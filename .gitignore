@@ -38,3 +38,6 @@ coverage/
 .cache/
 .turbo/
 .parcel-cache/
+
+# Claude Code conversation exports (/export)
+/20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]-*.txt
