@@ -12,6 +12,7 @@
 - 计划阶段 → `docs/plan/`（含 `specs/`、`architecture.md`、`roadmap.md`）
 - 开发阶段 → `docs/develop/decisions.md`
 - 验证阶段 → `docs/verify/`
+- 实践记录（元目标）→ `docs/practice-log.md`
 
 ## Skill 分层
 
