@@ -8,17 +8,22 @@
 - [x] product-definition.md 完成
 - [x] 关键假设列表与验证方式
 
-## M1 — Plan (本阶段)
+## M1 — Plan
 
-- [ ] 核心 spec 拆分（specs/ 至少 2 份）
-- [ ] architecture.md 收敛技术选型
-- [ ] 评测指标确定
+- [x] 核心 spec 拆分（specs/ 4 份达基线，经 3 轮独立评审收口）
+- [x] architecture.md 收敛技术选型（六节齐全，含 Agent 运行时 / 安全 9 项落点 / 成本控制路径）
+- [x] 评测指标确定（`eval-criteria.md` 阈值暂定，M1 末标定）
+- [x] DCP-0 附条件 ①: A3 数据源核实（`source-feasibility.md`）
+- [x] DCP-0 附条件 ②: 竞品分析（`competitive-analysis.md`）
 
-## M2 — Develop (MVP)
+## M2 — Develop (MVP) (本阶段)
 
+- [ ] **DCP-1 → M2 跨门硬门槛**: A1 验证实跑（真实数据评测集达 `eval-criteria.md` 上线门槛）+ 成本实测标定（charter A5）
 - [ ] 端到端 1 条数据流跑通
 - [ ] 收集 / 分析 / 校验三段 agent 落地
 - [ ] 基础 UI / 输出形态
+- [ ] 数据源接入按 `source-feasibility.md` MVP 清单（软工 12 + 安全 10 feeds）
+- [ ] 非 web 源采集可行性 spike（播客 / 视频字幕）
 
 ## M3 — Verify
 
@@ -44,3 +49,14 @@
   - 逐源核实假设 A3（数据源可达性），首版只接确定可达的源；
   - 补一次竞品分析，深化差异化论证。
 - **双签**：负责人 dongqiu ✓ · 架构师 ✓。
+
+### DCP-1 计划评审 — 2026-05-21
+
+- **决策**：✅ 继续（CONTINUE）—— 进入 M2 Develop（MVP）。
+- **依据**：准入通过（4 份 spec 达基线 + `architecture.md` 六节齐全 + `eval-criteria.md` 阈值定稿 + DCP-0 附条件 ① / ② 完成）；评审清单 4 ✅ + 2 ⚠️（成本条件 + 迭代节奏软通过），无 🔴 阻断项。
+- **关键产出**：4 份 spec 经 3 轮独立 agent 评审收口；architecture.md 经 1 轮独立评审、Vercel+SQLite 误选已纠正为自托管 Docker；`source-feasibility.md`（17 ✅ / 8 ⚠️ / 6 ❌，MVP 接入清单 22 feeds）；`competitive-analysis.md`（16 竞品，4 项差异化护城河窗口 18–24 个月）；`practice-log.md` 记录人机协同经验。
+- **M2 早期跨门硬门槛**:
+  - A1 验证实跑（`insight-analysis` AC10，真实数据评测集达上线门槛）；
+  - 成本实测标定（deep_dive / brief / initial_digest 三类报告平均成本验证 `eval-criteria.md` 暂定阈值）。
+- **战略备忘**：4 项差异化护城河强度排序与产品定义叙事顺序不一致（最稀缺：② 可溯源一致性、③ 主题持续聚合）；最警惕竞品 = Inoreader；一致性校验为 MVP 必做的"双重校验"，不能退化为只过可达性。
+- **双签**：负责人 dongqiu ✓ · 架构师 待会签。
