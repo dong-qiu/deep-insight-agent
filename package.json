@@ -8,6 +8,7 @@
   },
   "scripts": {
     "eval:a1": "tsx evals/run-a1.ts",
+    "review:sheet": "tsx evals/make-review-sheet.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
