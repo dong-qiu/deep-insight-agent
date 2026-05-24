@@ -1,0 +1,5 @@
+{"statement":"测试先行的修复循环降低了回归率。","source_text":"In our internal benchmark of 200 tasks, the test-first loop reduced regressions by 38% compared to the previous propose-then-test flow.","expected_consistency":"support"}
+{"statement":"测试先行的修复循环消除了所有回归。","source_text":"the test-first loop reduced regressions by 38% compared to the previous propose-then-test flow.","expected_consistency":"not_support","negative_type":"exaggeration"}
+{"statement":"门控测试的 agent 在所有场景下都严格优于不门控的 agent。","source_text":"agents that gate diffs on passing tests achieve higher merge rates than agents that do not. We caution that flaky tests can cause the loop to discard otherwise-correct patches.","expected_consistency":"not_support","negative_type":"out_of_context"}
+{"statement":"OWASP 将供应链风险列为 LLM 应用的头号风险。","source_text":"In the latest revision, prompt injection remains the top-ranked risk for LLM applications.","expected_consistency":"not_support","negative_type":"misattribution"}
+{"statement":"间接注入主要影响金融行业的 agent。","source_text":"agents which fetch untrusted web pages remain vulnerable to indirect prompt injection.","expected_consistency":"uncertain"}

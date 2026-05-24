@@ -68,10 +68,22 @@
 
 > `skills/L0–L3` 分层约束的有效性。
 
-_（尚无记录。）_
+### 2026-05-24 · 写 SDK 代码前先取 skill，而非凭训练记忆
+
+- **日期**: 2026-05-24
+- **情境**: 实现 A1 验证切片（本项目首段真正调 Claude API 的代码）。动手前先调 `claude-api` skill 取当前 Anthropic SDK 用法，再写。
+- **观察**: skill 给出的关键用法大多在模型训练 cutoff 之后 —— 结构化输出走 `messages.parse()` + `zodOutputFormat`、Opus 4.7 仅支持 adaptive thinking（传 `temperature` / `budget_tokens` 会 400）、模型 ID 不带日期后缀。若凭记忆写，大概率会用已废弃的 `output_format` 或给 4.7 传 `budget_tokens`。
+- **经验 / 教训**: 对「版本漂移快」的依赖（厂商 SDK、模型 API），skill 是「最新事实来源」，应作为**写代码前的固定前置步骤**，而非事后纠错。AI 的训练记忆对这类 API 是负债，不是资产。
+- **后续动作**: 把「调外部 SDK / 模型 API 前先取对应 skill」纳入 L0/L2 开发阶段约束。
 
 ## AI 代码质量保障
 
 > 评审、测试、eval 如何应对 AI 生成的代码。
 
-_（尚无记录。）_
+### 2026-05-24 · typecheck + 无 key 单测兜住 AI 的「记忆性 API 错误」
+
+- **日期**: 2026-05-24
+- **情境**: A1 切片代码写完，先跑 `npm run typecheck` + `npm test`（纯函数单测，不需 API key）。
+- **观察**: typecheck 第一时间抓出一个 AI 凭记忆写错的细节 —— schema 用了 zod 经典入口 `import { z } from "zod"`，而 SDK 的 `zodOutputFormat` helper 实际要 `zod/v4` 入口，类型对不上、编译失败。改成 `zod/v4` 后通过，8/8 单测过。这个错误「读代码看不出来」，是真跑工具链才暴露的。
+- **经验 / 教训**: AI 生成的 SDK 调用常常「看起来对、跑起来错」。第一道质量关应是**不依赖外部服务的确定性检查**（typecheck + 纯函数单测）—— 便宜、可在沙箱/CI 跑、专抓这类记忆性偏差。有意识地把「确定性逻辑（可达性校验、处置矩阵）」与「需真模型的部分」分开，让前者可被**无 key 单测**覆盖，是可测性设计的一部分。
+- **后续动作**: CI 至少跑 typecheck + `npm test`（无需 key）；`eval:a1`（需 key）作为人工/定时门槛。把「区分确定性逻辑 vs 模型依赖逻辑、前者必须有无 key 单测」写进 `skills/L3-quality.md`。

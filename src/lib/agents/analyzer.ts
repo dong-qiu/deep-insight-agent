@@ -1,0 +1,119 @@
+/**
+ * analyzer —— 把多源 ContentItem 提炼成围绕主题的结构化洞察。
+ * 对应 spec `docs/plan/specs/insight-analysis.md`（A1 切片：不做趋势预测 / 实体追踪 / 跨批次 event_id 对齐）。
+ *
+ * 模型只产出 statement/type/importance/importance_basis/confidence/citations(quote)；
+ * id / locator / source_count / multi_source / time_window / language / event_id 在代码侧派生，
+ * 不让模型编造。
+ */
+import { randomUUID } from "node:crypto";
+import { callStructured } from "../runtime/llm.js";
+import {
+  AnalyzerOutputSchema,
+  type AnalysisBatch,
+  type Citation,
+  type ContentItem,
+  type Insight,
+  type Topic,
+} from "../types.js";
+
+const SYSTEM = `你是行业洞察分析引擎。给定一个主题与一批已采集的多源内容，提炼围绕该主题的结构化洞察。
+
+规则：
+1. 主题聚合：跨源整合同主题信息，归并近义说法。
+2. 信号去噪：只保留重要性 ≥ 3 的洞察；若无重要事件，置 no_significant_event=true 且 insights 为空，绝不凑数。
+3. 可溯源：每条洞察必须挂 ≥ 1 条引用；quote 必须**逐字摘录**自对应 ContentItem 的 body（不得改写、不得跨条拼接），content_item_id 必须来自输入清单。
+4. 中性叙述：客观陈述已发生的事，不预测、不评论、不带情绪。
+5. type：主题聚合用 aggregation；描述时间维度的变化用 trend（trend 必须填 confidence，且只描述已发生变化，不做方向性预测）。
+
+只输出符合 schema 的 JSON。`;
+
+interface TimeWindow {
+  start: string;
+  end: string;
+}
+
+function computeLocator(body: string, quote: string): Citation["locator"] {
+  const idx = body.indexOf(quote);
+  if (idx < 0) return { paragraph_index: -1, char_start: -1, char_end: -1 };
+  const paragraph_index = body.slice(0, idx).split(/\n\s*\n/).length - 1;
+  return { paragraph_index, char_start: idx, char_end: idx + quote.length };
+}
+
+function renderItems(items: ContentItem[]): string {
+  return items
+    .map(
+      (it) =>
+        `[${it.id}] 标题：${it.title}\n来源：${it.source_id} · 时间：${it.published_at ?? "未知"}\n正文：\n${it.body}`,
+    )
+    .join("\n---\n");
+}
+
+export async function analyze(
+  topic: Topic,
+  items: ContentItem[],
+  timeWindow: TimeWindow,
+): Promise<AnalysisBatch> {
+  const batchId = `batch_${randomUUID().slice(0, 8)}`;
+  const user = `主题：${topic.name}（关键词：${topic.keywords.join("、")}）
+时间窗：${timeWindow.start} ~ ${timeWindow.end}
+
+已采集内容（共 ${items.length} 条）：
+
+${renderItems(items)}`;
+
+  const { data } = await callStructured({
+    role: "analyzer",
+    system: SYSTEM,
+    user,
+    schema: AnalyzerOutputSchema,
+    maxTokens: 16000,
+  });
+
+  const byId = new Map(items.map((i) => [i.id, i]));
+
+  const insights: Insight[] = data.no_significant_event
+    ? []
+    : data.insights.map((li, idx) => {
+        const citations: Citation[] = li.citations.map((c) => {
+          const item = byId.get(c.content_item_id);
+          return {
+            content_item_id: c.content_item_id,
+            quote: c.quote,
+            locator: item
+              ? computeLocator(item.body, c.quote)
+              : { paragraph_index: -1, char_start: -1, char_end: -1 },
+          };
+        });
+        const sourceIds = new Set(
+          citations
+            .map((c) => byId.get(c.content_item_id)?.source_id)
+            .filter((s): s is string => Boolean(s)),
+        );
+        const source_count = sourceIds.size;
+        return {
+          id: `ins_${batchId}_${idx}`,
+          topic_id: topic.id,
+          type: li.type,
+          event_id: null, // 跨批次事件对齐属骨架阶段，A1 切片不做
+          statement: li.statement,
+          importance: li.importance,
+          importance_basis: li.importance_basis,
+          citations,
+          source_count,
+          multi_source: source_count >= 2,
+          time_window: timeWindow,
+          confidence: li.confidence,
+          language: topic.language,
+        };
+      });
+
+  return {
+    id: batchId,
+    topic_id: topic.id,
+    time_window: timeWindow,
+    status: "done",
+    no_significant_event: data.no_significant_event,
+    insights,
+  };
+}
