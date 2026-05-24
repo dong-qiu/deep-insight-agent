@@ -11,6 +11,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import type { z } from "zod/v4";
+import { costUSD, type TokenUsage } from "./cost.js";
 
 export type Role = "analyzer" | "validator";
 
@@ -30,6 +31,53 @@ export function assertModelSeparation(): void {
 }
 
 const client = new Anthropic(); // ANTHROPIC_API_KEY from env
+
+// ── Cost Meter（进程内累计本次运行的 token / 成本） ──
+export interface ModelUsage {
+  calls: number;
+  input: number;
+  output: number;
+  cacheWrite: number;
+  cacheRead: number;
+  usd: number;
+  unpriced: boolean; // 命中未在价目表里的模型
+}
+export interface CostReport {
+  byModel: Array<{ model: string } & ModelUsage>;
+  totalUSD: number;
+}
+
+const meter = new Map<string, ModelUsage>();
+
+function record(model: string, u: Anthropic.Usage): void {
+  const agg = meter.get(model) ?? {
+    calls: 0,
+    input: 0,
+    output: 0,
+    cacheWrite: 0,
+    cacheRead: 0,
+    usd: 0,
+    unpriced: false,
+  };
+  agg.calls += 1;
+  agg.input += u.input_tokens ?? 0;
+  agg.output += u.output_tokens ?? 0;
+  agg.cacheWrite += u.cache_creation_input_tokens ?? 0;
+  agg.cacheRead += u.cache_read_input_tokens ?? 0;
+  const c = costUSD(model, u as TokenUsage);
+  if (c === null) agg.unpriced = true;
+  else agg.usd += c;
+  meter.set(model, agg);
+}
+
+export function getCostReport(): CostReport {
+  const byModel = [...meter.entries()].map(([model, m]) => ({ model, ...m }));
+  return { byModel, totalUSD: byModel.reduce((s, m) => s + m.usd, 0) };
+}
+
+export function resetCostMeter(): void {
+  meter.clear();
+}
 
 export interface StructuredCall<T extends z.ZodType> {
   role: Role;
@@ -51,8 +99,9 @@ export interface StructuredResult<T> {
 export async function callStructured<T extends z.ZodType>(
   opts: StructuredCall<T>,
 ): Promise<StructuredResult<z.infer<T>>> {
+  const model = MODELS[opts.role];
   const res = await client.messages.parse({
-    model: MODELS[opts.role],
+    model,
     max_tokens: opts.maxTokens ?? 16000,
     // system 作为稳定前缀缓存；user 永远在断点之后（prompt-caching 前缀匹配）
     system: [{ type: "text", text: opts.system, cache_control: { type: "ephemeral" } }],
@@ -64,6 +113,7 @@ export async function callStructured<T extends z.ZodType>(
     ...(opts.thinking ? { thinking: { type: "adaptive" as const } } : {}),
   });
 
+  record(model, res.usage);
   if (!res.parsed_output) {
     throw new Error(
       `结构化输出解析失败（role=${opts.role} stop_reason=${res.stop_reason}）`,

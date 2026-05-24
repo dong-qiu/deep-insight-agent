@@ -42,6 +42,8 @@ npm run typecheck   # tsc 类型检查
 作 DCP 判定前须扩到 eval-criteria 规模：**≥ 5 主题 × ≥ 10 洞察、≥ 100 组引用-结论对**，
 且用 `source-feasibility.md` MVP 清单里的**真实采集内容**（种子样本是示意，非真实数据）。
 
+👉 怎么填：见 **`dataset/GUIDE.md`**（目标规模、取数来源、格式、引用一致性 3 类负例的标注规则与 checklist）。
+
 ## 模型
 
 默认 分析=`claude-sonnet-4-6` / 校验=`claude-opus-4-7`（架构选型；校验模型必须独立于分析模型，

@@ -12,7 +12,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { analyze } from "../src/lib/agents/analyzer.js";
 import { judgeConsistency, validateBatch } from "../src/lib/agents/validator.js";
-import { MODELS, assertModelSeparation } from "../src/lib/runtime/llm.js";
+import { MODELS, assertModelSeparation, getCostReport } from "../src/lib/runtime/llm.js";
 import type { CitationCheck, ContentItem, Insight, Topic } from "../src/lib/types.js";
 
 // ── eval-criteria.md 上线门槛（镜像；改阈值请同步那份文档） ──
@@ -150,6 +150,21 @@ async function main(): Promise<void> {
     metric("校验器负例召回率", negTotal ? negRecalled / negTotal : 0, THRESHOLDS.judgeNegRecall, ">="),
   ];
   printMetrics(rows);
+
+  // ── 成本（估算，A5 成本可控） ──
+  const cost = getCostReport();
+  console.log("\n本次运行成本（估算）：");
+  for (const m of cost.byModel) {
+    const cache = m.cacheRead || m.cacheWrite ? ` · cache r/w ${m.cacheRead}/${m.cacheWrite}` : "";
+    console.log(
+      `  ${m.model}：${m.calls} 次调用 · in ${m.input} / out ${m.output} tok${cache}` +
+        ` → $${m.usd.toFixed(4)}${m.unpriced ? "（含未计价模型）" : ""}`,
+    );
+  }
+  console.log(
+    `  合计：$${cost.totalUSD.toFixed(4)}` +
+      (total ? ` · 每引用校验 $${(cost.totalUSD / total).toFixed(5)}` : ""),
+  );
 
   // ── 人工指标：导出 review queue（非显然占比、幻觉率需人评） ──
   mkdirSync("evals/out", { recursive: true });
