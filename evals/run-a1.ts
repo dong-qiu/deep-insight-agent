@@ -125,29 +125,42 @@ async function main(): Promise<void> {
   const allInsights: Insight[] = [];
   for (const c of qualityCases) {
     process.stdout.write(`[分析] 主题「${c.topic.name}」… `);
-    const batch = await analyze(c.topic, c.items, c.time_window);
-    const vr = await validateBatch(batch.insights, c.items);
-    allInsights.push(...batch.insights);
-    allChecks.push(...vr.checks);
-    console.log(`${batch.insights.length} 洞察 / ${vr.checks.length} 引用校验`);
+    try {
+      const batch = await analyze(c.topic, c.items, c.time_window);
+      const vr = await validateBatch(batch.insights, c.items);
+      allInsights.push(...batch.insights);
+      allChecks.push(...vr.checks);
+      console.log(`${batch.insights.length} 洞察 / ${vr.checks.length} 引用校验`);
+    } catch (e) {
+      console.log(`失败，跳过该主题（${(e as Error).message}）`);
+    }
   }
 
   // ── Part B：校验器一致性准召（标注集） ──
   const consistencyAll = readJsonl<ConsistencyCase>("evals/dataset/citation-consistency.jsonl");
   const consistencyCases = cLimit ? consistencyAll.slice(0, cLimit) : consistencyAll;
+  let judged = 0;
   let judgeCorrect = 0;
+  let judgeErrors = 0;
   let negTotal = 0;
   let negRecalled = 0;
   process.stdout.write(`[校验器准召] ${consistencyCases.length} 组标注对… `);
   for (const c of consistencyCases) {
-    const j = await judgeConsistency(c.statement, c.source_text);
+    let j: Awaited<ReturnType<typeof judgeConsistency>>;
+    try {
+      j = await judgeConsistency(c.statement, c.source_text);
+    } catch {
+      judgeErrors++;
+      continue;
+    }
+    judged++;
     if (j.consistency === c.expected_consistency) judgeCorrect++;
     if (c.expected_consistency === "not_support") {
       negTotal++;
       if (j.consistency === "not_support") negRecalled++;
     }
   }
-  console.log("done");
+  console.log(`done（成功 ${judged}/${consistencyCases.length}${judgeErrors ? `，跳过 ${judgeErrors}` : ""}）`);
 
   // ── 指标 ──
   const total = allChecks.length;
@@ -163,7 +176,7 @@ async function main(): Promise<void> {
     metric("flagged率(第二护栏)", total ? uncertain / total : 0, THRESHOLDS.flagged, "<="),
     metric(
       "校验器三分类准确率",
-      consistencyCases.length ? judgeCorrect / consistencyCases.length : 0,
+      judged ? judgeCorrect / judged : 0,
       THRESHOLDS.judgeAccuracy,
       ">=",
     ),

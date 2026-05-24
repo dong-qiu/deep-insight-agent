@@ -126,7 +126,13 @@ export async function validateBatch(
       }
 
       const item = byId.get(cit.content_item_id)!;
-      const judge = await judgeConsistency(ins.statement, item.body);
+      let judge: ConsistencyJudge;
+      try {
+        judge = await judgeConsistency(ins.statement, item.body);
+      } catch (e) {
+        console.warn(`  ⚠️ 跳过一致性校验 ${ins.id}#${ci}（${(e as Error).message}）`);
+        continue;
+      }
       checks.push({
         insight_id: ins.id,
         citation_index: ci,

@@ -36,7 +36,7 @@ let _client: Anthropic | null = null;
 function getClient(): Anthropic {
   // 经第三方中转站偶发卡死：用较短超时 + 多次重试，让卡住的请求快速失败并重试，
   // 而非默认 10min 超时干等一次。正常调用 4-9s 完成，60s 足够宽松。
-  return (_client ??= new Anthropic({ timeout: 60_000, maxRetries: 3 })); // key from env
+  return (_client ??= new Anthropic({ timeout: 45_000, maxRetries: 2 })); // key from env
 }
 
 // ── Cost Meter（进程内累计本次运行的 token / 成本） ──
