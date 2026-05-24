@@ -30,7 +30,12 @@ export function assertModelSeparation(): void {
   }
 }
 
-const client = new Anthropic(); // ANTHROPIC_API_KEY from env
+// 懒加载：首次调用时才构造客户端，确保 .env.local 已被注入 process.env
+// （模块 import 早于 run-a1 的 loadEnvLocal，过早 new Anthropic() 会拿不到 key）
+let _client: Anthropic | null = null;
+function getClient(): Anthropic {
+  return (_client ??= new Anthropic()); // ANTHROPIC_API_KEY from env
+}
 
 // ── Cost Meter（进程内累计本次运行的 token / 成本） ──
 export interface ModelUsage {
@@ -100,7 +105,7 @@ export async function callStructured<T extends z.ZodType>(
   opts: StructuredCall<T>,
 ): Promise<StructuredResult<z.infer<T>>> {
   const model = MODELS[opts.role];
-  const res = await client.messages.parse({
+  const res = await getClient().messages.parse({
     model,
     max_tokens: opts.maxTokens ?? 16000,
     // system 作为稳定前缀缓存；user 永远在断点之后（prompt-caching 前缀匹配）

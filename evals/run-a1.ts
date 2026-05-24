@@ -97,11 +97,30 @@ async function main(): Promise<void> {
     );
     process.exit(2);
   }
+  if (!process.env.ANTHROPIC_API_KEY.startsWith("sk-ant-")) {
+    console.warn(
+      "⚠️ ANTHROPIC_API_KEY 不以 'sk-ant-' 开头，可能不是有效的 Anthropic key" +
+        "（Anthropic key 形如 sk-ant-api03-...）。若实跑报 401/403，请先核对 key。\n",
+    );
+  }
   assertModelSeparation();
   console.log(`A1 验证实跑\n模型：分析=${MODELS.analyzer} / 校验=${MODELS.validator}\n`);
 
+  // 子集冒烟开关：A1_QUALITY_LIMIT / A1_CONSISTENCY_LIMIT 限制跑多少条（廉价验证链路+成本）
+  const qLimit = Number(process.env.A1_QUALITY_LIMIT) || 0;
+  const cLimit = Number(process.env.A1_CONSISTENCY_LIMIT) || 0;
+  const smoke = qLimit > 0 || cLimit > 0;
+
   // ── Part A：洞察提炼 + 引用双层校验 ──
-  const qualityCases = readJsonl<QualityCase>("evals/dataset/insight-quality.jsonl");
+  const qualityAll = readJsonl<QualityCase>("evals/dataset/insight-quality.jsonl");
+  const qualityCases = qLimit ? qualityAll.slice(0, qLimit) : qualityAll;
+  if (smoke) {
+    console.log(
+      `⚠️ 子集冒烟模式：主题 ${qualityCases.length}/${qualityAll.length}` +
+        (cLimit ? `、一致性对上限 ${cLimit}` : "") +
+        " —— 仅验证真模型链路与成本，不代表 A1 结论。\n",
+    );
+  }
   const allChecks: CitationCheck[] = [];
   const allInsights: Insight[] = [];
   for (const c of qualityCases) {
@@ -114,7 +133,8 @@ async function main(): Promise<void> {
   }
 
   // ── Part B：校验器一致性准召（标注集） ──
-  const consistencyCases = readJsonl<ConsistencyCase>("evals/dataset/citation-consistency.jsonl");
+  const consistencyAll = readJsonl<ConsistencyCase>("evals/dataset/citation-consistency.jsonl");
+  const consistencyCases = cLimit ? consistencyAll.slice(0, cLimit) : consistencyAll;
   let judgeCorrect = 0;
   let negTotal = 0;
   let negRecalled = 0;
@@ -179,10 +199,15 @@ async function main(): Promise<void> {
   );
 
   // ── 样本量提示 ──
-  if (qualityCases.length < MIN_TOPICS || consistencyCases.length < MIN_CONSISTENCY_PAIRS) {
+  if (smoke) {
     console.log(
-      `\n⚠️ 样本量低于 eval-criteria 规模（主题 ${qualityCases.length}/${MIN_TOPICS}，` +
-        `一致性对 ${consistencyCases.length}/${MIN_CONSISTENCY_PAIRS}）。\n` +
+      `\n⚠️ 子集冒烟：仅跑了主题 ${qualityCases.length}/${qualityAll.length}、一致性对 ${consistencyCases.length}/${consistencyAll.length}。\n` +
+        "   结果仅用于验证真模型链路 + 标定成本，不作 A1 / DCP 判定依据。去掉 A1_*_LIMIT 跑全量才出结论。",
+    );
+  } else if (qualityAll.length < MIN_TOPICS || consistencyAll.length < MIN_CONSISTENCY_PAIRS) {
+    console.log(
+      `\n⚠️ 样本量低于 eval-criteria 规模（主题 ${qualityAll.length}/${MIN_TOPICS}，` +
+        `一致性对 ${consistencyAll.length}/${MIN_CONSISTENCY_PAIRS}）。\n` +
         "   当前结论仅验证管线打通，不作 DCP 判定依据。请用真实采集数据扩充数据集后重跑。",
     );
   }
