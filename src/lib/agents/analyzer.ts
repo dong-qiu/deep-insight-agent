@@ -40,6 +40,11 @@ interface TimeWindow {
   end: string;
 }
 
+/** 产出守卫：statement 是否完整（以句末标点/收尾括号结束）。结构化输出偶发把长 statement 提前截断。 */
+export function isCompleteStatement(s: string): boolean {
+  return /[。.!?！？”")）】』」]$/.test(s.trim());
+}
+
 function computeLocator(body: string, quote: string): Citation["locator"] {
   const idx = body.indexOf(quote);
   if (idx < 0) return { paragraph_index: -1, char_start: -1, char_end: -1 };
@@ -79,7 +84,7 @@ ${renderItems(items)}`;
 
   const byId = new Map(items.map((i) => [i.id, i]));
 
-  const insights: Insight[] = data.no_significant_event
+  const built: Insight[] = data.no_significant_event
     ? []
     : data.insights.map((li, idx) => {
         const citations: Citation[] = li.citations.map((c) => {
@@ -114,6 +119,14 @@ ${renderItems(items)}`;
           language: topic.language,
         };
       });
+
+  // 产出守卫：丢弃疑似截断的洞察（结构化输出偶发把长 statement 字符串提前收尾，JSON 仍合法，
+  // 但半句洞察会污染校验与人评）。治本方向（自由文本/streaming）见 docs/verify/a1-runs.md。
+  const insights = built.filter((it) => {
+    if (isCompleteStatement(it.statement)) return true;
+    console.warn(`  ⚠️ 丢弃疑似截断洞察 ${it.id}：…「${it.statement.trim().slice(-24)}」`);
+    return false;
+  });
 
   return {
     id: batchId,
