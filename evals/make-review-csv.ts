@@ -16,12 +16,30 @@ if (!existsSync(inPath)) {
 }
 const insights = (JSON.parse(readFileSync(inPath, "utf8")) as { insights: Insight[] }).insights;
 
+// 可选：AI 预评 JSON（argv[4]，id → {non_obvious, hallucination, note}），合并成「AI预评」列作人评起点
+interface Prejudge {
+  id: string;
+  non_obvious: string;
+  hallucination: string;
+  note: string;
+}
+const prejudgePath = process.argv[4];
+if (prejudgePath && !existsSync(prejudgePath)) {
+  console.error(`找不到预评文件 ${prejudgePath}`);
+  process.exit(1);
+}
+const prejudge = prejudgePath
+  ? new Map((JSON.parse(readFileSync(prejudgePath, "utf8")) as Prejudge[]).map((j) => [j.id, j]))
+  : null;
+
 const esc = (v: string | number): string =>
   `"${String(v).replace(/\r?\n/g, " ").replace(/"/g, '""')}"`;
 
+const aiCols = prejudge ? ["AI预评·非显然", "AI预评·幻觉", "AI预评·理由"] : [];
 const headers = [
   "序号", "id", "主题", "类型", "重要性", "结论", "引用",
   "可定位", "截断",
+  ...aiCols,
   "非显然(是/否)", "幻觉(有/无)", "importance合理(是/否)", "备注",
 ];
 const rows = [headers.map(esc).join(",")];
@@ -30,10 +48,13 @@ insights.forEach((it, i) => {
   const quotes = it.citations.map((c) => `[${c.content_item_id}] ${c.quote}`).join("  ‖  ");
   const locatable = it.citations.every((c) => c.locator.char_start >= 0) ? "是" : "否";
   const truncated = isCompleteStatement(it.statement) ? "" : "是";
+  const j = prejudge?.get(it.id);
+  const aiCells = prejudge ? [j?.non_obvious ?? "", j?.hallucination ?? "", j?.note ?? ""] : [];
   rows.push(
     [
       i + 1, it.id, it.topic_id, it.type, it.importance,
       it.statement, quotes, locatable, truncated,
+      ...aiCells,
       "", "", "", "",
     ].map(esc).join(","),
   );
