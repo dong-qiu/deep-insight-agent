@@ -107,20 +107,27 @@ export async function callStructured<T extends z.ZodType>(
   opts: StructuredCall<T>,
 ): Promise<StructuredResult<z.infer<T>>> {
   const model = MODELS[opts.role];
-  const res = await getClient().messages.parse({
+  const params = {
     model,
     max_tokens: opts.maxTokens ?? 16000,
     // system 作为稳定前缀缓存；user 永远在断点之后（prompt-caching 前缀匹配）
-    system: [{ type: "text", text: opts.system, cache_control: { type: "ephemeral" } }],
-    messages: [{ role: "user", content: opts.user }],
+    system: [{ type: "text" as const, text: opts.system, cache_control: { type: "ephemeral" as const } }],
+    messages: [{ role: "user" as const, content: opts.user }],
     output_config: {
       format: zodOutputFormat(opts.schema),
       ...(opts.thinking ? { effort: "high" as const } : {}),
     },
     ...(opts.thinking ? { thinking: { type: "adaptive" as const } } : {}),
-  });
+  };
 
+  // 敏感领域内容偶发安全拒答（stop_reason=refusal）——多为非确定性，重试至多 3 次
+  let res = await getClient().messages.parse(params);
   record(model, res.usage);
+  for (let attempt = 1; res.stop_reason === "refusal" && attempt < 3; attempt++) {
+    res = await getClient().messages.parse(params);
+    record(model, res.usage);
+  }
+
   if (!res.parsed_output) {
     throw new Error(
       `结构化输出解析失败（role=${opts.role} stop_reason=${res.stop_reason}）`,
