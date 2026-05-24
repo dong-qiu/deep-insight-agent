@@ -65,3 +65,13 @@
 - [ ] 标注由**非生成者**完成（避免与 analyzer 同源偏差），最好双人交叉
 - [ ] 跑 `npm run eval:a1`，⚠️ 规模提示消失，自动门槛全 PASS
 - [ ] 人评 `evals/out/review-queue.json`：非显然占比 ≥ 60% / 幻觉率 ≤ 2%
+
+## 本仓自带数据集的来源与已知局限
+
+当前 `dataset/*.jsonl` 不是占位种子，是 2026-05-24 实抓构建的：
+
+- **`insight-quality.jsonl`**：5 主题 × 6 篇 = 30 条，全部为 **arXiv（2026-05）真实论文摘要**（经 arXiv API 抓取，轻清洗 LaTeX 符号）。
+  - ⚠️ **单一来源（全是 arXiv）**：未覆盖 news / 社交 / 视频字幕等异构噪音。团队应按上文从 `source-feasibility.md` 的非学术源补充，才能真正压测"多源去噪"。
+  - RAG 主题里混入了 1 篇天文学论文（真实搜索噪音），有意保留以测试主题去噪。
+- **`citation-consistency.jsonl`**：120 组。`source_text` 为上述摘要的**逐字片段**；`statement` 由 AI **按类型构造**（label-by-construction：故意写成夸大/断章取义/张冠李戴/不确定）。
+  - ⚠️ **标签是 AI 构造的，未经人工校验**。构造型负例的标签由构造保证、相对可靠，但 support / uncertain 的边界仍需**人工抽查**（见上"标注由非生成者完成"）。作 DCP 判定前请抽查 ≥ 20% 并修正。
