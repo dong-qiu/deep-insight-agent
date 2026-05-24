@@ -73,8 +73,9 @@ ${sourceText}
     system: CONSISTENCY_SYSTEM,
     user,
     schema: ConsistencyJudgeSchema,
-    thinking: true,
-    maxTokens: 16000,
+    // 默认开思考（精度敏感）；经会缓死长响应的中转站时可 VALIDATOR_THINKING=0 关掉
+    thinking: process.env.VALIDATOR_THINKING !== "0",
+    maxTokens: 4096,
   });
   return data;
 }

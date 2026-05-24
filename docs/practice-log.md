@@ -95,3 +95,21 @@
 - **观察**: typecheck 干净、13/13 单测全过的代码，**第一次真调 API 就崩**：`new Anthropic()` 写在模块顶层，import 时即执行，早于 `main()` 里的 `loadEnvLocal()`，于是客户端拿不到 key（`Could not resolve authentication method`）。改成懒加载后再跑，又用一次最小 curl 探针发现 key 本身无效（`401 invalid x-api-key`，前缀 `sk-V…` 而非 Anthropic 的 `sk-ant-`）。两个问题——一个代码 bug、一个配置错误——都在花钱跑全量前、用不到 1 美元暴露了。
 - **经验 / 教训**: 「typecheck + 单测全绿」只覆盖**确定性逻辑**，覆盖不到**模块初始化顺序**和**外部服务真实契约**这类问题——它们只在真跑时显形。所以**真依赖（模型 API）的冒烟是一道独立的、不可省的质量关**。两条具体规则：①依赖环境变量的单例必须懒加载（或在 import 前注入 env）；②昂贵的真 API 跑前，先用最小子集冒烟（`A1_*_LIMIT`）验证链路+标定成本。
 - **后续动作**: 已加 `A1_QUALITY_LIMIT` / `A1_CONSISTENCY_LIMIT` 子集开关 + key 前缀格式告警。把「真依赖冒烟 = 独立质量关」「env 单例懒加载」纳入 `skills/L3-quality.md`。
+
+## 基础设施与集成（模型接入）
+
+> 真实接入 LLM 时，环境/中转站对架构假设的冲击。
+
+### 2026-05-24 · 第三方 API 中转站打破多个架构假设
+
+- **日期**: 2026-05-24
+- **情境**: A1 实跑用的不是 Anthropic 直连，而是第三方中转站（`ANTHROPIC_BASE_URL=yibuapi.com`）。冒烟时逐层踩坑、逐层探针定位。
+- **观察**:
+  - token 非 `sk-ant-` 格式（中转站自有 token），且只授权了 **Opus（4.6/4.7），无 Sonnet/Haiku** → 默认 `analyzer=sonnet-4-6` 直接 403。靠「模型可配」用 env 切到 `opus-4-6 / opus-4-7` 绕过。
+  - 中转站对「**非流式 + adaptive thinking 的长响应**」会卡死（连接超时，4 次重试全超时）；但**同样请求体**用 curl 发小内容能 4–9s 返回 → 是长响应缓冲/超时问题，不是鉴权或参数非法。关掉 validator 思考后整条链路一次跑通。
+  - 代价：validator 在中转站上只能**不带思考**跑，子集三分类准确率仅 80%（< 90% 门槛）—— 精度受损是**中转站约束**导致，不是方法本身的问题。
+- **经验 / 教训**:
+  - 「模型可配」从纸面设计变成救命稻草：换接入方/中转站时**不改一行代码、env 切模型**即可。值得作为默认实践保留。
+  - 架构里「校验用 Opus + 思考」的假设**隐含依赖直连或流式**。经中转站要用 thinking，必须给 validator 上 streaming（claude-api skill 早有提示：长输出/高 max_tokens 一律 stream）。
+  - 第三方中转站会在**模型清单、特性支持、长响应稳定性、数据出境**多个维度悄悄打破假设；接入前应显式核验，别假设它等价于直连。
+- **后续动作**: validator 加了 `VALIDATOR_THINKING` 开关、客户端短超时（60s）+ 多重试（3）。要拿**可信的 A1 结论**，需直连 Anthropic、或给 validator 实现带 thinking 的 streaming。

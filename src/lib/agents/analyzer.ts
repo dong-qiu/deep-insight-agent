@@ -67,7 +67,7 @@ ${renderItems(items)}`;
     system: SYSTEM,
     user,
     schema: AnalyzerOutputSchema,
-    maxTokens: 16000,
+    maxTokens: 8000,
   });
 
   const byId = new Map(items.map((i) => [i.id, i]));
