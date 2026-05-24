@@ -12,10 +12,16 @@ function item(id: string, body: string): ContentItem {
     source_id: "src",
     url: "https://example.com",
     title: "t",
+    author: null,
     published_at: null,
+    fetched_at: "2026-05-25T00:00:00Z",
     language: "en",
     topic_ids: [],
+    tags: [],
     body,
+    raw_ref: `raw://${id}`,
+    content_hash: `h_${id}`,
+    fetch_status: "ok",
   };
 }
 

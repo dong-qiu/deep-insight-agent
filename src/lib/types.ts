@@ -1,30 +1,52 @@
 /**
- * 数据模型 —— 落 `docs/plan/architecture.md`「数据模型」节。
- * 本文件是 A1 验证切片用到的实体子集 + analyzer/validator 的结构化输出 Zod schema。
- * 完整数据模型（Source / Report / ReportIndexEntry / Run 等）待 A1 通过后建骨架时补齐。
+ * 数据模型 —— 落 `docs/plan/architecture.md`「数据模型」节（单一事实来源）。
+ * analyzer/validator 的结构化输出 Zod schema 见文件末。
  */
 import { z } from "zod/v4";
 
 export type Language = "zh" | "en" | "mixed";
+export type Industry = "ai-swe" | "ai-security";
 
-/** 采集产出的标准化内容（architecture 数据模型 · ContentItem，A1 切片用子集） */
+/** 数据源配置（architecture 数据模型 · Source） */
+export interface Source {
+  id: string;
+  name: string;
+  type: "rss" | "arxiv" | "api";
+  endpoint: string;
+  industry: Industry;
+  topic_ids: string[];
+  fetch_interval: string; // duration，如 "1h" / "30m"
+  backfill: { depth: string; max_cost: number } | null;
+  enabled: boolean;
+}
+
+/** 用户订阅主题（architecture 数据模型 · Topic） */
+export interface Topic {
+  id: string;
+  name: string;
+  keywords: string[];
+  industry: Industry;
+  language: Language;
+  brief_schedule: "daily" | "weekly";
+  enabled: boolean;
+}
+
+/** 采集产出的标准化内容（architecture 数据模型 · ContentItem） */
 export interface ContentItem {
   id: string;
   source_id: string;
   url: string;
   title: string;
+  author: string | null;
   published_at: string | null; // ISO；源未提供为 null
+  fetched_at: string;
   language: Language;
   topic_ids: string[];
+  tags: string[];
   body: string;
-}
-
-/** 用户订阅主题（architecture 数据模型 · Topic，A1 切片用子集） */
-export interface Topic {
-  id: string;
-  name: string;
-  keywords: string[];
-  language: Language;
+  raw_ref: string;
+  content_hash: string;
+  fetch_status: "ok" | "partial";
 }
 
 /** 可溯源最小单位（architecture 数据模型 · Citation） */
@@ -96,6 +118,58 @@ export interface ValidationReport {
 export interface ValidationResult {
   checks: CitationCheck[];
   report: ValidationReport;
+}
+
+export interface Cost {
+  tokens: number;
+  amount: number;
+}
+
+/** 报告对象（architecture 数据模型 · Report） */
+export interface Report {
+  id: string;
+  type: "brief" | "deep_dive" | "initial_digest";
+  topic_id: string;
+  status: "draft" | "generating" | "done" | "failed" | "archived" | "deleted";
+  generated_at: string;
+  title: string;
+  body_md: string;
+  body_html: string;
+  insight_ids: string[];
+  event_ids: string[];
+  prev_report_id: string | null;
+  citation_count: number;
+  cost: Cost;
+}
+
+/** 报告索引项（architecture 数据模型 · ReportIndexEntry）—— 落 SQLite 行 + FTS5 */
+export interface ReportIndexEntry {
+  report_id: string;
+  type: Report["type"];
+  topic_id: string;
+  industry: Industry;
+  date: string;
+  source_ids: string[];
+  title: string;
+  summary: string;
+  tags: string[];
+  entity_names: string[];
+  importance: number;
+  event_ids: string[];
+}
+
+/** 运行实体（architecture 数据模型 · Run）—— Job Runner 状态追踪 */
+export interface Run {
+  id: string;
+  kind: "ingest" | "analyze" | "validate" | "report-gen";
+  target: { topic_id?: string; source_id?: string; batch_id?: string; report_id?: string };
+  status: "running" | "done" | "failed";
+  started_at: string;
+  ended_at: string | null;
+  duration_ms: number | null;
+  cost: Cost | null;
+  error: { type: string; message: string; stack?: string } | null;
+  retry_of: string | null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

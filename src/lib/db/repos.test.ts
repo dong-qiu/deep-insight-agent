@@ -1,0 +1,86 @@
+/**
+ * 持久层单测 —— 内存库（:memory:），无需 API key，CI 可跑（npm test）。
+ * 验证 JSON 字段/bool 往返、去重判定、Run 状态机收尾。
+ */
+import { beforeEach, describe, expect, it } from "vitest";
+import type { ContentItem, Run, Source, Topic } from "../types.js";
+import { type DB, openDb } from "./index.js";
+import {
+  contentExists, finishRun, getContentItem, getRun, getSource, getTopic,
+  insertContentItem, insertRun, insertSource, insertTopic, listRuns, listSources,
+} from "./repos.js";
+
+let db: DB;
+beforeEach(() => {
+  db = openDb(":memory:");
+});
+
+const sampleSource: Source = {
+  id: "src_arxiv_swe", name: "arXiv cs.SE", type: "arxiv",
+  endpoint: "http://export.arxiv.org/api/query", industry: "ai-swe",
+  topic_ids: ["t1", "t2"], fetch_interval: "6h",
+  backfill: { depth: "90d", max_cost: 5 }, enabled: true,
+};
+
+it("Source 往返：JSON 数组 / backfill / bool", () => {
+  insertSource(db, sampleSource);
+  expect(getSource(db, "src_arxiv_swe")).toEqual(sampleSource);
+});
+
+it("Topic 往返 + enabledOnly 过滤", () => {
+  const t: Topic = {
+    id: "t1", name: "Code Agent", keywords: ["coding agent", "swe"],
+    industry: "ai-swe", language: "zh", brief_schedule: "daily", enabled: true,
+  };
+  insertTopic(db, t);
+  insertTopic(db, { ...t, id: "t2", enabled: false });
+  expect(getTopic(db, "t1")).toEqual(t);
+  expect(getTopic(db, "t2")?.enabled).toBe(false);
+});
+
+describe("ContentItem", () => {
+  const item: ContentItem = {
+    id: "ci1", source_id: "src_arxiv_swe", url: "https://arxiv.org/abs/2605.1",
+    title: "T", author: null, published_at: "2026-05-20", fetched_at: "2026-05-25T00:00:00Z",
+    language: "en", topic_ids: ["t1"], tags: [], body: "hello", raw_ref: "raw://1",
+    content_hash: "h1", fetch_status: "ok",
+  };
+  beforeEach(() => insertSource(db, sampleSource));
+
+  it("往返：含 null author / 空 tags", () => {
+    insertContentItem(db, item);
+    expect(getContentItem(db, "ci1")).toEqual(item);
+  });
+
+  it("contentExists 按 url+hash 判重", () => {
+    insertContentItem(db, item);
+    expect(contentExists(db, item.url, "h1")).toBe(true);
+    expect(contentExists(db, item.url, "h2")).toBe(false); // 内容更新（hash 变）
+  });
+});
+
+describe("Run 状态机", () => {
+  const run: Run = {
+    id: "run1", kind: "ingest", target: { source_id: "src_arxiv_swe" }, status: "running",
+    started_at: new Date(Date.now() - 1000).toISOString(), ended_at: null, duration_ms: null,
+    cost: null, error: null, retry_of: null,
+  };
+
+  it("insert → finish(done) 写 ended_at/duration/cost", () => {
+    insertRun(db, run);
+    finishRun(db, "run1", { status: "done", cost: { tokens: 1200, amount: 0.05 } });
+    const r = getRun(db, "run1")!;
+    expect(r.status).toBe("done");
+    expect(r.cost).toEqual({ tokens: 1200, amount: 0.05 });
+    expect(r.ended_at).not.toBeNull();
+    expect(r.duration_ms).toBeGreaterThanOrEqual(0);
+  });
+
+  it("finish(failed) 写 error；listRuns 按 status 过滤", () => {
+    insertRun(db, run);
+    insertRun(db, { ...run, id: "run2" });
+    finishRun(db, "run2", { status: "failed", error: { type: "Timeout", message: "x" } });
+    expect(getRun(db, "run2")?.error?.type).toBe("Timeout");
+    expect(listRuns(db, { status: "running" }).map((r) => r.id)).toEqual(["run1"]);
+  });
+});
