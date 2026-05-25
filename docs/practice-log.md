@@ -110,6 +110,19 @@
 - **经验 / 教训**: 「typecheck + 单测全绿」只覆盖**确定性逻辑**，覆盖不到**模块初始化顺序**和**外部服务真实契约**这类问题——它们只在真跑时显形。所以**真依赖（模型 API）的冒烟是一道独立的、不可省的质量关**。两条具体规则：①依赖环境变量的单例必须懒加载（或在 import 前注入 env）；②昂贵的真 API 跑前，先用最小子集冒烟（`A1_*_LIMIT`）验证链路+标定成本。
 - **后续动作**: 已加 `A1_QUALITY_LIMIT` / `A1_CONSISTENCY_LIMIT` 子集开关 + key 前缀格式告警。把「真依赖冒烟 = 独立质量关」「env 单例懒加载」纳入 `skills/L3-quality.md`。
 
+### 2026-05-26 · 独立评审 M2 后端：抓出自评 / 单测全漏的真 bug
+
+- **日期**: 2026-05-26
+- **情境**: M2 后端四 agent 管线写完（46/46 单测绿、typecheck 干净），按方法论起 3 个独立 agent 分块评审（数据模型 / 管线逻辑 / 源安全），不自评。
+- **观察**:
+  - 三 agent **强收敛**，抓出 4 个 🔴：① **校验闸门洞**——validator 一致性调用出错时静默 `continue` 丢掉该 check，report-gen `selectInsights` 又把「无 check」当「未 blocked」保留 → **未校验的引用伪装成已核实进报告**；② **去重违约**——同 URL 内容更新时插新行 + 新 id，违反 `data-collection` AC2「原地更新、id 不变、不新增」；③ **SSRF 全缺**——`Source.endpoint` 用户可控，三处 `fetch` 零校验且默认跟跳；④ **analyzer 把外部 body 裸拼进 prompt**、无 `<untrusted-source>` 包裹，违反安全设计，且 validator 已正确包裹、自相矛盾。
+  - **46/46 全绿却全没抓到** —— 因为单测只构造 happy path：从不构造「引用无 check」「同 URL 内容更新」「恶意 endpoint」这类失败 / 对抗场景。
+- **经验 / 教训**:
+  - **全绿 ≠ 正确**：测试只验你想到的路径；**闸门类逻辑必须专门构造「未通过 / 缺失 / 对抗」输入**，否则「黑名单式默认放行」（把「未校验」当「通过」）会一路绿灯。
+  - 自评有同源盲点；**独立评审对「作者默认假设」（无 check = 保留、endpoint 可信、body 可信）的捕捉不可替代** —— 这是继 architecture Vercel 选型之后的第二个印证。
+  - 安全契约（SSRF / untrusted 包裹）在「能跑」阶段最易被跳过，应在评审 checklist 硬挂。
+- **后续动作**: 闸门改白名单（无 check 即排除）、analyzer 补 untrusted 包裹、加 `safeFetch`（SSRF + 超时）、去重改 upsert 对齐 AC2；把「闸门 / 安全类逻辑必须有失败与对抗用例」写进 `skills/L3-quality.md`。
+
 ## 基础设施与集成（模型接入）
 
 > 真实接入 LLM 时，环境/中转站对架构假设的冲击。
