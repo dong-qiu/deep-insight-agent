@@ -124,3 +124,43 @@ CREATE TABLE IF NOT EXISTS validation_result (
   flagged_rate             REAL NOT NULL,
   releasable               INTEGER NOT NULL
 );
+
+-- ── 增量5：报告 + 索引 + 全文检索 ──
+-- 正文（Markdown + 自包含 HTML）落 FS（body_path 句柄），元数据落 SQLite。
+
+CREATE TABLE IF NOT EXISTS report (
+  id             TEXT PRIMARY KEY,
+  type           TEXT NOT NULL CHECK (type IN ('brief','deep_dive','initial_digest')),
+  topic_id       TEXT NOT NULL REFERENCES topic(id),
+  status         TEXT NOT NULL CHECK (status IN ('draft','generating','done','failed','archived','deleted')),
+  generated_at   TEXT NOT NULL,
+  title          TEXT NOT NULL,
+  body_path      TEXT NOT NULL,                 -- FS 前缀；正文 .md/.html 同名，不入库
+  insight_ids    TEXT NOT NULL DEFAULT '[]',
+  event_ids      TEXT NOT NULL DEFAULT '[]',
+  prev_report_id TEXT,
+  citation_count INTEGER NOT NULL,
+  cost           TEXT NOT NULL                   -- JSON {tokens,amount}
+);
+CREATE INDEX IF NOT EXISTS idx_report_topic  ON report(topic_id);
+CREATE INDEX IF NOT EXISTS idx_report_status ON report(status);
+
+CREATE TABLE IF NOT EXISTS report_index (
+  report_id    TEXT PRIMARY KEY REFERENCES report(id),
+  type         TEXT NOT NULL,
+  topic_id     TEXT NOT NULL,
+  industry     TEXT NOT NULL,
+  date         TEXT NOT NULL,
+  source_ids   TEXT NOT NULL DEFAULT '[]',
+  title        TEXT NOT NULL,
+  summary      TEXT NOT NULL,
+  tags         TEXT NOT NULL DEFAULT '[]',
+  entity_names TEXT NOT NULL DEFAULT '[]',
+  importance   INTEGER NOT NULL,
+  event_ids    TEXT NOT NULL DEFAULT '[]'
+);
+CREATE INDEX IF NOT EXISTS idx_report_index_topic ON report_index(topic_id);
+CREATE INDEX IF NOT EXISTS idx_report_index_date  ON report_index(date);
+
+-- 全文检索（title / summary / body）
+CREATE VIRTUAL TABLE IF NOT EXISTS report_fts USING fts5(report_id UNINDEXED, title, summary, body);
