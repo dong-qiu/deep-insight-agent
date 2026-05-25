@@ -12,7 +12,8 @@ import { analyze } from "./analyzer.js";
 import { buildReport } from "./report-gen.js";
 import { validateBatch } from "./validator.js";
 
-const totalTokens = (r: CostReport): number => r.byModel.reduce((s, m) => s + m.input + m.output, 0);
+const totalTokens = (r: CostReport): number =>
+  r.byModel.reduce((s, m) => s + m.input + m.output + m.cacheWrite + m.cacheRead, 0);
 
 /** 本次跑相对快照的成本增量（Cost Meter 是累计值）。 */
 function costSince(before: CostReport) {

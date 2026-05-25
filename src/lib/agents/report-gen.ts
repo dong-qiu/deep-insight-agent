@@ -27,7 +27,8 @@ export function selectInsights(batch: AnalysisBatch, validation: ValidationResul
     let flagged = false;
     ins.citations.forEach((_, i) => {
       const v = vs?.get(i);
-      if (v === "blocked") return; // 剔除
+      // 白名单:只有明确 pass/flagged 才纳入;blocked 与「无 check(未校验)」一律剔除
+      if (v !== "pass" && v !== "flagged") return;
       kept.push(i);
       if (v === "flagged") flagged = true;
     });

@@ -55,6 +55,25 @@ describe("selectInsights（洞察级纳入判定）", () => {
     expect(sel.find((x) => x.insight.id === "i1")!.flagged).toBe(false);
     expect(sel.find((x) => x.insight.id === "i2")!.flagged).toBe(true); // uncertain → 待核实
   });
+
+  it("无 check 的引用按「未通过」剔除（闸门白名单，防未校验引用伪装已核实）", () => {
+    const batch2: AnalysisBatch = {
+      ...batchOf(),
+      insights: [
+        {
+          id: "i9", topic_id: "t1", type: "aggregation", event_id: null, statement: "no check", importance: 3,
+          importance_basis: "x",
+          citations: [{ content_item_id: "ciX", quote: "q", locator: { paragraph_index: 0, char_start: 0, char_end: 1 } }],
+          source_count: 1, multi_source: false, time_window: win, confidence: null, language: "zh",
+        },
+      ],
+    };
+    const noChecks: ValidationResult = {
+      checks: [],
+      report: { total: 0, pass: 0, blocked: 0, flagged: 0, consistency_failure_rate: 0, flagged_rate: 0, releasable: true },
+    };
+    expect(selectInsights(batch2, noChecks)).toEqual([]); // 无 check → 整条不纳入
+  });
 });
 
 describe("buildReport 派生", () => {

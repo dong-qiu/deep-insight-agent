@@ -4,7 +4,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { contentExists, finishRun, insertContentItem, insertRun } from "../db/repos.js";
+import { finishRun, getContentByUrl, insertContentItem, insertRun, updateContentItem } from "../db/repos.js";
 import type { DB } from "../db/index.js";
 import type { Source } from "../types.js";
 import { fetchFromSource } from "../sources/index.js";
@@ -14,6 +14,7 @@ export interface CollectResult {
   runId: string;
   fetched: number;
   inserted: number;
+  updated: number;
   skipped: number;
 }
 
@@ -44,6 +45,7 @@ export async function collectSource(db: DB, source: Source): Promise<CollectResu
     const raws = await fetchFromSource(source);
     const fetchedAt = new Date().toISOString();
     let inserted = 0;
+    let updated = 0;
     let skipped = 0;
     for (const raw of raws) {
       if (!raw.body.trim()) {
@@ -51,16 +53,22 @@ export async function collectSource(db: DB, source: Source): Promise<CollectResu
         continue;
       }
       const item = rawToContentItem(raw, source, fetchedAt);
-      if (contentExists(db, item.url, item.content_hash)) {
-        skipped++; // 同 URL + 同指纹 = 已采集
+      const existing = getContentByUrl(db, item.url);
+      if (existing && existing.content_hash === item.content_hash) {
+        skipped++; // 同 URL + 同指纹 = 完全重复（AC2 ①）
         continue;
       }
       item.raw_ref = archiveRaw(item.id, raw.raw);
-      insertContentItem(db, item);
-      inserted++;
+      if (existing) {
+        updateContentItem(db, item); // 同 URL 内容更新 → 原地更新、id 不变（AC2 ②）
+        updated++;
+      } else {
+        insertContentItem(db, item); // 新 URL（AC2 ③）
+        inserted++;
+      }
     }
     finishRun(db, runId, { status: "done" });
-    return { runId, fetched: raws.length, inserted, skipped };
+    return { runId, fetched: raws.length, inserted, updated, skipped };
   } catch (e) {
     const err = e as Error;
     finishRun(db, runId, { status: "failed", error: { type: err.name, message: err.message } });

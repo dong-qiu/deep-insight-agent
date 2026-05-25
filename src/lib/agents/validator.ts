@@ -130,7 +130,18 @@ export async function validateBatch(
       try {
         judge = await judgeConsistency(ins.statement, item.body);
       } catch (e) {
-        console.warn(`  ⚠️ 跳过一致性校验 ${ins.id}#${ci}（${(e as Error).message}）`);
+        // 一致性调用失败（超时/限流/解析错）：不静默丢弃 —— 记为「待核实」(flagged)，
+        // 计入 total 且不让未校验引用伪装成已核实进报告（闸门完整性）。
+        console.warn(`  ⚠️ 一致性校验失败，记为待核实 ${ins.id}#${ci}（${(e as Error).message}）`);
+        checks.push({
+          insight_id: ins.id,
+          citation_index: ci,
+          reachability: "pass",
+          reachability_reason: "ok",
+          consistency: "uncertain",
+          consistency_reason: "uncertain",
+          verdict: "flagged",
+        });
         continue;
       }
       checks.push({

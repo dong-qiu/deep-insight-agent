@@ -1,5 +1,7 @@
 /** 极简 robots.txt 解析与判定（合规落点，architecture 安全设计「合规与版权」）。
  *  仅处理 User-agent / Disallow 分组；Allow 与通配符细则留后续。 */
+import { safeFetch } from "./safe-fetch.js";
+
 export const UA = "InsightAgentBot";
 
 export interface RobotsRules {
@@ -52,7 +54,7 @@ export function isAllowed(rules: RobotsRules, path: string): boolean {
 
 export async function fetchRobots(origin: string, ua: string = UA): Promise<RobotsRules> {
   try {
-    const res = await fetch(new URL("/robots.txt", origin), { headers: { "user-agent": ua } });
+    const res = await safeFetch(new URL("/robots.txt", origin).toString(), { headers: { "user-agent": ua } });
     if (!res.ok) return { disallow: [] };
     return parseRobots(await res.text(), ua);
   } catch {

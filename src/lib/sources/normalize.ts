@@ -37,9 +37,9 @@ export function detectLanguage(text: string): Language {
   return ratio > 0.7 ? "zh" : ratio < 0.15 ? "en" : "mixed";
 }
 
-/** 稳定 id：同一(规范化URL × 内容指纹)恒得同 id —— 重采集幂等。 */
-export function contentItemId(url: string, hash: string): string {
-  return `ci_${createHash("sha256").update(`${normalizeUrl(url)}|${hash}`).digest("hex").slice(0, 16)}`;
+/** 稳定 id：仅按规范化 URL 取哈希 —— 同 URL 内容更新时 id 不变（data-collection AC2「原地更新、id 不变」）。 */
+export function contentItemId(url: string): string {
+  return `ci_${createHash("sha256").update(normalizeUrl(url)).digest("hex").slice(0, 16)}`;
 }
 
 /** raw_ref 由 collector 归档后回填；topic_ids 继承 Source（源级粒度，见 architecture）。 */
@@ -48,7 +48,7 @@ export function rawToContentItem(raw: RawItem, source: Source, fetchedAt: string
   const hash = contentHash(body);
   const url = normalizeUrl(raw.url);
   return {
-    id: contentItemId(url, hash),
+    id: contentItemId(url),
     source_id: source.id,
     url,
     title: raw.title.trim() || "(untitled)",

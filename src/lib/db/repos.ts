@@ -86,6 +86,26 @@ export function contentExists(db: DB, url: string, contentHash: string): boolean
     undefined
   );
 }
+/** 按规范化 url 查已存条目的 id + content_hash（去重/更新判定用）。 */
+export function getContentByUrl(db: DB, url: string): { id: string; content_hash: string } | null {
+  const r = db.prepare("SELECT id, content_hash FROM content_item WHERE url = ?").get(url) as
+    | { id: string; content_hash: string }
+    | undefined;
+  return r ?? null;
+}
+/** 原地更新（data-collection AC2）：同 url 内容变化时刷新内容字段，保留 id / source_id / published_at。 */
+export function updateContentItem(db: DB, c: ContentItem): void {
+  db.prepare(
+    `UPDATE content_item
+       SET title=@title, author=@author, fetched_at=@fetched_at, language=@language,
+           tags=@tags, body=@body, raw_ref=@raw_ref, content_hash=@content_hash, fetch_status=@fetch_status
+     WHERE url=@url`,
+  ).run({
+    url: c.url, title: c.title, author: c.author, fetched_at: c.fetched_at, language: c.language,
+    tags: j(c.tags), body: c.body, raw_ref: c.raw_ref, content_hash: c.content_hash,
+    fetch_status: c.fetch_status,
+  });
+}
 function rowToContentItem(r: Record<string, unknown>): ContentItem {
   return {
     id: r.id as string, source_id: r.source_id as string, url: r.url as string,
@@ -116,7 +136,9 @@ export function finishRun(
 ): void {
   const ended = new Date().toISOString();
   const row = db.prepare("SELECT started_at FROM run WHERE id = ?").get(id) as { started_at: string } | undefined;
-  const duration = row ? Date.now() - new Date(row.started_at).getTime() : null;
+  if (!row) throw new Error(`finishRun: Run ${id} 不存在`);
+  const ms = Date.now() - new Date(row.started_at).getTime();
+  const duration = Number.isFinite(ms) ? ms : null;
   db.prepare(
     "UPDATE run SET status=@status, ended_at=@ended_at, duration_ms=@duration_ms, cost=@cost, error=@error WHERE id=@id",
   ).run({

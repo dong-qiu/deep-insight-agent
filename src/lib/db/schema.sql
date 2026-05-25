@@ -46,8 +46,9 @@ CREATE TABLE IF NOT EXISTS content_item (
   fetch_status TEXT NOT NULL CHECK (fetch_status IN ('ok','partial'))
 );
 CREATE INDEX IF NOT EXISTS idx_content_source ON content_item(source_id);
--- 同 URL 内容更新判定键（content_hash 变化即视为更新）
-CREATE UNIQUE INDEX IF NOT EXISTS idx_content_url_hash ON content_item(url, content_hash);
+-- 规范化 url 唯一（data-collection AC2：同 URL 内容更新走原地 upsert、不新增行；id 由 url 派生故不变）
+DROP INDEX IF EXISTS idx_content_url_hash;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_content_url ON content_item(url);
 
 CREATE TABLE IF NOT EXISTS run (
   id          TEXT PRIMARY KEY,
@@ -72,7 +73,9 @@ CREATE TABLE IF NOT EXISTS analysis_batch (
   time_window          TEXT NOT NULL,                -- JSON {start,end}
   status               TEXT NOT NULL CHECK (status IN ('done','failed')),
   no_significant_event INTEGER NOT NULL DEFAULT 0,
-  created_at           TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at           TEXT NOT NULL DEFAULT (datetime('now')),
+  -- 诚实兜底约束：无重要事件必为 done（失败 ≠ 诚实无事件）
+  CHECK (NOT (no_significant_event = 1 AND status <> 'done'))
 );
 CREATE INDEX IF NOT EXISTS idx_batch_topic ON analysis_batch(topic_id);
 
@@ -83,12 +86,12 @@ CREATE TABLE IF NOT EXISTS insight (
   type             TEXT NOT NULL CHECK (type IN ('aggregation','trend')),
   event_id         TEXT,
   statement        TEXT NOT NULL,
-  importance       INTEGER NOT NULL,
+  importance       INTEGER NOT NULL CHECK (importance BETWEEN 1 AND 5),
   importance_basis TEXT NOT NULL,
   source_count     INTEGER NOT NULL,
   multi_source     INTEGER NOT NULL,
   time_window      TEXT NOT NULL,                    -- JSON {start,end}
-  confidence       TEXT,                             -- high/medium/low | NULL
+  confidence       TEXT CHECK (confidence IS NULL OR confidence IN ('high','medium','low')),
   language         TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_insight_batch ON insight(batch_id);
@@ -106,11 +109,11 @@ CREATE TABLE IF NOT EXISTS citation_check (
   batch_id            TEXT NOT NULL REFERENCES analysis_batch(id),
   insight_id          TEXT NOT NULL,
   citation_index      INTEGER NOT NULL,
-  reachability        TEXT NOT NULL,
-  reachability_reason TEXT NOT NULL,
-  consistency         TEXT NOT NULL,
-  consistency_reason  TEXT NOT NULL,
-  verdict             TEXT NOT NULL,
+  reachability        TEXT NOT NULL CHECK (reachability IN ('pass','fail')),
+  reachability_reason TEXT NOT NULL CHECK (reachability_reason IN ('ok','source_not_found','source_unreachable','quote_not_in_source')),
+  consistency         TEXT NOT NULL CHECK (consistency IN ('support','not_support','uncertain','not_evaluated')),
+  consistency_reason  TEXT NOT NULL CHECK (consistency_reason IN ('ok','out_of_context','exaggeration','misattribution','uncertain','not_evaluated')),
+  verdict             TEXT NOT NULL CHECK (verdict IN ('pass','blocked','flagged')),
   PRIMARY KEY (batch_id, insight_id, citation_index)
 );
 

@@ -6,8 +6,8 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { ContentItem, Run, Source, Topic } from "../types.js";
 import { type DB, openDb } from "./index.js";
 import {
-  contentExists, finishRun, getContentItem, getRun, getSource, getTopic,
-  insertContentItem, insertRun, insertSource, insertTopic, listRuns, listSources,
+  contentExists, finishRun, getContentByUrl, getContentItem, getRun, getSource, getTopic,
+  insertContentItem, insertRun, insertSource, insertTopic, listRuns, listSources, updateContentItem,
 } from "./repos.js";
 
 let db: DB;
@@ -56,6 +56,19 @@ describe("ContentItem", () => {
     insertContentItem(db, item);
     expect(contentExists(db, item.url, "h1")).toBe(true);
     expect(contentExists(db, item.url, "h2")).toBe(false); // 内容更新（hash 变）
+  });
+
+  it("AC2 同 url 内容更新：原地更新、行数不增、id 不变", () => {
+    insertContentItem(db, item);
+    expect(getContentByUrl(db, item.url)).toEqual({ id: "ci1", content_hash: "h1" });
+    const updated: ContentItem = { ...item, content_hash: "h2", body: "new body", fetched_at: "2026-05-26T01:00:00Z" };
+    updateContentItem(db, updated);
+    const after = getContentItem(db, "ci1")!;
+    expect(after.id).toBe("ci1"); // id 不变
+    expect(after.content_hash).toBe("h2");
+    expect(after.body).toBe("new body");
+    expect(after.fetched_at).toBe("2026-05-26T01:00:00Z");
+    expect((db.prepare("SELECT COUNT(*) c FROM content_item").get() as { c: number }).c).toBe(1); // 不新增
   });
 });
 

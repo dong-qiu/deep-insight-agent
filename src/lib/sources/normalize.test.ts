@@ -30,10 +30,9 @@ describe("detectLanguage", () => {
   });
 });
 
-it("contentItemId 对同 url×hash 稳定、不同则异", () => {
-  const h = contentHash("body");
-  expect(contentItemId("https://ex.com/a", h)).toBe(contentItemId("https://ex.com/a", h));
-  expect(contentItemId("https://ex.com/a", h)).not.toBe(contentItemId("https://ex.com/b", h));
+it("contentItemId 仅按 url 稳定（同 url 内容变 id 不变；不同 url 则异）", () => {
+  expect(contentItemId("https://ex.com/a")).toBe(contentItemId("https://ex.com/a"));
+  expect(contentItemId("https://ex.com/a")).not.toBe(contentItemId("https://ex.com/b"));
 });
 
 it("rawToContentItem 归一化 + 继承 Source.topic_ids", () => {
@@ -52,7 +51,7 @@ it("rawToContentItem 归一化 + 继承 Source.topic_ids", () => {
   expect(item.topic_ids).toEqual(["t1", "t2"]);
   expect(item.source_id).toBe("s1");
   expect(item.content_hash).toBe(contentHash("Some body text."));
-  expect(item.id).toBe(contentItemId(item.url, item.content_hash));
+  expect(item.id).toBe(contentItemId(item.url));
   expect(item.fetch_status).toBe("ok");
   expect(item.raw_ref).toBe(""); // collector 回填
 });
