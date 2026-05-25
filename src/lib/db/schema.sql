@@ -63,3 +63,64 @@ CREATE TABLE IF NOT EXISTS run (
 );
 CREATE INDEX IF NOT EXISTS idx_run_status ON run(status);
 CREATE INDEX IF NOT EXISTS idx_run_kind   ON run(kind);
+
+-- ── 增量4：分析批次 / 洞察 / 引用 / 校验 ──
+
+CREATE TABLE IF NOT EXISTS analysis_batch (
+  id                   TEXT PRIMARY KEY,
+  topic_id             TEXT NOT NULL REFERENCES topic(id),
+  time_window          TEXT NOT NULL,                -- JSON {start,end}
+  status               TEXT NOT NULL CHECK (status IN ('done','failed')),
+  no_significant_event INTEGER NOT NULL DEFAULT 0,
+  created_at           TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_batch_topic ON analysis_batch(topic_id);
+
+CREATE TABLE IF NOT EXISTS insight (
+  id               TEXT PRIMARY KEY,
+  batch_id         TEXT NOT NULL REFERENCES analysis_batch(id),
+  topic_id         TEXT NOT NULL,
+  type             TEXT NOT NULL CHECK (type IN ('aggregation','trend')),
+  event_id         TEXT,
+  statement        TEXT NOT NULL,
+  importance       INTEGER NOT NULL,
+  importance_basis TEXT NOT NULL,
+  source_count     INTEGER NOT NULL,
+  multi_source     INTEGER NOT NULL,
+  time_window      TEXT NOT NULL,                    -- JSON {start,end}
+  confidence       TEXT,                             -- high/medium/low | NULL
+  language         TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_insight_batch ON insight(batch_id);
+
+CREATE TABLE IF NOT EXISTS citation (
+  insight_id      TEXT NOT NULL REFERENCES insight(id),
+  citation_index  INTEGER NOT NULL,
+  content_item_id TEXT NOT NULL,
+  quote           TEXT NOT NULL,
+  locator         TEXT NOT NULL,                     -- JSON {paragraph_index,char_start,char_end}
+  PRIMARY KEY (insight_id, citation_index)
+);
+
+CREATE TABLE IF NOT EXISTS citation_check (
+  batch_id            TEXT NOT NULL REFERENCES analysis_batch(id),
+  insight_id          TEXT NOT NULL,
+  citation_index      INTEGER NOT NULL,
+  reachability        TEXT NOT NULL,
+  reachability_reason TEXT NOT NULL,
+  consistency         TEXT NOT NULL,
+  consistency_reason  TEXT NOT NULL,
+  verdict             TEXT NOT NULL,
+  PRIMARY KEY (batch_id, insight_id, citation_index)
+);
+
+CREATE TABLE IF NOT EXISTS validation_result (
+  batch_id                 TEXT PRIMARY KEY REFERENCES analysis_batch(id),
+  total                    INTEGER NOT NULL,
+  pass                     INTEGER NOT NULL,
+  blocked                  INTEGER NOT NULL,
+  flagged                  INTEGER NOT NULL,
+  consistency_failure_rate REAL NOT NULL,
+  flagged_rate             REAL NOT NULL,
+  releasable               INTEGER NOT NULL
+);
