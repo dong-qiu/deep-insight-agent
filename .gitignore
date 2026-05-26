@@ -47,3 +47,6 @@ evals/out/
 
 # Local data: SQLite (WAL/SHM) + 报告正文 FS（挂持久卷，不入仓）
 .data/
+
+# TS incremental build info
+*.tsbuildinfo

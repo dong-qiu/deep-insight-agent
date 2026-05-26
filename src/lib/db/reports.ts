@@ -69,3 +69,16 @@ export function searchReports(db: DB, query: string): string[] {
     .all(query) as any[];
   return rows.map((x) => x.report_id as string);
 }
+
+/** 报告索引列表（报告库列表/筛选用），按日期倒序。 */
+export function listReportIndex(db: DB, opts: { limit?: number } = {}): ReportIndexEntry[] {
+  const rows = db
+    .prepare("SELECT * FROM report_index ORDER BY date DESC LIMIT ?")
+    .all(opts.limit ?? 100) as any[];
+  return rows.map((r) => ({
+    report_id: r.report_id, type: r.type, topic_id: r.topic_id, industry: r.industry, date: r.date,
+    source_ids: JSON.parse(r.source_ids), title: r.title, summary: r.summary,
+    tags: JSON.parse(r.tags), entity_names: JSON.parse(r.entity_names), importance: r.importance,
+    event_ids: JSON.parse(r.event_ids),
+  }));
+}

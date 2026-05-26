@@ -1,23 +1,20 @@
-/**
- * SQLite 持久层入口（architecture：SQLite WAL + FTS5，挂 Docker 持久卷）。
+/** SQLite 持久层入口（architecture：SQLite WAL + FTS5，挂 Docker 持久卷）。
  * - openDb(path)：打开/建库、设 WAL + 外键、应用 schema（幂等，CREATE IF NOT EXISTS）。
  * - getDb()：进程内单例，库路径取 env DB_PATH，默认 .data/insight.db（不入仓）。
- */
+ * schema 内联（见 schema.ts），不依赖运行时读 .sql，跨 tsx/vitest/Next/Docker 一致。 */
 import Database from "better-sqlite3";
-import { mkdirSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { mkdirSync } from "node:fs";
+import { dirname } from "node:path";
+import { SCHEMA_SQL } from "./schema.js";
 
 export type DB = Database.Database;
-
-const SCHEMA_PATH = join(dirname(fileURLToPath(import.meta.url)), "schema.sql");
 
 export function openDb(path: string): DB {
   if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
   const db = new Database(path);
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
-  db.exec(readFileSync(SCHEMA_PATH, "utf8"));
+  db.exec(SCHEMA_SQL);
   return db;
 }
 

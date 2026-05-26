@@ -7,6 +7,9 @@
     "node": ">=20"
   },
   "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
     "eval:a1": "tsx evals/run-a1.ts",
     "review:sheet": "tsx evals/make-review-sheet.ts",
     "review:csv": "tsx evals/make-review-csv.ts",
@@ -17,12 +20,17 @@
     "@anthropic-ai/sdk": "latest",
     "better-sqlite3": "^12.10.0",
     "fast-xml-parser": "^5.8.0",
+    "next": "^15.5.18",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
     "yaml": "^2.9.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^20.14.0",
+    "@types/react": "^19.2.15",
+    "@types/react-dom": "^19.2.3",
     "tsx": "^4.19.0",
     "typescript": "^5.5.0",
     "vitest": "^2.1.0"
