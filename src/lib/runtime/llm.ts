@@ -122,11 +122,16 @@ export async function callStructured<T extends z.ZodType>(
   opts: StructuredCall<T>,
 ): Promise<StructuredResult<z.infer<T>>> {
   const model = MODELS[opts.role];
+  // 默认对稳定 system 前缀打 prompt cache；PROMPT_CACHE=0 时关闭——某些第三方中转站只写不读，
+  // 缓存从不命中却仍计写入开销（见 a1-runs），此时关闭更省。
+  const useCache = process.env.PROMPT_CACHE !== "0";
   const params = {
     model,
     max_tokens: opts.maxTokens ?? 16000,
     // system 作为稳定前缀缓存；user 永远在断点之后（prompt-caching 前缀匹配）
-    system: [{ type: "text" as const, text: opts.system, cache_control: { type: "ephemeral" as const } }],
+    system: [
+      { type: "text" as const, text: opts.system, ...(useCache ? { cache_control: { type: "ephemeral" as const } } : {}) },
+    ],
     messages: [{ role: "user" as const, content: opts.user }],
     output_config: {
       format: zodOutputFormat(opts.schema),
