@@ -17,6 +17,7 @@
     "@anthropic-ai/sdk": "latest",
     "better-sqlite3": "^12.10.0",
     "fast-xml-parser": "^5.8.0",
+    "yaml": "^2.9.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {

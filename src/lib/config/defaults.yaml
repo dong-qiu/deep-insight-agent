@@ -1,0 +1,50 @@
+# 静态默认配置（构建时打包，随版本走）。architecture「配置分离」三层之一。
+# 密钥不落此处：用 ${VAR_NAME} 引用环境变量，缺失则启动即拒（见 config/index.ts）。
+# 用户运行时增删的 Source / Topic 落 SQLite（动态配置），覆盖 / 扩充本默认。
+
+models:
+  analyzer: claude-sonnet-4-6
+  validator: claude-opus-4-7
+  apiKey: ${ANTHROPIC_API_KEY} # 唯一来源 = 环境变量；启动解析，缺失即拒
+
+rateLimit:
+  perAccountPerMin: 60
+  perIpPerMin: 120
+
+system:
+  ingestConcurrency: 1
+  reportP50TargetMin: 10
+
+defaultTopics:
+  - id: t_code_agents
+    name: Code Agent / 自主软件工程
+    keywords: [coding agent, autonomous software engineering, SWE-bench]
+    industry: ai-swe
+    language: zh
+    brief_schedule: daily
+    enabled: true
+  - id: t_prompt_injection
+    name: Prompt Injection 防御
+    keywords: [prompt injection, indirect prompt injection, LLM security]
+    industry: ai-security
+    language: zh
+    brief_schedule: daily
+    enabled: true
+
+defaultSources:
+  - id: src_arxiv_se
+    name: arXiv cs.SE 最新
+    type: arxiv
+    endpoint: http://export.arxiv.org/api/query?search_query=cat:cs.SE&sortBy=submittedDate&sortOrder=descending&max_results=30
+    industry: ai-swe
+    topic_ids: [t_code_agents]
+    fetch_interval: 6h
+    enabled: true
+  - id: src_arxiv_cr
+    name: arXiv cs.CR 最新
+    type: arxiv
+    endpoint: http://export.arxiv.org/api/query?search_query=cat:cs.CR&sortBy=submittedDate&sortOrder=descending&max_results=30
+    industry: ai-security
+    topic_ids: [t_prompt_injection]
+    fetch_interval: 6h
+    enabled: true
