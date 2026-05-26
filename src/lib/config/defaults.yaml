@@ -15,23 +15,41 @@ system:
   ingestConcurrency: 1
   reportP50TargetMin: 10
 
+# 行业级宽主题（每行业 1 个），吃下该行业全部源；id 保持稳定（被源/评测/历史报告引用，不可改）。
+# 关键词放宽到覆盖行业全貌，analyzer 据此在宽源里提炼本行业相关洞察。
 defaultTopics:
   - id: t_code_agents
-    name: Code Agent / 自主软件工程
-    keywords: [coding agent, autonomous software engineering, SWE-bench]
+    name: AI 时代的软件工程
+    keywords:
+      [coding agent, autonomous software engineering, SWE-bench, AI 辅助编程, 代码生成, code review,
+       developer tools, RAG 检索增强, LLM agent 评测, LLM 推理与服务优化]
     industry: ai-swe
     language: zh
     brief_schedule: daily
     enabled: true
   - id: t_prompt_injection
-    name: Prompt Injection 防御
-    keywords: [prompt injection, indirect prompt injection, LLM security]
+    name: AI 时代的安全
+    keywords:
+      [prompt injection, indirect prompt injection, jailbreak, LLM/agent 安全, agent 越权, guardrails,
+       漏洞与威胁情报, CVE, 供应链安全, OWASP LLM Top 10, MITRE ATLAS, AI 安全合规]
     industry: ai-security
     language: zh
     brief_schedule: daily
     enabled: true
 
+# MVP 首版接入清单（source-feasibility.md 末节，17 ✅ 推荐源 → 23 feed）。
+# 全部走现有 rss / arxiv 适配器（GitHub Atom、播客 RSS 均由 rss 适配器的 Atom/RSS 分支处理）。
+# topic_ids 暂按行业映射到现有 2 主题；主题偏窄、未充分利用源广度，待后续按行业扩主题（见 roadmap）。
 defaultSources:
+  # ── AI 时代的软件工程（ai-swe → t_code_agents）──
+  - id: src_hn
+    name: Hacker News
+    type: rss
+    endpoint: https://news.ycombinator.com/rss
+    industry: ai-swe
+    topic_ids: [t_code_agents]
+    fetch_interval: 1h
+    enabled: true
   - id: src_arxiv_se
     name: arXiv cs.SE 最新
     type: arxiv
@@ -40,10 +58,172 @@ defaultSources:
     topic_ids: [t_code_agents]
     fetch_interval: 6h
     enabled: true
+  - id: src_arxiv_cl
+    name: arXiv cs.CL 最新
+    type: arxiv
+    endpoint: http://export.arxiv.org/api/query?search_query=cat:cs.CL&sortBy=submittedDate&sortOrder=descending&max_results=30
+    industry: ai-swe
+    topic_ids: [t_code_agents]
+    fetch_interval: 6h
+    enabled: true
+  - id: src_arxiv_ai
+    name: arXiv cs.AI 最新
+    type: arxiv
+    endpoint: http://export.arxiv.org/api/query?search_query=cat:cs.AI&sortBy=submittedDate&sortOrder=descending&max_results=30
+    industry: ai-swe
+    topic_ids: [t_code_agents]
+    fetch_interval: 6h
+    enabled: true
+  - id: src_openai_news
+    name: OpenAI News
+    type: rss
+    endpoint: https://openai.com/news/rss.xml
+    industry: ai-swe
+    topic_ids: [t_code_agents]
+    fetch_interval: 6h
+    enabled: true
+  - id: src_google_research
+    name: Google Research Blog
+    type: rss
+    endpoint: https://research.google/blog/rss/
+    industry: ai-swe
+    topic_ids: [t_code_agents]
+    fetch_interval: 6h
+    enabled: true
+  - id: src_githubnext
+    name: GitHub Next
+    type: rss
+    endpoint: https://githubnext.com/rss.xml
+    industry: ai-swe
+    topic_ids: [t_code_agents]
+    fetch_interval: 24h
+    enabled: true
+  - id: src_github_eng
+    name: GitHub Engineering Blog
+    type: rss
+    endpoint: https://github.blog/category/engineering/feed/
+    industry: ai-swe
+    topic_ids: [t_code_agents]
+    fetch_interval: 24h
+    enabled: true
+  - id: src_latent_space
+    name: Latent Space
+    type: rss
+    endpoint: https://www.latent.space/feed
+    industry: ai-swe
+    topic_ids: [t_code_agents]
+    fetch_interval: 12h
+    enabled: true
+  - id: src_pragmatic_eng
+    name: The Pragmatic Engineer
+    type: rss
+    endpoint: https://newsletter.pragmaticengineer.com/feed
+    industry: ai-swe
+    topic_ids: [t_code_agents]
+    fetch_interval: 24h
+    enabled: true
+  - id: src_practical_ai
+    name: Practical AI（播客 · 元数据）
+    type: rss
+    endpoint: https://feeds.transistor.fm/practical-ai-machine-learning-data-science-llm
+    industry: ai-swe
+    topic_ids: [t_code_agents]
+    fetch_interval: 24h
+    enabled: true
+  - id: src_qbitai
+    name: 量子位
+    type: rss
+    endpoint: https://www.qbitai.com/feed
+    industry: ai-swe
+    topic_ids: [t_code_agents]
+    fetch_interval: 6h
+    enabled: true
+  - id: src_infoq_ai
+    name: InfoQ AI/ML/Data
+    type: rss
+    endpoint: https://feed.infoq.com/ai-ml-data-eng
+    industry: ai-swe
+    topic_ids: [t_code_agents]
+    fetch_interval: 6h
+    enabled: true
+
+  # ── AI 时代的安全（ai-security → t_prompt_injection）──
+  - id: src_thehackernews
+    name: The Hacker News
+    type: rss
+    endpoint: https://feeds.feedburner.com/TheHackersNews
+    industry: ai-security
+    topic_ids: [t_prompt_injection]
+    fetch_interval: 6h
+    enabled: true
+  - id: src_krebs
+    name: KrebsOnSecurity
+    type: rss
+    endpoint: https://krebsonsecurity.com/feed/
+    industry: ai-security
+    topic_ids: [t_prompt_injection]
+    fetch_interval: 12h
+    enabled: true
+  - id: src_bleeping
+    name: Bleeping Computer
+    type: rss
+    endpoint: https://www.bleepingcomputer.com/feed/
+    industry: ai-security
+    topic_ids: [t_prompt_injection]
+    fetch_interval: 6h
+    enabled: true
   - id: src_arxiv_cr
     name: arXiv cs.CR 最新
     type: arxiv
     endpoint: http://export.arxiv.org/api/query?search_query=cat:cs.CR&sortBy=submittedDate&sortOrder=descending&max_results=30
+    industry: ai-security
+    topic_ids: [t_prompt_injection]
+    fetch_interval: 6h
+    enabled: true
+  - id: src_owasp_llm
+    name: OWASP LLM Top 10（GitHub releases）
+    type: rss
+    endpoint: https://github.com/OWASP/www-project-top-10-for-large-language-model-applications/releases.atom
+    industry: ai-security
+    topic_ids: [t_prompt_injection]
+    fetch_interval: 24h
+    enabled: true
+  - id: src_owasp_ai
+    name: OWASP AI Exchange（GitHub commits）
+    type: rss
+    endpoint: https://github.com/OWASP/www-project-ai-security-and-privacy-guide/commits.atom
+    industry: ai-security
+    topic_ids: [t_prompt_injection]
+    fetch_interval: 24h
+    enabled: true
+  - id: src_mitre_atlas
+    name: MITRE ATLAS（GitHub releases）
+    type: rss
+    endpoint: https://github.com/mitre-atlas/atlas-data/releases.atom
+    industry: ai-security
+    topic_ids: [t_prompt_injection]
+    fetch_interval: 24h
+    enabled: true
+  - id: src_risky_biz
+    name: Risky Business（播客 · show notes）
+    type: rss
+    endpoint: https://risky.biz/feeds/risky-business/
+    industry: ai-security
+    topic_ids: [t_prompt_injection]
+    fetch_interval: 24h
+    enabled: true
+  - id: src_darknet_diaries
+    name: Darknet Diaries（播客 · show notes）
+    type: rss
+    endpoint: https://podcast.darknetdiaries.com/
+    industry: ai-security
+    topic_ids: [t_prompt_injection]
+    fetch_interval: 24h
+    enabled: true
+  - id: src_freebuf
+    name: FreeBuf
+    type: rss
+    endpoint: https://www.freebuf.com/feed
     industry: ai-security
     topic_ids: [t_prompt_injection]
     fetch_interval: 6h

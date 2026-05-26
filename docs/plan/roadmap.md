@@ -18,12 +18,14 @@
 
 ## M2 — Develop (MVP) (本阶段)
 
-- [ ] **DCP-1 → M2 跨门硬门槛**: A1 验证实跑（真实数据评测集达 `eval-criteria.md` 上线门槛）+ 成本实测标定（charter A5）
-- [ ] 端到端 1 条数据流跑通
-- [ ] 收集 / 分析 / 校验三段 agent 落地
-- [ ] 基础 UI / 输出形态
-- [ ] 数据源接入按 `source-feasibility.md` MVP 清单（软工 12 + 安全 10 feeds）
-- [ ] 非 web 源采集可行性 spike（播客 / 视频字幕）
+- [x] **DCP-1 → M2 跨门硬门槛**: A1 验证实跑（有条件通过；2026-05-27 复验加固：校验环安全、提炼环非显然 68%/零捏造，见 `docs/verify/a1-runs.md`；条件 ②多源/③幻觉随规模 → M3）+ 成本实测标定（charter A5）
+- [x] 端到端 1 条数据流跑通（采集→分析→校验→报告，真模型 + 真持久化）
+- [x] 收集 / 分析 / 校验三段 agent 落地（+ report-gen）
+- [x] 基础 UI / 输出形态（Next.js：今日 Brief / 报告库 / 看板 / 设置 + 鉴权）
+- [x] 数据源接入按 `source-feasibility.md` MVP 清单（23 feed：ai-swe 13 / ai-security 10；现有 rss/arxiv 适配器全覆盖，抓取冒烟 7/8 通）
+- [~] 非 web 源采集可行性 spike（播客 / 视频字幕）—— 播客 RSS（show notes）已接入；视频字幕 / ASR 转写待 spike
+- [x] 容器化 + 容器内 cron + CI（增量7：Docker standalone + supercronic + GitHub Actions + Dependabot）
+- [x] M2 评审修复 round1（4×🔴）+ round2（8×🟡）
 
 ## M3 — Verify
 
