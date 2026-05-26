@@ -5,6 +5,10 @@ import type { RawItem } from "./types.js";
 
 const TRACKING = /^(utm_|ref$|fbclid$|gclid$|mc_|spm$)/i;
 
+/** 单条 ContentItem 正文字符上限（data-collection AC9）：超限截断并标 fetch_status=partial，
+ *  防异常大正文撑爆库 / 拖垮分析 token；下游可据 partial 决定是否回源补全。 */
+export const MAX_BODY_CHARS = 50_000;
+
 /** 去 fragment / 跟踪参数 / 末尾斜杠，host 小写。解析失败则原样 trim。 */
 export function normalizeUrl(raw: string): string {
   try {
@@ -42,9 +46,12 @@ export function contentItemId(url: string): string {
   return `ci_${createHash("sha256").update(normalizeUrl(url)).digest("hex").slice(0, 16)}`;
 }
 
-/** raw_ref 由 collector 归档后回填；topic_ids 继承 Source（源级粒度，见 architecture）。 */
+/** raw_ref 由 collector 归档后回填；topic_ids 继承 Source（源级粒度，见 architecture）。
+ *  正文超 MAX_BODY_CHARS 则截断并标 partial（AC9）；指纹按截断后正文计（去重判定一致）。 */
 export function rawToContentItem(raw: RawItem, source: Source, fetchedAt: string): ContentItem {
-  const body = normalizeBody(raw.body);
+  const full = normalizeBody(raw.body);
+  const truncated = full.length > MAX_BODY_CHARS;
+  const body = truncated ? full.slice(0, MAX_BODY_CHARS) : full;
   const hash = contentHash(body);
   const url = normalizeUrl(raw.url);
   return {
@@ -61,6 +68,6 @@ export function rawToContentItem(raw: RawItem, source: Source, fetchedAt: string
     body,
     raw_ref: "",
     content_hash: hash,
-    fetch_status: "ok",
+    fetch_status: truncated ? "partial" : "ok",
   };
 }

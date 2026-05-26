@@ -106,13 +106,15 @@ export interface CitationCheck {
 
 /** 整体校验报告（architecture 数据模型 · ValidationReport） */
 export interface ValidationReport {
-  total: number;
+  total: number; // 引用级（CitationCheck）总数
   pass: number;
   blocked: number;
   flagged: number;
   consistency_failure_rate: number; // not_support / total
   flagged_rate: number; // uncertain / total
-  releasable: boolean;
+  insights_total: number; // 有引用被校验的洞察数
+  insights_includable: number; // ≥1 条 pass/flagged 引用的洞察数（= report-gen 实际纳入数）
+  releasable: boolean; // 洞察级：insights_includable ≥ 1（空批次诚实放行）
 }
 
 export interface ValidationResult {

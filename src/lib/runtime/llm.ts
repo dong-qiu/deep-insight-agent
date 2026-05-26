@@ -11,6 +11,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import type { z } from "zod/v4";
+import type { Cost } from "../types.js";
 import { costUSD, type TokenUsage } from "./cost.js";
 
 export type Role = "analyzer" | "validator";
@@ -86,6 +87,16 @@ export function resetCostMeter(): void {
   meter.clear();
 }
 
+/** 单次调用的 token/成本（按返回值透传给调用方做 per-Run 记账，避免读全局 meter 做差——并发不隔离）。 */
+function usageToCost(model: string, u: Anthropic.Usage): Cost {
+  const tokens =
+    (u.input_tokens ?? 0) +
+    (u.output_tokens ?? 0) +
+    (u.cache_creation_input_tokens ?? 0) +
+    (u.cache_read_input_tokens ?? 0);
+  return { tokens, amount: costUSD(model, u as TokenUsage) ?? 0 };
+}
+
 export interface StructuredCall<T extends z.ZodType> {
   role: Role;
   /** 稳定指令前缀 —— 命中 prompt cache */
@@ -96,11 +107,15 @@ export interface StructuredCall<T extends z.ZodType> {
   maxTokens?: number;
   /** 启用自适应思考 + effort=high（校验等精度敏感子任务建议开） */
   thinking?: boolean;
+  /** 每次底层调用（含重试）的成本回调 —— 调用方据此做 per-Run 记账（并发隔离） */
+  onCost?: (cost: Cost) => void;
 }
 
 export interface StructuredResult<T> {
   data: T;
   usage: Anthropic.Usage;
+  /** 本次（含内部重试）累计成本 */
+  cost: Cost;
 }
 
 export async function callStructured<T extends z.ZodType>(
@@ -120,12 +135,21 @@ export async function callStructured<T extends z.ZodType>(
     ...(opts.thinking ? { thinking: { type: "adaptive" as const } } : {}),
   };
 
+  let cost: Cost = { tokens: 0, amount: 0 };
+  // 每次底层调用：累计全局 meter（eval 总额）+ 本次 cost + 透传 onCost（per-Run 记账）
+  const account = (u: Anthropic.Usage): void => {
+    record(model, u);
+    const c = usageToCost(model, u);
+    cost = { tokens: cost.tokens + c.tokens, amount: cost.amount + c.amount };
+    opts.onCost?.(c);
+  };
+
   // 敏感领域内容偶发安全拒答（stop_reason=refusal）——多为非确定性，重试至多 3 次
   let res = await getClient().messages.parse(params);
-  record(model, res.usage);
+  account(res.usage);
   for (let attempt = 1; res.stop_reason === "refusal" && attempt < 3; attempt++) {
     res = await getClient().messages.parse(params);
-    record(model, res.usage);
+    account(res.usage);
   }
 
   if (!res.parsed_output) {
@@ -133,5 +157,5 @@ export async function callStructured<T extends z.ZodType>(
       `结构化输出解析失败（role=${opts.role} stop_reason=${res.stop_reason}）`,
     );
   }
-  return { data: res.parsed_output, usage: res.usage };
+  return { data: res.parsed_output, usage: res.usage, cost };
 }

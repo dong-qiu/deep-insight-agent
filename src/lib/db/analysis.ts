@@ -69,11 +69,13 @@ export function saveValidationResult(db: DB, batchId: string, vr: ValidationResu
   db.transaction(() => {
     const r = vr.report;
     db.prepare(
-      `INSERT INTO validation_result (batch_id,total,pass,blocked,flagged,consistency_failure_rate,flagged_rate,releasable)
-       VALUES (@batch_id,@total,@pass,@blocked,@flagged,@cfr,@fr,@releasable)`,
+      `INSERT INTO validation_result
+         (batch_id,total,pass,blocked,flagged,consistency_failure_rate,flagged_rate,insights_total,insights_includable,releasable)
+       VALUES (@batch_id,@total,@pass,@blocked,@flagged,@cfr,@fr,@it,@ii,@releasable)`,
     ).run({
       batch_id: batchId, total: r.total, pass: r.pass, blocked: r.blocked, flagged: r.flagged,
-      cfr: r.consistency_failure_rate, fr: r.flagged_rate, releasable: b(r.releasable),
+      cfr: r.consistency_failure_rate, fr: r.flagged_rate,
+      it: r.insights_total, ii: r.insights_includable, releasable: b(r.releasable),
     });
     const ck = db.prepare(
       `INSERT INTO citation_check
@@ -96,9 +98,11 @@ export function getValidationResult(db: DB, batchId: string): ValidationResult |
       reachability_reason: c.reachability_reason, consistency: c.consistency,
       consistency_reason: c.consistency_reason, verdict: c.verdict,
     })),
+    // 全部护栏字段同源自 validation_result 行（写时由 summarize 一次性算定）：内部自洽、可 SQL 查、审计保真
     report: {
       total: rr.total, pass: rr.pass, blocked: rr.blocked, flagged: rr.flagged,
       consistency_failure_rate: rr.consistency_failure_rate, flagged_rate: rr.flagged_rate,
+      insights_total: rr.insights_total, insights_includable: rr.insights_includable,
       releasable: rr.releasable === 1,
     },
   };

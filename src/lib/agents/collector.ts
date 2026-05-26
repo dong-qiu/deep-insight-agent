@@ -1,11 +1,11 @@
 /** collector —— 数据采集 agent（architecture 数据流第 1 步）。
- *  按 Source 抓取 → 归一化 ContentItem → 去重 → 存档原文 → 落库；全程记一条 ingest Run。
- *  Job Runner（增量4）会接管 Run 编排；此处先用 repos 直接落 Run。 */
-import { randomUUID } from "node:crypto";
+ *  按 Source 抓取 → 归一化 ContentItem → 去重 → 存档原文 → 落库；统一经 Job Runner 记一条 ingest Run
+ *  （与 analyze/validate/report-gen 一致：单调时钟耗时 + 失败捕获 + 可重试）。 */
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { finishRun, getContentByUrl, insertContentItem, insertRun, updateContentItem } from "../db/repos.js";
+import { getContentByUrl, insertContentItem, updateContentItem } from "../db/repos.js";
 import type { DB } from "../db/index.js";
+import { runJob } from "../runtime/jobs.js";
 import type { Source } from "../types.js";
 import { fetchFromSource } from "../sources/index.js";
 import { rawToContentItem } from "../sources/normalize.js";
@@ -28,20 +28,7 @@ function archiveRaw(id: string, raw: string): string {
 }
 
 export async function collectSource(db: DB, source: Source): Promise<CollectResult> {
-  const runId = `run_${randomUUID().slice(0, 8)}`;
-  insertRun(db, {
-    id: runId,
-    kind: "ingest",
-    target: { source_id: source.id },
-    status: "running",
-    started_at: new Date().toISOString(),
-    ended_at: null,
-    duration_ms: null,
-    cost: null,
-    error: null,
-    retry_of: null,
-  });
-  try {
+  const { run, result } = await runJob(db, { kind: "ingest", target: { source_id: source.id } }, async () => {
     const raws = await fetchFromSource(source);
     const fetchedAt = new Date().toISOString();
     let inserted = 0;
@@ -67,11 +54,7 @@ export async function collectSource(db: DB, source: Source): Promise<CollectResu
         inserted++;
       }
     }
-    finishRun(db, runId, { status: "done" });
-    return { runId, fetched: raws.length, inserted, updated, skipped };
-  } catch (e) {
-    const err = e as Error;
-    finishRun(db, runId, { status: "failed", error: { type: err.name, message: err.message } });
-    throw e;
-  }
+    return { fetched: raws.length, inserted, updated, skipped };
+  });
+  return { runId: run.id, ...result };
 }

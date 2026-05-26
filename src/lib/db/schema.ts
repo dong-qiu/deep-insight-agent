@@ -121,6 +121,8 @@ CREATE TABLE IF NOT EXISTS validation_result (
   flagged                  INTEGER NOT NULL,
   consistency_failure_rate REAL NOT NULL,
   flagged_rate             REAL NOT NULL,
+  insights_total           INTEGER NOT NULL DEFAULT 0,
+  insights_includable      INTEGER NOT NULL DEFAULT 0,
   releasable               INTEGER NOT NULL
 );
 

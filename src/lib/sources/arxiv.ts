@@ -1,7 +1,7 @@
 /** arXiv API 适配器：Source.endpoint = 完整的 arXiv API query URL（含 search_query）。 */
 import type { Source } from "../types.js";
 import { UA } from "./robots.js";
-import { safeFetch } from "./safe-fetch.js";
+import { readTextCapped, safeFetch } from "./safe-fetch.js";
 import type { RawItem } from "./types.js";
 import { asArray, text, xml } from "./xml.js";
 
@@ -26,5 +26,5 @@ export function parseArxiv(atom: string): RawItem[] {
 export async function fetchArxiv(source: Source): Promise<RawItem[]> {
   const res = await safeFetch(source.endpoint, { headers: { "user-agent": UA } });
   if (!res.ok) throw new Error(`arxiv fetch ${res.status}：${source.endpoint}`);
-  return parseArxiv(await res.text());
+  return parseArxiv(await readTextCapped(res));
 }

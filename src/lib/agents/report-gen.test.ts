@@ -44,7 +44,7 @@ const validation: ValidationResult = {
     { insight_id: "i2", citation_index: 0, reachability: "pass", reachability_reason: "ok", consistency: "uncertain", consistency_reason: "uncertain", verdict: "flagged" },
     { insight_id: "i3", citation_index: 0, reachability: "fail", reachability_reason: "quote_not_in_source", consistency: "not_evaluated", consistency_reason: "not_evaluated", verdict: "blocked" },
   ],
-  report: { total: 4, pass: 1, blocked: 2, flagged: 1, consistency_failure_rate: 0.25, flagged_rate: 0.25, releasable: true },
+  report: { total: 4, pass: 1, blocked: 2, flagged: 1, consistency_failure_rate: 0.25, flagged_rate: 0.25, insights_total: 3, insights_includable: 2, releasable: true },
 };
 
 describe("selectInsights（洞察级纳入判定）", () => {
@@ -70,7 +70,7 @@ describe("selectInsights（洞察级纳入判定）", () => {
     };
     const noChecks: ValidationResult = {
       checks: [],
-      report: { total: 0, pass: 0, blocked: 0, flagged: 0, consistency_failure_rate: 0, flagged_rate: 0, releasable: true },
+      report: { total: 0, pass: 0, blocked: 0, flagged: 0, consistency_failure_rate: 0, flagged_rate: 0, insights_total: 0, insights_includable: 0, releasable: true },
     };
     expect(selectInsights(batch2, noChecks)).toEqual([]); // 无 check → 整条不纳入
   });

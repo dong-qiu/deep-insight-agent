@@ -154,13 +154,14 @@ export function insertRun(db: DB, run: Run): void {
 export function finishRun(
   db: DB,
   id: string,
-  outcome: { status: "done" | "failed"; cost?: Cost | null; error?: Run["error"] },
+  outcome: { status: "done" | "failed"; cost?: Cost | null; error?: Run["error"]; duration_ms?: number },
 ): void {
   const ended = new Date().toISOString();
   const row = db.prepare("SELECT started_at FROM run WHERE id = ?").get(id) as { started_at: string } | undefined;
   if (!row) throw new Error(`finishRun: Run ${id} 不存在`);
-  const ms = Date.now() - new Date(row.started_at).getTime();
-  const duration = Number.isFinite(ms) ? ms : null;
+  // 优先用调用方传入的单调时钟耗时（runJob 提供）；缺省回退墙钟差（受 NTP 跳变影响，仅兜底）
+  const wall = Date.now() - new Date(row.started_at).getTime();
+  const duration = outcome.duration_ms ?? (Number.isFinite(wall) ? wall : null);
   db.prepare(
     "UPDATE run SET status=@status, ended_at=@ended_at, duration_ms=@duration_ms, cost=@cost, error=@error WHERE id=@id",
   ).run({

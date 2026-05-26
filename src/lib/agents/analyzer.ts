@@ -13,6 +13,7 @@ import {
   type AnalysisBatch,
   type Citation,
   type ContentItem,
+  type Cost,
   type Insight,
   type Topic,
 } from "../types.js";
@@ -67,6 +68,7 @@ export async function analyze(
   topic: Topic,
   items: ContentItem[],
   timeWindow: TimeWindow,
+  onCost?: (cost: Cost) => void,
 ): Promise<AnalysisBatch> {
   const batchId = `batch_${randomUUID().slice(0, 8)}`;
   const user = `主题：${topic.name}（关键词：${topic.keywords.join("、")}）
@@ -82,6 +84,7 @@ ${renderItems(items)}`;
     user,
     schema: AnalyzerOutputSchema,
     maxTokens: 8000,
+    onCost,
   });
 
   const byId = new Map(items.map((i) => [i.id, i]));

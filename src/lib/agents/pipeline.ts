@@ -5,23 +5,14 @@ import type { DB } from "../db/index.js";
 import { saveAnalysisBatch, saveValidationResult } from "../db/analysis.js";
 import { getContentItem } from "../db/repos.js";
 import { saveReport } from "../db/reports.js";
-import { type CostReport, getCostReport } from "../runtime/llm.js";
 import { runJob } from "../runtime/jobs.js";
 import type { AnalysisBatch, ContentItem, Report, Topic, ValidationResult } from "../types.js";
 import { analyze } from "./analyzer.js";
 import { buildReport } from "./report-gen.js";
 import { validateBatch } from "./validator.js";
 
-const totalTokens = (r: CostReport): number =>
-  r.byModel.reduce((s, m) => s + m.input + m.output + m.cacheWrite + m.cacheRead, 0);
-
-/** 本次跑相对快照的成本增量（Cost Meter 是累计值）。 */
-function costSince(before: CostReport) {
-  const after = getCostReport();
-  return { tokens: totalTokens(after) - totalTokens(before), amount: after.totalUSD - before.totalUSD };
-}
-
-/** 分析某主题某窗口的 ContentItem → AnalysisBatch 落库；包一条 analyze Run（含成本）。 */
+/** 分析某主题某窗口的 ContentItem → AnalysisBatch 落库；包一条 analyze Run（含成本）。
+ *  成本经 analyze 的 onCost 回调按返回值透传给本 Run 的 ctx.recordCost —— 并发隔离，不读全局 meter 做差。 */
 export async function runAnalysis(
   db: DB,
   topic: Topic,
@@ -29,25 +20,21 @@ export async function runAnalysis(
   window: { start: string; end: string },
 ): Promise<AnalysisBatch> {
   const { result } = await runJob(db, { kind: "analyze", target: { topic_id: topic.id } }, async (ctx) => {
-    const before = getCostReport();
-    const batch = await analyze(topic, items, window);
-    ctx.recordCost(costSince(before));
+    const batch = await analyze(topic, items, window, ctx.recordCost);
     saveAnalysisBatch(db, batch);
     return batch;
   });
   return result;
 }
 
-/** 校验某批次洞察 → ValidationResult 落库；包一条 validate Run（含成本）。 */
+/** 校验某批次洞察 → ValidationResult 落库；包一条 validate Run（含成本，按返回值透传）。 */
 export async function runValidation(
   db: DB,
   batch: AnalysisBatch,
   items: ContentItem[],
 ): Promise<ValidationResult> {
   const { result } = await runJob(db, { kind: "validate", target: { batch_id: batch.id } }, async (ctx) => {
-    const before = getCostReport();
-    const vr = await validateBatch(batch.insights, items);
-    ctx.recordCost(costSince(before));
+    const vr = await validateBatch(batch.insights, items, ctx.recordCost);
     saveValidationResult(db, batch.id, vr);
     return vr;
   });

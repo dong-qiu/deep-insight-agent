@@ -1,9 +1,14 @@
 import { describe, expect, it } from "vitest";
 import type { Source } from "../types.js";
 import {
-  contentHash, contentItemId, detectLanguage, normalizeUrl, rawToContentItem,
+  MAX_BODY_CHARS, contentHash, contentItemId, detectLanguage, normalizeUrl, rawToContentItem,
 } from "./normalize.js";
 import type { RawItem } from "./types.js";
+
+const SRC: Source = {
+  id: "s1", name: "S", type: "rss", endpoint: "https://ex.com/feed", industry: "ai-swe",
+  topic_ids: ["t1"], fetch_interval: "1h", backfill: null, enabled: true,
+};
 
 describe("normalizeUrl", () => {
   it("去跟踪参数 / fragment / 末尾斜杠，host 小写", () => {
@@ -54,4 +59,23 @@ it("rawToContentItem 归一化 + 继承 Source.topic_ids", () => {
   expect(item.id).toBe(contentItemId(item.url));
   expect(item.fetch_status).toBe("ok");
   expect(item.raw_ref).toBe(""); // collector 回填
+});
+
+describe("rawToContentItem 正文上限（AC9 partial）", () => {
+  const raw = (body: string): RawItem => ({
+    url: "https://ex.com/big", title: "T", author: null, published_at: null, body, raw: "{}",
+  });
+
+  it("超 MAX_BODY_CHARS → 截断到上限并标 partial", () => {
+    const item = rawToContentItem(raw("x".repeat(MAX_BODY_CHARS + 5000)), SRC, "2026-05-26T00:00:00Z");
+    expect(item.body.length).toBe(MAX_BODY_CHARS);
+    expect(item.fetch_status).toBe("partial");
+    expect(item.content_hash).toBe(contentHash(item.body)); // 指纹按截断后正文计
+  });
+
+  it("未超限 → 完整保留并标 ok", () => {
+    const item = rawToContentItem(raw("short body"), SRC, "2026-05-26T00:00:00Z");
+    expect(item.body).toBe("short body");
+    expect(item.fetch_status).toBe("ok");
+  });
 });

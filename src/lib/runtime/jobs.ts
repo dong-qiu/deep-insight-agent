@@ -1,6 +1,7 @@
 /** Job Runner —— Run 实体编排：建 Run(running) → 跑 fn → 落 done/failed + 成本 + 错误。
  *  支撑管理看板「流水线追踪 / 失败下钻 / 重试」（architecture 运行实体 Run）。 */
 import { randomUUID } from "node:crypto";
+import { performance } from "node:perf_hooks";
 import type { DB } from "../db/index.js";
 import { finishRun, getRun, insertRun } from "../db/repos.js";
 import type { Cost, Run } from "../types.js";
@@ -26,6 +27,8 @@ export async function runJob<T>(
   fn: (ctx: JobCtx) => Promise<T>,
 ): Promise<JobOutcome<T>> {
   const runId = `run_${randomUUID().slice(0, 8)}`;
+  // 单调时钟测耗时，避免墙钟 NTP 跳变让 duration 出现负值/突跳
+  const startedMono = performance.now();
   insertRun(db, {
     id: runId, kind: spec.kind, target: spec.target, status: "running",
     started_at: new Date().toISOString(), ended_at: null, duration_ms: null,
@@ -39,15 +42,16 @@ export async function runJob<T>(
       cost = cost ? { tokens: cost.tokens + c.tokens, amount: cost.amount + c.amount } : { ...c };
     },
   };
+  const elapsed = (): number => Math.round(performance.now() - startedMono);
 
   try {
     const result = await fn(ctx);
-    finishRun(db, runId, { status: "done", cost });
+    finishRun(db, runId, { status: "done", cost, duration_ms: elapsed() });
     return { run: getRun(db, runId)!, result };
   } catch (e) {
     const err = e as Error;
     finishRun(db, runId, {
-      status: "failed", cost,
+      status: "failed", cost, duration_ms: elapsed(),
       error: { type: err.name, message: err.message, stack: err.stack },
     });
     throw e;

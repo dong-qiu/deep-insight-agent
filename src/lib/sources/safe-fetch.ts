@@ -54,6 +54,29 @@ export interface SafeFetchOptions {
   maxRedirects?: number;
 }
 
+/** 单次抓取响应体字节上限（默认 8MB）：防异常巨大 feed 撑爆内存/XML 解析。 */
+export const MAX_RESPONSE_BYTES = 8_000_000;
+
+/** 流式读取响应体并在超过 maxBytes 时中止抛错——不把整个超大响应读进内存。 */
+export async function readTextCapped(res: Response, maxBytes: number = MAX_RESPONSE_BYTES): Promise<string> {
+  const reader = res.body?.getReader();
+  if (!reader) return res.text();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel();
+      throw new Error(`响应体超过上限 ${maxBytes} 字节`);
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
 /** 安全出网：协议白名单 + 逐跳私有地址拦截 + 手动跟跳复检 + 超时。 */
 export async function safeFetch(input: string, opts: SafeFetchOptions = {}): Promise<Response> {
   const timeoutMs = opts.timeoutMs ?? 15_000;

@@ -52,12 +52,22 @@ export function isAllowed(rules: RobotsRules, path: string): boolean {
   return !rules.disallow.some((d) => path.startsWith(d));
 }
 
+/** 按 HTTP 状态码把抓取结果映射为规则（Google robots 语义）：
+ *  - 2xx：解析正文规则；
+ *  - 4xx（含 404 = 无 robots.txt）：不限制（放行全站）；
+ *  - 5xx：服务器异常，保守视为**全站禁止**（disallow "/"），避免在源不稳时越权抓取。 */
+export function rulesForStatus(status: number, body: string, ua: string = UA): RobotsRules {
+  if (status >= 200 && status < 300) return parseRobots(body, ua);
+  if (status >= 500) return { disallow: ["/"] };
+  return { disallow: [] };
+}
+
 export async function fetchRobots(origin: string, ua: string = UA): Promise<RobotsRules> {
   try {
     const res = await safeFetch(new URL("/robots.txt", origin).toString(), { headers: { "user-agent": ua } });
-    if (!res.ok) return { disallow: [] };
-    return parseRobots(await res.text(), ua);
+    const body = res.ok ? await res.text() : "";
+    return rulesForStatus(res.status, body, ua);
   } catch {
-    return { disallow: [] }; // robots 不可达不阻断（保守放行，记录留后续）
+    return { disallow: [] }; // 网络不可达：瞬时错误不永久阻断（保守放行），记录留后续
   }
 }

@@ -1,7 +1,7 @@
 /** RSS 2.0 + Atom 适配器；抓取前查 robots.txt。Source.endpoint = feed URL。 */
 import type { Source } from "../types.js";
 import { UA, fetchRobots, isAllowed } from "./robots.js";
-import { safeFetch } from "./safe-fetch.js";
+import { readTextCapped, safeFetch } from "./safe-fetch.js";
 import type { RawItem } from "./types.js";
 import { asArray, text, xml } from "./xml.js";
 
@@ -46,5 +46,5 @@ export async function fetchRss(source: Source): Promise<RawItem[]> {
   if (!isAllowed(rules, pathname)) throw new Error(`robots.txt 禁止抓取：${source.endpoint}`);
   const res = await safeFetch(source.endpoint, { headers: { "user-agent": UA } });
   if (!res.ok) throw new Error(`rss fetch ${res.status}：${source.endpoint}`);
-  return parseRss(await res.text());
+  return parseRss(await readTextCapped(res));
 }

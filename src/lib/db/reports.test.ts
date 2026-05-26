@@ -45,3 +45,13 @@ it("FTS5 全文检索命中正文/标题", () => {
   expect(searchReports(db, "coding")).toEqual(["rep_test1"]);
   expect(searchReports(db, "nonexistentword")).toEqual([]);
 });
+
+it("FS 正文缺失（孤儿 DB 行）→ getReport 兜底占位、不抛", () => {
+  saveReport(db, report, index, { dir });
+  rmSync(join(dir, `${report.id}.md`), { force: true });
+  rmSync(join(dir, `${report.id}.html`), { force: true });
+  const r = getReport(db, "rep_test1");
+  expect(r).not.toBeNull();
+  expect(r!.body_md).toContain("正文文件缺失");
+  expect(r!.title).toBe("Code Agent Brief"); // 元数据仍来自 DB
+});
