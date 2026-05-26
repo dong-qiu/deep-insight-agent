@@ -159,4 +159,15 @@ CREATE INDEX IF NOT EXISTS idx_report_index_topic ON report_index(topic_id);
 CREATE INDEX IF NOT EXISTS idx_report_index_date  ON report_index(date);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS report_fts USING fts5(report_id UNINDEXED, title, summary, body);
+
+-- ── 增量6c：审计日志（append-only，architecture 安全设计「审计与日志」，保留 90 天）──
+CREATE TABLE IF NOT EXISTS audit_log (
+  id     INTEGER PRIMARY KEY AUTOINCREMENT,
+  at     TEXT NOT NULL DEFAULT (datetime('now')),
+  actor  TEXT,                 -- 用户 / 系统标识
+  action TEXT NOT NULL,        -- login / config_change / source_add / report_gen / push / delete ...
+  target TEXT,                 -- 关联对象
+  detail TEXT                  -- JSON 附加（调用方负责脱敏后再传入）
+);
+CREATE INDEX IF NOT EXISTS idx_audit_at ON audit_log(at);
 `;
