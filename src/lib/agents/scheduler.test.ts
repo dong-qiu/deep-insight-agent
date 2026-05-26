@@ -45,4 +45,16 @@ describe("rankAndDiversify", () => {
     const items = [ci("a", "s1", "foo"), ci("b", "s2", "bar"), ci("c", "s3", "baz"), ci("d", "s4", "qux")];
     expect(rankAndDiversify(items, KW, 2).map((x) => x.id)).toEqual(["a", "b"]); // 原序前 2
   });
+
+  it("token 化：英文研究摘要靠词命中（非整短语）也算相关并排上", () => {
+    // 关键词整短语不会原样出现，但 token software/engineering/autonomous 会命中摘要
+    const kws = ["autonomous software engineering", "代码生成"];
+    const items = [
+      ci("mkt1", "s1", "introducing our new image model"),
+      ci("mkt2", "s1", "a fun podcast episode"),
+      ci("paper", "s_arxiv", "We study software engineering with autonomous agents on SWE tasks"),
+      ci("mkt3", "s1", "more marketing copy"),
+    ];
+    expect(rankAndDiversify(items, kws, 2)[0].id).toBe("paper");
+  });
 });

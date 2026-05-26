@@ -20,14 +20,29 @@ export interface ScheduleSummary {
 
 const errMsg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
-/** 关键词相关度 = 命中的不同关键词数（title+body 小写子串匹配）。 */
-function relevanceScore(item: ContentItem, keywords: string[]): number {
+/** 把关键词拆成可匹配 token：英文按词、≥3 字符；CJK 片段 ≥2 字符。
+ *  整短语子串匹配过脆（中文关键词永不命中英文摘要、英文长短语少见原样出现，曾把 arXiv 研究全过滤掉），
+ *  按 token 命中可让英文研究摘要靠 software/agent/retrieval/inference 等词被识别为相关。 */
+export function keywordTokens(keywords: string[]): string[] {
+  const toks = new Set<string>();
+  for (const kw of keywords) {
+    for (const t of kw.toLowerCase().split(/[\s/]+/)) {
+      const minLen = /[a-z]/.test(t) ? 3 : 2;
+      if (t.length >= minLen) toks.add(t);
+    }
+  }
+  return [...toks];
+}
+
+/** 相关度 = 命中的不同关键词 token 数（title+body 小写子串匹配）。 */
+function relevanceScore(item: ContentItem, tokens: string[]): number {
   const hay = `${item.title} ${item.body}`.toLowerCase();
-  return keywords.reduce((n, k) => (k && hay.includes(k) ? n + 1 : n), 0);
+  return tokens.reduce((n, t) => (hay.includes(t) ? n + 1 : n), 0);
 }
 
 /** 纯函数：从候选池按「相关度优先 + 来源多样」选出 ≤ limit 条用于分析。
- *  - 优先相关（命中关键词）的条目；若全 0 命中则回退按候选池既有顺序（recency）；
+ *  - 全量按相关度（token 命中数）降序，同分保持 recency；不再硬过滤 0 命中——
+ *    研究源（如 arXiv）即便措辞不同也多能命中 token；万一全 0 也由来源多样化兜底纳入；
  *  - 每源最多 ceil(limit/3) 条，避免高产源（如 OpenAI 全历史 backlog）独占切片淹没相关内容；
  *  - 名额没填满则放开每源上限补齐。 */
 export function rankAndDiversify(
@@ -36,11 +51,10 @@ export function rankAndDiversify(
   limit: number,
 ): ContentItem[] {
   if (candidates.length <= limit) return candidates;
-  const kws = keywords.map((k) => k.toLowerCase()).filter(Boolean);
-  const scored = candidates.map((it, i) => ({ it, s: relevanceScore(it, kws), i }));
-  const relevant = scored.filter((x) => x.s > 0);
-  // 相关项按相关度降序（同分保持 recency）；无相关项则用原序回退
-  const ranked = (relevant.length ? relevant : scored).sort((a, b) => b.s - a.s || a.i - b.i);
+  const tokens = keywordTokens(keywords);
+  const ranked = candidates
+    .map((it, i) => ({ it, s: relevanceScore(it, tokens), i }))
+    .sort((a, b) => b.s - a.s || a.i - b.i);
 
   const perSourceCap = Math.max(2, Math.ceil(limit / 3));
   const bySource = new Map<string, number>();
@@ -68,9 +82,11 @@ export function selectAnalysisItems(
   opts: { since: string; limit?: number; candidatePool?: number },
 ): ContentItem[] {
   const limit = opts.limit ?? 15;
+  // 候选池放大到覆盖 F1 后全行业量（每源 ≤50 × 源数），避免高产源按 recency 把研究源（arXiv）
+  // 挤出候选窗口、scoring 根本看不到它。打分是内存子串匹配，候选多也廉价。
   const candidates = listContentForTopic(db, topic.id, {
     since: opts.since,
-    limit: opts.candidatePool ?? 300,
+    limit: opts.candidatePool ?? 800,
   });
   return rankAndDiversify(candidates, topic.keywords, limit);
 }
