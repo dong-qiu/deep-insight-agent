@@ -1,0 +1,22 @@
+# 供应链（architecture「安全扫描」）：依赖 / Actions / 基础镜像自动升级 PR。
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # 次/补丁版聚合成一个 PR，减少噪音
+      minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: docker
+    directory: "/"
+    schedule:
+      interval: weekly

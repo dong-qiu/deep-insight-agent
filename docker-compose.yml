@@ -1,0 +1,40 @@
+# 自托管单实例编排（architecture「部署」）：app(Web/Job Runner) + cron(容器内调度) + 持久卷。
+# 用法：cp .env.example .env.local 并填好 ANTHROPIC_API_KEY / AUTH_SECRET / ADMIN_* / CRON_SECRET，
+#       然后 `docker compose up -d --build`。两服务复用同一镜像（tag 锁定，不用 latest）。
+name: deep-insight
+
+services:
+  app:
+    build:
+      context: .
+      args:
+        # 本机构建用 host 架构；amd64/arm64 均有 supercronic 校验和（见 Dockerfile）
+        TARGETARCH: ${TARGETARCH:-amd64}
+    image: deep-insight:0.1.0
+    restart: unless-stopped
+    env_file: [.env.local]
+    ports:
+      - "3000:3000"
+    volumes:
+      - insight-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  cron:
+    image: deep-insight:0.1.0
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+    env_file: [.env.local]
+    environment:
+      # crontab 内 curl 的目标（容器网络内按服务名解析）
+      APP_URL: http://app:3000
+    command: ["supercronic", "/app/ops/crontab"]
+
+volumes:
+  insight-data:

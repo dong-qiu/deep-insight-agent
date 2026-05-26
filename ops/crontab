@@ -1,0 +1,7 @@
+# 容器内系统 cron 调度表（supercronic 解析；它继承容器环境变量并传给任务）。
+# 字段：分 时 日 月 周  命令。触发脚本用 Node fetch 打 /api/cron（免 curl）。
+# 真正的采集→分析→校验→brief 在 app 容器进程内跑（非 serverless，无超时），
+# 由 /api/cron 走 Job Runner 落 Run / 成本 / 审计。
+
+# 每 6 小时跑一次完整管线（与 defaultSources 的 fetch_interval=6h 对齐）
+0 */6 * * * node --no-warnings /app/ops/trigger.mjs

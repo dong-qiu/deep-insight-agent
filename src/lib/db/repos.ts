@@ -106,6 +106,28 @@ export function updateContentItem(db: DB, c: ContentItem): void {
     fetch_status: c.fetch_status,
   });
 }
+/** 取归属某主题、且在 since 之后采集的 ContentItem（调度管线按主题切片用）。
+ *  topic_ids 以 JSON 数组文本存储，用带引号的子串匹配做包含判断（id 不含特殊字符，安全）。 */
+export function listContentForTopic(
+  db: DB,
+  topicId: string,
+  opts: { since?: string; limit?: number } = {},
+): ContentItem[] {
+  const clauses = ["topic_ids LIKE @like"];
+  const params: Record<string, unknown> = { like: `%"${topicId}"%`, limit: opts.limit ?? 200 };
+  if (opts.since) {
+    clauses.push("fetched_at >= @since");
+    params.since = opts.since;
+  }
+  const rows = db
+    .prepare(
+      `SELECT * FROM content_item WHERE ${clauses.join(" AND ")}
+       ORDER BY COALESCE(published_at, fetched_at) DESC LIMIT @limit`,
+    )
+    .all(params) as Record<string, unknown>[];
+  return rows.map(rowToContentItem);
+}
+
 function rowToContentItem(r: Record<string, unknown>): ContentItem {
   return {
     id: r.id as string, source_id: r.source_id as string, url: r.url as string,

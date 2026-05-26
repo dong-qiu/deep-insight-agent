@@ -11,7 +11,10 @@ import { getSource, getTopic, insertSource, insertTopic, listSources } from "../
 import type { Source } from "../types.js";
 import { type AppConfig, AppConfigSchema } from "./types.js";
 
-const DEFAULTS_PATH = join(dirname(fileURLToPath(import.meta.url)), "defaults.yaml");
+// 默认相对编译产物定位 defaults.yaml；Next standalone 打包后该相对路径会失效，
+// 容器内用 INSIGHT_CONFIG_PATH 指向固定路径（见 Dockerfile）覆盖。
+const DEFAULTS_PATH =
+  process.env.INSIGHT_CONFIG_PATH ?? join(dirname(fileURLToPath(import.meta.url)), "defaults.yaml");
 
 /** 递归把字符串里的 ${VAR} 替换为环境变量；引用了未设置的变量即抛（密钥唯一来源 = env）。 */
 export function resolveEnvRefs<T>(node: T): T {

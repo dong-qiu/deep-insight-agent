@@ -140,3 +140,21 @@
   - 架构里「校验用 Opus + 思考」的假设**隐含依赖直连或流式**。经中转站要用 thinking，必须给 validator 上 streaming（claude-api skill 早有提示：长输出/高 max_tokens 一律 stream）。
   - 第三方中转站会在**模型清单、特性支持、长响应稳定性、数据出境**多个维度悄悄打破假设；接入前应显式核验，别假设它等价于直连。
 - **后续动作**: validator 加了 `VALIDATOR_THINKING` 开关、客户端短超时（60s）+ 多重试（3）。要拿**可信的 A1 结论**，需直连 Anthropic、或给 validator 实现带 thinking 的 streaming。
+
+### 2026-05-26 · `next build` 绿 ≠ 容器能跑：standalone 打包的隐藏假设
+
+- **日期**: 2026-05-26
+- **情境**: 增量7 给应用容器化，用 Next `output: "standalone"` 瘦身镜像。
+- **观察**:
+  - standalone 只拷被 trace 到的 JS + 原生模块，**不拷非 JS 资源**。`loadStaticConfig` 用
+    `import.meta.url` 相对定位 `defaults.yaml`，打包后该路径失效——`next build` 照样全绿，问题只在容器运行时才暴露。
+  - 同类隐患还有原生模块：`better-sqlite3` 的 `.node` 是否被 trace 进 standalone，肉眼看构建日志看不出来。
+  - 关键动作：**不等 Docker build，先把 `.next/standalone/server.js` 用容器同款 env 直接起起来冒烟**
+    （`/api/health` 命中库、`/api/cron` 鉴权 401）。一次本地启动就确认了原生模块加载 OK、配置外挂路径 OK，
+    把「镜像 build 完才发现起不来」的长反馈环砍掉。
+- **经验 / 教训**:
+  - 与「子集冒烟不可替代」同源：**构建期检查（typecheck / build）兜不住运行期的资源定位与原生加载**，
+    打包形态变了就要对**产物本身**冒烟，而不是只看 build 退出码。
+  - 凡「相对自身模块读文件」的代码，在 bundler / standalone 下都要预设会失效，改走**环境变量指定绝对路径**。
+- **后续动作**: 配置路径加 `INSIGHT_CONFIG_PATH` 覆盖；Dockerfile 显式 COPY `defaults.yaml` 与
+  `better-sqlite3`（兜底 trace 漏拷）；决策记入 ADR-0001。

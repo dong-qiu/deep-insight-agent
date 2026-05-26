@@ -1,0 +1,22 @@
+# 构建上下文裁剪 —— 关键：排除密钥与本地数据，避免烘进镜像层
+node_modules
+.next
+.git
+.github
+.data
+.env
+.env.*
+!.env.example
+npm-debug.log*
+*.tsbuildinfo
+.DS_Store
+
+# 运行时不需要的资料
+docs
+evals
+tests
+*.txt
+Dockerfile
+docker-compose.yml
+.dockerignore
+README.md
