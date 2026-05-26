@@ -7,14 +7,15 @@ import { isIP } from "node:net";
 function v4PrivateOrReserved(ip: string): boolean {
   const p = ip.split(".").map(Number);
   if (p.length !== 4 || p.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return true;
-  const [a, b] = p;
+  const [a, b, c] = p;
   return (
     a === 0 || a === 10 || a === 127 ||
     (a === 100 && b >= 64 && b <= 127) || // CGNAT 100.64/10
     (a === 169 && b === 254) ||           // link-local
     (a === 172 && b >= 16 && b <= 31) ||
     (a === 192 && b === 168) ||
-    (a === 192 && b === 0) ||             // 192.0.0/24
+    (a === 192 && b === 0 && c === 0) ||  // 192.0.0.0/24 IETF 协议分配（注意：仅 /24，非 /16）
+    (a === 192 && b === 0 && c === 2) ||  // 192.0.2.0/24 TEST-NET-1（文档示例）
     (a === 198 && (b === 18 || b === 19)) || // benchmarking 198.18/15
     a >= 224                               // multicast / 保留 224-255
   );

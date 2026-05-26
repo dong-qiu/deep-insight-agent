@@ -3,12 +3,12 @@ import { isPrivateOrReserved, safeFetch } from "./safe-fetch.js";
 
 describe("isPrivateOrReserved", () => {
   it("私有 / 保留 IPv4 → true", () => {
-    for (const ip of ["10.0.0.1", "172.16.5.4", "192.168.1.1", "127.0.0.1", "169.254.169.254", "0.0.0.0", "100.64.0.1", "224.0.0.1"]) {
+    for (const ip of ["10.0.0.1", "172.16.5.4", "192.168.1.1", "127.0.0.1", "169.254.169.254", "0.0.0.0", "100.64.0.1", "224.0.0.1", "192.0.0.1", "192.0.2.5"]) {
       expect(isPrivateOrReserved(ip), ip).toBe(true);
     }
   });
-  it("公网 IPv4 → false", () => {
-    for (const ip of ["8.8.8.8", "1.1.1.1", "151.101.1.69"]) {
+  it("公网 IPv4 → false（含 192.0.66/24 等 192.0.x 公网，仅 192.0.0/24 与 192.0.2/24 才保留）", () => {
+    for (const ip of ["8.8.8.8", "1.1.1.1", "151.101.1.69", "192.0.66.2", "192.0.78.20"]) {
       expect(isPrivateOrReserved(ip), ip).toBe(false);
     }
   });

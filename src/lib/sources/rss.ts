@@ -40,11 +40,15 @@ export function parseRss(feedXml: string): RawItem[] {
   return [];
 }
 
+/** 单次抓取保留的条目上限（MVP 只消费增量；防 OpenAI/播客等全历史 backlog 一次灌库淹没相关内容）。
+ *  RSS 惯例为新到在前，取前 N 即最近 N 条；env RSS_MAX_ITEMS 可覆盖。 */
+export const RSS_MAX_ITEMS = Number(process.env.RSS_MAX_ITEMS) || 50;
+
 export async function fetchRss(source: Source): Promise<RawItem[]> {
   const { origin, pathname } = new URL(source.endpoint);
   const rules = await fetchRobots(origin);
   if (!isAllowed(rules, pathname)) throw new Error(`robots.txt 禁止抓取：${source.endpoint}`);
   const res = await safeFetch(source.endpoint, { headers: { "user-agent": UA } });
   if (!res.ok) throw new Error(`rss fetch ${res.status}：${source.endpoint}`);
-  return parseRss(await readTextCapped(res));
+  return parseRss(await readTextCapped(res)).slice(0, RSS_MAX_ITEMS);
 }
