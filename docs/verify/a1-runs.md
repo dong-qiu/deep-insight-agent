@@ -151,3 +151,8 @@ swe 8 条 / 5 源（practical_ai/pragmatic/latent_space/hn/arxiv）、security 8
 
 **结论**：**A1「可溯源」在真实异构内容上不达标**（非干净通过）。这是 M3 Verify 该找出的核心退化。
 **M3 修复项**：① 引用纪律——更短的连续 quote / 产出后做 quote 对齐修复（snap 到最近的连续 verbatim 子串）/ body 清洗（播客转录去噪）；② 拒答缓解——更强框定或换 system 策略；③ 与 A1 截断治本（streaming/自由文本）合并推进。
+
+### M3-6 引用对齐修复（repairQuote）验证 — 同日复测
+接入 `repairQuote`（quote snap 回连续 verbatim 子串）后同配置复测 swe：**引用可达性 24.1% → 54.3%（+30pp）**、一致性合格率 18.5% → 47.8%。
+**判断**：repair 把"起头逐字、后半漂移"的引用挽回（recover 约一半）；剩 ~46% 是**真改写**（起头都不在正文 → repair 正确放弃 → 被闸门挡下，不造假）。
+**故 repair 是安全网、非全解**——还需 ① analyzer **逐字纪律**（提示层面减少编造引用，治本）、② security **拒答缓解**（本轮仍拒答跳过）。这两项续做。
