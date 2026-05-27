@@ -112,7 +112,9 @@ async function main(): Promise<void> {
   const smoke = qLimit > 0 || cLimit > 0;
 
   // ── Part A：洞察提炼 + 引用双层校验 ──
-  const qualityAll = readJsonl<QualityCase>("evals/dataset/insight-quality.jsonl");
+  // A1_QUALITY_FILE 可指向本地多源集（evals/dataset/*.local.jsonl，不入仓）；默认 arXiv 集
+  const qualityFile = process.env.A1_QUALITY_FILE ?? "evals/dataset/insight-quality.jsonl";
+  const qualityAll = readJsonl<QualityCase>(qualityFile);
   const qualityCases = qLimit ? qualityAll.slice(0, qLimit) : qualityAll;
   if (smoke) {
     console.log(

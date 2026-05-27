@@ -44,6 +44,20 @@ npm run typecheck   # tsc 类型检查
 
 👉 怎么填：见 **`dataset/GUIDE.md`**（目标规模、取数来源、格式、引用一致性 3 类负例的标注规则与 checklist）。
 
+### 本地多源评测（M3-2 · 方案 B：不入仓）
+
+验证 A1 在**非 arXiv 异构内容**下是否稳健，但**不把第三方全文提交进仓库**（项目原则「不复制全文存储」）。
+内容留本地（`dataset/*.local.jsonl` 已 gitignore），只提交配方/代码与指标/基线。
+
+```bash
+npm run seed                 # 播种 23 源 + 2 主题
+# （采集：触发 /api/cron 或既有 .data；F1 限流，每 RSS 源 ≤50）
+npm run eval:build-local     # 从 .data 抽多源富内容 → dataset/insight-quality-multisource.local.jsonl
+A1_QUALITY_FILE=evals/dataset/insight-quality-multisource.local.jsonl npm run eval:a1   # 多源重测
+```
+
+产出的多源指标写入 `baseline.json`（多源段）；内容本身不入仓、可由上述配方重建。
+
 ## 模型
 
 默认 分析=`claude-sonnet-4-6` / 校验=`claude-opus-4-7`（架构选型；校验模型必须独立于分析模型，

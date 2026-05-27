@@ -12,6 +12,7 @@
     "start": "next start",
     "seed": "tsx evals/seed.ts",
     "eval:a1": "tsx evals/run-a1.ts",
+    "eval:build-local": "tsx evals/build-local-eval.ts",
     "review:sheet": "tsx evals/make-review-sheet.ts",
     "review:csv": "tsx evals/make-review-csv.ts",
     "typecheck": "tsc --noEmit",
