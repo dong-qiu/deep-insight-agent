@@ -158,3 +158,17 @@
   - 凡「相对自身模块读文件」的代码，在 bundler / standalone 下都要预设会失效，改走**环境变量指定绝对路径**。
 - **后续动作**: 配置路径加 `INSIGHT_CONFIG_PATH` 覆盖；Dockerfile 显式 COPY `defaults.yaml` 与
   `better-sqlite3`（兜底 trace 漏拷）；决策记入 ADR-0001。
+
+### 2026-05-27 · 广度 ≠ 源数量：一次真多源 populate 暴露 4 个 curated-demo 测不出的问题
+
+- **日期**: 2026-05-27
+- **情境**: 数据源从 2 个 arXiv 扩到 MVP 清单 23 个、主题拓宽为行业级后，跑一次真 populate「看广度变现」。
+- **观察**:
+  - **加源反而更差**：swe 主题"近期 top-10"被 OpenAI feed 一次灌回的 **968 条全历史 backlog** 占满（全是 DALL·E 等旧营销帖），把相关的 arXiv 挤出 → analyzer 正确判 **0 洞察**。安全主题直接超时。**源多了，信号反被淹没。**
+  - 一次真多源实跑**连带抖出 4 个潜伏问题**，全是之前 curated 的 6 条 arXiv demo（`rep_ddf10bd4` 那篇好报告）+ 单测都测不出的：① SSRF 把 `192.0.0.0/16` 整段误拦（误杀 github.blog 公网，实际只该拦 `/24`）；② RSS 无每次抓取上限（backlog 灌库）；③ 朴素 recency 选片被高产源独占；④ arXiv 连发多查询触 429 限速。
+  - 那篇"好报告"之所以好，恰恰因为它是**人工精选的 6 条对口 arXiv 摘要**——curated 输入掩盖了规模化采集/选择的全部短板。
+- **经验 / 教训**:
+  - **「广度」是工程能力，不是源清单长度**：= 限流（每源每次封顶 F1）+ 选片（相关 token 命中 + 来源多样 F2）+ 限速（arXiv token bucket F5）。少了任一条，加源只会增噪。
+  - 与「子集冒烟」「standalone 冒烟」同一脉络：**curated / 小而美的输入会系统性掩盖真实形态下的问题**；要验证规模化能力，必须喂**真实、异构、带噪**的全量数据跑一遍。
+  - 真 populate 的 ROI 极高：一次跑出 4 个潜伏 bug，比读代码/单测高效得多。
+- **后续动作**: 修 F1（`RSS_MAX_ITEMS`）/F2（`rankAndDiversify` token 化 + 候选池放大）/F3（SSRF `/24`）/F5（arXiv ≥3s 节流 + 429 退避）；干净重采复验：安全侧 5 源多样、swe 侧 arXiv 15/15 回归。analyzer 大池分批仍待办。
