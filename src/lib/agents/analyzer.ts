@@ -47,6 +47,16 @@ export function isCompleteStatement(s: string): boolean {
   return /[。.!?！？”")）】』」]$/.test(s.trim());
 }
 
+/** 引用覆盖检测（#14 类）：抽 statement 里的**百分比/小数**（高特异性、低误报；不查年份/小整数），
+ *  检查每个是否在某条 citation quote 里出现；返回未被覆盖的数字 = 结论数字无引用支撑（潜在幻觉/应补引）。
+ *  非破坏性——仅用于告警 + 人评幻觉跟踪（#14 负责人判定为"补引"而非丢弃，故不在此删洞察）。 */
+export function uncoveredClaims(statement: string, quotes: string[]): string[] {
+  const nums = statement.match(/\d+\.\d+%?|\d+%/g) ?? [];
+  if (!nums.length) return [];
+  const hay = quotes.join(" ").replace(/\s+/g, "");
+  return [...new Set(nums.filter((n) => !hay.includes(n.replace(/\s+/g, ""))))];
+}
+
 function computeLocator(body: string, quote: string): Citation["locator"] {
   const idx = body.indexOf(quote);
   if (idx < 0) return { paragraph_index: -1, char_start: -1, char_end: -1 };
@@ -180,6 +190,11 @@ ${renderItems(items)}`;
     console.warn(`  ⚠️ 丢弃疑似截断洞察 ${it.id}：…「${it.statement.trim().slice(-24)}」`);
     return false;
   });
+  // 引用覆盖检测（#14 类）：告警未被引用覆盖的数字（非删除——建议补引；供人评幻觉跟踪）
+  for (const it of insights) {
+    const uncov = uncoveredClaims(it.statement, it.citations.map((c) => c.quote));
+    if (uncov.length) console.warn(`  ⚠️ 数字未被引用覆盖 ${it.id}：${uncov.join(", ")}（#14 类，建议补引）`);
+  }
   return { insights, rawCount: data.insights.length };
 }
 

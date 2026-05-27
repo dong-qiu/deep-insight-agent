@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from "vitest";
 import type { ContentItem } from "../types.js";
-import { ANALYZE_BODY_CHARS, chunkByChars, isCompleteStatement, repairQuote, truncateForAnalyze } from "./analyzer.js";
+import { ANALYZE_BODY_CHARS, chunkByChars, isCompleteStatement, repairQuote, truncateForAnalyze, uncoveredClaims } from "./analyzer.js";
 
 function item(id: string, bodyLen: number): ContentItem {
   return {
@@ -93,5 +93,21 @@ describe("truncateForAnalyze（M3-3 analyze body 上限）", () => {
   });
   it("未超 → 原样", () => {
     expect(truncateForAnalyze("short body")).toBe("short body");
+  });
+});
+
+describe("uncoveredClaims（#14 类·数字引用覆盖检测）", () => {
+  it("数字在引用里 → 无未覆盖", () => {
+    expect(uncoveredClaims("仅 35.7% 的被拒 PR 是失误", ["only 35.7% of rejected PRs reflected failures"])).toEqual([]);
+    expect(uncoveredClaims("可编译率提升至 38.33%", ["improves compilability from 19.34% to 38.33%"])).toEqual([]);
+  });
+  it("结论数字不在本条引用（#14 案）→ 报未覆盖", () => {
+    expect(uncoveredClaims("八篇论文审计均分 0.38，经典基准 0.66", ["none of the eight papers disclose inference cost"]).sort()).toEqual(["0.38", "0.66"]);
+  });
+  it("无百分比/小数 → 空（不查年份/小整数）", () => {
+    expect(uncoveredClaims("2026 年发布的 8 个基准", ["a benchmark"])).toEqual([]);
+  });
+  it("混合：覆盖的不报、未覆盖的报", () => {
+    expect(uncoveredClaims("从 0.25 提升到 0.61，相对增益 99.9%", ["lifts score from 0.25 to 0.61 in a cycle"])).toEqual(["99.9%"]);
   });
 });
