@@ -33,9 +33,10 @@
 - **已知输入（M3-1 live 实测）**：富正文 12 条 / 9 批 analyze ≈ **¥6.26**（vs 6 条 arXiv 单批 ¥0.53）——**分批使 SYSTEM 提示重复 N 次、成本随批数上升**；prompt caching 可缓解但中转站不命中（待直连 key）。标定须区分内容形态（arXiv 摘要 vs 富正文长文）；可调 `ANALYZE_BATCH_CHARS` 在"批数/超时风险"间权衡降本。
 - 交付：成本实测报告 + 阈值定稿 + 时延实测；不依赖 key（Sonnet 干净测算待将来）。
 
-### M3-4 · 回归与 CI eval
-- eval 抽样接进 CI（architecture 已规划）；回归告警接线（`eval-criteria`「指标降>3pp 阻断」）。
-- 交付：CI eval 抽样 + 回归门。依赖 M3-2 基线。
+### M3-4 · 回归与 CI eval — ✅ 回归门完成 2026-05-27
+- **回归门** ✅：`run-a1` 跑完对照 `baseline.json`（arXiv 基线），任一指标较基线 **降 >3pp 即 ⚠️ + 非零退出**（按 op 方向：`>=` 指标降 / `<=` 指标升）；全量非冒烟下阻断，离线验证逻辑正确。
+- **CI 现实**：真模型 eval 需 key + 预算 + 中转站，**公共 CI 跑不了** → 确定性 eval 逻辑由 vitest 覆盖（无 key，CI 已跑）；真模型 eval + 回归门在**带 key 环境**（本地/手动/将来定时 job + secrets）运行。
+- 交付：回归门 ✅；带 key 的定时 eval job（接 secrets）留将来。
 
 ### M3-5 · 试用反馈闭环（dogfood）
 - cron 常态运行一段、团队 dogfood、收集反馈迭代；多人交叉评审固化（承接 A1 条件④单人→多人）。

@@ -59,15 +59,16 @@ function readJsonl<T>(path: string): T[] {
 const pct = (x: number) => `${(x * 100).toFixed(1)}%`;
 
 interface MetricRow {
+  key: string; // 对齐 baseline.json auto_metrics 键（回归对照用）
   name: string;
   value: number;
   threshold: number;
   op: ">=" | "<=";
   pass: boolean;
 }
-function metric(name: string, value: number, threshold: number, op: ">=" | "<="): MetricRow {
+function metric(key: string, name: string, value: number, threshold: number, op: ">=" | "<="): MetricRow {
   const pass = op === ">=" ? value >= threshold : value <= threshold;
-  return { name, value, threshold, op, pass };
+  return { key, name, value, threshold, op, pass };
 }
 
 function printMetrics(rows: MetricRow[]): void {
@@ -172,17 +173,12 @@ async function main(): Promise<void> {
   const uncertain = allChecks.filter((c) => c.consistency === "uncertain").length;
 
   const rows = [
-    metric("引用可达性通过率", total ? reachPass / total : 0, THRESHOLDS.reachabilityPass, ">="),
-    metric("引用一致性合格率", total ? support / total : 0, THRESHOLDS.consistencyOk, ">="),
-    metric("一致性失败率(护栏)", total ? notSupport / total : 0, THRESHOLDS.consistencyFailure, "<="),
-    metric("flagged率(第二护栏)", total ? uncertain / total : 0, THRESHOLDS.flagged, "<="),
-    metric(
-      "校验器三分类准确率",
-      judged ? judgeCorrect / judged : 0,
-      THRESHOLDS.judgeAccuracy,
-      ">=",
-    ),
-    metric("校验器负例召回率", negTotal ? negRecalled / negTotal : 0, THRESHOLDS.judgeNegRecall, ">="),
+    metric("reachability_pass", "引用可达性通过率", total ? reachPass / total : 0, THRESHOLDS.reachabilityPass, ">="),
+    metric("consistency_ok", "引用一致性合格率", total ? support / total : 0, THRESHOLDS.consistencyOk, ">="),
+    metric("consistency_failure", "一致性失败率(护栏)", total ? notSupport / total : 0, THRESHOLDS.consistencyFailure, "<="),
+    metric("flagged_rate", "flagged率(第二护栏)", total ? uncertain / total : 0, THRESHOLDS.flagged, "<="),
+    metric("judge_accuracy", "校验器三分类准确率", judged ? judgeCorrect / judged : 0, THRESHOLDS.judgeAccuracy, ">="),
+    metric("judge_neg_recall", "校验器负例召回率", negTotal ? negRecalled / negTotal : 0, THRESHOLDS.judgeNegRecall, ">="),
   ];
   printMetrics(rows);
 
@@ -227,9 +223,35 @@ async function main(): Promise<void> {
     );
   }
 
+  // ── 回归门（eval-criteria：任一指标较基线降 >3pp 告警/阻断）。基线 = arXiv 标准集 ──
+  let regressed = false;
+  try {
+    const base = (JSON.parse(readFileSync("evals/baseline.json", "utf8")).auto_metrics ?? {}) as Record<string, number>;
+    const TOL = 0.03;
+    console.log("\n回归对照（vs baseline.json · arXiv 基线）：");
+    for (const r of rows) {
+      const b = base[r.key];
+      if (typeof b !== "number") continue;
+      const delta = r.value - b;
+      const isReg = r.op === ">=" ? delta < -TOL : delta > TOL; // 升降方向按 op
+      if (isReg) regressed = true;
+      console.log(
+        `  ${r.name.padEnd(18)} ${pct(b)} → ${pct(r.value)}（Δ${delta >= 0 ? "+" : ""}${pct(delta)}）${isReg ? " ⚠️ 回归" : ""}`,
+      );
+    }
+    if (regressed) {
+      console.log(
+        "  ⚠️ 检测到 >3pp 回归。单次跑有非确定性噪声——标准 arXiv 全量跑下视为阻断；非标准数据集/冒烟仅供参考。",
+      );
+    }
+  } catch {
+    console.log("\n（无 baseline.json，跳过回归对照）");
+  }
+
   const failed = rows.filter((r) => !r.pass);
   console.log(`\n自动门槛：${rows.length - failed.length}/${rows.length} 通过。`);
-  process.exit(failed.length ? 1 : 0);
+  // 阈值 FAIL 或（全量非冒烟下的）>3pp 回归 → 非零退出（带 key 的 job/CI 可据此阻断合并）
+  process.exit(failed.length || (regressed && !smoke) ? 1 : 0);
 }
 
 main().catch((err) => {

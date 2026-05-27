@@ -23,6 +23,9 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
+      # vitest 覆盖确定性 eval 逻辑（reachability/verdict/选片/分批/repairQuote 等，无需 key）。
+      # 真模型 eval（npm run eval:a1）+ 回归门需 API key + 预算 + 中转站 → 不在公共 CI 跑，
+      # 在带 key 环境（本地/手动/将来定时 job + secrets）运行；见 docs/plan/m3-plan.md M3-4。
       - run: npm test
       - name: next build
         run: npm run build
