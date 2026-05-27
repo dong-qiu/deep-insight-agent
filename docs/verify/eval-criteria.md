@@ -82,9 +82,16 @@
 - 端到端起点 = 用户提交深挖请求；终点 = `Report.status` 置 `done`
 - P50 ≤ 10 分钟（charter 辅助指标）
 
-**成本（暂定值，M1 实测后标定）：**
+**成本（2026-05-27 按 Opus-on-relay 现实重标，provisional）：**
 
-- 单份报告平均成本（按 `Report.type`）：`deep_dive` ≤ ¥3.0；`brief` ≤ ¥0.5；`initial_digest` ≤ ¥8.0（一次性首版，因覆盖回填全量历史，阈值放宽）
+> 重标背景：原 `brief ≤¥0.5 / deep_dive ≤¥3 / initial_digest ≤¥8` 暂定值假设 analyzer=Sonnet；
+> 但 MVP 实际经中转站、**只有 Opus**（analyzer 被迫用 Opus-4-6、validator Opus-4-7），且直连 key 目前不可得。
+> **口径**：成本 = analyze + validate（report-gen 确定性 $0）；Anthropic 列表价 ×7.2；**validator 带思考**为基准档（安全档，A1 验证用）；含 ~1.5× 余量。
+> **实测锚点**：brief 的 analyze（6 条 arXiv · opus-4-6）= $0.073 ≈ **¥0.53**；validate 随引用数变化，带思考约 ¥0.2–0.35/引用。
+
+- 单份报告平均成本（按 `Report.type`，Opus-on-relay 带思考基准）：`brief` ≤ **¥5**；`deep_dive` ≤ **¥15**；`initial_digest` ≤ **¥30**（冷启动回填全量历史，放宽）
+  - 注：validator **thinking-off 约减半**（A1 显示带思考仅边际提精度、负例召回 98.3%→100%，可视成本权衡取舍）；
+  - 注：将来取得**直连 key + analyzer 切 Sonnet** 可大幅降本，届时按干净测量收紧本阈值。
 - 单条引用一致性校验 ≤ 4000 token
 - 人工抽检比例：一致性校验结果抽检 10%
 
