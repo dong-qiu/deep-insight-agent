@@ -27,12 +27,13 @@
 - [x] 容器化 + 容器内 cron + CI（增量7：Docker standalone + supercronic + GitHub Actions + Dependabot）
 - [x] M2 评审修复 round1（4×🔴）+ round2（8×🟡）
 
-## M3 — Verify (本阶段)
+## M3 — Verify (本阶段) — 代码实现完成，待 DCP-3 门评前补两项证据
 
-- [ ] eval 数据集与基线
-- [ ] 回归测试通过
-- [ ] 试用反馈闭环
-- [ ] **DCP-2 附条件**：① 成本按中转站真实计价测实费 + 验证/收紧重标阈值；② A1 遗留——非 arXiv 多源压测 + 幻觉率收紧至 ≤2%；③ 中转站稳定性跟踪；④ initial_digest 冷启动 / 视频字幕 spike（低优）
+- [x] eval 数据集与基线（多源本地快照 `eval:build-local` + `baseline.json`；A1 标注 20/20 人评固化）
+- [x] 回归测试通过（`run-a1` 对照 baseline >3pp 阻断；CI 确定性 eval 绿，102 tests）
+- [~] 试用反馈闭环（dogfood 已启动：2 份 swe 报告 + security 拒答已修可产出；多人评审 ≥1 完整轮**待回填**）
+- [~] **DCP-2 附条件**：① 成本——阈值已按 Opus 现实重标 + 富多源砍半实测落阈内；真实账单定稿待直连 key（**附条件**）；② A1 遗留——多源压测完成（可达性 24%→89%、security 0→8）；**幻觉率 ≤2% 待规模数据 + 人评**；③ 中转站稳定性——120s+分批+重试已兜底，告警接线待运维；④ initial_digest / 视频字幕 spike（低优，推 M4）
+- **DCP-3 准入体检**（门评前）见 `docs/verify/dcp-3-readiness-2026-05-28.md`：可溯源红线（发布层 100%）已构造即成立；门差在幻觉率首轮人评 + 试用首轮闭环两项最小证据。
 
 ## M4 — Launch
 
