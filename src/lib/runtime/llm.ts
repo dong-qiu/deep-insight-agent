@@ -35,9 +35,11 @@ export function assertModelSeparation(): void {
 // （模块 import 早于 run-a1 的 loadEnvLocal，过早 new Anthropic() 会拿不到 key）
 let _client: Anthropic | null = null;
 function getClient(): Anthropic {
-  // 经第三方中转站偶发卡死：用较短超时 + 多次重试，让卡住的请求快速失败并重试，
-  // 而非默认 10min 超时干等一次。正常调用 4-9s 完成，60s 足够宽松。
-  return (_client ??= new Anthropic({ timeout: 45_000, maxRetries: 2 })); // key from env
+  // 超时取舍：原 45s 是为快速失败中转站「卡死」；但 Opus 生成 8k token 输出的合法调用可能 >45s，
+  // 且每次重试也只等 45s → 合法慢生成永远成功不了（F4 live 确认暴露）。改 120s（env LLM_TIMEOUT_MS 可配），
+  // 让合法慢生成跑完；中转站现已支持长响应（带思考已验证），不再需要 45s 那么激进。
+  const timeout = Number(process.env.LLM_TIMEOUT_MS) || 120_000;
+  return (_client ??= new Anthropic({ timeout, maxRetries: 2 })); // key from env
 }
 
 // ── Cost Meter（进程内累计本次运行的 token / 成本） ──
