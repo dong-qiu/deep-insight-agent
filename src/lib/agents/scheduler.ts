@@ -94,11 +94,12 @@ export function selectAnalysisItems(
 /** 触发一次完整管线。库为空时 getEffectiveSources 会先播种默认 Topic/Source（首跑自举）。 */
 export async function runScheduledPipeline(
   db: DB,
-  opts: { windowHours?: number; itemsPerTopic?: number } = {},
+  opts: { windowHours?: number; itemsPerTopic?: number; reportType?: "brief" | "deep_dive" } = {},
 ): Promise<ScheduleSummary> {
   const startedAt = new Date().toISOString();
   const windowHours = opts.windowHours ?? Number(process.env.PIPELINE_WINDOW_HOURS ?? 168);
   const itemsPerTopic = opts.itemsPerTopic ?? (Number(process.env.PIPELINE_ITEMS_PER_TOPIC) || 15);
+  const reportType = opts.reportType ?? "brief"; // 每日 brief / 周报 deep_dive（cron 按周期传入）
   const end = Date.now();
   const since = new Date(end - windowHours * 3_600_000).toISOString();
   const endIso = new Date(end).toISOString();
@@ -134,7 +135,7 @@ export async function runScheduledPipeline(
     try {
       const batch = await runAnalysis(db, topic, items, { start: since, end: endIso });
       const validation = await runValidation(db, batch, items);
-      const report = await runReportGen(db, { topic, batch, validation, type: "brief" });
+      const report = await runReportGen(db, { topic, batch, validation, type: reportType });
       summary.topics.push({
         topic: topic.id,
         items: items.length,

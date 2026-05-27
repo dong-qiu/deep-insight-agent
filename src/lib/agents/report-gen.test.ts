@@ -109,4 +109,32 @@ describe("buildReport 派生", () => {
     expect(report.body_html).toContain("<section>");
     expect(report.body_html).toContain("待核实");
   });
+
+  it("brief 维持扁平：无分节、无详版来源行", () => {
+    expect(report.body_md).not.toContain("重点关注");
+    expect(report.body_md).not.toContain("- 来源：");
+    expect(report.body_html).not.toContain("<h3>");
+  });
+});
+
+describe("buildReport · deep_dive（最小确定性深挖）", () => {
+  const { report } = buildReport({
+    topic, batch: batchOf(), validation, type: "deep_dive",
+    contentLookup: new Map(), now: "2026-05-07T08:00:00Z",
+  });
+  it("标题用深度报告标签", () => {
+    expect(report.title).toContain("深度报告");
+  });
+  it("按重要性分节 + 节内三级标题", () => {
+    expect(report.body_md).toContain("## 重点关注"); // i1/i2 均 importance≥4
+    expect(report.body_md).toContain("### "); // 节内洞察用三级标题
+    expect(report.body_html).toContain("<h3>");
+  });
+  it("详版多展示来源（来源数 / 多源）", () => {
+    expect(report.body_md).toContain("- 来源：");
+  });
+  it("仍只纳入通过/待核实洞察（与 brief 同闸门）", () => {
+    expect(report.insight_ids).toEqual(["i1", "i2"]);
+    expect(report.body_md).not.toContain("S3 all blocked");
+  });
 });
