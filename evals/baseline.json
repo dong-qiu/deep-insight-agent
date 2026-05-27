@@ -1,0 +1,25 @@
+{
+  "_about": "A1 评测基线快照（M3-2 固化）。供回归对比：eval-criteria「任一指标较基线降 >3pp 告警/阻断」。新数据/新配置下重测后更新本基线并记 provenance。",
+  "provenance": {
+    "date": "2026-05-26",
+    "run": "validator 带思考全量复跑（a1-runs.md 2026-05-26 条目）",
+    "config": "analyzer=claude-opus-4-6 · validator=claude-opus-4-7 · thinking=on · 经中转站(yibuapi)",
+    "dataset": "arXiv 单源（insight-quality 5 主题 / citation-consistency 120 对，AI 构造标注、20/20 已人工抽检）",
+    "caveats": "Opus-on-relay 约束 + thinking-on；多源/直连 key 下需重设基线。一致性合格率/失败率受复合句+AI 标注影响，非校验器能力上限。"
+  },
+  "auto_metrics": {
+    "reachability_pass": 0.983,
+    "consistency_ok": 0.517,
+    "consistency_failure": 0.293,
+    "flagged_rate": 0.172,
+    "judge_accuracy": 0.821,
+    "judge_neg_recall": 1.0
+  },
+  "human_metrics": {
+    "_source": "a1-ai-prereview-2026-05-26.md，产品负责人 2026-05-27 确认",
+    "non_obvious_ratio": 0.68,
+    "fabrication_rate": 0.0,
+    "untraceable_count": 1
+  },
+  "thresholds_ref": "docs/verify/eval-criteria.md（上线门槛 + 成本阈值，后者 2026-05-27 按 Opus 现实重标）"
+}
