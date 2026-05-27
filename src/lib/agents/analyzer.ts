@@ -54,6 +54,22 @@ function computeLocator(body: string, quote: string): Citation["locator"] {
   return { paragraph_index, char_start: idx, char_end: idx + quote.length };
 }
 
+/** 引用对齐修复（M3-6）：模型在长/口语化内容上常"起头逐字、后半漂移/拼接"，致 quote 非连续原文 → 不可达
+ *  （多源重测可达性崩到 24%）。把 quote snap 到正文里以其起头为锚的**最长连续 verbatim 子串**（空白归一比较），
+ *  挽回可达性；起头都不在正文（真改写）则放弃 → 保持原 quote、仍被可达性闸门挡下，绝不造假。
+ *  返回修复后的 quote，或 null（无需 / 无法修复，调用方用原 quote）。 */
+export function repairQuote(body: string, quote: string, minLen = 24): string | null {
+  const collapse = (s: string): string => s.replace(/\s+/g, " ").trim();
+  const nb = collapse(body);
+  const nq = collapse(quote);
+  if (nq.length < minLen || nb.includes(nq)) return null; // 太短 / 已可达 → 用原 quote
+  const at = nb.indexOf(nq.slice(0, minLen)); // 以前 minLen 字符为锚定位（起头通常逐字）
+  if (at < 0) return null; // 起头都不在正文 = 真改写，放弃
+  let len = minLen;
+  while (len < nq.length && at + len < nb.length && nb[at + len] === nq[len]) len++;
+  return len >= minLen ? nb.slice(at, at + len) : null;
+}
+
 function renderItems(items: ContentItem[]): string {
   // 外部内容包 <untrusted-source>，防 prompt injection（architecture 安全设计「输入防护」）
   return items
@@ -117,11 +133,13 @@ ${renderItems(items)}`;
   const built: Insight[] = data.insights.map((li, j) => {
     const citations: Citation[] = li.citations.map((c) => {
       const item = byId.get(c.content_item_id);
+      // M3-6：把漂移/拼接的 quote 对齐回正文连续 verbatim 子串（挽回可达性）；无法修复则用原 quote
+      const quote = item ? (repairQuote(item.body, c.quote) ?? c.quote) : c.quote;
       return {
         content_item_id: c.content_item_id,
-        quote: c.quote,
+        quote,
         locator: item
-          ? computeLocator(item.body, c.quote)
+          ? computeLocator(item.body, quote)
           : { paragraph_index: -1, char_start: -1, char_end: -1 },
       };
     });

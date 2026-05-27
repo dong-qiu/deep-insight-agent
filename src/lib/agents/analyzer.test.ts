@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from "vitest";
 import type { ContentItem } from "../types.js";
-import { chunkByChars, isCompleteStatement } from "./analyzer.js";
+import { chunkByChars, isCompleteStatement, repairQuote } from "./analyzer.js";
 
 function item(id: string, bodyLen: number): ContentItem {
   return {
@@ -57,5 +57,29 @@ describe("chunkByChars（F4 分批）", () => {
 
   it("空输入 → 空批列表", () => {
     expect(chunkByChars([], 30_000)).toEqual([]);
+  });
+});
+
+describe("repairQuote（M3-6 引用对齐修复）", () => {
+  it("起头逐字、后半漂移 → snap 回连续 verbatim 子串（变可达）", () => {
+    const body = "Coding agents introduce tangled refactorings less frequently than human developers.";
+    const quote = "Coding agents introduce tangled refactorings less often than humans"; // “often/humans”漂移
+    const r = repairQuote(body, quote);
+    expect(r).not.toBeNull();
+    expect(body.replace(/\s+/g, " ").includes(r!)).toBe(true); // 修复后是正文连续子串 → 可达
+    expect(r!.length).toBeGreaterThanOrEqual(24);
+    expect(r).not.toContain("often"); // 漂移部分被切掉
+  });
+
+  it("已逐字可达 → null（用原 quote）", () => {
+    expect(repairQuote("The full sentence appears verbatim in the body.", "The full sentence appears verbatim")).toBeNull();
+  });
+
+  it("起头都不在正文（真改写）→ null（不造假，留给可达性闸门挡下）", () => {
+    expect(repairQuote("The system records action accuracy of 0.92 on test.", "A totally unrelated claim sharing no prefix at all here.")).toBeNull();
+  });
+
+  it("太短 → null", () => {
+    expect(repairQuote("some sufficiently long body text here", "short")).toBeNull();
   });
 });
