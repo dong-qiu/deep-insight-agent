@@ -21,5 +21,12 @@
     "fabrication_rate": 0.0,
     "untraceable_count": 1
   },
+  "multisource": {
+    "_about": "M3-2 多源重测（2026-05-27，方案 B 本地集，thinking off，F4 分批）。揭示 A1 在脏异构内容下退化；详见 a1-runs.md。",
+    "reachability_pass": 0.241,
+    "consistency_ok": 0.185,
+    "note": "可达性 98.3%→24.1%：analyzer 在长/口语化内容上拼接/改写 quote（前 40 字命中、整条不命中），违反连续原文。security 主题触发安全拒答被跳过。安全闸门仍守住（坏引用不放行），但产出率崩。修复项见 m3-plan M3-6。",
+    "cost_usd": 1.14
+  },
   "thresholds_ref": "docs/verify/eval-criteria.md（上线门槛 + 成本阈值，后者 2026-05-27 按 Opus 现实重标）"
 }
