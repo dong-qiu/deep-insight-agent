@@ -30,7 +30,7 @@
 ### M3-3 · 成本 / 性能标定（DCP-2 附条件①）— ✅ 标定报告完成 2026-05-27（`cost-perf-2026-05-27.md`）
 - **成本量级**（thinking-off，列表价估算）：arXiv brief ~¥2–4（阈内）；**富多源 brief ~¥7–13（超 ¥5 重标阈）**；deep_dive 按比例更高。成本由**内容形态**主导，非报告类型。
 - **P50 时延**：富正文 12 条/9 批 analyze 290s；多源全跑 ~5–10min——在 charter ≤10min 内但富正文 + 分批接近上限。
-- **首要待调（最高杠杆）**：**analyze body 上限**（富正文截到 ~8–12k 字喂 analyze）——同时降成本 + 时延，且对 reachability 安全（quote 取自所见前缀⊂全文）。env 化后实测重定阈值。
+- **首要杠杆已落实+验证** ✅：`ANALYZE_BODY_CHARS=10k`（renderItems 截短富正文）→ 富多源单跑 **$1.86→$0.99（砍半）**、可达性保持（前缀 safe by construction）。
 - **干净定稿**（Sonnet/缓存命中/列表价）待直连 key；当前 Opus-on-relay provisional 标定。
 
 ### M3-4 · 回归与 CI eval — ✅ 回归门完成 2026-05-27

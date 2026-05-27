@@ -70,13 +70,23 @@ export function repairQuote(body: string, quote: string, minLen = 24): string | 
   return len >= minLen ? nb.slice(at, at + len) : null;
 }
 
+/** analyze 输入 body 上限（M3-3 降本 + 降时延）：富正文（Latent Space/Krebs 可达 5 万字）截到前 N 字喂分析。
+ *  对 reachability 安全——截断 body 是全文前缀，quote 取自模型所见前缀 ⊂ 全文，仍逐字可达；
+ *  且 abstract/导语信息密度最高，截短对洞察损失有限。env ANALYZE_BODY_CHARS 可调。 */
+export const ANALYZE_BODY_CHARS = Number(process.env.ANALYZE_BODY_CHARS) || 10_000;
+
+export function truncateForAnalyze(body: string): string {
+  return body.length > ANALYZE_BODY_CHARS ? body.slice(0, ANALYZE_BODY_CHARS) : body;
+}
+
 function renderItems(items: ContentItem[]): string {
   // 外部内容包 <untrusted-source>，防 prompt injection（architecture 安全设计「输入防护」）
   return items
-    .map(
-      (it) =>
-        `<untrusted-source id="${it.id}" url="${it.url}">\n标题：${it.title}\n来源：${it.source_id} · 时间：${it.published_at ?? "未知"}\n正文：\n${it.body}\n</untrusted-source>`,
-    )
+    .map((it) => {
+      const body = truncateForAnalyze(it.body);
+      const label = body.length < it.body.length ? `正文（过长，仅取前 ${ANALYZE_BODY_CHARS} 字）` : "正文";
+      return `<untrusted-source id="${it.id}" url="${it.url}">\n标题：${it.title}\n来源：${it.source_id} · 时间：${it.published_at ?? "未知"}\n${label}：\n${body}\n</untrusted-source>`;
+    })
     .join("\n");
 }
 

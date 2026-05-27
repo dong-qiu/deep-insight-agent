@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from "vitest";
 import type { ContentItem } from "../types.js";
-import { chunkByChars, isCompleteStatement, repairQuote } from "./analyzer.js";
+import { ANALYZE_BODY_CHARS, chunkByChars, isCompleteStatement, repairQuote, truncateForAnalyze } from "./analyzer.js";
 
 function item(id: string, bodyLen: number): ContentItem {
   return {
@@ -81,5 +81,17 @@ describe("repairQuote（M3-6 引用对齐修复）", () => {
 
   it("太短 → null", () => {
     expect(repairQuote("some sufficiently long body text here", "short")).toBeNull();
+  });
+});
+
+describe("truncateForAnalyze（M3-3 analyze body 上限）", () => {
+  it("超上限 → 截到 ANALYZE_BODY_CHARS，且是原文前缀（保 reachability）", () => {
+    const body = "x".repeat(ANALYZE_BODY_CHARS + 5000);
+    const t = truncateForAnalyze(body);
+    expect(t.length).toBe(ANALYZE_BODY_CHARS);
+    expect(body.startsWith(t)).toBe(true); // 前缀 → quote 取自所见仍 ⊂ 全文
+  });
+  it("未超 → 原样", () => {
+    expect(truncateForAnalyze("short body")).toBe("short body");
   });
 });
