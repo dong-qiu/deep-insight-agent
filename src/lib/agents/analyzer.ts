@@ -123,15 +123,14 @@ export function chunkByChars(items: ContentItem[], budget: number = ANALYZE_BATC
   return chunks;
 }
 
-/** 分析单批 → Insight[]（含产出守卫）。idxOffset 保证多批间 id 不相交。返回原始条数供下批 offset 累进。 */
+/** 分析单批 → Insight[]（含产出守卫；id 占位 ""，由 analyze 末尾统一分配）。
+ *  拒答/解析失败抛出，交由 analyzeWithSplit 二分拆批兜底。 */
 async function analyzeChunk(
   topic: Topic,
   items: ContentItem[],
   timeWindow: TimeWindow,
-  batchId: string,
-  idxOffset: number,
   onCost?: (cost: Cost) => void,
-): Promise<{ insights: Insight[]; rawCount: number }> {
+): Promise<Insight[]> {
   const user = `主题：${topic.name}（关键词：${topic.keywords.join("、")}）
 时间窗：${timeWindow.start} ~ ${timeWindow.end}
 
@@ -147,10 +146,10 @@ ${renderItems(items)}`;
     maxTokens: 8000,
     onCost,
   });
-  if (data.no_significant_event) return { insights: [], rawCount: 0 };
+  if (data.no_significant_event) return [];
 
   const byId = new Map(items.map((i) => [i.id, i]));
-  const built: Insight[] = data.insights.map((li, j) => {
+  const built: Insight[] = data.insights.map((li) => {
     const citations: Citation[] = li.citations.map((c) => {
       const item = byId.get(c.content_item_id);
       // M3-6：把漂移/拼接的 quote 对齐回正文连续 verbatim 子串（挽回可达性）；无法修复则用原 quote
@@ -168,7 +167,7 @@ ${renderItems(items)}`;
     );
     const source_count = sourceIds.size;
     return {
-      id: `ins_${batchId}_${idxOffset + j}`,
+      id: "", // 末尾由 analyze 统一分配（支持拒答二分拆批后合并）
       topic_id: topic.id,
       type: li.type,
       event_id: null, // 跨批次事件对齐属骨架阶段，A1 切片不做
@@ -187,19 +186,45 @@ ${renderItems(items)}`;
   // 产出守卫：丢弃疑似截断的洞察（结构化输出偶发把长 statement 提前收尾，JSON 仍合法，半句污染校验/人评）。
   const insights = built.filter((it) => {
     if (isCompleteStatement(it.statement)) return true;
-    console.warn(`  ⚠️ 丢弃疑似截断洞察 ${it.id}：…「${it.statement.trim().slice(-24)}」`);
+    console.warn(`  ⚠️ 丢弃疑似截断洞察：…「${it.statement.trim().slice(-24)}」`);
     return false;
   });
   // 引用覆盖检测（#14 类）：告警未被引用覆盖的数字（非删除——建议补引；供人评幻觉跟踪）
   for (const it of insights) {
     const uncov = uncoveredClaims(it.statement, it.citations.map((c) => c.quote));
-    if (uncov.length) console.warn(`  ⚠️ 数字未被引用覆盖 ${it.id}：${uncov.join(", ")}（#14 类，建议补引）`);
+    if (uncov.length) {
+      console.warn(`  ⚠️ 数字未被引用覆盖（#14 类，建议补引）：${uncov.join(", ")} ——「${it.statement.slice(0, 24)}…」`);
+    }
   }
-  return { insights, rawCount: data.insights.length };
+  return insights;
 }
 
-/** 提炼洞察。条目过多/正文过大时按 ANALYZE_BATCH_CHARS 分批逐批分析再合并（F4，防超时）。
- *  注意：分批后**跨批综合会丢失**（每批只见本批内容）——这是"不超时"的代价；跨批去重/综合留后续迭代。 */
+/** 拒答/解析失败时二分拆批重试（攻 security 拒答）：把干净内容从触发拒答的内容里捞出来，
+ *  避免"一条毒内容毒死整批"。拆到单条仍失败 → 丢弃该条（模型确拒答的原始内容，合理放弃，不越狱）。 */
+async function analyzeWithSplit(
+  topic: Topic,
+  items: ContentItem[],
+  timeWindow: TimeWindow,
+  onCost?: (cost: Cost) => void,
+): Promise<Insight[]> {
+  if (!items.length) return [];
+  try {
+    return await analyzeChunk(topic, items, timeWindow, onCost);
+  } catch (e) {
+    if (items.length <= 1) {
+      console.warn(`  ⚠️ 丢弃 1 条（模型拒答/解析失败）：${(e as Error).message.slice(0, 40)}`);
+      return [];
+    }
+    const mid = Math.ceil(items.length / 2);
+    console.warn(`  ⚠️ 拆批重试（${items.length} → ${mid}+${items.length - mid}，疑拒答/失败）`);
+    const left = await analyzeWithSplit(topic, items.slice(0, mid), timeWindow, onCost);
+    const right = await analyzeWithSplit(topic, items.slice(mid), timeWindow, onCost);
+    return [...left, ...right];
+  }
+}
+
+/** 提炼洞察。F4 分批（防超时）+ 拒答二分隔离（攻 security 拒答）；id 末尾统一分配。
+ *  注意：分批后**跨批综合会丢失**（每批只见本批内容）——"不超时/隔离拒答"的代价；跨批综合留后续。 */
 export async function analyze(
   topic: Topic,
   items: ContentItem[],
@@ -207,17 +232,13 @@ export async function analyze(
   onCost?: (cost: Cost) => void,
 ): Promise<AnalysisBatch> {
   const batchId = `batch_${randomUUID().slice(0, 8)}`;
-  const chunks = chunkByChars(items);
   const insights: Insight[] = [];
-  let offset = 0;
-  for (const chunk of chunks) {
-    const { insights: chunkInsights, rawCount } = await analyzeChunk(
-      topic, chunk, timeWindow, batchId, offset, onCost,
-    );
-    insights.push(...chunkInsights);
-    offset += rawCount;
+  for (const chunk of chunkByChars(items)) {
+    insights.push(...(await analyzeWithSplit(topic, chunk, timeWindow, onCost)));
   }
-
+  insights.forEach((it, i) => {
+    it.id = `ins_${batchId}_${i}`;
+  });
   return {
     id: batchId,
     topic_id: topic.id,
