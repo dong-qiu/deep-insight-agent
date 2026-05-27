@@ -64,13 +64,38 @@ function renderItems(items: ContentItem[]): string {
     .join("\n");
 }
 
-export async function analyze(
+/** 单次 analyze 喂入的正文字符预算（F4）。正文长度差异大（arXiv ~600 / Latent Space ~4 万），
+ *  富正文一次性灌一个 analyze 会撑爆 prompt / 触发中转站超时；按预算切批，逐批分析后合并。 */
+export const ANALYZE_BATCH_CHARS = Number(process.env.ANALYZE_BATCH_CHARS) || 30_000;
+
+/** 按累计正文字符预算把条目切成多批；单条超预算时独占一批（保证每批 ≥1 条）。纯函数，可测。 */
+export function chunkByChars(items: ContentItem[], budget: number = ANALYZE_BATCH_CHARS): ContentItem[][] {
+  const chunks: ContentItem[][] = [];
+  let cur: ContentItem[] = [];
+  let size = 0;
+  for (const it of items) {
+    const len = it.body.length;
+    if (cur.length && size + len > budget) {
+      chunks.push(cur);
+      cur = [];
+      size = 0;
+    }
+    cur.push(it);
+    size += len;
+  }
+  if (cur.length) chunks.push(cur);
+  return chunks;
+}
+
+/** 分析单批 → Insight[]（含产出守卫）。idxOffset 保证多批间 id 不相交。返回原始条数供下批 offset 累进。 */
+async function analyzeChunk(
   topic: Topic,
   items: ContentItem[],
   timeWindow: TimeWindow,
+  batchId: string,
+  idxOffset: number,
   onCost?: (cost: Cost) => void,
-): Promise<AnalysisBatch> {
-  const batchId = `batch_${randomUUID().slice(0, 8)}`;
+): Promise<{ insights: Insight[]; rawCount: number }> {
   const user = `主题：${topic.name}（关键词：${topic.keywords.join("、")}）
 时间窗：${timeWindow.start} ~ ${timeWindow.end}
 
@@ -86,59 +111,76 @@ ${renderItems(items)}`;
     maxTokens: 8000,
     onCost,
   });
+  if (data.no_significant_event) return { insights: [], rawCount: 0 };
 
   const byId = new Map(items.map((i) => [i.id, i]));
+  const built: Insight[] = data.insights.map((li, j) => {
+    const citations: Citation[] = li.citations.map((c) => {
+      const item = byId.get(c.content_item_id);
+      return {
+        content_item_id: c.content_item_id,
+        quote: c.quote,
+        locator: item
+          ? computeLocator(item.body, c.quote)
+          : { paragraph_index: -1, char_start: -1, char_end: -1 },
+      };
+    });
+    const sourceIds = new Set(
+      citations.map((c) => byId.get(c.content_item_id)?.source_id).filter((s): s is string => Boolean(s)),
+    );
+    const source_count = sourceIds.size;
+    return {
+      id: `ins_${batchId}_${idxOffset + j}`,
+      topic_id: topic.id,
+      type: li.type,
+      event_id: null, // 跨批次事件对齐属骨架阶段，A1 切片不做
+      statement: li.statement,
+      importance: li.importance,
+      importance_basis: li.importance_basis,
+      citations,
+      source_count,
+      multi_source: source_count >= 2,
+      time_window: timeWindow,
+      confidence: li.confidence,
+      language: topic.language,
+    };
+  });
 
-  const built: Insight[] = data.no_significant_event
-    ? []
-    : data.insights.map((li, idx) => {
-        const citations: Citation[] = li.citations.map((c) => {
-          const item = byId.get(c.content_item_id);
-          return {
-            content_item_id: c.content_item_id,
-            quote: c.quote,
-            locator: item
-              ? computeLocator(item.body, c.quote)
-              : { paragraph_index: -1, char_start: -1, char_end: -1 },
-          };
-        });
-        const sourceIds = new Set(
-          citations
-            .map((c) => byId.get(c.content_item_id)?.source_id)
-            .filter((s): s is string => Boolean(s)),
-        );
-        const source_count = sourceIds.size;
-        return {
-          id: `ins_${batchId}_${idx}`,
-          topic_id: topic.id,
-          type: li.type,
-          event_id: null, // 跨批次事件对齐属骨架阶段，A1 切片不做
-          statement: li.statement,
-          importance: li.importance,
-          importance_basis: li.importance_basis,
-          citations,
-          source_count,
-          multi_source: source_count >= 2,
-          time_window: timeWindow,
-          confidence: li.confidence,
-          language: topic.language,
-        };
-      });
-
-  // 产出守卫：丢弃疑似截断的洞察（结构化输出偶发把长 statement 字符串提前收尾，JSON 仍合法，
-  // 但半句洞察会污染校验与人评）。治本方向（自由文本/streaming）见 docs/verify/a1-runs.md。
+  // 产出守卫：丢弃疑似截断的洞察（结构化输出偶发把长 statement 提前收尾，JSON 仍合法，半句污染校验/人评）。
   const insights = built.filter((it) => {
     if (isCompleteStatement(it.statement)) return true;
     console.warn(`  ⚠️ 丢弃疑似截断洞察 ${it.id}：…「${it.statement.trim().slice(-24)}」`);
     return false;
   });
+  return { insights, rawCount: data.insights.length };
+}
+
+/** 提炼洞察。条目过多/正文过大时按 ANALYZE_BATCH_CHARS 分批逐批分析再合并（F4，防超时）。
+ *  注意：分批后**跨批综合会丢失**（每批只见本批内容）——这是"不超时"的代价；跨批去重/综合留后续迭代。 */
+export async function analyze(
+  topic: Topic,
+  items: ContentItem[],
+  timeWindow: TimeWindow,
+  onCost?: (cost: Cost) => void,
+): Promise<AnalysisBatch> {
+  const batchId = `batch_${randomUUID().slice(0, 8)}`;
+  const chunks = chunkByChars(items);
+  const insights: Insight[] = [];
+  let offset = 0;
+  for (const chunk of chunks) {
+    const { insights: chunkInsights, rawCount } = await analyzeChunk(
+      topic, chunk, timeWindow, batchId, offset, onCost,
+    );
+    insights.push(...chunkInsights);
+    offset += rawCount;
+  }
 
   return {
     id: batchId,
     topic_id: topic.id,
     time_window: timeWindow,
     status: "done",
-    no_significant_event: data.no_significant_event,
+    no_significant_event: insights.length === 0,
     insights,
   };
 }
