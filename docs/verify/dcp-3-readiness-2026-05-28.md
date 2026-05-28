@@ -50,7 +50,7 @@
 
 | 桶 | 缺口 | 解锁条件 | owner / 里程碑 |
 |---|---|---|---|
-| **代码（会话内）** | ~~HTML 治本（引用覆盖根因）~~ ✅；~~uncoveredClaims vX.Y 误报~~ ✅（均已 push）。剩：statement 截断（结构化输出 maxTokens 把半句洞察丢弃，本两轮 6+1 条）→ yield | 截断 streaming 治本（deliberate 大改） | 工程 · M4 早 |
+| **代码（会话内）** | ~~HTML 治本~~ ✅；~~uncoveredClaims 误报~~ ✅；~~statement 截断 streaming 治本~~ ✅（流式 + maxTokens 12k：**token 上限截断消除**、丢弃 6→3、relay 流式结构化输出已验证）。剩：isCompleteStatement 守卫格式误杀（%/数字结尾误判半句，≈3 条/批） | 守卫放宽（小改） | 工程 · M4 早 |
 | **运营（需人/时间）** | 试用闭环 ≥1 轮（准出⑤，**双主题材料已就绪**）；幻觉率 ≤2% 实测（准出①，AI 预审 0/45 待人核）；cron 常态收稳定性 | 团队多人 dogfood 回填 + 人评抽检 + 持续运行 | 团队 · M3 内 |
 | **外部 key（不可得）** | 成本含校验定稿 / Sonnet 降本（准出②）；失败告警接线 | 取得直连 `sk-ant-` key + 运维基础设施 | 待资源 · 附条件 |
 
@@ -62,7 +62,7 @@
    - ~~幻觉率人评~~ ✅ **已做·双主题**（`hallucination-prereview-2026-05-28.md`：45 条逐条核清洗原文、幻觉 0/45）；待团队抽核（swe #8/#13/#15/#19/#29 + security #9/#10/#11）固化真值；
    - ~~试用 triage + 评审包~~ ✅ **已做·双主题**（`dogfood-feedback.md` + `dogfood-review-sheet`：swe 30 + security 15 全维度 triage 无 🔴 + 逐条工作表）；待团队 ≥2 人独立回填打勾，确认无 🔴 = 闭环；
    - ~~重生 security 报告~~ ✅ **已做**（`rep_34d35c18`/`af85ba6b`，analyzeWithSplit 隔离拒答；闭合"security 无报告"缺口）。
-2. **补齐后按 DCP-2 范式"有条件通过 → M4"**，将以下列**附条件**：成本含校验定稿/口径（外部 key 或重订阈值）、产出 yield 提升（statement 截断 streaming 治本）、失败告警接线（运维）、带 key 定时 eval job。
+2. **补齐后按 DCP-2 范式"有条件通过 → M4"**，将以下列**附条件**：成本含校验定稿/口径（外部 key 或重订阈值）、失败告警接线（运维）、带 key 定时 eval job、isCompleteStatement 守卫放宽（小改，回收 ≈3 条/批格式误杀）。（statement 截断 streaming 治本已落地，token 上限失败模式消除）
 3. 若门评接受 §2「发布层 100%」口径，则可达性红线视为**已达**（非附条件）。
 
 > 一句话：**红线本质已守住（发布即 100% 可溯源），门差在"还没用真实试用 + 人评把幻觉率和闭环这两项证据补上"**——这是运营动作，不是代码缺口。
