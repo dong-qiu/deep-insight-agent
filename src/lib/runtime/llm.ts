@@ -4,7 +4,7 @@
  *
  * 当前职责：
  *  - 模型可配（按子任务分别指定，默认 分析=sonnet-4-6 / 校验=opus-4-7）
- *  - 结构化输出（messages.parse + zodOutputFormat）
+ *  - 结构化输出（messages.stream + finalMessage + zodOutputFormat；流式避免长输出网关超时）
  *  - prompt caching（稳定 system 前缀打 cache_control）
  *  - 启动校验「校验模型 ID ≠ 分析模型 ID」（同源偏差约束）
  */
@@ -151,14 +151,21 @@ export async function callStructured<T extends z.ZodType>(
     opts.onCost?.(c);
   };
 
-  // 敏感领域内容偶发安全拒答（stop_reason=refusal）——多为非确定性，重试至多 3 次
-  let res = await getClient().messages.parse(params);
+  // 流式生成（messages.stream + finalMessage）：长输出（dense 批 / 高 max_tokens）下避免中转站
+  // 缓冲整段响应再返回导致的网关超时；SDK 在 output_config.format 下从流尾解析出 parsed_output。
+  // 敏感领域内容偶发安全拒答（stop_reason=refusal）——多为非确定性，重试至多 3 次。
+  let res = await getClient().messages.stream(params).finalMessage();
   account(res.usage);
   for (let attempt = 1; res.stop_reason === "refusal" && attempt < 3; attempt++) {
-    res = await getClient().messages.parse(params);
+    res = await getClient().messages.stream(params).finalMessage();
     account(res.usage);
   }
 
+  // 输出触顶被截断：JSON 多半残缺→下方 parsed_output 缺失而抛错（由 analyzeWithSplit 拆批兜底）；
+  // 即便侥幸解析成功，末条 statement 也常半句（isCompleteStatement 守卫丢弃）。显式告警以暴露，避免静默丢洞察。
+  if (res.stop_reason === "max_tokens") {
+    console.warn(`  ⚠️ 输出达 max_tokens(${params.max_tokens}) 截断（role=${opts.role}）——可能漏洞察，建议提高预算或缩小批`);
+  }
   if (!res.parsed_output) {
     throw new Error(
       `结构化输出解析失败（role=${opts.role} stop_reason=${res.stop_reason}）`,

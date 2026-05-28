@@ -150,7 +150,9 @@ ${renderItems(items)}`;
     system: SYSTEM,
     user,
     schema: AnalyzerOutputSchema,
-    maxTokens: 8000,
+    // dense 批（多源富正文）产出可超 8k → 末条 statement 半句被 isCompleteStatement 丢弃。
+    // 提到 12k 给足空间（已改流式，长输出不撑网关超时；真超时仍由 analyzeWithSplit 拆批兜底）。
+    maxTokens: 12000,
     onCost,
   });
   if (data.no_significant_event) return [];
