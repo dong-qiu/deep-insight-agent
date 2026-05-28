@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { Source } from "../types.js";
 import {
-  MAX_BODY_CHARS, contentHash, contentItemId, detectLanguage, normalizeUrl, rawToContentItem,
+  MAX_BODY_CHARS, contentHash, contentItemId, detectLanguage, normalizeBody, normalizeUrl,
+  rawToContentItem, stripHtml,
 } from "./normalize.js";
 import type { RawItem } from "./types.js";
 
@@ -24,6 +25,42 @@ describe("contentHash", () => {
   it("空白不敏感、内容变则变", () => {
     expect(contentHash("a  b\nc")).toBe(contentHash("a b c"));
     expect(contentHash("a b c")).not.toBe(contentHash("a b d"));
+  });
+});
+
+describe("stripHtml（#14 类根因：加粗/链接的数字被标签从 quote 切掉）", () => {
+  it("行内标签删除，被加粗的数字回到正文（真实 #1 案例）", () => {
+    const html = "Google says it now processes <strong>over 3.2 quadrillion tokens/month</strong>, up <strong>7x YoY</strong>";
+    const clean = normalizeBody(html);
+    expect(clean).toBe("Google says it now processes over 3.2 quadrillion tokens/month, up 7x YoY");
+    // 模型剥标签后的 quote 现可逐字命中 body（不再在 "processes " 处截断）
+    expect(clean.includes("processes over 3.2 quadrillion tokens/month")).toBe(true);
+  });
+
+  it("链接里的金额 + 数字实体（真实 #8 案例）", () => {
+    const html = '<a href="/x">$1.5B ($300m each</a> &#8220;A typical&#8221;';
+    expect(normalizeBody(html)).toBe("$1.5B ($300m each “A typical”");
+  });
+
+  it("块级标签 → 空白，不粘连相邻词", () => {
+    expect(normalizeBody("<p>End one.</p><p>Start two.</p>")).toBe("End one. Start two.");
+  });
+
+  it("常见实体解码", () => {
+    expect(stripHtml("a &amp; b &lt;tag&gt; &quot;q&quot; it&#39;s &nbsp;x")).toBe("a & b <tag> \"q\" it's  x");
+  });
+
+  it("保留正文中的不等式（仅剥字母起头的标签）", () => {
+    expect(normalizeBody("if a < b and c > d then x")).toBe("if a < b and c > d then x");
+  });
+
+  it("幂等：清洗后再清洗无变化", () => {
+    const once = normalizeBody("<div>Foo <em>3.2 quadrillion</em> &amp; bar</div>");
+    expect(normalizeBody(once)).toBe(once);
+  });
+
+  it("丢弃 script/style 整段", () => {
+    expect(normalizeBody("Hi<script>alert(1)</script> there")).toBe("Hi there");
   });
 });
 

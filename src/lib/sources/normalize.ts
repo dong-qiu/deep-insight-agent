@@ -22,8 +22,39 @@ export function normalizeUrl(raw: string): string {
   }
 }
 
+const DECIMAL_ENTITY = /&#(\d+);/g;
+const HEX_ENTITY = /&#x([0-9a-fA-F]+);/g;
+function codePoint(n: number): string {
+  try {
+    return n >= 0 && n <= 0x10ffff ? String.fromCodePoint(n) : "";
+  } catch {
+    return "";
+  }
+}
+
+/** 剥 HTML 标签 + 解码常见实体 → 纯文本。RSS content:encoded / 网页抓取常把正文裹在 <strong>/<a> 里，
+ *  尤以**数字/具名实体被加粗或做成链接**（因其重要）。模型引用时自然剥标签，致 quote 与含标签的 body 逐字
+ *  不匹配 → repairQuote 在首个标签处截断，恰好砍掉那个被强调的数字 → 引用覆盖不足（#14 类根因）。
+ *  在归一层统一清洗，使 body 为干净文本，让模型 quote 直接逐字可达。
+ *  仅匹配字母起头的标签（<\/?[a-zA-Z]…>），保留正文里的 "a < b" 等不等式；幂等（清洗后再清洗无变化）。 */
+export function stripHtml(html: string): string {
+  return html
+    .replace(/<!--[\s\S]*?-->/g, " ")
+    .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi, " ") // 整段丢弃脚本/样式
+    .replace(/<\/?(?:p|div|br|li|tr|h[1-6]|ul|ol|blockquote|section|article|table|thead|tbody|figure|figcaption|pre|hr)\b[^>]*>/gi, "\n") // 块级 → 换行，防跨块粘连
+    .replace(/<\/?[a-zA-Z][^>]*>/g, "") // 行内标签（<strong>/<a>…）→ 删除，使 "处理<strong>over" → "处理over"
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(DECIMAL_ENTITY, (_, n) => codePoint(Number(n)))
+    .replace(HEX_ENTITY, (_, n) => codePoint(parseInt(n, 16)));
+}
+
 export function normalizeBody(body: string): string {
-  return body.replace(/\s+/g, " ").trim();
+  return stripHtml(body).replace(/\s+/g, " ").trim();
 }
 
 /** 内容指纹 = 规范化 body 的 sha256，用于同 URL 内容更新检测。 */
