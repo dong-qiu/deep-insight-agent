@@ -1,11 +1,13 @@
-# Dogfood 评审工作表（重生轮 · 2026-05-28）
+# Dogfood 评审工作表（重生轮 · 双主题 · 2026-05-28）
 
-> 配 `dogfood-feedback.md` 用。评审对象 = **HTML 治本后重生**的 swe 报告：`rep_8bdf3a13`（brief）/ `rep_a99a6530`（deep_dive，同批 `batch_c6c53b51`，30 条已发布洞察）。
-> ⚠️ 取代旧轮 `rep_0a6aea1b`/`rep_0f4607fc`——旧报告含 HTML 截断 bug（数字被 `<strong>`/`<a>` 标签从 quote 切掉），已由 `normalizeBody` 剥标签修复并重生。本工作表针对新报告。
-> 打开报告：`open .data/reports/rep_8bdf3a13.html`（自包含 HTML，可直接发同事）或 `npm run dev` → 报告库。
+> 配 `dogfood-feedback.md` 用。评审对象 = **HTML 治本后重生**的两主题报告：
+> - **swe**（AI 软件工程）：`rep_8bdf3a13`（brief）/ `rep_a99a6530`（deep_dive，批 `batch_c6c53b51`，**30 条**）
+> - **security**（AI 时代的安全）：`rep_34d35c18`（brief）/ `rep_af85ba6b`（deep_dive，**15 条**，analyzeWithSplit 拒答隔离后存活）
+> ⚠️ 取代旧轮 `rep_0a6aea1b`/`rep_0f4607fc`——旧报告含 HTML 截断 bug（数字被 `<strong>`/`<a>` 标签从 quote 切掉），已由 `normalizeBody` 剥标签修复并重生。
+> 打开报告：`open .data/reports/rep_8bdf3a13.html` / `rep_34d35c18.html`（自包含 HTML，可直接发同事）或 `npm run dev` → 报告库。
 > 报告里引用只显示 `ci_xxxx` 代码、点不开——**用下表的「核验关键词」到对应原文链接 Ctrl-F**，几秒确认结论里的数字/实体是否属实。
 
-## 原文链接（10 文章 · 3 源）
+## swe · 原文链接（10 文章 · 3 源）
 
 | 代码 | 标题 | 链接 |
 |---|---|---|
@@ -24,9 +26,9 @@
 
 每条洞察判 4 件事，在「评审 A/B」栏写代码：**幻**(幻觉 Y/N) · **溯**(quote 在原文找得到、且覆盖结论里的数字 Y/◐/N) · **显**(非显然/跨源 Y/N) · **用**(有用 Y/N)。例：`幻N 溯Y 显N 用Y`。
 - **幻觉判据**：到原文 Ctrl-F「核验关键词」——**查无 = 幻觉(🔴)**；查到、但不在报告所引那条 quote 里（在原文别处）= 覆盖不足(🟡 补引、非幻觉)。
-- **重点抽核**（截断 quote / 数字不在片段 / 校验掉线）：**#8 · #13 · #15 · #19 · #29**（覆盖◐）、**#2 · #25**（〔待核实〕= 校验时中转站掉线，非内容问题，请人工补判一致性）。
+- **重点抽核**（截断 quote / 数字不在片段 / 校验存疑）：**swe** #8·#13·#15·#19·#29（覆盖◐）+ #2·#25（〔待核实〕）；**security** #9·#10·#11（〔待核实〕= ATLAS v5.2.0、单引一条名+列举多项，请人工补判一致性）。
 
-## 逐条工作表（30 条已发布）
+## swe · 逐条工作表（30 条已发布）
 
 | # | 结论关键词 | 源 | 核验关键词（Ctrl-F 原文） | AI 预判 | 评审 A | 评审 B |
 |---|---|---|---|---|---|---|
@@ -63,9 +65,46 @@
 
 > AI 预判（grep 清洗后原文逐条核，详见 `hallucination-prereview-2026-05-28.md`）：**幻觉 0/30**；溯源 ~8 条覆盖◐（截断/换算/合成，#6/#7/#8/#10/#11/#13/#15/#19/#25/#29，**非幻觉、应补引**）；**非显然/跨源 1/30**（#26 跨 Practical AI×2 + Pragmatic），其余多为单源聚合/复述。请独立验证、勿照抄。
 
+## security · 原文链接（8 文章 · 3 源）
+
+| 代码 | 标题 | 链接 |
+|---|---|---|
+| `ci_0d1` | MITRE ATLAS v5.1.0（GitHub release） | https://github.com/mitre-atlas/atlas-data/releases/tag/v5.1.0 |
+| `ci_3e7` | MITRE ATLAS v5.0.0（GitHub release） | https://github.com/mitre-atlas/atlas-data/releases/tag/v5.0.0 |
+| `ci_f4f` | MITRE ATLAS v5.2.0（GitHub release） | https://github.com/mitre-atlas/atlas-data/releases/tag/v5.2.0 |
+| `ci_c3d` | MITRE ATLAS v5.3.0（GitHub release） | https://github.com/mitre-atlas/atlas-data/releases/tag/v5.3.0 |
+| `ci_2d5` | Risky Business #825（risky.biz） | https://risky.biz/RB825 |
+| `ci_ef2` | Risky Business #818（risky.biz） | https://risky.biz/RB818 |
+| `ci_d5d` | Risky Business #799（risky.biz） | https://risky.biz/RB799 |
+| `ci_9d2` | Memory-Induced Tool-Drift in LLM Agents（arXiv 2605.24941） | https://arxiv.org/abs/2605.24941v1 |
+
+## security · 逐条工作表（15 条已发布）
+
+> ⚠️ 中性框定：以下均为**已公开报道**的威胁情报/防御框架摘录（MITRE ATLAS 公开技术名、Risky Business show notes、arXiv 论文）；quote 为公开技术名/标题逐字，**非操作指南**。评审重点 = 这些技术名/CVE/具名实体/数字是否真在原文，而非攻击细节。
+
+| # | 结论关键词 | 源 | 核验关键词（Ctrl-F 原文） | AI 预判 | 评审 A | 评审 B |
+|---|---|---|---|---|---|---|
+| 1 | ATLAS v5.1.0 新增攻击技术：Prompt Infiltration / Manipulate Chat History / Delay Execution | ci_0d1 | `Prompt Infiltration via Public-Facing Application` `Manipulate User LLM Chat History` `Delay Execution` | 幻N 溯Y 显N 用Y | | |
+| 2 | ATLAS v5.1.0 新增缓解：特权权限配置 / 人机协同 / 限制不可信数据工具调用 / Memory Hardening | ci_0d1 | `Privileged AI Agent Permissions` `Human In-the-Loop` `Memory Hardening` | 幻N 溯Y 显N 用Y | | |
+| 3 | ATLAS v5.1.0 新案例：Slack AI/Copilot Studio 数据泄露、ChatGPT 记忆篡改、规则文件后门供应链 | ci_0d1 | `Data Exfiltration from Slack AI` `Copilot Studio` `Rules File Backdoor` | 幻N 溯Y 显Y 用Y | | |
+| 4 | ATLAS v5.0.0 新增 Agent 攻击技术：上下文投毒 / RAG 凭证收割 / 工具调用窃取 / 触发式注入 | ci_3e7 | `AI Agent Context Poisoning` `RAG Credential Harvesting` `LLM Prompt Injection: Triggered` | 幻N 溯Y 显N 用Y | | |
+| 5 | Proofpoint 收购 Acuvity、Cisco 扩展 AI Defense + AI-Aware SASE | ci_2d5 | `Proofpoint acquires Acuvity` `Cisco` `AI-Aware SASE` | 幻N 溯Y 显Y 用Y | | |
+| 6 | Google：国家支持黑客在攻击全周期使用 AI | ci_2d5 | `state-sponsored hackers use AI` `all stages` | 幻N 溯Y 显N 用Y | | |
+| 7 | 英国网安机构：LLM 将始终易受 prompt injection | ci_ef2 | `always be vulnerable to prompt injection` | 幻N 溯Y 显N 用Y | | |
+| 8 | （ATLAS v5.3.0）更新 LLM Prompt Obfuscation + AI Supply Chain Compromise 描述 | ci_c3d | `LLM Prompt Obfuscation` `AI Supply Chain Compromise: AI Software` | 幻N 溯Y 显N 用~ ·（"该版本"指代模糊=v5.3.0） | | |
+| 9 | ATLAS v5.2.0 新增 Agent 技术（Tool Credential Harvesting 等）+ 缓解（Segmentation 等） | ci_f4f | `AI Agent Tool Credential Harvesting` `Segmentation of AI Agent Components` | 幻N 溯◐(仅引 1 名、claim 列举多项) 显N 用Y · **〔待核实〕** | | |
+| 10 | ATLAS v5.2.0 更新注入技术 + Generative AI Guardrails 防护 | ci_f4f | `Prompt Infiltration` `LLM Prompt Obfuscation` `Generative AI Guardrails` | 幻N 溯Y 显N 用Y · **〔待核实〕** | | |
+| 11 | ATLAS v5.2.0 武器化案例：SesameOp(C2)/嵌注入恶意软件原型/LAMEHUG 动态生成命令 | ci_f4f | `SesameOp` `Embedded Prompt Injection` `LAMEHUG` | 幻N 溯Y 显Y 用Y · **〔待核实〕** | | |
+| 12 | Fortinet CVE-2025-25257 预认证 RCE / HPE 硬编码密码 / Citrix 在野利用 / SonicWall 后门 | ci_d5d | `CVE-2025-25257` `hardcoded passwords` `SonicWall` | 幻N 溯Y 显Y 用Y | | |
+| 13 | 中国关联：SharePoint 0day / Salt Typhoon 入侵国民警卫队 / 新加坡指控攻击关键基建 | ci_d5d | `SharePoint Zero-Day` `Salt Typhoon` `Singapore` | 幻N 溯Y 显Y 用Y | | |
+| 14 | memory-induced tool-drift：偏转评分最高 +3.6（1-5）；288 MCP 上 6062 工具中 608 含易感参数 | ci_9d2 | `memory-induced tool-drift` `+3.6` `6{,}062` `288 verified MCP` `608` | 幻N 溯Y 显Y 用Y | | |
+| 15 | 有偏记忆=隐式引导向量；标准防御（提示相关性/记忆过滤）减轻但不能消除漂移 | ci_9d2 | `implicit steering vectors` `reduce drift but do not eliminate` | 幻N 溯Y 显Y 用Y | | |
+
+> AI 预判（grep 清洗后原文逐条核）：**幻觉 0/15**；引用覆盖 **0 未覆盖**（quote 多为公开技术名/标题逐字、短而精确，溯源体验好）；**跨源 0/15**（每条单文章，多为源内聚合：一个 ATLAS release / 一期 Risky Business 含多条目）。2 处词形差异（v5.2.0 / `6{,}062` LaTeX）非问题。请独立验证、勿照抄。
+
 ## 评完回填两处
 
 1. **报告级勾选** → `dogfood-feedback.md`「评审记录」表的「评审人 A/B」行（有用/可信/非显然/多源去噪 + 问题）。
-2. **汇总** → `dogfood-feedback.md`「汇总」段：评审人数、各率、**幻觉率(人核) X/30**、🔴 数、高频问题。
+2. **汇总** → `dogfood-feedback.md`「汇总」段：评审人数、各率、**幻觉率(人核) X/45**（swe 30 + security 15）、🔴 数、高频问题。
 
 **闭环成立 = ≥2 人填完 + 汇总确认无 🔴。** 🔴 判据：编造事实 / 不可达引用进报告 / 跑题 / 拒答空报告。截断 quote、单源、〔待核实〕均为 🟡（不阻断）。
