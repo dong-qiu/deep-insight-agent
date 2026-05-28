@@ -47,11 +47,18 @@ export function isCompleteStatement(s: string): boolean {
   return /[。.!?！？”")）】』」]$/.test(s.trim());
 }
 
-/** 引用覆盖检测（#14 类）：抽 statement 里的**百分比/小数**（高特异性、低误报；不查年份/小整数），
- *  检查每个是否在某条 citation quote 里出现；返回未被覆盖的数字 = 结论数字无引用支撑（潜在幻觉/应补引）。
+/** 版本/型号标识里的小数不是定量声明——`v5.1`、`Opus 4.5`、`Gemini 2.5`、`GPT-4.1` 等，
+ *  当成"数字"会误报（m3-plan：待细化、排除 vX.Y）。两类形态：v 前缀，或**大写产品名 + 分隔 + X.Y**。
+ *  要求产品名首字母大写（保护"about 3.2"/"处理 3.2"等真实定量数字不被误剥）。 */
+const VERSION_TOKEN = /\bv\d+(?:\.\d+)+|[A-Z][A-Za-z]+[-\s]\d+(?:\.\d+)+/g;
+
+/** 引用覆盖检测（#14 类）：抽 statement 里的**百分比/小数**（高特异性、低误报；不查年份/小整数，
+ *  且先剥版本/型号标识 vX.Y），检查每个是否在某条 citation quote 里出现；返回未被覆盖的数字 =
+ *  结论数字无引用支撑（潜在幻觉/应补引）。
  *  非破坏性——仅用于告警 + 人评幻觉跟踪（#14 负责人判定为"补引"而非丢弃，故不在此删洞察）。 */
 export function uncoveredClaims(statement: string, quotes: string[]): string[] {
-  const nums = statement.match(/\d+\.\d+%?|\d+%/g) ?? [];
+  const claims = statement.replace(VERSION_TOKEN, " "); // 先剥版本号，避免把 Opus 4.5 的 "4.5" 当声明
+  const nums = claims.match(/\d+\.\d+%?|\d+%/g) ?? [];
   if (!nums.length) return [];
   const hay = quotes.join(" ").replace(/\s+/g, "");
   return [...new Set(nums.filter((n) => !hay.includes(n.replace(/\s+/g, ""))))];

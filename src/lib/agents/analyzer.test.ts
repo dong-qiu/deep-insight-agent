@@ -110,4 +110,16 @@ describe("uncoveredClaims（#14 类·数字引用覆盖检测）", () => {
   it("混合：覆盖的不报、未覆盖的报", () => {
     expect(uncoveredClaims("从 0.25 提升到 0.61，相对增益 99.9%", ["lifts score from 0.25 to 0.61 in a cycle"])).toEqual(["99.9%"]);
   });
+  it("排除版本/型号标识 vX.Y（m3-plan 细化：非定量声明、不报）", () => {
+    // 产品名 + 版本：Opus 4.5 / Gemini 2.5 / GPT-4.1 的小数不当作声明，quote 没有也不报
+    expect(uncoveredClaims("加上 Opus 4.5 等强模型成为转折", ["the emergence of powerful models"])).toEqual([]);
+    expect(uncoveredClaims("用 Gemini 2.5 与 GPT-4.1 双模型", ["a fast LLM in one terminal"])).toEqual([]);
+    // v 前缀（含多段）
+    expect(uncoveredClaims("升级到 v5.1，再到 v5.6.2", ["upgraded the toolchain"])).toEqual([]);
+  });
+  it("版本号排除不误伤真实定量小数（前导非大写产品名）", () => {
+    // "3.2 quadrillion" 前是中文/小写词，仍正常检测；版本 4.5 同句被剥、定量 3.2 保留
+    expect(uncoveredClaims("Opus 4.5 处理超过 3.2 千万亿 token", ["Opus 4.5 is powerful"])).toEqual(["3.2"]);
+    expect(uncoveredClaims("about 0.5 ms 延迟", ["latency dropped"])).toEqual(["0.5"]);
+  });
 });
