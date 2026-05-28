@@ -42,9 +42,12 @@ interface TimeWindow {
   end: string;
 }
 
-/** 产出守卫：statement 是否完整（以句末标点/收尾括号结束）。结构化输出偶发把长 statement 提前截断。 */
+/** 产出守卫：statement 是否完整（以句末标点/收尾括号/百分号结束）。结构化输出偶发把长 statement 提前截断。
+ *  纳入 `%`/`％`：百分号是终值字符、几乎不会是截断点（如"准确率为 0%"），原白名单漏判致误杀。
+ *  注意保持严格：以实词/裸动词（如"…提出"）收尾仍判半句——模型被要求产出完整句、完整句应以句末标点收尾，
+ *  无标点多为截断或漏写；字符规则无法区分"完整名词结尾"与"动词截断"，故不放宽至实词结尾（见 analyzer.test）。 */
 export function isCompleteStatement(s: string): boolean {
-  return /[。.!?！？”")）】』」]$/.test(s.trim());
+  return /[。.!?！？”")）】』」%％]$/.test(s.trim());
 }
 
 /** 版本/型号标识里的小数不是定量声明——`v5.1`、`Opus 4.5`、`Gemini 2.5`、`GPT-4.1` 等，

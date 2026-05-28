@@ -22,6 +22,11 @@ describe("isCompleteStatement", () => {
     expect(isCompleteStatement("某结论（详见原文）")).toBe(true);
   });
 
+  it("以百分号收尾 → true（终值字符、非截断点；原白名单漏判误杀）", () => {
+    expect(isCompleteStatement("当前顶级模型的全测试通过准确率为 0%")).toBe(true);
+    expect(isCompleteStatement("缓存命中率达 96％")).toBe(true);
+  });
+
   it("截断（非句末标点收尾）→ false", () => {
     // 三轮实跑里真实出现的截断尾巴
     expect(isCompleteStatement("一项针对高风险医疗问答场景的研究提出了")).toBe(false);
