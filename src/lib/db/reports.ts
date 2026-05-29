@@ -80,6 +80,11 @@ export function getReport(db: DB, id: string): Report | null {
   };
 }
 
+/** 该主题是否已有任意报告——冷启动检测（无 → 首版综述 initial_digest）。 */
+export function topicHasReport(db: DB, topicId: string): boolean {
+  return !!db.prepare("SELECT 1 FROM report WHERE topic_id = ? LIMIT 1").get(topicId);
+}
+
 /** FTS5 全文检索，按相关度返回 report_id。 */
 export function searchReports(db: DB, query: string): string[] {
   const rows = db

@@ -1,7 +1,7 @@
 /** rankAndDiversify 纯函数单测（F2 选片：相关优先 + 来源多样）。无 key、无 db。 */
 import { describe, expect, it } from "vitest";
 import type { ContentItem } from "../types.js";
-import { rankAndDiversify } from "./scheduler.js";
+import { rankAndDiversify, reportPlan } from "./scheduler.js";
 
 function ci(id: string, source_id: string, text: string): ContentItem {
   return {
@@ -56,5 +56,20 @@ describe("rankAndDiversify", () => {
       ci("mkt3", "s1", "more marketing copy"),
     ];
     expect(rankAndDiversify(items, kws, 2)[0].id).toBe("paper");
+  });
+});
+
+describe("reportPlan（冷启动 → 首版综述）", () => {
+  const warm = { type: "brief" as const, windowHours: 168, items: 15 };
+  const cold = { windowHours: 720, items: 25 };
+
+  it("topic 无历史报告 → initial_digest + 宽窗 + 多条", () => {
+    expect(reportPlan(true, warm, cold)).toEqual({ type: "initial_digest", windowHours: 720, items: 25 });
+  });
+
+  it("topic 已有报告 → 沿用常规 reportType 与窗口/条数", () => {
+    expect(reportPlan(false, warm, cold)).toEqual({ type: "brief", windowHours: 168, items: 15 });
+    expect(reportPlan(false, { type: "deep_dive", windowHours: 168, items: 20 }, cold))
+      .toEqual({ type: "deep_dive", windowHours: 168, items: 20 });
   });
 });

@@ -5,7 +5,8 @@
 import type { DB } from "../db/index.js";
 import { getEffectiveSources, loadStaticConfig } from "../config/index.js";
 import { listContentForTopic, listTopics } from "../db/repos.js";
-import type { ContentItem, Topic } from "../types.js";
+import { topicHasReport } from "../db/reports.js";
+import type { ContentItem, Report, Topic } from "../types.js";
 import { collectSource } from "./collector.js";
 import { runAnalysis, runReportGen, runValidation } from "./pipeline.js";
 
@@ -14,8 +15,20 @@ export interface ScheduleSummary {
   finishedAt: string;
   windowHours: number;
   collected: Array<{ source: string; fetched?: number; inserted?: number; updated?: number; error?: string }>;
-  topics: Array<{ topic: string; items: number; reportId?: string; included?: number; status: string }>;
+  topics: Array<{ topic: string; items: number; reportId?: string; included?: number; status: string; type?: Report["type"] }>;
   errors: string[];
+}
+
+/** 冷启动决策（纯函数，可测）：topic 无历史报告 → 首版综述 initial_digest（更宽窗口 / 更多条，
+ *  给新主题一份有份量的首报）；否则按常规 reportType（brief / deep_dive）。 */
+export function reportPlan(
+  cold: boolean,
+  warm: { type: "brief" | "deep_dive"; windowHours: number; items: number },
+  coldCfg: { windowHours: number; items: number },
+): { type: Report["type"]; windowHours: number; items: number } {
+  return cold
+    ? { type: "initial_digest", windowHours: coldCfg.windowHours, items: coldCfg.items }
+    : { type: warm.type, windowHours: warm.windowHours, items: warm.items };
 }
 
 const errMsg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
@@ -100,8 +113,10 @@ export async function runScheduledPipeline(
   const windowHours = opts.windowHours ?? Number(process.env.PIPELINE_WINDOW_HOURS ?? 168);
   const itemsPerTopic = opts.itemsPerTopic ?? (Number(process.env.PIPELINE_ITEMS_PER_TOPIC) || 15);
   const reportType = opts.reportType ?? "brief"; // 每日 brief / 周报 deep_dive（cron 按周期传入）
+  // 冷启动（topic 无历史报告）→ 首版综述：更宽窗口 + 更多条，给新主题有份量的首报
+  const coldWindowHours = Number(process.env.INITIAL_DIGEST_WINDOW_HOURS) || 720; // 30 天
+  const coldItems = Number(process.env.INITIAL_DIGEST_ITEMS) || 25;
   const end = Date.now();
-  const since = new Date(end - windowHours * 3_600_000).toISOString();
   const endIso = new Date(end).toISOString();
 
   const summary: ScheduleSummary = {
@@ -125,26 +140,33 @@ export async function runScheduledPipeline(
     }
   }
 
-  // 2-4. 每个启用 Topic：分析→校验→生成 brief
+  // 2-4. 每个启用 Topic：冷启动决策 → 分析→校验→生成报告（首版综述 / brief / deep_dive）
   for (const topic of listTopics(db, { enabledOnly: true })) {
-    const items = selectAnalysisItems(db, topic, { since, limit: itemsPerTopic });
+    const plan = reportPlan(
+      !topicHasReport(db, topic.id),
+      { type: reportType, windowHours, items: itemsPerTopic },
+      { windowHours: coldWindowHours, items: coldItems },
+    );
+    const since = new Date(end - plan.windowHours * 3_600_000).toISOString();
+    const items = selectAnalysisItems(db, topic, { since, limit: plan.items });
     if (items.length === 0) {
-      summary.topics.push({ topic: topic.id, items: 0, status: "skipped-no-content" });
+      summary.topics.push({ topic: topic.id, items: 0, status: "skipped-no-content", type: plan.type });
       continue;
     }
     try {
       const batch = await runAnalysis(db, topic, items, { start: since, end: endIso });
       const validation = await runValidation(db, batch, items);
-      const report = await runReportGen(db, { topic, batch, validation, type: reportType });
+      const report = await runReportGen(db, { topic, batch, validation, type: plan.type });
       summary.topics.push({
         topic: topic.id,
         items: items.length,
         reportId: report.id,
         included: report.insight_ids.length,
         status: "done",
+        type: plan.type,
       });
     } catch (e) {
-      summary.topics.push({ topic: topic.id, items: items.length, status: `failed: ${errMsg(e)}` });
+      summary.topics.push({ topic: topic.id, items: items.length, status: `failed: ${errMsg(e)}`, type: plan.type });
       summary.errors.push(`pipeline ${topic.id}: ${errMsg(e)}`);
     }
   }
