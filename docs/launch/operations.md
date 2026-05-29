@@ -24,7 +24,7 @@ docker compose ps                 # 期望 app/cron 均 healthy / running
 curl -fsS http://127.0.0.1:3000/api/health         # {"status":"ok","reports":N}
 ```
 
-首跑库为空时 `getEffectiveSources` 会自举播种默认 Topic/Source；首轮 cron（每 6h）或手动触发后才有报告。手动触发一轮：
+首跑库为空时 `getEffectiveSources` 会自举播种默认 Topic/Source；首轮 cron（每 6h）或手动触发后才有报告。**冷启动**（topic 尚无任何报告）自动产出**首版综述 `initial_digest`**（更宽回看窗口 + 更多条），其后该主题回落到常规 brief/deep_dive——新增主题同理。手动触发一轮：
 
 ```bash
 curl -fsS -X POST http://127.0.0.1:3000/api/cron -H "authorization: Bearer $CRON_SECRET"
@@ -45,6 +45,7 @@ curl -fsS -X POST http://127.0.0.1:3000/api/cron -H "authorization: Bearer $CRON
 | `ADMIN_EMAIL` / `ADMIN_PASSWORD` | ✅ | 管理员登录（Credentials） |
 | `CRON_SECRET` | ✅（定时） | `openssl rand -base64 32`；**未设则 `/api/cron` 返回 503、定时管线不工作** |
 | `PIPELINE_WINDOW_HOURS` | 否 | 单轮回看窗口，默认 168（7 天） |
+| `INITIAL_DIGEST_WINDOW_HOURS` / `INITIAL_DIGEST_ITEMS` | 否 | 冷启动首版综述的窗口/条数，默认 720（30 天）/ 25 |
 | `ALERT_WEBHOOK` | 否 | Run 失败时 POST 告警（Slack incoming webhook 兼容 `{text}`；通用 webhook 同样可收）；未设则不发、失败仍落 Run + error 日志 |
 | `ALERT_TIMEOUT_MS` | 否 | 告警发送超时，默认 5000 |
 | `DATA_DIR`/`DB_PATH`/`INSIGHT_CONFIG_PATH` | 容器已设 | 勿在本地 dev 设；Dockerfile 已指向 `/data` 与打包内 `defaults.yaml` |
