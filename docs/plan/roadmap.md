@@ -27,11 +27,11 @@
 - [x] 容器化 + 容器内 cron + CI（增量7：Docker standalone + supercronic + GitHub Actions + Dependabot）
 - [x] M2 评审修复 round1（4×🔴）+ round2（8×🟡）
 
-## M3 — Verify (本阶段) — 代码实现完成，待 DCP-3 门评前补两项证据
+## M3 — Verify ✅ 收口（DCP-3 有条件通过 2026-05-29，进入 M4 Launch）
 
 - [x] eval 数据集与基线（多源本地快照 `eval:build-local` + `baseline.json`；A1 标注 20/20 人评固化）
 - [x] 回归测试通过（`run-a1` 对照 baseline >3pp 阻断；CI 确定性 eval 绿，102 tests）
-- [~] 试用反馈闭环（dogfood 已启动：2 份 swe 报告 + security 拒答已修可产出；多人评审 ≥1 完整轮**待回填**）
+- [x] 试用反馈闭环（dogfood 双主题重生 swe 30 + security 15；**2 名独立评审完整轮回填、幻觉 0/45、无 🔴 → ⑤ 闭合** 2026-05-29）
 - [~] **DCP-2 附条件**：① 成本——阈值已按 Opus 现实重标 + 富多源砍半实测落阈内；真实账单定稿待直连 key（**附条件**）；② A1 遗留——多源压测完成（可达性 24%→89%、security 0→8）；**幻觉率 ≤2% 待规模数据 + 人评**；③ 中转站稳定性——120s+分批+重试已兜底，告警接线待运维；④ initial_digest / 视频字幕 spike（低优，推 M4）
 - **DCP-3 准入体检**（门评前）见 `docs/verify/dcp-3-readiness-2026-05-28.md`：可溯源红线（发布层 100%）已构造即成立；门差在幻觉率首轮人评 + 试用首轮闭环两项最小证据。
 
@@ -73,3 +73,12 @@
 - **外部依赖（不阻塞）**：直连 `sk-ant-` key 目前不可得 → Sonnet 降本 + Anthropic 列表价干净测算待将来有 key。
 - **双签**：负责人 dongqiu ✓ · 架构师 待会签。
 - **双签**：负责人 待评审 · 架构师 待评审。
+
+### DCP-3 验证门评 — 2026-05-29
+
+- **决策**：✅ 继续（CONTINUE）—— 进入 M4 Launch（有条件）。
+- **依据**：两条红线安全——可达性**发布层 100%**（`validator.checkReachability` + `report-gen.selectInsights` 白名单构造强制）+ **幻觉率人核 0/45**（双主题、2 名独立评审全 45 条复核）；试用反馈闭环 ⑤ 成立（45 条无 🔴）；回归 + CI 绿（112 tests + typecheck + build）；负例召回 100%。**0 项明确未达**。材料包见 `docs/verify/dcp-3-review-2026-05-29.md` + `dcp-3-readiness-2026-05-28.md`。
+- **关键产出（M3 内）**：HTML 治本（引用覆盖根因）· uncoveredClaims 误报细化 · analyzeWithSplit 拒答隔离（security 0→可产出）· statement 截断 streaming 治本 · isCompleteStatement 窄放宽；双主题报告重生（swe 30 + security 15）；dogfood 双主题人评固化（幻觉 0/45、可达 100%、非显然 44%、有用 98%）。
+- **附条件（M4 内闭合）**：① 成本——按"含校验端到端"重订阈值/口径 或 validator 降本（Sonnet，待直连 key）；② 失败告警接线（运维）+ 带 key 定时 eval job；③ 产出 yield/质量迭代——引用覆盖◐ 9 条补引、isCompleteStatement 名词结尾放宽（待取证）、跨源综合提升；④ initial_digest 冷启动 / 视频字幕 spike（低优）。
+- **战略备忘**：成本口径新发现——校验（opus-4-7 逐条一致性）是成本大头，含校验一轮 ≈ ¥14–26、超 analyze-only 阈；中转站 Opus-only 约束下 validator 降本待直连 key。
+- **双签**：负责人 dongqiu ✓ 有条件通过（2026-05-29）· 架构师 ✓ 会签同意（2026-05-29）。
