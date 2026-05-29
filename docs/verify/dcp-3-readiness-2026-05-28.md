@@ -13,7 +13,7 @@
 | ① | 负例（not_support）召回 ≥95% | A1 实测 **100%** | ✅ 达 | A1 复验：坏引用零漏网（保守但安全），`a1-runs.md` |
 | ② | 成本阈值**实测定稿**（真实账单） | Opus-on-relay provisional；**含校验端到端实测**：swe 一轮 $3.63 / security $1.98 | 🔶 未定稿·阈值口径待明确 | 校验（opus-4-7 逐条一致性）是成本大头；含校验后超 analyze-only 重标的 per-type 阈值（§3）。定稿待重订口径或 validator 降本（直连 key） |
 | ③ | 回归 + CI 绿 | 回归门 ✅ · typecheck/test(102)/build ✅ | ✅ 达 | `run-a1` 对照 baseline >3pp 阻断；CI 确定性 eval 覆盖。带 key 定时 eval job 留运维 |
-| ④ | 稳定性（不超时 / 重试 / 告警） | 120s+分批不超时 ✅ · maxRetries2 ✅ · 告警 ❌ | 🔶 部分 | 超时/分批根因已修；失败告警 channel 待运维基础设施 |
+| ④ | 稳定性（不超时 / 重试 / 告警） | 120s+分批不超时 ✅ · maxRetries2 ✅ · **告警钩子已接 ✅（待配 channel）** | 🔶 近达 | 超时/分批根因已修；Run 失败告警钩子已落地（`notifyFailure`，Job Runner 失败路径，`ALERT_WEBHOOK` 可配），operator 填一个 webhook URL 即生效 |
 | ⑤ | 试用反馈闭环 ≥1 轮，无 🔴 | **双主题** AI triage（全维度）+ 评审包 + 逐条工作表就绪、**无 🔴**；待 ≥2 人回填 | 🔶 就绪·待人回填 | `dogfood-feedback.md` + `dogfood-review-sheet`：swe 30 + security 15 条 triage 标 0 阻断项；评审包即插即用。**闭环需团队 ≥2 人独立打勾**（运营动作） |
 
 **小结**：8 项中 **3 达 · 5 部分/保守/待人确认 · 0 明确未达**。两条红线均安全（可达性发布层 100% 构造成立；幻觉率 AI 预审 **双主题 0/45**）；试用闭环已 **双主题** triage（无 🔴）+ 评审包 + 逐条工作表就绪。会话内代码缺口已闭（HTML 治本 + uncoveredClaims 细化已落地并 push）。**门评前剩余的全部是"团队人确认"动作**（抽核幻觉真值 + ≥2 人回填试用），不依赖 key、不依赖代码。
@@ -50,9 +50,9 @@
 
 | 桶 | 缺口 | 解锁条件 | owner / 里程碑 |
 |---|---|---|---|
-| **代码（会话内）** | ~~HTML 治本~~ ✅；~~uncoveredClaims 误报~~ ✅；~~statement 截断 streaming 治本~~ ✅（流式 + maxTokens 12k：**token 上限截断消除**、丢弃 6→3、relay 流式结构化输出已验证）。剩：isCompleteStatement 守卫格式误杀（%/数字结尾误判半句，≈3 条/批） | 守卫放宽（小改） | 工程 · M4 早 |
-| **运营（需人/时间）** | 试用闭环 ≥1 轮（准出⑤，**双主题材料已就绪**）；幻觉率 ≤2% 实测（准出①，AI 预审 0/45 待人核）；cron 常态收稳定性 | 团队多人 dogfood 回填 + 人评抽检 + 持续运行 | 团队 · M3 内 |
-| **外部 key（不可得）** | 成本含校验定稿 / Sonnet 降本（准出②）；失败告警接线 | 取得直连 `sk-ant-` key + 运维基础设施 | 待资源 · 附条件 |
+| **代码（会话内）** | ~~HTML 治本~~ ✅；~~uncoveredClaims 误报~~ ✅；~~statement 截断 streaming 治本~~ ✅；~~isCompleteStatement % 窄放宽~~ ✅；~~引用覆盖 rule 4 补引~~ ✅；~~失败告警钩子~~ ✅（`notifyFailure`）。剩：isCompleteStatement 名词结尾放宽（待取证）、uncoveredClaims 确定性补引兜底（待 dogfood 证明 nudge 不够再上） | 小改 / 待证据 | 工程 · M4 |
+| **运营（需人/时间）** | ~~试用闭环 ≥1 轮~~ ✅（准出⑤ 2 独立评审闭合）；~~幻觉率 ≤2%~~ ✅（人核 0/45）；cron 常态收稳定性 + 配 `ALERT_WEBHOOK` channel | 持续运行 + operator 配告警 webhook | 团队 / operator |
+| **外部 key（不可得）** | 成本含校验定稿 / Sonnet 降本（准出②）；带 key 定时 eval job | 取得直连 `sk-ant-` key | 待资源 · 附条件 |
 
 ## 5. 建议门评走向（待双签裁定）
 
@@ -62,7 +62,7 @@
    - ~~幻觉率人评~~ ✅ **已做·双主题**（`hallucination-prereview-2026-05-28.md`：45 条逐条核清洗原文、幻觉 0/45）；待团队抽核（swe #8/#13/#15/#19/#29 + security #9/#10/#11）固化真值；
    - ~~试用 triage + 评审包~~ ✅ **已做·双主题**（`dogfood-feedback.md` + `dogfood-review-sheet`：swe 30 + security 15 全维度 triage 无 🔴 + 逐条工作表）；待团队 ≥2 人独立回填打勾，确认无 🔴 = 闭环；
    - ~~重生 security 报告~~ ✅ **已做**（`rep_34d35c18`/`af85ba6b`，analyzeWithSplit 隔离拒答；闭合"security 无报告"缺口）。
-2. **补齐后按 DCP-2 范式"有条件通过 → M4"**，将以下列**附条件**：成本含校验定稿/口径（外部 key 或重订阈值）、失败告警接线（运维）、带 key 定时 eval job、isCompleteStatement 守卫放宽（小改，回收 ≈3 条/批格式误杀）。（statement 截断 streaming 治本已落地，token 上限失败模式消除）
+2. **已按 DCP-2 范式"有条件通过 → M4"（2026-05-29 双签）**，附条件 M4 内闭合：成本含校验定稿/口径（外部 key 或重订阈值）、带 key 定时 eval job、isCompleteStatement 名词结尾放宽（待取证）、uncoveredClaims 确定性补引兜底（待 dogfood 证明 nudge 不够）。（已落地：statement 截断 streaming 治本、% 窄放宽、引用覆盖 rule 4 补引、**失败告警钩子**——operator 配 `ALERT_WEBHOOK` channel 即生效）
 3. 若门评接受 §2「发布层 100%」口径，则可达性红线视为**已达**（非附条件）。
 
 > 一句话：**红线本质已守住（发布即 100% 可溯源），门差在"还没用真实试用 + 人评把幻觉率和闭环这两项证据补上"**——这是运营动作，不是代码缺口。

@@ -39,7 +39,7 @@
 
 - [~] 部署上线（**产物就绪 + 冒烟验证通过**：Docker compose `up --wait` exit 0、app healthy / cron 运行，修了 2 处 healthcheck 阻断，2026-05-29；**待真正部署到生产服务器**——域名/TLS/反代/卷备份）
 - [x] 文档与使用指南（README 简介 + `docs/launch/operations.md` 部署运维手册：env 速查 / 中转站 Opus 约束 / 监控 / 备份恢复 / 故障排查）
-- **DCP-3 附条件（M4 内闭合）**：① 成本含校验口径定稿 / Sonnet 降本（待直连 key）；② 失败告警接线（运维）+ 带 key 定时 eval job；③ 产出 yield/质量迭代——引用覆盖◐ 9 条补引、isCompleteStatement 名词结尾放宽（待取证）、跨源综合提升；④ initial_digest 冷启动 / 视频字幕 spike（低优）。
+- **DCP-3 附条件（M4 内闭合）**：① 成本含校验口径定稿 / Sonnet 降本（待直连 key）；② **失败告警钩子已接 ✅**（`notifyFailure`，待 operator 配 `ALERT_WEBHOOK` channel）+ 带 key 定时 eval job；③ 产出 yield/质量迭代——**引用覆盖 rule 4 补引已强化 ✅**（◐ 降幅待下轮 dogfood 测）、isCompleteStatement 名词结尾放宽（待取证）、跨源综合提升；④ initial_digest 冷启动 / 视频字幕 spike（低优）。
 
 ## DCP 决策日志
 
