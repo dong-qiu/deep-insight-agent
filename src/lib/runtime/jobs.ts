@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import type { DB } from "../db/index.js";
 import { finishRun, getRun, insertRun } from "../db/repos.js";
+import { notifyFailure } from "./alert.js";
 import type { Cost, Run } from "../types.js";
 
 export interface JobSpec {
@@ -54,6 +55,8 @@ export async function runJob<T>(
       status: "failed", cost, duration_ms: elapsed(),
       error: { type: err.name, message: err.message, stack: err.stack },
     });
+    // 失败告警（运维附条件②）：fire-and-forget，ALERT_WEBHOOK 未配置则 no-op，永不连累抛出
+    notifyFailure({ runId, kind: spec.kind, target: spec.target, errorType: err.name, message: err.message });
     throw e;
   }
 }

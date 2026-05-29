@@ -45,6 +45,8 @@ curl -fsS -X POST http://127.0.0.1:3000/api/cron -H "authorization: Bearer $CRON
 | `ADMIN_EMAIL` / `ADMIN_PASSWORD` | ✅ | 管理员登录（Credentials） |
 | `CRON_SECRET` | ✅（定时） | `openssl rand -base64 32`；**未设则 `/api/cron` 返回 503、定时管线不工作** |
 | `PIPELINE_WINDOW_HOURS` | 否 | 单轮回看窗口，默认 168（7 天） |
+| `ALERT_WEBHOOK` | 否 | Run 失败时 POST 告警（Slack incoming webhook 兼容 `{text}`；通用 webhook 同样可收）；未设则不发、失败仍落 Run + error 日志 |
+| `ALERT_TIMEOUT_MS` | 否 | 告警发送超时，默认 5000 |
 | `DATA_DIR`/`DB_PATH`/`INSIGHT_CONFIG_PATH` | 容器已设 | 勿在本地 dev 设；Dockerfile 已指向 `/data` 与打包内 `defaults.yaml` |
 
 ## 4. ⚠️ 中转站（Opus-only）约束
@@ -61,6 +63,7 @@ curl -fsS -X POST http://127.0.0.1:3000/api/cron -H "authorization: Bearer $CRON
 - **Run 记录**：每次采集/分析/校验/报告经 Job Runner 落一条 Run（单调时钟耗时 + 失败捕获 + 成本透传）；`audit_log` 记关键动作；成本计量按模型累计。
 - **报告**：Web `/reports`（报告库）/ 今日 Brief / 看板 / `/settings`；登录 `/login`。
 - **cron 是否在跑**：`docker compose logs cron` 应见每 6h 一行 `POST .../api/cron → HTTP 200`。
+- **失败告警**：任一 Run（采集/分析/校验/报告）失败时，若配置 `ALERT_WEBHOOK` 则 fire-and-forget POST 一条告警（Slack 兼容 `{text}` + kind/runId/error 结构化字段）；告警发送本身永不连累管线（超时 + 全捕获）。未配置时失败仍落 Run + error 日志，从 `docker compose logs app` 可见。
 
 ## 6. 数据与备份/恢复
 
