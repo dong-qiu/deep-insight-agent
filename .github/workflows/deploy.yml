@@ -1,0 +1,43 @@
+name: Deploy
+
+# 生产部署（自托管单实例）：**手动触发** 或 **推送 v* tag**（刻意发布）。
+# 不在 push main 自动部署——避免每次合并即上线的生产风险；tag/手动 = 刻意决定"现在部署"。
+# 语义：服务器 clone 跟踪 main，部署 = git pull main + 在服务器上 build + up --wait（健康门）。
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+# 同一时刻只一个生产部署；**不取消**进行中的部署（让它跑完，避免半截状态）
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: ssh deploy (build on server)
+    runs-on: ubuntu-latest
+    # 可在仓库 Settings → Environments → production 加"必需审批/保护规则"，给生产部署再上一道人闸
+    environment: production
+    steps:
+      - name: SSH 部署（git pull → build → up --wait → prune）
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          SSH_HOST: ${{ secrets.DEPLOY_HOST }}
+          SSH_USER: ${{ secrets.DEPLOY_USER }}
+          SSH_PORT: ${{ secrets.DEPLOY_SSH_PORT || '22' }}
+          SSH_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+        run: |
+          set -euo pipefail
+          : "${SSH_HOST:?缺少 secret DEPLOY_HOST}"
+          : "${SSH_USER:?缺少 secret DEPLOY_USER}"
+          : "${DEPLOY_PATH:?缺少 secret DEPLOY_PATH}"
+          : "${SSH_KEY:?缺少 secret DEPLOY_SSH_KEY}"
+          : "${SSH_KNOWN_HOSTS:?缺少 secret DEPLOY_KNOWN_HOSTS（ssh-keyscan -H 主机 生成，固定主机公钥防中间人）}"
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_deploy && chmod 600 ~/.ssh/id_deploy
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts && chmod 644 ~/.ssh/known_hosts
+          # 远端：拉取最新 main → 按服务器架构构建并起（up --wait 不健康即非零退出 → 本步失败、部署标红）→ 清旧镜像
+          ssh -i ~/.ssh/id_deploy -p "$SSH_PORT" "$SSH_USER@$SSH_HOST" \
+            "set -eu; cd '$DEPLOY_PATH'; git pull --ff-only; export TARGETARCH=\$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/'); docker compose up -d --wait --wait-timeout 180 --build; docker image prune -f"
