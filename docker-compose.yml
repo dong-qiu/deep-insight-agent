@@ -17,8 +17,10 @@ services:
       - "3000:3000"
     volumes:
       - insight-data:/data
+    # 运行镜像是 slim、无 curl（见 Dockerfile）——healthcheck 必须用 Node fetch，否则探针永远失败、
+    # app 永不 healthy、cron(depends_on service_healthy) 起不来。与 Dockerfile 的 HEALTHCHECK 一致。
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3000/api/health"]
+      test: ["CMD", "node", "--no-warnings", "-e", "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -35,6 +37,9 @@ services:
       # crontab 内 curl 的目标（容器网络内按服务名解析）
       APP_URL: http://app:3000
     command: ["supercronic", "/app/ops/crontab"]
+    # cron 跑 supercronic、非 Web 服务——禁用从镜像继承的 Web 健康探针（否则 fetch :3000 永远失败、误报 unhealthy）。
+    healthcheck:
+      disable: true
 
 volumes:
   insight-data:
