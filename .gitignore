@@ -28,6 +28,7 @@ pnpm-debug.log*
 Thumbs.db
 .vscode/
 .idea/
+.obsidian/
 *.swp
 
 # Test / coverage
