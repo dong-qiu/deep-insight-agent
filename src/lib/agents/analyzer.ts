@@ -7,6 +7,7 @@
  * 不让模型编造。
  */
 import { randomUUID } from "node:crypto";
+import { isTransientApiError } from "../runtime/errors.js";
 import { callStructured } from "../runtime/llm.js";
 import {
   AnalyzerOutputSchema,
@@ -212,7 +213,11 @@ ${renderItems(items)}`;
 }
 
 /** 拒答/解析失败时二分拆批重试（攻 security 拒答）：把干净内容从触发拒答的内容里捞出来，
- *  避免"一条毒内容毒死整批"。拆到单条仍失败 → 丢弃该条（模型确拒答的原始内容，合理放弃，不越狱）。 */
+ *  避免"一条毒内容毒死整批"。拆到单条仍失败 → 丢弃该条（模型确拒答的原始内容，合理放弃，不越狱）。
+ *  **重要分类**（实测 security 0 洞察的教训）：中转站/SDK 瞬时基础设施错误（Connection error /
+ *  超时 / 限流 / 5xx）**不算拒答**——本应整批失败 + 告警，若误判为拒答拆批会把数据连续丢光。
+ *  故先用 `isTransientApiError` 分流：瞬时错误抛上（runJob 标 failed + 触发告警钩子）；
+ *  仅模型层错误（refusal / 解析失败 / max_tokens）才拆批隔离。 */
 async function analyzeWithSplit(
   topic: Topic,
   items: ContentItem[],
@@ -223,6 +228,7 @@ async function analyzeWithSplit(
   try {
     return await analyzeChunk(topic, items, timeWindow, onCost);
   } catch (e) {
+    if (isTransientApiError(e)) throw e; // 中转站抽风：抛上而非拆批丢内容
     if (items.length <= 1) {
       console.warn(`  ⚠️ 丢弃 1 条（模型拒答/解析失败）：${(e as Error).message.slice(0, 40)}`);
       return [];
