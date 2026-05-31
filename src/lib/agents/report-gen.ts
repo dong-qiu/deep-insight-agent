@@ -10,29 +10,49 @@ export interface IncludedInsight {
   insight: Insight;
   citationIndices: number[]; // 剔除 blocked 后保留的引用下标
   flagged: boolean; // 含 uncertain（待核实）引用
+  blockedCount: number; // 被 validator 屏蔽的引用数（不在 citationIndices 内）
+  blockedReasonCounts: Record<string, number>; // 屏蔽理由直方图（如 exaggeration→2、out_of_context→1）
+}
+
+/** verdict=blocked 时取真实理由：reachability=fail → reachability_reason；
+ *  否则（reachability=pass 但 consistency=not_support）→ consistency_reason。
+ *  "ok" 视为无信息（理论不应作为 blocked 理由出现，防御性跳过）。 */
+function blockedReason(c: import("../types.js").CitationCheck): string | null {
+  if (c.verdict !== "blocked") return null;
+  const r = c.reachability === "fail" ? c.reachability_reason : c.consistency_reason;
+  return r && r !== "ok" ? r : null;
 }
 
 /** 洞察级纳入判定（architecture「校验结果·洞察级纳入判定」）：
- *  剔除 verdict=blocked 的引用；剩余 ≥1 则纳入（含 flagged 标待核实），全 blocked 则排除。 */
+ *  剔除 verdict=blocked 的引用；剩余 ≥1 则纳入（含 flagged 标待核实），全 blocked 则排除。
+ *  同时汇总被屏蔽数与理由直方图——供渲染端外露 validator 把关力度（透明信任信号）。 */
 export function selectInsights(batch: AnalysisBatch, validation: ValidationResult): IncludedInsight[] {
-  const verdictOf = new Map<string, Map<number, string>>();
+  const checksByInsight = new Map<string, Map<number, import("../types.js").CitationCheck>>();
   for (const c of validation.checks) {
-    if (!verdictOf.has(c.insight_id)) verdictOf.set(c.insight_id, new Map());
-    verdictOf.get(c.insight_id)!.set(c.citation_index, c.verdict);
+    if (!checksByInsight.has(c.insight_id)) checksByInsight.set(c.insight_id, new Map());
+    checksByInsight.get(c.insight_id)!.set(c.citation_index, c);
   }
   const out: IncludedInsight[] = [];
   for (const ins of batch.insights) {
-    const vs = verdictOf.get(ins.id);
+    const cs = checksByInsight.get(ins.id);
     const kept: number[] = [];
     let flagged = false;
+    let blockedCount = 0;
+    const blockedReasonCounts: Record<string, number> = {};
     ins.citations.forEach((_, i) => {
-      const v = vs?.get(i);
+      const c = cs?.get(i);
+      const v = c?.verdict;
       // 白名单:只有明确 pass/flagged 才纳入;blocked 与「无 check(未校验)」一律剔除
-      if (v !== "pass" && v !== "flagged") return;
-      kept.push(i);
-      if (v === "flagged") flagged = true;
+      if (v === "pass" || v === "flagged") {
+        kept.push(i);
+        if (v === "flagged") flagged = true;
+      } else if (v === "blocked") {
+        blockedCount += 1;
+        const r = c ? blockedReason(c) : null;
+        if (r) blockedReasonCounts[r] = (blockedReasonCounts[r] ?? 0) + 1;
+      }
     });
-    if (kept.length >= 1) out.push({ insight: ins, citationIndices: kept, flagged });
+    if (kept.length >= 1) out.push({ insight: ins, citationIndices: kept, flagged, blockedCount, blockedReasonCounts });
   }
   return out;
 }
@@ -90,6 +110,12 @@ export function buildReport(input: BuildReportInput): { report: Report; index: R
   return { report, index };
 }
 
+/** 屏蔽理由分布渲染（如 "exaggeration ×2 · out_of_context ×1"）。空理由不展示括号。 */
+function blockedReasonStr(counts: Record<string, number>): string {
+  const items = Object.entries(counts).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  return items.length ? `（理由：${items.map(([r, n]) => `${r} ×${n}`).join(" · ")}）` : "";
+}
+
 /** 单条洞察的 Markdown 块。deep_dive（detailed）多展示来源数 / 多源印证。 */
 function insightBlockMd(x: IncludedInsight, heading: string, detailed: boolean): string[] {
   const ins = x.insight;
@@ -102,6 +128,8 @@ function insightBlockMd(x: IncludedInsight, heading: string, detailed: boolean):
     const c = ins.citations[i];
     L.push(`  - 「${c.quote}」— \`${c.content_item_id}\``);
   }
+  // 透明信任信号：validator 屏蔽计数 + 理由（仅在有屏蔽时展示，避免常态杂讯）
+  if (x.blockedCount > 0) L.push(`- 校验阻断：${x.blockedCount} 条${blockedReasonStr(x.blockedReasonCounts)}`);
   L.push("");
   return L;
 }
@@ -156,9 +184,13 @@ function insightHtml(x: IncludedInsight, n: number, tag: "h2" | "h3", detailed: 
     .join("");
   const conf = ins.type === "trend" && ins.confidence ? ` · 置信度 ${ins.confidence}` : "";
   const src = detailed ? ` · 来源 ${ins.source_count}（${ins.multi_source ? "多源" : "单源"}）` : "";
+  // 透明信任信号：validator 屏蔽计数 + 理由（仅在有屏蔽时展示）
+  const blocked = x.blockedCount > 0
+    ? `<p class="meta blocked">校验阻断：${x.blockedCount} 条${esc(blockedReasonStr(x.blockedReasonCounts))}</p>`
+    : "";
   return `<section><${tag}>${n}. ${esc(ins.statement)}${
     x.flagged ? ' <span class="flag">待核实</span>' : ""
-  }</${tag}><p class="meta">重要性 ${ins.importance}/5 · ${esc(ins.importance_basis)}${conf}${src}</p><ul>${cites}</ul></section>`;
+  }</${tag}><p class="meta">重要性 ${ins.importance}/5 · ${esc(ins.importance_basis)}${conf}${src}</p><ul>${cites}</ul>${blocked}</section>`;
 }
 
 function renderHtml(
@@ -190,7 +222,7 @@ function renderHtml(
   }
   return `<!doctype html><html lang="${topic.language}"><head><meta charset="utf-8"><title>${esc(
     title,
-  )}</title><style>body{font-family:system-ui,sans-serif;max-width:46rem;margin:2rem auto;padding:0 1rem;line-height:1.6}h1{font-size:1.5rem}h2{font-size:1.1rem;margin-top:1.5rem}h3{font-size:1rem;margin-top:1rem}.meta{color:#666;font-size:.9rem}.flag{color:#b45309;font-size:.75rem;border:1px solid #b45309;border-radius:4px;padding:0 .3rem}q{color:#1f2937}code{color:#6b7280;font-size:.85rem}</style></head><body><h1>${esc(
+  )}</title><style>body{font-family:system-ui,sans-serif;max-width:46rem;margin:2rem auto;padding:0 1rem;line-height:1.6}h1{font-size:1.5rem}h2{font-size:1.1rem;margin-top:1.5rem}h3{font-size:1rem;margin-top:1rem}.meta{color:#666;font-size:.9rem}.meta.blocked{color:#6b7280;font-size:.8rem;margin-top:.25rem}.flag{color:#b45309;font-size:.75rem;border:1px solid #b45309;border-radius:4px;padding:0 .3rem}q{color:#1f2937}code{color:#6b7280;font-size:.85rem}</style></head><body><h1>${esc(
     title,
   )}</h1><p class="meta">${esc(topic.name)}（${topic.industry}）· ${date} · 共 ${included.length} 条洞察</p>${body}</body></html>`;
 }

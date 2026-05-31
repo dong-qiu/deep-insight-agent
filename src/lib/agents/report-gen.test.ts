@@ -56,6 +56,15 @@ describe("selectInsights（洞察级纳入判定）", () => {
     expect(sel.find((x) => x.insight.id === "i2")!.flagged).toBe(true); // uncertain → 待核实
   });
 
+  it("汇总被屏蔽数 + 屏蔽理由直方图（外露 validator 把关力度）", () => {
+    const i1 = sel.find((x) => x.insight.id === "i1")!;
+    expect(i1.blockedCount).toBe(1);
+    expect(i1.blockedReasonCounts).toEqual({ exaggeration: 1 }); // consistency_reason
+    const i2 = sel.find((x) => x.insight.id === "i2")!;
+    expect(i2.blockedCount).toBe(0);
+    expect(i2.blockedReasonCounts).toEqual({});
+  });
+
   it("无 check 的引用按「未通过」剔除（闸门白名单，防未校验引用伪装已核实）", () => {
     const batch2: AnalysisBatch = {
       ...batchOf(),
@@ -114,6 +123,15 @@ describe("buildReport 派生", () => {
     expect(report.body_md).not.toContain("重点关注");
     expect(report.body_md).not.toContain("- 来源：");
     expect(report.body_html).not.toContain("<h3>");
+  });
+
+  it("外露 validator 屏蔽信号：md/html 各加 1 行（仅 blockedCount>0 时展示）", () => {
+    // i1 有 1 条 blocked exaggeration → 应渲染
+    expect(report.body_md).toContain("- 校验阻断：1 条（理由：exaggeration ×1）");
+    expect(report.body_html).toContain('class="meta blocked"');
+    expect(report.body_html).toContain("校验阻断：1 条（理由：exaggeration ×1）");
+    // i2 无 blocked → 不应出现"校验阻断"标签（除非来自 i1，匹配次数=1）
+    expect((report.body_md.match(/校验阻断/g) ?? []).length).toBe(1);
   });
 });
 
