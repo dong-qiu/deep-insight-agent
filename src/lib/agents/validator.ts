@@ -5,6 +5,7 @@
  *  - 处置矩阵 / verdict：见 architecture「数据模型 · 校验结果 · 校验判定流程」。
  */
 import { callStructured } from "../runtime/llm.js";
+import { normalizeTypography } from "../runtime/text-normalize.js";
 import {
   ConsistencyJudgeSchema,
   type Citation,
@@ -18,7 +19,11 @@ import {
 } from "../types.js";
 
 function normalize(s: string): string {
-  return s.replace(/\s+/g, " ").trim();
+  // **比较语义**：双侧 typography fold + 空白折叠后做 substring 比较。
+  // 可达性承诺由"byte-verbatim in body"弱化为"fold-equivalent in body"——见 text-normalize.ts
+  // 文档的完整 fold 表与不在表内的字符（度量符号 prime/double-prime 等故意保留 codepoint）。
+  // 动机：rep_54ed154e 13/13 blocked quote_not_in_source 全是 typography 不匹配，fold 后 100% 恢复。
+  return normalizeTypography(s).replace(/\s+/g, " ").trim();
 }
 
 /** 可达性校验（纯函数，无 API key 即可测） */

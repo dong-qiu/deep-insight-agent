@@ -9,6 +9,7 @@
 import { randomUUID } from "node:crypto";
 import { isTransientApiError } from "../runtime/errors.js";
 import { callStructured } from "../runtime/llm.js";
+import { normalizeTypography } from "../runtime/text-normalize.js";
 import {
   AnalyzerOutputSchema,
   type AnalysisBatch,
@@ -80,7 +81,8 @@ function computeLocator(body: string, quote: string): Citation["locator"] {
  *  挽回可达性；起头都不在正文（真改写）则放弃 → 保持原 quote、仍被可达性闸门挡下，绝不造假。
  *  返回修复后的 quote，或 null（无需 / 无法修复，调用方用原 quote）。 */
 export function repairQuote(body: string, quote: string, minLen = 24): string | null {
-  const collapse = (s: string): string => s.replace(/\s+/g, " ").trim();
+  // typography fold + 空白折叠（与 validator.checkReachability 同一规则；smart quotes 等价于 ASCII）
+  const collapse = (s: string): string => normalizeTypography(s).replace(/\s+/g, " ").trim();
   const nb = collapse(body);
   const nq = collapse(quote);
   if (nq.length < minLen || nb.includes(nq)) return null; // 太短 / 已可达 → 用原 quote

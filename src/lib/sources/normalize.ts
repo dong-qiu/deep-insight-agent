@@ -49,6 +49,15 @@ export function stripHtml(html: string): string {
     .replace(/&gt;/gi, ">")
     .replace(/&quot;/gi, '"')
     .replace(/&#39;|&apos;/gi, "'")
+    // 常见印刷/排版命名实体——rep_54ed154e 抽样审计发现 body 残留 &rsquo;/&rdquo;
+    // 致 substring 与模型 ASCII quote 永不匹配（2/13 blocked 的直接根因）。补齐：
+    .replace(/&lsquo;/gi, "‘")  // '
+    .replace(/&rsquo;/gi, "’")  // '
+    .replace(/&ldquo;/gi, "“")  // "
+    .replace(/&rdquo;/gi, "”")  // "
+    .replace(/&ndash;/gi, "–")  // –
+    .replace(/&mdash;/gi, "—")  // —
+    .replace(/&hellip;/gi, "…") // …
     .replace(DECIMAL_ENTITY, (_, n) => codePoint(Number(n)))
     .replace(HEX_ENTITY, (_, n) => codePoint(parseInt(n, 16)));
 }

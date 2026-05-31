@@ -44,6 +44,10 @@
   - **HN / google_research / thehackernews** —— 容器→境外**网络层不通**（`fetch failed`，UA 无关）。**境外 VPS 部署后预期直通**；标准操作 = 生产 IP 复测，无需代码改动。
   - **bleeping** —— Cloudflare 主动挑战（`cf-mitigated=challenge`，"Just a moment..." JS 页），按 IP 信誉 + TLS 指纹判定，UA/Cookie/Headers 均无效；需 FlareSolverr/headless 中转方可绕（重 + 灰）。**`defaults.yaml` 中已 `enabled: false` 下架**，注释含根因。安全报道由 THN / Krebs / Risky Business 覆盖，损失小。
   - **freebuf** —— URL 正确（本机 curl 200 + 真 RSS XML），但容器内被阿里云盾边缘节点拦下伪 405（`server=Tengine` 而非起源 `fbserver/1.1`），按出口段 + TLS 指纹反爬；本地 + 境内 VPS 均拦，境外 VPS 待测。**`defaults.yaml` 中已 `enabled: false` 下架**，注释含根因；境外部署后可手动重启验证。
+- **quote-drift 修复 follow-up（2026-06-01，承接 typography fold 主修，Sonnet R1/R2 异构 review 共识）**：本批引入 `normalizeTypography` 把可达性比较语义由 byte-verbatim 弱化为 fold-equivalent，13/13 blocked 端到端恢复 100%；Sonnet R2 `approve_with_followup` 标 3 项需明文 track：
+  - **F1（已扩大 pre-existing 弱化）**：`analyzer.repairQuote` 仍返 `nb.slice(...)`（nb = 已 fold + collapse 后的 body），导致 repair 命中时**存进 DB 的 quote 不是 byte-verbatim**。pre-existing（HEAD 上已是空白折叠后的 slice），但本 PR 扩大到 typography。最小修：在 repair 时返 `body.slice(...)`，需 offset map（fold 是定长保形、collapse 改长度）。M4 内闭合。
+  - **F2（locator 漂移）**：`analyzer.computeLocator` 用 raw `body.indexOf(quote)`，当 `repairQuote` 返非 null（drift / tail-diverge 模式）时 locator 永远 `{-1,-1,-1}`。本 PR 让命中频率上升。配合 F1 修复同步处理。
+  - **F3（compareKey 单点）**：当前比较键散在 `validator.normalize` + `analyzer.repairQuote` 两处，靠人工同步。抽 `lib/runtime/compare-key.ts` 单点定义，任何一处改动自动对称——降低未来回归概率。低优、可与 F1/F2 同 PR。
 
 ## DCP 决策日志
 

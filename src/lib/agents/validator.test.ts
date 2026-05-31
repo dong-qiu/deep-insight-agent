@@ -56,6 +56,16 @@ describe("checkReachability", () => {
       checkReachability({ content_item_id: "ci_missing", quote: "x" }, items),
     ).toEqual({ reachability: "fail", reason: "source_not_found" });
   });
+
+  it("typography 等价（smart quotes/dashes/ellipsis）→ pass —— rep_54ed154e 13/13 blocked 的根因", () => {
+    const m = new Map<string, ContentItem>([
+      // body 含 smart quotes（采集后真实形态）
+      ["ci_a", item("ci_a", "He’d seen the “static” intro and knew it deserved more—even wait…")],
+    ]);
+    // 模型产出 ASCII 等价 quote，过去会 reachability=fail；fold 后 pass
+    expect(checkReachability({ content_item_id: "ci_a", quote: "He'd seen the \"static\" intro" }, m).reachability).toBe("pass");
+    expect(checkReachability({ content_item_id: "ci_a", quote: "deserved more-even wait..." }, m).reachability).toBe("pass");
+  });
 });
 
 describe("verdictFor（处置矩阵）", () => {
