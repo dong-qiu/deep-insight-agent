@@ -121,6 +121,10 @@ docker run --rm -v deep-insight_insight-data:/data -v "$PWD":/backup alpine \
   - **Run 2（暖启动 brief，复现 + 验证修复）**：中转站仍抽风 → 两主题双双 `failed: Request timed out`（如实暴露根因，**不再静默 0 洞察**）。耗时 14 min、**$0.58**（快速失败、不再耗费拆批分析钱）。修复**端到端坐实**。
   - **Run 3（暖启动 brief，relay 健康，端到端 happy path）**：swe `rep_54ed154e` 45 洞察 / 110 引用；security `rep_b91964bd` 4 洞察 / 12 引用。耗时 34 min、**$11.40**（validator $8.15 仍是大头）。
   - **Run 3 副产品 · 可溯源链路在真实运行中首次端到端坐实**：抽查 security #1（"MITRE ATLAS v5.1.0–v5.6.0 综览"，statement 含多个具体技术/缓解名、报告渲染显示 `引用（1）`），逐层溯源 → DB 实际挂了 **4 条 citation 跨 3 个 ATLAS release**；validator（独立 Opus-4-7）将其中 3 条判 `blocked`（`exaggeration` ×2、`out_of_context` ×1），仅 1 条判 `flagged uncertain`；`report-gen.selectInsights` 白名单据此剔除 3 条 blocked、保留 1 条 flagged → 报告渲染如实只列 1 条 quote + statement 自动带 `〔待核实〕`标记。**结论**：构造性可达保证（validator 一致性闸门 → 白名单 → 100% 可达发布）在真实运行洞察上首次坐实，不止对 dogfood 45 条管用——validator 在生产路径上独立抓出了 analyzer rule 5（不得放大）的违规，把"结论合并 v5.1.0–v5.3.0 内容、文本却跨度到 v5.6.0"这种放大行为屏蔽掉，正是 DCP-3 §2 论证的"发布层 100% by construction"实例。
+- **2026-05-31 · Run 3 屏蔽分布抽样审计（B，纯 SQL ~$0）**：
+  - **swe `rep_54ed154e`**（45 洞察 / 123 引用）：blocked 13 / flagged 9 / pass 101 → **屏蔽率 10.6%**；34/45 = 76% 洞察 0 blocked；**13 条全部 `quote_not_in_source`**（reachability fail，模型 quote 漂移、`repairQuote` 兜底漏网，rule 3 引用纪律问题）。
+  - **security `rep_b91964bd`**（4 洞察 / 15 引用）：blocked 3 / flagged 1 / pass 11 → 屏蔽率 20%（样本小）；**3 条全部 `exaggeration` / `out_of_context`**（consistency not_support，quote 可逐字但结论放大，rule 5 不得放大问题）。
+  - **关键发现**：两批捕到**两类完全不同的失败模式、零交叉**。长内容（latent.space/Pragmatic 长文）→ quote 漂移→reachability fail；短而结构化内容（ATLAS release notes）→ 借题发挥放大→consistency fail。validator 在两条独立路径上都正常工作，A1/A2/A3 渲染（中文标签`引用不在源中` vs `夸大`/`脱离上下文`）实测可信、用户能区分根因。**两批合计：发布 110 条引用全部可达** —— "100% by construction" 在多主题、多失败模式下双重坐实。
 
 ## 10. 在 Oracle Cloud Always-Free（ARM）上部署（免费选项）
 
