@@ -85,6 +85,48 @@ export function topicHasReport(db: DB, topicId: string): boolean {
   return !!db.prepare("SELECT 1 FROM report WHERE topic_id = ? LIMIT 1").get(topicId);
 }
 
+/** 校验下钻条目：本报告涉及洞察的所有被 validator 屏蔽的引用（含理由与 quote 全文）。
+ *  - 经 report.insight_ids → insight.batch_id 关联到 citation_check；
+ *  - 联表 citation 拿原始 quote 与 content_item_id；
+ *  - 评审用：让"不可见的把关"可下钻，外露 validator 真实抓到的具体案例。 */
+export interface BlockedCheck {
+  insight_id: string;
+  statement: string; // 洞察 statement（截断由 UI 决定）
+  citation_index: number;
+  quote: string;
+  content_item_id: string;
+  reachability: "pass" | "fail";
+  reachability_reason: string;
+  consistency: "support" | "not_support" | "uncertain" | "not_evaluated";
+  consistency_reason: string;
+  reason: string; // 选定的真实理由（reachability fail → reachability_reason；否则 → consistency_reason）
+}
+
+export function listBlockedChecksForReport(db: DB, reportId: string): BlockedCheck[] {
+  const rows = db.prepare(`
+    SELECT
+      cc.insight_id AS insight_id,
+      i.statement AS statement,
+      cc.citation_index AS citation_index,
+      c.quote AS quote,
+      c.content_item_id AS content_item_id,
+      cc.reachability AS reachability,
+      cc.reachability_reason AS reachability_reason,
+      cc.consistency AS consistency,
+      cc.consistency_reason AS consistency_reason
+    FROM report r
+    JOIN insight i ON instr(r.insight_ids, '"' || i.id || '"') > 0
+    JOIN citation_check cc ON cc.insight_id = i.id
+    JOIN citation c ON c.insight_id = cc.insight_id AND c.citation_index = cc.citation_index
+    WHERE r.id = ? AND cc.verdict = 'blocked'
+    ORDER BY i.id, cc.citation_index
+  `).all(reportId) as Omit<BlockedCheck, "reason">[];
+  return rows.map((r) => ({
+    ...r,
+    reason: r.reachability === "fail" ? r.reachability_reason : r.consistency_reason,
+  }));
+}
+
 /** FTS5 全文检索，按相关度返回 report_id。 */
 export function searchReports(db: DB, query: string): string[] {
   const rows = db
