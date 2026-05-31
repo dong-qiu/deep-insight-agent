@@ -9,7 +9,7 @@
 import { randomUUID } from "node:crypto";
 import { isTransientApiError } from "../runtime/errors.js";
 import { callStructured } from "../runtime/llm.js";
-import { normalizeTypography } from "../runtime/text-normalize.js";
+import { collapseWithMap, compareKey } from "../runtime/text-normalize.js";
 import {
   AnalyzerOutputSchema,
   type AnalysisBatch,
@@ -76,21 +76,25 @@ function computeLocator(body: string, quote: string): Citation["locator"] {
   return { paragraph_index, char_start: idx, char_end: idx + quote.length };
 }
 
-/** 引用对齐修复（M3-6）：模型在长/口语化内容上常"起头逐字、后半漂移/拼接"，致 quote 非连续原文 → 不可达
- *  （多源重测可达性崩到 24%）。把 quote snap 到正文里以其起头为锚的**最长连续 verbatim 子串**（空白归一比较），
- *  挽回可达性；起头都不在正文（真改写）则放弃 → 保持原 quote、仍被可达性闸门挡下，绝不造假。
- *  返回修复后的 quote，或 null（无需 / 无法修复，调用方用原 quote）。 */
+/** 引用对齐修复（M3-6 · F1 重构）：模型在长/口语化内容上常"起头逐字、后半漂移/拼接"，致 quote
+ *  非连续原文 → 不可达。把 quote snap 到正文里以其起头为锚的**最长 fold-equivalent 子串**（与
+ *  validator.checkReachability 同一 compareKey 规则）；返回该子串在 **body 中的原始字节**（含
+ *  smart quotes / 块内空白），保 byte-verbatim 承诺，让 computeLocator(body, returnedSlice) 也能直接命中。
+ *  起头都不在正文（真改写）则放弃 → 保持原 quote、仍被可达性闸门挡下，绝不造假。
+ *  返回修复后的 quote（来自 body 的原始字节），或 null（无需 / 无法修复，调用方用原 quote）。 */
 export function repairQuote(body: string, quote: string, minLen = 24): string | null {
-  // typography fold + 空白折叠（与 validator.checkReachability 同一规则；smart quotes 等价于 ASCII）
-  const collapse = (s: string): string => normalizeTypography(s).replace(/\s+/g, " ").trim();
-  const nb = collapse(body);
-  const nq = collapse(quote);
+  const { key: nb, map: bodyMap } = collapseWithMap(body);
+  const nq = compareKey(quote);
   if (nq.length < minLen || nb.includes(nq)) return null; // 太短 / 已可达 → 用原 quote
   const at = nb.indexOf(nq.slice(0, minLen)); // 以前 minLen 字符为锚定位（起头通常逐字）
   if (at < 0) return null; // 起头都不在正文 = 真改写，放弃
   let len = minLen;
   while (len < nq.length && at + len < nb.length && nb[at + len] === nq[len]) len++;
-  return len >= minLen ? nb.slice(at, at + len) : null;
+  if (len < minLen) return null;
+  // F1：映射回 body 原始字节切片（保 byte-verbatim，含 smart quote/块内空白/dash 原样）。
+  // 尾部 trimEnd：match 停在 key-space 边界时 slice 末尾会带原始 ws 字符（'\n' / 多个 ' '），
+  // 视觉与下游消费者期望不符；trim 后仍是 body 的字面子串（byte-verbatim 不破）。
+  return body.slice(bodyMap[at], bodyMap[at + len - 1] + 1).trimEnd();
 }
 
 /** analyze 输入 body 上限（M3-3 降本 + 降时延）：富正文（Latent Space/Krebs 可达 5 万字）截到前 N 字喂分析。

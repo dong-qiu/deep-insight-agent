@@ -71,7 +71,7 @@ describe("repairQuote（M3-6 引用对齐修复）", () => {
     const quote = "Coding agents introduce tangled refactorings less often than humans"; // “often/humans”漂移
     const r = repairQuote(body, quote);
     expect(r).not.toBeNull();
-    expect(body.replace(/\s+/g, " ").includes(r!)).toBe(true); // 修复后是正文连续子串 → 可达
+    expect(body.includes(r!)).toBe(true); // F1：byte-verbatim 在 body 中（不靠 collapse 等价）
     expect(r!.length).toBeGreaterThanOrEqual(24);
     expect(r).not.toContain("often"); // 漂移部分被切掉
   });
@@ -86,6 +86,32 @@ describe("repairQuote（M3-6 引用对齐修复）", () => {
 
   it("太短 → null", () => {
     expect(repairQuote("some sufficiently long body text here", "short")).toBeNull();
+  });
+
+  it("F1：smart-quote body + ASCII 模型 quote 后段漂移 → 返 body 原始字节切片（含 smart quote、含原始空白）", () => {
+    // body 含 smart quote + 多空白；quote 模型产 ASCII 起头 + 后段漂移
+    const body = "He’d  seen the “static” intro and remembered every detail of it precisely.";
+    const quote = "He'd  seen the \"static\" intro and remembered every detail of HISTORY"; // 后段漂移 "of HISTORY"
+    const r = repairQuote(body, quote);
+    expect(r).not.toBeNull();
+    // F1：返的是 body **原始字节**——含 smart quote ’ 和 “”，**不**是 ASCII 折叠形态
+    expect(r).toContain("’");
+    expect(r).toContain("“");
+    expect(r).toContain("”");
+    // F1：body **逐字**包含该切片（不需 collapse 也能命中 → 满足 byte-verbatim 承诺）
+    expect(body.includes(r!)).toBe(true);
+    // 后段漂移部分被切掉
+    expect(r).not.toContain("HISTORY");
+    expect(r!.length).toBeGreaterThanOrEqual(24);
+  });
+
+  it("F2：返切片可直接用 body.indexOf 命中（locator 不会再永远 -1）", () => {
+    const body = "He’d seen the “static” intro that everyone remembers now.";
+    const quote = "He'd seen the \"static\" intro that everyone REWRITE";
+    const r = repairQuote(body, quote);
+    expect(r).not.toBeNull();
+    // F2：computeLocator 用 raw indexOf 即可命中（旧版返 nb.slice 时这里会 -1）
+    expect(body.indexOf(r!)).toBeGreaterThanOrEqual(0);
   });
 });
 

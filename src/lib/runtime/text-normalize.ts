@@ -28,3 +28,41 @@ export function normalizeTypography(s: string): string {
     .replace(/…/g, "...") // ellipsis … → ...
     .replace(/ /g, " "); // non-breaking space → 普通空格（用转义防 Write 工具吞字符）
 }
+
+/** 比较键（F3 单点）：validator.checkReachability / analyzer.repairQuote 双侧 substring 对比
+ *  前都过这里。语义见本文件顶部 fold 表 + "fold-equivalent" 契约文档。 */
+export function compareKey(s: string): string {
+  return normalizeTypography(s).replace(/\s+/g, " ").trim();
+}
+
+/** 比较键 + 位置映射（F1）：返回 key（同 compareKey 结果）+ map（key[i] → 来源 body 字符偏移）。
+ *  repairQuote 用此把"在 key 上匹配的子串"映射回 body **原始字节**（含 smart quotes / 块内空白）
+ *  并切片返回，保 byte-verbatim；computeLocator 据此能直接 body.indexOf 命中（F2）。 */
+export function collapseWithMap(body: string): { key: string; map: number[] } {
+  const out: string[] = [];
+  const map: number[] = [];
+  let inLeadingWs = true;
+  let pendingWsAt = -1; // 中间空白：暂存第一个 ws 偏移，等下一个非 ws 到达才落 1 个空格
+  for (let i = 0; i < body.length; i++) {
+    const ch = body[i];
+    if (/\s/.test(ch)) {
+      if (!inLeadingWs && pendingWsAt < 0) pendingWsAt = i;
+      continue;
+    }
+    if (inLeadingWs) {
+      inLeadingWs = false;
+    } else if (pendingWsAt >= 0) {
+      out.push(" ");
+      map.push(pendingWsAt);
+      pendingWsAt = -1;
+    }
+    // typography fold 是单字符输入；多数 → 1 字符（smart quote/dash），偶有 1→3（… → ...）
+    const folded = normalizeTypography(ch);
+    for (const fc of folded) {
+      out.push(fc);
+      map.push(i);
+    }
+  }
+  // 尾部 pendingWs 故意丢弃（trim 语义）
+  return { key: out.join(""), map };
+}
