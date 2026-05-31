@@ -171,7 +171,10 @@ defaultSources:
     industry: ai-security
     topic_ids: [t_prompt_injection]
     fetch_interval: 6h
-    enabled: true
+    # 2026-05-31 实测：Cloudflare 主动挑战（cf-mitigated=challenge，"Just a moment..." JS 页），
+    # 按 IP 信誉 + TLS 指纹判定，UA/Cookie/Headers 均无效；需 FlareSolverr/headless 中转方可绕
+    # （重 + 灰）。安全报道与 THN / Krebs / Risky Business 高度重叠，损失小。下架。
+    enabled: false
   - id: src_arxiv_cr
     name: arXiv cs.CR 最新
     type: arxiv
@@ -227,4 +230,7 @@ defaultSources:
     industry: ai-security
     topic_ids: [t_prompt_injection]
     fetch_interval: 6h
-    enabled: true
+    # 2026-05-31 实测：URL 正确（本机 curl 200 + 真 RSS XML），但容器内被阿里云盾边缘节点
+    # 拦下伪 405（server=Tengine 而非起源 fbserver/1.1），按出口段 + TLS 指纹反爬，UA 无效；
+    # 本地 + 境内 VPS 均拦，境外 VPS 待测。下架，境外部署时可试重启。
+    enabled: false
