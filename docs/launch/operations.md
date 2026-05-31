@@ -144,3 +144,34 @@ Oracle 的 **Always Free** ARM Ampere A1 实例（永久免费、最高 4 OCPU /
 4. **持久化（自动）**：这是 VM，Docker 命名卷 `insight-data` 落在持久启动盘 → 重启 / 重部署 / `up` 都在，**无需** PaaS 式持久卷设置。（可选：挂独立块卷再把 `/var/lib/docker/volumes` 或 compose 卷指过去，非必需。）
 5. **反代 + TLS**：VM 无自带域名 → 自备域名、A 记录指向实例**公网 IP**，按 §2 反代说明上 Caddy（自动证书）。
 6. **CD**：`deploy.yml` 直接可用——`DEPLOY_HOST` = 公网 IP；workflow 内 `TARGETARCH=$(uname -m …)` 会在 ARM 上自动解析为 `arm64`，无需额外配置。
+
+## 11. 在 Google Cloud e2-micro（Always Free · 1GB）上部署（免费选项）
+
+GCP 的 **e2-micro**（2 vCPU 共享 / **1 GB RAM** / 30GB 标准盘）是三大公有云里**唯一"永久免费"的真 VM**，定位同 §10 的 Oracle，差别只在 **RAM 仅 1 GB**（Oracle 24GB）。它是 x86，直接用 compose 默认 `TARGETARCH=amd64`，比 ARM 还省事。AWS（新号 $200 额度/6 个月、老号 12 个月）与 Azure（B1S 750h/月、仅 12 个月）也能以同样的"VM + docker compose"方式跑，但**均为限时免费、到期转按量计费**，不宜作长期落点；serverless/容器 PaaS（Lambda/Cloud Run/Functions）因**任务 14–42 分钟超时 + SQLite 本地盘有状态 + 单实例常驻**三条与本架构根本不兼容，免费额度再大也用不上。
+
+> ⚠️ 同 §10：免费主机省"机器钱"，**省不掉模型调用钱**（每轮中转站 Opus ≈ ¥14–26，见 §4）。
+
+**与通用步骤的关系**：§2 上线 / §6 备份 / §8 CD 全部适用；下面只列 **e2-micro/1GB 特有**注意点（核心是 1GB 内存）。
+
+1. **开实例**：Compute Engine → e2-micro，**区域必须选 `us-central1` / `us-east1` / `us-west1` 之一**（仅这三个美国区永久免费，开在别处即按量计费）；Ubuntu LTS、30GB 标准持久盘（免费额度内）。
+
+2. **⚠️ 1GB 内存：构建会 OOM——必先加 swap 或改预构建**。`next build` + better-sqlite3 原生编译 >1GB，1GB 机直接编译几乎必 OOM。二选一：
+   - **加 2GB swap**（最省事，顺带兜运行时峰值）：
+     ```bash
+     sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile
+     sudo mkswap /swapfile && sudo swapon /swapfile
+     echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab   # 重启自动挂
+     ```
+   - 或**改 CD 为预构建镜像**：CI 里 build → push 到 registry → 服务器只 `docker compose pull`（运行时 1GB 够，不在小机上编译）。当前 `deploy.yml` 是服务器侧 `up --build`，走这条路必须先配 swap。
+
+3. **运行时内存可控（设计本就轻）**：管线 14–42 分钟几乎全在等中转站 LLM 的 HTTP 往返，非内存密集——源**串行采集**（`ingestConcurrency: 1`）、单次抓取封顶 8MB 且流式不整体入内存（`safe-fetch.ts`）、每条正文截断 50KB（`normalize.ts`）、单批最多 25 条 ≈ 1.25MB 文本、LLM 走流式且输出有界。实测预算 ~0.5–0.8GB，**塞进 1GB 但余量不大**。建议给 app 服务设堆上限兜底，避免 V8 默认堆顶满触发 OOM-killer：
+   ```yaml
+   # docker-compose.yml 的 app 服务下追加
+   environment:
+     NODE_OPTIONS: "--max-old-space-size=512"
+   ```
+   配合 §11.2 的 swap，运行时偶发峰值有去处。
+
+4. **持久化 / 反代 / CD**：同 §10 第 4–6 点——Docker 命名卷落持久启动盘自动持久；防火墙（GCP **VPC Firewall**）放行入站 80/443、3000 不对公网开；自备域名 A 记录指向公网 IP 上 Caddy；`deploy.yml` 的 `DEPLOY_HOST` = 公网 IP，x86 机 `TARGETARCH` 自动解析为 `amd64`。
+
+> 一句话：e2-micro **够用、余量小**——构建用 swap/预构建绕开、运行时设 `--max-old-space-size` 兜底即可长期免费跑。要零调优 + 大余量，§10 的 Oracle Ampere（24GB）更舒服。
