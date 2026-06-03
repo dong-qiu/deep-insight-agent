@@ -95,6 +95,30 @@ ${numbered}
   }
 }
 
+/** 并发上限：中转站对高并发 tool_use 流式不稳——实测 14 路并发约 36% 单条解析失败
+ *  （input_json_delta 累积截断 → JSON.parse 报 "Expected ',' or ']'"）。
+ *  限制 ≤4 路并发后实测稳定（fallback 仍是兜底，但失败率应趋近 0）。
+ *  通过 PPT_POLISH_CONCURRENCY 环境变量可调；缺省 4。 */
+const POLISH_CONCURRENCY_DEFAULT = 4;
+
+/** 简易并发 map：批量切片，每批内并发跑 worker，串行推进。保留输入顺序的结果数组。 */
+async function mapWithLimit<T, R>(
+  items: T[],
+  limit: number,
+  worker: (item: T, idx: number) => Promise<R>,
+): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  let cursor = 0;
+  const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (cursor < items.length) {
+      const i = cursor++;
+      out[i] = await worker(items[i], i);
+    }
+  });
+  await Promise.all(runners);
+  return out;
+}
+
 /** PPT LLM 润色入口：仅对重点条（importance≥4）做单条 polish + 整批 Executive。
  *  非重点条不做 polish（ppt-gen 走 A 简表渲染）。 */
 export async function polishForPpt(
@@ -106,12 +130,16 @@ export async function polishForPpt(
     cost = { tokens: cost.tokens + c.tokens, amount: cost.amount + c.amount };
   };
 
-  // 并发：N 条 insight polish + 1 executive。
-  const perPromises = keyInsights.map((x) =>
-    polishInsight(x.insight, topic, accumulate).then((p) => [x.insight.id, p] as const),
-  );
+  const concurrency =
+    Number(process.env.PPT_POLISH_CONCURRENCY) > 0
+      ? Number(process.env.PPT_POLISH_CONCURRENCY)
+      : POLISH_CONCURRENCY_DEFAULT;
+
+  // 单条 polish 池化并发 + executive 单独并行（与池子同时跑、不占池子配额——独立独占一席）
   const [perResults, executive] = await Promise.all([
-    Promise.all(perPromises),
+    mapWithLimit(keyInsights, concurrency, (x) =>
+      polishInsight(x.insight, topic, accumulate).then((p) => [x.insight.id, p] as const),
+    ),
     polishExecutive(keyInsights, topic, accumulate),
   ]);
 

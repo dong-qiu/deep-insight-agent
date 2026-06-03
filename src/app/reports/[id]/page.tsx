@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 import { getDb } from "../../../lib/db/index.js";
 import { getReport, listBlockedChecksForReport } from "../../../lib/db/reports.js";
 import { Markdown } from "../../_components/markdown.js";
+import { ExportPptButton } from "./_components/export-ppt-button.js";
 
 export const dynamic = "force-dynamic";
 
@@ -33,8 +34,9 @@ export default async function ReportPage({ params }: { params: Promise<{ id: str
 
   return (
     <section>
-      <p className="muted">
+      <p className="report-header muted">
         <a href="/reports">← 报告库</a>
+        <ExportPptButton reportId={id} />
       </p>
       <Markdown md={report.body_md} />
       <hr />
