@@ -62,6 +62,7 @@ COPY --from=builder --chown=app:app /app/src/lib/config/defaults.yaml ./config/d
 # 容器内 cron 调度表 + 触发脚本（用 Node fetch，免 curl）
 COPY --chown=app:app ops/crontab ./ops/crontab
 COPY --chown=app:app ops/trigger.mjs ./ops/trigger.mjs
+COPY --chown=app:app ops/cost-backfill.mjs ./ops/cost-backfill.mjs
 
 # 持久卷挂载点（SQLite 库 + 报告正文 + 原文归档）
 RUN mkdir -p /data && chown app:app /data
