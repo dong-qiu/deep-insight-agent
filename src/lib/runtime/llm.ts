@@ -12,7 +12,28 @@ import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import type { z } from "zod/v4";
 import type { Cost } from "../types.js";
-import { costUSD, type TokenUsage } from "./cost.js";
+import { FALLBACK_PRICING, costUSD, type TokenUsage } from "./cost.js";
+
+// 已警告过的未知模型集合（每模型仅警告一次，防日志刷屏）
+const warnedUnpriced = new Set<string>();
+function fallbackCostUSD(model: string, u: TokenUsage): number {
+  if (!warnedUnpriced.has(model)) {
+    warnedUnpriced.add(model);
+    // eslint-disable-next-line no-console
+    console.warn(
+      `⚠️ 未知模型「${model}」不在价目表（PRICING）；按已知最贵价（input $${FALLBACK_PRICING.input}/M, output $${FALLBACK_PRICING.output}/M）保守估算成本。补全 src/lib/runtime/cost.ts 的 PRICING。`,
+    );
+  }
+  const cacheWrite = u.cache_creation_input_tokens ?? 0;
+  const cacheRead = u.cache_read_input_tokens ?? 0;
+  const inputUSD =
+    (u.input_tokens * FALLBACK_PRICING.input +
+      cacheWrite * FALLBACK_PRICING.input * 1.25 +
+      cacheRead * FALLBACK_PRICING.input * 0.1) /
+    1_000_000;
+  const outputUSD = (u.output_tokens * FALLBACK_PRICING.output) / 1_000_000;
+  return inputUSD + outputUSD;
+}
 
 export type Role = "analyzer" | "validator";
 
@@ -74,9 +95,15 @@ function record(model: string, u: Anthropic.Usage): void {
   agg.output += u.output_tokens ?? 0;
   agg.cacheWrite += u.cache_creation_input_tokens ?? 0;
   agg.cacheRead += u.cache_read_input_tokens ?? 0;
+  // 未知模型：标 unpriced 同时**走保守估算**（不静默 $0）。曾因 VALIDATOR_MODEL 配为
+  // 未入表型号致 amount=0、56 万 token 被记成 \$0，掩盖真实成本（2026-06-03）。
   const c = costUSD(model, u as TokenUsage);
-  if (c === null) agg.unpriced = true;
-  else agg.usd += c;
+  if (c === null) {
+    agg.unpriced = true;
+    agg.usd += fallbackCostUSD(model, u as TokenUsage);
+  } else {
+    agg.usd += c;
+  }
   meter.set(model, agg);
 }
 
@@ -89,14 +116,16 @@ export function resetCostMeter(): void {
   meter.clear();
 }
 
-/** 单次调用的 token/成本（按返回值透传给调用方做 per-Run 记账，避免读全局 meter 做差——并发不隔离）。 */
+/** 单次调用的 token/成本（按返回值透传给调用方做 per-Run 记账，避免读全局 meter 做差——并发不隔离）。
+ *  未知模型用 fallbackCostUSD 保守估算（最贵已知价），不静默 \$0。 */
 function usageToCost(model: string, u: Anthropic.Usage): Cost {
   const tokens =
     (u.input_tokens ?? 0) +
     (u.output_tokens ?? 0) +
     (u.cache_creation_input_tokens ?? 0) +
     (u.cache_read_input_tokens ?? 0);
-  return { tokens, amount: costUSD(model, u as TokenUsage) ?? 0 };
+  const known = costUSD(model, u as TokenUsage);
+  return { tokens, amount: known ?? fallbackCostUSD(model, u as TokenUsage) };
 }
 
 export interface StructuredCall<T extends z.ZodType> {

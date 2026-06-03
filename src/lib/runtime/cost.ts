@@ -9,11 +9,22 @@ export interface ModelPricing {
 }
 
 export const PRICING: Record<string, ModelPricing> = {
+  "claude-opus-4-8": { input: 5, output: 25 }, // Opus 4.8（2026 新版，与 4.7 同档）—— 2026-06-03 补：曾因不在表内致 amount=0 静默走过路径
   "claude-opus-4-7": { input: 5, output: 25 },
   "claude-opus-4-6": { input: 5, output: 25 },
   "claude-sonnet-4-6": { input: 3, output: 15 },
   "claude-haiku-4-5": { input: 1, output: 5 },
 };
+
+/** 未知模型的"保守估算"上限：取已知表内最贵价格。用于 unknown-model 不再静默走 $0
+ *  （计费数据偏低 → 成本控制误判）；同时 console.warn 暴露配置/价目表缺漏。 */
+export const FALLBACK_PRICING: ModelPricing = (() => {
+  const all = Object.values(PRICING);
+  return {
+    input: Math.max(...all.map((p) => p.input)),
+    output: Math.max(...all.map((p) => p.output)),
+  };
+})();
 
 const CACHE_WRITE_MULT = 1.25; // 缓存写入 = 1.25 × 输入价
 const CACHE_READ_MULT = 0.1; // 缓存读取 = 0.1 × 输入价

@@ -2,7 +2,7 @@
  * 计价纯函数单测 —— 无需 API key，CI 可跑（npm test）。
  */
 import { describe, expect, it } from "vitest";
-import { costUSD } from "./cost.js";
+import { FALLBACK_PRICING, PRICING, costUSD } from "./cost.js";
 
 describe("costUSD", () => {
   it("Sonnet 4.6：输入/输出按 $3 / $15 每 1M", () => {
@@ -31,5 +31,17 @@ describe("costUSD", () => {
 
   it("未知模型 → null（无法计价）", () => {
     expect(costUSD("gpt-4", { input_tokens: 1, output_tokens: 1 })).toBeNull();
+  });
+
+  it("Opus 4.8（2026-06-03 补入表）：与 4.7 同档 \$5 / \$25", () => {
+    expect(costUSD("claude-opus-4-8", { input_tokens: 1_000_000, output_tokens: 0 })).toBeCloseTo(5);
+    expect(costUSD("claude-opus-4-8", { input_tokens: 0, output_tokens: 1_000_000 })).toBeCloseTo(25);
+  });
+
+  it("FALLBACK_PRICING = 表内最贵价（Opus tier 上限：input \$5 / output \$25）", () => {
+    expect(FALLBACK_PRICING.input).toBe(Math.max(...Object.values(PRICING).map((p) => p.input)));
+    expect(FALLBACK_PRICING.output).toBe(Math.max(...Object.values(PRICING).map((p) => p.output)));
+    expect(FALLBACK_PRICING.input).toBe(5);
+    expect(FALLBACK_PRICING.output).toBe(25);
   });
 });
