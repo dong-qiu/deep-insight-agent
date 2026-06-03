@@ -123,6 +123,60 @@
   - 安全契约（SSRF / untrusted 包裹）在「能跑」阶段最易被跳过，应在评审 checklist 硬挂。
 - **后续动作**: 闸门改白名单（无 check 即排除）、analyzer 补 untrusted 包裹、加 `safeFetch`（SSRF + 超时）、去重改 upsert 对齐 AC2；把「闸门 / 安全类逻辑必须有失败与对抗用例」写进 `skills/L3-quality.md`。
 
+### 2026-05-31 · 端到端 SQL 审计揭示两批两类失败模式零交叉
+
+- **日期**: 2026-05-31
+- **情境**: A1/A2/A3 把 validator 屏蔽信号外露到 UI 后，跑纯 SQL（~$0）审计 Run 3 输出的 swe `rep_54ed154e`（45 洞察 / 123 引用）与 security `rep_b91964bd`（4 洞察 / 15 引用）的屏蔽分布。
+- **观察**:
+  - swe 屏蔽率 13/123 = 10.6%，**13 条全部**是 `quote_not_in_source`（reachability fail，rule 3 引用纪律）；
+  - security 屏蔽率 3/15 = 20%（样本小），**3 条全部**是 `exaggeration ×2 / out_of_context ×1`（consistency not_support，rule 5 不得放大）；
+  - **两批零交叉**：长内容（latent.space/Pragmatic 长文）触发 quote 漂移→reachability；短结构化内容（ATLAS release notes）触发借题发挥→consistency。同一管线在不同内容形态上呈现两条完全分离的失败路径。
+- **经验 / 教训**:
+  - **"屏蔽率"作为单一指标会隐藏失败结构**——必须按 reason 分布看才知道是哪类问题。本批两个数字（10.6% / 20%）都不算高，但根因截然不同，治理方法也截然不同（前者是字符比较，后者是 prompt 强化）。
+  - **不同主题触发不同失败模式**——不能用一类内容验证另一类的 yield；dogfood / eval 集必须跨主题/源风格取样以覆盖两条路径。
+  - "100% by construction" 是双重保证（reachability 和 consistency 闸门分别拦不同问题）——两批数据**实证**了这一点：13 + 3 = 16 条被屏蔽，其中 13 不可达 + 3 不一致，0 重叠，缺一类就漏。
+- **后续动作**: A1 渲染默认外露 reason 分布（已落地 `校验阻断: N 条（理由：X×n）`）；admin 看板按 reason 维度统计（A3 已有 kind 维度，可扩 reason）；dogfood 选片硬约束「至少覆盖两类源风格」写入 `skills/L3-quality.md`。
+
+### 2026-06-01 · 自动分类的"无信号"实际是关键信号：13/13 rewrite 错觉
+
+- **日期**: 2026-06-01
+- **情境**: B 审计抓出 swe 13 条 blocked quote_not_in_source 后，写了一个分类脚本把每条按"漂移程度"归类：whitespace-only / mid-drift / early-drift / rewrite-from-start / major-rewrite。期望分类直接定位根因。
+- **观察**:
+  - 一跑：0/13 whitespace-only · 0/13 mid-drift · 0/13 early-drift · 5/13 rewrite-from-start · 8/13 major-rewrite。
+  - 看分类直觉是"全是 model 严重漂移，rule 3 违规、prompt 改进"，差点据此就改 prompt。
+  - 改看 raw 案例（3 条样本 quote vs body 逐字对比）才发现：所有"差很多字"实际是 **typography 不匹配**——body 含 smart quote `"`（U+201C/D）+ HTML 命名实体残留 `&rsquo;`，模型 quote 用 ASCII `"`/`'`。一个 codepoint 差异让 substring 永久失败，外加 `repairQuote` 用前 24 字锚定遇 typography 差异即放弃，导致**整段被分类为"重写"**。
+  - 实际修复方案不是 prompt，是 fold typography（双侧 substring 前归一）+ stripHtml 补 7 个命名实体。13/13 全恢复，0 行 prompt 改动。
+- **经验 / 教训**:
+  - **自动分类器给出"全集中在一类"时反而要警惕**——可能是 false negative 的均匀分布（所有项都被同一种问题阻断在分类器看得见的早期）。
+  - **抽 3 条 raw 数据看一眼成本极低，能颠覆全局诊断**。本次若按分类直觉改 prompt，会浪费几轮迭代且不解决问题。
+  - **分类的精细度不等于诊断的深度**：分类器只能区分它的维度之外的差异；它没说出来的细节（例：1 个 codepoint 差异）往往才是答案。Codepoint-level diff 维度本应在分类器里。
+  - 启发用在更广场景：任何"自动指标看起来集中"的情况，都先抽 raw 样本看，不要被 aggregation 欺骗。
+- **后续动作**: A2 报告详情页的"校验下钻"已能展示原 quote + reason（部分覆盖此需求）；可考虑后续给分类脚本加 `byte-level diff(quote, body-substring)` 维度，自动报"U+xxxx → U+yyyy"；写进 `skills/L3-quality.md` 的「诊断方法学」段。
+
+### 2026-06-01/06-02 · 异构 + 隔离上下文 review：突破单模型自审盲点
+
+- **日期**: 2026-06-01 ~ 2026-06-02
+- **情境**: typography fold 主修做完后要 review；自审风险很大（我作为作者有动机维护自己的诊断结论）。改用 `Agent` 工具 spawn **Sonnet sub-agent**（不同型号 + 完全隔离的上下文，不带本会话记忆），用对抗式 prompt + 结构化 YAML 输出。三轮迭代收敛。
+- **观察**:
+  - **R1** 抓出 1 critical（`repairQuote` 返 `nb.slice` 弱化 byte-verbatim 承诺）+ 4 concerns（U+2032/U+2033 prime 安全混淆、CJK 引号缺口、computeLocator 漂移、compareKey 应单点）—— 我自审根本没看到，因为这些都是"作者认为已经处理好"的隐性假设。
+  - **A/B 修订**：移 prime/double-prime + 加 CJK 「」『』 + 契约文档明确"fold-equivalent ≠ byte-verbatim"。R1 critical 降级为 follow-up。
+  - **R2** 终审 + 抓到我**全新的笔误**——`it("含 U+2032")` 测试描述与代码（已移除 U+2032）相反，是 A/B 修订时改了代码却忘改测试描述字符串。如果不复审会让未来读者困惑。
+  - **F1/F2/F3** 落地（byte-verbatim + locator 自愈 + compareKey 单点抽离）。
+  - **R3** 全部 verdict yes、7 个 edge cases 全部 holds: yes、approve_with_followup high confidence；剩余 2 个 optional 微调（trimEnd + 旧测试断言强化）就地修复。
+  - **每轮成本** ~$0.05–0.20（Sonnet 通过 Max 订阅，单次 review 极便宜）。三轮总成本 < $1，比一次 `/code-review ultra`（$1–5）便宜数倍。
+  - **三轮发现独立**：R1 找的是设计缺陷、R2 找的是新引入的笔误、R3 找的是边界精确性。轮次叠加而非重复。
+- **经验 / 教训**:
+  - **同模型 / 同会话自审有系统性盲点**——作者的认知偏差不会因为"我再看一遍"消失。需要**机制层面**的隔离：不同型号 + 不带本会话上下文 + 对抗式 prompt。
+  - **轮次迭代很快收敛**：R1→A/B→R2→F1/F2/F3→R3，从 `request_changes` 到 `approve_with_followup high confidence` 三轮。每轮花的不是更多分析时间，而是**给前一轮发现一个明确的响应路径**（修 / 降级 / 留 follow-up），让下一轮可以专注新维度。
+  - **对抗式 prompt 是关键**：让 reviewer 扮演 "skeptical / find what's wrong"，比 "check this looks ok" 信号强很多。R1 找到的 critical 就是因为它被明确要求"verify or refute the recovery claim"。
+  - **结构化输出（YAML schema）方便聚合**——critical / concerns / suggestions / strengths / verified_claims / verdict / confidence。同一 schema 跨轮可比、跨模型可比、可写脚本聚合。
+  - **隔离上下文要做到位**：sub-agent 不能看到我的根因分析（否则它会顺着我的逻辑走，等于自审）。**只给数据（diff + raw blocked 数据）+ 问题陈述**，让它自己推。
+  - **跨厂商比同厂跨型号独立度更强**——但同 Max 订阅下 Sonnet sub-agent 已是 95% 收益、零额外成本，先把这个用起来再升级到跨厂。
+- **后续动作**:
+  - 把"PR 提交前 spawn Sonnet R1 隔离 review"写进 `skills/L3-quality.md`，作为下次 PR 默认动作。
+  - 长期搭 v2 多厂商脚本（GPT/Gemini/Claude 并发 + 结构化聚合）；中期把 review 流程做成可重放（每次都用同一对抗 prompt + schema）。
+  - 异构 review 的发现要保留在 commit message 里（已实践：本次 commit 详尽记录三轮发现），让 review 历史成为代码资产。
+
 ## 基础设施与集成（模型接入）
 
 > 真实接入 LLM 时，环境/中转站对架构假设的冲击。
