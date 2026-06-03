@@ -9,8 +9,7 @@
  *  - 启动校验「校验模型 ID ≠ 分析模型 ID」（同源偏差约束）
  */
 import Anthropic from "@anthropic-ai/sdk";
-import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
-import type { z } from "zod/v4";
+import { z } from "zod/v4";
 import type { Cost } from "../types.js";
 import { FALLBACK_PRICING, costUSD, type TokenUsage } from "./cost.js";
 
@@ -149,6 +148,8 @@ export interface StructuredResult<T> {
   cost: Cost;
 }
 
+const STRUCTURED_TOOL_NAME = "respond_with_structured_output";
+
 export async function callStructured<T extends z.ZodType>(
   opts: StructuredCall<T>,
 ): Promise<StructuredResult<z.infer<T>>> {
@@ -156,23 +157,33 @@ export async function callStructured<T extends z.ZodType>(
   // 默认对稳定 system 前缀打 prompt cache；PROMPT_CACHE=0 时关闭——某些第三方中转站只写不读，
   // 缓存从不命中却仍计写入开销（见 a1-runs），此时关闭更省。
   const useCache = process.env.PROMPT_CACHE !== "0";
+  // 中转站兼容性（2026-06-03）：yibuapi 不再接受 SDK 0.98 的 output_config.format 字段。
+  // 改走通用 tool_use：把目标 schema 包装成单个强制工具调用（tool_choice 锁定），从工具
+  // 调用块取 input 当结构化输出。tool_use 是 Anthropic 长稳定接口，被所有中转站支持。
+  const jsonSchema = z.toJSONSchema(opts.schema) as { type?: string };
+  if (jsonSchema.type !== "object") {
+    throw new Error(`callStructured schema 根类型必须是 object（当前 ${jsonSchema.type ?? "<未知>"}）`);
+  }
+  const tools = [
+    {
+      name: STRUCTURED_TOOL_NAME,
+      description: "Return the structured result strictly matching the input_schema. Do not include any text outside the tool call.",
+      input_schema: jsonSchema as Anthropic.Messages.Tool.InputSchema,
+    },
+  ];
   const params = {
     model,
     max_tokens: opts.maxTokens ?? 16000,
-    // system 作为稳定前缀缓存；user 永远在断点之后（prompt-caching 前缀匹配）
     system: [
       { type: "text" as const, text: opts.system, ...(useCache ? { cache_control: { type: "ephemeral" as const } } : {}) },
     ],
     messages: [{ role: "user" as const, content: opts.user }],
-    output_config: {
-      format: zodOutputFormat(opts.schema),
-      ...(opts.thinking ? { effort: "high" as const } : {}),
-    },
+    tools,
+    tool_choice: { type: "tool" as const, name: STRUCTURED_TOOL_NAME },
     ...(opts.thinking ? { thinking: { type: "adaptive" as const } } : {}),
   };
 
   let cost: Cost = { tokens: 0, amount: 0 };
-  // 每次底层调用：累计全局 meter（eval 总额）+ 本次 cost + 透传 onCost（per-Run 记账）
   const account = (u: Anthropic.Usage): void => {
     record(model, u);
     const c = usageToCost(model, u);
@@ -181,7 +192,7 @@ export async function callStructured<T extends z.ZodType>(
   };
 
   // 流式生成（messages.stream + finalMessage）：长输出（dense 批 / 高 max_tokens）下避免中转站
-  // 缓冲整段响应再返回导致的网关超时；SDK 在 output_config.format 下从流尾解析出 parsed_output。
+  // 缓冲整段响应再返回导致的网关超时。流尾内容块中找 tool_use → 取 input 当结构化输出。
   // 敏感领域内容偶发安全拒答（stop_reason=refusal）——多为非确定性，重试至多 3 次。
   let res = await getClient().messages.stream(params).finalMessage();
   account(res.usage);
@@ -190,15 +201,29 @@ export async function callStructured<T extends z.ZodType>(
     account(res.usage);
   }
 
-  // 输出触顶被截断：JSON 多半残缺→下方 parsed_output 缺失而抛错（由 analyzeWithSplit 拆批兜底）；
-  // 即便侥幸解析成功，末条 statement 也常半句（isCompleteStatement 守卫丢弃）。显式告警以暴露，避免静默丢洞察。
   if (res.stop_reason === "max_tokens") {
     console.warn(`  ⚠️ 输出达 max_tokens(${params.max_tokens}) 截断（role=${opts.role}）——可能漏洞察，建议提高预算或缩小批`);
   }
-  if (!res.parsed_output) {
+
+  // 找 tool_use 内容块；模型可能先输出文本块再调用工具，遍历全部块取第一个 tool_use。
+  const toolUse = res.content.find(
+    (b): b is Anthropic.Messages.ToolUseBlock => b.type === "tool_use" && b.name === STRUCTURED_TOOL_NAME,
+  );
+  if (!toolUse) {
     throw new Error(
-      `结构化输出解析失败（role=${opts.role} stop_reason=${res.stop_reason}）`,
+      `结构化输出解析失败（role=${opts.role} stop_reason=${res.stop_reason}）：模型未调用 ${STRUCTURED_TOOL_NAME} 工具`,
     );
   }
-  return { data: res.parsed_output, usage: res.usage, cost };
+  // zod 校验：模型偶发产出不符 schema（如多余字段被 additionalProperties:false 拒）；
+  // 走 safeParse 拿明确错误而非 ZodError 黑盒。
+  const parsed = opts.schema.safeParse(toolUse.input);
+  if (!parsed.success) {
+    throw new Error(
+      `结构化输出 schema 校验失败（role=${opts.role}）：${parsed.error.issues
+        .slice(0, 3)
+        .map((i) => `${i.path.join(".")}: ${i.message}`)
+        .join("; ")}`,
+    );
+  }
+  return { data: parsed.data, usage: res.usage, cost };
 }
