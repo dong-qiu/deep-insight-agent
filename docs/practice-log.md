@@ -243,3 +243,69 @@
   - **CD「身份/认证契约」要在配 secret 时一次对齐**：交互登录用谁、CD 用谁、私有库怎么非交互拉码（deploy key）、OS Login 是否吞掉机器级 key——任一不齐，代码全对也部署不动。
   - 「**免费不等于零成本**」：永久免费 VM 的外部 IPv4 仍按 ~$3.6/月 计费、省机器钱省不掉模型调用钱（中转站 Opus ≈¥14–26/轮）——「免费方案」要把**未被免费档覆盖的尾巴**显式列清。
 - **后续动作**: 选型结论 + e2-micro/1GB 注意点（swap、`NODE_OPTIONS`、区域、IP 计费）落 `operations.md` §11（已合并 main）。待续做时：①「部署前 env 体检脚本化」可纳入 CD 预检；②把「CD 身份/认证契约清单」沉淀进 §8/§10–11 或 `skills/L2-workflow.md` 的发布约束。本轮 GCP 实例 + secret + 密钥已清理，零遗留成本。
+
+### 2026-06-03 · 中转站第二次打破假设：`output_config.format` 拒收 + 「新 SDK 字段是隐性技术债」
+
+- **日期**: 2026-06-03
+- **情境**: PPT B 阶段（LLM polish）跑端到端验证，第一次真调 LLM 全部 400 失败。错误体：`output_config.format: Extra inputs are not permitted`。换 analyzer probe 同样 400 → **整条 `callStructured` 链路（analyzer / validator / ppt-polish 全部）瞬间挂掉**。
+- **观察**:
+  - 同一中转站、同一 key、同一 model；前一天 cron 还跑得好好的，**当天起就拒收 `output_config.format`** 字段。中转站收紧了请求体校验，没通告。
+  - `output_config.format` 是 Anthropic SDK 2024H2 新增的结构化输出新路径；`tools` + `tool_choice: {type:"tool", name}` 是 2023 起就存在的事实标准。中转站对**老路径稳定支持、对新路径滞后或拒收**。
+  - 修复就是把 callStructured 内部从 `messages.stream({output_config.format})` 迁到 `tools + tool_choice`：zod schema 用 zod v4 内置 `z.toJSONSchema` 转 JSON schema、流尾内容块里找 `tool_use` 取 `input`、再 `schema.safeParse` 校验。15 分钟改完，relay probe 验通。
+  - **意外收益**：这个 bug 是 PPT 子线的 B 阶段 probe 当时碰上的，但**真正受影响的是下游 cron 的 analyzer/validator**——若不是 B 阶段当天动了 LLM 路径，下一次 6h cron 才会暴露，那时会**静默产出 0 洞察的报告**（之前 6/2-6/3 容器 volume 里的两份空报告就是这个根因）。
+- **经验 / 教训**:
+  - **新 SDK 字段是隐性技术债**：选结构化输出实现时不该追新——`output_config.format` 是新路径、`tools+tool_choice` 是老接口。中转站、私有部署、降级链路下，**老接口的事实兼容性 = 真稳定性**。同样情形若在直连 Anthropic 不会触发；中转站把这个隐性假设照出来了。
+  - **B 阶段 probe 顺带救了下游 cron** 是个范式信号：每个**触碰底层调用面**的新功能 commit 配的端到端 probe，**会顺带验证既有功能是否还活着**——这是次生质量关。建议：调底层（callStructured / safe-fetch / DB 句柄等）的变更，commit 时跑一次极简 probe 命中线上路径，比单测多一层 catch。
+  - 中转站从 5/24（首次打破假设）到 6/3（第二次）连续两次，**对中转站的"突变"不可控**；架构对此的真正抵抗策略是：① 调用面保持最稳老（不追新 SDK 字段）；② 每个外部依赖一道 fallback / 解析降级；③ Optional：在 callStructured 加 try-old-shape-on-400 自愈，把这条经验固化进运行时。
+- **后续动作**: tool_use 迁移已 commit `9369ba7` 合 main；`operations.md` §7 增加这条故障排查（含治本指引）。下次中转站再变（很可能还会有第三次），优先确认 callStructured 是否还在最稳老路径上。
+
+### 2026-06-03/04 · merge 增量收敛：对抗 flaky 上游的标准缓存范式
+
+- **日期**: 2026-06-03 ~ 2026-06-04
+- **情境**: PPT B 阶段 LLM polish 跑 13 重点条 + 1 executive 并发；D 阶段加缓存，初版严格门槛"perInsight 全 + executive 非 null 才入缓存"。
+- **观察**:
+  - **并发=14 流式 tool_use 偶发截断**：实测 14 路并发，36% 单条 `JSON.parse` 失败（中转站累积 `input_json_delta` 时截字节）；同一中转站单笔调用次次通——**并发场景对 SSE 流稳定性是独立问题**。限并发到 4 后失败率降到 14%，但仍非 0。
+  - **严格缓存门槛在中转站现实下不可达**：3 次 polish=1 真跑全 partial（每次 executive 都挂、单条挂 2-5 条），"全成功才入缓存"实测**从来不命中** → 缓存永空 = 没做。
+  - 改成 **总是缓存 partial + merge 增量收敛**：每次跑都与同 hash 既有缓存做并集（新成功覆盖旧、新失败仍能拿旧），状态 header 报 N/M + exec 覆盖度；用户多次 `refresh=1` 时新批补漏不重做成功的，**自然渐进收敛**。实测：cold miss 12/13 partial → refresh 1 次 → 13/13 no-executive，下次 hit 26ms / $0。
+- **经验 / 教训**:
+  - **理想化门槛 = 把功能砍了**：设缓存门槛前必须看真实成功率分布。把"全成功"当门槛只在上游 100% 稳定时正确；上游 < 70% 单笔成功率下，"全成功"是空集。
+  - **merge 增量收敛是对抗 flaky 上游的标准范式**：每次努力不浪费（新成功必入），失败不回退（旧成功必留）；多次 refresh 单调升级。比"严格门槛 + 全失败重试"成本低得多、用户感知更平稳。同模式可推广到：multi-source ingest（每源单独缓存）、batch validation（每批独立 commit）、retry-with-progress 类所有"上游不稳但子任务可独立成败"的场景。
+  - **并发上限要可配 + 默认保守**：`PPT_POLISH_CONCURRENCY` env 默认 4。把"并发到上游能力上限"的诱惑收住——上游能力是上限不是均值，**并发数应按 P95 不超时容量定**。本应用上游是中转站，P95 容量明显低于 P50。
+  - **partial 状态要外露**：`X-Ppt-Polish-Status` / `X-Ppt-Polish-Coverage` 让用户知道何时该 `refresh=1`，否则缓存命中后用户不知道"上次只跑齐了 12/13"。状态透明 = "用户能自己判断要不要再花钱"。
+- **后续动作**: D 阶段已合 commit `a3ab0fb`；后续如有类似"调上游多次 + 子任务独立"场景，**默认走 merge 收敛**而非全成功门槛。把"flaky 上游的 merge 缓存"写进 `skills/L3-quality.md` 作为推荐范式。
+
+### 2026-06-04 · 容器部署两个隐式默认坑：arch 透传 + `cp` 覆盖卷
+
+- **日期**: 2026-06-04
+- **情境**: D 阶段验证要在容器里真跑（不是 dev server），本地 `docker compose up -d --build` 起服务 + cp 本地 DB 到容器卷做演示数据。
+- **观察**:
+  - **隐式默认 1（arch 透传）**：`Dockerfile` `ARG TARGETARCH=amd64`，compose 默认不传 → 本地 aarch64 主机 build 出的镜像里 supercronic 仍是 `linux-amd64` 二进制，cron 容器起来立刻 `exit 139` 段错误。app 服务由于全是 JS/native 模块（QEMU 能勉强跑），假性 healthy。`TARGETARCH=arm64 docker compose build` 重 build 后 cron 才正常。
+  - **隐式默认 2（cp 覆盖卷）**：`docker compose cp .data/insight.db app:/data/insight.db` 把容器里的 DB **直接覆盖**——容器原本 cron 跑出的 6 月新报告（rep_b91964bd 等 4 条）瞬间没了，被 5/28 的本地 DB 替换。后来发现要演示 6 月数据时不得不手动触发 `/api/cron`：耗时 17 min、花费 $1.85、跑 29 个 Run，才把丢的两条 6 月报告（部分）重生回来。
+  - **句柄缓存放大第二个坑**：cp 完后 `getDb()` 单例还握着旧句柄，第一波请求全返 404；`docker compose restart app` 让 Next.js 重读 DB 才恢复——这是另一个"隐式默认"：单例 DB 句柄不知道文件被换了。
+- **经验 / 教训**:
+  - **跨平台默认值不能写死**：`TARGETARCH=amd64` 在 ARM 主机上是隐式 wrong default。要么用 `${TARGETARCH:-$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')}` auto-detect，要么 compose `build.platform` 显式锁；ARG 默认值是"分布环境下的隐患"，**任何"在新机器跑就错"的默认值都是 bug**。
+  - **`docker compose cp` 是单向覆盖、不是 merge**：默认行为对关键文件危险；操作前应 ① 先 `docker compose exec` 备份目标到容器内 `.bak`，② 或拒绝 cp 已存在的关键文件（rsync `--ignore-existing` 语义）。**ops 文档要把这条警告写明**——下次同坑成本是$1.85 + 17 分钟 + 操作焦虑。
+  - **演示数据准备的 cost > 演示本身**：cp 覆盖前 5 秒的犹豫能省 17 分钟 / $1.85。"快速操作"在生产/演示场景下应该有 5 秒确认门槛——尤其涉及覆盖的命令。
+  - **单例句柄要对外部文件变更可感知**：长进程 + 文件被换 = 静默 404；要么 `getDb()` 用 mtime check 失效重开、要么文档明确"换 DB 后必须 restart app"。本次按文档化处理（restart 操作明示）即可，不需要代码改。
+- **后续动作**: `Dockerfile` 默认 TARGETARCH 改 auto-detect（commit 单独走）；`operations.md` §6 备份/恢复加 **"cp 进卷前必先 dump 既有数据 / 或先 backup"** 警告 + restart 步骤；`skills/L0-foundation.md` 加 "覆盖类命令 5 秒确认门槛" 微规则。
+
+### 2026-06-04 · 反例反思：B/C/D 三个 commit 自评通过 ≠ 反证 6/01 立的 review 规矩
+
+- **日期**: 2026-06-04
+- **情境**: 6/01 复盘 typography fold 后，明确把 **"PR 提交前 spawn Sonnet R1 隔离 review"** 写进 `skills/L3-quality.md` 作为下次 PR 默认动作。随后的 B / C / D 三个 commit（`f2e0956` / `6bfcfcb` / `a3ab0fb`），**全没跑 R1**——只跑了 typecheck + 单测 + 主 agent 自评 + 端到端 probe + 用户 ack。结果没出大问题（容器部署、缓存、UI 链路都正常）。**规矩自打脸了**——但要诚实分类回答"为什么这次没出事"，而不是把"运气好"包装成"自评也行"。
+- **观察**:
+  - 三条新代码与 typography 那次的**性质差异**：
+    - **typography fold**：涉及 byte-verbatim 契约这种**隐性语义约定** + `repairQuote` 返 `nb.slice` 弱化承诺这种**跨组件一致性 bug**——人眼审 + 单测覆盖都难抓，Sonnet R1 一眼挑出。
+    - **B (LLM polish)**：写 prompt + 调用现成 `callStructured` + zod 校验 + try/catch fallback。**认知负载低**：prompt 是人眼可读的自然语言、runtime 别人写好、schema 由 zod 强制。
+    - **C (API route + button)**：orchestrator 把已有片段串起来 + 标准 Next route + 客户端按钮。**结构清晰、无隐性契约**。
+    - **D (cache)**：SHA-256 + UPSERT + merge 逻辑。merge 逻辑稍复杂，但 vitest 写了 4 个用例（hit / partial / refresh / merge 升级）+ 在线实测 4 步循环验通——**测试可观测性硬挡了 review 该挡的部分**。
+  - 反过来想：B/C/D 真有**潜伏的设计错**未被自评抓住，是 **D 的初版严格缓存门槛**（"perInsight 全 + executive 非 null 才入"）——实测中转站现实下永不命中、缓存=没做。但这个**review 也抓不到**：要看真实运行成功率分布才显形，是数据驱动的产品决策、不是静态推理能预判的（连"上游 < 100% 稳"这个假设本身都是踩到才确认）。
+- **经验 / 教训**:
+  - **Review 的有效区是"可静态推理的错误"**：契约违反、命名混乱、安全漏洞、跨组件一致性、隐性约定弱化。这些 review 该抓也能抓。
+  - **Review 的盲区是"需真实数据反馈才显形的设计错"**：初版缓存严格门槛、prompt 调参不对、并发上限定得太大、cost cap 设错——这类**靠跑出来 + 看分布**才暴露，不是再多一道 review 能预防的。
+  - 所以**"是否跑异构 review"应按工作性质分类，不是按"是否合规"机械跑**：
+    - **必跑**：涉及隐性契约（byte-verbatim / SSRF / 闸门白名单 / 数据一致性）、跨组件协调、安全敏感、改"已经被信赖"的 API。
+    - **可跳**：纯 orchestration、纯 UI/路由层、有完整端到端 probe 兜底、改"全新没人依赖"的代码。
+  - **但跳的时候要诚实记账**：本次"跳过 review × 3 commit + 没出事"是**带条件的样本**——条件是上面四类"可跳"匹配。**不要把它当成"自评够用"的归纳证据**——要不是 D 的严格门槛在 PPT polish 实测里立刻被砸醒，就会以"完全可用"的错觉合进 main 并影响后续 Iteration。
+  - **6/01 那条规矩本身不需要改**：它说"下次 PR 默认动作"，默认动作就是 default，遇到"可跳"的明确分类时显式跳——`skills/L3` 应该补"何时可跳"的判据，让规矩长出例外维度。
+- **后续动作**: `skills/L3-quality.md` 把"可跳"判据补进异构 review 那节（**契约/安全/跨组件一致性** vs **纯 orchestration/UI**）；本次反思条目本身也是个范例，下次 commit 时如果跳 review 应在 commit message 显式声明"本次跳过 R1，理由：纯 UI/orchestration、有 e2e probe"——把"跳"做成可审计动作，不是默认隐式。
