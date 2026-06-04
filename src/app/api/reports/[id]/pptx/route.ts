@@ -1,5 +1,6 @@
-/** GET /api/reports/{id}/pptx?polish=1 —— 把报告导出为 .pptx 下载。
- *  - polish=1 → 跑 B 阶段 LLM 润色（§1 凝练 + §3 启示 + Executive 页，~10s + ~$0.07）；
+/** GET /api/reports/{id}/pptx?polish=1[&refresh=1] —— 把报告导出为 .pptx 下载。
+ *  - polish=1 → 跑 B 阶段 LLM 润色（§1 凝练 + §3 启示 + Executive 页，~10s + ~$0.07–0.21）；
+ *  - refresh=1 → 忽略缓存强制重跑 LLM（用于 partial/失败重试）；缺省命中即复用、零成本；
  *  - 缺省（A 即时导出）：仅确定性骨架 + statement 首句 + importance_basis；零 LLM 成本。
  *  鉴权由 middleware.ts 已统一拦截，未登录走 401。 */
 import { NextResponse } from "next/server";
@@ -15,11 +16,13 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> },
 ): Promise<Response> {
   const { id } = await params;
-  const usePolish = new URL(req.url).searchParams.get("polish") === "1";
+  const sp = new URL(req.url).searchParams;
+  const usePolish = sp.get("polish") === "1";
+  const refresh = sp.get("refresh") === "1";
 
   let result;
   try {
-    result = await exportReportPptx(getDb(), id, { usePolish });
+    result = await exportReportPptx(getDb(), id, { usePolish, refresh });
   } catch (e) {
     console.error(`[pptx] 报告 ${id} 导出失败：`, e);
     return NextResponse.json({ error: (e as Error).message }, { status: 500 });
@@ -39,6 +42,9 @@ export async function GET(
       "X-Ppt-Page-Count": String(result.pageCount),
       "X-Ppt-Polish-Tokens": String(result.polishCost.tokens),
       "X-Ppt-Polish-Cost-Usd": result.polishCost.amount.toFixed(6),
+      "X-Ppt-Polish-Cache": result.polishCache,
+      "X-Ppt-Polish-Status": result.polishStatus,
+      "X-Ppt-Polish-Coverage": `${result.polishCoverage.perInsightDone}/${result.polishCoverage.perInsightTotal} exec=${result.polishCoverage.hasExecutive ? "y" : "n"}`,
     },
   });
 }

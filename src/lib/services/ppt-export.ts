@@ -5,6 +5,11 @@
  *  保证导出页面与报告正文同口径，避免"PPT 显示了报告里看不到的引用"这种倒挂。 */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import type { DB } from "../db/index.js";
+import {
+  computePolishInputsHash,
+  getPolishCacheEntry,
+  upsertPolishCacheEntry,
+} from "../db/ppt-cache.js";
 import { getReport } from "../db/reports.js";
 import { getSource, getTopic } from "../db/repos.js";
 import type { Insight, Report, Topic } from "../types.js";
@@ -14,8 +19,18 @@ import { polishForPpt, type PolishResult } from "./ppt-polish.js";
 export interface PptExportResult extends PptGenOutput {
   report: Report;
   topic: Topic;
-  /** LLM 润色累计成本（usePolish=false 或全失败时 amount=0） */
+  /** 本次 LLM 净支出（cache hit → 0）。不含历史已支付的 polish 成本（见 polishCacheOriginalCost） */
   polishCost: { tokens: number; amount: number };
+  /** "none"=未启用 polish；"miss"=本次跑了 LLM；"hit"=复用上次缓存 */
+  polishCache: "none" | "hit" | "miss";
+  /** 当前生效的 polish 完整度（用于决定是否提示 refresh）：
+   *  - "complete": 所有重点条 + executive 全有；
+   *  - "no-executive": 重点条全有、executive 缺；
+   *  - "partial": 部分重点条缺；
+   *  - "none": 未启用 polish。 */
+  polishStatus: "none" | "complete" | "no-executive" | "partial";
+  /** polish 覆盖度 N/M 透传——complete 时 N=M、有 executive */
+  polishCoverage: { perInsightDone: number; perInsightTotal: number; hasExecutive: boolean };
   /** 文件名：`{topic.name} · {generated_at[:10]}.pptx`（替换文件系统非法字符） */
   fileName: string;
 }
@@ -23,6 +38,8 @@ export interface PptExportResult extends PptGenOutput {
 export interface PptExportOptions {
   /** 启用 B 阶段 LLM 润色（§1 凝练 + §3 启示 + Executive 页）；缺省 false（A 即时导出） */
   usePolish?: boolean;
+  /** 强制重跑 LLM（忽略既有缓存条目；新结果完整则覆盖写入）。缺省 false。 */
+  refresh?: boolean;
 }
 
 /** 一次性读齐 report + insights + citations + checks + sources + topic，
@@ -115,6 +132,8 @@ function safeFileName(topicName: string, generatedAt: string): string {
  *  - usePolish=false（默认）：即时返、零 LLM 成本；§1/§3 走 A 确定性 fallback；
  *  - usePolish=true：N 条重点 + 1 executive 并发跑 LLM，~10s + ~\$0.07/PPT；
  *    任一 LLM 失败 → 该项 A fallback、不阻断导出（polishForPpt 内部已 try/catch）。 */
+const KEY_IMPORTANCE = 4;
+
 export async function exportReportPptx(
   db: DB,
   reportId: string,
@@ -124,15 +143,61 @@ export async function exportReportPptx(
   if (!loaded) return null;
   const { report, topic, insights, sourceNameByCi, sourceNameById } = loaded;
 
-  let polish: PolishResult | undefined;
+  let polish: { perInsight: PolishResult["perInsight"]; executive: PolishResult["executive"] } | undefined;
   let polishCost = { tokens: 0, amount: 0 };
+  let polishCache: "none" | "hit" | "miss" = "none";
+  let perInsightTotal = 0; // 重点条总数（即使 polish 全失败也要报）
+
   if (opts.usePolish) {
-    const KEY_IMPORTANCE = 4;
+    polishCache = "miss";
     const key = insights.filter((x) => x.insight.importance >= KEY_IMPORTANCE);
-    const result = await polishForPpt(key, topic);
-    polish = result;
-    polishCost = result.cost;
+    perInsightTotal = key.length;
+    const inputsHash = computePolishInputsHash(topic, key.map((x) => x.insight));
+
+    // 1) 命中缓存（refresh=false 时）：直接复用，零成本
+    if (!opts.refresh) {
+      const cached = getPolishCacheEntry(db, reportId);
+      if (cached && cached.inputsHash === inputsHash) {
+        polish = cached.polish;
+        polishCache = "hit";
+      }
+    }
+
+    // 2) 未命中 / refresh：跑 LLM；merge 既有缓存补齐缺漏（同 hash）；写回。
+    //    中转站 tool_use 流式偶发截断 → 多次 refresh 渐进收敛到 complete。
+    if (!polish) {
+      const result = await polishForPpt(key, topic);
+      polishCost = result.cost;
+
+      // 与既有同 hash 缓存做并集：新调用成功的字段覆盖旧、新失败仍能拿旧。
+      const existing = getPolishCacheEntry(db, reportId);
+      const baseline = existing && existing.inputsHash === inputsHash ? existing.polish : null;
+      const merged = {
+        perInsight: new Map(baseline?.perInsight ?? []),
+        executive: baseline?.executive ?? null,
+      };
+      for (const [id, p] of result.perInsight) merged.perInsight.set(id, p);
+      if (result.executive) merged.executive = result.executive;
+
+      polish = merged;
+      // 总有进步 → 总写缓存（覆盖累计 cost 起到节流"已付"的事实记录）
+      const mergedCost = {
+        tokens: (existing?.originalCost.tokens ?? 0) + result.cost.tokens,
+        amount: (existing?.originalCost.amount ?? 0) + result.cost.amount,
+      };
+      upsertPolishCacheEntry(db, reportId, inputsHash, merged, mergedCost);
+    }
   }
+
+  const perInsightDone = polish?.perInsight.size ?? 0;
+  const hasExecutive = polish?.executive != null;
+  const polishStatus: PptExportResult["polishStatus"] = !opts.usePolish
+    ? "none"
+    : perInsightDone < perInsightTotal
+      ? "partial"
+      : hasExecutive
+        ? "complete"
+        : "no-executive";
 
   const out = await buildPptx({
     report,
@@ -140,7 +205,7 @@ export async function exportReportPptx(
     topic,
     sourceNameByCi,
     sourceNameById,
-    polish: polish ? { perInsight: polish.perInsight, executive: polish.executive } : undefined,
+    polish,
   });
 
   return {
@@ -148,6 +213,9 @@ export async function exportReportPptx(
     report,
     topic,
     polishCost,
+    polishCache,
+    polishStatus,
+    polishCoverage: { perInsightDone, perInsightTotal, hasExecutive },
     fileName: safeFileName(topic.name, report.generated_at),
   };
 }

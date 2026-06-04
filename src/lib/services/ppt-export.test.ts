@@ -109,7 +109,7 @@ describe("exportReportPptx", () => {
     expect(r!.pageCount).toBe(3);
   });
 
-  it("usePolish=true → 调 polishForPpt(只传重点条) + polishCost 透传", async () => {
+  it("usePolish=true → 调 polishForPpt(只传重点条) + polishCost 透传 + cache miss", async () => {
     vi.mocked(polishForPpt).mockResolvedValue({
       perInsight: new Map([["i1", { brief_summary: "凝练", implications: ["启示 a"] }]]),
       executive: { takeaways: ["TK1", "TK2", "TK3"] },
@@ -123,7 +123,98 @@ describe("exportReportPptx", () => {
     expect(keyInsights).toHaveLength(1);
     expect(keyInsights[0].insight.id).toBe("i1");
     expect(r!.polishCost).toEqual({ tokens: 1234, amount: 0.0789 });
+    expect(r!.polishCache).toBe("miss");
     // executive 存在 → 多 1 页：1 标题 + 1 executive + 1 重点 + 1 源 = 4 页
     expect(r!.pageCount).toBe(4);
+  });
+
+  it("第二次同参数请求 → cache hit、零成本、不调 LLM", async () => {
+    vi.mocked(polishForPpt).mockResolvedValue({
+      perInsight: new Map([["i1", { brief_summary: "凝练", implications: ["启示 a"] }]]),
+      executive: { takeaways: ["TK1", "TK2", "TK3"] },
+      cost: { tokens: 1234, amount: 0.0789 },
+    });
+    await exportReportPptx(db, "rep_t1", { usePolish: true }); // 第 1 次：miss + 写缓存
+    vi.mocked(polishForPpt).mockReset();
+    const r2 = await exportReportPptx(db, "rep_t1", { usePolish: true });
+    expect(r2!.polishCache).toBe("hit");
+    expect(r2!.polishCost).toEqual({ tokens: 0, amount: 0 });
+    expect(polishForPpt).not.toHaveBeenCalled();
+    expect(r2!.pageCount).toBe(4); // 仍然包含 Executive 页（从缓存还原）
+  });
+
+  it("partial polish（executive=null）→ 仍写缓存；status='no-executive'；下次 hit 仍 partial", async () => {
+    vi.mocked(polishForPpt).mockResolvedValue({
+      perInsight: new Map([["i1", { brief_summary: "凝练", implications: ["启示 a"] }]]),
+      executive: null, // executive 失败
+      cost: { tokens: 500, amount: 0.05 },
+    });
+    const r1 = await exportReportPptx(db, "rep_t1", { usePolish: true });
+    expect(r1!.polishCache).toBe("miss");
+    expect(r1!.polishStatus).toBe("no-executive");
+    expect(r1!.polishCoverage).toEqual({ perInsightDone: 1, perInsightTotal: 1, hasExecutive: false });
+
+    vi.mocked(polishForPpt).mockReset();
+    const r2 = await exportReportPptx(db, "rep_t1", { usePolish: true });
+    expect(r2!.polishCache).toBe("hit"); // 缓存命中（即使 partial）
+    expect(r2!.polishStatus).toBe("no-executive");
+    expect(polishForPpt).not.toHaveBeenCalled();
+  });
+
+  it("refresh 跑出新 executive → 与缓存 perInsight 合并，status 升至 complete", async () => {
+    // 第 1 次：perInsight 全、executive 缺 → cache partial
+    vi.mocked(polishForPpt).mockResolvedValue({
+      perInsight: new Map([["i1", { brief_summary: "v1", implications: ["a"] }]]),
+      executive: null,
+      cost: { tokens: 100, amount: 0.01 },
+    });
+    await exportReportPptx(db, "rep_t1", { usePolish: true });
+
+    // refresh：本次 perInsight 失败、executive 成功；merge 应保留旧 perInsight + 新 executive
+    vi.mocked(polishForPpt).mockResolvedValue({
+      perInsight: new Map(), // 全失败
+      executive: { takeaways: ["TK1", "TK2"] },
+      cost: { tokens: 50, amount: 0.005 },
+    });
+    const rRefresh = await exportReportPptx(db, "rep_t1", { usePolish: true, refresh: true });
+    expect(rRefresh!.polishStatus).toBe("complete");
+    expect(rRefresh!.polishCache).toBe("miss"); // refresh 强制 miss
+    expect(rRefresh!.polishCoverage).toEqual({ perInsightDone: 1, perInsightTotal: 1, hasExecutive: true });
+
+    // 第 3 次正常请求：hit 完整缓存
+    vi.mocked(polishForPpt).mockReset();
+    const r3 = await exportReportPptx(db, "rep_t1", { usePolish: true });
+    expect(r3!.polishCache).toBe("hit");
+    expect(r3!.polishStatus).toBe("complete");
+    expect(polishForPpt).not.toHaveBeenCalled();
+  });
+
+  it("refresh=1 同 hash → 忽略既有缓存重跑、新结果 merge 进缓存", async () => {
+    vi.mocked(polishForPpt).mockResolvedValue({
+      perInsight: new Map([["i1", { brief_summary: "v1", implications: ["启示 a"] }]]),
+      executive: { takeaways: ["TK", "TK2"] },
+      cost: { tokens: 100, amount: 0.01 },
+    });
+    await exportReportPptx(db, "rep_t1", { usePolish: true }); // 写入缓存
+
+    vi.mocked(polishForPpt).mockResolvedValue({
+      perInsight: new Map([["i1", { brief_summary: "v2 重写", implications: ["启示 b"] }]]),
+      executive: { takeaways: ["TK new", "TK2 new"] },
+      cost: { tokens: 200, amount: 0.02 },
+    });
+    const rRefresh = await exportReportPptx(db, "rep_t1", { usePolish: true, refresh: true });
+    expect(rRefresh!.polishCache).toBe("miss"); // refresh 强制重跑
+    expect(rRefresh!.polishCost.amount).toBe(0.02);
+
+    // 再次普通请求 → 命中刚写入的 v2
+    const r3 = await exportReportPptx(db, "rep_t1", { usePolish: true });
+    expect(r3!.polishCache).toBe("hit");
+    expect(r3!.polishCost.amount).toBe(0);
+  });
+
+  it("usePolish=false → polishCache='none' / polishStatus='none'，不查缓存", async () => {
+    const r = await exportReportPptx(db, "rep_t1");
+    expect(r!.polishCache).toBe("none");
+    expect(r!.polishStatus).toBe("none");
   });
 });

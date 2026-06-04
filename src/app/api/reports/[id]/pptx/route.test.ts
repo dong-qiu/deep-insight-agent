@@ -31,10 +31,14 @@ describe("GET /api/reports/[id]/pptx", () => {
       // @ts-expect-error 测试 stub：只填路由用到的字段
       report: { id: "rep_x" }, topic: { name: "T" },
       polishCost: { tokens: 0, amount: 0 },
+      polishCache: "none",
+      polishStatus: "none",
+      polishCoverage: { perInsightDone: 0, perInsightTotal: 0, hasExecutive: false },
       fileName: "T · 2026-06-07.pptx",
     });
     const res = await callGet("http://x/api/reports/rep_x/pptx", "rep_x");
     expect(res.status).toBe(200);
+    expect(res.headers.get("X-Ppt-Polish-Cache")).toBe("none");
     expect(res.headers.get("Content-Type")).toBe(
       "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     );
@@ -47,22 +51,57 @@ describe("GET /api/reports/[id]/pptx", () => {
     const body = Buffer.from(await res.arrayBuffer());
     expect(body).toEqual(fakeBuf);
     // 默认无 polish=1 → orchestrator 收到 usePolish:false
-    expect(exportReportPptx).toHaveBeenCalledWith(expect.anything(), "rep_x", { usePolish: false });
+    expect(exportReportPptx).toHaveBeenCalledWith(expect.anything(), "rep_x", { usePolish: false, refresh: false });
   });
 
-  it("?polish=1 → 透传 usePolish:true + 成本 header 体现", async () => {
+  it("?polish=1 → 透传 usePolish:true + 成本 header 体现 + cache=miss", async () => {
     vi.mocked(exportReportPptx).mockResolvedValue({
       buffer: Buffer.from([1, 2, 3]), pageCount: 7,
       // @ts-expect-error 测试 stub
       report: { id: "rep_x" }, topic: { name: "T" },
       polishCost: { tokens: 8817, amount: 0.0712 },
+      polishCache: "miss",
+      polishStatus: "complete",
+      polishCoverage: { perInsightDone: 5, perInsightTotal: 5, hasExecutive: true },
       fileName: "T.pptx",
     });
     const res = await callGet("http://x/api/reports/rep_x/pptx?polish=1", "rep_x");
     expect(res.status).toBe(200);
     expect(res.headers.get("X-Ppt-Polish-Tokens")).toBe("8817");
     expect(res.headers.get("X-Ppt-Polish-Cost-Usd")).toBe("0.071200");
-    expect(exportReportPptx).toHaveBeenCalledWith(expect.anything(), "rep_x", { usePolish: true });
+    expect(res.headers.get("X-Ppt-Polish-Cache")).toBe("miss");
+    expect(exportReportPptx).toHaveBeenCalledWith(expect.anything(), "rep_x", { usePolish: true, refresh: false });
+  });
+
+  it("?polish=1&refresh=1 → 透传 refresh:true + cache=miss", async () => {
+    vi.mocked(exportReportPptx).mockResolvedValue({
+      buffer: Buffer.from([1]), pageCount: 5,
+      // @ts-expect-error 测试 stub
+      report: {}, topic: {},
+      polishCost: { tokens: 100, amount: 0.01 },
+      polishCache: "miss",
+      polishStatus: "complete",
+      polishCoverage: { perInsightDone: 5, perInsightTotal: 5, hasExecutive: true },
+      fileName: "x.pptx",
+    });
+    await callGet("http://x/api/reports/r/pptx?polish=1&refresh=1", "r");
+    expect(exportReportPptx).toHaveBeenCalledWith(expect.anything(), "r", { usePolish: true, refresh: true });
+  });
+
+  it("cache hit 时 X-Ppt-Polish-Cache=hit + 成本 0", async () => {
+    vi.mocked(exportReportPptx).mockResolvedValue({
+      buffer: Buffer.from([1]), pageCount: 7,
+      // @ts-expect-error 测试 stub
+      report: {}, topic: {},
+      polishCost: { tokens: 0, amount: 0 },
+      polishCache: "hit",
+      polishStatus: "complete",
+      polishCoverage: { perInsightDone: 5, perInsightTotal: 5, hasExecutive: true },
+      fileName: "x.pptx",
+    });
+    const res = await callGet("http://x/api/reports/r/pptx?polish=1", "r");
+    expect(res.headers.get("X-Ppt-Polish-Cache")).toBe("hit");
+    expect(res.headers.get("X-Ppt-Polish-Cost-Usd")).toBe("0.000000");
   });
 
   it("orchestrator 抛错 → 500 + JSON error", async () => {

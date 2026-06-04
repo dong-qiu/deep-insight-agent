@@ -172,4 +172,20 @@ CREATE TABLE IF NOT EXISTS audit_log (
   detail TEXT                  -- JSON 附加（调用方负责脱敏后再传入）
 );
 CREATE INDEX IF NOT EXISTS idx_audit_at ON audit_log(at);
+
+-- ── 增量·D：PPT polish 缓存（B 路径 LLM 重写）──
+-- B 路径每次 ~$0.21 / ~30s；同一 report 重复点击导出按钮（或 LLM 路径），靠 inputs_hash
+-- 复用上次成功结果，cache 命中秒级返、零成本。
+-- inputs_hash = SHA-256(topic.name + sorted [insight.id, statement, importance_basis])，
+-- 任一输入变化（topic 改名、洞察改写、纳入条变动）都自动失效。
+-- 只缓存"完整成功"结果（perInsight 全填 + executive 非 null），partial 不写入
+-- → 中转站偶发流式截断时下次还会重试、直到攒齐一份完整 polish 才锁。
+CREATE TABLE IF NOT EXISTS ppt_polish_cache (
+  report_id   TEXT PRIMARY KEY,
+  inputs_hash TEXT NOT NULL,
+  polish_json TEXT NOT NULL,
+  tokens      INTEGER NOT NULL,
+  amount      REAL NOT NULL,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
 `;
