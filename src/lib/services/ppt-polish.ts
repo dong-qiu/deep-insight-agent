@@ -34,11 +34,13 @@ export interface PolishResult {
   cost: Cost;
 }
 
-/** 针对单条洞察凝练 §1 + 生成 §3 启示。失败返 null（caller 走 fallback）。 */
+/** 针对单条洞察凝练 §1 + 生成 §3 启示。失败返 null（caller 走 fallback）。
+ *  signal 透传 callStructured；abort 后抛 AbortError、由本函数 catch 走 null 路径。 */
 async function polishInsight(
   ins: Insight,
   topic: Topic,
   onCost?: (c: Cost) => void,
+  signal?: AbortSignal,
 ): Promise<InsightPolish | null> {
   try {
     const { data } = await callStructured({
@@ -56,10 +58,14 @@ ${ins.importance_basis}
       schema: InsightPolishSchema,
       maxTokens: 1500,
       onCost,
+      signal,
     });
     return data;
   } catch (e) {
-    console.warn(`  ⚠️ ppt-polish 失败（insight=${ins.id}）：${(e as Error).message.slice(0, 80)} → A fallback`);
+    // 我方主动 abort：任何错误都按"取消"语义处理（SDK 实际抛 APIUserAbortError 而非 AbortError）
+    if (signal?.aborted) return null;
+    const err = e as Error;
+    console.warn(`  ⚠️ ppt-polish 失败（insight=${ins.id}）：${err.message.slice(0, 80)} → A fallback`);
     return null;
   }
 }
@@ -69,6 +75,7 @@ async function polishExecutive(
   keyInsights: IncludedInsightLite[],
   topic: Topic,
   onCost?: (c: Cost) => void,
+  signal?: AbortSignal,
 ): Promise<ExecutivePolish | null> {
   if (keyInsights.length === 0) return null;
   try {
@@ -87,10 +94,13 @@ ${numbered}
       schema: ExecutivePolishSchema,
       maxTokens: 2000,
       onCost,
+      signal,
     });
     return data;
   } catch (e) {
-    console.warn(`  ⚠️ ppt-polish 执行摘要失败：${(e as Error).message.slice(0, 80)} → 跳过 Executive 页`);
+    if (signal?.aborted) return null;
+    const err = e as Error;
+    console.warn(`  ⚠️ ppt-polish 执行摘要失败：${err.message.slice(0, 80)} → 跳过 Executive 页`);
     return null;
   }
 }
@@ -101,16 +111,20 @@ ${numbered}
  *  通过 PPT_POLISH_CONCURRENCY 环境变量可调；缺省 4。 */
 const POLISH_CONCURRENCY_DEFAULT = 4;
 
-/** 简易并发 map：批量切片，每批内并发跑 worker，串行推进。保留输入顺序的结果数组。 */
+/** 简易并发 map：批量切片，每批内并发跑 worker，串行推进。保留输入顺序的结果数组。
+ *  signal 在每次拉新任务前 check：abort 后 pending 项不再启动，已 in-flight 由 worker 自身处理。
+ *  跳过的位置返 undefined，调用方需对 sparse 数组容错。 */
 async function mapWithLimit<T, R>(
   items: T[],
   limit: number,
   worker: (item: T, idx: number) => Promise<R>,
-): Promise<R[]> {
-  const out: R[] = new Array(items.length);
+  signal?: AbortSignal,
+): Promise<Array<R | undefined>> {
+  const out: Array<R | undefined> = new Array(items.length);
   let cursor = 0;
   const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
     while (cursor < items.length) {
+      if (signal?.aborted) break;
       const i = cursor++;
       out[i] = await worker(items[i], i);
     }
@@ -119,15 +133,25 @@ async function mapWithLimit<T, R>(
   return out;
 }
 
+export interface PolishOptions {
+  /** 透传到所有底层 callStructured；上层（orchestrator）按累计成本 abort */
+  signal?: AbortSignal;
+  /** 每次成功 LLM 调用回调（含重试累计 cost）——上层监听以决定何时 abort */
+  onCost?: (c: Cost) => void;
+}
+
 /** PPT LLM 润色入口：仅对重点条（importance≥4）做单条 polish + 整批 Executive。
- *  非重点条不做 polish（ppt-gen 走 A 简表渲染）。 */
+ *  非重点条不做 polish（ppt-gen 走 A 简表渲染）。
+ *  signal/onCost 由 orchestrator 注入以实现"累计成本上限到达 → 取消未启动 + in-flight"硬停。 */
 export async function polishForPpt(
   keyInsights: IncludedInsightLite[],
   topic: Topic,
+  opts: PolishOptions = {},
 ): Promise<PolishResult> {
   let cost: Cost = { tokens: 0, amount: 0 };
   const accumulate = (c: Cost): void => {
     cost = { tokens: cost.tokens + c.tokens, amount: cost.amount + c.amount };
+    opts.onCost?.(c);
   };
 
   const concurrency =
@@ -137,14 +161,24 @@ export async function polishForPpt(
 
   // 单条 polish 池化并发 + executive 单独并行（与池子同时跑、不占池子配额——独立独占一席）
   const [perResults, executive] = await Promise.all([
-    mapWithLimit(keyInsights, concurrency, (x) =>
-      polishInsight(x.insight, topic, accumulate).then((p) => [x.insight.id, p] as const),
+    mapWithLimit(
+      keyInsights,
+      concurrency,
+      (x) =>
+        polishInsight(x.insight, topic, accumulate, opts.signal).then(
+          (p) => [x.insight.id, p] as const,
+        ),
+      opts.signal,
     ),
-    polishExecutive(keyInsights, topic, accumulate),
+    polishExecutive(keyInsights, topic, accumulate, opts.signal),
   ]);
 
   const perInsight = new Map<string, InsightPolish>();
-  for (const [id, p] of perResults) if (p) perInsight.set(id, p);
+  for (const tup of perResults) {
+    if (!tup) continue; // abort 后未启动的 slot 是 undefined
+    const [id, p] = tup;
+    if (p) perInsight.set(id, p);
+  }
   return { perInsight, executive, cost };
 }
 

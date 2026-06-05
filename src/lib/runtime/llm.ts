@@ -139,6 +139,9 @@ export interface StructuredCall<T extends z.ZodType> {
   thinking?: boolean;
   /** 每次底层调用（含重试）的成本回调 —— 调用方据此做 per-Run 记账（并发隔离） */
   onCost?: (cost: Cost) => void;
+  /** AbortSignal——透传到 SDK 流式请求，用于"成本上限到达 → 取消未完成调用"等场景。
+   *  abort 后 SDK 抛 AbortError；调用方应当外层 catch 并按"失败"路径处理（保留已成功子结果）。 */
+  signal?: AbortSignal;
 }
 
 export interface StructuredResult<T> {
@@ -194,10 +197,12 @@ export async function callStructured<T extends z.ZodType>(
   // 流式生成（messages.stream + finalMessage）：长输出（dense 批 / 高 max_tokens）下避免中转站
   // 缓冲整段响应再返回导致的网关超时。流尾内容块中找 tool_use → 取 input 当结构化输出。
   // 敏感领域内容偶发安全拒答（stop_reason=refusal）——多为非确定性，重试至多 3 次。
-  let res = await getClient().messages.stream(params).finalMessage();
+  // signal 透传到 SDK 选项，调用方 abort 时 SDK 抛 AbortError、由外层 catch 走"失败"路径。
+  const reqOpts = opts.signal ? { signal: opts.signal } : undefined;
+  let res = await getClient().messages.stream(params, reqOpts).finalMessage();
   account(res.usage);
   for (let attempt = 1; res.stop_reason === "refusal" && attempt < 3; attempt++) {
-    res = await getClient().messages.stream(params).finalMessage();
+    res = await getClient().messages.stream(params, reqOpts).finalMessage();
     account(res.usage);
   }
 

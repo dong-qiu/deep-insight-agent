@@ -45,6 +45,8 @@ export async function GET(
       "X-Ppt-Polish-Cache": result.polishCache,
       "X-Ppt-Polish-Status": result.polishStatus,
       "X-Ppt-Polish-Coverage": `${result.polishCoverage.perInsightDone}/${result.polishCoverage.perInsightTotal} exec=${result.polishCoverage.hasExecutive ? "y" : "n"}`,
+      "X-Ppt-Polish-Aborted": result.polishAborted ? "true" : "false",
+      "X-Ppt-Polish-Cost-Cap-Usd": result.polishCostCapUsd.toFixed(2),
     },
   });
 }

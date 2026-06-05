@@ -216,5 +216,47 @@ describe("exportReportPptx", () => {
     const r = await exportReportPptx(db, "rep_t1");
     expect(r!.polishCache).toBe("none");
     expect(r!.polishStatus).toBe("none");
+    expect(r!.polishAborted).toBe(false);
+    expect(r!.polishCostCapUsd).toBe(0);
+  });
+
+  it("累计成本越 cap → orchestrator abort signal、polishAborted=true、CostCapUsd 透传", async () => {
+    // mock polishForPpt：通过 onCost 模拟 3 次 $0.15 累计，触发上层在 0.30 cap 时 abort
+    vi.mocked(polishForPpt).mockImplementation(async (_, __, options) => {
+      let total = 0;
+      for (let i = 0; i < 3; i++) {
+        if (options?.signal?.aborted) break;
+        const delta = { tokens: 1000, amount: 0.15 };
+        total += delta.amount;
+        options?.onCost?.(delta);
+      }
+      return {
+        perInsight: new Map([["i1", { brief_summary: "s", implications: ["x"] }]]),
+        executive: null,
+        cost: { tokens: 1000 * Math.ceil(total / 0.15), amount: total },
+      };
+    });
+    process.env.PPT_POLISH_COST_CAP_USD = "0.30";
+    const r = await exportReportPptx(db, "rep_t1", { usePolish: true });
+    delete process.env.PPT_POLISH_COST_CAP_USD;
+
+    expect(r!.polishAborted).toBe(true);
+    expect(r!.polishCostCapUsd).toBe(0.30);
+    // 仍写缓存（保留已成功子结果，与 D 阶段 partial-also-cache 语义一致）
+    expect(r!.polishStatus).not.toBe("complete");
+  });
+
+  it("cache hit 不消耗 LLM → polishAborted=false、CostCapUsd 仍透传 cap 让 UI 显示", async () => {
+    vi.mocked(polishForPpt).mockResolvedValue({
+      perInsight: new Map([["i1", { brief_summary: "s", implications: ["x"] }]]),
+      executive: { takeaways: ["a", "b"] },
+      cost: { tokens: 100, amount: 0.01 },
+    });
+    await exportReportPptx(db, "rep_t1", { usePolish: true }); // 写缓存
+    vi.mocked(polishForPpt).mockReset();
+    const r2 = await exportReportPptx(db, "rep_t1", { usePolish: true });
+    expect(r2!.polishCache).toBe("hit");
+    expect(r2!.polishAborted).toBe(false);
+    expect(r2!.polishCostCapUsd).toBeGreaterThan(0); // 默认 0.30
   });
 });

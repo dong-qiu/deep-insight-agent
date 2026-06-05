@@ -31,6 +31,10 @@ export interface PptExportResult extends PptGenOutput {
   polishStatus: "none" | "complete" | "no-executive" | "partial";
   /** polish 覆盖度 N/M 透传——complete 时 N=M、有 executive */
   polishCoverage: { perInsightDone: number; perInsightTotal: number; hasExecutive: boolean };
+  /** 本次 polish 是否因为累计成本越过 PPT_POLISH_COST_CAP_USD 被硬停（cache hit / 未启用 polish 时恒 false） */
+  polishAborted: boolean;
+  /** 触发硬停的成本上限（透传给 header，方便用户知道阈值在哪）；usePolish=false 时 0 */
+  polishCostCapUsd: number;
   /** 文件名：`{topic.name} · {generated_at[:10]}.pptx`（替换文件系统非法字符） */
   fileName: string;
 }
@@ -133,6 +137,12 @@ function safeFileName(topicName: string, generatedAt: string): string {
  *  - usePolish=true：N 条重点 + 1 executive 并发跑 LLM，~10s + ~\$0.07/PPT；
  *    任一 LLM 失败 → 该项 A fallback、不阻断导出（polishForPpt 内部已 try/catch）。 */
 const KEY_IMPORTANCE = 4;
+const COST_CAP_DEFAULT_USD = 0.30;
+
+function resolveCostCap(): number {
+  const raw = Number(process.env.PPT_POLISH_COST_CAP_USD);
+  return Number.isFinite(raw) && raw > 0 ? raw : COST_CAP_DEFAULT_USD;
+}
 
 export async function exportReportPptx(
   db: DB,
@@ -146,7 +156,9 @@ export async function exportReportPptx(
   let polish: { perInsight: PolishResult["perInsight"]; executive: PolishResult["executive"] } | undefined;
   let polishCost = { tokens: 0, amount: 0 };
   let polishCache: "none" | "hit" | "miss" = "none";
-  let perInsightTotal = 0; // 重点条总数（即使 polish 全失败也要报）
+  let perInsightTotal = 0;
+  let polishAborted = false;
+  const costCap = resolveCostCap();
 
   if (opts.usePolish) {
     polishCache = "miss";
@@ -163,13 +175,26 @@ export async function exportReportPptx(
       }
     }
 
-    // 2) 未命中 / refresh：跑 LLM；merge 既有缓存补齐缺漏（同 hash）；写回。
-    //    中转站 tool_use 流式偶发截断 → 多次 refresh 渐进收敛到 complete。
+    // 2) 未命中 / refresh：跑 LLM；累计成本越过 costCap → abort 未启动 + in-flight；
+    //    与既有缓存 merge（同 hash）后写回；中转站偶发截断时多次 refresh 渐进收敛。
     if (!polish) {
-      const result = await polishForPpt(key, topic);
+      const controller = new AbortController();
+      let running = 0;
+      const result = await polishForPpt(key, topic, {
+        signal: controller.signal,
+        onCost: (delta) => {
+          running += delta.amount;
+          if (running >= costCap && !controller.signal.aborted) {
+            polishAborted = true;
+            controller.abort();
+            console.warn(
+              `  ⚠️ ppt-polish 累计成本 $${running.toFixed(4)} ≥ cap $${costCap.toFixed(2)}（PPT_POLISH_COST_CAP_USD）→ abort 未启动 + in-flight；已成功子结果保留`,
+            );
+          }
+        },
+      });
       polishCost = result.cost;
 
-      // 与既有同 hash 缓存做并集：新调用成功的字段覆盖旧、新失败仍能拿旧。
       const existing = getPolishCacheEntry(db, reportId);
       const baseline = existing && existing.inputsHash === inputsHash ? existing.polish : null;
       const merged = {
@@ -180,7 +205,6 @@ export async function exportReportPptx(
       if (result.executive) merged.executive = result.executive;
 
       polish = merged;
-      // 总有进步 → 总写缓存（覆盖累计 cost 起到节流"已付"的事实记录）
       const mergedCost = {
         tokens: (existing?.originalCost.tokens ?? 0) + result.cost.tokens,
         amount: (existing?.originalCost.amount ?? 0) + result.cost.amount,
@@ -216,6 +240,8 @@ export async function exportReportPptx(
     polishCache,
     polishStatus,
     polishCoverage: { perInsightDone, perInsightTotal, hasExecutive },
+    polishAborted,
+    polishCostCapUsd: opts.usePolish ? costCap : 0,
     fileName: safeFileName(topic.name, report.generated_at),
   };
 }

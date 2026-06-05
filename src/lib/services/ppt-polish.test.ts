@@ -94,4 +94,35 @@ describe("polishForPpt", () => {
     expect(r.perInsight.size).toBe(0);
     expect(callStructured).not.toHaveBeenCalled();
   });
+
+  it("opts.signal 已 aborted → 新调用都被跳过、perInsight 空（与 in-flight 一致语义）", async () => {
+    const ctrl = new AbortController();
+    ctrl.abort();
+    // 模拟 callStructured 见 abort 即抛 AbortError
+    vi.mocked(callStructured).mockImplementation(() => {
+      const e = new Error("aborted");
+      e.name = "AbortError";
+      return Promise.reject(e);
+    });
+    const insights = [lite(ins("i1", "S1")), lite(ins("i2", "S2"))];
+    const r = await polishForPpt(insights, topic, { signal: ctrl.signal });
+    expect(r.perInsight.size).toBe(0);
+    expect(r.executive).toBeNull();
+  });
+
+  it("opts.onCost 每次成功调用回调一次（含 executive），传 abort 用", async () => {
+    vi.mocked(callStructured).mockImplementation((o) => {
+      const cost = { tokens: 10, amount: 0.01 };
+      o.onCost?.(cost);
+      const data = o.system.includes("Executive")
+        ? { takeaways: ["a", "b"] }
+        : { brief_summary: "s", implications: ["x"] };
+      return Promise.resolve({ data, usage: {}, cost } as unknown as ReturnType<typeof callStructured>);
+    });
+    const costs: number[] = [];
+    const insights = [lite(ins("i1", "S1")), lite(ins("i2", "S2"))];
+    await polishForPpt(insights, topic, { onCost: (c) => costs.push(c.amount) });
+    expect(costs).toHaveLength(3); // 2 insights + 1 executive
+    expect(costs.every((c) => c === 0.01)).toBe(true);
+  });
 });

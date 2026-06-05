@@ -34,6 +34,8 @@ describe("GET /api/reports/[id]/pptx", () => {
       polishCache: "none",
       polishStatus: "none",
       polishCoverage: { perInsightDone: 0, perInsightTotal: 0, hasExecutive: false },
+      polishAborted: false,
+      polishCostCapUsd: 0,
       fileName: "T · 2026-06-07.pptx",
     });
     const res = await callGet("http://x/api/reports/rep_x/pptx", "rep_x");
@@ -63,6 +65,8 @@ describe("GET /api/reports/[id]/pptx", () => {
       polishCache: "miss",
       polishStatus: "complete",
       polishCoverage: { perInsightDone: 5, perInsightTotal: 5, hasExecutive: true },
+      polishAborted: false,
+      polishCostCapUsd: 0.3,
       fileName: "T.pptx",
     });
     const res = await callGet("http://x/api/reports/rep_x/pptx?polish=1", "rep_x");
@@ -82,10 +86,30 @@ describe("GET /api/reports/[id]/pptx", () => {
       polishCache: "miss",
       polishStatus: "complete",
       polishCoverage: { perInsightDone: 5, perInsightTotal: 5, hasExecutive: true },
+      polishAborted: false,
+      polishCostCapUsd: 0.3,
       fileName: "x.pptx",
     });
     await callGet("http://x/api/reports/r/pptx?polish=1&refresh=1", "r");
     expect(exportReportPptx).toHaveBeenCalledWith(expect.anything(), "r", { usePolish: true, refresh: true });
+  });
+
+  it("polish aborted → X-Ppt-Polish-Aborted=true + Cost-Cap 透传", async () => {
+    vi.mocked(exportReportPptx).mockResolvedValue({
+      buffer: Buffer.from([1]), pageCount: 16,
+      // @ts-expect-error 测试 stub
+      report: {}, topic: {},
+      polishCost: { tokens: 5000, amount: 0.32 },
+      polishCache: "miss",
+      polishStatus: "partial",
+      polishCoverage: { perInsightDone: 5, perInsightTotal: 13, hasExecutive: false },
+      polishAborted: true,
+      polishCostCapUsd: 0.3,
+      fileName: "x.pptx",
+    });
+    const res = await callGet("http://x/api/reports/r/pptx?polish=1", "r");
+    expect(res.headers.get("X-Ppt-Polish-Aborted")).toBe("true");
+    expect(res.headers.get("X-Ppt-Polish-Cost-Cap-Usd")).toBe("0.30");
   });
 
   it("cache hit 时 X-Ppt-Polish-Cache=hit + 成本 0", async () => {
@@ -97,6 +121,8 @@ describe("GET /api/reports/[id]/pptx", () => {
       polishCache: "hit",
       polishStatus: "complete",
       polishCoverage: { perInsightDone: 5, perInsightTotal: 5, hasExecutive: true },
+      polishAborted: false,
+      polishCostCapUsd: 0.3,
       fileName: "x.pptx",
     });
     const res = await callGet("http://x/api/reports/r/pptx?polish=1", "r");
