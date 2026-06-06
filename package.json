@@ -7,10 +7,10 @@
     "node": ">=20"
   },
   "scripts": {
-    "dev": "next dev",
+    "dev": "NODE_USE_ENV_PROXY=1 next dev",
     "build": "next build",
-    "start": "next start",
-    "seed": "tsx evals/seed.ts",
+    "start": "NODE_USE_ENV_PROXY=1 next start",
+    "seed": "NODE_USE_ENV_PROXY=1 tsx evals/seed.ts",
     "eval:a1": "tsx evals/run-a1.ts",
     "eval:build-local": "tsx evals/build-local-eval.ts",
     "review:sheet": "tsx evals/make-review-sheet.ts",
