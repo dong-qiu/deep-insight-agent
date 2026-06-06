@@ -64,13 +64,25 @@ const TYPE_LABEL: Record<Report["type"], string> = {
   initial_digest: "首版综述",
 };
 
+/** 引用渲染所需信息（dogfood feedback：原 ci_xxx 给用户看太唐突，quote 应可点）。
+ *  source_name 来自 Source 表的人可读名（"Hacker News" / "arXiv cs.AI 最新"…）；
+ *  url 是 content_item 抓回时的源 URL，用作 quote 链接目标；
+ *  published_at 用于显示日期，缺失时省略。 */
+export interface CitationDisplay {
+  source_id: string;
+  source_name: string;
+  tags: string[];
+  url: string;
+  published_at: string | null;
+}
+
 export interface BuildReportInput {
   topic: Topic;
   batch: AnalysisBatch;
   validation: ValidationResult;
   type: Report["type"];
-  /** content_item_id → {source_id, tags}，用于派生 source_ids / tags */
-  contentLookup: Map<string, Pick<ContentItem, "source_id" | "tags">>;
+  /** content_item_id → 展示元数据，用于派生 source_ids / tags + 渲染引用链接 */
+  contentLookup: Map<string, CitationDisplay>;
   prevReportId?: string | null;
   now?: string; // 注入时间便于测试
 }
@@ -95,7 +107,7 @@ export function buildReport(input: BuildReportInput): { report: Report; index: R
 
   const report: Report = {
     id, type: input.type, topic_id: input.topic.id, status: "done", generated_at: now, title,
-    body_md: renderMarkdown(title, input.topic, included, date, input.type !== "brief"),
+    body_md: renderMarkdown(title, input.topic, included, date, input.type !== "brief", input.contentLookup),
     body_html: renderHtml(title, input.topic, included, date, input.type !== "brief"),
     insight_ids: included.map((x) => x.insight.id),
     event_ids: eventIds,
@@ -123,6 +135,7 @@ function insightBlockMd(
   heading: string,
   detailed: boolean,
   citeStart: number,
+  lookup: Map<string, CitationDisplay>,
 ): { lines: string[]; next: number } {
   const ins = x.insight;
   const refs = x.citationIndices.length > 0
@@ -132,13 +145,19 @@ function insightBlockMd(
   L.push(`- 重要性：${ins.importance}/5 · 依据：${ins.importance_basis}`);
   if (detailed) L.push(`- 来源：${ins.source_count} 个 · ${ins.multi_source ? "多源印证" : "单源"}`);
   if (ins.type === "trend" && ins.confidence) L.push(`- 置信度：${ins.confidence}`);
-  // review #8d：仅在有引用时输出引用块——selectInsights 已保证 citationIndices.length>=1，
-  // 防御性处理外部构造 IncludedInsight 时（测试 / 未来直接喂数据场景）的"- 引用（0）："空块。
   if (x.citationIndices.length > 0) {
     L.push(`- 引用（${x.citationIndices.length}）：`);
     x.citationIndices.forEach((i, j) => {
       const c = ins.citations[i];
-      L.push(`  - [${citeStart + j}] 「${c.quote}」— \`${c.content_item_id}\``);
+      const info = lookup.get(c.content_item_id);
+      // dogfood feedback：quote 可点跳源；source_name + 日期 替代生硬的 ci_xxx
+      const quotePart = info?.url
+        ? `[「${c.quote}」](${info.url})`
+        : `「${c.quote}」`;
+      const sourceLabel = info?.source_name ?? c.content_item_id;
+      const date = info?.published_at?.slice(0, 10);
+      const datePart = date ? ` · ${date}` : "";
+      L.push(`  - [${citeStart + j}] ${quotePart} — ${sourceLabel}${datePart}`);
     });
   }
   if (x.blockedCount > 0) L.push(`- 校验阻断：${x.blockedCount} 条${blockedReasonStr(x.blockedReasonCounts)}`);
@@ -154,6 +173,7 @@ function renderMarkdown(
   included: IncludedInsight[],
   date: string,
   deep: boolean,
+  lookup: Map<string, CitationDisplay>,
 ): string {
   const keyN = included.filter(KEY).length;
   const summary = `> 主题：${topic.name}（${topic.industry}）· 生成于 ${date} · 共 ${included.length} 条洞察${
@@ -167,7 +187,7 @@ function renderMarkdown(
   let cite = 1; // C-2：全局连续引用编号，跨多条洞察累计
   if (!deep) {
     included.forEach((x, n) => {
-      const r = insightBlockMd(x, `## ${n + 1}.`, false, cite);
+      const r = insightBlockMd(x, `## ${n + 1}.`, false, cite, lookup);
       L.push(...r.lines);
       cite = r.next;
     });
@@ -183,7 +203,7 @@ function renderMarkdown(
     if (!t.items.length) continue;
     L.push(`## ${t.label}（${t.items.length}）`, "");
     for (const x of t.items) {
-      const r = insightBlockMd(x, `### ${(n += 1)}.`, true, cite);
+      const r = insightBlockMd(x, `### ${(n += 1)}.`, true, cite, lookup);
       L.push(...r.lines);
       cite = r.next;
     }

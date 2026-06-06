@@ -3,12 +3,12 @@
  *  端到端需 ANTHROPIC_API_KEY，由团队/定时任务跑。 */
 import type { DB } from "../db/index.js";
 import { saveAnalysisBatch, saveValidationResult } from "../db/analysis.js";
-import { getContentItem } from "../db/repos.js";
+import { getContentItem, getSource } from "../db/repos.js";
 import { saveReport } from "../db/reports.js";
 import { runJob } from "../runtime/jobs.js";
 import type { AnalysisBatch, ContentItem, Report, Topic, ValidationResult } from "../types.js";
 import { analyze } from "./analyzer.js";
-import { buildReport } from "./report-gen.js";
+import { buildReport, type CitationDisplay } from "./report-gen.js";
 import { validateBatch } from "./validator.js";
 
 /** 分析某主题某窗口的 ContentItem → AnalysisBatch 落库；包一条 analyze Run（含成本）。
@@ -52,13 +52,22 @@ export async function runReportGen(
     prevReportId?: string | null;
   },
 ): Promise<Report> {
-  // 为被引内容建 source_id / tags 查找表（派生 source_ids / tags 用）
-  const contentLookup = new Map<string, { source_id: string; tags: string[] }>();
+  // 为被引内容建展示元数据查找表：source_id / tags（派生 source_ids / tags）
+  // + source_name / url / published_at（dogfood feedback：渲染时给用户可读源名 + 可点 quote）
+  const contentLookup = new Map<string, CitationDisplay>();
   for (const ins of opts.batch.insights) {
     for (const c of ins.citations) {
       if (contentLookup.has(c.content_item_id)) continue;
       const ci = getContentItem(db, c.content_item_id);
-      if (ci) contentLookup.set(c.content_item_id, { source_id: ci.source_id, tags: ci.tags });
+      if (!ci) continue;
+      const src = getSource(db, ci.source_id);
+      contentLookup.set(c.content_item_id, {
+        source_id: ci.source_id,
+        source_name: src?.name ?? ci.source_id,
+        tags: ci.tags,
+        url: ci.url,
+        published_at: ci.published_at,
+      });
     }
   }
   const { result } = await runJob(

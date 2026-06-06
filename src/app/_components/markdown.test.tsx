@@ -66,4 +66,19 @@ describe("Markdown 引用 [N]（C-2）", () => {
     expect(h).toContain("<code>[1]</code>");
     expect(h).not.toContain("cite-ref");
   });
+
+  it("标准 markdown 链接 [text](url) → <a> 带 target=_blank", () => {
+    const h = html("点 [「quote 文本」](https://example.com/abc) 看原文");
+    expect(h).toContain('href="https://example.com/abc"');
+    expect(h).toContain('target="_blank"');
+    expect(h).toContain("「quote 文本」");
+    // 不应被误认成 [N] 锚
+    expect(h).not.toContain("cite-ref");
+  });
+
+  it("[5](url) 优先解析为链接（不被误识为 [N] 锚）", () => {
+    const h = html("[5](https://example.com)");
+    expect(h).toContain('href="https://example.com"');
+    expect(h).not.toContain("#cite-5");
+  });
 });

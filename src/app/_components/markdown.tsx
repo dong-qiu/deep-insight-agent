@@ -58,30 +58,35 @@ export function Markdown({ md }: { md: string }) {
   return <article>{nodes}</article>;
 }
 
-/** 行内 `code` + [N] 引用锚链接（C-2）。
- *  分词规则：先按 `code` 切；非 code 段再按 `[N]`（贪婪不跨字符）切，逐段决定 ReactNode。 */
+/** 行内分词：`code` + 标准 markdown 链接 [text](url) + [N] 引用锚（C-2）。
+ *  正则按优先级：链接（含括号 text + URL）→ code → [N] 数字锚。
+ *  顺序重要：链接先匹配避免 [5](url) 被误识别成 [5] 锚。 */
+const INLINE_PATTERN = /(\[[^\]]+\]\([^)]+\)|`[^`]+`|\[\d+\])/g;
+
 function inline(text: string): ReactNode {
-  const codeSplits = text.split(/(`[^`]+`)/g);
-  const out: ReactNode[] = [];
-  codeSplits.forEach((seg, segIdx) => {
-    if (seg.startsWith("`") && seg.endsWith("`")) {
-      out.push(<code key={`c-${segIdx}`}>{seg.slice(1, -1)}</code>);
-      return;
+  const parts = text.split(INLINE_PATTERN);
+  return parts.map((p, idx) => {
+    if (!p) return null;
+    // [text](url) markdown 链接（dogfood feedback：quote 可点跳源）
+    const linkM = p.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
+    if (linkM) {
+      return (
+        <a key={`l-${idx}`} href={linkM[2]} target="_blank" rel="noopener noreferrer">{linkM[1]}</a>
+      );
     }
-    // 非 code 段：把 [N] 切出来
-    const refSplits = seg.split(/(\[\d+\])/g);
-    refSplits.forEach((p, idx) => {
-      const m = p.match(/^\[(\d+)\]$/);
-      if (m) {
-        out.push(
-          <sup key={`r-${segIdx}-${idx}`} className="cite-ref">
-            <a href={`#cite-${m[1]}`}>[{m[1]}]</a>
-          </sup>,
-        );
-      } else if (p.length > 0) {
-        out.push(p);
-      }
-    });
+    // `code`
+    if (p.startsWith("`") && p.endsWith("`")) {
+      return <code key={`c-${idx}`}>{p.slice(1, -1)}</code>;
+    }
+    // [N] 锚（仅纯数字）
+    const refM = p.match(/^\[(\d+)\]$/);
+    if (refM) {
+      return (
+        <sup key={`r-${idx}`} className="cite-ref">
+          <a href={`#cite-${refM[1]}`}>[{refM[1]}]</a>
+        </sup>
+      );
+    }
+    return p;
   });
-  return out;
 }
