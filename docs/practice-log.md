@@ -309,3 +309,24 @@
   - **但跳的时候要诚实记账**：本次"跳过 review × 3 commit + 没出事"是**带条件的样本**——条件是上面四类"可跳"匹配。**不要把它当成"自评够用"的归纳证据**——要不是 D 的严格门槛在 PPT polish 实测里立刻被砸醒，就会以"完全可用"的错觉合进 main 并影响后续 Iteration。
   - **6/01 那条规矩本身不需要改**：它说"下次 PR 默认动作"，默认动作就是 default，遇到"可跳"的明确分类时显式跳——`skills/L3` 应该补"何时可跳"的判据，让规矩长出例外维度。
 - **后续动作**: `skills/L3-quality.md` 把"可跳"判据补进异构 review 那节（**契约/安全/跨组件一致性** vs **纯 orchestration/UI**）；本次反思条目本身也是个范例，下次 commit 时如果跳 review 应在 commit message 显式声明"本次跳过 R1，理由：纯 UI/orchestration、有 e2e probe"——把"跳"做成可审计动作，不是默认隐式。
+
+### 2026-06-06 · "深度 MVP 分析 → 路径化补齐"作为一种 IPD 收口工作法
+
+- **日期**: 2026-06-06
+- **情境**: PPT A/B/C/D 子线收尾后，对"MVP 是否完整"做了次深度回扫——把 charter / product-definition 的 MVP 范围 + specs 的 AC 逐项对照实际 src/ 代码 + 看板/设置/列表 UI 实况，识别出 4-5 处中等严重度缺口（报告库无搜索/筛选/排序、设置只读、admin 无重试 + 无成本时序、主题深挖无入口、引用 [n] 无行内交互、按需触发抓取缺失）。然后用"B 路径"（4 commit · 38 测试）+ "C 路径"（3 commit · 14 测试）系统补齐 7 项缺口、每项都"API + UI + 测试 + 容器实测 + 提交"五件套收口。
+- **观察**:
+  - **MVP 完成"对照 spec 项"远比"凭直觉觉得跑通了"严格**：A1 验证、5/27 多源、6/4 cron 都跑通后，**直觉上"MVP 完成"**——但拉回去对照 product-definition 表格 / specs AC，发现"设置 readonly + 自注释'于后续子增量补'"、"报告库纯卡片列表无任何筛选"、"看板缺重试 / 时序图"、"主题深挖无 UI 入口"等明确写在 MVP 范围里却未做的项。**"对账"是收尾的独立动作**，不会自动发生。
+  - **超 MVP 范围的事（PPT A/B/C/D）反而被先做了**：因为 PPT 是新场景、有完整端到端 probe 驱动；而 MVP 内的 UI 缺口（搜索/筛选/CRUD）是"在已有代码上加表单"——心理感觉"不够新鲜"反而被一直推迟。"**新鲜度偏置**"是 IPD 收口的隐性反向力。
+  - **路径化（B-1+2/B-3/B-4/B-5）比"逐项做"效率高**：把 4-5 个缺口规划为有内部依赖关系的路径后，公共抽象（CSS .ppt-btn 系列、admin _components 目录、URL searchParams 模式、客户端 form + router.refresh、FK 友好错处理范式）只设计一次，复用 4 次。如果逐项独立做，每项都要重新发明这些。**路径化 = 公共抽象的批量摊销**。
+  - **服务端组件 + URL searchParams 比客户端 state 更简洁（B-1+2 实例）**：报告库搜索/筛选用 HTML 原生 GET 表单 + Server Component 读 searchParams，**零客户端 state、零 JS、零 useEffect**，纯刷新即重渲染。比想象中省事得多——React 生态默认推客户端 state 是被 SPA 时代影响的"过度复杂化"。
+  - **FK 违例的友好错处理范式（B-3 复用 3 次）**：repos.ts delete*() 直接 throw，路由层 catch 后返 409 + 中文文案"…被 X 引用，无法删除（建议改 enabled=false 停用）"。这个范式被 source/topic 删除复用、可拓展到其他实体删除。
+  - **fire-and-forget 长任务用 Node runtime 是合理的（C-1）**：14-42 min 的深挖任务用 `void runPipelineForTopic(...)` 直接 fire，202 立即返；Node runtime 下事件循环会挂着 promise 直到完成（实测 21ms 后 analyze Run 落库）。如果是 Edge / Serverless 早就丢了。**这强化了 5/31 GCP 那条"架构判据 = 长任务 + 状态"的判定**——我们就是为这个选了"常驻 Node + Docker"。
+- **经验 / 教训**:
+  - **"端到端跑通"不等于"MVP 完成"**：前者是技术可行性证明，后者是 spec 落点对账。两者之间隔了一道"逐项对照"动作——必须显式做，不会自然发生。
+  - **MVP 缺口收口要路径化、不要碎片化**：批量做 4-5 项 UI 缺口时，至少识别出 3-4 个公共抽象先沉淀，再喂给逐项。这次摊出来的：CSS button system、admin/settings _components 目录、URL searchParams 表单模式、客户端 fetch + router.refresh、FK 友好错——全是"做一项发明、做四项摊销"。
+  - **"新鲜度偏置"对 IPD 收尾有害**：超 MVP 范围的事（PPT 子线）因新鲜被优先；MVP 内补缺口因"不够新鲜"被推。**收口阶段需要纪律性反偏置**——把"补齐"列入 roadmap 显式条目，按对账优先级排，而不是按"想做"优先级。
+  - **HTML 原生表单仍然是好答案**：在 React Server Components 时代，URL searchParams + Server Component 是最简单的"无 state 表单"方案。reach for client state should be a deliberate choice, not a default.
+- **后续动作**:
+  - 把"MVP 完成 = 端到端跑通 + spec 对账"两条独立判据写进 `skills/L2-workflow.md` IPD 收口约束；
+  - 公共抽象（FK 友好错 / fire-and-forget 长任务 / URL searchParams 表单）作为模式收录到 `skills/L0-foundation.md`；
+  - 本次路径化补齐总计 7 commit / +52 测试 / 7 个 MVP 项闭合——作为"路径化补齐"的范例案例留档。

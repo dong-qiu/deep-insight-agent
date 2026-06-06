@@ -46,6 +46,10 @@ curl -fsS -X POST http://127.0.0.1:3000/api/cron -H "authorization: Bearer $CRON
 | `CRON_SECRET` | ✅（定时） | `openssl rand -base64 32`；**未设则 `/api/cron` 返回 503、定时管线不工作** |
 | `PIPELINE_WINDOW_HOURS` | 否 | 单轮回看窗口，默认 168（7 天） |
 | `INITIAL_DIGEST_WINDOW_HOURS` / `INITIAL_DIGEST_ITEMS` | 否 | 冷启动首版综述的窗口/条数，默认 720（30 天）/ 25 |
+| `DEEP_DIVE_WINDOW_HOURS` / `DEEP_DIVE_ITEMS` | 否 | 用户触发主题深挖（C-1，`POST /api/topics/[id]/deep-dive`）的窗口/条数，默认 336（14 天）/ 25 |
+| `PROMPT_CACHE` | 否 | `0` 关闭 Anthropic prompt caching（中转站只写不读时省钱；直连 Anthropic 时不要设）|
+| `PPT_POLISH_CONCURRENCY` | 否 | B 路径 LLM polish 单批并发上限，默认 4（中转站对 14 路 tool_use 流式 36% 截断、限到 4 路降到 14%；详见 practice-log 2026-06-03/04 条）|
+| `PPT_POLISH_COST_CAP_USD` | 否 | B 路径累计成本硬上限（默认 0.30）；越线立刻 AbortController.abort() 取消未启动 + in-flight、partial 结果照常 merge 进缓存 |
 | `ALERT_WEBHOOK` | 否 | Run 失败时 POST 告警；**当前 payload 是 Slack 兼容 `{text, runId, kind, target, error}`**；通用 webhook 端（webhook.site / Discord / Slack）直收；ntfy/飞书/钉钉/Bark 等需 payload 适配（见 §13）。未设则不发、失败仍落 Run + error 日志 |
 | `ALERT_TIMEOUT_MS` | 否 | 告警发送超时，默认 5000 |
 | `DATA_DIR`/`DB_PATH`/`INSIGHT_CONFIG_PATH` | 容器已设 | 勿在本地 dev 设；Dockerfile 已指向 `/data` 与打包内 `defaults.yaml` |

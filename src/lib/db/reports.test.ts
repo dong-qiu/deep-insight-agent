@@ -167,6 +167,17 @@ describe("queryReportIndex（B-1+2 报告库筛/搜/排）", () => {
     expect(rs.length).toBe(4);
   });
 
+  it("非法 industry 静默忽略（Sonnet R1 critical：与 type 同口径白名单）", () => {
+    const rs = queryReportIndex(db, { industry: "garbage" });
+    expect(rs.length).toBe(4); // 不过滤、全返
+  });
+
+  it("非法 sort 字段（注入面）走默认 date", () => {
+    // 即使传 'id; DROP TABLE'，因走 SORT_COLS 映射，未匹配 key 必 fallback 到 date
+    const rs = queryReportIndex(db, { sort: "id; DROP TABLE report_index--" });
+    expect(rs.map((r) => r.report_id)).toEqual(["r2", "r3", "r1", "r4"]); // 默认 date desc 顺序
+  });
+
   it("非法日期格式静默忽略", () => {
     const rs = queryReportIndex(db, { from: "not-a-date" });
     expect(rs.length).toBe(4);

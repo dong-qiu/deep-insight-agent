@@ -2,8 +2,9 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Report, ReportIndexEntry } from "../types.js";
+import type { Industry, Report, ReportIndexEntry } from "../types.js";
 import type { DB } from "./index.js";
+import { INDUSTRY_VALUES } from "./validate.js";
 
 const j = (v: unknown): string => JSON.stringify(v);
 
@@ -155,8 +156,10 @@ function rowToIndex(r: any): ReportIndexEntry {
 /** 报告库查询：FTS5 + 筛选 + 排序。
  *  - q: 走 FTS5 → 取 report_id 集合再过滤；
  *  - type / industry / from / to (yyyy-mm-dd inclusive)：白名单 + 参数化 SQL；
- *  - sort: "date"|"importance"，dir: "asc"|"desc"，默认 date desc。
- *  - 无效字段静默忽略走默认（UI 不应被 400 打断）。 */
+ *  - sort: "date"|"importance"，dir: "asc"|"desc"，默认 date desc——白名单查表映射常量列名；
+ *  - 无效字段静默忽略走默认（UI 不应被 400 打断）。
+ *  - Sonnet R1 review (2026-06-06)：industry 白名单与 validateSourceInput 复用；
+ *    ORDER BY 用 SORT_COLS 常量映射隔离任意字符串拼接面。 */
 export interface ReportQuery {
   q?: string;
   type?: string;
@@ -167,14 +170,18 @@ export interface ReportQuery {
   dir?: string;
   limit?: number;
 }
+const REPORT_TYPES = new Set(["brief", "deep_dive", "initial_digest"]);
+const SORT_COLS = { date: "date", importance: "importance" } as const;
+const SORT_DIRS = { asc: "ASC", desc: "DESC" } as const;
+
 export function queryReportIndex(db: DB, opts: ReportQuery = {}): ReportIndexEntry[] {
   const where: string[] = [];
   const args: unknown[] = [];
 
-  if (opts.type && ["brief", "deep_dive", "initial_digest"].includes(opts.type)) {
+  if (opts.type && REPORT_TYPES.has(opts.type)) {
     where.push("type = ?"); args.push(opts.type);
   }
-  if (opts.industry) {
+  if (opts.industry && INDUSTRY_VALUES.has(opts.industry as Industry)) {
     where.push("industry = ?"); args.push(opts.industry);
   }
   if (opts.from && /^\d{4}-\d{2}-\d{2}$/.test(opts.from)) {
@@ -183,15 +190,14 @@ export function queryReportIndex(db: DB, opts: ReportQuery = {}): ReportIndexEnt
   if (opts.to && /^\d{4}-\d{2}-\d{2}$/.test(opts.to)) {
     where.push("date <= ?"); args.push(opts.to);
   }
-
-  // FTS5 子查询：q 命中走 report_fts，取 report_id 集合后 IN 过滤
   if (opts.q && opts.q.trim()) {
     where.push("report_id IN (SELECT report_id FROM report_fts WHERE report_fts MATCH ?)");
     args.push(opts.q.trim());
   }
 
-  const sortCol = opts.sort === "importance" ? "importance" : "date";
-  const dir = opts.dir === "asc" ? "ASC" : "DESC";
+  // 列名/方向走"输入键 → 常量值"映射（不是字符串校验后拼接），完全消除 ORDER BY 拼接面
+  const sortCol = SORT_COLS[(opts.sort ?? "date") as keyof typeof SORT_COLS] ?? "date";
+  const dir = SORT_DIRS[(opts.dir ?? "desc") as keyof typeof SORT_DIRS] ?? "DESC";
   const tiebreak = sortCol === "importance" ? ", date DESC" : "";
   const limit = Math.min(Math.max(opts.limit ?? 100, 1), 500);
 

@@ -58,6 +58,17 @@ describe("validateTopicInput", () => {
     expect(validateTopicInput(null).ok).toBe(false);
     expect(validateTopicInput("string").ok).toBe(false);
   });
+
+  it("keyword 单项 >100 字符 → 422（Sonnet R1 concern）", () => {
+    const v = validateTopicInput({ ...valid, keywords: ["a".repeat(101)] });
+    expect(v.ok).toBe(false);
+    if (!v.ok) expect(v.message).toContain("100");
+  });
+
+  it("keyword 单项 100 字符正好 → ok（边界）", () => {
+    const v = validateTopicInput({ ...valid, keywords: ["a".repeat(100)] });
+    expect(v.ok).toBe(true);
+  });
 });
 
 describe("validateSourceInput", () => {

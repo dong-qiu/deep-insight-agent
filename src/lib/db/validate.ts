@@ -2,10 +2,10 @@
  *  返 { ok: true, value } | { ok: false, message }——调用方按 message 返 422。 */
 import type { Industry, Language, Source, Topic } from "../types.js";
 
-const INDUSTRY_VALUES = new Set<Industry>(["ai-swe", "ai-security"]);
-const LANGUAGE_VALUES = new Set<Language>(["zh", "en", "mixed"]);
-const SOURCE_TYPES = new Set<Source["type"]>(["rss", "arxiv", "api"]);
-const BRIEF_SCHEDULES = new Set<Topic["brief_schedule"]>(["daily", "weekly"]);
+export const INDUSTRY_VALUES = new Set<Industry>(["ai-swe", "ai-security"]);
+export const LANGUAGE_VALUES = new Set<Language>(["zh", "en", "mixed"]);
+export const SOURCE_TYPES = new Set<Source["type"]>(["rss", "arxiv", "api"]);
+export const BRIEF_SCHEDULES = new Set<Topic["brief_schedule"]>(["daily", "weekly"]);
 
 export type Validated<T> = { ok: true; value: T } | { ok: false; message: string };
 
@@ -35,6 +35,11 @@ export function validateTopicInput(body: unknown, opts: { existingId?: string } 
   const kws = arr<string>(o.keywords, "keywords");
   if (!Array.isArray(kws)) return { ok: false, message: kws.fail };
   if (kws.length === 0) return { ok: false, message: "keywords 不能为空" };
+  // Sonnet R1 review concern：keyword 单项无长度限制（>100 字属脏数据）
+  for (const k of kws) {
+    if (typeof k !== "string") return { ok: false, message: "keywords 元素必须为字符串" };
+    if (k.trim().length > 100) return { ok: false, message: `keyword "${k.slice(0, 20)}…" 超过 100 字符上限` };
+  }
 
   const ind = typeof o.industry === "string" ? o.industry : "";
   if (!INDUSTRY_VALUES.has(ind as Industry)) {
