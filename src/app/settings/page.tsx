@@ -5,6 +5,7 @@
 import { getEffectiveModels, loadStaticConfig } from "../../lib/config/index.js";
 import { getDb } from "../../lib/db/index.js";
 import { listSources, listTopics } from "../../lib/db/repos.js";
+import { DeepDiveButton } from "./_components/deep-dive-button.js";
 import { DeleteButton } from "./_components/delete-button.js";
 import { SourceForm } from "./_components/source-form.js";
 import { TopicForm } from "./_components/topic-form.js";
@@ -46,6 +47,7 @@ export default function SettingsPage() {
             <div className="muted">
               {t.industry} · {t.language} · brief {t.brief_schedule} · 关键词 {t.keywords.join("、")}
               {t.enabled ? "" : " · 已停用"}
+              <DeepDiveButton topicId={t.id} topicName={t.name} enabled={t.enabled} />
               <DeleteButton entity="topics" id={t.id} name={t.name} />
             </div>
             <details style={{ marginTop: ".5rem" }}>

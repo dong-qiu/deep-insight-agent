@@ -4,7 +4,7 @@
  *  由 /api/cron 触发（系统 cron / supercronic 定时 curl）；含真模型调用，需 ANTHROPIC_API_KEY。 */
 import type { DB } from "../db/index.js";
 import { getEffectiveSources, loadStaticConfig } from "../config/index.js";
-import { listContentForTopic, listTopics } from "../db/repos.js";
+import { getTopic, listContentForTopic, listTopics } from "../db/repos.js";
 import { topicHasReport } from "../db/reports.js";
 import type { ContentItem, Report, Topic } from "../types.js";
 import { collectSource } from "./collector.js";
@@ -173,4 +173,35 @@ export async function runScheduledPipeline(
 
   summary.finishedAt = new Date().toISOString();
   return summary;
+}
+
+/** 单主题端到端跑（C-1 用户触发深挖）：
+ *  - 不做全局 collect（cron 已每 6h 跑，深挖不应再灌全源）；
+ *  - 强制 reportType=deep_dive（不走冷启动 initial_digest 重写，"深挖"语义就要深，不要首版综述）；
+ *  - 窗口默认更宽 / 条数更多（与默认 brief 区分）；
+ *  - 单步失败 → 抛出（不像 runScheduledPipeline 包裹），让调用方决定告警/记录。
+ *  - 复用 runAnalysis/runValidation/runReportGen 三个 Job Runner——管理看板 /admin 自然能看进度。 */
+export async function runPipelineForTopic(
+  db: DB,
+  topicId: string,
+  opts: { windowHours?: number; items?: number } = {},
+): Promise<Report> {
+  const topic = getTopic(db, topicId);
+  if (!topic) throw new Error(`topic ${topicId} 不存在`);
+  if (!topic.enabled) throw new Error(`topic ${topicId} 已停用，启用后再深挖`);
+
+  const windowHours = opts.windowHours ?? (Number(process.env.DEEP_DIVE_WINDOW_HOURS) || 336); // 14 天
+  const itemsLimit = opts.items ?? (Number(process.env.DEEP_DIVE_ITEMS) || 25);
+  const end = Date.now();
+  const endIso = new Date(end).toISOString();
+  const since = new Date(end - windowHours * 3_600_000).toISOString();
+
+  const items = selectAnalysisItems(db, topic, { since, limit: itemsLimit });
+  if (items.length === 0) {
+    throw new Error(`窗口 ${windowHours}h 内无可分析内容（请先触发 /api/cron 采集或扩大窗口）`);
+  }
+
+  const batch = await runAnalysis(db, topic, items, { start: since, end: endIso });
+  const validation = await runValidation(db, batch, items);
+  return runReportGen(db, { topic, batch, validation, type: "deep_dive" });
 }
