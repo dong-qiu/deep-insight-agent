@@ -1,7 +1,7 @@
 /** 报告持久化：正文（.md/.html）落 FS，元数据 + 索引 + FTS5 落 SQLite。增量5。 */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { Industry, Report, ReportIndexEntry } from "../types.js";
 import type { DB } from "./index.js";
 import { INDUSTRY_VALUES } from "./validate.js";
@@ -12,7 +12,10 @@ function defaultBodyDir(): string {
   return join(process.env.DATA_DIR ?? ".data", "reports");
 }
 
-/** 写正文到 FS + 落 report / report_index / report_fts。dir 可注入（测试用临时目录）。 */
+/** 写正文到 FS + 落 report / report_index / report_fts。dir 可注入（测试用临时目录）。
+ *  body_path **始终写绝对路径**——dogfood 2026-06-06 发现"相对路径在跨环境（本地 dev →
+ *  容器，cwd 不同）时失效"是 5/31 practice-log "worktree 相对 DB 路径陷阱"的同根复发。
+ *  resolve() 把任何相对 path 锚到当时 cwd 取绝对，存进 DB 后跨环境也能直接 readFile。 */
 export function saveReport(
   db: DB,
   report: Report,
@@ -21,7 +24,7 @@ export function saveReport(
 ): void {
   const dir = opts.dir ?? defaultBodyDir();
   mkdirSync(dir, { recursive: true });
-  const prefix = join(dir, report.id);
+  const prefix = resolve(join(dir, report.id));
   writeFileSync(`${prefix}.md`, report.body_md);
   writeFileSync(`${prefix}.html`, report.body_html);
 

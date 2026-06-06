@@ -40,6 +40,14 @@ it("saveReport → getReport 往返（正文走 FS）", () => {
   expect(getReport(db, "rep_test1")).toEqual(report);
 });
 
+it("saveReport body_path 始终是绝对路径（dogfood 6/6 防相对路径跨环境失效回退）", () => {
+  saveReport(db, report, index, { dir: "relative/path/reports" });
+  const row = db.prepare("SELECT body_path FROM report WHERE id = ?").get("rep_test1") as { body_path: string };
+  expect(row.body_path.startsWith("/")).toBe(true); // POSIX 系上必须 / 开头
+  // 清理
+  rmSync("relative", { recursive: true, force: true });
+});
+
 it("FTS5 全文检索命中正文/标题", () => {
   saveReport(db, report, index, { dir });
   expect(searchReports(db, "reward hacking")).toEqual(["rep_test1"]);
