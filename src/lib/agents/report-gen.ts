@@ -116,22 +116,30 @@ function blockedReasonStr(counts: Record<string, number>): string {
   return items.length ? `（理由：${items.map(([r, n]) => `${r} ×${n}`).join(" · ")}）` : "";
 }
 
-/** 单条洞察的 Markdown 块。deep_dive（detailed）多展示来源数 / 多源印证。 */
-function insightBlockMd(x: IncludedInsight, heading: string, detailed: boolean): string[] {
+/** 单条洞察的 Markdown 块。deep_dive（detailed）多展示来源数 / 多源印证。
+ *  citeStart：全局连续引用编号起点（C-2 引用 [n] 行内 + 列表锚）；返回 next 让 caller 串联。 */
+function insightBlockMd(
+  x: IncludedInsight,
+  heading: string,
+  detailed: boolean,
+  citeStart: number,
+): { lines: string[]; next: number } {
   const ins = x.insight;
-  const L = [`${heading} ${ins.statement}${x.flagged ? " 〔待核实〕" : ""}`, ""];
+  const refs = x.citationIndices.length > 0
+    ? " " + x.citationIndices.map((_, i) => `[${citeStart + i}]`).join("")
+    : "";
+  const L = [`${heading} ${ins.statement}${refs}${x.flagged ? " 〔待核实〕" : ""}`, ""];
   L.push(`- 重要性：${ins.importance}/5 · 依据：${ins.importance_basis}`);
   if (detailed) L.push(`- 来源：${ins.source_count} 个 · ${ins.multi_source ? "多源印证" : "单源"}`);
   if (ins.type === "trend" && ins.confidence) L.push(`- 置信度：${ins.confidence}`);
   L.push(`- 引用（${x.citationIndices.length}）：`);
-  for (const i of x.citationIndices) {
+  x.citationIndices.forEach((i, j) => {
     const c = ins.citations[i];
-    L.push(`  - 「${c.quote}」— \`${c.content_item_id}\``);
-  }
-  // 透明信任信号：validator 屏蔽计数 + 理由（仅在有屏蔽时展示，避免常态杂讯）
+    L.push(`  - [${citeStart + j}] 「${c.quote}」— \`${c.content_item_id}\``);
+  });
   if (x.blockedCount > 0) L.push(`- 校验阻断：${x.blockedCount} 条${blockedReasonStr(x.blockedReasonCounts)}`);
   L.push("");
-  return L;
+  return { lines: L, next: citeStart + x.citationIndices.length };
 }
 
 const KEY = (x: IncludedInsight): boolean => x.insight.importance >= 4;
@@ -152,8 +160,13 @@ function renderMarkdown(
     L.push("_本期无重要事件。_");
     return L.join("\n");
   }
+  let cite = 1; // C-2：全局连续引用编号，跨多条洞察累计
   if (!deep) {
-    included.forEach((x, n) => L.push(...insightBlockMd(x, `## ${n + 1}.`, false)));
+    included.forEach((x, n) => {
+      const r = insightBlockMd(x, `## ${n + 1}.`, false, cite);
+      L.push(...r.lines);
+      cite = r.next;
+    });
     return L.join("\n");
   }
   // deep_dive：按重要性分节（重点 / 其他），节内详版块
@@ -165,7 +178,11 @@ function renderMarkdown(
   for (const t of tiers) {
     if (!t.items.length) continue;
     L.push(`## ${t.label}（${t.items.length}）`, "");
-    for (const x of t.items) L.push(...insightBlockMd(x, `### ${(n += 1)}.`, true));
+    for (const x of t.items) {
+      const r = insightBlockMd(x, `### ${(n += 1)}.`, true, cite);
+      L.push(...r.lines);
+      cite = r.next;
+    }
   }
   return L.join("\n");
 }

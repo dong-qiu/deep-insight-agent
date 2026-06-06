@@ -125,6 +125,15 @@ describe("buildReport 派生", () => {
     expect(report.body_html).not.toContain("<h3>");
   });
 
+  it("C-2 全局连续引用编号：statement 含 [N] inline + 列表项 [N] 前缀", () => {
+    // i1 留 1 引用 → [1]；i2 留 1 引用 → [2]（跨洞察累计）
+    expect(report.body_md).toMatch(/## 1\. S1 \[1\]/);
+    expect(report.body_md).toMatch(/## 2\. S2 \[2\]/);
+    // 列表项前缀：每条 quote 行以 [N] 开头
+    expect(report.body_md).toMatch(/- \[1\] 「q1」/);
+    expect(report.body_md).toMatch(/- \[2\] 「q3/);
+  });
+
   it("外露 validator 屏蔽信号：md/html 各加 1 行（仅 blockedCount>0 时展示）", () => {
     // i1 有 1 条 blocked exaggeration → 应渲染
     expect(report.body_md).toContain("- 校验阻断：1 条（理由：exaggeration ×1）");
