@@ -107,10 +107,19 @@ function enrichCitations(md) {
   return { md: newMd, changed: newMd !== md, missed };
 }
 
+/** Pass 3：去掉引用末尾的 ` · 日期` 段（dogfood feedback：RSS published_at 多种格式
+ *  无统一 parser，"Tue, 02 Ju" 这种截断垃圾难看；删干净）。
+ *  只匹配 ISO 日期 (yyyy-MM-dd) 或 RFC 2822 weekday 前缀，避免误吃源名内的 `·`。 */
+function stripCitationDate(md) {
+  const re = /^(  - \[\d+\] [^\n]+?) · (?:\d{4}-\d{2}-\d{2}|(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun),\s*\d{1,2}\s*[A-Za-z]+(?:\s+\d{4})?)[^\n]*$/gm;
+  const newMd = md.replace(re, "$1");
+  return { md: newMd, changed: newMd !== md };
+}
+
 const reports = db.prepare("SELECT id, body_path FROM report ORDER BY generated_at DESC").all();
 console.log(`扫描 ${reports.length} 份报告…\n`);
 
-let stats = { p1Done: 0, p1Skip: 0, p2Done: 0, p2Skip: 0, missedTotal: 0, fileMiss: 0 };
+let stats = { p1Done: 0, p1Skip: 0, p2Done: 0, p2Skip: 0, p3Done: 0, p3Skip: 0, missedTotal: 0, fileMiss: 0 };
 for (const r of reports) {
   const mdPath = `${r.body_path}.md`;
   let md;
@@ -121,22 +130,21 @@ for (const r of reports) {
     stats.fileMiss++;
     continue;
   }
-  // Pass 1
   const p1 = injectCiteNumbers(md);
-  if (p1.changed) stats.p1Done++;
-  else stats.p1Skip++;
-  // Pass 2
+  if (p1.changed) stats.p1Done++; else stats.p1Skip++;
   const p2 = enrichCitations(p1.md);
-  if (p2.changed) stats.p2Done++;
-  else stats.p2Skip++;
+  if (p2.changed) stats.p2Done++; else stats.p2Skip++;
   stats.missedTotal += p2.missed;
+  const p3 = stripCitationDate(p2.md);
+  if (p3.changed) stats.p3Done++; else stats.p3Skip++;
 
-  const finalMd = p2.md;
+  const finalMd = p3.md;
   if (finalMd !== md) {
     writeFileSync(mdPath, finalMd);
     const parts = [];
     if (p1.changed) parts.push("注入 [N]");
     if (p2.changed) parts.push("富化引用");
+    if (p3.changed) parts.push("去日期");
     console.log(`  ✓ ${r.id} · ${parts.join(" + ")}${p2.missed > 0 ? ` · ${p2.missed} 条 ci 查不到` : ""}`);
   } else {
     console.log(`  · ${r.id} 跳过（已是最新格式 / 无引用）`);
@@ -146,5 +154,6 @@ for (const r of reports) {
 console.log(`\n完成：`);
 console.log(`  Pass 1 [N] 注入：${stats.p1Done} 改 / ${stats.p1Skip} 跳`);
 console.log(`  Pass 2 富化：${stats.p2Done} 改 / ${stats.p2Skip} 跳`);
-console.log(`  累计查不到 ci 的引用：${stats.missedTotal}（保持原 \`ci_xxx\` 显示）`);
+console.log(`  Pass 3 去日期：${stats.p3Done} 改 / ${stats.p3Skip} 跳`);
+console.log(`  累计查不到 ci 的引用：${stats.missedTotal}`);
 console.log(`  FS 文件缺失：${stats.fileMiss}`);
