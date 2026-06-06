@@ -1,6 +1,13 @@
 /** 设置页 CRUD 输入校验（B-3）：纯函数，无 IO，可单测。
  *  返 { ok: true, value } | { ok: false, message }——调用方按 message 返 422。 */
+import { randomBytes } from "node:crypto";
 import type { Industry, Language, Source, Topic } from "../types.js";
+
+/** 自动生成 id 末尾 4 位随机十六进制（review #8b：替代 Date.now().toString(36).slice(-4)
+ *  的时间戳熵——并发批量创建时 ts36 末 4 位可能撞车，64K 随机空间冲突率显著更低）。 */
+function rand4(): string {
+  return randomBytes(2).toString("hex");
+}
 
 export const INDUSTRY_VALUES = new Set<Industry>(["ai-swe", "ai-security"]);
 export const LANGUAGE_VALUES = new Set<Language>(["zh", "en", "mixed"]);
@@ -29,7 +36,7 @@ export function validateTopicInput(body: unknown, opts: { existingId?: string } 
   if (typeof name !== "string") return { ok: false, message: name.fail };
   const id = opts.existingId ?? (typeof o.id === "string" && o.id.trim()
     ? o.id.trim()
-    : `t_${name.toLowerCase().replace(/[^a-z0-9]+/g, "_").slice(0, 30)}_${Date.now().toString(36).slice(-4)}`);
+    : `t_${name.toLowerCase().replace(/[^a-z0-9]+/g, "_").slice(0, 30)}_${rand4()}`);
   if (!/^[a-z0-9_\-]+$/i.test(id)) return { ok: false, message: "id 只能含字母/数字/下划线/连字符" };
 
   const kws = arr<string>(o.keywords, "keywords");
@@ -73,7 +80,7 @@ export function validateSourceInput(body: unknown, opts: { existingId?: string }
   if (typeof name !== "string") return { ok: false, message: name.fail };
   const id = opts.existingId ?? (typeof o.id === "string" && o.id.trim()
     ? o.id.trim()
-    : `src_${name.toLowerCase().replace(/[^a-z0-9]+/g, "_").slice(0, 30)}_${Date.now().toString(36).slice(-4)}`);
+    : `src_${name.toLowerCase().replace(/[^a-z0-9]+/g, "_").slice(0, 30)}_${rand4()}`);
   if (!/^[a-z0-9_\-]+$/i.test(id)) return { ok: false, message: "id 只能含字母/数字/下划线/连字符" };
 
   const type = typeof o.type === "string" ? o.type : "";

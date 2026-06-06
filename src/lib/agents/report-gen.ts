@@ -132,11 +132,15 @@ function insightBlockMd(
   L.push(`- 重要性：${ins.importance}/5 · 依据：${ins.importance_basis}`);
   if (detailed) L.push(`- 来源：${ins.source_count} 个 · ${ins.multi_source ? "多源印证" : "单源"}`);
   if (ins.type === "trend" && ins.confidence) L.push(`- 置信度：${ins.confidence}`);
-  L.push(`- 引用（${x.citationIndices.length}）：`);
-  x.citationIndices.forEach((i, j) => {
-    const c = ins.citations[i];
-    L.push(`  - [${citeStart + j}] 「${c.quote}」— \`${c.content_item_id}\``);
-  });
+  // review #8d：仅在有引用时输出引用块——selectInsights 已保证 citationIndices.length>=1，
+  // 防御性处理外部构造 IncludedInsight 时（测试 / 未来直接喂数据场景）的"- 引用（0）："空块。
+  if (x.citationIndices.length > 0) {
+    L.push(`- 引用（${x.citationIndices.length}）：`);
+    x.citationIndices.forEach((i, j) => {
+      const c = ins.citations[i];
+      L.push(`  - [${citeStart + j}] 「${c.quote}」— \`${c.content_item_id}\``);
+    });
+  }
   if (x.blockedCount > 0) L.push(`- 校验阻断：${x.blockedCount} 条${blockedReasonStr(x.blockedReasonCounts)}`);
   L.push("");
   return { lines: L, next: citeStart + x.citationIndices.length };

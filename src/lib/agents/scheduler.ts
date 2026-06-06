@@ -72,17 +72,23 @@ export function rankAndDiversify(
   const perSourceCap = Math.max(2, Math.ceil(limit / 3));
   const bySource = new Map<string, number>();
   const out: ContentItem[] = [];
+  // review #8c：用 Set<id> 取代 out.includes(it) 的 O(n) 线性扫描——批补齐阶段命中率高时收益明显
+  const takenIds = new Set<string>();
   for (const { it } of ranked) {
     if (out.length >= limit) break;
     const c = bySource.get(it.source_id) ?? 0;
     if (c >= perSourceCap) continue;
     bySource.set(it.source_id, c + 1);
+    takenIds.add(it.id);
     out.push(it);
   }
   if (out.length < limit) {
     for (const { it } of ranked) {
       if (out.length >= limit) break;
-      if (!out.includes(it)) out.push(it);
+      if (!takenIds.has(it.id)) {
+        takenIds.add(it.id);
+        out.push(it);
+      }
     }
   }
   return out;
@@ -180,7 +186,17 @@ export async function runScheduledPipeline(
  *  - 强制 reportType=deep_dive（不走冷启动 initial_digest 重写，"深挖"语义就要深，不要首版综述）；
  *  - 窗口默认更宽 / 条数更多（与默认 brief 区分）；
  *  - 单步失败 → 抛出（不像 runScheduledPipeline 包裹），让调用方决定告警/记录。
- *  - 复用 runAnalysis/runValidation/runReportGen 三个 Job Runner——管理看板 /admin 自然能看进度。 */
+ *  - 复用 runAnalysis/runValidation/runReportGen 三个 Job Runner——管理看板 /admin 自然能看进度。
+ *
+ *  @throws
+ *  - `Error("topic X 不存在")` —— topicId 找不到对应 topic；
+ *  - `Error("topic X 已停用")` —— topic.enabled=false；
+ *  - `Error("窗口 Nh 内无可分析内容…")` —— selectAnalysisItems 返空；
+ *  - runAnalysis/runValidation/runReportGen 内部任一 runJob 抛出的错误（被 runJob 落 failed Run + notifyFailure）。
+ *
+ *  @remark
+ *  fire-and-forget 调用方（如 `/api/topics/[id]/deep-dive`）**必须** `void p.then(_, e => log)`
+ *  显式 catch reject，否则 Node runtime 下未处理 promise rejection 会触发 unhandledRejection 警告。 */
 export async function runPipelineForTopic(
   db: DB,
   topicId: string,

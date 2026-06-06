@@ -9,7 +9,11 @@ vi.mock("../../../../../../lib/db/repos.js", () => ({
   hasRunningRun: vi.fn(() => false),
 }));
 vi.mock("../../../../../../lib/agents/collector.js", () => ({
-  collectSource: vi.fn(),
+  // 立刻 resolve 一个 fake 结果（fire-and-forget 路径 .then 会消费它）
+  collectSource: vi.fn().mockResolvedValue({ runId: "run_fake", fetched: 5, inserted: 3, updated: 1, skipped: 1 }),
+}));
+vi.mock("../../../../../../lib/runtime/logger.js", () => ({
+  runLogger: () => ({ info: vi.fn(), error: vi.fn() }),
 }));
 
 import { collectSource } from "../../../../../../lib/agents/collector.js";
@@ -46,25 +50,16 @@ describe("POST /api/admin/sources/[id]/collect", () => {
     expect(collectSource).not.toHaveBeenCalled();
   });
 
-  it("成功 → 200 + 抓取计数", async () => {
+  it("正常路径 → 202 fire-and-forget（review #3 改造）+ 调度 collectSource", async () => {
     // @ts-expect-error stub
-    vi.mocked(getSource).mockReturnValue({ id: "s1", name: "x", enabled: true });
-    vi.mocked(collectSource).mockResolvedValue({
-      runId: "run_new", fetched: 10, inserted: 7, updated: 2, skipped: 1,
-    });
+    vi.mocked(getSource).mockReturnValue({ id: "s1", name: "ArXiv", enabled: true });
     const res = await call("s1");
-    expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({
-      status: "done", run_id: "run_new", fetched: 10, inserted: 7, updated: 2, skipped: 1,
-    });
-  });
-
-  it("collectSource 抛错 → 502", async () => {
-    // @ts-expect-error stub
-    vi.mocked(getSource).mockReturnValue({ id: "s1", name: "x", enabled: true });
-    vi.mocked(collectSource).mockRejectedValue(new Error("rss 5xx"));
-    const res = await call("s1");
-    expect(res.status).toBe(502);
-    expect((await res.json()).error).toContain("rss 5xx");
+    expect(res.status).toBe(202);
+    const j = (await res.json()) as Record<string, unknown>;
+    expect(j.status).toBe("started");
+    expect(j.source_id).toBe("s1");
+    expect(j.source_name).toBe("ArXiv");
+    expect(j.started_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(collectSource).toHaveBeenCalledTimes(1);
   });
 });

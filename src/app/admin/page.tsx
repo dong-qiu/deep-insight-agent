@@ -29,6 +29,7 @@ export default function AdminPage() {
   const failed = runs.filter((r) => r.status === "failed").length;
   const totalCost = runs.reduce((s, r) => s + (r.cost?.amount ?? 0), 0);
   const daily = aggregateDailyCost(runsForTimeseries, { days: 30 });
+  const dailyTotal = daily.reduce((s, d) => s + d.costUSD, 0);
   const dailyMax = Math.max(...daily.map((d) => d.costUSD), 0.001); // 防 0 除
 
   return (
@@ -72,34 +73,41 @@ export default function AdminPage() {
 
       <article className="card">
         <p className="muted" style={{ margin: 0 }}>
-          近 30 天成本时序 · 累计 ${daily.reduce((s, d) => s + d.costUSD, 0).toFixed(4)} ·
-          峰值 ${dailyMax.toFixed(4)}
+          近 30 天成本时序 · 累计 ${dailyTotal.toFixed(4)} · 峰值 ${dailyMax.toFixed(4)}
         </p>
-        {/* 内联 SVG 柱状图，无 JS 依赖；每天一根柱，高度按 cost 归一到 max */}
-        <svg
-          viewBox={`0 0 ${daily.length * 18} 80`}
-          width="100%"
-          height="80"
-          preserveAspectRatio="none"
-          style={{ marginTop: ".25rem", display: "block" }}
-          aria-label="近 30 天成本柱状图"
-          role="img"
-        >
-          {daily.map((d, i) => {
-            const h = dailyMax > 0 ? Math.max((d.costUSD / dailyMax) * 70, d.costUSD > 0 ? 1 : 0) : 0;
-            const x = i * 18 + 2;
-            const y = 80 - h - 2;
-            return (
-              <g key={d.date}>
-                <title>{`${d.date} · $${d.costUSD.toFixed(4)} · ${d.runCount} Run`}</title>
-                <rect x={x} y={y} width={14} height={h} fill="#2563eb" opacity={d.costUSD > 0 ? 0.85 : 0.2} />
-              </g>
-            );
-          })}
-        </svg>
-        <p className="muted" style={{ marginTop: ".25rem", fontSize: ".75rem" }}>
-          {daily[0]?.date} → {daily[daily.length - 1]?.date}（悬停柱体看当日明细）
-        </p>
+        {dailyTotal === 0 ? (
+          /* review #4：全 0 时显占位文案，不渲染 30 个灰柱（视觉噪音）*/
+          <p className="muted" style={{ marginTop: ".5rem", fontSize: ".85rem" }}>
+            近 30 天暂无成本数据——管线尚未运行或仅跑确定性段（采集/报告生成不调 LLM）。
+          </p>
+        ) : (
+          <>
+            <svg
+              viewBox={`0 0 ${daily.length * 18} 80`}
+              width="100%"
+              height="80"
+              preserveAspectRatio="none"
+              style={{ marginTop: ".25rem", display: "block" }}
+              aria-label="近 30 天成本柱状图"
+              role="img"
+            >
+              {daily.map((d, i) => {
+                const h = Math.max((d.costUSD / dailyMax) * 70, d.costUSD > 0 ? 1 : 0);
+                const x = i * 18 + 2;
+                const y = 80 - h - 2;
+                return (
+                  <g key={d.date}>
+                    <title>{`${d.date} · $${d.costUSD.toFixed(4)} · ${d.runCount} Run`}</title>
+                    <rect x={x} y={y} width={14} height={h} fill="#2563eb" opacity={d.costUSD > 0 ? 0.85 : 0.2} />
+                  </g>
+                );
+              })}
+            </svg>
+            <p className="muted" style={{ marginTop: ".25rem", fontSize: ".75rem" }}>
+              {daily[0]?.date} → {daily[daily.length - 1]?.date}（悬停柱体看当日明细）
+            </p>
+          </>
+        )}
       </article>
 
       {runs.length === 0 ? (
