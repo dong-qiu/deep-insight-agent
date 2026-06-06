@@ -35,6 +35,23 @@ function rowToSource(r: Record<string, unknown>): Source {
     backfill: r.backfill ? JSON.parse(r.backfill as string) : null, enabled: r.enabled === 1,
   };
 }
+/** 更新 source（id 不变，覆盖其他字段）。返 changes 数（应 = 1）。 */
+export function updateSource(db: DB, s: Source): number {
+  const r = db.prepare(
+    `UPDATE source SET name=@name,type=@type,endpoint=@endpoint,industry=@industry,
+       topic_ids=@topic_ids,fetch_interval=@fetch_interval,backfill=@backfill,enabled=@enabled
+     WHERE id=@id`,
+  ).run({
+    id: s.id, name: s.name, type: s.type, endpoint: s.endpoint, industry: s.industry,
+    topic_ids: j(s.topic_ids), fetch_interval: s.fetch_interval,
+    backfill: s.backfill ? j(s.backfill) : null, enabled: b(s.enabled),
+  });
+  return r.changes;
+}
+/** 物理删 source；FK 违例（被 content_item 引用）由调用方 catch 返友好错。 */
+export function deleteSource(db: DB, id: string): number {
+  return db.prepare("DELETE FROM source WHERE id = ?").run(id).changes;
+}
 
 // ── Topic ──
 export function insertTopic(db: DB, t: Topic): void {
@@ -60,6 +77,22 @@ function rowToTopic(r: Record<string, unknown>): Topic {
     industry: r.industry as Topic["industry"], language: r.language as Topic["language"],
     brief_schedule: r.brief_schedule as Topic["brief_schedule"], enabled: r.enabled === 1,
   };
+}
+/** 更新 topic。返 changes 数。 */
+export function updateTopic(db: DB, t: Topic): number {
+  const r = db.prepare(
+    `UPDATE topic SET name=@name,keywords=@keywords,industry=@industry,
+       language=@language,brief_schedule=@brief_schedule,enabled=@enabled
+     WHERE id=@id`,
+  ).run({
+    id: t.id, name: t.name, keywords: j(t.keywords), industry: t.industry,
+    language: t.language, brief_schedule: t.brief_schedule, enabled: b(t.enabled),
+  });
+  return r.changes;
+}
+/** 物理删 topic；FK 违例（被 report / insight 引用）由调用方 catch 返友好错。 */
+export function deleteTopic(db: DB, id: string): number {
+  return db.prepare("DELETE FROM topic WHERE id = ?").run(id).changes;
 }
 
 // ── ContentItem ──

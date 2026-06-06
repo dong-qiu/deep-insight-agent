@@ -1,6 +1,13 @@
+/** 设置页（B-3）：主题 / 数据源 CRUD。
+ *  - 顶部为只读模型对子；
+ *  - 主题/数据源各自分块：① 列表（每行内嵌编辑表单 details + 删除按钮）；② 新建（折叠 details）。
+ *  - 表单通过客户端组件（TopicForm/SourceForm）调 /api/admin/* 路由，成功后 router.refresh()。 */
 import { getEffectiveModels, loadStaticConfig } from "../../lib/config/index.js";
 import { getDb } from "../../lib/db/index.js";
 import { listSources, listTopics } from "../../lib/db/repos.js";
+import { DeleteButton } from "./_components/delete-button.js";
+import { SourceForm } from "./_components/source-form.js";
+import { TopicForm } from "./_components/topic-form.js";
 
 export const dynamic = "force-dynamic";
 
@@ -12,7 +19,7 @@ export default function SettingsPage() {
   try {
     models = getEffectiveModels(loadStaticConfig());
   } catch {
-    models = null; // ANTHROPIC_API_KEY 未配时配置加载会抛
+    models = null;
   }
 
   return (
@@ -35,13 +42,23 @@ export default function SettingsPage() {
         topics.map((t) => (
           <div className="card" key={t.id}>
             <strong>{t.name}</strong>
+            <code className="muted" style={{ marginLeft: ".5rem", fontSize: ".8rem" }}>{t.id}</code>
             <div className="muted">
               {t.industry} · {t.language} · brief {t.brief_schedule} · 关键词 {t.keywords.join("、")}
               {t.enabled ? "" : " · 已停用"}
+              <DeleteButton entity="topics" id={t.id} name={t.name} />
             </div>
+            <details style={{ marginTop: ".5rem" }}>
+              <summary className="muted" style={{ cursor: "pointer", fontSize: ".85rem" }}>编辑</summary>
+              <TopicForm mode="edit" initial={t} />
+            </details>
           </div>
         ))
       )}
+      <details className="card">
+        <summary style={{ cursor: "pointer", fontWeight: 600 }}>+ 新建主题</summary>
+        <TopicForm mode="create" />
+      </details>
 
       <h3>数据源（{sources.length}）</h3>
       {sources.length === 0 ? (
@@ -50,15 +67,23 @@ export default function SettingsPage() {
         sources.map((s) => (
           <div className="card" key={s.id}>
             <strong>{s.name}</strong>
+            <code className="muted" style={{ marginLeft: ".5rem", fontSize: ".8rem" }}>{s.id}</code>
             <div className="muted">
               {s.type} · {s.industry} · 每 {s.fetch_interval} · 主题 {s.topic_ids.join("、")}
               {s.enabled ? "" : " · 已停用"}
+              <DeleteButton entity="sources" id={s.id} name={s.name} />
             </div>
+            <details style={{ marginTop: ".5rem" }}>
+              <summary className="muted" style={{ cursor: "pointer", fontSize: ".85rem" }}>编辑</summary>
+              <SourceForm mode="edit" initial={s} topics={topics.map((t) => ({ id: t.id, name: t.name }))} />
+            </details>
           </div>
         ))
       )}
-
-      <p className="muted">源 / 主题的增删改（写接口 + 表单）于后续子增量补。</p>
+      <details className="card">
+        <summary style={{ cursor: "pointer", fontWeight: 600 }}>+ 新建数据源</summary>
+        <SourceForm mode="create" topics={topics.map((t) => ({ id: t.id, name: t.name }))} />
+      </details>
     </section>
   );
 }

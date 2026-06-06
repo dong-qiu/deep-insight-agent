@@ -47,6 +47,16 @@ nav a { margin-right: 1rem; }
 @media (prefers-color-scheme: dark) {
   .ppt-btn-link { color: #60a5fa; }
 }
+/* 设置页 CRUD 表单（B-3）：纵向 label-input 排版 */
+.entity-form { display: flex; flex-direction: column; gap: .4rem; margin-top: .5rem; }
+.entity-form label { display: flex; gap: .5rem; align-items: center; font-size: .9rem; }
+.entity-form input[type="text"], .entity-form input:not([type]), .entity-form select {
+  flex: 1; min-width: 0; padding: .25rem .4rem; border: 1px solid #d1d5db; border-radius: 4px;
+  font: inherit; background: inherit; color: inherit;
+}
+@media (prefers-color-scheme: dark) {
+  .entity-form input, .entity-form select { border-color: #374151; }
+}
 /* 报告库（B-1+2）：搜索/筛选/排序行——HTML 表单原生提交、无 JS 状态 */
 .report-filter {
   display: flex; flex-wrap: wrap; gap: .5rem; align-items: center;
