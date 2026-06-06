@@ -15,6 +15,9 @@ export function openDb(path: string): DB {
   const db = new Database(path);
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
+  // 多写者（并行 worktree/容器共享同一卷、或 cron+web 同进程外）抢锁时，
+  // 默认会立刻抛 SQLITE_BUSY；改为最多等 5s 让写串行化，而非直接失败。
+  db.pragma("busy_timeout = 5000");
   db.exec(SCHEMA_SQL);
   migrate(db);
   // review follow-up #1：进程重启后清扫上一次跑到一半被 SIGTERM 杀掉的孤儿 Run。

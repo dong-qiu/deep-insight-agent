@@ -1,6 +1,10 @@
 # 自托管单实例编排（architecture「部署」）：app(Web/Job Runner) + cron(容器内调度) + 持久卷。
 # 用法：cp .env.example .env.local 并填好 ANTHROPIC_API_KEY / AUTH_SECRET / ADMIN_* / CRON_SECRET，
 #       然后 `docker compose up -d --build`。两服务复用同一镜像（tag 锁定，不用 latest）。
+#
+# 多 worktree 并行：本机若要同时起多套，复制 .env.compose.example 为 .env，给每个 worktree
+#   不同的 COMPOSE_PROJECT_NAME（隔离容器名+数据卷 <工程名>_insight-data）与 APP_PORT（避端口冲突）。
+#   不建 .env 时回落到下方 name: 与端口 3000，与单机生产部署行为一致。
 name: deep-insight
 
 services:
@@ -14,7 +18,7 @@ services:
     restart: unless-stopped
     env_file: [.env.local]
     ports:
-      - "3000:3000"
+      - "${APP_PORT:-3000}:3000"
     volumes:
       - insight-data:/data
     # 运行镜像是 slim、无 curl（见 Dockerfile）——healthcheck 必须用 Node fetch，否则探针永远失败、
