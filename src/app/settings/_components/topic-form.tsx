@@ -2,7 +2,12 @@
 /** 主题 新建/编辑 表单（B-3）。
  *  mode=create → POST /api/admin/topics
  *  mode=edit → PUT /api/admin/topics/[id]
- *  成功后 router.refresh() 让 /settings 重渲染最新列表。 */
+ *  成功后 router.refresh() 让 /settings 重渲染最新列表。
+ *
+ *  dogfood 发现的 bug（2026-06-06）：keywords input 之前 onChange 即时 split+trim+filter，
+ *  导致用户按空格时空格被立刻吃掉、光标回退、"无法输入空格"假象。
+ *  修复：input 用独立 raw string state，submit 时才 split+trim+filter；
+ *  显示同步走 raw（避免 round-trip 截断中文/空格）。 */
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import type { Topic } from "../../../lib/types.js";
@@ -19,23 +24,27 @@ export function TopicForm({
   const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const [form, setForm] = useState<Topic>(
-    initial ?? {
-      id: "", name: "", keywords: [], industry: "ai-swe", language: "zh",
+  const [form, setForm] = useState<Omit<Topic, "keywords">>(
+    initial ? { ...initial } : {
+      id: "", name: "", industry: "ai-swe", language: "zh",
       brief_schedule: "daily", enabled: true,
     },
   );
+  // keywords 单独 raw string state，避免 round-trip trim 吃空格 / 中文
+  const [keywordsRaw, setKeywordsRaw] = useState((initial?.keywords ?? []).join(", "));
 
   async function submit(e: React.FormEvent): Promise<void> {
     e.preventDefault();
     setBusy(true); setErr(null);
     try {
+      // 提交时才把 raw 切成数组（split + trim + filter 一次到位）
+      const keywords = keywordsRaw.split(",").map((s) => s.trim()).filter(Boolean);
       const url = mode === "create" ? "/api/admin/topics" : `/api/admin/topics/${initial!.id}`;
       const method = mode === "create" ? "POST" : "PUT";
       const res = await fetch(url, {
         method,
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(form),
+        body: JSON.stringify({ ...form, keywords }),
       });
       if (!res.ok) {
         const j = (await res.json()) as { message?: string; error?: string };
@@ -54,9 +63,9 @@ export function TopicForm({
     <form onSubmit={submit} className="entity-form">
       <label>名称 <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required /></label>
       <label>关键词（逗号分隔） <input
-        value={form.keywords.join(", ")}
-        onChange={(e) => setForm({ ...form, keywords: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) })}
-        placeholder="coding, agent, ide"
+        value={keywordsRaw}
+        onChange={(e) => setKeywordsRaw(e.target.value)}
+        placeholder="coding agent, autonomous software engineering, RAG"
       /></label>
       <label>行业 <select value={form.industry} onChange={(e) => setForm({ ...form, industry: e.target.value as Topic["industry"] })}>
         <option value="ai-swe">ai-swe</option>

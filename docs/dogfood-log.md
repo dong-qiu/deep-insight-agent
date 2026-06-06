@@ -44,3 +44,7 @@ dogfood 开始时间：2026-06-06
 - 2026-06-07 14:30 · 读 rep_04df240d 关于 prompt injection 趋势 · 想问 "这条结论在 2024 vs 2025 有何变化" · 当前打开 Google 搜了
 - 2026-06-08 09:15 · 触发 t_code_agents 深挖 · 想看到"正在采集 7/23 源"的实时进度 · 当前看 /admin Run 表数数
 -->
+
+- 2026-06-06 23:xx · settings 修 t_code_agents 关键词时 · 想输入 "coding agent"（含空格）但空格被吃掉 · 改成 "codingagent" 凑合（**bug 已修**：input onChange 即时 split+trim 导致；改 raw string state 提交时才切分）
+- 2026-06-06 23:xx · 同一次 · 想要 "重置该主题到 defaults.yaml" 按钮——以后再被测试 / 误操作污染可一键复原 · 当前要手敲 10 个关键词（**摩擦观察 #1**）
+- 2026-06-06 23:xx · 同一次 · 关键词输入框是单行 input 装 10 个逗号分隔短语，**很难一眼看清哪些已填**——想要 "chip 输入"（每个关键词一个 tag）或多行 textarea · 当前凑合用（**摩擦观察 #2**）
