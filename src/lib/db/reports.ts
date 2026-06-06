@@ -131,6 +131,55 @@ export function listBlockedChecksForReport(db: DB, reportId: string): BlockedChe
   }));
 }
 
+/** P1 不复报（2026-06-06）：查某主题近 sinceDays 天 brief 报告里的 event_id + statement，喂 analyzer
+ *  作为"已报告事件"清单做事件对齐 / followup 判定。
+ *  - 只取 brief（每日节奏，followup 主要发生在同节奏跨日；deep_dive 是用户触发的回顾，加进去会污染）；
+ *  - 走 report_index 取 date（避免 report.generated_at 时区差），用 insight_ids 反查 insight 表拿 event_id；
+ *  - 去重：同 event_id 只留最新 statement（取最新的 brief 那条，避免清单膨胀）；
+ *  - 上限保护：硬上限 50 条，防超长清单挤压 analyzer 上下文。 */
+export interface RecentBriefEvent {
+  event_id: string;
+  statement: string;
+  date: string;
+}
+export function listRecentBriefEvents(
+  db: DB,
+  topicId: string,
+  opts: { sinceDays?: number; limit?: number } = {},
+): RecentBriefEvent[] {
+  const sinceDays = opts.sinceDays ?? 14;
+  const limit = Math.min(opts.limit ?? 50, 200);
+  const since = new Date(Date.now() - sinceDays * 86_400_000).toISOString().slice(0, 10);
+  // 报告日期降序 → 同 event_id 保留最新；只取 brief。
+  const rows = db
+    .prepare(`
+      SELECT ri.date AS date, r.insight_ids AS insight_ids
+      FROM report_index ri
+      JOIN report r ON r.id = ri.report_id
+      WHERE ri.topic_id = ? AND ri.type = 'brief' AND ri.date >= ?
+      ORDER BY ri.date DESC
+    `)
+    .all(topicId, since) as Array<{ date: string; insight_ids: string }>;
+  const seen = new Set<string>();
+  const out: RecentBriefEvent[] = [];
+  for (const r of rows) {
+    const ids: string[] = JSON.parse(r.insight_ids);
+    if (!ids.length) continue;
+    // 联表 insight 拿 event_id + statement（按 ids 的顺序，IN 子句的参数注入需逐条 prepare 或拼接 ?）
+    const placeholders = ids.map(() => "?").join(",");
+    const insRows = db
+      .prepare(`SELECT event_id, statement FROM insight WHERE id IN (${placeholders}) AND event_id IS NOT NULL`)
+      .all(...ids) as Array<{ event_id: string; statement: string }>;
+    for (const ir of insRows) {
+      if (seen.has(ir.event_id)) continue;
+      seen.add(ir.event_id);
+      out.push({ event_id: ir.event_id, statement: ir.statement, date: r.date });
+      if (out.length >= limit) return out;
+    }
+  }
+  return out;
+}
+
 /** FTS5 全文检索，按相关度返回 report_id。 */
 export function searchReports(db: DB, query: string): string[] {
   const rows = db

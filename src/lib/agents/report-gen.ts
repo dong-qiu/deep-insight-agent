@@ -152,8 +152,13 @@ function insightBlockMd(
   const refs = x.citationIndices.length > 0
     ? " " + x.citationIndices.map((_, i) => `[${citeStart + i}]`).join("")
     : "";
+  // P1 不复报：is_followup=true 标 〔更新〕——读者一眼看出"本条是已报告事件的新进展"。
+  // analyzer 已在 prompt 层约束"无新进展则不出"，此标记仅作展示提示；与 flagLabel（待核实
+  // / 校验失败·待重试）相互正交、可同时出现："〔更新〕 〔待核实〕"。
+  const followupTag = ins.is_followup ? " 〔更新〕" : "";
   const label = flagLabel(x);
-  const L = [`${heading} ${ins.statement}${refs}${label ? ` 〔${label}〕` : ""}`, ""];
+  const flaggedTag = label ? ` 〔${label}〕` : "";
+  const L = [`${heading} ${ins.statement}${refs}${followupTag}${flaggedTag}`, ""];
   L.push(`- 重要性：${ins.importance}/5 · 依据：${ins.importance_basis}`);
   if (detailed) L.push(`- 来源：${ins.source_count} 个 · ${ins.multi_source ? "多源印证" : "单源"}`);
   if (ins.type === "trend" && ins.confidence) L.push(`- 置信度：${ins.confidence}`);
@@ -248,10 +253,10 @@ function insightHtml(x: IncludedInsight, n: number, tag: "h2" | "h3", detailed: 
   const blocked = x.blockedCount > 0
     ? `<p class="meta blocked">校验阻断：${x.blockedCount} 条${esc(blockedReasonStr(x.blockedReasonCounts))}</p>`
     : "";
+  const followupBadge = ins.is_followup ? ' <span class="followup">更新</span>' : "";
   const label = flagLabel(x);
-  return `<section><${tag}>${n}. ${esc(ins.statement)}${
-    label ? ` <span class="flag">${label}</span>` : ""
-  }</${tag}><p class="meta">重要性 ${ins.importance}/5 · ${esc(ins.importance_basis)}${conf}${src}</p><ul>${cites}</ul>${blocked}</section>`;
+  const flaggedBadge = label ? ` <span class="flag">${label}</span>` : "";
+  return `<section><${tag}>${n}. ${esc(ins.statement)}${followupBadge}${flaggedBadge}</${tag}><p class="meta">重要性 ${ins.importance}/5 · ${esc(ins.importance_basis)}${conf}${src}</p><ul>${cites}</ul>${blocked}</section>`;
 }
 
 function renderHtml(

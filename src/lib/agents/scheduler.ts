@@ -5,7 +5,7 @@
 import type { DB } from "../db/index.js";
 import { getEffectiveSources, loadStaticConfig } from "../config/index.js";
 import { getTopic, listContentForTopic, listTopics } from "../db/repos.js";
-import { topicHasReport } from "../db/reports.js";
+import { listRecentBriefEvents, topicHasReport } from "../db/reports.js";
 import type { ContentItem, Report, Topic } from "../types.js";
 import { collectSource } from "./collector.js";
 import { runAnalysis, runReportGen, runValidation } from "./pipeline.js";
@@ -160,7 +160,10 @@ export async function runScheduledPipeline(
       continue;
     }
     try {
-      const batch = await runAnalysis(db, topic, items, { start: since, end: endIso });
+      // P1 不复报：brief 喂"近 14 天已报告 event"清单做事件对齐；deep_dive/initial_digest 不喂
+      // （前者是用户触发的回顾、与日度复报概念不同；后者是冷启动首报，清单必空，无需查）。
+      const history = plan.type === "brief" ? listRecentBriefEvents(db, topic.id) : [];
+      const batch = await runAnalysis(db, topic, items, { start: since, end: endIso }, { history });
       const validation = await runValidation(db, batch, items);
       const report = await runReportGen(db, { topic, batch, validation, type: plan.type });
       summary.topics.push({

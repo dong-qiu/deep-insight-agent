@@ -5,7 +5,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { AnalysisBatch, Report, ReportIndexEntry, Topic, ValidationResult } from "../types.js";
 import { saveAnalysisBatch, saveValidationResult } from "./analysis.js";
 import { type DB, openDb } from "./index.js";
-import { getReport, listBlockedChecksForReport, queryReportIndex, saveReport, searchReports } from "./reports.js";
+import { getReport, listBlockedChecksForReport, listRecentBriefEvents, queryReportIndex, saveReport, searchReports } from "./reports.js";
 import { insertTopic } from "./repos.js";
 
 const dir = mkdtempSync(join(tmpdir(), "ia-reports-"));
@@ -196,5 +196,77 @@ describe("queryReportIndex（B-1+2 报告库筛/搜/排）", () => {
       type: "deep_dive", industry: "ai-swe", from: "2026-06-01",
     });
     expect(rs.map((r) => r.report_id)).toEqual(["r2"]);
+  });
+});
+
+describe("listRecentBriefEvents（P1 不复报 · 喂 analyzer 的历史事件清单）", () => {
+  const today = new Date().toISOString().slice(0, 10);
+  const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+
+  // 两个 brief、不同日期；一个 deep_dive 必须被过滤；event_id 复用判定
+  beforeEach(() => {
+    const seed = (
+      reportId: string,
+      type: "brief" | "deep_dive",
+      date: string,
+      insights: Array<{ id: string; event_id: string | null; statement: string }>,
+    ) => {
+      const win = { start: date, end: date };
+      const batch: AnalysisBatch = {
+        id: `b_${reportId}`, topic_id: "t1", time_window: win, status: "done", no_significant_event: false,
+        insights: insights.map((s) => ({
+          id: s.id, topic_id: "t1", type: "aggregation", event_id: s.event_id, statement: s.statement,
+          importance: 4, importance_basis: "x", citations: [], source_count: 1, multi_source: false,
+          time_window: win, confidence: null, language: "zh",
+        })),
+      };
+      saveAnalysisBatch(db, batch);
+      const rep: Report = {
+        id: reportId, type, topic_id: "t1", status: "done", generated_at: `${date}T08:00:00Z`,
+        title: `R-${reportId}`, body_md: `# R-${reportId}`, body_html: `<h1>R-${reportId}</h1>`,
+        insight_ids: insights.map((s) => s.id), event_ids: [], prev_report_id: null,
+        citation_count: 0, cost: { tokens: 0, amount: 0 },
+      };
+      const idx: ReportIndexEntry = {
+        report_id: reportId, type, topic_id: "t1", industry: "ai-swe", date,
+        source_ids: [], title: rep.title, summary: "", tags: [], entity_names: [], importance: 4, event_ids: [],
+      };
+      saveReport(db, rep, idx, { dir });
+    };
+
+    seed("rep_today_brief", "brief", today, [
+      { id: "ins_t1", event_id: "evt_alpha", statement: "今日 alpha 进展" },
+      { id: "ins_t2", event_id: "evt_beta", statement: "今日 beta 新事件" },
+    ]);
+    seed("rep_yest_brief", "brief", yesterday, [
+      { id: "ins_y1", event_id: "evt_alpha", statement: "昨日 alpha 较旧表述" }, // 同 evt_alpha → 应被 today 那条覆盖
+      { id: "ins_y2", event_id: null, statement: "无 event_id 的洞察被过滤" }, // NULL event_id 不入清单
+    ]);
+    seed("rep_deep", "deep_dive", today, [
+      { id: "ins_d1", event_id: "evt_deep_only", statement: "深度报告独有事件" }, // 必须不入清单
+    ]);
+  });
+
+  it("只取 brief；同 event_id 取最新；NULL event_id 过滤；deep_dive 不入", () => {
+    const events = listRecentBriefEvents(db, "t1");
+    const ids = events.map((e) => e.event_id).sort();
+    expect(ids).toEqual(["evt_alpha", "evt_beta"]); // 不含 evt_deep_only
+    // evt_alpha 取 today 的 statement，不是 yesterday 那条
+    expect(events.find((e) => e.event_id === "evt_alpha")?.statement).toBe("今日 alpha 进展");
+    expect(events.find((e) => e.event_id === "evt_alpha")?.date).toBe(today);
+  });
+
+  it("sinceDays 过期截断：sinceDays=0 → 仅今日 brief 内 event", () => {
+    const events = listRecentBriefEvents(db, "t1", { sinceDays: 0 });
+    expect(events.map((e) => e.event_id).sort()).toEqual(["evt_alpha", "evt_beta"]);
+  });
+
+  it("limit 截断", () => {
+    const events = listRecentBriefEvents(db, "t1", { limit: 1 });
+    expect(events).toHaveLength(1);
+  });
+
+  it("无报告 / 别的 topic_id → 空数组（冷启动）", () => {
+    expect(listRecentBriefEvents(db, "t_other")).toEqual([]);
   });
 });

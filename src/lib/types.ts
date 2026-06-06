@@ -71,6 +71,10 @@ export interface Insight {
   time_window: { start: string; end: string };
   confidence: "high" | "medium" | "low" | null;
   language: Language;
+  /** P1 不复报（2026-06-06）：analyzer 判定本条与历史 brief 同 event_id 时设 true。
+   *  spec："同事件的后续进展可作为'更新'再次出现"——is_followup 区分新事件 vs 续报。
+   *  缺省 false（旧库 migration 默认 0）。 */
+  is_followup?: boolean;
 }
 
 /** 分析批次（architecture 数据模型 · AnalysisBatch） */
@@ -207,6 +211,17 @@ export const LlmInsightSchema = z.object({
     .nullable()
     .describe("trend 类必填、aggregation 类填 null"),
   citations: z.array(LlmCitationSchema).min(1).describe("≥1 条引用，无引用不输出该洞察"),
+  event_id: z
+    .string()
+    .nullable()
+    .describe(
+      "事件标识。判定与历史 brief（user 消息后附『已报告事件』清单）的某个 event 同一现实事件时，复用该 event_id 字符串并设 is_followup=true；否则置 null（代码侧生成新 event_id）。",
+    ),
+  is_followup: z
+    .boolean()
+    .describe(
+      "true=本条是已报告事件的『新进展/更新』（必须复用历史 event_id 且包含实质新信息）；false=新事件（必置 event_id=null）。",
+    ),
 });
 
 /** analyzer 整体输出 */

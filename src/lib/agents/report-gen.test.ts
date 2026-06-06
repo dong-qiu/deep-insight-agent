@@ -140,6 +140,18 @@ describe("buildReport 派生", () => {
     expect(report.body_md).toMatch(/- \[2\] \[「q3」]\(https:\/\/b\.example\/q3\) — Source B$/m);
   });
 
+  it("P1 不复报：is_followup=true 的洞察 statement 后渲染 〔更新〕（md）+ <span class=\"followup\">（html）", () => {
+    const fb = batchOf();
+    fb.insights[0].is_followup = true; // i1 标记为续报
+    fb.insights[1].is_followup = false; // i2 仍是新事件
+    const { report } = buildReport({
+      topic, batch: fb, validation, type: "brief", contentLookup: lookup, now: "2026-05-07T08:00:00Z",
+    });
+    expect(report.body_md).toMatch(/## 1\. S1 \[1\] 〔更新〕/); // i1 有 〔更新〕
+    expect(report.body_md).not.toMatch(/## 2\. S2 \[2\] 〔更新〕/); // i2 无 〔更新〕
+    expect(report.body_html).toContain('<span class="followup">更新</span>');
+  });
+
   it("外露 validator 屏蔽信号：md/html 各加 1 行（仅 blockedCount>0 时展示）", () => {
     // i1 有 1 条 blocked exaggeration → 应渲染
     expect(report.body_md).toContain("- 校验阻断：1 条（理由：exaggeration ×1）");

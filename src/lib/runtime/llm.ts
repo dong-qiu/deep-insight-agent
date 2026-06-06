@@ -183,7 +183,11 @@ export async function callStructured<T extends z.ZodType>(
     messages: [{ role: "user" as const, content: opts.user }],
     tools,
     tool_choice: { type: "tool" as const, name: STRUCTURED_TOOL_NAME },
-    ...(opts.thinking ? { thinking: { type: "adaptive" as const } } : {}),
+    // 中转站兼容性（2026-06-06）：yibuapi 新策略对"forced tool_choice + thinking"组合
+    // 返 400 "Thinking may not be enabled when tool_choice forces tool use"——但 Anthropic
+    // 直连允许。callStructured 必定 forced tool_choice，故无论 opts.thinking 真假都不发
+    // thinking 参数（否则所有 validator 调用 100% 失败）。等中转站放开或切直连再恢复。
+    // opts.thinking 字段保留：调用方语义层未变；以后改回时只需要把这一行加回来。
   };
 
   let cost: Cost = { tokens: 0, amount: 0 };

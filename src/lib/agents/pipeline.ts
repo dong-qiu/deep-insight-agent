@@ -7,7 +7,7 @@ import { getContentItem, getSource } from "../db/repos.js";
 import { saveReport } from "../db/reports.js";
 import { runJob } from "../runtime/jobs.js";
 import type { AnalysisBatch, ContentItem, Report, Topic, ValidationResult } from "../types.js";
-import { analyze } from "./analyzer.js";
+import { analyze, type HistoricalEvent } from "./analyzer.js";
 import { buildReport, type CitationDisplay } from "./report-gen.js";
 import { validateBatch } from "./validator.js";
 
@@ -18,9 +18,10 @@ export async function runAnalysis(
   topic: Topic,
   items: ContentItem[],
   window: { start: string; end: string },
+  opts: { history?: HistoricalEvent[] } = {},
 ): Promise<AnalysisBatch> {
   const { result } = await runJob(db, { kind: "analyze", target: { topic_id: topic.id } }, async (ctx) => {
-    const batch = await analyze(topic, items, window, ctx.recordCost);
+    const batch = await analyze(topic, items, window, ctx.recordCost, { history: opts.history });
     saveAnalysisBatch(db, batch);
     return batch;
   });
