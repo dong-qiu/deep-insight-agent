@@ -40,8 +40,9 @@ export function TopicForm({
     const detailsEl = (e.currentTarget as HTMLFormElement).closest("details");
     setBusy(true); setErr(null);
     try {
-      // 提交时才把 raw 切成数组（split + trim + filter 一次到位）
-      const keywords = keywordsRaw.split(",").map((s) => s.trim()).filter(Boolean);
+      // 提交时把 raw 切成数组——接受 `,` 或换行作为分隔，用户可用 textarea 多行
+      // 或粘贴单行逗号串都行（dogfood feedback：单行 input 难看清，改 textarea）
+      const keywords = keywordsRaw.split(/[,\n]/).map((s) => s.trim()).filter(Boolean);
       const url = mode === "create" ? "/api/admin/topics" : `/api/admin/topics/${initial!.id}`;
       const method = mode === "create" ? "POST" : "PUT";
       const res = await fetch(url, {
@@ -67,10 +68,12 @@ export function TopicForm({
   return (
     <form onSubmit={submit} className="entity-form">
       <label>名称 <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required /></label>
-      <label>关键词（逗号分隔） <input
+      <label style={{ alignItems: "flex-start" }}>关键词（逗号或换行分隔） <textarea
         value={keywordsRaw}
         onChange={(e) => setKeywordsRaw(e.target.value)}
-        placeholder="coding agent, autonomous software engineering, RAG"
+        placeholder={"coding agent\nautonomous software engineering\nRAG 检索增强\n…"}
+        rows={4}
+        style={{ flex: 1, fontFamily: "inherit", resize: "vertical", minHeight: "5rem" }}
       /></label>
       <label>行业 <select value={form.industry} onChange={(e) => setForm({ ...form, industry: e.target.value as Topic["industry"] })}>
         <option value="ai-swe">ai-swe</option>
