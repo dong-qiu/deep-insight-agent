@@ -1,11 +1,11 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeEach, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { AnalysisBatch, Report, ReportIndexEntry, Topic, ValidationResult } from "../types.js";
 import { saveAnalysisBatch, saveValidationResult } from "./analysis.js";
 import { type DB, openDb } from "./index.js";
-import { getReport, listBlockedChecksForReport, saveReport, searchReports } from "./reports.js";
+import { getReport, listBlockedChecksForReport, queryReportIndex, saveReport, searchReports } from "./reports.js";
 import { insertTopic } from "./repos.js";
 
 const dir = mkdtempSync(join(tmpdir(), "ia-reports-"));
@@ -100,4 +100,82 @@ it("FS 正文缺失（孤儿 DB 行）→ getReport 兜底占位、不抛", () =
   expect(r).not.toBeNull();
   expect(r!.body_md).toContain("正文文件缺失");
   expect(r!.title).toBe("Code Agent Brief"); // 元数据仍来自 DB
+});
+
+describe("queryReportIndex（B-1+2 报告库筛/搜/排）", () => {
+  // 4 条多样化样本
+  const samples: ReportIndexEntry[] = [
+    { report_id: "r1", type: "brief", topic_id: "t_swe", industry: "ai-swe", date: "2026-06-01", source_ids: ["s1"], title: "AI 软件工程·6月1日", summary: "DHH AI 编码", tags: [], entity_names: ["DHH"], importance: 5, event_ids: [] },
+    { report_id: "r2", type: "deep_dive", topic_id: "t_swe", industry: "ai-swe", date: "2026-06-05", source_ids: ["s1"], title: "深度·Coding Agent", summary: "Cursor Composer", tags: [], entity_names: ["Cursor"], importance: 4, event_ids: [] },
+    { report_id: "r3", type: "brief", topic_id: "t_sec", industry: "ai-security", date: "2026-06-03", source_ids: ["s2"], title: "AI 安全·6月3日", summary: "Prompt injection 案例", tags: [], entity_names: [], importance: 3, event_ids: [] },
+    { report_id: "r4", type: "initial_digest", topic_id: "t_sec", industry: "ai-security", date: "2026-05-20", source_ids: ["s2"], title: "首版·ATLAS 综述", summary: "MITRE ATLAS", tags: [], entity_names: ["MITRE"], importance: 5, event_ids: [] },
+  ];
+
+  beforeEach(() => {
+    insertTopic(db, { id: "t_swe", name: "SWE", keywords: [], industry: "ai-swe", language: "zh", brief_schedule: "daily", enabled: true });
+    insertTopic(db, { id: "t_sec", name: "SEC", keywords: [], industry: "ai-security", language: "zh", brief_schedule: "daily", enabled: true });
+    for (const idx of samples) {
+      const rep: Report = {
+        id: idx.report_id, type: idx.type, topic_id: idx.topic_id, status: "done",
+        generated_at: `${idx.date}T08:00:00Z`, title: idx.title,
+        body_md: `# ${idx.title}\n${idx.summary}`, body_html: `<h1>${idx.title}</h1>`,
+        insight_ids: [], event_ids: [], prev_report_id: null, citation_count: 0,
+        cost: { tokens: 0, amount: 0 },
+      };
+      saveReport(db, rep, idx, { dir });
+    }
+  });
+
+  it("无筛选 → 4 条按 date desc 默认", () => {
+    const rs = queryReportIndex(db);
+    expect(rs.map((r) => r.report_id)).toEqual(["r2", "r3", "r1", "r4"]);
+  });
+
+  it("type=brief → 仅 2 条", () => {
+    const rs = queryReportIndex(db, { type: "brief" });
+    expect(rs.map((r) => r.report_id).sort()).toEqual(["r1", "r3"]);
+  });
+
+  it("industry=ai-security → r3 + r4", () => {
+    const rs = queryReportIndex(db, { industry: "ai-security" });
+    expect(rs.map((r) => r.report_id).sort()).toEqual(["r3", "r4"]);
+  });
+
+  it("from + to 区间筛选 → 仅 r2/r3/r1", () => {
+    const rs = queryReportIndex(db, { from: "2026-06-01", to: "2026-06-05" });
+    expect(rs.map((r) => r.report_id).sort()).toEqual(["r1", "r2", "r3"]);
+  });
+
+  it("sort=importance desc → 5/5/4/3", () => {
+    const rs = queryReportIndex(db, { sort: "importance" });
+    expect(rs.map((r) => r.importance)).toEqual([5, 5, 4, 3]);
+  });
+
+  it("sort=date asc → r4 最早", () => {
+    const rs = queryReportIndex(db, { sort: "date", dir: "asc" });
+    expect(rs[0].report_id).toBe("r4");
+  });
+
+  it("q='ATLAS' FTS5 命中 r4（标题）+ 不命中 r1", () => {
+    const rs = queryReportIndex(db, { q: "ATLAS" });
+    expect(rs.map((r) => r.report_id)).toContain("r4");
+    expect(rs.map((r) => r.report_id)).not.toContain("r1");
+  });
+
+  it("非法 type 静默忽略走默认（不抛、不过滤）", () => {
+    const rs = queryReportIndex(db, { type: "garbage" });
+    expect(rs.length).toBe(4);
+  });
+
+  it("非法日期格式静默忽略", () => {
+    const rs = queryReportIndex(db, { from: "not-a-date" });
+    expect(rs.length).toBe(4);
+  });
+
+  it("组合筛选：type+industry+from → 单条命中", () => {
+    const rs = queryReportIndex(db, {
+      type: "deep_dive", industry: "ai-swe", from: "2026-06-01",
+    });
+    expect(rs.map((r) => r.report_id)).toEqual(["r2"]);
+  });
 });

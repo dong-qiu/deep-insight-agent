@@ -140,10 +140,63 @@ export function listReportIndex(db: DB, opts: { limit?: number } = {}): ReportIn
   const rows = db
     .prepare("SELECT * FROM report_index ORDER BY date DESC LIMIT ?")
     .all(opts.limit ?? 100) as any[];
-  return rows.map((r) => ({
+  return rows.map(rowToIndex);
+}
+
+function rowToIndex(r: any): ReportIndexEntry {
+  return {
     report_id: r.report_id, type: r.type, topic_id: r.topic_id, industry: r.industry, date: r.date,
     source_ids: JSON.parse(r.source_ids), title: r.title, summary: r.summary,
     tags: JSON.parse(r.tags), entity_names: JSON.parse(r.entity_names), importance: r.importance,
     event_ids: JSON.parse(r.event_ids),
-  }));
+  };
+}
+
+/** 报告库查询：FTS5 + 筛选 + 排序。
+ *  - q: 走 FTS5 → 取 report_id 集合再过滤；
+ *  - type / industry / from / to (yyyy-mm-dd inclusive)：白名单 + 参数化 SQL；
+ *  - sort: "date"|"importance"，dir: "asc"|"desc"，默认 date desc。
+ *  - 无效字段静默忽略走默认（UI 不应被 400 打断）。 */
+export interface ReportQuery {
+  q?: string;
+  type?: string;
+  industry?: string;
+  from?: string;
+  to?: string;
+  sort?: string;
+  dir?: string;
+  limit?: number;
+}
+export function queryReportIndex(db: DB, opts: ReportQuery = {}): ReportIndexEntry[] {
+  const where: string[] = [];
+  const args: unknown[] = [];
+
+  if (opts.type && ["brief", "deep_dive", "initial_digest"].includes(opts.type)) {
+    where.push("type = ?"); args.push(opts.type);
+  }
+  if (opts.industry) {
+    where.push("industry = ?"); args.push(opts.industry);
+  }
+  if (opts.from && /^\d{4}-\d{2}-\d{2}$/.test(opts.from)) {
+    where.push("date >= ?"); args.push(opts.from);
+  }
+  if (opts.to && /^\d{4}-\d{2}-\d{2}$/.test(opts.to)) {
+    where.push("date <= ?"); args.push(opts.to);
+  }
+
+  // FTS5 子查询：q 命中走 report_fts，取 report_id 集合后 IN 过滤
+  if (opts.q && opts.q.trim()) {
+    where.push("report_id IN (SELECT report_id FROM report_fts WHERE report_fts MATCH ?)");
+    args.push(opts.q.trim());
+  }
+
+  const sortCol = opts.sort === "importance" ? "importance" : "date";
+  const dir = opts.dir === "asc" ? "ASC" : "DESC";
+  const tiebreak = sortCol === "importance" ? ", date DESC" : "";
+  const limit = Math.min(Math.max(opts.limit ?? 100, 1), 500);
+
+  const sql = `SELECT * FROM report_index ${
+    where.length ? `WHERE ${where.join(" AND ")}` : ""
+  } ORDER BY ${sortCol} ${dir}${tiebreak} LIMIT ${limit}`;
+  return (db.prepare(sql).all(...args) as any[]).map(rowToIndex);
 }
