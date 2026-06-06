@@ -64,6 +64,7 @@ COPY --chown=app:app ops/crontab ./ops/crontab
 COPY --chown=app:app ops/trigger.mjs ./ops/trigger.mjs
 COPY --chown=app:app ops/cost-backfill.mjs ./ops/cost-backfill.mjs
 COPY --chown=app:app ops/probe-alert.mjs ./ops/probe-alert.mjs
+COPY --chown=app:app ops/regenerate-reports-cites.mjs ./ops/regenerate-reports-cites.mjs
 
 # 持久卷挂载点（SQLite 库 + 报告正文 + 原文归档）
 RUN mkdir -p /data && chown app:app /data
