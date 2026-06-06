@@ -123,6 +123,7 @@ export interface ValidationReport {
   //  故一般 flagged ≥ flagged_rate×total，两者不应被当作等价（校验失败被刻意排除出 rate，
   //  让 rate 纯表"原文不确定性"而非基础设施抖动）。
   flagged: number;
+  errored: number; // 一致性「调用失败」引用数（reachability=pass + consistency=not_evaluated）——高值=LLM/中转站抖动，非内容问题
   consistency_failure_rate: number; // not_support / total
   flagged_rate: number; // genuine uncertain（consistency='uncertain'）/ total——不含校验失败
   insights_total: number; // 有引用被校验的洞察数

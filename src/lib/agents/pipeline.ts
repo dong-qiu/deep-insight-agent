@@ -5,11 +5,12 @@ import type { DB } from "../db/index.js";
 import { saveAnalysisBatch, saveValidationResult } from "../db/analysis.js";
 import { getContentItem, getSource } from "../db/repos.js";
 import { saveReport } from "../db/reports.js";
+import { notifyFailure } from "../runtime/alert.js";
 import { runJob } from "../runtime/jobs.js";
 import type { AnalysisBatch, ContentItem, Report, Topic, ValidationResult } from "../types.js";
 import { analyze, type HistoricalEvent } from "./analyzer.js";
 import { buildReport, type CitationDisplay } from "./report-gen.js";
-import { validateBatch } from "./validator.js";
+import { isValidationDegraded, validateBatch } from "./validator.js";
 
 /** 分析某主题某窗口的 ContentItem → AnalysisBatch 落库；包一条 analyze Run（含成本）。
  *  成本经 analyze 的 onCost 回调按返回值透传给本 Run 的 ctx.recordCost —— 并发隔离，不读全局 meter 做差。 */
@@ -37,6 +38,15 @@ export async function runValidation(
   const { result } = await runJob(db, { kind: "validate", target: { batch_id: batch.id } }, async (ctx) => {
     const vr = await validateBatch(batch.insights, items, ctx.recordCost);
     saveValidationResult(db, batch.id, vr);
+    // 抗抖告警：一致性调用大面积失败（疑似 LLM/中转站抖动）→ 主动告警，别让一整轮失败默默缺刊/记假数据。
+    // 非致命：Run 仍 done（部分校验结果有效、已落库）；运维收到告警后重跑整管线即恢复（见 validator-uncertain-storms）。
+    if (isValidationDegraded(vr.checks)) {
+      notifyFailure({
+        runId: ctx.runId, kind: "validate", target: { batch_id: batch.id },
+        errorType: "ValidationDegraded",
+        message: `一致性校验大面积失败：${vr.report.errored} 条调用失败（疑似 LLM/中转站抖动）；本批多数洞察未成功校验，重跑管线恢复。`,
+      });
+    }
     return vr;
   });
   return result;

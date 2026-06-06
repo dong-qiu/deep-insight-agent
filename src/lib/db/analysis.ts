@@ -72,11 +72,11 @@ export function saveValidationResult(db: DB, batchId: string, vr: ValidationResu
     const r = vr.report;
     db.prepare(
       `INSERT INTO validation_result
-         (batch_id,total,pass,blocked,flagged,consistency_failure_rate,flagged_rate,insights_total,insights_includable,releasable)
-       VALUES (@batch_id,@total,@pass,@blocked,@flagged,@cfr,@fr,@it,@ii,@releasable)`,
+         (batch_id,total,pass,blocked,flagged,errored,consistency_failure_rate,flagged_rate,insights_total,insights_includable,releasable)
+       VALUES (@batch_id,@total,@pass,@blocked,@flagged,@errored,@cfr,@fr,@it,@ii,@releasable)`,
     ).run({
       batch_id: batchId, total: r.total, pass: r.pass, blocked: r.blocked, flagged: r.flagged,
-      cfr: r.consistency_failure_rate, fr: r.flagged_rate,
+      errored: r.errored, cfr: r.consistency_failure_rate, fr: r.flagged_rate,
       it: r.insights_total, ii: r.insights_includable, releasable: b(r.releasable),
     });
     const ck = db.prepare(
@@ -103,7 +103,7 @@ export function getValidationResult(db: DB, batchId: string): ValidationResult |
     // 全部护栏字段同源自 validation_result 行（写时由 summarize 一次性算定）：内部自洽、可 SQL 查、审计保真
     report: {
       total: rr.total, pass: rr.pass, blocked: rr.blocked, flagged: rr.flagged,
-      consistency_failure_rate: rr.consistency_failure_rate, flagged_rate: rr.flagged_rate,
+      errored: rr.errored ?? 0, consistency_failure_rate: rr.consistency_failure_rate, flagged_rate: rr.flagged_rate,
       insights_total: rr.insights_total, insights_includable: rr.insights_includable,
       releasable: rr.releasable === 1,
     },

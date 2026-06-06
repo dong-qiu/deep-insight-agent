@@ -64,7 +64,7 @@ const vr: ValidationResult = {
     { insight_id: "i1", citation_index: 0, reachability: "pass", reachability_reason: "ok", consistency: "support", consistency_reason: "ok", verdict: "pass" },
     { insight_id: "i2", citation_index: 0, reachability: "fail", reachability_reason: "quote_not_in_source", consistency: "not_evaluated", consistency_reason: "not_evaluated", verdict: "blocked" },
   ],
-  report: { total: 2, pass: 1, blocked: 1, flagged: 0, consistency_failure_rate: 0, flagged_rate: 0, insights_total: 2, insights_includable: 1, releasable: true },
+  report: { total: 2, pass: 1, blocked: 1, flagged: 0, errored: 0, consistency_failure_rate: 0, flagged_rate: 0, insights_total: 2, insights_includable: 1, releasable: true },
 };
 const report: Report = {
   id: "rep_t1", type: "brief", topic_id: "t1", status: "done", generated_at: "2026-06-07T08:00:00Z",

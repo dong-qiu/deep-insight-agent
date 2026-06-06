@@ -6,7 +6,7 @@
  */
 import { callStructured } from "../runtime/llm.js";
 import { compareKey } from "../runtime/text-normalize.js";
-import { isIncludableCheck } from "../utils/citation-verdict.js";
+import { isIncludableCheck, isValidationError } from "../utils/citation-verdict.js";
 import {
   ConsistencyJudgeSchema,
   type Citation,
@@ -86,6 +86,42 @@ ${sourceText}
   return data;
 }
 
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/** 一致性判定带重试 + 指数退避——抗中转站/LLM **瞬时**抖动（超时/限流/5xx/解析错）。
+ *  仅吸收短暂失败；整批持续不可用由 validateBatch 记 not_evaluated + pipeline 大面积告警兜底。
+ *  VALIDATOR_RETRIES=额外重试次数（默认 2，0=关）；VALIDATOR_RETRY_BACKOFF_MS=退避基数（默认 800，测试设 0）。
+ *  注：SDK 自身已 maxRetries 兜网络层；这层再加一道，覆盖 SDK 重试耗尽后的短窗失败。 */
+export async function judgeWithRetry(
+  statement: string,
+  sourceText: string,
+  onCost?: (cost: Cost) => void,
+): Promise<ConsistencyJudge> {
+  const extra = Math.max(0, Number(process.env.VALIDATOR_RETRIES ?? 2));
+  const base = Math.max(0, Number(process.env.VALIDATOR_RETRY_BACKOFF_MS ?? 800));
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= extra; attempt++) {
+    try {
+      return await judgeConsistency(statement, sourceText, onCost);
+    } catch (e) {
+      lastErr = e;
+      if (attempt < extra) await sleep(base * 2 ** attempt); // 800ms, 1600ms, …
+    }
+  }
+  throw lastErr;
+}
+
+/** 校验是否"大面积失败"（疑似 LLM/中转站抖动，非内容问题）：可达引用中"校验失败"占比 ≥ 阈值。
+ *  pipeline.runValidation 据此主动告警——别让一整轮失败默默缺刊/记成假数据。 */
+export function isValidationDegraded(
+  checks: CitationCheck[],
+  rate: number = Number(process.env.VALIDATION_DEGRADED_ALERT_RATE ?? 0.5),
+): boolean {
+  const evaluated = checks.filter((c) => c.reachability === "pass").length;
+  if (evaluated === 0) return false;
+  return checks.filter(isValidationError).length / evaluated >= rate;
+}
+
 /** 洞察级纳入计数（与 report-gen.selectInsights 对齐）：一条洞察当且仅当至少有 1 条
  *  「已成功校验」引用（pass 或 genuine uncertain）时才可纳入——校验失败（isValidationError）
  *  不算，避免零条成功校验的洞察出街（闸门完整性）。summarize 在写时一次性算定
@@ -114,6 +150,7 @@ export function summarize(checks: CitationCheck[]): ValidationReport {
   const flagged = checks.filter((c) => c.verdict === "flagged").length;
   const notSupport = checks.filter((c) => c.consistency === "not_support").length;
   const uncertain = checks.filter((c) => c.consistency === "uncertain").length;
+  const errored = checks.filter(isValidationError).length; // 一致性调用失败（pass + not_evaluated）
   const { insights_total, insights_includable } = insightInclusion(checks);
 
   return {
@@ -121,6 +158,7 @@ export function summarize(checks: CitationCheck[]): ValidationReport {
     pass,
     blocked,
     flagged,
+    errored,
     consistency_failure_rate: total ? notSupport / total : 0,
     flagged_rate: total ? uncertain / total : 0,
     insights_total,
@@ -167,7 +205,7 @@ export async function validateBatch(
       let outcome = judgeByItem.get(cit.content_item_id);
       if (outcome === undefined) {
         try {
-          outcome = await judgeConsistency(ins.statement, item.body, onCost);
+          outcome = await judgeWithRetry(ins.statement, item.body, onCost);
         } catch (e) {
           // 调用失败（超时/限流/解析错）与「判官真说不确定」分开记账（不静默丢弃）：
           // 记 reachability=pass + consistency=not_evaluated —— 该组合此前不可能出现

@@ -41,6 +41,8 @@ function migrate(db: DB): void {
   // 洞察级护栏字段（round2）：旧库补列，已存在行取 DEFAULT 0（重跑管线即写入正确值）
   ensureColumn(db, "validation_result", "insights_total", "insights_total INTEGER NOT NULL DEFAULT 0");
   ensureColumn(db, "validation_result", "insights_includable", "insights_includable INTEGER NOT NULL DEFAULT 0");
+  // 校验失败计数（validator 抗抖 round）：旧库补列，已存在行取 DEFAULT 0（重跑管线即写入正确值）
+  ensureColumn(db, "validation_result", "errored", "errored INTEGER NOT NULL DEFAULT 0");
   // P1 不复报（2026-06-06 dogfood）：analyzer 喂历史 event_id 后标"同事件 follow-up"，
   // 旧数据全 0（视为新事件）；新管线写正确值。0/1 表 bool，与 schema 其他 bool 一致。
   ensureColumn(db, "insight", "is_followup", "is_followup INTEGER NOT NULL DEFAULT 0");

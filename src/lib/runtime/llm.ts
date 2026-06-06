@@ -59,7 +59,10 @@ function getClient(): Anthropic {
   // 且每次重试也只等 45s → 合法慢生成永远成功不了（F4 live 确认暴露）。改 120s（env LLM_TIMEOUT_MS 可配），
   // 让合法慢生成跑完；中转站现已支持长响应（带思考已验证），不再需要 45s 那么激进。
   const timeout = Number(process.env.LLM_TIMEOUT_MS) || 120_000;
-  return (_client ??= new Anthropic({ timeout, maxRetries: 2 })); // key from env
+  // maxRetries 可调（LLM_MAX_RETRIES，默认 2）：中转站抖动期可临时调高兜网络层；
+  // 与 validator.judgeWithRetry 的应用层重试叠加（前者管网络/5xx，后者覆盖 SDK 重试耗尽后的短窗）。
+  const maxRetries = Number(process.env.LLM_MAX_RETRIES) || 2;
+  return (_client ??= new Anthropic({ timeout, maxRetries })); // key from env
 }
 
 // ── Cost Meter（进程内累计本次运行的 token / 成本） ──

@@ -119,6 +119,7 @@ CREATE TABLE IF NOT EXISTS validation_result (
   pass                     INTEGER NOT NULL,
   blocked                  INTEGER NOT NULL,
   flagged                  INTEGER NOT NULL,
+  errored                  INTEGER NOT NULL DEFAULT 0,
   consistency_failure_rate REAL NOT NULL,
   flagged_rate             REAL NOT NULL,
   insights_total           INTEGER NOT NULL DEFAULT 0,

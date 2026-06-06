@@ -80,7 +80,7 @@ it("listBlockedChecksForReport：按报告下钻 validator 屏蔽的引用 + 真
       { insight_id: "i1", citation_index: 1, reachability: "pass", reachability_reason: "ok", consistency: "not_support", consistency_reason: "exaggeration", verdict: "blocked" },
       { insight_id: "i1", citation_index: 2, reachability: "fail", reachability_reason: "quote_not_in_source", consistency: "not_evaluated", consistency_reason: "not_evaluated", verdict: "blocked" },
     ],
-    report: { total: 3, pass: 1, blocked: 2, flagged: 0, consistency_failure_rate: 0.33, flagged_rate: 0, insights_total: 1, insights_includable: 1, releasable: true },
+    report: { total: 3, pass: 1, blocked: 2, flagged: 0, errored: 0, consistency_failure_rate: 0.33, flagged_rate: 0, insights_total: 1, insights_includable: 1, releasable: true },
   };
   saveValidationResult(db, batch.id, v);
 

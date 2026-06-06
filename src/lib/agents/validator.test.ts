@@ -2,13 +2,13 @@
  * validator 纯函数单测 —— 不需要 API key，CI 可跑（npm test）。
  * 覆盖可达性校验与 verdict 处置矩阵（确定性逻辑）。
  */
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // callStructured mock 掉——validateBatch 经 judgeConsistency 调它；无 API key、CI 可跑
 vi.mock("../runtime/llm.js", () => ({ callStructured: vi.fn() }));
 
 import { callStructured } from "../runtime/llm.js";
-import { checkReachability, insightInclusion, summarize, validateBatch, verdictFor } from "./validator.js";
+import { checkReachability, insightInclusion, isValidationDegraded, summarize, validateBatch, verdictFor } from "./validator.js";
 import type { CitationCheck, ContentItem, Insight } from "../types.js";
 
 function item(id: string, body: string): ContentItem {
@@ -166,9 +166,15 @@ const judgeData = (consistency: "support" | "not_support" | "uncertain", reason:
   ({ data: { consistency, consistency_reason: reason, rationale: "r" } }) as unknown as Awaited<ReturnType<typeof callStructured>>;
 
 describe("validateBatch（A 去重 + C 校验失败分账）", () => {
+  // 默认关掉应用层重试 + 退避，让这些测试的"每源判一次"调用计数确定（重试单独测）。
+  beforeEach(() => { process.env.VALIDATOR_RETRIES = "0"; process.env.VALIDATOR_RETRY_BACKOFF_MS = "0"; });
   // 用 afterEach + restoreAllMocks 而非 beforeEach+mockReset：后者在「先 resolve 的测试 →
   // 再 reject 的测试」序列下会让 vitest 的未处理拒绝追踪误把已 catch 的拒绝算到测试头上。
-  afterEach(() => vi.restoreAllMocks());
+  afterEach(() => {
+    vi.restoreAllMocks();
+    delete process.env.VALIDATOR_RETRIES;
+    delete process.env.VALIDATOR_RETRY_BACKOFF_MS;
+  });
 
   it("A：同洞察多引用指向同一源 → 一致性只判一次、复用结果", async () => {
     const items = [item("ci_x", "Membrane pairs blocking and permitting. Highest F1 on six attacks. Benign refusal 7-14%.")];
@@ -217,5 +223,55 @@ describe("validateBatch（A 去重 + C 校验失败分账）", () => {
     const { checks } = await validateBatch([ins], items);
     expect(callStructured).toHaveBeenCalledTimes(1); // 失败也只调一次
     expect(checks.every((c) => c.verdict === "flagged" && c.consistency === "not_evaluated")).toBe(true);
+  });
+
+  it("抗抖：瞬时失败一次后重试成功 → pass（不记校验失败）", async () => {
+    process.env.VALIDATOR_RETRIES = "2"; // 覆盖 beforeEach 的 0
+    const items = [item("ci_r", "retry body content here")];
+    const ins = insight("ir", "S", [{ content_item_id: "ci_r", quote: "retry body" }]);
+    let n = 0;
+    vi.mocked(callStructured).mockImplementation(async () => {
+      if (n++ === 0) throw new Error("transient blip");
+      return judgeData("support", "ok");
+    });
+    const { checks } = await validateBatch([ins], items);
+    expect(callStructured).toHaveBeenCalledTimes(2); // 1 失败 + 1 重试成功
+    expect(checks[0].verdict).toBe("pass");
+  });
+
+  it("抗抖：重试耗尽仍失败 → 记校验失败（not_evaluated），调用 1+retries 次", async () => {
+    process.env.VALIDATOR_RETRIES = "2";
+    const items = [item("ci_r2", "body content here")];
+    const ins = insight("ir2", "S", [{ content_item_id: "ci_r2", quote: "body content" }]);
+    vi.mocked(callStructured).mockImplementation(async () => { throw new Error("relay down"); });
+    const { checks } = await validateBatch([ins], items);
+    expect(callStructured).toHaveBeenCalledTimes(3); // 1 + 2 retries
+    expect(checks[0]).toMatchObject({ consistency: "not_evaluated", verdict: "flagged" });
+  });
+});
+
+describe("summarize.errored + isValidationDegraded（抗抖可观测/告警）", () => {
+  const mk = (verdict: CitationCheck["verdict"], consistency: CitationCheck["consistency"], reachability: CitationCheck["reachability"] = "pass"): CitationCheck => ({
+    insight_id: "i", citation_index: 0, reachability,
+    reachability_reason: reachability === "fail" ? "quote_not_in_source" : "ok",
+    consistency, consistency_reason: consistency === "uncertain" ? "uncertain" : consistency === "support" ? "ok" : "not_evaluated",
+    verdict,
+  });
+
+  it("errored 只计 reachability=pass + not_evaluated（校验失败），不污染 flagged_rate", () => {
+    const r = summarize([mk("flagged", "not_evaluated"), mk("flagged", "uncertain"), mk("pass", "support")]);
+    expect(r.errored).toBe(1);       // 仅校验失败那条
+    expect(r.flagged).toBe(2);       // verdict=flagged 两条（校验失败 + genuine uncertain）
+    expect(r.flagged_rate).toBeCloseTo(1 / 3); // 仅 consistency=uncertain 计入
+  });
+
+  it("可达引用过半校验失败 → degraded=true（达阈值告警）", () => {
+    expect(isValidationDegraded([mk("flagged", "not_evaluated"), mk("flagged", "not_evaluated"), mk("pass", "support")], 0.5)).toBe(true); // 2/3
+  });
+  it("少量失败 → degraded=false（不刷告警）", () => {
+    expect(isValidationDegraded([mk("flagged", "not_evaluated"), mk("pass", "support"), mk("pass", "support")], 0.5)).toBe(false); // 1/3
+  });
+  it("无可达引用（全 blocked-unreachable）→ degraded=false（不误报）", () => {
+    expect(isValidationDegraded([mk("blocked", "not_evaluated", "fail")], 0.5)).toBe(false);
   });
 });
