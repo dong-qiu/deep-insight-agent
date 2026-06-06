@@ -346,4 +346,5 @@
   - **"环境隔离"是特性不是缺陷**：12-factor 的 dev/prod parity 要求每个开发环境独立可丢弃——一个分支的迁移/脏数据绝不该污染另一个分支的验证。要的恰恰是"互不一致"。
   - **数据是产物不是真相来源**：真相 = 代码 + seed/迁移；库文件只是其缓存。只要 seed/快照能重建已知状态，"跨 worktree 数据一致"就是伪需求。
   - **真共享可变状态只在 staging/生产级用真 DB server（Postgres）**，绝不在开发机跨 worktree 挂同一 SQLite 卷——那是过度工程。
-- **后续动作**: 已落地（commit `e51c798`）：compose 端口参数化 + `.env.compose.example`、`busy_timeout=5000`、`ops/db-snapshot.mjs`+`db-restore.mjs`（VACUUM INTO 快照/恢复）。判据"并发隔离靠配置不靠纪律"宜补进 `skills/L0-foundation.md`。
+- **后续动作**: 已落地（commit `e51c798`）：compose 端口参数化 + `.env.compose.example`、`busy_timeout=5000`、`ops/db-snapshot.mjs`+`db-restore.mjs`（VACUUM INTO 快照/恢复）。判据"并发隔离靠配置不靠纪律"已补进 `skills/L0-foundation.md`。
+- **补记（同日演进，commit `5fc32b8`）**: 初版隔离是"每 worktree 手动建 `.env` 设 `COMPOSE_PROJECT_NAME`"——仍是"靠记得建文件"的弱纪律。进一步删掉 `docker-compose.yml` 写死的 `name:`，让工程名回落目录 basename → **worktree 零配置自动隔离**（"危险的事默认不发生"，比"手动隔离"更彻底）。代价是默认行为翻转：**权威/生产实例**（拥有真数据）反过来须显式钉 `COMPOSE_PROJECT_NAME=deep-insight`，否则换目录跑回落新工程名→挂新空卷→孤立数据（同款"worktree 空库"陷阱，主体换成"该稳定的实例"）。**教训升级**：隔离的最优解不是"让每个环境记得声明隔离"，而是"让隔离成为默认、让少数需要稳定的实例显式声明稳定"——把显式声明的负担放在"少且固定"的一侧。实测 `bugfix+docker`→`bugfixdocker_insight-data`、主 worktree 仍 `deep-insight_insight-data`（与运行中容器卷一致，数据安全），并排实跑两套四维隔离验证通过。

@@ -32,8 +32,13 @@
   起独立库、从同一起点恢复后各自漂移。真要并发多写共享状态才上 Postgres，绝不挂同一卷。
 - **环境隔离是特性不是缺陷**（12-factor dev/prod parity）：一个分支的迁移/脏数据不得污染
   另一个分支的验证。要的恰恰是"互不一致"。数据是产物、不是真相来源（真相 = 代码 + seed/迁移）。
-- **认知陷阱备忘**：`COMPOSE_PROJECT_NAME` 必须放 compose 目录的 `.env`，不是 `.env.local`
-  （后者是 `env_file:`，只注入容器内部环境，compose 解析工程名时不读）。
+- **「默认即隔离」优于「手动隔离」**：本项目 `docker-compose.yml` 不写死 `name:`，工程名回落
+  目录 basename → 各 worktree `docker compose up` 零配置自动隔离卷 `<basename>_insight-data`。
+  即"危险的事（串库）默认不发生"，而非靠记得建 `.env`。反过来：**权威/生产实例**（拥有真数据）
+  须在自己目录 `.env` 显式钉 `COMPOSE_PROJECT_NAME=deep-insight`，保证换目录跑仍复用同卷。
+  端口不随目录自动分配，同时起多套才需设 `APP_PORT`（良性失败：绑定报错、立即可见、不伤数据）。
+- **认知陷阱备忘**：`COMPOSE_PROJECT_NAME` / `APP_PORT` 必须放 compose 目录的 `.env`，不是
+  `.env.local`（后者是 `env_file:`，只注入容器内部环境，compose 解析工程名/插值时不读）。
 
 ## 文件操作约定
 
