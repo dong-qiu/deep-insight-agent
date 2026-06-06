@@ -39,7 +39,7 @@
 
 - [~] 部署上线（**产物就绪 + 冒烟验证通过**：Docker compose `up --wait` exit 0、app healthy / cron 运行，修了 2 处 healthcheck 阻断，2026-05-29；**CD workflow 已备**（`deploy.yml`：SSH 部署、build-on-server、健康门，待配 SSH secrets）；**待真正部署到生产服务器**——域名/TLS/反代/卷备份）
 - [x] 文档与使用指南（README 简介 + `docs/launch/operations.md` 部署运维手册：env 速查 / 中转站 Opus 约束 / 监控 / 备份恢复 / 故障排查）
-- **DCP-3 附条件（M4 内闭合）**：① 成本含校验口径定稿 / Sonnet 降本（待直连 key）；② **失败告警钩子已接 ✅**（`notifyFailure`，待 operator 配 `ALERT_WEBHOOK` channel）+ 带 key 定时 eval job；③ 产出 yield/质量迭代——**引用覆盖 rule 4 补引已强化 ✅**（◐ 降幅待下轮 dogfood 测）、isCompleteStatement 名词结尾放宽（待取证）、跨源综合提升；④ **initial_digest 冷启动已实现 ✅**（topic 无历史报告 → 首版综述 + 宽窗/多条，`reportPlan`）/ 视频字幕 spike（低优、未做）。
+- **DCP-3 附条件（M4 内闭合）**：① 成本含校验口径定稿 / Sonnet 降本（待直连 key）；② **失败告警钩子已接 ✅**（`notifyFailure`，2026-06-06 接入 webhook.site 占位 + `ops/probe-alert.mjs` 探针端到端通；**真渠道 + payload adapter 待开发**——ntfy / 飞书 / Bark / PushDeer 见 `operations.md` §12 选型表）+ 带 key 定时 eval job；③ 产出 yield/质量迭代——**引用覆盖 rule 4 补引已强化 ✅**（◐ 降幅待下轮 dogfood 测）、isCompleteStatement 名词结尾放宽（待取证）、跨源综合提升；④ **initial_digest 冷启动已实现 ✅**（topic 无历史报告 → 首版综述 + 宽窗/多条，`reportPlan`）/ 视频字幕 spike（低优、未做）。
 - **沙箱被挡源（承接 DCP-2 ⑤，2026-05-31 本地端到端验证细化分类）**：
   - **HN / google_research / thehackernews** —— 容器→境外**网络层不通**（`fetch failed`，UA 无关）。**境外 VPS 部署后预期直通**；标准操作 = 生产 IP 复测，无需代码改动。
   - **bleeping** —— Cloudflare 主动挑战（`cf-mitigated=challenge`，"Just a moment..." JS 页），按 IP 信誉 + TLS 指纹判定，UA/Cookie/Headers 均无效；需 FlareSolverr/headless 中转方可绕（重 + 灰）。**`defaults.yaml` 中已 `enabled: false` 下架**，注释含根因。安全报道由 THN / Krebs / Risky Business 覆盖，损失小。

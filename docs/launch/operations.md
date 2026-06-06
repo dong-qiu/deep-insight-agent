@@ -46,7 +46,7 @@ curl -fsS -X POST http://127.0.0.1:3000/api/cron -H "authorization: Bearer $CRON
 | `CRON_SECRET` | ✅（定时） | `openssl rand -base64 32`；**未设则 `/api/cron` 返回 503、定时管线不工作** |
 | `PIPELINE_WINDOW_HOURS` | 否 | 单轮回看窗口，默认 168（7 天） |
 | `INITIAL_DIGEST_WINDOW_HOURS` / `INITIAL_DIGEST_ITEMS` | 否 | 冷启动首版综述的窗口/条数，默认 720（30 天）/ 25 |
-| `ALERT_WEBHOOK` | 否 | Run 失败时 POST 告警（Slack incoming webhook 兼容 `{text}`；通用 webhook 同样可收）；未设则不发、失败仍落 Run + error 日志 |
+| `ALERT_WEBHOOK` | 否 | Run 失败时 POST 告警；**当前 payload 是 Slack 兼容 `{text, runId, kind, target, error}`**；通用 webhook 端（webhook.site / Discord / Slack）直收；ntfy/飞书/钉钉/Bark 等需 payload 适配（见 §13）。未设则不发、失败仍落 Run + error 日志 |
 | `ALERT_TIMEOUT_MS` | 否 | 告警发送超时，默认 5000 |
 | `DATA_DIR`/`DB_PATH`/`INSIGHT_CONFIG_PATH` | 容器已设 | 勿在本地 dev 设；Dockerfile 已指向 `/data` 与打包内 `defaults.yaml` |
 
@@ -181,3 +181,50 @@ GCP 的 **e2-micro**（2 vCPU 共享 / **1 GB RAM** / 30GB 标准盘）是三大
 4. **持久化 / 反代 / CD**：同 §10 第 4–6 点——Docker 命名卷落持久启动盘自动持久；防火墙（GCP **VPC Firewall**）放行入站 80/443、3000 不对公网开；自备域名 A 记录指向公网 IP 上 Caddy；`deploy.yml` 的 `DEPLOY_HOST` = 公网 IP，x86 机 `TARGETARCH` 自动解析为 `amd64`。
 
 > 一句话：e2-micro **够用、余量小**——构建用 swap/预构建绕开、运行时设 `--max-old-space-size` 兜底即可长期免费跑。要零调优 + 大余量，§10 的 Oracle Ampere（24GB）更舒服。
+
+## 12. 失败告警接线（DCP-3 ② 占位 → 真渠道）
+
+`notifyFailure` 钩子（`src/lib/runtime/alert.ts`）已在 Run 失败时 fire-and-forget POST 到 `ALERT_WEBHOOK`。当前 payload 形如：
+
+```json
+{
+  "text": "🔴 Run 失败：analyze · TimeoutError：connect ETIMEDOUT 1.2.3.4:443",
+  "runId": "run_a1b2c3",
+  "kind": "analyze",
+  "target": "topic:t_code_agents",
+  "error": { "type": "TimeoutError", "message": "..." }
+}
+```
+
+### 占位期（开发/演示 · 当前默认）：webhook.site
+
+无需真渠道时用：浏览器开 https://webhook.site → 拷自己的 inbox URL → 填 `ALERT_WEBHOOK` → 失败时浏览器可见 payload，**不推送手机**。
+
+烟雾验证（不等真 Run 挂）：
+
+```bash
+# 本地
+ALERT_WEBHOOK=https://webhook.site/<uuid> node ops/probe-alert.mjs
+
+# 容器内（注意 -T 让 exec 透传 env）
+docker compose exec -T app node /app/ops/probe-alert.mjs
+```
+
+### 真渠道（待选 · 接线方式取决于你装哪个 App）
+
+| 渠道 | payload 兼容性 | 是否需 adapter | 备注 |
+|---|---|---|---|
+| **Slack / Discord** | ✅ 现 `{text}` 直收 | 否 | 国内需 VPN |
+| **webhook.site** | ✅ 任何 JSON 都收 | 否 | 仅浏览器看、无手机推送、仅占位用 |
+| **ntfy.sh** | ⚠️ 需改 payload | **是**（小，POST raw text body 或 `{title, message, priority}`）| 安卓 / 老鸿蒙可装；NEXT 5.x 无原生 App |
+| **飞书 群机器人** | ❌ 需 `{msg_type:"text", content:{text}}` | **是**（小，包一层）| 国内直通、安卓/鸿蒙 NEXT 都有原生 App |
+| **企业微信 / 钉钉** | ❌ 私有 schema | **是** | 同上 |
+| **Bark**（iOS）| ❌ GET URL 编码或 `{title, body, ...}` POST | **是** | iPhone 用户专属 |
+| **PushDeer** | ⚠️ `{pushkey, text, type}` | **是**（小）| 国产开源、安卓/iOS |
+
+### 后续真渠道接入工作（M4 内 DCP-3 ② 闭合）
+
+1. 在 `src/lib/runtime/alert.ts` 加 channel adapter（按 `ALERT_WEBHOOK` URL 域名识别走哪种 payload）；
+2. 优先 ntfy + 飞书两路（覆盖安卓/iOS/老鸿蒙 + 国内直通 + 鸿蒙 NEXT）；
+3. 端到端烟雾测试：`ops/probe-alert.mjs` 在每种渠道走一遍 → 手机收到 ✅；
+4. operations §3 表里 `ALERT_WEBHOOK` 一行补"自动按 URL 域名识别 channel"。

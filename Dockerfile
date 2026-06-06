@@ -63,6 +63,7 @@ COPY --from=builder --chown=app:app /app/src/lib/config/defaults.yaml ./config/d
 COPY --chown=app:app ops/crontab ./ops/crontab
 COPY --chown=app:app ops/trigger.mjs ./ops/trigger.mjs
 COPY --chown=app:app ops/cost-backfill.mjs ./ops/cost-backfill.mjs
+COPY --chown=app:app ops/probe-alert.mjs ./ops/probe-alert.mjs
 
 # 持久卷挂载点（SQLite 库 + 报告正文 + 原文归档）
 RUN mkdir -p /data && chown app:app /data
