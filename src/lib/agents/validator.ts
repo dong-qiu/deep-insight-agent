@@ -6,6 +6,7 @@
  */
 import { callStructured } from "../runtime/llm.js";
 import { compareKey } from "../runtime/text-normalize.js";
+import { isIncludableCheck } from "../utils/citation-verdict.js";
 import {
   ConsistencyJudgeSchema,
   type Citation,
@@ -86,8 +87,10 @@ ${sourceText}
 }
 
 /** 洞察级纳入计数（与 report-gen.selectInsights 对齐）：一条洞察当且仅当至少有 1 条
- *  pass/flagged 引用时才可纳入。summarize 在写时一次性算定 insights_total/includable + releasable
- *  并随 validation_result 落库（读回直接取列，不再重算），保证三者同源、内部自洽。 */
+ *  「已成功校验」引用（pass 或 genuine uncertain）时才可纳入——校验失败（isValidationError）
+ *  不算，避免零条成功校验的洞察出街（闸门完整性）。summarize 在写时一次性算定
+ *  insights_total/includable + releasable 并随 validation_result 落库（读回直接取列，不再重算），
+ *  保证三者同源、内部自洽。 */
 export function insightInclusion(checks: CitationCheck[]): {
   insights_total: number;
   insights_includable: number;
@@ -100,9 +103,7 @@ export function insightInclusion(checks: CitationCheck[]): {
   }
   return {
     insights_total: byInsight.size,
-    insights_includable: [...byInsight.values()].filter((cs) =>
-      cs.some((c) => c.verdict === "pass" || c.verdict === "flagged"),
-    ).length,
+    insights_includable: [...byInsight.values()].filter((cs) => cs.some(isIncludableCheck)).length,
   };
 }
 

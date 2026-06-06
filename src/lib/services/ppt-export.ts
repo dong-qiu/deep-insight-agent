@@ -12,7 +12,8 @@ import {
 } from "../db/ppt-cache.js";
 import { getReport } from "../db/reports.js";
 import { getSource, getTopic } from "../db/repos.js";
-import type { Insight, Report, Topic } from "../types.js";
+import type { CitationCheck, Insight, Report, Topic } from "../types.js";
+import { isIncludableCheck, isValidationError } from "../utils/citation-verdict.js";
 import { buildPptx, type IncludedInsightLite, type PptGenOutput } from "./ppt-gen.js";
 import { polishForPpt, type PolishResult } from "./ppt-polish.js";
 
@@ -86,23 +87,25 @@ function loadPptInput(
     // 白名单（与 selectInsights 同口径）：pass/flagged 纳入；blocked/无 check 剔除
     const checks = db
       .prepare("SELECT citation_index, verdict, consistency FROM citation_check WHERE insight_id = ?")
-      .all(id) as { citation_index: number; verdict: string; consistency: string }[];
+      .all(id) as Pick<CitationCheck, "citation_index" | "verdict" | "consistency">[];
     const cMap = new Map(checks.map((c) => [c.citation_index, c]));
     const kept: number[] = [];
     let flaggedUncertain = false;
     let flaggedError = false;
+    let includable = false;
     insight.citations.forEach((_, i) => {
       const c = cMap.get(i);
       if (c?.verdict === "pass" || c?.verdict === "flagged") {
         kept.push(i);
-        // flagged 两类（验证器约定）：consistency=not_evaluated 表「校验失败」，否则 genuine uncertain
+        // flagged 两类（验证器约定）：校验失败（isValidationError）vs genuine uncertain
         if (c.verdict === "flagged") {
-          if (c.consistency === "not_evaluated") flaggedError = true;
+          if (isValidationError(c)) flaggedError = true;
           else flaggedUncertain = true;
         }
+        if (isIncludableCheck(c)) includable = true; // 校验失败不计入纳入闸门（与 selectInsights 同口径）
       }
     });
-    if (kept.length > 0) insights.push({ insight, citationIndices: kept, flaggedUncertain, flaggedError });
+    if (includable) insights.push({ insight, citationIndices: kept, flaggedUncertain, flaggedError });
   }
 
   // 源名映射：ci → source_id → source.name；同时建 source_id → name（供"源与方法"页）

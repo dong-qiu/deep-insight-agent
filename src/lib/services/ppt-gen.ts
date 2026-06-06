@@ -13,7 +13,7 @@
  *  v1 不调 LLM；slide 标题用 statement 截断（B 阶段会换成 LLM 凝练标题 + summary 页）。 */
 import PptxGenJsImport from "pptxgenjs";
 import type { Insight, Report, Topic } from "../types.js";
-import { flagLabel } from "../agents/report-gen.js";
+import { flagLabel } from "../utils/citation-verdict.js";
 import type { ExecutivePolish, InsightPolish } from "./ppt-polish.js";
 
 // pptxgenjs CJS/ESM 互操作不稳定：tsx 直接跑 ESM 路径返 { default } 而 vitest 走 CJS

@@ -113,11 +113,16 @@ export interface ValidationReport {
   total: number; // 引用级（CitationCheck）总数
   pass: number;
   blocked: number;
+  // 注意：flagged 与 flagged_rate 度量不同——
+  //  flagged = verdict='flagged' 的引用数（含 genuine uncertain + 校验失败两类）；
+  //  flagged_rate = consistency='uncertain'/total，只算 genuine uncertain，不含校验失败。
+  //  故一般 flagged ≥ flagged_rate×total，两者不应被当作等价（校验失败被刻意排除出 rate，
+  //  让 rate 纯表"原文不确定性"而非基础设施抖动）。
   flagged: number;
   consistency_failure_rate: number; // not_support / total
-  flagged_rate: number; // uncertain / total
+  flagged_rate: number; // genuine uncertain（consistency='uncertain'）/ total——不含校验失败
   insights_total: number; // 有引用被校验的洞察数
-  insights_includable: number; // ≥1 条 pass/flagged 引用的洞察数（= report-gen 实际纳入数）
+  insights_includable: number; // ≥1 条「已成功校验」引用（pass/genuine uncertain）的洞察数（= report-gen 实际纳入数；校验失败不算）
   releasable: boolean; // 洞察级：insights_includable ≥ 1（空批次诚实放行）
 }
 

@@ -133,8 +133,22 @@ describe("summarize（护栏与 releasable 对齐洞察级纳入判定）", () =
   it("insightInclusion 按 insight_id 分组、与 verdict 白名单一致", () => {
     expect(insightInclusion([check("a", "pass"), check("b", "blocked"), check("b", "flagged")])).toEqual({
       insights_total: 2,
-      insights_includable: 2, // a 有 pass；b 有 flagged
+      insights_includable: 2, // a 有 pass；b 有 genuine uncertain flagged
     });
+  });
+
+  it("#2：唯一引用「校验失败」(pass+not_evaluated) 的洞察不计入 includable，但计入 total", () => {
+    // 校验失败 check：flagged 但 consistency=not_evaluated（与 genuine uncertain 区分）
+    const errCheck: CitationCheck = {
+      insight_id: "e1", citation_index: 0, reachability: "pass", reachability_reason: "ok",
+      consistency: "not_evaluated", consistency_reason: "not_evaluated", verdict: "flagged",
+    };
+    expect(insightInclusion([errCheck])).toEqual({ insights_total: 1, insights_includable: 0 });
+    // 但同洞察若另有一条 pass → 可纳入
+    expect(insightInclusion([errCheck, check("e1", "pass")])).toEqual({ insights_total: 1, insights_includable: 1 });
+    // summarize 同源：纯校验失败批次 → releasable=false（不发零成功校验报告）
+    const r = summarize([errCheck]);
+    expect(r).toMatchObject({ flagged: 1, flagged_rate: 0, insights_includable: 0, releasable: false });
   });
 });
 

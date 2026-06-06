@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AnalysisBatch, ContentItem, Topic, ValidationResult } from "../types.js";
-import { buildReport, flagLabel, selectInsights } from "./report-gen.js";
+import { buildReport, selectInsights } from "./report-gen.js";
+import { flagLabel } from "../utils/citation-verdict.js";
 
 const topic: Topic = {
   id: "t1", name: "Code Agent", keywords: ["a"], industry: "ai-swe", language: "zh",
@@ -179,24 +180,46 @@ describe("flagLabel + 校验失败/待核实 区分（C）", () => {
     expect(flagLabel({ flaggedUncertain: false, flaggedError: false })).toBe("");
   });
 
-  it("selectInsights：reachability=pass + consistency=not_evaluated 记为 flaggedError，非 flaggedUncertain", () => {
+  // 构造单洞察 batch + 给定 checks 的便捷器（每条 citation 一个 ci_index）
+  function selOf(checks: ValidationResult["checks"], nCitations: number) {
     const batch: AnalysisBatch = {
       id: "be", topic_id: "t1", time_window: win, status: "done", no_significant_event: false,
       insights: [{
         id: "ie", topic_id: "t1", type: "aggregation", event_id: null, statement: "Serr", importance: 4,
         importance_basis: "x",
-        citations: [{ content_item_id: "ci9", quote: "q9", locator: { paragraph_index: 0, char_start: 0, char_end: 1 } }],
+        citations: Array.from({ length: nCitations }, (_, i) => ({
+          content_item_id: `ci${i}`, quote: `q${i}`, locator: { paragraph_index: 0, char_start: 0, char_end: 1 },
+        })),
         source_count: 1, multi_source: false, time_window: win, confidence: null, language: "zh",
       }],
     };
     const v: ValidationResult = {
-      checks: [{ insight_id: "ie", citation_index: 0, reachability: "pass", reachability_reason: "ok", consistency: "not_evaluated", consistency_reason: "not_evaluated", verdict: "flagged" }],
-      report: { total: 1, pass: 0, blocked: 0, flagged: 1, consistency_failure_rate: 0, flagged_rate: 0, insights_total: 1, insights_includable: 1, releasable: true },
+      checks,
+      report: { total: 0, pass: 0, blocked: 0, flagged: 0, consistency_failure_rate: 0, flagged_rate: 0, insights_total: 0, insights_includable: 0, releasable: true },
     };
-    const sel = selectInsights(batch, v);
+    return selectInsights(batch, v);
+  }
+  const chk = (ci: number, verdict: "pass" | "flagged", consistency: "support" | "uncertain" | "not_evaluated") =>
+    ({ insight_id: "ie", citation_index: ci, reachability: "pass" as const, reachability_reason: "ok" as const, consistency, consistency_reason: consistency === "support" ? "ok" as const : consistency, verdict });
+
+  it("#2：唯一引用校验失败（pass+not_evaluated）→ 整条不纳入（零成功校验不出街）", () => {
+    expect(selOf([chk(0, "flagged", "not_evaluated")], 1)).toHaveLength(0);
+  });
+
+  it("#2：pass + 校验失败 → 仍纳入（靠 pass），标 flaggedError、含错误引用展示", () => {
+    const sel = selOf([chk(0, "pass", "support"), chk(1, "flagged", "not_evaluated")], 2);
     expect(sel).toHaveLength(1);
+    expect(sel[0].citationIndices).toEqual([0, 1]); // 错误引用仍展示（带标签）
     expect(sel[0].flaggedError).toBe(true);
     expect(sel[0].flaggedUncertain).toBe(false);
-    expect(sel[0].citationIndices).toEqual([0]); // 仍纳入（flagged 可纳入）
+    expect(flagLabel(sel[0])).toBe("校验失败·待重试");
+  });
+
+  it("#4：genuine uncertain + 校验失败并存 → 两标志均 true，标签取「待核实」（uncertain 优先）", () => {
+    const sel = selOf([chk(0, "flagged", "uncertain"), chk(1, "flagged", "not_evaluated")], 2);
+    expect(sel).toHaveLength(1);
+    expect(sel[0].flaggedUncertain).toBe(true);
+    expect(sel[0].flaggedError).toBe(true);
+    expect(flagLabel(sel[0])).toBe("待核实");
   });
 });

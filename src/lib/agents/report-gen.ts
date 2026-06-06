@@ -5,22 +5,15 @@ import { randomUUID } from "node:crypto";
 import type {
   AnalysisBatch, ContentItem, Insight, Report, ReportIndexEntry, Topic, ValidationResult,
 } from "../types.js";
+import { flagLabel, isIncludableCheck, isValidationError } from "../utils/citation-verdict.js";
 
 export interface IncludedInsight {
   insight: Insight;
-  citationIndices: number[]; // 剔除 blocked 后保留的引用下标
+  citationIndices: number[]; // 剔除 blocked 后保留的引用下标（含校验失败引用，带标签展示）
   flaggedUncertain: boolean; // 含 genuine uncertain 引用（判官判原文信息不足）→「待核实」
   flaggedError: boolean; // 含一致性「校验失败」引用（调用出错，可重跑）→「校验失败·待重试」
   blockedCount: number; // 被 validator 屏蔽的引用数（不在 citationIndices 内）
   blockedReasonCounts: Record<string, number>; // 屏蔽理由直方图（如 exaggeration→2、out_of_context→1）
-}
-
-/** flagged 标签文案：genuine uncertain 优先（更实质的告警），其次校验失败；都无返空串。
- *  ppt-gen / ppt-export 共用，保证三处渲染口径一致。 */
-export function flagLabel(x: { flaggedUncertain: boolean; flaggedError: boolean }): string {
-  if (x.flaggedUncertain) return "待核实";
-  if (x.flaggedError) return "校验失败·待重试";
-  return "";
 }
 
 /** verdict=blocked 时取真实理由：reachability=fail → reachability_reason；
@@ -47,26 +40,29 @@ export function selectInsights(batch: AnalysisBatch, validation: ValidationResul
     const kept: number[] = [];
     let flaggedUncertain = false;
     let flaggedError = false;
+    let includable = false; // ≥1 条「已成功校验」引用（pass / genuine uncertain）才纳入
     let blockedCount = 0;
     const blockedReasonCounts: Record<string, number> = {};
     ins.citations.forEach((_, i) => {
       const c = cs?.get(i);
       const v = c?.verdict;
-      // 白名单:只有明确 pass/flagged 才纳入;blocked 与「无 check(未校验)」一律剔除
+      // 白名单:pass/flagged 进展示;blocked 与「无 check(未校验)」一律剔除
       if (v === "pass" || v === "flagged") {
         kept.push(i);
-        // flagged 两类（验证器约定）：consistency=not_evaluated 表「校验失败」，否则 genuine uncertain
+        // flagged 两类（验证器约定）：校验失败（isValidationError）vs genuine uncertain
         if (v === "flagged") {
-          if (c!.consistency === "not_evaluated") flaggedError = true;
+          if (isValidationError(c!)) flaggedError = true;
           else flaggedUncertain = true;
         }
+        if (isIncludableCheck(c!)) includable = true; // 校验失败不计入纳入闸门
       } else if (v === "blocked") {
         blockedCount += 1;
         const r = c ? blockedReason(c) : null;
         if (r) blockedReasonCounts[r] = (blockedReasonCounts[r] ?? 0) + 1;
       }
     });
-    if (kept.length >= 1)
+    // 纳入需 ≥1 成功校验引用：唯一引用校验失败的洞察整条剔除（不发零成功校验内容，等重校验恢复）
+    if (includable)
       out.push({ insight: ins, citationIndices: kept, flaggedUncertain, flaggedError, blockedCount, blockedReasonCounts });
   }
   return out;
