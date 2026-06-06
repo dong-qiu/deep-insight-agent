@@ -1,6 +1,7 @@
 /** RawItem → ContentItem 的归一化：URL 规范化、内容指纹、语言检测、稳定 id。纯函数，可无 key 单测。 */
 import { createHash } from "node:crypto";
 import type { ContentItem, Language, Source } from "../types.js";
+import { parsePublishedAt } from "./parse-date.js";
 import type { RawItem } from "./types.js";
 
 const TRACKING = /^(utm_|ref$|fbclid$|gclid$|mc_|spm$)/i;
@@ -100,7 +101,10 @@ export function rawToContentItem(raw: RawItem, source: Source, fetchedAt: string
     url,
     title: raw.title.trim() || "(untitled)",
     author: raw.author,
-    published_at: raw.published_at,
+    // dogfood feedback：published_at 必须归一化到 ISO 8601，否则 SQL 字典序 ≠ 时间序，
+    // 导致 listContentForTopic 用 `published_at >= since` 过滤时把 RFC 2822 字符串
+    // 拿来比对必然错乱。解析失败保留 null。
+    published_at: parsePublishedAt(raw.published_at),
     fetched_at: fetchedAt,
     language: detectLanguage(`${raw.title} ${body}`),
     topic_ids: source.topic_ids,

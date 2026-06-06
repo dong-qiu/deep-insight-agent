@@ -149,7 +149,10 @@ export function listContentForTopic(
   const clauses = ["topic_ids LIKE @like"];
   const params: Record<string, unknown> = { like: `%"${topicId}"%`, limit: opts.limit ?? 200 };
   if (opts.since) {
-    clauses.push("fetched_at >= @since");
+    // dogfood feedback：用 published_at（真发布时间，已归一化 ISO 8601）做窗口过滤——
+    // 之前用 fetched_at 导致几个月前的 GitHub Eng 文章今天还在 brief 里（"重抓 ≠ 新鲜"）。
+    // COALESCE 在 published_at 为 null 时回退到 fetched_at，保证不解析的源仍能被收录。
+    clauses.push("COALESCE(published_at, fetched_at) >= @since");
     params.since = opts.since;
   }
   const rows = db

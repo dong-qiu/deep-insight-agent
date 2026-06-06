@@ -107,7 +107,7 @@ export function buildReport(input: BuildReportInput): { report: Report; index: R
 
   const report: Report = {
     id, type: input.type, topic_id: input.topic.id, status: "done", generated_at: now, title,
-    body_md: renderMarkdown(title, input.topic, included, date, input.type !== "brief", input.contentLookup),
+    body_md: renderMarkdown(title, input.topic, included, date, input.type !== "brief", input.contentLookup, input.batch.time_window),
     body_html: renderHtml(title, input.topic, included, date, input.type !== "brief"),
     insight_ids: included.map((x) => x.insight.id),
     event_ids: eventIds,
@@ -174,11 +174,14 @@ function renderMarkdown(
   date: string,
   deep: boolean,
   lookup: Map<string, CitationDisplay>,
+  timeWindow: { start: string; end: string },
 ): string {
   const keyN = included.filter(KEY).length;
-  const summary = `> 主题：${topic.name}（${topic.industry}）· 生成于 ${date} · 共 ${included.length} 条洞察${
+  // dogfood feedback：hero 元数据条加"内容窗口"，让读者知道这是哪段时间发布的内容
+  const windowLabel = `${timeWindow.start.slice(0, 10)} ~ ${timeWindow.end.slice(0, 10)}`;
+  const summary = `> 主题：${topic.name}（${topic.industry}）· 内容窗口：${windowLabel} · 共 ${included.length} 条洞察${
     deep ? `（重点 ${keyN} 条）` : ""
-  }`;
+  } · 生成于 ${date}`;
   const L: string[] = [`# ${title}`, "", summary, ""];
   if (!included.length) {
     L.push("_本期无重要事件。_");
