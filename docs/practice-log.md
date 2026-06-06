@@ -330,3 +330,20 @@
   - 把"MVP 完成 = 端到端跑通 + spec 对账"两条独立判据写进 `skills/L2-workflow.md` IPD 收口约束；
   - 公共抽象（FK 友好错 / fire-and-forget 长任务 / URL searchParams 表单）作为模式收录到 `skills/L0-foundation.md`；
   - 本次路径化补齐总计 7 commit / +52 测试 / 7 个 MVP 项闭合——作为"路径化补齐"的范例案例留档。
+
+### 2026-06-07 · 并行 worktree 的"环境隔离 vs 数据共享"——靠配置钉死，别靠纪律
+
+- **日期**: 2026-06-07
+- **情境**: 在 `bugfix+docker` / `bugfix+collection` / `feat+deploy` 等多个 worktree 并行开发时，问"本地 docker 部署 + 数据库会不会不一致"。回扫 `docker-compose.yml` 发现 `name: deep-insight` **写死**——4 个 worktree 全解析到同一 compose 工程：容器互相顶替、共用命名卷 `deep-insight_insight-data`、3000 端口冲突。这是 [worktree 相对 DB 路径陷阱] 的同源新变体（上次是 .env.local 没钉绝对 DB_PATH，这次是 compose 工程名没隔离）。
+- **观察**:
+  - **同一类坑第二次踩**：上次结论就是"能用配置钉死的别靠记性"，这次又出现"靠约好只在一个 worktree 起 docker"的诱惑。**约定型纪律对这类并发隔离问题必然失效**——会忘。
+  - **关键技巧 = 把"隔离"与"共享"解耦**：compose 工程名按 worktree 分（`COMPOSE_PROJECT_NAME` 环境变量可覆盖文件里写死的 `name:`，实测优先级成立）→ 容器/卷天然隔离；要共享数据则单独走"外部卷 / 快照"，不靠同名硬绑。
+  - **`COMPOSE_PROJECT_NAME` 必须放 compose 目录的 `.env`，不是 `.env.local`**：后者是 `env_file:`，只注入容器内部环境，compose 解析工程名时根本不读。这点不踩对，改了也没用——是个隐性的"两个 .env 各管一段"认知陷阱。
+  - **共享 live SQLite 库是反模式**：跨分支读写同一库 → 写锁竞争（SQLITE_BUSY）+ 迁移漂移（A 分支迁移、B 旧代码崩）。最佳实践是**共享"配方"（不可变快照 / seed）不共享"做好的菜"（live 文件）**——各 worktree 起独立库、从同一快照恢复成共同起点，之后各自漂移互不影响。
+  - **本仓库迁移是纯增量的（ensureColumn 只 ADD COLUMN IF NOT EXISTS）**，把"漂移"风险压低一大半——旧代码读到多几列的库通常没事，只有删列/改约束才真崩。这降低了"必须严格隔离"的压力，但不改变结论。
+- **经验 / 教训**:
+  - **并发隔离问题的判据：能用配置/路径钉死的，永远别留给纪律。** 第二次同源踩坑印证这条该升级为硬规矩，而不是 case-by-case。
+  - **"环境隔离"是特性不是缺陷**：12-factor 的 dev/prod parity 要求每个开发环境独立可丢弃——一个分支的迁移/脏数据绝不该污染另一个分支的验证。要的恰恰是"互不一致"。
+  - **数据是产物不是真相来源**：真相 = 代码 + seed/迁移；库文件只是其缓存。只要 seed/快照能重建已知状态，"跨 worktree 数据一致"就是伪需求。
+  - **真共享可变状态只在 staging/生产级用真 DB server（Postgres）**，绝不在开发机跨 worktree 挂同一 SQLite 卷——那是过度工程。
+- **后续动作**: 已落地（commit `e51c798`）：compose 端口参数化 + `.env.compose.example`、`busy_timeout=5000`、`ops/db-snapshot.mjs`+`db-restore.mjs`（VACUUM INTO 快照/恢复）。判据"并发隔离靠配置不靠纪律"宜补进 `skills/L0-foundation.md`。
