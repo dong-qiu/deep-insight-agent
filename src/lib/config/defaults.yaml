@@ -51,7 +51,7 @@ defaultSources:
     fetch_interval: 1h
     enabled: true
   - id: src_arxiv_se
-    name: arXiv cs.SE 最新
+    name: arXiv cs.SE
     type: arxiv
     endpoint: http://export.arxiv.org/api/query?search_query=cat:cs.SE&sortBy=submittedDate&sortOrder=descending&max_results=30
     industry: ai-swe
@@ -59,7 +59,7 @@ defaultSources:
     fetch_interval: 6h
     enabled: true
   - id: src_arxiv_cl
-    name: arXiv cs.CL 最新
+    name: arXiv cs.CL
     type: arxiv
     endpoint: http://export.arxiv.org/api/query?search_query=cat:cs.CL&sortBy=submittedDate&sortOrder=descending&max_results=30
     industry: ai-swe
@@ -67,7 +67,7 @@ defaultSources:
     fetch_interval: 6h
     enabled: true
   - id: src_arxiv_ai
-    name: arXiv cs.AI 最新
+    name: arXiv cs.AI
     type: arxiv
     endpoint: http://export.arxiv.org/api/query?search_query=cat:cs.AI&sortBy=submittedDate&sortOrder=descending&max_results=30
     industry: ai-swe
@@ -176,7 +176,7 @@ defaultSources:
     # （重 + 灰）。安全报道与 THN / Krebs / Risky Business 高度重叠，损失小。下架。
     enabled: false
   - id: src_arxiv_cr
-    name: arXiv cs.CR 最新
+    name: arXiv cs.CR
     type: arxiv
     endpoint: http://export.arxiv.org/api/query?search_query=cat:cs.CR&sortBy=submittedDate&sortOrder=descending&max_results=30
     industry: ai-security

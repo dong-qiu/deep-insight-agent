@@ -116,10 +116,18 @@ function stripCitationDate(md) {
   return { md: newMd, changed: newMd !== md };
 }
 
+/** Pass 4：清掉源名内的 " 最新" 后缀（dogfood feedback：defaults.yaml 源名 papermark）。
+ *  仅在引用行的源名段（` — 源名` 至行末）做替换，避免误吃 quote 内容里的"最新"。 */
+function stripSourceLatestSuffix(md) {
+  const re = /^(  - \[\d+\] [^\n]+? — [^\n]*?) 最新(\s*)$/gm;
+  const newMd = md.replace(re, "$1$2");
+  return { md: newMd, changed: newMd !== md };
+}
+
 const reports = db.prepare("SELECT id, body_path FROM report ORDER BY generated_at DESC").all();
 console.log(`扫描 ${reports.length} 份报告…\n`);
 
-let stats = { p1Done: 0, p1Skip: 0, p2Done: 0, p2Skip: 0, p3Done: 0, p3Skip: 0, missedTotal: 0, fileMiss: 0 };
+let stats = { p1Done: 0, p1Skip: 0, p2Done: 0, p2Skip: 0, p3Done: 0, p3Skip: 0, p4Done: 0, p4Skip: 0, missedTotal: 0, fileMiss: 0 };
 for (const r of reports) {
   const mdPath = `${r.body_path}.md`;
   let md;
@@ -137,14 +145,17 @@ for (const r of reports) {
   stats.missedTotal += p2.missed;
   const p3 = stripCitationDate(p2.md);
   if (p3.changed) stats.p3Done++; else stats.p3Skip++;
+  const p4 = stripSourceLatestSuffix(p3.md);
+  if (p4.changed) stats.p4Done++; else stats.p4Skip++;
 
-  const finalMd = p3.md;
+  const finalMd = p4.md;
   if (finalMd !== md) {
     writeFileSync(mdPath, finalMd);
     const parts = [];
     if (p1.changed) parts.push("注入 [N]");
     if (p2.changed) parts.push("富化引用");
     if (p3.changed) parts.push("去日期");
+    if (p4.changed) parts.push("去'最新'");
     console.log(`  ✓ ${r.id} · ${parts.join(" + ")}${p2.missed > 0 ? ` · ${p2.missed} 条 ci 查不到` : ""}`);
   } else {
     console.log(`  · ${r.id} 跳过（已是最新格式 / 无引用）`);
@@ -155,5 +166,6 @@ console.log(`\n完成：`);
 console.log(`  Pass 1 [N] 注入：${stats.p1Done} 改 / ${stats.p1Skip} 跳`);
 console.log(`  Pass 2 富化：${stats.p2Done} 改 / ${stats.p2Skip} 跳`);
 console.log(`  Pass 3 去日期：${stats.p3Done} 改 / ${stats.p3Skip} 跳`);
+console.log(`  Pass 4 去'最新'后缀：${stats.p4Done} 改 / ${stats.p4Skip} 跳`);
 console.log(`  累计查不到 ci 的引用：${stats.missedTotal}`);
 console.log(`  FS 文件缺失：${stats.fileMiss}`);
