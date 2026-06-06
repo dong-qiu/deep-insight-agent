@@ -3,5 +3,9 @@
 # 真正的采集→分析→校验→brief 在 app 容器进程内跑（非 serverless，无超时），
 # 由 /api/cron 走 Job Runner 落 Run / 成本 / 审计。
 
-# 每 6 小时跑一次完整管线（与 defaultSources 的 fetch_interval=6h 对齐）
-0 */6 * * * node --no-warnings /app/ops/trigger.mjs
+# 每日 1 次完整管线（dogfood feedback 2026-06-06：spec 写"Daily Brief"但之前是
+# 每 6h 一份，一天 4 份 brief 名不副实；改为每日凌晨 1:00 北京 = UTC 17:00 跑，
+# 早晨用户可读到当日 brief。源 fetch_interval=6h 是采集层"想多久抓一次"的提示，
+# 与 cron 触发频率无关——前者描述意愿、后者真触发；不一致已在 source_id
+# fetch_interval 字段加文档注解）
+0 17 * * * node --no-warnings /app/ops/trigger.mjs
