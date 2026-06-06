@@ -5,57 +5,92 @@ import type { ReactNode } from "react";
  *
  *  C-2 引用支持（全局连续编号）：
  *  - 段落 / 标题中的 `[N]` → 渲染 <sup><a href="#cite-N">[N]</a></sup>；
- *  - 列表项以 `[N] ` 开头 → 该 <li> 加 id="cite-N"（点击 [N] 行内时浏览器自动滚到此项）；
- *  - 「{quote}」段 → 渲染 <q>，无引号字面值（避免和系统其他位置「」重复）。 */
+ *  - 列表项以 `[N] ` 开头 → 该 <li> 加 id="cite-N"、class="cite-li"、首列显式 [N] 序号。
+ *
+ *  dogfood feedback（2026-06-06）：
+ *  - 标准 markdown 链接 [text](url) → <a target="_blank">；
+ *  - 编号洞察标题 (`## N.` 或 `### N.`) 自动包入 <section class="insight-block">，
+ *    使每条洞察可作为视觉"卡片"独立排版（CSS 在 globals.css）。 */
 export function Markdown({ md }: { md: string }) {
-  const nodes: ReactNode[] = [];
+  const rootNodes: ReactNode[] = [];
+  /** 当前洞察 section 的内容容器；null = 不在某条洞察内 */
+  let insightNodes: ReactNode[] | null = null;
   let bullets: { text: string; id: string | null; citeNum: string | null }[] = [];
-  const flush = () => {
-    if (bullets.length) {
-      const items = bullets;
-      nodes.push(
-        <ul key={`ul-${nodes.length}`}>
-          {items.map((b, i) => (
-            <li key={i} id={b.id ?? undefined} className={b.citeNum ? "cite-li" : undefined}>
-              {/* dogfood feedback：列表项 [N] 作为可见序号显示（之前只剥成 id 用、用户只看到圆点）*/}
-              {b.citeNum ? <span className="cite-num">[{b.citeNum}]</span> : null}
-              {inline(b.text)}
-            </li>
-          ))}
-        </ul>,
+
+  const target = (): ReactNode[] => insightNodes ?? rootNodes;
+  const flushBullets = (): void => {
+    if (!bullets.length) return;
+    const items = bullets;
+    target().push(
+      <ul key={`ul-${target().length}`}>
+        {items.map((b, i) => (
+          <li key={i} id={b.id ?? undefined} className={b.citeNum ? "cite-li" : undefined}>
+            {b.citeNum ? <span className="cite-num">[{b.citeNum}]</span> : null}
+            {inline(b.text)}
+          </li>
+        ))}
+      </ul>,
+    );
+    bullets = [];
+  };
+  const flushInsight = (): void => {
+    flushBullets();
+    if (insightNodes) {
+      rootNodes.push(
+        <section className="insight-block" key={`ins-${rootNodes.length}`}>
+          {insightNodes}
+        </section>,
       );
-      bullets = [];
+      insightNodes = null;
     }
   };
+  /** 编号洞察标题：brief 用 `## 1.`，deep_dive 用 `### 1.`（节内三级） */
+  const isInsightHeading = (line: string): boolean =>
+    /^##\s+\d+\.\s/.test(line) || /^###\s+\d+\.\s/.test(line);
 
   for (const raw of md.split("\n")) {
     const line = raw.trimEnd();
     if (/^\s*-\s+/.test(line)) {
-      // [N] 引用解析的硬约束（review #7 注释明示）：
-      // 仅当 stripped 紧接 [数字] + 空格 才赋 id="cite-N"——report-gen 的引用列表
-      // 必须输出 "- [N] 「quote」— `ci`" 的扁平形式。任何嵌套（"  - 父项\n    - [1] xxx"）
-      // 经 `^\s*-\s+` 一刀切前导空白后，第二级也会被解析为 cite 锚——目前 report-gen
-      // 不输出嵌套列表所以安全；如需嵌套引用要先重做编号设计。
       const stripped = line.replace(/^\s*-\s+/, "");
       const m = stripped.match(/^\[(\d+)\]\s+(.*)$/);
       if (m) bullets.push({ text: m[2], id: `cite-${m[1]}`, citeNum: m[1] });
       else bullets.push({ text: stripped, id: null, citeNum: null });
       continue;
     }
-    flush();
-    if (line.startsWith("# ")) nodes.push(<h1 key={nodes.length}>{inline(line.slice(2))}</h1>);
-    else if (line.startsWith("### ")) nodes.push(<h3 key={nodes.length}>{inline(line.slice(4))}</h3>);
-    else if (line.startsWith("## ")) nodes.push(<h2 key={nodes.length}>{inline(line.slice(3))}</h2>);
-    else if (line.startsWith("> "))
-      nodes.push(
-        <blockquote key={nodes.length} className="muted">
+    flushBullets();
+
+    if (isInsightHeading(line)) {
+      flushInsight(); // 上一条洞察收尾
+      insightNodes = []; // 新洞察开始
+      if (line.startsWith("## ")) {
+        insightNodes.push(<h2 key={0}>{inline(line.slice(3))}</h2>);
+      } else {
+        insightNodes.push(<h3 key={0}>{inline(line.slice(4))}</h3>);
+      }
+    } else if (line.startsWith("# ")) {
+      flushInsight();
+      rootNodes.push(<h1 key={rootNodes.length}>{inline(line.slice(2))}</h1>);
+    } else if (line.startsWith("### ")) {
+      flushInsight();
+      rootNodes.push(<h3 key={rootNodes.length}>{inline(line.slice(4))}</h3>);
+    } else if (line.startsWith("## ")) {
+      flushInsight(); // 非编号 ## 视作分节标题（deep_dive 的 "## 重点关注"），不进洞察卡
+      rootNodes.push(<h2 key={rootNodes.length}>{inline(line.slice(3))}</h2>);
+    } else if (line.startsWith("> ")) {
+      // 报告 hero 元数据条：第一条顶层 blockquote 加强类供 CSS hero 样式锁定
+      const isHero = !insightNodes && rootNodes.length <= 2;
+      target().push(
+        <blockquote key={target().length} className={isHero ? "hero-meta" : "muted"}>
           {inline(line.slice(2))}
         </blockquote>,
       );
-    else if (line.trim() !== "") nodes.push(<p key={nodes.length}>{inline(line)}</p>);
+    } else if (line.trim() !== "") {
+      target().push(<p key={target().length}>{inline(line)}</p>);
+    }
   }
-  flush();
-  return <article>{nodes}</article>;
+  flushBullets();
+  flushInsight();
+  return <article className="report-body">{rootNodes}</article>;
 }
 
 /** 行内分词：`code` + 标准 markdown 链接 [text](url) + [N] 引用锚（C-2）。
@@ -67,18 +102,15 @@ function inline(text: string): ReactNode {
   const parts = text.split(INLINE_PATTERN);
   return parts.map((p, idx) => {
     if (!p) return null;
-    // [text](url) markdown 链接（dogfood feedback：quote 可点跳源）
     const linkM = p.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
     if (linkM) {
       return (
         <a key={`l-${idx}`} href={linkM[2]} target="_blank" rel="noopener noreferrer">{linkM[1]}</a>
       );
     }
-    // `code`
     if (p.startsWith("`") && p.endsWith("`")) {
       return <code key={`c-${idx}`}>{p.slice(1, -1)}</code>;
     }
-    // [N] 锚（仅纯数字）
     const refM = p.match(/^\[(\d+)\]$/);
     if (refM) {
       return (

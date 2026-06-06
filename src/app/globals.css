@@ -51,19 +51,93 @@ nav a { margin-right: 1rem; }
 .cite-ref { font-size: .75em; vertical-align: super; line-height: 0; margin: 0 .1em; }
 .cite-ref a { color: #2563eb; text-decoration: none; padding: 0 .15em; border-radius: 3px; }
 .cite-ref a:hover { background: #eff6ff; text-decoration: underline; }
-/* review #5：限缩到 cite-* 锚——避免命中 settings/admin 等无关 id 的 element */
 [id^="cite-"]:target { background: #fef3c7; transition: background .8s; }
-/* dogfood feedback：列表项 [N] 显式可见——去圆点、[N] 蓝色短宽编号居首 */
-.cite-li { list-style: none; }
+.cite-li { list-style: none; padding-left: 0; }
 .cite-num {
-  display: inline-block; min-width: 2.2em; font-weight: 500; color: #2563eb;
-  margin-right: .35em; font-variant-numeric: tabular-nums;
+  display: inline-block; min-width: 2.2em; font-weight: 600; color: #2563eb;
+  margin-right: .4em; font-variant-numeric: tabular-nums; font-size: .85rem;
 }
 @media (prefers-color-scheme: dark) {
   .cite-ref a { color: #60a5fa; }
   .cite-ref a:hover { background: #1e293b; }
   [id^="cite-"]:target { background: #422006; }
   .cite-num { color: #60a5fa; }
+}
+
+/* ────────────────────────────────────────────────────
+   报告排版（dogfood feedback：层级清晰 + 业界最佳实践参考）
+   Stripe Docs / Notion / Substack 那种"数据密集但易读"的范式：
+   - 行宽控制（最大化扫读，避免长行眼跳）
+   - 卡片化每条洞察，左边色条标识"重要单元"
+   - 字号 scale 1.25 比率，hero / 正文 / meta 三档分明
+   - meta 信息用 monospace tabular-nums，避免数字跳动
+   - 引用区视觉 subordinate（小一号 + muted）
+   ──────────────────────────────────────────────────── */
+.report-body {
+  max-width: 44rem; margin: 0 auto;
+  font-feature-settings: "kern", "liga", "ss01";
+}
+
+/* H1 报告标题：大号、紧凑行高 */
+.report-body > h1 {
+  font-size: 1.875rem; font-weight: 700; line-height: 1.2;
+  margin: 0 0 .25rem; letter-spacing: -.01em;
+}
+
+/* Hero 元数据条：报告头那条 blockquote 取代默认 muted，做成像 Notion property 行 */
+.report-body .hero-meta {
+  margin: 0 0 2rem; padding: .75rem 1rem;
+  border-left: 3px solid #2563eb;
+  background: #f0f7ff;
+  border-radius: 0 6px 6px 0;
+  color: #374151; font-size: .9rem;
+}
+
+/* 洞察卡片：每条独立、左色条强调、卡片间充分留白 */
+.insight-block {
+  margin: 1.75rem 0;
+  padding: 1.25rem 1.25rem .75rem 1.5rem;
+  border: 1px solid #e5e7eb;
+  border-left: 4px solid #2563eb;
+  border-radius: 6px;
+  background: #ffffff;
+}
+.insight-block > h2,
+.insight-block > h3 {
+  margin: 0 0 .75rem;
+  font-size: 1.125rem; font-weight: 600; line-height: 1.5;
+  color: #111827;
+}
+
+/* 洞察块内"重要性 · 依据"等 meta 用 ul → 紧凑 + 灰字 */
+.insight-block > ul {
+  margin: .5rem 0; padding-left: 1.25rem;
+  font-size: .9rem; color: #4b5563;
+  line-height: 1.55;
+}
+.insight-block > ul > li { margin: .15rem 0; }
+
+/* 引用块（紧跟"- 引用（N）："的子 ul）：小一号 + 缩进 + 圆点去掉 */
+.insight-block > ul + ul {
+  margin-top: .25rem; padding-left: .5rem;
+  font-size: .85rem;
+}
+.insight-block > ul + ul > li.cite-li {
+  padding: .35rem 0; border-top: 1px dashed #e5e7eb;
+  text-indent: 0;
+}
+.insight-block > ul + ul > li.cite-li:first-child { border-top: none; }
+
+/* 引用项内 quote 链接：蓝色无下划线，hover 时下划线 */
+.cite-li a:not(.cite-ref a) { color: #2563eb; text-decoration: none; }
+.cite-li a:not(.cite-ref a):hover { text-decoration: underline; }
+
+@media (prefers-color-scheme: dark) {
+  .report-body .hero-meta { background: #1e293b; border-left-color: #60a5fa; color: #d1d5db; }
+  .insight-block { background: #0f172a; border-color: #1f2937; border-left-color: #60a5fa; }
+  .insight-block > h2, .insight-block > h3 { color: #f3f4f6; }
+  .insight-block > ul + ul > li.cite-li { border-top-color: #1f2937; }
+  .cite-li a:not(.cite-ref a) { color: #60a5fa; }
 }
 /* 设置页 CRUD 表单（B-3）：纵向 label-input 排版 */
 .entity-form { display: flex; flex-direction: column; gap: .4rem; margin-top: .5rem; }

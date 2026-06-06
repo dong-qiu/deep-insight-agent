@@ -8,16 +8,38 @@ function html(md: string): string {
 }
 
 describe("Markdown 基础", () => {
-  it("# / ## / ### 标题 + 段落 + 行内 code", () => {
+  it("# / ## / ### 标题 + 段落 + 行内 code（非编号标题不进 insight-block）", () => {
     const h = html("# T1\n## T2\n### T3\n正文 `inline` 段");
     expect(h).toContain("<h1>T1</h1>");
     expect(h).toContain("<h2>T2</h2>");
     expect(h).toContain("<h3>T3</h3>");
     expect(h).toContain("<code>inline</code>");
+    expect(h).not.toContain("insight-block");
   });
 
-  it("> blockquote · muted 类", () => {
-    expect(html("> 引言")).toContain('class="muted"');
+  it("编号 ## N. / ### N. 自动包入 <section class='insight-block'>", () => {
+    const h1 = html("## 1. 重要洞察 statement");
+    expect(h1).toContain('class="insight-block"');
+    expect(h1).toMatch(/<section[^>]*><h2>1\./);
+
+    const h2 = html("### 1. deep_dive 洞察");
+    expect(h2).toContain('class="insight-block"');
+    expect(h2).toMatch(/<section[^>]*><h3>1\./);
+  });
+
+  it("两条洞察 → 两个独立 <section> 不嵌套", () => {
+    const h = html("## 1. 第一条 [1]\n- [1] Q1\n\n## 2. 第二条 [2]\n- [2] Q2");
+    const sections = h.match(/<section[^>]*class="insight-block"/g);
+    expect(sections?.length).toBe(2);
+  });
+
+  it("> blockquote · 第一条 hero-meta 类（报告头）", () => {
+    expect(html("> 引言")).toContain('class="hero-meta"');
+  });
+
+  it("> blockquote · 非顶部位置 muted 类（普通引用）", () => {
+    const h = html("# Title\n## 1. 洞察\n> 内嵌引用");
+    expect(h).toContain('class="muted"');
   });
 
   it("- 列表 → ul/li", () => {
