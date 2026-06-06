@@ -35,6 +35,9 @@ export function TopicForm({
 
   async function submit(e: React.FormEvent): Promise<void> {
     e.preventDefault();
+    // 抓取 form 的祖先 <details>——保存成功后关闭它（dogfood feedback：保存后编辑框该收回）
+    // currentTarget 必须在 await 前抓，await 之后会变 null
+    const detailsEl = (e.currentTarget as HTMLFormElement).closest("details");
     setBusy(true); setErr(null);
     try {
       // 提交时才把 raw 切成数组（split + trim + filter 一次到位）
@@ -51,6 +54,8 @@ export function TopicForm({
         throw new Error(j.message ?? j.error ?? `HTTP ${res.status}`);
       }
       onDone?.();
+      // 保存成功 → 关闭外层 <details>（编辑框收回）；refresh 让 server 拉新数据
+      if (detailsEl) detailsEl.open = false;
       router.refresh();
     } catch (e) {
       setErr((e as Error).message);

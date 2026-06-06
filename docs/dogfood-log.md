@@ -48,3 +48,4 @@ dogfood 开始时间：2026-06-06
 - 2026-06-06 23:xx · settings 修 t_code_agents 关键词时 · 想输入 "coding agent"（含空格）但空格被吃掉 · 改成 "codingagent" 凑合（**bug 已修**：input onChange 即时 split+trim 导致；改 raw string state 提交时才切分）
 - 2026-06-06 23:xx · 同一次 · 想要 "重置该主题到 defaults.yaml" 按钮——以后再被测试 / 误操作污染可一键复原 · 当前要手敲 10 个关键词（**摩擦观察 #1**）
 - 2026-06-06 23:xx · 同一次 · 关键词输入框是单行 input 装 10 个逗号分隔短语，**很难一眼看清哪些已填**——想要 "chip 输入"（每个关键词一个 tag）或多行 textarea · 当前凑合用（**摩擦观察 #2**）
+- 2026-06-06 23:xx · 修完 t_code_agents 点保存后 · 编辑框没自动收回，还摊在那儿——以为没保存成功又点了一次 · 当前没明显"已保存 ✓"反馈（**bug 已修**：submit 成功后 closest('details').open=false 自动关）

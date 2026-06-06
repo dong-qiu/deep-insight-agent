@@ -37,6 +37,8 @@ export function SourceForm({
 
   async function submit(e: React.FormEvent): Promise<void> {
     e.preventDefault();
+    // dogfood feedback：保存成功后关闭外层 <details>（编辑框收回）
+    const detailsEl = (e.currentTarget as HTMLFormElement).closest("details");
     setBusy(true); setErr(null);
     try {
       const url = mode === "create" ? "/api/admin/sources" : `/api/admin/sources/${initial!.id}`;
@@ -51,6 +53,7 @@ export function SourceForm({
         throw new Error(j.message ?? j.error ?? `HTTP ${res.status}`);
       }
       onDone?.();
+      if (detailsEl) detailsEl.open = false;
       router.refresh();
     } catch (e) {
       setErr((e as Error).message);
