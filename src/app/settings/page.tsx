@@ -5,6 +5,7 @@
 import { getEffectiveModels, loadStaticConfig } from "../../lib/config/index.js";
 import { getDb } from "../../lib/db/index.js";
 import { listSources, listTopics } from "../../lib/db/repos.js";
+import { CollectButton } from "./_components/collect-button.js";
 import { DeepDiveButton } from "./_components/deep-dive-button.js";
 import { DeleteButton } from "./_components/delete-button.js";
 import { SourceForm } from "./_components/source-form.js";
@@ -73,6 +74,7 @@ export default function SettingsPage() {
             <div className="muted">
               {s.type} · {s.industry} · 每 {s.fetch_interval} · 主题 {s.topic_ids.join("、")}
               {s.enabled ? "" : " · 已停用"}
+              <CollectButton sourceId={s.id} sourceName={s.name} enabled={s.enabled} />
               <DeleteButton entity="sources" id={s.id} name={s.name} />
             </div>
             <details style={{ marginTop: ".5rem" }}>
