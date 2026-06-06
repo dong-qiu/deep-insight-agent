@@ -93,6 +93,10 @@ export interface CitationCheck {
     | "source_not_found"
     | "source_unreachable"
     | "quote_not_in_source";
+  // consistency=not_evaluated 有两义，按 reachability 区分：
+  //  - reachability=fail → 可达性短路未判（verdict=blocked）；
+  //  - reachability=pass → 一致性「调用失败」（verdict=flagged，报告标「校验失败·待重试」，
+  //    与判官真说 uncertain 区分；见 validator.validateBatch 的 catch 分支）。
   consistency: "support" | "not_support" | "uncertain" | "not_evaluated";
   consistency_reason:
     | "ok"

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AnalysisBatch, ContentItem, Topic, ValidationResult } from "../types.js";
-import { buildReport, selectInsights } from "./report-gen.js";
+import { buildReport, flagLabel, selectInsights } from "./report-gen.js";
 
 const topic: Topic = {
   id: "t1", name: "Code Agent", keywords: ["a"], industry: "ai-swe", language: "zh",
@@ -52,8 +52,12 @@ describe("selectInsights（洞察级纳入判定）", () => {
   it("剔除 blocked 引用、排除全 blocked 洞察、标记 flagged", () => {
     expect(sel.map((x) => x.insight.id)).toEqual(["i1", "i2"]); // i3 全 blocked 被排除
     expect(sel.find((x) => x.insight.id === "i1")!.citationIndices).toEqual([0]); // index1 blocked 被剔
-    expect(sel.find((x) => x.insight.id === "i1")!.flagged).toBe(false);
-    expect(sel.find((x) => x.insight.id === "i2")!.flagged).toBe(true); // uncertain → 待核实
+    const i1 = sel.find((x) => x.insight.id === "i1")!;
+    expect(i1.flaggedUncertain).toBe(false);
+    expect(i1.flaggedError).toBe(false);
+    const i2 = sel.find((x) => x.insight.id === "i2")!;
+    expect(i2.flaggedUncertain).toBe(true); // uncertain → 待核实
+    expect(i2.flaggedError).toBe(false);
   });
 
   it("汇总被屏蔽数 + 屏蔽理由直方图（外露 validator 把关力度）", () => {
@@ -164,5 +168,35 @@ describe("buildReport · deep_dive（最小确定性深挖）", () => {
   it("仍只纳入通过/待核实洞察（与 brief 同闸门）", () => {
     expect(report.insight_ids).toEqual(["i1", "i2"]);
     expect(report.body_md).not.toContain("S3 all blocked");
+  });
+});
+
+describe("flagLabel + 校验失败/待核实 区分（C）", () => {
+  it("genuine uncertain 优先于校验失败；都无返空串", () => {
+    expect(flagLabel({ flaggedUncertain: true, flaggedError: false })).toBe("待核实");
+    expect(flagLabel({ flaggedUncertain: false, flaggedError: true })).toBe("校验失败·待重试");
+    expect(flagLabel({ flaggedUncertain: true, flaggedError: true })).toBe("待核实");
+    expect(flagLabel({ flaggedUncertain: false, flaggedError: false })).toBe("");
+  });
+
+  it("selectInsights：reachability=pass + consistency=not_evaluated 记为 flaggedError，非 flaggedUncertain", () => {
+    const batch: AnalysisBatch = {
+      id: "be", topic_id: "t1", time_window: win, status: "done", no_significant_event: false,
+      insights: [{
+        id: "ie", topic_id: "t1", type: "aggregation", event_id: null, statement: "Serr", importance: 4,
+        importance_basis: "x",
+        citations: [{ content_item_id: "ci9", quote: "q9", locator: { paragraph_index: 0, char_start: 0, char_end: 1 } }],
+        source_count: 1, multi_source: false, time_window: win, confidence: null, language: "zh",
+      }],
+    };
+    const v: ValidationResult = {
+      checks: [{ insight_id: "ie", citation_index: 0, reachability: "pass", reachability_reason: "ok", consistency: "not_evaluated", consistency_reason: "not_evaluated", verdict: "flagged" }],
+      report: { total: 1, pass: 0, blocked: 0, flagged: 1, consistency_failure_rate: 0, flagged_rate: 0, insights_total: 1, insights_includable: 1, releasable: true },
+    };
+    const sel = selectInsights(batch, v);
+    expect(sel).toHaveLength(1);
+    expect(sel[0].flaggedError).toBe(true);
+    expect(sel[0].flaggedUncertain).toBe(false);
+    expect(sel[0].citationIndices).toEqual([0]); // 仍纳入（flagged 可纳入）
   });
 });

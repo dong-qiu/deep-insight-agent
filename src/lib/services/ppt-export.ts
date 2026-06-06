@@ -85,19 +85,24 @@ function loadPptInput(
     };
     // 白名单（与 selectInsights 同口径）：pass/flagged 纳入；blocked/无 check 剔除
     const checks = db
-      .prepare("SELECT citation_index, verdict FROM citation_check WHERE insight_id = ?")
-      .all(id) as { citation_index: number; verdict: string }[];
-    const vMap = new Map(checks.map((c) => [c.citation_index, c.verdict]));
+      .prepare("SELECT citation_index, verdict, consistency FROM citation_check WHERE insight_id = ?")
+      .all(id) as { citation_index: number; verdict: string; consistency: string }[];
+    const cMap = new Map(checks.map((c) => [c.citation_index, c]));
     const kept: number[] = [];
-    let flagged = false;
+    let flaggedUncertain = false;
+    let flaggedError = false;
     insight.citations.forEach((_, i) => {
-      const v = vMap.get(i);
-      if (v === "pass" || v === "flagged") {
+      const c = cMap.get(i);
+      if (c?.verdict === "pass" || c?.verdict === "flagged") {
         kept.push(i);
-        if (v === "flagged") flagged = true;
+        // flagged 两类（验证器约定）：consistency=not_evaluated 表「校验失败」，否则 genuine uncertain
+        if (c.verdict === "flagged") {
+          if (c.consistency === "not_evaluated") flaggedError = true;
+          else flaggedUncertain = true;
+        }
       }
     });
-    if (kept.length > 0) insights.push({ insight, citationIndices: kept, flagged });
+    if (kept.length > 0) insights.push({ insight, citationIndices: kept, flaggedUncertain, flaggedError });
   }
 
   // 源名映射：ci → source_id → source.name；同时建 source_id → name（供"源与方法"页）

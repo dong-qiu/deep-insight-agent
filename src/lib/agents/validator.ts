@@ -129,6 +129,9 @@ export function summarize(checks: CitationCheck[]): ValidationReport {
   };
 }
 
+/** 一致性判定缓存值：成功的判官输出，或一次被捕获的调用失败。 */
+type JudgeOutcome = ConsistencyJudge | { error: true };
+
 export async function validateBatch(
   insights: Insight[],
   items: ContentItem[],
@@ -138,6 +141,10 @@ export async function validateBatch(
   const checks: CitationCheck[] = [];
 
   for (const ins of insights) {
+    // 一致性判定只依赖 (statement, item.body)，与具体 quote 无关。同一洞察内多条引用
+    // 指向同一源时按 content_item_id 去重：判一次、复用——省成本，且消除「相同输入跑多次
+    // → LLM 非确定性互相矛盾 → 任一次 uncertain 就把整条洞察误标待核实」的伪阳性。
+    const judgeByItem = new Map<string, JudgeOutcome>();
     for (let ci = 0; ci < ins.citations.length; ci++) {
       const cit = ins.citations[ci];
       const { reachability, reason } = checkReachability(cit, byId);
@@ -156,20 +163,30 @@ export async function validateBatch(
       }
 
       const item = byId.get(cit.content_item_id)!;
-      let judge: ConsistencyJudge;
-      try {
-        judge = await judgeConsistency(ins.statement, item.body, onCost);
-      } catch (e) {
-        // 一致性调用失败（超时/限流/解析错）：不静默丢弃 —— 记为「待核实」(flagged)，
-        // 计入 total 且不让未校验引用伪装成已核实进报告（闸门完整性）。
-        console.warn(`  ⚠️ 一致性校验失败，记为待核实 ${ins.id}#${ci}（${(e as Error).message}）`);
+      let outcome = judgeByItem.get(cit.content_item_id);
+      if (outcome === undefined) {
+        try {
+          outcome = await judgeConsistency(ins.statement, item.body, onCost);
+        } catch (e) {
+          // 调用失败（超时/限流/解析错）与「判官真说不确定」分开记账（不静默丢弃）：
+          // 记 reachability=pass + consistency=not_evaluated —— 该组合此前不可能出现
+          // （not_evaluated 仅随 reachability=fail），故专指「校验失败」。verdict 仍 flagged
+          // （不让未校验引用伪装成已核实进报告），但报告会标「校验失败·待重试」而非「待核实」，
+          // 且 summarize 的 flagged_rate（按 consistency=uncertain 计）不再被错误污染。
+          console.warn(`  ⚠️ 一致性校验失败，记为校验失败 ${ins.id}#${ci}（${(e as Error).message}）`);
+          outcome = { error: true };
+        }
+        judgeByItem.set(cit.content_item_id, outcome);
+      }
+
+      if ("error" in outcome) {
         checks.push({
           insight_id: ins.id,
           citation_index: ci,
           reachability: "pass",
           reachability_reason: "ok",
-          consistency: "uncertain",
-          consistency_reason: "uncertain",
+          consistency: "not_evaluated",
+          consistency_reason: "not_evaluated",
           verdict: "flagged",
         });
         continue;
@@ -179,9 +196,9 @@ export async function validateBatch(
         citation_index: ci,
         reachability: "pass",
         reachability_reason: "ok",
-        consistency: judge.consistency,
-        consistency_reason: judge.consistency_reason,
-        verdict: verdictFor("pass", judge.consistency),
+        consistency: outcome.consistency,
+        consistency_reason: outcome.consistency_reason,
+        verdict: verdictFor("pass", outcome.consistency),
       });
     }
   }

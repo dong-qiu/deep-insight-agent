@@ -13,6 +13,7 @@
  *  v1 不调 LLM；slide 标题用 statement 截断（B 阶段会换成 LLM 凝练标题 + summary 页）。 */
 import PptxGenJsImport from "pptxgenjs";
 import type { Insight, Report, Topic } from "../types.js";
+import { flagLabel } from "../agents/report-gen.js";
 import type { ExecutivePolish, InsightPolish } from "./ppt-polish.js";
 
 // pptxgenjs CJS/ESM 互操作不稳定：tsx 直接跑 ESM 路径返 { default } 而 vitest 走 CJS
@@ -24,7 +25,8 @@ const PptxGen: typeof PptxGenJsImport =
 export interface IncludedInsightLite {
   insight: Insight;
   citationIndices: number[]; // 已剔除 blocked、含 flagged
-  flagged: boolean;
+  flaggedUncertain: boolean; // genuine uncertain →「待核实」
+  flaggedError: boolean; // 一致性校验失败 →「校验失败·待重试」（见 report-gen.flagLabel）
 }
 
 export interface PptGenInput {
@@ -183,11 +185,12 @@ function addKeyInsightSlide(
   const date = input.report.generated_at.slice(0, 10);
 
   // ── 顶部编号 + 标签 ──
-  const tag = x.flagged ? "待核实" : `重点 · 重要性 ${x.insight.importance}/5`;
+  const label = flagLabel(x);
+  const tag = label || `重点 · 重要性 ${x.insight.importance}/5`;
   s.addText(`#${n}  ·  ${tag}`, {
     x: 0.5, y: 0.3, w: 12.3, h: 0.3,
     fontSize: 10, fontFace: STYLE.fontFace,
-    color: x.flagged ? STYLE.flagAccent : STYLE.textMuted,
+    color: label ? STYLE.flagAccent : STYLE.textMuted,
   });
 
   // ── 标题（pithy；A 阶段截断、B 阶段 LLM 凝练）──
@@ -301,7 +304,8 @@ function addOtherInsightSlides(pres: InstanceType<typeof PptxGen>, rest: Include
     });
     let y = 1.1;
     for (const x of chunk) {
-      const flag = x.flagged ? "  〔待核实〕" : "";
+      const lbl = flagLabel(x);
+      const flag = lbl ? `  〔${lbl}〕` : "";
       s.addText(`· [${x.insight.importance}/5] ${truncate(x.insight.statement, 180)}${flag}`, {
         x: 0.6, y, w: 12.1, h: 1.3,
         fontSize: 12, fontFace: STYLE.fontFace, color: STYLE.textSubtle,

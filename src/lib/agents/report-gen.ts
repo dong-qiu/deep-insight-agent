@@ -9,9 +9,18 @@ import type {
 export interface IncludedInsight {
   insight: Insight;
   citationIndices: number[]; // 剔除 blocked 后保留的引用下标
-  flagged: boolean; // 含 uncertain（待核实）引用
+  flaggedUncertain: boolean; // 含 genuine uncertain 引用（判官判原文信息不足）→「待核实」
+  flaggedError: boolean; // 含一致性「校验失败」引用（调用出错，可重跑）→「校验失败·待重试」
   blockedCount: number; // 被 validator 屏蔽的引用数（不在 citationIndices 内）
   blockedReasonCounts: Record<string, number>; // 屏蔽理由直方图（如 exaggeration→2、out_of_context→1）
+}
+
+/** flagged 标签文案：genuine uncertain 优先（更实质的告警），其次校验失败；都无返空串。
+ *  ppt-gen / ppt-export 共用，保证三处渲染口径一致。 */
+export function flagLabel(x: { flaggedUncertain: boolean; flaggedError: boolean }): string {
+  if (x.flaggedUncertain) return "待核实";
+  if (x.flaggedError) return "校验失败·待重试";
+  return "";
 }
 
 /** verdict=blocked 时取真实理由：reachability=fail → reachability_reason；
@@ -36,7 +45,8 @@ export function selectInsights(batch: AnalysisBatch, validation: ValidationResul
   for (const ins of batch.insights) {
     const cs = checksByInsight.get(ins.id);
     const kept: number[] = [];
-    let flagged = false;
+    let flaggedUncertain = false;
+    let flaggedError = false;
     let blockedCount = 0;
     const blockedReasonCounts: Record<string, number> = {};
     ins.citations.forEach((_, i) => {
@@ -45,14 +55,19 @@ export function selectInsights(batch: AnalysisBatch, validation: ValidationResul
       // 白名单:只有明确 pass/flagged 才纳入;blocked 与「无 check(未校验)」一律剔除
       if (v === "pass" || v === "flagged") {
         kept.push(i);
-        if (v === "flagged") flagged = true;
+        // flagged 两类（验证器约定）：consistency=not_evaluated 表「校验失败」，否则 genuine uncertain
+        if (v === "flagged") {
+          if (c!.consistency === "not_evaluated") flaggedError = true;
+          else flaggedUncertain = true;
+        }
       } else if (v === "blocked") {
         blockedCount += 1;
         const r = c ? blockedReason(c) : null;
         if (r) blockedReasonCounts[r] = (blockedReasonCounts[r] ?? 0) + 1;
       }
     });
-    if (kept.length >= 1) out.push({ insight: ins, citationIndices: kept, flagged, blockedCount, blockedReasonCounts });
+    if (kept.length >= 1)
+      out.push({ insight: ins, citationIndices: kept, flaggedUncertain, flaggedError, blockedCount, blockedReasonCounts });
   }
   return out;
 }
@@ -141,7 +156,8 @@ function insightBlockMd(
   const refs = x.citationIndices.length > 0
     ? " " + x.citationIndices.map((_, i) => `[${citeStart + i}]`).join("")
     : "";
-  const L = [`${heading} ${ins.statement}${refs}${x.flagged ? " 〔待核实〕" : ""}`, ""];
+  const label = flagLabel(x);
+  const L = [`${heading} ${ins.statement}${refs}${label ? ` 〔${label}〕` : ""}`, ""];
   L.push(`- 重要性：${ins.importance}/5 · 依据：${ins.importance_basis}`);
   if (detailed) L.push(`- 来源：${ins.source_count} 个 · ${ins.multi_source ? "多源印证" : "单源"}`);
   if (ins.type === "trend" && ins.confidence) L.push(`- 置信度：${ins.confidence}`);
@@ -236,8 +252,9 @@ function insightHtml(x: IncludedInsight, n: number, tag: "h2" | "h3", detailed: 
   const blocked = x.blockedCount > 0
     ? `<p class="meta blocked">校验阻断：${x.blockedCount} 条${esc(blockedReasonStr(x.blockedReasonCounts))}</p>`
     : "";
+  const label = flagLabel(x);
   return `<section><${tag}>${n}. ${esc(ins.statement)}${
-    x.flagged ? ' <span class="flag">待核实</span>' : ""
+    label ? ` <span class="flag">${label}</span>` : ""
   }</${tag}><p class="meta">重要性 ${ins.importance}/5 · ${esc(ins.importance_basis)}${conf}${src}</p><ul>${cites}</ul>${blocked}</section>`;
 }
 

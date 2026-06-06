@@ -27,7 +27,7 @@ function ins(id: string, statement: string, importance = 5): Insight {
   };
 }
 function lite(i: Insight): IncludedInsightLite {
-  return { insight: i, citationIndices: [], flagged: false };
+  return { insight: i, citationIndices: [], flaggedUncertain: false, flaggedError: false };
 }
 
 describe("polishForPpt", () => {

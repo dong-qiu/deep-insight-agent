@@ -2,9 +2,14 @@
  * validator 纯函数单测 —— 不需要 API key，CI 可跑（npm test）。
  * 覆盖可达性校验与 verdict 处置矩阵（确定性逻辑）。
  */
-import { describe, expect, it } from "vitest";
-import { checkReachability, insightInclusion, summarize, verdictFor } from "./validator.js";
-import type { CitationCheck, ContentItem } from "../types.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+// callStructured mock 掉——validateBatch 经 judgeConsistency 调它；无 API key、CI 可跑
+vi.mock("../runtime/llm.js", () => ({ callStructured: vi.fn() }));
+
+import { callStructured } from "../runtime/llm.js";
+import { checkReachability, insightInclusion, summarize, validateBatch, verdictFor } from "./validator.js";
+import type { CitationCheck, ContentItem, Insight } from "../types.js";
 
 function item(id: string, body: string): ContentItem {
   return {
@@ -130,5 +135,73 @@ describe("summarize（护栏与 releasable 对齐洞察级纳入判定）", () =
       insights_total: 2,
       insights_includable: 2, // a 有 pass；b 有 flagged
     });
+  });
+});
+
+/** 构造一条最小合法 Insight（validateBatch 只读 statement + citations）。 */
+function insight(id: string, statement: string, cits: { content_item_id: string; quote: string }[]): Insight {
+  return {
+    id, topic_id: "t1", type: "aggregation", event_id: null, statement, importance: 4,
+    importance_basis: "x",
+    citations: cits.map((c) => ({ ...c, locator: { paragraph_index: 0, char_start: 0, char_end: 1 } })),
+    source_count: 1, multi_source: false,
+    time_window: { start: "2026-05-01", end: "2026-05-07" }, confidence: null, language: "en",
+  };
+}
+const judgeData = (consistency: "support" | "not_support" | "uncertain", reason: string) =>
+  ({ data: { consistency, consistency_reason: reason, rationale: "r" } }) as unknown as Awaited<ReturnType<typeof callStructured>>;
+
+describe("validateBatch（A 去重 + C 校验失败分账）", () => {
+  // 用 afterEach + restoreAllMocks 而非 beforeEach+mockReset：后者在「先 resolve 的测试 →
+  // 再 reject 的测试」序列下会让 vitest 的未处理拒绝追踪误把已 catch 的拒绝算到测试头上。
+  afterEach(() => vi.restoreAllMocks());
+
+  it("A：同洞察多引用指向同一源 → 一致性只判一次、复用结果", async () => {
+    const items = [item("ci_x", "Membrane pairs blocking and permitting. Highest F1 on six attacks. Benign refusal 7-14%.")];
+    const ins = insight("i1", "Membrane 在六种攻击上最高 F1", [
+      { content_item_id: "ci_x", quote: "Membrane pairs blocking" },
+      { content_item_id: "ci_x", quote: "Highest F1 on six attacks" },
+      { content_item_id: "ci_x", quote: "Benign refusal 7-14%" },
+    ]);
+    vi.mocked(callStructured).mockResolvedValue(judgeData("support", "ok"));
+
+    const { checks } = await validateBatch([ins], items);
+    expect(callStructured).toHaveBeenCalledTimes(1); // 3 引用同源 → 判 1 次
+    expect(checks.map((c) => c.verdict)).toEqual(["pass", "pass", "pass"]); // 复用同一结果，无相互矛盾
+  });
+
+  it("A：不同源各判一次", async () => {
+    const items = [item("ci_a", "alpha body text"), item("ci_b", "beta body text")];
+    const ins = insight("i2", "S", [
+      { content_item_id: "ci_a", quote: "alpha body" },
+      { content_item_id: "ci_b", quote: "beta body" },
+    ]);
+    vi.mocked(callStructured).mockResolvedValue(judgeData("support", "ok"));
+    await validateBatch([ins], items);
+    expect(callStructured).toHaveBeenCalledTimes(2);
+  });
+
+  it("C：一致性调用抛错 → reachability=pass + consistency=not_evaluated + verdict=flagged（与 genuine uncertain 区分）", async () => {
+    const items = [item("ci_y", "some reachable body content")];
+    const ins = insight("i3", "S", [{ content_item_id: "ci_y", quote: "reachable body" }]);
+    vi.mocked(callStructured).mockImplementation(async () => { throw new Error("timeout"); });
+
+    const { checks } = await validateBatch([ins], items);
+    expect(checks).toHaveLength(1);
+    expect(checks[0]).toMatchObject({
+      reachability: "pass", consistency: "not_evaluated", consistency_reason: "not_evaluated", verdict: "flagged",
+    });
+  });
+
+  it("C：失败结果同样按源去重复用（不重复重试同一源）", async () => {
+    const items = [item("ci_z", "shared reachable body here")];
+    const ins = insight("i4", "S", [
+      { content_item_id: "ci_z", quote: "shared reachable" },
+      { content_item_id: "ci_z", quote: "reachable body" },
+    ]);
+    vi.mocked(callStructured).mockImplementation(async () => { throw new Error("rate limit"); });
+    const { checks } = await validateBatch([ins], items);
+    expect(callStructured).toHaveBeenCalledTimes(1); // 失败也只调一次
+    expect(checks.every((c) => c.verdict === "flagged" && c.consistency === "not_evaluated")).toBe(true);
   });
 });

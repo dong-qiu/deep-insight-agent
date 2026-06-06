@@ -32,8 +32,10 @@ function makeInput(insights: IncludedInsightLite[]): PptGenInput {
   };
 }
 
-function lite(i: Insight, indices: number[] = [0], flagged = false): IncludedInsightLite {
-  return { insight: i, citationIndices: indices, flagged };
+function lite(
+  i: Insight, indices: number[] = [0], flaggedUncertain = false, flaggedError = false,
+): IncludedInsightLite {
+  return { insight: i, citationIndices: indices, flaggedUncertain, flaggedError };
 }
 
 const PPTX_MAGIC = Buffer.from([0x50, 0x4b, 0x03, 0x04]); // "PK\x03\x04"（ZIP）
