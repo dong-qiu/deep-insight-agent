@@ -107,13 +107,25 @@ function enrichCitations(md) {
   return { md: newMd, changed: newMd !== md, missed };
 }
 
-/** Pass 3：去掉引用末尾的 ` · 日期` 段（dogfood feedback：RSS published_at 多种格式
- *  无统一 parser，"Tue, 02 Ju" 这种截断垃圾难看；删干净）。
- *  只匹配 ISO 日期 (yyyy-MM-dd) 或 RFC 2822 weekday 前缀，避免误吃源名内的 `·`。 */
-function stripCitationDate(md) {
-  const re = /^(  - \[\d+\] [^\n]+?) · (?:\d{4}-\d{2}-\d{2}|(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun),\s*\d{1,2}\s*[A-Za-z]+(?:\s+\d{4})?)[^\n]*$/gm;
-  const newMd = md.replace(re, "$1");
-  return { md: newMd, changed: newMd !== md };
+/** Pass 3：把引用行的日期统一成 YYYY-MM-DD 格式（dogfood feedback v2）。
+ *  - 旧报告里可能是 "Tue, 02 Ju" 这种截断垃圾、或 ISO、或缺失；
+ *  - 现在 published_at 已全归一化 ISO 8601，从 URL 反查 DB 拿真发布日，重写一致；
+ *  - 没有 published_at 的源（部分 API）→ 删掉旧的乱日期段、不补新。
+ *  幂等：YYYY-MM-DD 形式且与 DB 一致时不动。 */
+function reformatCitationDates(md) {
+  // 匹配：`  - [N] [「quote」](url) — Source[ · 任意旧日期]` 行末
+  const re = /^(  - \[\d+\] \[[^\]]+\]\(([^)]+)\) — )([^\n·]+?)(?:\s*·\s*[^\n]+)?$/gm;
+  let changed = false;
+  const newMd = md.replace(re, (full, prefix, url, sourceLabel) => {
+    const row = db.prepare("SELECT published_at FROM content_item WHERE url = ?").get(url);
+    const iso = row?.published_at;
+    const dateIso = iso && /^\d{4}-\d{2}-\d{2}T/.test(iso) ? iso.slice(0, 10) : null;
+    const datePart = dateIso ? ` · ${dateIso}` : "";
+    const next = `${prefix}${sourceLabel.trim()}${datePart}`;
+    if (next !== full) changed = true;
+    return next;
+  });
+  return { md: newMd, changed };
 }
 
 /** Pass 4：清掉源名内的 " 最新" 后缀（dogfood feedback：defaults.yaml 源名 papermark）。
@@ -143,7 +155,7 @@ for (const r of reports) {
   const p2 = enrichCitations(p1.md);
   if (p2.changed) stats.p2Done++; else stats.p2Skip++;
   stats.missedTotal += p2.missed;
-  const p3 = stripCitationDate(p2.md);
+  const p3 = reformatCitationDates(p2.md);
   if (p3.changed) stats.p3Done++; else stats.p3Skip++;
   const p4 = stripSourceLatestSuffix(p3.md);
   if (p4.changed) stats.p4Done++; else stats.p4Skip++;
@@ -154,7 +166,7 @@ for (const r of reports) {
     const parts = [];
     if (p1.changed) parts.push("注入 [N]");
     if (p2.changed) parts.push("富化引用");
-    if (p3.changed) parts.push("去日期");
+    if (p3.changed) parts.push("日期 → YYYY-MM-DD");
     if (p4.changed) parts.push("去'最新'");
     console.log(`  ✓ ${r.id} · ${parts.join(" + ")}${p2.missed > 0 ? ` · ${p2.missed} 条 ci 查不到` : ""}`);
   } else {
@@ -165,7 +177,7 @@ for (const r of reports) {
 console.log(`\n完成：`);
 console.log(`  Pass 1 [N] 注入：${stats.p1Done} 改 / ${stats.p1Skip} 跳`);
 console.log(`  Pass 2 富化：${stats.p2Done} 改 / ${stats.p2Skip} 跳`);
-console.log(`  Pass 3 去日期：${stats.p3Done} 改 / ${stats.p3Skip} 跳`);
+console.log(`  Pass 3 日期 → YYYY-MM-DD：${stats.p3Done} 改 / ${stats.p3Skip} 跳`);
 console.log(`  Pass 4 去'最新'后缀：${stats.p4Done} 改 / ${stats.p4Skip} 跳`);
 console.log(`  累计查不到 ci 的引用：${stats.missedTotal}`);
 console.log(`  FS 文件缺失：${stats.fileMiss}`);

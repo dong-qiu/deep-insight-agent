@@ -151,13 +151,17 @@ function insightBlockMd(
       const c = ins.citations[i];
       const info = lookup.get(c.content_item_id);
       // dogfood feedback：quote 可点跳源；source_name 替代生硬的 ci_xxx；
-      // 日期段已删——RSS published_at 多种格式（ISO / RFC 2822 / 自定义），无统一
-      // parser，slice(0,10) 出现 "Tue, 02 Ju" 这种截断垃圾；不展示更干净。
+      // 日期 YYYY-MM-DD（之前删是因 RFC 2822 截断垃圾——published_at 现已全归一化
+      // ISO 8601 by parsePublishedAt，slice(0,10) 安全得 "2026-03-31"）。
       const quotePart = info?.url
         ? `[「${c.quote}」](${info.url})`
         : `「${c.quote}」`;
       const sourceLabel = info?.source_name ?? c.content_item_id;
-      L.push(`  - [${citeStart + j}] ${quotePart} — ${sourceLabel}`);
+      const dateIso = info?.published_at && /^\d{4}-\d{2}-\d{2}T/.test(info.published_at)
+        ? info.published_at.slice(0, 10)
+        : null;
+      const datePart = dateIso ? ` · ${dateIso}` : "";
+      L.push(`  - [${citeStart + j}] ${quotePart} — ${sourceLabel}${datePart}`);
     });
   }
   if (x.blockedCount > 0) L.push(`- 校验阻断：${x.blockedCount} 条${blockedReasonStr(x.blockedReasonCounts)}`);

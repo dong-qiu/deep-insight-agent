@@ -87,7 +87,7 @@ describe("selectInsights（洞察级纳入判定）", () => {
 
 describe("buildReport 派生", () => {
   const lookup = new Map([
-    ["ci1", { source_id: "s_a", source_name: "Source A", tags: ["t-x"], url: "https://a.example/q1", published_at: "2026-05-07T00:00:00Z" }],
+    ["ci1", { source_id: "s_a", source_name: "Source A", tags: ["t-x"], url: "https://a.example/q1", published_at: "2026-05-07T08:00:00.000Z" }],
     ["ci3", { source_id: "s_b", source_name: "Source B", tags: ["t-y", "t-x"], url: "https://b.example/q3", published_at: null }],
   ]);
   const { report, index } = buildReport({
@@ -129,9 +129,10 @@ describe("buildReport 派生", () => {
     // i1 留 1 引用 → [1]；i2 留 1 引用 → [2]（跨洞察累计）
     expect(report.body_md).toMatch(/## 1\. S1 \[1\]/);
     expect(report.body_md).toMatch(/## 2\. S2 \[2\]/);
-    // 列表项前缀：每条 quote 行以 [N] 开头；含 url 时 quote 被包成 markdown 链接、源名跟在 — 后
-    expect(report.body_md).toMatch(/- \[1\] \[「q1」]\(https:\/\/a\.example\/q1\) — Source A/);
-    expect(report.body_md).toMatch(/- \[2\] \[「q3」]\(https:\/\/b\.example\/q3\) — Source B/);
+    // 列表项前缀：每条 quote 行以 [N] 开头；含 url 时 quote 被包成 markdown 链接、
+    // 源名跟在 — 后；published_at 是 ISO 时输出 YYYY-MM-DD 日期，null 时无日期段
+    expect(report.body_md).toMatch(/- \[1\] \[「q1」]\(https:\/\/a\.example\/q1\) — Source A · 2026-05-07/);
+    expect(report.body_md).toMatch(/- \[2\] \[「q3」]\(https:\/\/b\.example\/q3\) — Source B$/m);
   });
 
   it("外露 validator 屏蔽信号：md/html 各加 1 行（仅 blockedCount>0 时展示）", () => {
