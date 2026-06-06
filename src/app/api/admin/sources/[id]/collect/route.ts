@@ -7,7 +7,7 @@
 import { NextResponse } from "next/server";
 import { collectSource } from "../../../../../../lib/agents/collector.js";
 import { getDb } from "../../../../../../lib/db/index.js";
-import { getSource } from "../../../../../../lib/db/repos.js";
+import { getSource, hasRunningRun } from "../../../../../../lib/db/repos.js";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -23,6 +23,16 @@ export async function POST(
   if (!source.enabled) {
     return NextResponse.json(
       { error: "source_disabled", message: `源 ${id} 已停用，启用后再抓取` },
+      { status: 409 },
+    );
+  }
+  // review follow-up #2 防并发：同 source 已有 ingest running → 409 拒收。
+  if (hasRunningRun(db, "ingest", "source_id", id)) {
+    return NextResponse.json(
+      {
+        error: "already_running",
+        message: `源 ${id} 已有 ingest Run 在跑——等当前轮结束再触发。`,
+      },
       { status: 409 },
     );
   }

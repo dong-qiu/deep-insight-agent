@@ -51,16 +51,18 @@ nav a { margin-right: 1rem; }
 .cite-ref { font-size: .75em; vertical-align: super; line-height: 0; margin: 0 .1em; }
 .cite-ref a { color: #2563eb; text-decoration: none; padding: 0 .15em; border-radius: 3px; }
 .cite-ref a:hover { background: #eff6ff; text-decoration: underline; }
-:target { background: #fef3c7; transition: background .8s; }
+/* review #5：限缩到 cite-* 锚——避免命中 settings/admin 等无关 id 的 element */
+[id^="cite-"]:target { background: #fef3c7; transition: background .8s; }
 @media (prefers-color-scheme: dark) {
   .cite-ref a { color: #60a5fa; }
   .cite-ref a:hover { background: #1e293b; }
-  :target { background: #422006; }
+  [id^="cite-"]:target { background: #422006; }
 }
 /* 设置页 CRUD 表单（B-3）：纵向 label-input 排版 */
 .entity-form { display: flex; flex-direction: column; gap: .4rem; margin-top: .5rem; }
 .entity-form label { display: flex; gap: .5rem; align-items: center; font-size: .9rem; }
-.entity-form input[type="text"], .entity-form input:not([type]), .entity-form select {
+/* review #6：宽容选择器——未来加 date/email/url/number 字段也命中，无需逐项加 */
+.entity-form input:not([type="checkbox"]), .entity-form select {
   flex: 1; min-width: 0; padding: .25rem .4rem; border: 1px solid #d1d5db; border-radius: 4px;
   font: inherit; background: inherit; color: inherit;
 }

@@ -5,6 +5,7 @@
 import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { recoverOrphanedRuns } from "./repos.js";
 import { SCHEMA_SQL } from "./schema.js";
 
 export type DB = Database.Database;
@@ -16,6 +17,13 @@ export function openDb(path: string): DB {
   db.pragma("foreign_keys = ON");
   db.exec(SCHEMA_SQL);
   migrate(db);
+  // review follow-up #1：进程重启后清扫上一次跑到一半被 SIGTERM 杀掉的孤儿 Run。
+  // 单例 DB 第一次创建时触发；测试用 :memory: 时此操作 no-op（无 running Run 可清）。
+  const orphaned = recoverOrphanedRuns(db);
+  if (orphaned > 0) {
+    // eslint-disable-next-line no-console
+    console.warn(`⚠️ 启动清扫：${orphaned} 条孤儿 Run 已标 failed（OrphanedOnRestart）`);
+  }
   return db;
 }
 

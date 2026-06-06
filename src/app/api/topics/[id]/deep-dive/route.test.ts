@@ -7,6 +7,7 @@ vi.mock("../../../../../lib/db/index.js", () => ({
 }));
 vi.mock("../../../../../lib/db/repos.js", () => ({
   getTopic: vi.fn(),
+  hasRunningRun: vi.fn(() => false), // 默认无 running，路径 happy
 }));
 vi.mock("../../../../../lib/agents/scheduler.js", () => ({
   // 立刻 resolve 一个 fake Report，避免悬挂 Promise；fire-and-forget 路径会消费它
@@ -17,7 +18,7 @@ vi.mock("../../../../../lib/runtime/logger.js", () => ({
 }));
 
 import { runPipelineForTopic } from "../../../../../lib/agents/scheduler.js";
-import { getTopic } from "../../../../../lib/db/repos.js";
+import { getTopic, hasRunningRun } from "../../../../../lib/db/repos.js";
 import { POST } from "./route.js";
 
 function call(id: string): Promise<Response> {
@@ -39,6 +40,18 @@ describe("POST /api/topics/[id]/deep-dive", () => {
     const j = (await res.json()) as { error: string; message: string };
     expect(j.error).toBe("topic_disabled");
     expect(j.message).toContain("启用后再深挖");
+  });
+
+  it("已有 running analyze Run → 409 already_running（防并发 review #2）", async () => {
+    // @ts-expect-error stub
+    vi.mocked(getTopic).mockReturnValue({ id: "t1", name: "T", enabled: true });
+    vi.mocked(hasRunningRun).mockReturnValueOnce(true);
+    const res = await call("t1");
+    expect(res.status).toBe(409);
+    const j = (await res.json()) as { error: string; message: string };
+    expect(j.error).toBe("already_running");
+    expect(j.message).toContain("/admin");
+    expect(runPipelineForTopic).not.toHaveBeenCalled();
   });
 
   it("正常路径 → 202 + 调度 scheduler（fire-and-forget）", async () => {

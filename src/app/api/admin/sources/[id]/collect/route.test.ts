@@ -6,13 +6,14 @@ vi.mock("../../../../../../lib/db/index.js", () => ({
 }));
 vi.mock("../../../../../../lib/db/repos.js", () => ({
   getSource: vi.fn(),
+  hasRunningRun: vi.fn(() => false),
 }));
 vi.mock("../../../../../../lib/agents/collector.js", () => ({
   collectSource: vi.fn(),
 }));
 
 import { collectSource } from "../../../../../../lib/agents/collector.js";
-import { getSource } from "../../../../../../lib/db/repos.js";
+import { getSource, hasRunningRun } from "../../../../../../lib/db/repos.js";
 import { POST } from "./route.js";
 
 function call(id: string): Promise<Response> {
@@ -33,6 +34,16 @@ describe("POST /api/admin/sources/[id]/collect", () => {
     expect(res.status).toBe(409);
     const j = (await res.json()) as { message: string };
     expect(j.message).toContain("启用后再抓取");
+  });
+
+  it("已有 running ingest Run → 409 already_running（防并发 review #2）", async () => {
+    // @ts-expect-error stub
+    vi.mocked(getSource).mockReturnValue({ id: "s1", name: "x", enabled: true });
+    vi.mocked(hasRunningRun).mockReturnValueOnce(true);
+    const res = await call("s1");
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toBe("already_running");
+    expect(collectSource).not.toHaveBeenCalled();
   });
 
   it("成功 → 200 + 抓取计数", async () => {

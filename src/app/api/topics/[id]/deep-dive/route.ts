@@ -10,7 +10,7 @@
 import { NextResponse } from "next/server";
 import { runPipelineForTopic } from "../../../../../lib/agents/scheduler.js";
 import { getDb } from "../../../../../lib/db/index.js";
-import { getTopic } from "../../../../../lib/db/repos.js";
+import { getTopic, hasRunningRun } from "../../../../../lib/db/repos.js";
 import { runLogger } from "../../../../../lib/runtime/logger.js";
 
 export const dynamic = "force-dynamic";
@@ -27,6 +27,17 @@ export async function POST(
   if (!topic.enabled) {
     return NextResponse.json(
       { error: "topic_disabled", message: `主题 ${id} 已停用，启用后再深挖` },
+      { status: 409 },
+    );
+  }
+  // review follow-up #2 防并发：同 topic 已有 analyze running → 409 拒收，
+  // 避免用户连点产生 2 条 deep-dive 双倍 ~$1-4 成本。
+  if (hasRunningRun(db, "analyze", "topic_id", id)) {
+    return NextResponse.json(
+      {
+        error: "already_running",
+        message: `主题 ${id} 已有 analyze Run 在跑——等当前轮结束再触发，或去 /admin 看进度。`,
+      },
       { status: 409 },
     );
   }

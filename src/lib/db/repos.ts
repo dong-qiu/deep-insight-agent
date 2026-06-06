@@ -213,6 +213,46 @@ export function listRuns(db: DB, opts: { status?: Run["status"]; limit?: number 
     .all({ status: opts.status ?? null, limit: opts.limit ?? 100 }) as Record<string, unknown>[];
   return rows.map(rowToRun);
 }
+/** 启动期清扫"孤儿 Run"（review follow-up #1）：进程被 SIGTERM / 容器重启时，
+ *  正在跑的 Run 留在 `status=running` 永不变 done/failed，/admin 看板显示永久"运行中"。
+ *  openDb 触发时把所有 `running` Run 一刀切标 failed，error.type="OrphanedOnRestart"，
+ *  duration_ms 用 ended-started 补；返扫到几条以便日志。
+ *  幂等：清扫只对仍 running 的生效，新一轮 runJob 起的新 Run 不受影响。 */
+export function recoverOrphanedRuns(db: DB): number {
+  const now = new Date().toISOString();
+  const errorJson = JSON.stringify({
+    type: "OrphanedOnRestart",
+    message: "进程重启时该 Run 仍在 running 状态，无法继续；已标 failed。可手动重试。",
+  });
+  const r = db.prepare(
+    `UPDATE run
+     SET status = 'failed',
+         ended_at = ?,
+         duration_ms = COALESCE(duration_ms, CAST((julianday(?) - julianday(started_at)) * 86400000 AS INTEGER)),
+         error = ?
+     WHERE status = 'running'`,
+  ).run(now, now, errorJson);
+  return r.changes;
+}
+
+/** 同 kind + target 下是否有任一 Run 处于 running（review follow-up #2 防并发）。
+ *  - kind=ingest：targetMatch={ source_id }；
+ *  - kind=analyze/validate/report-gen：targetMatch={ topic_id }（用户场景仅深挖触发 analyze）。
+ *  target 在 DB 是 JSON 字符串，用 SQLite 内建 json_extract 比对。 */
+export function hasRunningRun(
+  db: DB,
+  kind: Run["kind"],
+  targetField: "source_id" | "topic_id" | "batch_id",
+  value: string,
+): boolean {
+  const r = db.prepare(
+    `SELECT 1 FROM run
+     WHERE status='running' AND kind=? AND json_extract(target, '$.${targetField}') = ?
+     LIMIT 1`,
+  ).get(kind, value);
+  return r != null;
+}
+
 function rowToRun(r: Record<string, unknown>): Run {
   return {
     id: r.id as string, kind: r.kind as Run["kind"], target: JSON.parse(r.target as string),

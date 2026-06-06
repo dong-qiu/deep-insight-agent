@@ -7,7 +7,8 @@ import type { ContentItem, Run, Source, Topic } from "../types.js";
 import { type DB, openDb } from "./index.js";
 import {
   contentExists, finishRun, getContentByUrl, getContentItem, getRun, getSource, getTopic,
-  insertContentItem, insertRun, insertSource, insertTopic, listRuns, listSources, updateContentItem,
+  hasRunningRun, insertContentItem, insertRun, insertSource, insertTopic, listRuns,
+  listSources, recoverOrphanedRuns, updateContentItem,
 } from "./repos.js";
 
 let db: DB;
@@ -95,5 +96,56 @@ describe("Run 状态机", () => {
     finishRun(db, "run2", { status: "failed", error: { type: "Timeout", message: "x" } });
     expect(getRun(db, "run2")?.error?.type).toBe("Timeout");
     expect(listRuns(db, { status: "running" }).map((r) => r.id)).toEqual(["run1"]);
+  });
+});
+
+describe("recoverOrphanedRuns（review follow-up #1）", () => {
+  function freshRunningRun(id: string, kind: Run["kind"], targetField: string, val: string, startMsAgo = 5000): Run {
+    return {
+      id, kind, target: { [targetField]: val } as Run["target"], status: "running",
+      started_at: new Date(Date.now() - startMsAgo).toISOString(),
+      ended_at: null, duration_ms: null, cost: null, error: null, retry_of: null,
+    };
+  }
+
+  it("running Run 一刀切 → failed + error.type=OrphanedOnRestart + duration 补", () => {
+    insertRun(db, freshRunningRun("orph1", "ingest", "source_id", "s1"));
+    insertRun(db, freshRunningRun("orph2", "analyze", "topic_id", "t1", 10_000));
+    insertRun(db, { ...freshRunningRun("done_keep", "ingest", "source_id", "s2"), status: "done",
+      ended_at: new Date().toISOString(), duration_ms: 100 });
+    const n = recoverOrphanedRuns(db);
+    expect(n).toBe(2);
+    const r1 = getRun(db, "orph1")!;
+    expect(r1.status).toBe("failed");
+    expect(r1.error?.type).toBe("OrphanedOnRestart");
+    expect(r1.duration_ms).toBeGreaterThanOrEqual(0);
+    expect(getRun(db, "done_keep")?.status).toBe("done");
+  });
+
+  it("无 running → 返 0、幂等", () => {
+    expect(recoverOrphanedRuns(db)).toBe(0);
+  });
+});
+
+describe("hasRunningRun（review follow-up #2 防并发）", () => {
+  function freshRunningRun(id: string, kind: Run["kind"], targetField: string, val: string): Run {
+    return {
+      id, kind, target: { [targetField]: val } as Run["target"], status: "running",
+      started_at: new Date().toISOString(),
+      ended_at: null, duration_ms: null, cost: null, error: null, retry_of: null,
+    };
+  }
+
+  it("同 kind + 同 target 字段值 → true；不同 source / 不同 kind → false", () => {
+    insertRun(db, freshRunningRun("r1", "ingest", "source_id", "src_a"));
+    expect(hasRunningRun(db, "ingest", "source_id", "src_a")).toBe(true);
+    expect(hasRunningRun(db, "ingest", "source_id", "src_b")).toBe(false);
+    expect(hasRunningRun(db, "analyze", "source_id", "src_a")).toBe(false);
+  });
+
+  it("已 done 不计入 running 判断（finishRun 之后）", () => {
+    insertRun(db, freshRunningRun("r1", "analyze", "topic_id", "t1"));
+    finishRun(db, "r1", { status: "done" });
+    expect(hasRunningRun(db, "analyze", "topic_id", "t1")).toBe(false);
   });
 });

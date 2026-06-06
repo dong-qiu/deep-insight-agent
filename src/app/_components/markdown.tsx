@@ -27,6 +27,11 @@ export function Markdown({ md }: { md: string }) {
   for (const raw of md.split("\n")) {
     const line = raw.trimEnd();
     if (/^\s*-\s+/.test(line)) {
+      // [N] 引用解析的硬约束（review #7 注释明示）：
+      // 仅当 stripped 紧接 [数字] + 空格 才赋 id="cite-N"——report-gen 的引用列表
+      // 必须输出 "- [N] 「quote」— `ci`" 的扁平形式。任何嵌套（"  - 父项\n    - [1] xxx"）
+      // 经 `^\s*-\s+` 一刀切前导空白后，第二级也会被解析为 cite 锚——目前 report-gen
+      // 不输出嵌套列表所以安全；如需嵌套引用要先重做编号设计。
       const stripped = line.replace(/^\s*-\s+/, "");
       const m = stripped.match(/^\[(\d+)\]\s+(.*)$/);
       if (m) bullets.push({ text: m[2], id: `cite-${m[1]}` });
