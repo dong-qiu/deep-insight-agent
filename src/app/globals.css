@@ -53,10 +53,17 @@ nav a { margin-right: 1rem; }
 .cite-ref a:hover { background: #eff6ff; text-decoration: underline; }
 /* review #5：限缩到 cite-* 锚——避免命中 settings/admin 等无关 id 的 element */
 [id^="cite-"]:target { background: #fef3c7; transition: background .8s; }
+/* dogfood feedback：列表项 [N] 显式可见——去圆点、[N] 蓝色短宽编号居首 */
+.cite-li { list-style: none; }
+.cite-num {
+  display: inline-block; min-width: 2.2em; font-weight: 500; color: #2563eb;
+  margin-right: .35em; font-variant-numeric: tabular-nums;
+}
 @media (prefers-color-scheme: dark) {
   .cite-ref a { color: #60a5fa; }
   .cite-ref a:hover { background: #1e293b; }
   [id^="cite-"]:target { background: #422006; }
+  .cite-num { color: #60a5fa; }
 }
 /* 设置页 CRUD 表单（B-3）：纵向 label-input 排版 */
 .entity-form { display: flex; flex-direction: column; gap: .4rem; margin-top: .5rem; }

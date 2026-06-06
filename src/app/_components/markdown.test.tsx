@@ -40,11 +40,13 @@ describe("Markdown 引用 [N]（C-2）", () => {
     expect(h).toContain('href="#cite-3"');
   });
 
-  it("列表项 '- [N] text' → <li id='cite-N'>", () => {
+  it("列表项 '- [N] text' → <li id='cite-N'> + 可见 [N] 序号 + cite-li 类", () => {
     const h = html("- [5] 引用文本");
     expect(h).toContain('id="cite-5"');
-    // 文本去掉 [N] 前缀
-    expect(h).toContain(">引用文本</li>");
+    expect(h).toContain('class="cite-li"');
+    expect(h).toContain('class="cite-num"');
+    expect(h).toContain("[5]");        // [N] 作为可见序号渲染（不再剥掉）
+    expect(h).toContain("引用文本");  // 文本部分仍正常显示
   });
 
   it("混合：statement 含 [1] + 列表项 [1] 同号匹配（点击会跳到 li#cite-1）", () => {

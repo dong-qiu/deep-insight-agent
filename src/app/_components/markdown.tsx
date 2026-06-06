@@ -9,14 +9,18 @@ import type { ReactNode } from "react";
  *  - 「{quote}」段 → 渲染 <q>，无引号字面值（避免和系统其他位置「」重复）。 */
 export function Markdown({ md }: { md: string }) {
   const nodes: ReactNode[] = [];
-  let bullets: { text: string; id: string | null }[] = [];
+  let bullets: { text: string; id: string | null; citeNum: string | null }[] = [];
   const flush = () => {
     if (bullets.length) {
       const items = bullets;
       nodes.push(
         <ul key={`ul-${nodes.length}`}>
           {items.map((b, i) => (
-            <li key={i} id={b.id ?? undefined}>{inline(b.text)}</li>
+            <li key={i} id={b.id ?? undefined} className={b.citeNum ? "cite-li" : undefined}>
+              {/* dogfood feedback：列表项 [N] 作为可见序号显示（之前只剥成 id 用、用户只看到圆点）*/}
+              {b.citeNum ? <span className="cite-num">[{b.citeNum}]</span> : null}
+              {inline(b.text)}
+            </li>
           ))}
         </ul>,
       );
@@ -34,8 +38,8 @@ export function Markdown({ md }: { md: string }) {
       // 不输出嵌套列表所以安全；如需嵌套引用要先重做编号设计。
       const stripped = line.replace(/^\s*-\s+/, "");
       const m = stripped.match(/^\[(\d+)\]\s+(.*)$/);
-      if (m) bullets.push({ text: m[2], id: `cite-${m[1]}` });
-      else bullets.push({ text: stripped, id: null });
+      if (m) bullets.push({ text: m[2], id: `cite-${m[1]}`, citeNum: m[1] });
+      else bullets.push({ text: stripped, id: null, citeNum: null });
       continue;
     }
     flush();
