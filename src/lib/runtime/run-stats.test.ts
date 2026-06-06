@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Run } from "../types.js";
-import { aggregateByKind } from "./run-stats.js";
+import { aggregateByKind, aggregateDailyCost } from "./run-stats.js";
 
 function run(p: Partial<Run> & Pick<Run, "kind" | "status">): Run {
   return {
@@ -52,5 +52,54 @@ describe("aggregateByKind", () => {
 
   it("空输入 → 空数组（不抛）", () => {
     expect(aggregateByKind([])).toEqual([]);
+  });
+});
+
+describe("aggregateDailyCost", () => {
+  function r(started_at: string, amount: number): Run {
+    return run({ kind: "analyze", status: "done", started_at, cost: { tokens: 100, amount } });
+  }
+
+  it("缺失日补 0 + X 轴连续", () => {
+    const out = aggregateDailyCost(
+      [r("2026-06-04T08:00:00Z", 0.1), r("2026-06-06T08:00:00Z", 0.2)],
+      { days: 5, todayIso: "2026-06-06T12:00:00Z" },
+    );
+    expect(out).toHaveLength(5);
+    expect(out.map((x) => x.date)).toEqual([
+      "2026-06-02", "2026-06-03", "2026-06-04", "2026-06-05", "2026-06-06",
+    ]);
+    expect(out.map((x) => x.costUSD)).toEqual([0, 0, 0.1, 0, 0.2]);
+  });
+
+  it("同日多 Run 累加 cost + runCount", () => {
+    const out = aggregateDailyCost(
+      [r("2026-06-06T01:00:00Z", 0.05), r("2026-06-06T15:00:00Z", 0.07)],
+      { days: 2, todayIso: "2026-06-06T18:00:00Z" },
+    );
+    expect(out[1]).toMatchObject({ date: "2026-06-06", runCount: 2 });
+    expect(out[1].costUSD).toBeCloseTo(0.12);
+  });
+
+  it("超出窗口的 Run 不计", () => {
+    const out = aggregateDailyCost(
+      [r("2025-01-01T00:00:00Z", 999)],
+      { days: 7, todayIso: "2026-06-06T00:00:00Z" },
+    );
+    expect(out.every((x) => x.costUSD === 0)).toBe(true);
+  });
+
+  it("空输入 → N 个 0 cost 槽（仍连续）", () => {
+    const out = aggregateDailyCost([], { days: 3, todayIso: "2026-06-06T00:00:00Z" });
+    expect(out).toHaveLength(3);
+    expect(out.every((x) => x.costUSD === 0 && x.runCount === 0)).toBe(true);
+  });
+
+  it("无 cost 字段（ingest/report-gen 等确定性任务）→ amount=0 不计", () => {
+    const out = aggregateDailyCost(
+      [run({ kind: "ingest", status: "done", started_at: "2026-06-06T00:00:00Z", cost: null })],
+      { days: 1, todayIso: "2026-06-06T00:00:00Z" },
+    );
+    expect(out[0]).toMatchObject({ costUSD: 0, runCount: 1 });
   });
 });

@@ -1,6 +1,6 @@
 import { getDb } from "../../lib/db/index.js";
 import { listRuns } from "../../lib/db/repos.js";
-import { aggregateByKind } from "../../lib/runtime/run-stats.js";
+import { aggregateByKind, aggregateDailyCost } from "../../lib/runtime/run-stats.js";
 import { RetryButton } from "./_components/retry-button.js";
 
 export const dynamic = "force-dynamic";
@@ -21,10 +21,15 @@ function fmtTarget(target: Record<string, unknown>): string {
 }
 
 export default function AdminPage() {
-  const runs = listRuns(getDb(), { limit: 50 });
+  const db = getDb();
+  // 看板用近 50 条详情；时序图用近 30 天全量（独立查询，避免 50 条把时序图截掉）
+  const runs = listRuns(db, { limit: 50 });
+  const runsForTimeseries = listRuns(db, { limit: 2000 });
   const stats = aggregateByKind(runs);
   const failed = runs.filter((r) => r.status === "failed").length;
   const totalCost = runs.reduce((s, r) => s + (r.cost?.amount ?? 0), 0);
+  const daily = aggregateDailyCost(runsForTimeseries, { days: 30 });
+  const dailyMax = Math.max(...daily.map((d) => d.costUSD), 0.001); // 防 0 除
 
   return (
     <section>
@@ -64,6 +69,38 @@ export default function AdminPage() {
           </table>
         </article>
       )}
+
+      <article className="card">
+        <p className="muted" style={{ margin: 0 }}>
+          近 30 天成本时序 · 累计 ${daily.reduce((s, d) => s + d.costUSD, 0).toFixed(4)} ·
+          峰值 ${dailyMax.toFixed(4)}
+        </p>
+        {/* 内联 SVG 柱状图，无 JS 依赖；每天一根柱，高度按 cost 归一到 max */}
+        <svg
+          viewBox={`0 0 ${daily.length * 18} 80`}
+          width="100%"
+          height="80"
+          preserveAspectRatio="none"
+          style={{ marginTop: ".25rem", display: "block" }}
+          aria-label="近 30 天成本柱状图"
+          role="img"
+        >
+          {daily.map((d, i) => {
+            const h = dailyMax > 0 ? Math.max((d.costUSD / dailyMax) * 70, d.costUSD > 0 ? 1 : 0) : 0;
+            const x = i * 18 + 2;
+            const y = 80 - h - 2;
+            return (
+              <g key={d.date}>
+                <title>{`${d.date} · $${d.costUSD.toFixed(4)} · ${d.runCount} Run`}</title>
+                <rect x={x} y={y} width={14} height={h} fill="#2563eb" opacity={d.costUSD > 0 ? 0.85 : 0.2} />
+              </g>
+            );
+          })}
+        </svg>
+        <p className="muted" style={{ marginTop: ".25rem", fontSize: ".75rem" }}>
+          {daily[0]?.date} → {daily[daily.length - 1]?.date}（悬停柱体看当日明细）
+        </p>
+      </article>
 
       {runs.length === 0 ? (
         <p className="muted">暂无运行记录。采集/分析/校验/报告执行后会出现在这里。</p>

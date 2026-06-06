@@ -37,3 +37,39 @@ export function aggregateByKind(runs: Run[]): KindStats[] {
   const order: Run["kind"][] = ["ingest", "analyze", "validate", "report-gen"];
   return order.map((k) => by.get(k)).filter((s): s is KindStats => !!s);
 }
+
+export interface DailyCost {
+  date: string;   // yyyy-mm-dd
+  costUSD: number;
+  runCount: number;
+}
+
+/** 按天聚合最近 N 天的成本（B-5 admin 时序图）：
+ *  - 缺失日补 0（保持 X 轴连续）；
+ *  - date 取 started_at 的日期段（UTC，与 generated_at 一致）；
+ *  - todayIso 注入便于测试。 */
+export function aggregateDailyCost(
+  runs: Run[],
+  opts: { days?: number; todayIso?: string } = {},
+): DailyCost[] {
+  const days = opts.days ?? 30;
+  const todayIso = opts.todayIso ?? new Date().toISOString();
+  const today = todayIso.slice(0, 10);
+  // 生成最近 days 天的日期序列（从早到晚），保证 X 轴连续
+  const dates: string[] = [];
+  const todayMs = Date.parse(`${today}T00:00:00Z`);
+  for (let i = days - 1; i >= 0; i--) {
+    dates.push(new Date(todayMs - i * 86400_000).toISOString().slice(0, 10));
+  }
+  const byDate = new Map<string, DailyCost>(
+    dates.map((d) => [d, { date: d, costUSD: 0, runCount: 0 }]),
+  );
+  for (const r of runs) {
+    const d = r.started_at.slice(0, 10);
+    const slot = byDate.get(d);
+    if (!slot) continue; // 超出 N 天窗口
+    slot.costUSD += r.cost?.amount ?? 0;
+    slot.runCount += 1;
+  }
+  return dates.map((d) => byDate.get(d)!);
+}
