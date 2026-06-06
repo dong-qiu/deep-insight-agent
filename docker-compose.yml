@@ -2,10 +2,11 @@
 # 用法：cp .env.example .env.local 并填好 ANTHROPIC_API_KEY / AUTH_SECRET / ADMIN_* / CRON_SECRET，
 #       然后 `docker compose up -d --build`。两服务复用同一镜像（tag 锁定，不用 latest）。
 #
-# 多 worktree 并行：本机若要同时起多套，复制 .env.compose.example 为 .env，给每个 worktree
-#   不同的 COMPOSE_PROJECT_NAME（隔离容器名+数据卷 <工程名>_insight-data）与 APP_PORT（避端口冲突）。
-#   不建 .env 时回落到下方 name: 与端口 3000，与单机生产部署行为一致。
-name: deep-insight
+# 工程名 = compose 自动取的目录 basename（本文件不写死 name:）。各 worktree 目录不同 →
+#   容器名与数据卷 <工程名>_insight-data 默认天然隔离，零配置即可并行起多套、互不串库。
+# ⚠️ 权威/生产实例（拥有真数据）必须在自己目录的 .env 钉 COMPOSE_PROJECT_NAME=deep-insight，
+#   否则换目录跑会回落新工程名 → 挂到新空卷、孤立现有数据（见 .env.compose.example）。
+# 同时起多套时各 worktree 还需设 APP_PORT（端口不随目录自动分配，缺省 3000 会相互占用）。
 
 services:
   app:
