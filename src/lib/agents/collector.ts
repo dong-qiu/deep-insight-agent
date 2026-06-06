@@ -27,8 +27,15 @@ function archiveRaw(id: string, raw: string): string {
   return path;
 }
 
-export async function collectSource(db: DB, source: Source): Promise<CollectResult> {
-  const { run, result } = await runJob(db, { kind: "ingest", target: { source_id: source.id } }, async () => {
+export async function collectSource(
+  db: DB,
+  source: Source,
+  opts: { retryOf?: string | null } = {},
+): Promise<CollectResult> {
+  const { run, result } = await runJob(
+    db,
+    { kind: "ingest", target: { source_id: source.id }, retryOf: opts.retryOf ?? null },
+    async () => {
     const raws = await fetchFromSource(source);
     const fetchedAt = new Date().toISOString();
     let inserted = 0;
@@ -54,7 +61,8 @@ export async function collectSource(db: DB, source: Source): Promise<CollectResu
         inserted++;
       }
     }
-    return { fetched: raws.length, inserted, updated, skipped };
-  });
+      return { fetched: raws.length, inserted, updated, skipped };
+    },
+  );
   return { runId: run.id, ...result };
 }

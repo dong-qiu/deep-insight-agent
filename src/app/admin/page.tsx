@@ -1,6 +1,7 @@
 import { getDb } from "../../lib/db/index.js";
 import { listRuns } from "../../lib/db/repos.js";
 import { aggregateByKind } from "../../lib/runtime/run-stats.js";
+import { RetryButton } from "./_components/retry-button.js";
 
 export const dynamic = "force-dynamic";
 
@@ -79,6 +80,7 @@ export default function AdminPage() {
             {r.error ? (
               <div className="muted">
                 ❌ <strong>{r.error.type}</strong>: {r.error.message}
+                {r.status === "failed" ? <RetryButton runId={r.id} kind={r.kind} /> : null}
               </div>
             ) : null}
             <details className="audit" style={{ marginTop: "0.5rem" }}>
