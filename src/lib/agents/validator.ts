@@ -4,13 +4,15 @@
  *  - 一致性（LLM 评判，独立于分析模型）：原文是否真正支持结论。
  *  - 处置矩阵 / verdict：见 architecture「数据模型 · 校验结果 · 校验判定流程」。
  */
-import { callStructured } from "../runtime/llm.js";
+import { createHash } from "node:crypto";
+import { MODELS, callStructured } from "../runtime/llm.js";
 import { compareKey } from "../runtime/text-normalize.js";
 import { isIncludableCheck, isValidationError } from "../utils/citation-verdict.js";
 import {
   ConsistencyJudgeSchema,
   type Citation,
   type CitationCheck,
+  type ConsistencyCache,
   type ConsistencyJudge,
   type ContentItem,
   type Cost,
@@ -171,10 +173,21 @@ export function summarize(checks: CitationCheck[]): ValidationReport {
 /** 一致性判定缓存值：成功的判官输出，或一次被捕获的调用失败。 */
 type JudgeOutcome = ConsistencyJudge | { error: true };
 
+/** 一致性缓存的版本标签 = 校验模型 + CONSISTENCY_SYSTEM 哈希 + thinking 档位。
+ *  其中任一变 → version 变 → 缓存 key 变 → 旧判定不再命中、自动重判。
+ *  治"陈旧判定"：安全 prompt 加固 / 模型升级 / 精度旋钮（VALIDATOR_THINKING，运维按 relay 状况翻转）
+ *  对历史 (statement, body) 立即生效，不被旧缓存静默绕过。 */
+export function consistencyCacheVersion(): string {
+  const promptHash = createHash("sha256").update(CONSISTENCY_SYSTEM).digest("hex").slice(0, 12);
+  const thinking = process.env.VALIDATOR_THINKING !== "0" ? "t1" : "t0"; // 与 judgeConsistency 的 thinking 同源
+  return `${MODELS.validator}|${promptHash}|${thinking}`;
+}
+
 export async function validateBatch(
   insights: Insight[],
   items: ContentItem[],
   onCost?: (cost: Cost) => void,
+  cache?: ConsistencyCache,
 ): Promise<ValidationResult> {
   const byId = new Map(items.map((i) => [i.id, i]));
   const checks: CitationCheck[] = [];
@@ -204,16 +217,33 @@ export async function validateBatch(
       const item = byId.get(cit.content_item_id)!;
       let outcome = judgeByItem.get(cit.content_item_id);
       if (outcome === undefined) {
-        try {
-          outcome = await judgeWithRetry(ins.statement, item.body, onCost);
-        } catch (e) {
-          // 调用失败（超时/限流/解析错）与「判官真说不确定」分开记账（不静默丢弃）：
-          // 记 reachability=pass + consistency=not_evaluated —— 该组合此前不可能出现
-          // （not_evaluated 仅随 reachability=fail），故专指「校验失败」。verdict 仍 flagged
-          // （不让未校验引用伪装成已核实进报告），但报告会标「校验失败·待重试」而非「待核实」，
-          // 且 summarize 的 flagged_rate（按 consistency=uncertain 计）不再被错误污染。
-          console.warn(`  ⚠️ 一致性校验失败，记为校验失败 ${ins.id}#${ci}（${(e as Error).message}）`);
-          outcome = { error: true };
+        // 跨批缓存命中 → 跳过 Opus（不计成本、不重试）；miss 才真打 LLM。
+        const cached = cache?.get(ins.statement, item.body);
+        if (cached) {
+          outcome = cached;
+        } else {
+          try {
+            outcome = await judgeWithRetry(ins.statement, item.body, onCost);
+          } catch (e) {
+            // 调用失败（超时/限流/解析错）与「判官真说不确定」分开记账（不静默丢弃）：
+            // 记 reachability=pass + consistency=not_evaluated —— 该组合此前不可能出现
+            // （not_evaluated 仅随 reachability=fail），故专指「校验失败」。verdict 仍 flagged
+            // （不让未校验引用伪装成已核实进报告），但报告会标「校验失败·待重试」而非「待核实」，
+            // 且 summarize 的 flagged_rate（按 consistency=uncertain 计）不再被错误污染。
+            console.warn(`  ⚠️ 一致性校验失败，记为校验失败 ${ins.id}#${ci}（${(e as Error).message}）`);
+            outcome = { error: true };
+          }
+          // 缓存写是 best-effort 且**只在判定成功时**——独立 try 包裹，写失败（DB 锁/CHECK/磁盘）
+          // 绝不能把一条已成功的判定回退成「校验失败」（set 旧版在 judge 的 try 内有此隐患）。
+          // 不缓存 uncertain：它是 LLM 最易翻转的边界判定（"信息不足"+宁误杀），冻结 TTL 久会把本可
+          // 在重跑中被纠正为 support 的引用长期压成「待核实」——边界判定每次重判，只缓存有把握的 support/not_support。
+          if (!("error" in outcome) && outcome.consistency !== "uncertain") {
+            try {
+              cache?.set(ins.statement, item.body, outcome);
+            } catch (e) {
+              console.warn(`  ⚠️ 一致性缓存写失败（已忽略，不影响判定）${ins.id}#${ci}（${(e as Error).message}）`);
+            }
+          }
         }
         judgeByItem.set(cit.content_item_id, outcome);
       }

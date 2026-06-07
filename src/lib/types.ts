@@ -245,3 +245,12 @@ export const ConsistencyJudgeSchema = z.object({
   rationale: z.string().describe("简短判定理由"),
 });
 export type ConsistencyJudge = z.infer<typeof ConsistencyJudgeSchema>;
+
+/** 跨批/跨run 一致性判定缓存的共享契约（DB 实现见 db/consistency-cache.ts，消费方 validator.validateBatch）。
+ *  放共享 types 而非 validator——避免 db 层反向依赖 agents 层。
+ *  缓存命中即跳过 Opus 调用、不计成本；只存成功判定（调用失败绝不缓存）。
+ *  版本隔离（model + prompt 哈希）与 TTL 由实现侧保证——见 makeConsistencyCache。 */
+export interface ConsistencyCache {
+  get(statement: string, body: string): ConsistencyJudge | undefined;
+  set(statement: string, body: string, judge: ConsistencyJudge): void;
+}

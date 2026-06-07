@@ -47,7 +47,9 @@ curl -fsS -X POST http://127.0.0.1:3000/api/cron -H "authorization: Bearer $CRON
 | `PIPELINE_WINDOW_HOURS` | 否 | 单轮回看窗口，默认 168（7 天） |
 | `INITIAL_DIGEST_WINDOW_HOURS` / `INITIAL_DIGEST_ITEMS` | 否 | 冷启动首版综述的窗口/条数，默认 720（30 天）/ 25 |
 | `DEEP_DIVE_WINDOW_HOURS` / `DEEP_DIVE_ITEMS` | 否 | 用户触发主题深挖（C-1，`POST /api/topics/[id]/deep-dive`）的窗口/条数，默认 336（14 天）/ 25 |
-| `PROMPT_CACHE` | 否 | `0` 关闭 Anthropic prompt caching（中转站只写不读时省钱；直连 Anthropic 时不要设）|
+| `PROMPT_CACHE` | 否 | `0` 关闭 Anthropic prompt caching。**经只写不读的中转站建议设 0**——本 relay 首次定时 eval 实测 `cache r/w 0/17135`（写了付溢价、读 0 无收益）；直连 Anthropic 时不要设（cache read 真省钱）|
+| `CONSISTENCY_CACHE` | 否 | 跨批一致性判定缓存（省 relay 抖动重跑 / 报告重生成的重复 Opus 校验）。默认开；`0` 整体关闭（怀疑缓存返回坏判定时的运维开关）。按「校验模型 + prompt 哈希」版本隔离——改模型/prompt 自动失效重判 |
+| `CONSISTENCY_CACHE_TTL_DAYS` | 否 | 一致性缓存 TTL 天数，默认 14。过期项视为 miss → 重判（给"重跑可纠错"留出口，首跑偶发错判最多冻结一个 TTL）|
 | `PPT_POLISH_CONCURRENCY` | 否 | B 路径 LLM polish 单批并发上限，默认 4（中转站对 14 路 tool_use 流式 36% 截断、限到 4 路降到 14%；详见 practice-log 2026-06-03/04 条）|
 | `PPT_POLISH_COST_CAP_USD` | 否 | B 路径累计成本硬上限（默认 0.30）；越线立刻 AbortController.abort() 取消未启动 + in-flight、partial 结果照常 merge 进缓存 |
 | `ALERT_WEBHOOK` | 否 | Run 失败时 POST 告警；**按 URL 自动识别渠道**（feishu / ntfy / slack / discord / generic）并翻译 payload（见 §12）。未设则不发、失败仍落 Run + error 日志 |

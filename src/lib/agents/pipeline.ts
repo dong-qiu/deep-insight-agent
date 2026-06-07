@@ -3,6 +3,7 @@
  *  端到端需 ANTHROPIC_API_KEY，由团队/定时任务跑。 */
 import type { DB } from "../db/index.js";
 import { saveAnalysisBatch, saveValidationResult } from "../db/analysis.js";
+import { makeConsistencyCache } from "../db/consistency-cache.js";
 import { getContentItem, getSource } from "../db/repos.js";
 import { saveReport } from "../db/reports.js";
 import { notifyFailure } from "../runtime/alert.js";
@@ -10,7 +11,7 @@ import { runJob } from "../runtime/jobs.js";
 import type { AnalysisBatch, ContentItem, Report, Topic, ValidationResult } from "../types.js";
 import { analyze, type HistoricalEvent } from "./analyzer.js";
 import { buildReport, type CitationDisplay } from "./report-gen.js";
-import { isValidationDegraded, validateBatch } from "./validator.js";
+import { consistencyCacheVersion, isValidationDegraded, validateBatch } from "./validator.js";
 
 /** 分析某主题某窗口的 ContentItem → AnalysisBatch 落库；包一条 analyze Run（含成本）。
  *  成本经 analyze 的 onCost 回调按返回值透传给本 Run 的 ctx.recordCost —— 并发隔离，不读全局 meter 做差。 */
@@ -36,7 +37,11 @@ export async function runValidation(
   items: ContentItem[],
 ): Promise<ValidationResult> {
   const { result } = await runJob(db, { kind: "validate", target: { batch_id: batch.id } }, async (ctx) => {
-    const vr = await validateBatch(batch.insights, items, ctx.recordCost);
+    // 跨批一致性缓存：relay 抖动重跑 / 报告重生成时复用已判定，省重复 Opus 校验（只缓存成功判定）。
+    // 按 (模型+prompt) 版本隔离 + TTL（见 db/consistency-cache.ts）；CONSISTENCY_CACHE=0 可整体关闭（出事时的运维开关）。
+    const cache =
+      process.env.CONSISTENCY_CACHE === "0" ? undefined : makeConsistencyCache(db, consistencyCacheVersion());
+    const vr = await validateBatch(batch.insights, items, ctx.recordCost, cache);
     saveValidationResult(db, batch.id, vr);
     // 抗抖告警：一致性调用大面积失败（疑似 LLM/中转站抖动）→ 主动告警，别让一整轮失败默默缺刊/记假数据。
     // 非致命：Run 仍 done（部分校验结果有效、已落库）；运维收到告警后重跑整管线即恢复（见 validator-uncertain-storms）。

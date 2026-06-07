@@ -189,4 +189,15 @@ CREATE TABLE IF NOT EXISTS ppt_polish_cache (
   amount      REAL NOT NULL,
   created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- 一致性判定缓存：跨批/跨run 复用 (statement, item.body) 的 Opus 判定，省重复校验成本
+-- （尤其 relay 抖动导致的部分失败重跑、报告重生成）。key = sha256(version + NUL + statement + NUL + body)，
+-- version=校验模型+prompt 哈希（改模型/prompt 自动失效）；读侧带 TTL（见 db/consistency-cache.ts）。
+-- 只缓存成功判定（support/not_support/uncertain）；调用失败（not_evaluated）绝不入缓存（瞬时抖动须重试）。
+CREATE TABLE IF NOT EXISTS consistency_cache (
+  key                 TEXT PRIMARY KEY,
+  consistency         TEXT NOT NULL CHECK (consistency IN ('support','not_support','uncertain')),
+  consistency_reason  TEXT NOT NULL,
+  created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
 `;

@@ -47,6 +47,7 @@ jobs:
       ANALYZER_MODEL: ${{ vars.ANALYZER_MODEL }}
       VALIDATOR_MODEL: ${{ vars.VALIDATOR_MODEL }}
       VALIDATOR_THINKING: "0" # 中转站 thinking+forced tool_choice 组合会 400（见 practice-log）
+      PROMPT_CACHE: "0" # 本 relay 只写不读 prompt cache（首跑实测 cache r/w 0/17135）→ 关掉免付写入溢价
       A1_QUALITY_LIMIT: ${{ github.event.inputs.quality_limit || '0' }}
       A1_CONSISTENCY_LIMIT: ${{ github.event.inputs.consistency_limit || '0' }}
     steps:

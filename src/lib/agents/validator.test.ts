@@ -5,10 +5,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // callStructured mock 掉——validateBatch 经 judgeConsistency 调它；无 API key、CI 可跑
-vi.mock("../runtime/llm.js", () => ({ callStructured: vi.fn() }));
+vi.mock("../runtime/llm.js", () => ({
+  callStructured: vi.fn(),
+  MODELS: { analyzer: "claude-sonnet-4-6", validator: "claude-opus-4-7" }, // consistencyCacheVersion 读 MODELS.validator
+}));
 
 import { callStructured } from "../runtime/llm.js";
-import { checkReachability, insightInclusion, isValidationDegraded, summarize, validateBatch, verdictFor } from "./validator.js";
+import { checkReachability, consistencyCacheVersion, insightInclusion, isValidationDegraded, summarize, validateBatch, verdictFor } from "./validator.js";
 import type { CitationCheck, ContentItem, Insight } from "../types.js";
 
 function item(id: string, body: string): ContentItem {
@@ -165,6 +168,20 @@ function insight(id: string, statement: string, cits: { content_item_id: string;
 const judgeData = (consistency: "support" | "not_support" | "uncertain", reason: string) =>
   ({ data: { consistency, consistency_reason: reason, rationale: "r" } }) as unknown as Awaited<ReturnType<typeof callStructured>>;
 
+describe("consistencyCacheVersion", () => {
+  afterEach(() => { delete process.env.VALIDATOR_THINKING; });
+  it("含校验模型；翻转 VALIDATOR_THINKING → 版本变（精度旋钮纳入隔离）", () => {
+    delete process.env.VALIDATOR_THINKING; // 默认 thinking on
+    const on = consistencyCacheVersion();
+    expect(on).toContain("claude-opus-4-7"); // 默认校验模型
+    expect(on.endsWith("|t1")).toBe(true);
+    process.env.VALIDATOR_THINKING = "0";
+    const off = consistencyCacheVersion();
+    expect(off.endsWith("|t0")).toBe(true);
+    expect(off).not.toBe(on); // thinking 档位变 → 版本变 → 旧判定不命中
+  });
+});
+
 describe("validateBatch（A 去重 + C 校验失败分账）", () => {
   // 默认关掉应用层重试 + 退避，让这些测试的"每源判一次"调用计数确定（重试单独测）。
   beforeEach(() => { process.env.VALIDATOR_RETRIES = "0"; process.env.VALIDATOR_RETRY_BACKOFF_MS = "0"; });
@@ -223,6 +240,60 @@ describe("validateBatch（A 去重 + C 校验失败分账）", () => {
     const { checks } = await validateBatch([ins], items);
     expect(callStructured).toHaveBeenCalledTimes(1); // 失败也只调一次
     expect(checks.every((c) => c.verdict === "flagged" && c.consistency === "not_evaluated")).toBe(true);
+  });
+
+  it("缓存命中 → 跳过 Opus（0 次调用）、复用判定、不计 onCost", async () => {
+    const items = [item("ci_c1", "cached body content here")];
+    const ins = insight("ic1", "S", [{ content_item_id: "ci_c1", quote: "cached body" }]);
+    const cache = { get: () => ({ consistency: "support" as const, consistency_reason: "ok" as const, rationale: "(cached)" }), set: vi.fn() };
+    const onCost = vi.fn();
+    const { checks } = await validateBatch([ins], items, onCost, cache);
+    expect(callStructured).not.toHaveBeenCalled(); // 命中 → 不打 LLM
+    expect(checks[0].verdict).toBe("pass");
+    expect(cache.set).not.toHaveBeenCalled(); // 命中不回写
+    expect(onCost).not.toHaveBeenCalled(); // 命中不计成本（缓存的本职）
+  });
+
+  it("uncertain 判定不回写缓存（边界判定每次重判，不冻结待核实）", async () => {
+    const items = [item("ci_cu", "uncertain body content here")];
+    const ins = insight("icu", "S", [{ content_item_id: "ci_cu", quote: "uncertain body" }]);
+    const cache = { get: () => undefined, set: vi.fn() };
+    vi.mocked(callStructured).mockResolvedValue(judgeData("uncertain", "uncertain"));
+    const { checks } = await validateBatch([ins], items, undefined, cache);
+    expect(cache.set).not.toHaveBeenCalled(); // uncertain 不缓存
+    expect(checks[0].verdict).toBe("flagged");
+  });
+
+  it("缓存 set 抛错 → 不污染已成功的判定（仍 pass，不降级为校验失败）", async () => {
+    const items = [item("ci_cs", "body for set-throw case")];
+    const ins = insight("ics", "S", [{ content_item_id: "ci_cs", quote: "body for set" }]);
+    const cache = { get: () => undefined, set: vi.fn(() => { throw new Error("SQLITE_BUSY"); }) };
+    vi.mocked(callStructured).mockResolvedValue(judgeData("support", "ok"));
+    const { checks } = await validateBatch([ins], items, undefined, cache);
+    expect(cache.set).toHaveBeenCalledTimes(1); // 试图写
+    expect(checks[0].verdict).toBe("pass"); // 写失败被吞，判定不回退
+    expect(checks[0].consistency).toBe("support");
+  });
+
+  it("缓存未命中 + 成功 → 调 Opus 1 次并回写缓存", async () => {
+    const items = [item("ci_c2", "fresh body content here")];
+    const ins = insight("ic2", "Sx", [{ content_item_id: "ci_c2", quote: "fresh body" }]);
+    const store = new Map<string, unknown>();
+    const cache = { get: () => undefined, set: vi.fn((s: string, b: string) => store.set(s + b, 1)) };
+    vi.mocked(callStructured).mockResolvedValue(judgeData("support", "ok"));
+    await validateBatch([ins], items, undefined, cache);
+    expect(callStructured).toHaveBeenCalledTimes(1);
+    expect(cache.set).toHaveBeenCalledTimes(1); // 成功 → 回写
+  });
+
+  it("缓存未命中 + 调用失败 → 绝不回写缓存（瞬时抖动须重试）", async () => {
+    const items = [item("ci_c3", "erroring body content here")];
+    const ins = insight("ic3", "Sy", [{ content_item_id: "ci_c3", quote: "erroring body" }]);
+    const cache = { get: () => undefined, set: vi.fn() };
+    vi.mocked(callStructured).mockImplementation(async () => { throw new Error("relay 5xx"); });
+    const { checks } = await validateBatch([ins], items, undefined, cache);
+    expect(cache.set).not.toHaveBeenCalled(); // 失败绝不缓存
+    expect(checks[0]).toMatchObject({ consistency: "not_evaluated", verdict: "flagged" });
   });
 
   it("抗抖：瞬时失败一次后重试成功 → pass（不记校验失败）", async () => {
