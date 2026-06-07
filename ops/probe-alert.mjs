@@ -99,9 +99,28 @@ const ctrl = new AbortController();
 const timer = setTimeout(() => ctrl.abort(), 5000);
 try {
   const res = await fetch(req.url, { method: req.method, headers: req.headers, body: req.body, signal: ctrl.signal });
+  const text = await res.text();
   console.log(`✅ HTTP ${res.status} ${res.statusText}`);
-  if (!res.ok)
-    console.warn("   ⚠️ 非 2xx——webhook.site 仍会展示请求体；飞书/ntfy 等严格端 4xx 多半是 URL 错或 payload 不符（或飞书开了签名校验但未设 ALERT_FEISHU_SECRET）。");
+  if (channel === "feishu") {
+    // 飞书即使鉴权失败也常回 HTTP 200，真实结果在响应 JSON 的 code/StatusCode（两种格式都见过）
+    try {
+      const j = JSON.parse(text);
+      const code = j.code ?? j.StatusCode;
+      const msg = j.msg ?? j.StatusMessage ?? "";
+      if (code === 0) console.log("   ✅ 飞书 code=0 success——去群里确认那条消息已到。");
+      else
+        console.error(
+          `   ❌ 飞书逻辑失败 code=${code} msg=${msg}\n` +
+            "      常见：19021 签名错/没传 ALERT_FEISHU_SECRET；消息不含安全设置的「关键词」；机器人被移出群。",
+        );
+    } catch {
+      console.warn(`   ⚠️ 飞书响应非 JSON，原文：${text.slice(0, 200)}`);
+    }
+  } else if (!res.ok) {
+    console.warn("   ⚠️ 非 2xx——webhook.site 仍会展示请求体；ntfy 等严格端 4xx 多半是 URL 错或 payload 不符。");
+  } else if (text) {
+    console.log(`   响应：${text.slice(0, 200)}`);
+  }
 } catch (e) {
   console.error(`❌ 发送失败：${e instanceof Error ? e.message : String(e)}`);
   console.error("   常见原因：① 网络不通；② URL 错；③ 渠道服务挂；④ 容器内 fetch 被防火墙拦。");
