@@ -227,3 +227,29 @@ docker compose exec -T -e ALERT_WEBHOOK=<url> app node /app/ops/probe-alert.mjs
 ```
 
 期望：飞书/ntfy → **手机 App 收到**；generic → webhook.site inbox 可见。
+
+## 13. 定时真模型 eval（A1 回归门 · DCP-3 ②）
+
+真模型 eval 不进公共 CI（需凭据 + 预算 + 中转站）。由定时 workflow `.github/workflows/eval.yml` 跑：**每周一次** + 可手动触发（`workflow_dispatch`，可限量做廉价冒烟）。`run-a1.ts` 自带阈值门 + `baseline.json` 回归对照（任一指标较基线降 >3pp → 非零退出 → job 变红），失败时复用渠道 adapter 推告警到 `ALERT_WEBHOOK`。
+
+**关键：用中转站 relay 凭据即可，不需要直连 `sk-ant-` key**（`run-a1.ts` 只要求 `ANTHROPIC_API_KEY` 存在，`sk-ant-` 仅软警告）。
+
+### 在 repo 配置（Settings → Secrets and variables → Actions）
+
+| 类型 | 名称 | 必填 | 说明 |
+|---|---|---|---|
+| Secret | `ANTHROPIC_API_KEY` | ✅ | relay 凭据 |
+| Secret | `ANTHROPIC_BASE_URL` | ✅ | relay 端点 |
+| Variable | `ANALYZER_MODEL` | ✅ | Opus-only relay 必设为 Opus（如 `claude-opus-4-6`），且须与 validator 不同（否则 `assertModelSeparation` 报错） |
+| Variable | `VALIDATOR_MODEL` | 建议 | 默认 `claude-opus-4-7` |
+| Secret | `ALERT_WEBHOOK` | 可选 | 配了则 eval 失败推告警（§12 同款渠道识别）；不配则只看 GitHub 失败通知 |
+| Secret | `ALERT_FEISHU_SECRET` | 可选 | 飞书加签模式 |
+| Variable | `ALERT_CHANNEL` | 可选 | 覆盖渠道自动识别 |
+
+### ⚠️ 网络前提与退路
+
+GitHub 托管 runner 在境外，**必须能访问你的 relay**。若 relay 限国内 IP/区域 → runner 连不上、eval 网络失败。两条退路：
+1. **self-hosted runner**：把 runner 跑在能访问 relay 的机器/VPS 上（`runs-on` 改为你的 self-hosted label）；
+2. **容器内跑**：加 `/api/eval` 端点 + 把 eval 数据集打进镜像，在 app 容器进程内跑（relay 已在容器内可达，同管线路径）。
+
+> 成本：标准 arXiv 集 = 5 主题 + 120 一致性对 ≈ 125 个 Opus relay 调用/次，周频可接受；手动触发时可用 `quality_limit`/`consistency_limit` 限量省钱。

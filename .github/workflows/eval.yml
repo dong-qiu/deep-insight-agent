@@ -1,0 +1,86 @@
+# 定时真模型 eval（A1 回归门）——DCP-3 ② 的"定时 eval job"。
+#
+# 为什么单独一个 workflow：真模型 eval 需 API 凭据 + 预算 + 中转站，不进公共 CI（见 ci.yml 注释）。
+# 这里用 repo secrets 经【中转站 relay】跑——**不需要直连 sk-ant- key**，relay 凭据即可
+# （run-a1.ts 只要求 ANTHROPIC_API_KEY 存在，sk-ant- 仅软警告）。
+#
+# 触发：每周一次（北京周二凌晨）+ 手动（workflow_dispatch，可限量做廉价冒烟）。
+# 判定：run-a1.ts 自带阈值门 + baseline.json 回归对照（任一指标较基线降 >3pp → 非零退出 → 本 job 变红）。
+# 失败 → 复用渠道 adapter 推一条告警到 ALERT_WEBHOOK（飞书等）。
+#
+# ⚠️ 网络前提：GitHub 托管 runner 在境外，必须能访问你的 relay（ANTHROPIC_BASE_URL）。
+#    若 relay 限国内 IP/区域 → runner 连不上，eval 会网络失败。两条退路：
+#      ① 用 self-hosted runner（跑在你能访问 relay 的机器/VPS 上）；
+#      ② 改在容器内跑（加 /api/eval 端点 + 数据集打进镜像）。
+#
+# 需要在 repo 配置（Settings → Secrets and variables → Actions）：
+#   Secrets：ANTHROPIC_API_KEY（relay 凭据）、ANTHROPIC_BASE_URL（relay 端点）、
+#            可选 ALERT_WEBHOOK、ALERT_FEISHU_SECRET
+#   Variables：ANALYZER_MODEL（Opus-only relay 必设为 Opus，如 claude-opus-4-6，需与 validator 不同）、
+#              VALIDATOR_MODEL（默认 claude-opus-4-7）、可选 ALERT_CHANNEL
+
+name: Scheduled Eval (A1 regression)
+
+on:
+  schedule:
+    - cron: "0 18 * * 1" # 每周一 UTC 18:00 = 北京周二 02:00
+  workflow_dispatch:
+    inputs:
+      quality_limit:
+        description: "限制 quality 主题数（0=全量）；冒烟省成本时设小值"
+        default: "0"
+      consistency_limit:
+        description: "限制一致性对数（0=全量）"
+        default: "0"
+
+concurrency:
+  group: eval-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  a1:
+    name: A1 真模型回归 eval（经 relay）
+    runs-on: ubuntu-latest
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
+      ANALYZER_MODEL: ${{ vars.ANALYZER_MODEL }}
+      VALIDATOR_MODEL: ${{ vars.VALIDATOR_MODEL }}
+      VALIDATOR_THINKING: "0" # 中转站 thinking+forced tool_choice 组合会 400（见 practice-log）
+      A1_QUALITY_LIMIT: ${{ github.event.inputs.quality_limit || '0' }}
+      A1_CONSISTENCY_LIMIT: ${{ github.event.inputs.consistency_limit || '0' }}
+    steps:
+      - name: 检查 relay 凭据是否已配
+        id: guard
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ] || [ -z "$ANTHROPIC_BASE_URL" ]; then
+            echo "::notice::未配置 ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL secrets，跳过真模型 eval（没配 relay 凭据时本 job 空跑、不报错）。"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.guard.outputs.skip != 'true'
+        uses: actions/checkout@v4
+      - if: steps.guard.outputs.skip != 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+      - if: steps.guard.outputs.skip != 'true'
+        run: npm ci
+      - name: 跑 A1 eval（阈值门 + baseline 回归对照）
+        if: steps.guard.outputs.skip != 'true'
+        run: npm run eval:a1
+      - name: 回归/失败 → 推告警（复用渠道 adapter）
+        if: failure()
+        env:
+          ALERT_WEBHOOK: ${{ secrets.ALERT_WEBHOOK }}
+          ALERT_CHANNEL: ${{ vars.ALERT_CHANNEL }}
+          ALERT_FEISHU_SECRET: ${{ secrets.ALERT_FEISHU_SECRET }}
+          NOTIFY_TITLE: "🔴 A1 定时 eval 回归/失败"
+          NOTIFY_TEXT: "${{ github.repository }} 的定时 A1 eval 未过阈值或较 baseline 回归 >3pp。"
+          NOTIFY_LINK: "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+        run: |
+          if [ -z "$ALERT_WEBHOOK" ]; then
+            echo "未配 ALERT_WEBHOOK secret，跳过告警推送（job 仍标红，看 GitHub 通知即可）。"
+            exit 0
+          fi
+          node ops/probe-alert.mjs

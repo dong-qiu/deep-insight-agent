@@ -40,12 +40,15 @@ function detectChannel(u, override) {
   return "generic";
 }
 
+// 默认发一条烟雾告警；NOTIFY_TITLE / NOTIFY_TEXT 可覆盖正文——供 CI（如定时 eval 回归）复用本渠道层。
 const n = {
-  title: "🔴 Run 失败：smoke",
-  text: `TestError：本条来自 ops/probe-alert.mjs 的手测烟雾 / 非真实故障\nrunId：probe-${Math.random().toString(36).slice(2, 10)}`,
+  title: process.env.NOTIFY_TITLE || "🔴 Run 失败：smoke",
+  text:
+    process.env.NOTIFY_TEXT ||
+    `TestError：本条来自 ops/probe-alert.mjs 的手测烟雾 / 非真实故障\nrunId：probe-${Math.random().toString(36).slice(2, 10)}`,
   priority: "high",
   tags: ["rotating_light"],
-  link: undefined, // 失败告警无 link；保留字段位以与 alert.ts 的 flatten/generic/ntfy click 对齐
+  link: process.env.NOTIFY_LINK || undefined, // 失败告警无 link；CI 可传 run URL。与 alert.ts 的 flatten/generic/ntfy click 对齐
 };
 const flatten = (m) => `${m.title}\n${m.text}${m.link ? `\n${m.link}` : ""}`;
 const flat = flatten(n);
