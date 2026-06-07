@@ -366,3 +366,17 @@
   - **真共享可变状态只在 staging/生产级用真 DB server（Postgres）**，绝不在开发机跨 worktree 挂同一 SQLite 卷——那是过度工程。
 - **后续动作**: 已落地（commit `e51c798`）：compose 端口参数化 + `.env.compose.example`、`busy_timeout=5000`、`ops/db-snapshot.mjs`+`db-restore.mjs`（VACUUM INTO 快照/恢复）。判据"并发隔离靠配置不靠纪律"已补进 `skills/L0-foundation.md`。
 - **补记（同日演进，commit `5fc32b8`）**: 初版隔离是"每 worktree 手动建 `.env` 设 `COMPOSE_PROJECT_NAME`"——仍是"靠记得建文件"的弱纪律。进一步删掉 `docker-compose.yml` 写死的 `name:`，让工程名回落目录 basename → **worktree 零配置自动隔离**（"危险的事默认不发生"，比"手动隔离"更彻底）。代价是默认行为翻转：**权威/生产实例**（拥有真数据）反过来须显式钉 `COMPOSE_PROJECT_NAME=deep-insight`，否则换目录跑回落新工程名→挂新空卷→孤立数据（同款"worktree 空库"陷阱，主体换成"该稳定的实例"）。**教训升级**：隔离的最优解不是"让每个环境记得声明隔离"，而是"让隔离成为默认、让少数需要稳定的实例显式声明稳定"——把显式声明的负担放在"少且固定"的一侧。实测 `bugfix+docker`→`bugfixdocker_insight-data`、主 worktree 仍 `deep-insight_insight-data`（与运行中容器卷一致，数据安全），并排实跑两套四维隔离验证通过。
+
+### 2026-06-08 · `docker compose up -d` 不带 `--build` 用旧镜像——配置改对了、代码还是旧的
+
+- **日期**: 2026-06-08
+- **情境**: 把新做的多渠道失败告警接进生产：`.env.local` 填好飞书 `ALERT_WEBHOOK` → `docker compose up -d` → 容器内跑 `probe-alert.mjs` 验证。
+- **观察**:
+  - 探针输出是**旧版格式**（`📡 POST →` / `payload.text` / "去浏览器看 webhook.site"），不是新版的 `渠道识别 = feishu` / `飞书 code=0`。`up -d` 只**用缓存镜像 `deep-insight:0.1.0` 重建容器**，没重新构建——容器里还是 adapter 之前的旧代码。
+  - 更阴险的是**假成功**：旧代码把 Slack 形状 `{text}` 发给飞书（飞书要 `{msg_type,content}`），飞书回 **HTTP 200 但 body 带错误 code**，旧探针不解析 code、只看 200 就报"成功"，还提示去 webhook.site（与实际用的飞书渠道完全无关）。手机其实没收到。
+  - 修复 = `git pull && docker compose up -d --build`：先把生产 checkout 的 `main` 拉到最新（含 adapter），再**重建镜像**。重跑探针 → `渠道识别 = feishu` + `飞书 code=0 success` + 手机可达，闭环真正打通。
+- **经验 / 教训**:
+  - **`up -d` 改的是"容器实例 + 运行时 env"，`--build` 才改"镜像里的代码"。** 只改 `.env.local` / compose 配置 → `up -d` 够；动了应用代码 → 必须 `--build`（或先 `compose build`）。这是"配置 vs 制品"两个生命周期，混淆就会"配置对了、行为没变"。
+  - **镜像是从源码 checkout 构建的——`--build` 前先 `git pull`**，否则重建的还是旧源码。生产 checkout 的本地 `main` 不会因 `push origin main` 自动前进，得显式拉。
+  - **"HTTP 200"在跨服务调用里不等于成功**——这正是上一条加固 `probe` 解析飞书 `code` 的价值；但前提是容器跑的是**新** probe。旧 probe 的 200-假成功 + 误导提示，恰好演示了"陈旧制品"如何把一个已修好的诊断能力又藏回去。
+- **后续动作**: 把"改代码必 `--build`、`--build` 前先 `git pull`"补进 `docs/launch/operations.md` 部署/升级章节（§8 升级）；与已有的"`next build` 绿 ≠ 容器能跑""容器部署两个隐式默认坑"同属"容器制品的隐式默认"系列。
