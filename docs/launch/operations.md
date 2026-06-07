@@ -107,6 +107,12 @@ docker run --rm -v deep-insight_insight-data:/data -v "$PWD":/backup alpine \
 
 **手动**：改 `package.json` version → 同步 compose `image: deep-insight:<ver>` → `docker compose up -d --build`。CI（`.github/workflows/ci.yml`）：typecheck → vitest → next build → docker build；Dependabot 管依赖/Actions/镜像。
 
+> ⚠️ **改了应用代码必带 `--build`，且 `--build` 前先 `git pull`**（配置 vs 制品是两个生命周期）：
+> - `docker compose up -d`（不带 `--build`）只重建容器、**复用缓存镜像** → 仅 `.env.local`/compose 配置变更够用；**代码变更不会生效**（容器跑的还是旧镜像里的旧代码）。
+> - 镜像从源码 checkout 构建——本地 `main` **不随 `git push origin main` 自动前进**，`--build` 前不 `git pull` 会重建出旧源码。
+> - 验证别只看 `HTTP 200`（跨服务调用里 200 ≠ 成功，如飞书回 200+错误码）；用 `docker exec deep-insight-app-1 node /app/ops/probe-alert.mjs` 看渠道 + `code=0` + 真到达。
+> - 实战教训见 `docs/practice-log.md` 2026-06-08 条（接飞书告警时 `up -d` 跑旧 probe 报假成功）。
+
 **CD（自动部署 · `.github/workflows/deploy.yml`）**：**手动触发**（Actions → Deploy → Run）或**推送 `v*` tag**（刻意发布）；**不**在 push main 自动部署（避免每次合并即上线）。流程 = SSH 到服务器 → `git pull --ff-only`（跟踪 main）→ 按服务器架构 `docker compose up -d --wait --build` → `image prune`。`up --wait` 不健康即非零退出 → 部署标红（健康门）。
 
 - **必需 secrets**（仓库 Settings → Secrets）：`DEPLOY_HOST` · `DEPLOY_USER` · `DEPLOY_SSH_KEY`（部署用户私钥）· `DEPLOY_KNOWN_HOSTS`（`ssh-keyscan -H 主机` 生成，固定主机公钥防中间人）· `DEPLOY_PATH`（服务器上仓库 clone 路径）·（可选 `DEPLOY_SSH_PORT`，默认 22）。
