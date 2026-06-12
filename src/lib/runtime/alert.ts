@@ -161,16 +161,28 @@ export async function sendAlert(req: AlertRequest, timeoutMs = 5000): Promise<vo
  *  全程 try/catch——构造阶段（detectChannel/buildAlertRequest 的 new URL、failureToNotification 的 JSON.stringify）
  *  也可能抛，绝不能逃逸到 runJob catch 顶替待重抛的原始错误。 */
 export function notifyFailure(a: FailureAlert): void {
+  // failureToNotification 的 JSON.stringify(target) 可能抛（循环引用）——必须在 try 内构造，
+  // 绝不逃逸到 runJob catch 顶替待重抛的原始错误。
+  try {
+    notify(failureToNotification(a));
+  } catch (e) {
+    runLogger({ stage: "alert" }).warn({ err: e instanceof Error ? e.message : String(e) }, "失败告警构造失败（已忽略）");
+  }
+}
+
+/** 发一条中性通知：ALERT_WEBHOOK 配置则按渠道 fire-and-forget 发送，否则 no-op。
+ *  全程 try/catch——构造阶段（detectChannel/buildAlertRequest 的 new URL 等）也可能抛，
+ *  绝不能逃逸到调用方（如 runJob catch 顶替待重抛的原始错误，或 watchdog tick）。
+ *  通用入口：Run 失败（notifyFailure）、数据陈旧（staleness）、将来报告推送（B）共用渠道层。 */
+export function notify(n: Notification): void {
   const url = process.env.ALERT_WEBHOOK;
-  if (!url) return; // 未配置 → no-op（失败已在 Run / error 日志里）
+  if (!url) return; // 未配置 → no-op
   try {
     const timeoutMs = Number(process.env.ALERT_TIMEOUT_MS) || 5000;
     const channel = detectChannel(url, process.env.ALERT_CHANNEL);
-    const req = buildAlertRequest(url, failureToNotification(a), channel, {
-      feishuSecret: process.env.ALERT_FEISHU_SECRET,
-    });
+    const req = buildAlertRequest(url, n, channel, { feishuSecret: process.env.ALERT_FEISHU_SECRET });
     void sendAlert(req, timeoutMs);
   } catch (e) {
-    runLogger({ stage: "alert" }).warn({ err: e instanceof Error ? e.message : String(e) }, "失败告警构造失败（已忽略）");
+    runLogger({ stage: "alert" }).warn({ err: e instanceof Error ? e.message : String(e) }, "告警构造失败（已忽略）");
   }
 }
