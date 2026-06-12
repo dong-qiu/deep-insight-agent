@@ -17,6 +17,11 @@ out/
 *.pem
 *.key
 
+# 云部署本地态（含部署参数 / 公网 IP / 实例 ID，不入库）
+ops/aws/config.sh
+ops/aws/.vm-ip
+ops/aws/.vm-id
+
 # Logs
 *.log
 npm-debug.log*
