@@ -11,7 +11,8 @@ import type { ReactNode } from "react";
  *  - 标准 markdown 链接 [text](url) → <a target="_blank">；
  *  - 编号洞察标题 (`## N.` 或 `### N.`) 自动包入 <section class="insight-block">，
  *    使每条洞察可作为视觉"卡片"独立排版（CSS 在 globals.css）。 */
-export function Markdown({ md }: { md: string }) {
+export function Markdown({ md, anchorPrefix = "cite-" }: { md: string; anchorPrefix?: string }) {
+  const inline = (text: string): ReactNode => inlineWith(text, anchorPrefix);
   const rootNodes: ReactNode[] = [];
   /** 当前洞察 section 的内容容器；null = 不在某条洞察内 */
   let insightNodes: ReactNode[] | null = null;
@@ -53,7 +54,7 @@ export function Markdown({ md }: { md: string }) {
     if (/^\s*-\s+/.test(line)) {
       const stripped = line.replace(/^\s*-\s+/, "");
       const m = stripped.match(/^\[(\d+)\]\s+(.*)$/);
-      if (m) bullets.push({ text: m[2], id: `cite-${m[1]}`, citeNum: m[1] });
+      if (m) bullets.push({ text: m[2], id: `${anchorPrefix}${m[1]}`, citeNum: m[1] });
       else bullets.push({ text: stripped, id: null, citeNum: null });
       continue;
     }
@@ -98,7 +99,8 @@ export function Markdown({ md }: { md: string }) {
  *  顺序重要：链接先匹配避免 [5](url) 被误识别成 [5] 锚。 */
 const INLINE_PATTERN = /(\[[^\]]+\]\([^)]+\)|`[^`]+`|\[\d+\])/g;
 
-function inline(text: string): ReactNode {
+/** anchorPrefix 让同页多处引用各用独立锚命名空间（报告正文 "cite-" vs 追问 "cite-fup-{id}-"）。 */
+function inlineWith(text: string, anchorPrefix: string): ReactNode {
   const parts = text.split(INLINE_PATTERN);
   return parts.map((p, idx) => {
     if (!p) return null;
@@ -115,7 +117,7 @@ function inline(text: string): ReactNode {
     if (refM) {
       return (
         <sup key={`r-${idx}`} className="cite-ref">
-          <a href={`#cite-${refM[1]}`}>[{refM[1]}]</a>
+          <a href={`#${anchorPrefix}${refM[1]}`}>[{refM[1]}]</a>
         </sup>
       );
     }

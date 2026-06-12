@@ -34,11 +34,14 @@ function fallbackCostUSD(model: string, u: TokenUsage): number {
   return inputUSD + outputUSD;
 }
 
-export type Role = "analyzer" | "validator";
+export type Role = "analyzer" | "validator" | "followup";
 
 export const MODELS: Record<Role, string> = {
   analyzer: process.env.ANALYZER_MODEL ?? "claude-sonnet-4-6",
   validator: process.env.VALIDATOR_MODEL ?? "claude-opus-4-7",
+  // 追问生成（A4）：成本敏感、非校验路径，默认与 analyzer 同档 sonnet；
+  // 一致性兜底仍走独立的 validator 角色（opus），同源偏差约束不受影响。
+  followup: process.env.FOLLOWUP_MODEL ?? "claude-sonnet-4-6",
 };
 
 /** 同源偏差约束：校验模型必须独立于分析模型（citation-validation 行为规约 3 / AC7） */

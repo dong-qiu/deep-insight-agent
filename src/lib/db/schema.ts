@@ -200,4 +200,24 @@ CREATE TABLE IF NOT EXISTS consistency_cache (
   consistency_reason  TEXT NOT NULL,
   created_at          TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- 报告页内追问（Follow-up Q&A，A4）：用户就某报告内容提问 → 受限于该报告引用池的可溯源回答。
+-- thread_id / turn_index 为多轮升级预留：v1 单轮恒 thread_id=自身id、turn_index=0；
+-- 升级多轮时按 thread_id 归并、turn_index 排序，无需迁移。
+-- citations_used / validation / cost 以 JSON TEXT 存（与本库其他 JSON 字段一致）。
+CREATE TABLE IF NOT EXISTS followup_qa (
+  id             TEXT PRIMARY KEY,
+  report_id      TEXT NOT NULL REFERENCES report(id),
+  thread_id      TEXT NOT NULL,
+  turn_index     INTEGER NOT NULL DEFAULT 0,
+  question       TEXT NOT NULL,
+  answer_md      TEXT NOT NULL,
+  citations_used TEXT NOT NULL DEFAULT '[]',
+  validation     TEXT NOT NULL DEFAULT '{}',
+  cost           TEXT NOT NULL,
+  status         TEXT NOT NULL CHECK (status IN ('done','failed')),
+  created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_followup_report ON followup_qa(report_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_followup_thread ON followup_qa(thread_id, turn_index);
 `;

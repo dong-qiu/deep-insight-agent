@@ -158,6 +158,40 @@ export interface Report {
   cost: Cost;
 }
 
+/** 追问回答里的一条已校验引用（followup-qa spec）。
+ *  ref = 引用池编号（保留池序，被剥离的 ref 不出现，编号可有空位）。 */
+export interface FollowupCitation {
+  ref: number;
+  content_item_id: string;
+  quote: string;
+  source_name: string;
+  url: string;
+  published_at: string | null;
+}
+
+/** 报告页内追问的一问一答（architecture：报告页 A4 入口；DB 表 followup_qa）。
+ *  thread_id / turn_index 为多轮升级预留（v1 单轮：thread_id=自身id，turn_index=0）。 */
+export interface FollowupQA {
+  id: string;
+  report_id: string;
+  thread_id: string;
+  turn_index: number;
+  question: string;
+  answer_md: string;
+  citations_used: FollowupCitation[];
+  /** 引用级校验计数（透明信任信号） */
+  validation: {
+    total: number;
+    reachable: number;
+    consistent: number;
+    blocked: number;
+    errored: number;
+  };
+  cost: Cost;
+  status: "done" | "failed";
+  created_at: string;
+}
+
 /** 报告索引项（architecture 数据模型 · ReportIndexEntry）—— 落 SQLite 行 + FTS5 */
 export interface ReportIndexEntry {
   report_id: string;

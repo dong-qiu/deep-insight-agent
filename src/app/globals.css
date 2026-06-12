@@ -175,3 +175,28 @@ nav a { margin-right: 1rem; }
   a { color: #60a5fa; }
   .card { border-color: #1f2937; }
 }
+
+/* 报告页内追问（A4） */
+.followup { margin-top: 1.5rem; }
+.followup-title { font-size: 1.1rem; margin: 0 0 .25rem; }
+.followup-hint { margin: 0 0 1rem; }
+.followup-qa { margin-bottom: 1rem; }
+.followup-q { margin: 0 0 .5rem; }
+.followup-a { border-left: 3px solid #e5e7eb; padding-left: .75rem; }
+.followup-a .report-body { margin: 0; }
+.followup-meta { margin: .5rem 0 0; font-size: .8rem; }
+.followup-form { display: flex; flex-direction: column; gap: .5rem; margin-top: 1rem; }
+.followup-form textarea {
+  width: 100%; padding: .5rem .75rem; border: 1px solid #e5e7eb; border-radius: 8px;
+  font: inherit; resize: vertical; box-sizing: border-box;
+}
+.followup-form button {
+  align-self: flex-start; padding: .4rem 1rem; border: 1px solid #2563eb; border-radius: 8px;
+  background: #2563eb; color: #fff; font: inherit; cursor: pointer;
+}
+.followup-form button:disabled { opacity: .55; cursor: default; }
+.followup-err { color: #b91c1c; font-size: .9rem; margin-top: .5rem; }
+@media (prefers-color-scheme: dark) {
+  .followup-a { border-color: #1f2937; }
+  .followup-form textarea { border-color: #374151; background: #0f172a; color: #e5e7eb; }
+}

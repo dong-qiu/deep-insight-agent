@@ -1,8 +1,10 @@
 import { notFound } from "next/navigation";
 import { getDb } from "../../../lib/db/index.js";
+import { listFollowups } from "../../../lib/db/followup.js";
 import { getReport, listBlockedChecksForReport } from "../../../lib/db/reports.js";
 import { Markdown } from "../../_components/markdown.js";
 import { ExportPptButton } from "./_components/export-ppt-button.js";
+import { FollowupPanel } from "./_components/followup-panel.js";
 
 export const dynamic = "force-dynamic";
 
@@ -24,6 +26,7 @@ export default async function ReportPage({ params }: { params: Promise<{ id: str
   const report = getReport(db, id);
   if (!report) notFound();
   const blocked = listBlockedChecksForReport(db, id);
+  const followups = listFollowups(db, id);
 
   // 按 insight 分组（保持 SQL 顺序）
   const byInsight = new Map<string, { statement: string; rows: typeof blocked }>();
@@ -81,6 +84,13 @@ export default async function ReportPage({ params }: { params: Promise<{ id: str
           ))}
         </details>
       )}
+
+      {report.status === "done" ? (
+        <>
+          <hr />
+          <FollowupPanel reportId={id} initial={followups} />
+        </>
+      ) : null}
     </section>
   );
 }

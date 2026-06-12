@@ -67,6 +67,31 @@ export function getAnalysisBatch(db: DB, id: string): AnalysisBatch | null {
   };
 }
 
+/** 按 id 列表取洞察及其引用（追问按 report.insight_ids 取引用池用）。
+ *  报告只存 insight_ids、不存 batch_id，故按 id 直取 insight 表 + 联 citation。
+ *  返回顺序与传入 ids 一致（保留报告内洞察顺序）；缺失的 id 跳过。 */
+export function getInsightsByIds(db: DB, ids: string[]): Insight[] {
+  const out: Insight[] = [];
+  const citStmt = db.prepare("SELECT * FROM citation WHERE insight_id = ? ORDER BY citation_index");
+  const insStmt = db.prepare("SELECT * FROM insight WHERE id = ?");
+  for (const id of ids) {
+    const r = insStmt.get(id) as any;
+    if (!r) continue;
+    const cits = citStmt.all(id) as any[];
+    out.push({
+      id: r.id, topic_id: r.topic_id, type: r.type, event_id: r.event_id ?? null,
+      statement: r.statement, importance: r.importance, importance_basis: r.importance_basis,
+      citations: cits.map((c) => ({
+        content_item_id: c.content_item_id, quote: c.quote, locator: JSON.parse(c.locator),
+      })),
+      source_count: r.source_count, multi_source: r.multi_source === 1,
+      time_window: JSON.parse(r.time_window), confidence: r.confidence ?? null, language: r.language,
+      is_followup: r.is_followup === 1,
+    });
+  }
+  return out;
+}
+
 export function saveValidationResult(db: DB, batchId: string, vr: ValidationResult): void {
   db.transaction(() => {
     const r = vr.report;
