@@ -1,0 +1,39 @@
+#cloud-config
+# Runs on VM first boot (AWS passes this file as EC2 user-data).
+# Infrastructure only: install Docker, create swap, install Caddy, create app dir.
+# NOTE: intentionally NO secrets and NO private-repo clone here -- user-data is
+#       readable from instance metadata. Code and secrets are delivered by deploy.sh
+#       over encrypted rsync/ssh instead.
+# ASCII-only for portability across cloud user-data encoders.
+
+package_update: true
+package_upgrade: false
+
+# 2GB swap: B1s has only 1GB RAM; next build / analysis pipeline are memory-hungry.
+swap:
+  filename: /swapfile
+  size: 2147483648   # 2 GiB
+  maxsize: 2147483648
+
+runcmd:
+  # --- Docker Engine + compose plugin (official script) ---
+  - curl -fsSL https://get.docker.com -o /tmp/get-docker.sh
+  - sh /tmp/get-docker.sh
+  - usermod -aG docker ubuntu
+  - systemctl enable --now docker
+
+  # --- Caddy (automatic HTTPS reverse proxy; Caddyfile written by deploy.sh once domain known) ---
+  - apt-get install -y debian-keyring debian-archive-keyring apt-transport-https curl
+  - curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+  - curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-stable.list
+  - apt-get update
+  - apt-get install -y caddy
+
+  # --- Deploy dir (owned by ubuntu, for deploy.sh rsync) ---
+  - mkdir -p /opt/app
+  - chown -R ubuntu:ubuntu /opt/app
+
+  # --- Mark cloud-init done so scripts can probe ---
+  - touch /opt/app/.cloud-init-done
+
+final_message: "cloud-init done: docker + swap + caddy ready"

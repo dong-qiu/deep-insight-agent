@@ -1,0 +1,37 @@
+# ops/aws 部署参数（非密钥）。用法：cp config.sh.example config.sh 然后按需改。
+# config.sh 已被 .gitignore 忽略——只放非敏感部署参数；真正的密钥在 .env.local（由 gen-env.sh 生成）。
+#
+# AWS EC2 部署（provision.sh 用 aws ec2）。
+
+# —— AWS 资源 ——
+export AWS_REGION="ap-southeast-1"        # 新加坡(Southeast Asia)，默认开通、稳定、对华延迟低
+                                          #   香港 ap-east-1 延迟更低但需手动开通(opt-in)
+export AWS_NAME="deep-insight"            # EC2 实例名 / 密钥对名 / 安全组名前缀
+export AWS_INSTANCE_TYPE="t3.micro"       # 免费档 1GB；build 若 OOM 可临时改 t3.small 再缩回
+export AWS_DISK_GB="30"                   # gp3 根卷，免费档含 30GB
+# Ubuntu 24.04 AMI 由 provision.sh 通过 SSM 动态解析，无需写死。
+
+# 允许 SSH(22) 的来源 CIDR。强烈建议收窄到你的公网 IP；"0.0.0.0/0" = 对全网开放(仅 demo)。
+export SSH_ALLOW_CIDR=""              # 例 "1.2.3.4/32"（你的公网/代理出口 IP）；空=对全网开放 22
+
+# SSH 私钥：provision.sh 创建 AWS 密钥对并存到这里；其余脚本复用。
+export SSH_KEY="$HOME/.ssh/deep-insight.pem"
+
+# —— 应用部署 ——
+export ADMIN_USER="ubuntu"                # AWS Ubuntu AMI 默认登录用户（Azure 是 azureuser）
+export APP_DIR_REMOTE="/opt/app"          # VM 上的部署目录（cloud-init 已建好、归 ubuntu）
+export GIT_REPO="https://github.com/dong-qiu/deep-insight-agent.git"  # 仅备查；deploy.sh 走 rsync 本地代码
+
+# 域名（要 HTTPS 才填；留空则用 http://<IP>:3000 临时访问，需在安全组临时放行 3000）
+export APP_DOMAIN=""
+
+# —— 运行时配置（写入 .env.local 的非密钥项；密钥由 gen-env.sh 用 openssl 生成）——
+export ADMIN_EMAIL="admin"                # 后台登录名
+export ANALYZER_MODEL="claude-opus-4-7"   # ★ 必须 ≠ VALIDATOR_MODEL，否则应用启动即报错
+export VALIDATOR_MODEL="claude-opus-4-8"
+export ANTHROPIC_BASE_URL="https://yibuapi.com"  # 直连 Anthropic 则置空 ""
+# ANTHROPIC_API_KEY / ADMIN_PASSWORD 不在此文件——运行 gen-env.sh 时通过环境变量或交互输入提供。
+
+# —— 数据迁移（migrate-db.sh 用）——
+export SOURCE_CONTAINER="deep-insight-app-1"  # 本机现有生产容器名（其 /data/insight.db 是真生产库）
+export COMPOSE_PROJECT="deep-insight"         # 决定云端卷名 <COMPOSE_PROJECT>_insight-data
