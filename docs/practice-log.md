@@ -428,3 +428,18 @@
   - **告警自身要可观测**：告警系统静默失效是最坏的盲区（它本就是兜底层）。warn 日志是底线，理想还应有"告警发送成功率"指标。
   - **安全模式选型影响可维护性**：加签对"多消息类型 + 经常演进"的系统比关键词更省心。
 - **后续动作**: 已做：`sendAlert` 解析飞书 `code`（+6 单测）；EC2 机器人换加签、配 `ALERT_FEISHU_SECRET`、删关键词，实测加签送达 code:0。待评估：告警发送成功率指标（observability）。
+
+### 2026-06-13 · worktree 跑 dev 读到空库——env 文件的"双重身份"与放置目录
+
+- **日期**: 2026-06-13
+- **情境**: 在 `feat+mvp-final` worktree 里要"本地开发、云上部署"的最佳实践，顺手验证从这个 worktree 跑 `npm run dev` 报告能否读到。这是 [worktree 相对 DB 路径陷阱]（2026-06-04）与 [worktree 环境隔离 vs 数据共享]（2026-06-07）的第三次同源复现。
+- **观察**:
+  - **默认 DB 路径是相对 cwd 解析**：`getDb()` 用 `process.env.DB_PATH ?? ".data/insight.db"`、`DATA_DIR` 同理（`src/lib/db/index.ts`、`collector.ts`、`reports.ts` 三处）。从 worktree 跑 dev，`.data` 落到 worktree 根（无库）→ better-sqlite3 **现造空库** → `/api/health` 返 `reports:0`，报告"消失"假象；真库（含 8 条报告）在主仓 `.data`。
+  - **`.env.local` 是"双重身份"文件，钉绝对路径会撞车**：它既被 `next dev` 加载，又被 `docker-compose.yml` 的 `env_file: [.env.local]` 读。若按老办法把宿主机绝对 `DB_PATH/DATA_DIR` 写进 `.env.local`，本地 `docker compose up` 时容器会继承 `/Users/...`（容器内不存在）、**覆盖 Dockerfile 的 `DATA_DIR=/data`** → 容器跑挂。解法：路径放 **`.env.development.local`**——`next dev` 优先加载它，而 compose 的 `env_file` 看不见它，两条路径天然隔离。
+  - **env 文件必须放在实际 `npm run dev` 的目录（worktree 根），不是主仓根**：第一次我把 `.env.development.local` 建到主仓根 → 不生效、照样现造空库。`next dev` 的 cwd 是 worktree，只加载 worktree 根的 env 文件。`lsof -p <pid> | grep insight.db` 一眼看出进程打开的是哪个库。（讽刺的是收尾追加本条 practice-log 时又踩同款"主仓 vs worktree 路径"坑——Edit 误落主仓副本、worktree 没改，靠 `wc -l`/`grep` 跨两副本对比才发现。**绝对路径省心但要认准是哪个工作树的副本**。）
+  - **验证读到的是"活库"而非快照**：验证中报告数从 7→8，追因是**另一个 worktree 同时跑了深挖任务**写进同一主库——反向印证了"多 worktree 钉同一主库、共享生产数据"确实生效（也提醒 SQLite 单写者模型下并行重度写可能撞 `SQLITE_BUSY`）。
+- **经验 / 教训**:
+  - **"环境隔离靠配置不靠纪律"的延伸：配置项要放在与其作用域匹配的文件层**。DB 路径只对宿主 dev 有意义 → 放只被 dev 加载的 `.env.development.local`；放进被 dev + compose 共用的 `.env.local` 就是把作用域搞混、必然撞车。一个配置文件被两套运行时共用时，先问"这个值对每套运行时都对吗"。
+  - **相对路径 + 多 cwd（worktree）= 反复踩的结构性坑**。同一相对 `.data/insight.db`、同一相对 `docs/practice-log.md` 在不同 cwd/工作树指向不同副本。多次复现（相对 DB 路径 / compose 工程名 / env 文件放置 / 文档副本）都是同一根：**把"当前在哪个工作树"隐式带进了行为**。绝对路径解决"读哪个库"，但反过来要时刻认清"在写哪个工作树的文件"。
+  - **验证要查到"进程实际打开的资源"那一层**：`/api/health` 的计数 + `lsof` 实际文件 + worktree 下没冒出新 `.data`，三者交叉才算证实，光看接口返回数可能被空库的"0"或缓存骗。
+- **后续动作**: 已做：worktree 根建 `.env.development.local` 钉绝对 `DB_PATH/DATA_DIR` 回主仓（`.env.*` 已 gitignore），实测 `reports:8` + `lsof` 确认打开主仓库；更新记忆 [worktree 相对 DB 路径陷阱]（改用 `.env.development.local`、强调放 worktree 根、补验证法）。待评估：把"worktree 跑 dev 前钉 DB 路径"做成 worktree 初始化脚本/checklist，免每次手动建文件（同 06-07"让隔离成为默认"的思路——理想是新 worktree 自动具备指向主库的 dev 配置）。
