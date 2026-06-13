@@ -62,3 +62,4 @@ evals/dataset/*.local.jsonl
 # TS incremental build info
 *.tsbuildinfo
 .claude/
+deep-insight-cli_accessKeys.csv
