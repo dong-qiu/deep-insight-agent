@@ -13,6 +13,7 @@
     "seed": "NODE_USE_ENV_PROXY=1 tsx evals/seed.ts",
     "db:snapshot": "node ops/db-snapshot.mjs",
     "db:restore": "node ops/db-restore.mjs",
+    "db:backup": "node --no-warnings ops/backup-db.mjs",
     "eval:a1": "tsx evals/run-a1.ts",
     "eval:build-local": "tsx evals/build-local-eval.ts",
     "review:sheet": "tsx evals/make-review-sheet.ts",

@@ -9,3 +9,9 @@
 # 与 cron 触发频率无关——前者描述意愿、后者真触发；不一致已在 source_id
 # fetch_interval 字段加文档注解）
 0 17 * * * node --no-warnings /app/ops/trigger.mjs
+
+# 每日卷备份：管线（17:00 UTC）跑完后 1 小时备份，确保当日 brief 已落库再快照。
+# SQLite 在线备份（一致）+ reports/ 正文 → /data/backups/<时间戳>/，默认留最近 14 份
+# （BACKUP_KEEP 可调）。备份在同卷——防损坏/误删，非防整卷丢失；真 DR 把 /data/backups
+# 拉到机器外（见 operations.md §6）。需 cron 服务挂 /data 卷（docker-compose.yml 已配）。
+0 18 * * * node --no-warnings /app/ops/backup-db.mjs

@@ -37,7 +37,11 @@ ANTHROPIC_API_KEY=sk-xxx ADMIN_PASSWORD=xxx ./gen-env.sh
 # 5) 投递代码 + 起服务 + 配 Caddy + 验证
 ./deploy.sh
 
-# 止费（释放所有 EC2 资源，账单归零）
+# 6) 可选：off-box DR —— 建 S3 桶 + 实例角色加最小 S3 权限 + host cron 每日异地同步
+#    （在容器内每日备份 ops/backup-db.mjs 之上多一层异地副本；成本 ≈ $0，见脚本头注）
+./setup-dr.sh
+
+# 止费（释放所有 EC2 资源，账单归零；注：DR 的 S3 桶不在此清理，需手动 aws s3 rb）
 ./destroy.sh
 ```
 
@@ -51,6 +55,7 @@ ANTHROPIC_API_KEY=sk-xxx ADMIN_PASSWORD=xxx ./gen-env.sh
 | `gen-env.sh` | 生成 `.env` / `.env.local`（密钥用 openssl） | API key / 管理员密码 |
 | `migrate-db.sh` | 本机生产容器 `VACUUM INTO` 快照 → 写入云端卷 | SSH 私钥 |
 | `deploy.sh` | rsync 代码 + `docker compose up` + Caddy + 健康检查 | SSH 私钥 |
+| `setup-dr.sh` | off-box DR：建 S3 桶（加固）+ 实例角色挂最小 S3 策略 + 经 SSM 装 awscli/写 host cron 每日异地同步 | 需 `aws`（建桶/IAM/SSM） |
 | `destroy.sh` | 终止实例 + 删安全组/密钥，止费 | 需 `aws` |
 
 ## 设计要点 / 安全
