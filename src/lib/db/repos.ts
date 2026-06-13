@@ -256,6 +256,17 @@ export function hasRunningRun(
   return r != null;
 }
 
+/** 累计 started_at ≥ sinceIso 的 Run 真实成本（USD）——成本预算守卫（cost-guard）用。
+ *  cost 是 JSON TEXT，用 SQLite 内建 json_extract 取 amount；无 cost 的 Run（确定性段如
+ *  ingest / report-gen）json_extract 返 NULL、被 SUM 忽略。started_at 为 ISO8601（同格式），
+ *  字典序比较即时间序，可直接走 idx 无需解析。 */
+export function sumRunCostSince(db: DB, sinceIso: string): number {
+  const r = db
+    .prepare(`SELECT COALESCE(SUM(json_extract(cost, '$.amount')), 0) AS total FROM run WHERE started_at >= ?`)
+    .get(sinceIso) as { total: number };
+  return r.total ?? 0;
+}
+
 function rowToRun(r: Record<string, unknown>): Run {
   return {
     id: r.id as string, kind: r.kind as Run["kind"], target: JSON.parse(r.target as string),

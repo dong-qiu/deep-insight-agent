@@ -13,7 +13,10 @@ import { getInsightsByIds } from "../db/analysis.js";
 import { makeConsistencyCache } from "../db/consistency-cache.js";
 import { getContentItem, getSource } from "../db/repos.js";
 import type { DB } from "../db/index.js";
+import { notifyBudget } from "../runtime/alert.js";
+import { getBudgetStatus } from "../runtime/cost-guard.js";
 import { callStructured } from "../runtime/llm.js";
+import { runLogger } from "../runtime/logger.js";
 import type { ContentItem, Cost, FollowupCitation, Report } from "../types.js";
 import { checkReachability, consistencyCacheVersion, judgeWithRetry } from "./validator.js";
 
@@ -146,6 +149,19 @@ function renderCitationList(cites: FollowupCitation[]): string {
 /** 执行一次追问：组装上下文 → 约束生成 → 轻校验 → 组装回答。
  *  report 由调用方（API）保证存在且 status=done。 */
 export async function answerFollowup(db: DB, report: Report, question: string): Promise<FollowupResult> {
+  // A5 手动路径：预算触顶不硬拦（追问是用户主动意图，且单次成本低），仅记日志 + 告警一次（放行但提示，见 decisions）。
+  const budget = getBudgetStatus(db);
+  if (budget.verdict === "exceeded") {
+    runLogger({ stage: "followup" }).warn(
+      { spentToday: budget.spentToday, spentMonth: budget.spentMonth },
+      `成本预算已触顶仍放行追问：${budget.reason ?? ""}`,
+    );
+    notifyBudget({
+      verdict: "exceeded", reason: budget.reason ?? "成本预算触顶",
+      spentToday: budget.spentToday, spentMonth: budget.spentMonth, context: "manual",
+    });
+  }
+
   let cost: Cost = { tokens: 0, amount: 0 };
   const addCost = (c: Cost): void => {
     cost = { tokens: cost.tokens + c.tokens, amount: cost.amount + c.amount };

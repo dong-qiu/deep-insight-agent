@@ -8,7 +8,7 @@ import { type DB, openDb } from "./index.js";
 import {
   contentExists, finishRun, getContentByUrl, getContentItem, getRun, getSource, getTopic,
   hasRunningRun, insertContentItem, insertRun, insertSource, insertTopic, listRuns,
-  listSources, recoverOrphanedRuns, updateContentItem,
+  listSources, recoverOrphanedRuns, sumRunCostSince, updateContentItem,
 } from "./repos.js";
 
 let db: DB;
@@ -96,6 +96,28 @@ describe("Run 状态机", () => {
     finishRun(db, "run2", { status: "failed", error: { type: "Timeout", message: "x" } });
     expect(getRun(db, "run2")?.error?.type).toBe("Timeout");
     expect(listRuns(db, { status: "running" }).map((r) => r.id)).toEqual(["run1"]);
+  });
+});
+
+describe("sumRunCostSince", () => {
+  const mk = (id: string, startedAt: string, amount: number | null): Run => ({
+    id, kind: "analyze", target: { topic_id: "t1" }, status: "done",
+    started_at: startedAt, ended_at: startedAt, duration_ms: 1, cost: amount == null ? null : { tokens: 1, amount },
+    error: null, retry_of: null,
+  });
+
+  it("按 started_at 窗口累计 cost.amount；无 cost 的 Run 记 0", () => {
+    insertRun(db, mk("a", "2026-06-13T08:00:00.000Z", 5));
+    insertRun(db, mk("b", "2026-06-05T08:00:00.000Z", 10));
+    insertRun(db, mk("c", "2026-05-20T08:00:00.000Z", 100));
+    insertRun(db, mk("d", "2026-06-13T09:00:00.000Z", null)); // 确定性段、无成本
+    expect(sumRunCostSince(db, "2026-06-13T00:00:00.000Z")).toBeCloseTo(5); // 仅今日
+    expect(sumRunCostSince(db, "2026-06-01T00:00:00.000Z")).toBeCloseTo(15); // 本月
+    expect(sumRunCostSince(db, "2026-05-01T00:00:00.000Z")).toBeCloseTo(115); // 含上月
+  });
+
+  it("无任何 Run → 0（COALESCE 兜底，不返 null）", () => {
+    expect(sumRunCostSince(db, "2026-01-01T00:00:00.000Z")).toBe(0);
   });
 });
 
