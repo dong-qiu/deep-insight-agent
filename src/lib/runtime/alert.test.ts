@@ -2,9 +2,11 @@ import { createHmac } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   appLevelError,
+  budgetToNotification,
   buildAlertRequest,
   detectChannel,
   failureToNotification,
+  notifyBudget,
   notifyFailure,
   notifyReport,
   reportToNotification,
@@ -313,5 +315,51 @@ describe("notifyFailure", () => {
     const circular: Record<string, unknown> = {};
     circular.self = circular;
     expect(() => notifyFailure({ ...FAIL, target: circular })).not.toThrow();
+  });
+});
+
+describe("budgetToNotification", () => {
+  it("exceeded → 高优 + ⛔ + no_entry tag；auto 措辞=已暂停", () => {
+    const n = budgetToNotification({
+      verdict: "exceeded", reason: "日预算已触顶（$10.00 / $10.00）",
+      spentToday: 10, spentMonth: 42, context: "auto",
+    });
+    expect(n.title).toContain("⛔");
+    expect(n.priority).toBe("high");
+    expect(n.tags).toEqual(["no_entry"]);
+    expect(n.text).toContain("已暂停本轮剩余");
+    expect(n.text).toContain("今日 $10.00 · 本月 $42.00");
+  });
+
+  it("exceeded + manual → 措辞=已放行未暂停", () => {
+    const n = budgetToNotification({
+      verdict: "exceeded", reason: "x", spentToday: 1, spentMonth: 1, context: "manual",
+    });
+    expect(n.text).toContain("已放行");
+  });
+
+  it("alert → 默认优先级 + ⚠️ + warning tag，无暂停措辞", () => {
+    const n = budgetToNotification({ verdict: "alert", reason: "日预算已用 85%", spentToday: 8.5, spentMonth: 8.5 });
+    expect(n.title).toContain("⚠️");
+    expect(n.priority).toBe("default");
+    expect(n.tags).toEqual(["warning"]);
+    expect(n.text).not.toContain("暂停");
+  });
+});
+
+describe("notifyBudget", () => {
+  it("ALERT_WEBHOOK 未配置 → no-op，不触发 fetch", () => {
+    const fetchMock = vi.fn((..._a: unknown[]) => Promise.resolve(new Response(null, { status: 200 })));
+    vi.stubGlobal("fetch", fetchMock);
+    notifyBudget({ verdict: "exceeded", reason: "x", spentToday: 1, spentMonth: 1, context: "auto" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("配置 webhook → 发送一条；永不抛", async () => {
+    process.env.ALERT_WEBHOOK = "https://ntfy.sh/my-topic";
+    const fetchMock = vi.fn((..._a: unknown[]) => Promise.resolve(new Response(null, { status: 200 })));
+    vi.stubGlobal("fetch", fetchMock);
+    expect(() => notifyBudget({ verdict: "alert", reason: "x", spentToday: 1, spentMonth: 1 })).not.toThrow();
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
   });
 });

@@ -1,5 +1,6 @@
 import { getDb } from "../../lib/db/index.js";
 import { listRuns } from "../../lib/db/repos.js";
+import { getBudgetStatus, type BudgetStatus } from "../../lib/runtime/cost-guard.js";
 import { aggregateByKind, aggregateDailyCost } from "../../lib/runtime/run-stats.js";
 import { RetryButton } from "./_components/retry-button.js";
 
@@ -20,6 +21,65 @@ function fmtTarget(target: Record<string, unknown>): string {
   return parts.length ? parts.join(" · ") : "（无 target）";
 }
 
+const VERDICT_BADGE: Record<BudgetStatus["verdict"], { label: string; color: string }> = {
+  ok: { label: "正常", color: "#16a34a" },
+  alert: { label: "⚠️ 接近上限", color: "#d97706" },
+  exceeded: { label: "⛔ 已触顶", color: "#dc2626" },
+};
+
+/** 单维度预算用量行：spent / limit + 百分比进度条。limit 缺失（未配）显「未设」。
+ *  near（橙）阈值用生效的 alertPct，与告警/徽标判定口径一致（非硬编码 80）。 */
+function BudgetRow({ label, spent, limit, ratio, alertPct }: { label: string; spent: number; limit?: number; ratio?: number; alertPct: number }) {
+  if (limit == null) {
+    return (
+      <p className="muted" style={{ margin: ".25rem 0", fontSize: ".85rem" }}>
+        {label}：${spent.toFixed(2)} · 未设上限
+      </p>
+    );
+  }
+  const pct = Math.min((ratio ?? 0) * 100, 100);
+  const over = (ratio ?? 0) >= 1;
+  const near = !over && (ratio ?? 0) * 100 >= alertPct;
+  const barColor = over ? "#dc2626" : near ? "#d97706" : "#2563eb";
+  return (
+    <div style={{ margin: ".4rem 0" }}>
+      <p className="muted" style={{ margin: "0 0 .15rem", fontSize: ".85rem" }}>
+        {label}：${spent.toFixed(2)} / ${limit.toFixed(2)}（{Math.round((ratio ?? 0) * 100)}%）
+      </p>
+      <div style={{ height: 8, background: "#e5e7eb", borderRadius: 4, overflow: "hidden" }}>
+        <div style={{ width: `${pct}%`, height: "100%", background: barColor }} />
+      </div>
+    </div>
+  );
+}
+
+function BudgetCard({ status }: { status: BudgetStatus }) {
+  const noLimits = status.daily == null && status.monthly == null;
+  const badge = VERDICT_BADGE[status.verdict];
+  return (
+    <article className="card">
+      <p className="muted" style={{ margin: 0, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <span>成本预算</span>
+        {!noLimits ? <span style={{ color: badge.color, fontWeight: 600 }}>{badge.label}</span> : null}
+      </p>
+      {noLimits ? (
+        <p className="muted" style={{ marginTop: ".5rem", fontSize: ".85rem" }}>
+          未设成本预算上限——配置 <code>COST_LIMIT_DAILY</code> / <code>COST_LIMIT_MONTHLY</code>（USD）后,
+          触顶将自动熔断定时管线、告警推送，并在此显示用量。
+        </p>
+      ) : (
+        <>
+          <BudgetRow label="今日" spent={status.spentToday} limit={status.daily} ratio={status.dailyRatio} alertPct={status.alertPct} />
+          <BudgetRow label="本月" spent={status.spentMonth} limit={status.monthly} ratio={status.monthlyRatio} alertPct={status.alertPct} />
+          {status.reason ? (
+            <p className="muted" style={{ marginTop: ".25rem", fontSize: ".75rem", color: badge.color }}>{status.reason}</p>
+          ) : null}
+        </>
+      )}
+    </article>
+  );
+}
+
 export default function AdminPage() {
   const db = getDb();
   // 看板用近 50 条详情；时序图用近 30 天全量（独立查询，避免 50 条把时序图截掉）
@@ -31,6 +91,7 @@ export default function AdminPage() {
   const daily = aggregateDailyCost(runsForTimeseries, { days: 30 });
   const dailyTotal = daily.reduce((s, d) => s + d.costUSD, 0);
   const dailyMax = Math.max(...daily.map((d) => d.costUSD), 0.001); // 防 0 除
+  const budget = getBudgetStatus(db);
 
   return (
     <section>
@@ -38,6 +99,8 @@ export default function AdminPage() {
       <p className="muted">
         最近 {runs.length} 条运行 · 失败 {failed} · 估算成本 ${totalCost.toFixed(4)}
       </p>
+
+      <BudgetCard status={budget} />
 
       {stats.length === 0 ? null : (
         <article className="card">

@@ -56,6 +56,9 @@ curl -fsS -X POST http://127.0.0.1:3000/api/cron -H "authorization: Bearer $CRON
 | `ALERT_CHANNEL` | 否 | 显式指定渠道，覆盖 URL 自动识别（自建 ntfy 用自定义域名时设 `ntfy`）。取值 feishu/ntfy/slack/discord/generic |
 | `ALERT_FEISHU_SECRET` | 否 | 飞书群机器人开了「签名校验」时设；自动加 `timestamp + sign`。不开签名则不设 |
 | `ALERT_TIMEOUT_MS` | 否 | 告警发送超时，默认 5000 |
+| `COST_LIMIT_DAILY` | 否 | 日成本上限（**USD**）；触顶自动熔断定时管线（跳过剩余 topic）+ 告警。未设 = 不限（见 §14）|
+| `COST_LIMIT_MONTHLY` | 否 | 月成本上限（**USD**，自然月 UTC）；同上熔断 + 告警。未设 = 不限 |
+| `COST_ALERT_PCT` | 否 | 触顶前的告警阈值百分比，默认 80；任一维度达此比例发一次「接近上限」告警 |
 | `DATA_DIR`/`DB_PATH`/`INSIGHT_CONFIG_PATH` | 容器已设 | 勿在本地 dev 设；Dockerfile 已指向 `/data` 与打包内 `defaults.yaml` |
 
 ## 4. ⚠️ 中转站（Opus-only）约束
@@ -331,3 +334,29 @@ GitHub 托管 runner 在境外，**必须能访问你的 relay**。若 relay 限
 2. **容器内跑**：加 `/api/eval` 端点 + 把 eval 数据集打进镜像，在 app 容器进程内跑（relay 已在容器内可达，同管线路径）。
 
 > 成本：标准 arXiv 集 = 5 主题 + 120 一致性对 ≈ 125 个 Opus relay 调用/次，周频可接受；手动触发时可用 `quality_limit`/`consistency_limit` 限量省钱。
+
+## 14. 成本预算控制（A5 · DCP-3 ①）
+
+度量地基（每段 `Run.cost` 落库 + admin 成本时序图）之上加配额校验 + 触顶熔断 + 看板用量。判定核心
+`src/lib/runtime/cost-guard.ts`，配置走三个 env（见 §3）：`COST_LIMIT_DAILY` / `COST_LIMIT_MONTHLY`（USD）
+/ `COST_ALERT_PCT`（默认 80）。**未配任何上限 = 不限 = 行为与改动前完全一致（零回归）。**
+
+### 行为
+
+- **判定窗口**：日 = 当日 00:00 UTC 起；月 = 当月 1 号 00:00 UTC 起（自然月，对齐账单）。已花额取自
+  `run.cost.amount`（含分析/校验等所有调 LLM 的段；确定性段如采集/报告生成不计）。
+- **自动管线（cron / `runScheduledPipeline`）**：每个 topic 前查预算——
+  - `exceeded`（任一维度 ≥ 上限）→ **硬熔断**：跳过本 topic 及之后全部，`summary` 标
+    `skipped-budget-exceeded` + `budgetStopped=true`，发一次「触顶」告警；下一轮 cron（次日预算重置）自动恢复。
+  - `alert`（任一维度 ≥ `COST_ALERT_PCT`%）→ 发一次「接近上限」告警，**继续跑**。
+  - 告警每 cron 进程去重（≤1 条/轮 → ≤4 条/天）。
+- **手动操作（深挖 / 追问）**：预算触顶**不拦**（用户主动意图，保留应急能力）——仅记日志 + 发一次
+  `manual` 告警（措辞「已放行，未自动暂停」）。
+- **看板**：`/admin` 顶部「成本预算」卡片显示今日 / 本月 spent vs 上限 + 进度条 + 状态徽标（正常 / ⚠️接近 / ⛔触顶）；
+  未配上限时显提示文案。
+
+### 接线
+
+配 `COST_LIMIT_DAILY` 和/或 `COST_LIMIT_MONTHLY`（USD）即生效；告警复用 `ALERT_WEBHOOK`（无独立 opt-in——
+预算是运维信号，配了 webhook 就该收到）。Opus-on-relay 含校验单轮 ≈ ¥14-26，按月用量与汇率折算 USD 填限额。
+改 env 后须 `docker compose up -d --force-recreate`（见 §7 重读 env 说明）。

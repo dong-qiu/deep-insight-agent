@@ -6,6 +6,9 @@ import type { DB } from "../db/index.js";
 import { getEffectiveSources, loadStaticConfig } from "../config/index.js";
 import { getTopic, listContentForTopic, listTopics } from "../db/repos.js";
 import { listRecentBriefEvents, topicHasReport } from "../db/reports.js";
+import { notifyBudget } from "../runtime/alert.js";
+import { getBudgetStatus } from "../runtime/cost-guard.js";
+import { runLogger } from "../runtime/logger.js";
 import type { ContentItem, Report, Topic } from "../types.js";
 import { collectSource } from "./collector.js";
 import { runAnalysis, runReportGen, runValidation } from "./pipeline.js";
@@ -17,6 +20,8 @@ export interface ScheduleSummary {
   collected: Array<{ source: string; fetched?: number; inserted?: number; updated?: number; error?: string }>;
   topics: Array<{ topic: string; items: number; reportId?: string; included?: number; status: string; type?: Report["type"] }>;
   errors: string[];
+  /** 成本预算触顶 → 本轮剩余 topic 被自动熔断跳过（A5）；未配预算或未触顶时省略。 */
+  budgetStopped?: boolean;
 }
 
 /** 冷启动决策（纯函数，可测）：topic 无历史报告 → 首版综述 initial_digest（更宽窗口 / 更多条，
@@ -147,7 +152,32 @@ export async function runScheduledPipeline(
   }
 
   // 2-4. 每个启用 Topic：冷启动决策 → 分析→校验→生成报告（首版综述 / brief / deep_dive）
+  // A5 自动熔断：每个 topic 前查预算，触顶则跳过本 topic 及之后全部（过冲上界 = 单 topic 一轮）。
+  // 成本在每段 Run 完成后即落库，故此处拿到的是近实时已花额。告警每进程去重（cron 每 6h 一跑 → ≤4 条/天）。
+  let budgetStopped = false;
+  let budgetAlerted = false;
   for (const topic of listTopics(db, { enabledOnly: true })) {
+    if (!budgetStopped) {
+      const budget = getBudgetStatus(db);
+      if (budget.verdict === "exceeded") {
+        budgetStopped = true;
+        summary.budgetStopped = true;
+        notifyBudget({
+          verdict: "exceeded", reason: budget.reason ?? "成本预算触顶",
+          spentToday: budget.spentToday, spentMonth: budget.spentMonth, context: "auto",
+        });
+      } else if (budget.verdict === "alert" && !budgetAlerted) {
+        budgetAlerted = true;
+        notifyBudget({
+          verdict: "alert", reason: budget.reason ?? "成本预算接近上限",
+          spentToday: budget.spentToday, spentMonth: budget.spentMonth, context: "auto",
+        });
+      }
+    }
+    if (budgetStopped) {
+      summary.topics.push({ topic: topic.id, items: 0, status: "skipped-budget-exceeded" });
+      continue;
+    }
     const plan = reportPlan(
       !topicHasReport(db, topic.id),
       { type: reportType, windowHours, items: itemsPerTopic },
@@ -208,6 +238,19 @@ export async function runPipelineForTopic(
   const topic = getTopic(db, topicId);
   if (!topic) throw new Error(`topic ${topicId} 不存在`);
   if (!topic.enabled) throw new Error(`topic ${topicId} 已停用，启用后再深挖`);
+
+  // A5 手动路径：预算触顶不硬拦（深挖是用户主动意图，保留应急能力），但记日志 + 告警一次（放行但提示，见 decisions）。
+  const budget = getBudgetStatus(db);
+  if (budget.verdict === "exceeded") {
+    runLogger({ stage: "deep-dive" }).warn(
+      { spentToday: budget.spentToday, spentMonth: budget.spentMonth },
+      `成本预算已触顶仍放行手动深挖：${budget.reason ?? ""}`,
+    );
+    notifyBudget({
+      verdict: "exceeded", reason: budget.reason ?? "成本预算触顶",
+      spentToday: budget.spentToday, spentMonth: budget.spentMonth, context: "manual",
+    });
+  }
 
   const windowHours = opts.windowHours ?? (Number(process.env.DEEP_DIVE_WINDOW_HOURS) || 336); // 14 天
   const itemsLimit = opts.items ?? (Number(process.env.DEEP_DIVE_ITEMS) || 25);

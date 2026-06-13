@@ -103,6 +103,43 @@ export function notifyReport(r: ReportPush): void {
   }
 }
 
+/** 成本预算告警（A5 · 触顶熔断 / 接近上限）：与失败告警、报告推送共用渠道层（同 ALERT_WEBHOOK）。
+ *  无独立 opt-in——预算是运维信号、与失败告警同性质，配了 webhook 就该收到。
+ *  context 区分场景影响措辞：auto=自动管线已暂停本轮剩余；manual=手动操作已放行未暂停。 */
+export interface BudgetAlert {
+  verdict: "alert" | "exceeded";
+  reason: string;
+  spentToday: number;
+  spentMonth: number;
+  context?: "auto" | "manual";
+}
+
+/** 纯函数：预算状态 → 中性通知。exceeded 高优 + ⛔，alert 默认优先级 + ⚠️。 */
+export function budgetToNotification(a: BudgetAlert): Notification {
+  const exceeded = a.verdict === "exceeded";
+  const icon = exceeded ? "⛔" : "⚠️";
+  const head = exceeded ? "成本预算触顶" : "成本预算告警";
+  const action = exceeded
+    ? a.context === "manual"
+      ? "（手动操作已放行，未自动暂停）"
+      : "（自动管线已暂停本轮剩余任务）"
+    : "";
+  const text = [a.reason, action, `今日 $${a.spentToday.toFixed(2)} · 本月 $${a.spentMonth.toFixed(2)}`]
+    .filter(Boolean)
+    .join("\n")
+    .slice(0, 1000);
+  return { title: `${icon} ${head}`, text, priority: exceeded ? "high" : "default", tags: [exceeded ? "no_entry" : "warning"] };
+}
+
+/** 预算触顶 / 接近上限时调用：按渠道 fire-and-forget 发送。非阻塞、永不抛——与 notifyFailure 同约束。 */
+export function notifyBudget(a: BudgetAlert): void {
+  try {
+    notify(budgetToNotification(a));
+  } catch (e) {
+    runLogger({ stage: "alert" }).warn({ err: e instanceof Error ? e.message : String(e) }, "预算告警构造失败（已忽略）");
+  }
+}
+
 /** 纯函数：Run 失败 → 中性通知（高优 + 🔴 tag；runId/目标内联进正文便于回查）。 */
 export function failureToNotification(a: FailureAlert): Notification {
   const targetStr =
