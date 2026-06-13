@@ -37,6 +37,8 @@ export interface AlertRequest {
   method: string;
   headers: Record<string, string>;
   body: string;
+  /** 渠道——供 sendAlert 做"HTTP 2xx 但应用层失败"识别（主要飞书）。缺省时 sendAlert 按 url 兜底识别。 */
+  channel?: ChannelId;
 }
 
 const CHANNELS: readonly ChannelId[] = ["feishu", "ntfy", "slack", "discord", "generic"];
@@ -194,11 +196,29 @@ export function buildAlertRequest(
     default:
       r = { url, body: JSON.stringify({ text: flatten(n), title: n.title, priority: n.priority, tags: n.tags, link: n.link }) };
   }
-  return { url: r.url, method: "POST", headers: { "content-type": "application/json" }, body: r.body };
+  return { url: r.url, method: "POST", headers: { "content-type": "application/json" }, body: r.body, channel };
 }
 
-/** 发送一条告警 —— 超时（代码库惯用 AbortSignal.timeout）+ 全捕获，**永不抛/拒**（resolve 即可，失败只 warn 日志）。 */
+/** "HTTP 2xx 但应用层失败"的识别。主要针对飞书：群机器人即使关键词未命中 / 签名错 / 限流，也返
+ *  HTTP 200，真实结果在 body.code（成功=0）。只看 HTTP 状态会把"已拒绝"当成"已发送"——告警静默
+ *  失效、无人知（2026-06-13 实锤：关键词模式把陈旧告警吞了）。其余渠道 HTTP 状态本就准确（slack 200
+ *  "ok" / discord 204 / ntfy 200），不强判，避免误报。返回错误描述或 null（成功/不适用）。 */
+export function appLevelError(channel: ChannelId, body: string): string | null {
+  if (channel !== "feishu") return null;
+  if (!body) return null; // 防御：空 body 不误判
+  try {
+    const j = JSON.parse(body) as { code?: number; StatusCode?: number; msg?: string };
+    const code = j.code ?? j.StatusCode ?? 0; // 飞书新/旧两种字段
+    return code === 0 ? null : `feishu code=${code} msg=${j.msg ?? ""}`;
+  } catch {
+    return `feishu 响应非 JSON：${body.slice(0, 120)}`;
+  }
+}
+
+/** 发送一条告警 —— 超时（代码库惯用 AbortSignal.timeout）+ 全捕获，**永不抛/拒**（resolve 即可，失败只 warn 日志）。
+ *  读响应体并做应用层校验（appLevelError）：HTTP 2xx 不等于送达——尤其飞书 200+code≠0。 */
 export async function sendAlert(req: AlertRequest, timeoutMs = 5000): Promise<void> {
+  const log = runLogger({ stage: "alert" });
   try {
     const res = await fetch(req.url, {
       method: req.method,
@@ -206,9 +226,15 @@ export async function sendAlert(req: AlertRequest, timeoutMs = 5000): Promise<vo
       body: req.body,
       signal: AbortSignal.timeout(timeoutMs),
     });
-    if (!res.ok) runLogger({ stage: "alert" }).warn({ status: res.status }, "失败告警 webhook 返回非 2xx");
+    const text = await res.text().catch(() => "");
+    if (!res.ok) {
+      log.warn({ status: res.status, body: text.slice(0, 200) }, "告警 webhook 返回非 2xx");
+      return;
+    }
+    const appErr = appLevelError(req.channel ?? detectChannel(req.url), text);
+    if (appErr) log.warn({ detail: appErr }, "告警 webhook 应用层拒绝（HTTP 2xx 但未送达）");
   } catch (e) {
-    runLogger({ stage: "alert" }).warn({ err: e instanceof Error ? e.message : String(e) }, "失败告警发送失败（已忽略）");
+    log.warn({ err: e instanceof Error ? e.message : String(e) }, "告警发送失败（已忽略）");
   }
 }
 

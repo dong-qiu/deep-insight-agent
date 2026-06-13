@@ -1,6 +1,7 @@
 import { createHmac } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  appLevelError,
   buildAlertRequest,
   detectChannel,
   failureToNotification,
@@ -233,6 +234,29 @@ describe("buildAlertRequest", () => {
   });
 });
 
+describe("appLevelError（HTTP 2xx 但应用层失败识别）", () => {
+  it("飞书 code=0 → 成功（null）", () => {
+    expect(appLevelError("feishu", '{"code":0,"msg":"success"}')).toBeNull();
+    expect(appLevelError("feishu", '{"StatusCode":0,"code":0,"msg":"success"}')).toBeNull();
+  });
+  it("飞书 code≠0（关键词未命中）→ 返回错误描述", () => {
+    const e = appLevelError("feishu", '{"code":19024,"msg":"Key Words Not Found"}');
+    expect(e).toContain("19024");
+    expect(e).toContain("Key Words Not Found");
+  });
+  it("飞书旧字段 StatusCode≠0 → 识别为失败", () => {
+    expect(appLevelError("feishu", '{"StatusCode":9499,"msg":"sign error"}')).toContain("9499");
+  });
+  it("飞书响应非 JSON → 报错（防御）", () => {
+    expect(appLevelError("feishu", "<html>500</html>")).toContain("非 JSON");
+  });
+  it("非飞书渠道 / 空 body → 不强判（null）", () => {
+    expect(appLevelError("slack", "ok")).toBeNull();
+    expect(appLevelError("discord", "")).toBeNull();
+    expect(appLevelError("feishu", "")).toBeNull();
+  });
+});
+
 describe("sendAlert（永不抛）", () => {
   it("按 req 描述发请求（url/method/headers/body 透传）", async () => {
     const fetchMock = vi.fn((..._a: unknown[]) => Promise.resolve(new Response(null, { status: 200 })));
@@ -243,6 +267,14 @@ describe("sendAlert（永不抛）", () => {
     expect(u).toBe("https://x/y");
     expect(opts.method).toBe("POST");
     expect(opts.body).toBe('{"a":1}');
+  });
+  it("飞书 HTTP200 + code≠0（关键词被拦）→ 仍 resolve 不抛（应用层失败已 warn）", async () => {
+    vi.stubGlobal("fetch", vi.fn(() =>
+      Promise.resolve(new Response('{"code":19024,"msg":"Key Words Not Found"}', { status: 200 })),
+    ));
+    await expect(
+      sendAlert({ url: "https://open.feishu.cn/open-apis/bot/v2/hook/abc", method: "POST", headers: {}, body: "{}", channel: "feishu" }),
+    ).resolves.toBeUndefined();
   });
   it("fetch 抛出 → resolve 不抛（吞掉、不连累管线）", async () => {
     vi.stubGlobal("fetch", vi.fn((..._a: unknown[]) => Promise.reject(new Error("network"))));
