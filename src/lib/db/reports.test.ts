@@ -5,7 +5,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { AnalysisBatch, Report, ReportIndexEntry, Topic, ValidationResult } from "../types.js";
 import { saveAnalysisBatch, saveValidationResult } from "./analysis.js";
 import { type DB, openDb } from "./index.js";
-import { getReport, listBlockedChecksForReport, listRecentBriefEvents, queryReportIndex, saveReport, searchReports } from "./reports.js";
+import { getReport, listBlockedChecksForReport, listRecentBriefEvents, queryReportIndex, saveReport, searchReports, topicReportStats } from "./reports.js";
 import { insertTopic } from "./repos.js";
 
 const dir = mkdtempSync(join(tmpdir(), "ia-reports-"));
@@ -196,6 +196,27 @@ describe("queryReportIndex（B-1+2 报告库筛/搜/排）", () => {
       type: "deep_dive", industry: "ai-swe", from: "2026-06-01",
     });
     expect(rs.map((r) => r.report_id)).toEqual(["r2"]);
+  });
+
+  it("topic 筛选 → 仅该主题报告（主题页时间线用）", () => {
+    expect(queryReportIndex(db, { topic: "t_swe" }).map((r) => r.report_id).sort()).toEqual(["r1", "r2"]);
+    expect(queryReportIndex(db, { topic: "t_sec" }).map((r) => r.report_id).sort()).toEqual(["r3", "r4"]);
+  });
+
+  it("空白 topic 静默忽略（不过滤）", () => {
+    expect(queryReportIndex(db, { topic: "  " }).length).toBe(4);
+  });
+
+  it("topic + 日期倒序组合（时间线默认序）", () => {
+    const rs = queryReportIndex(db, { topic: "t_sec", sort: "date", dir: "desc" });
+    expect(rs.map((r) => r.report_id)).toEqual(["r3", "r4"]); // 06-03 晚于 05-20
+  });
+
+  it("topicReportStats：按主题聚合条数 + MAX(date)", () => {
+    const stats = topicReportStats(db);
+    expect(stats.get("t_swe")).toEqual({ count: 2, latestDate: "2026-06-05" });
+    expect(stats.get("t_sec")).toEqual({ count: 2, latestDate: "2026-06-03" });
+    expect(stats.has("t_none")).toBe(false); // 无报告的主题不出现在统计里
   });
 });
 

@@ -6,8 +6,12 @@ import {
   detectChannel,
   failureToNotification,
   notifyFailure,
+  notifyReport,
+  reportToNotification,
   sendAlert,
+  shouldPushReport,
   type Notification,
+  type ReportPush,
 } from "./alert.js";
 
 afterEach(() => {
@@ -15,6 +19,8 @@ afterEach(() => {
   delete process.env.ALERT_WEBHOOK;
   delete process.env.ALERT_CHANNEL;
   delete process.env.ALERT_FEISHU_SECRET;
+  delete process.env.REPORT_PUSH;
+  delete process.env.PUBLIC_BASE_URL;
 });
 
 const FAIL = { runId: "run_1", kind: "analyze", target: { topic_id: "t1" }, errorType: "Error", message: "boom" };
@@ -36,6 +42,103 @@ describe("failureToNotification", () => {
   });
   it("target 为 null 时不出'目标'行", () => {
     expect(failureToNotification({ ...FAIL, target: null }).text).not.toContain("目标：");
+  });
+});
+
+const REPORT: ReportPush = {
+  id: "rep_1",
+  type: "brief",
+  title: "AI 软件工程 · 今日 Brief",
+  summary: "本期 3 条关键进展。",
+  topicName: "AI 软件工程",
+  citationCount: 7,
+  insightCount: 3,
+};
+
+describe("shouldPushReport", () => {
+  it("空 brief（无洞察）不推", () => {
+    expect(shouldPushReport({ type: "brief", insightCount: 0 })).toBe(false);
+    expect(shouldPushReport({ type: "brief", insightCount: undefined })).toBe(false);
+  });
+  it("非空 brief 推", () => {
+    expect(shouldPushReport({ type: "brief", insightCount: 1 })).toBe(true);
+  });
+  it("deep_dive / initial_digest 即便 0 条也推（用户触发 / 冷启动首报）", () => {
+    expect(shouldPushReport({ type: "deep_dive", insightCount: 0 })).toBe(true);
+    expect(shouldPushReport({ type: "initial_digest", insightCount: 0 })).toBe(true);
+  });
+});
+
+describe("reportToNotification", () => {
+  it("默认优先级 + newspaper tag；类型标签/主题/摘要/引用数进正文", () => {
+    const n = reportToNotification(REPORT, "https://app.example.com");
+    expect(n.priority).toBe("default");
+    expect(n.tags).toEqual(["newspaper"]);
+    expect(n.title).toContain("今日 Brief");
+    expect(n.title).toContain("AI 软件工程 · 今日 Brief");
+    expect(n.text).toContain("主题：AI 软件工程");
+    expect(n.text).toContain("本期 3 条关键进展");
+    expect(n.text).toContain("引用：7 条");
+  });
+  it("deep-link = baseUrl + /reports/<id>，去尾斜杠", () => {
+    expect(reportToNotification(REPORT, "https://app.example.com/").link).toBe("https://app.example.com/reports/rep_1");
+    expect(reportToNotification(REPORT, "https://app.example.com").link).toBe("https://app.example.com/reports/rep_1");
+  });
+  it("baseUrl 缺失 → 无 link，推送仍可发", () => {
+    expect(reportToNotification(REPORT, undefined).link).toBeUndefined();
+    expect(reportToNotification(REPORT, "   ").link).toBeUndefined();
+  });
+  it("deep_dive / initial_digest 用各自类型标签", () => {
+    expect(reportToNotification({ ...REPORT, type: "deep_dive" }).title).toContain("主题深挖");
+    expect(reportToNotification({ ...REPORT, type: "initial_digest" }).title).toContain("初始综述");
+  });
+  it("正文截断到 1000 字", () => {
+    expect(reportToNotification({ ...REPORT, summary: "x".repeat(2000) }).text.length).toBe(1000);
+  });
+});
+
+describe("notifyReport", () => {
+  const fetchOk = () => vi.fn((..._a: unknown[]) => Promise.resolve(new Response(null, { status: 200 })));
+  it("REPORT_PUSH 未置 1 → no-op，即便配了 webhook 也不发", () => {
+    process.env.ALERT_WEBHOOK = "https://open.feishu.cn/open-apis/bot/v2/hook/abc";
+    const fetchMock = fetchOk();
+    vi.stubGlobal("fetch", fetchMock);
+    notifyReport(REPORT);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+  it("REPORT_PUSH=1 + webhook → 发报告通知到该渠道，带 deep-link", async () => {
+    process.env.REPORT_PUSH = "1";
+    process.env.ALERT_WEBHOOK = "https://ntfy.sh/my-topic";
+    process.env.PUBLIC_BASE_URL = "https://app.example.com";
+    const fetchMock = fetchOk();
+    vi.stubGlobal("fetch", fetchMock);
+    notifyReport(REPORT);
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+    const b = JSON.parse((fetchMock.mock.calls[0] as [string, RequestInit])[1].body as string);
+    expect(b.title).toContain("今日 Brief");
+    expect(b.click).toBe("https://app.example.com/reports/rep_1");
+  });
+  it("REPORT_PUSH=1 但空 brief → 不发（shouldPushReport 拦下）", () => {
+    process.env.REPORT_PUSH = "1";
+    process.env.ALERT_WEBHOOK = "https://ntfy.sh/my-topic";
+    const fetchMock = fetchOk();
+    vi.stubGlobal("fetch", fetchMock);
+    notifyReport({ ...REPORT, insightCount: 0 });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+  it("REPORT_PUSH=1 但 webhook 未配 → no-op（notify 内层兜底）", () => {
+    process.env.REPORT_PUSH = "1";
+    const fetchMock = fetchOk();
+    vi.stubGlobal("fetch", fetchMock);
+    notifyReport(REPORT);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+  it("构造阶段抛出（ntfy override + 非法 URL）→ 永不逃逸，不连累报告生成", () => {
+    process.env.REPORT_PUSH = "1";
+    process.env.ALERT_WEBHOOK = "ntfy.sh/topic"; // 缺 scheme → new URL 抛
+    process.env.ALERT_CHANNEL = "ntfy";
+    vi.stubGlobal("fetch", fetchOk());
+    expect(() => notifyReport(REPORT)).not.toThrow();
   });
 });
 

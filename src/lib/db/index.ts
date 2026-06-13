@@ -46,6 +46,8 @@ function migrate(db: DB): void {
   // P1 不复报（2026-06-06 dogfood）：analyzer 喂历史 event_id 后标"同事件 follow-up"，
   // 旧数据全 0（视为新事件）；新管线写正确值。0/1 表 bool，与 schema 其他 bool 一致。
   ensureColumn(db, "insight", "is_followup", "is_followup INTEGER NOT NULL DEFAULT 0");
+  // 实体追踪：analyzer 抽取的关键实体 JSON 数组；旧库补列默认 '[]'（重跑管线写正确值）。
+  ensureColumn(db, "insight", "entities", "entities TEXT NOT NULL DEFAULT '[]'");
 }
 
 let _db: DB | null = null;

@@ -198,7 +198,7 @@ GCP 的 **e2-micro**（2 vCPU 共享 / **1 GB RAM** / 30GB 标准盘）是三大
 
 ## 12. 失败告警接线（DCP-3 ② ✅ 已闭合：多渠道 adapter）
 
-`notifyFailure` 钩子（`src/lib/runtime/alert.ts`）在 Run 失败时 fire-and-forget 发告警，**按 `ALERT_WEBHOOK` URL 自动识别渠道**并翻译 payload（`ALERT_CHANNEL` 可显式覆盖）。失败先归一到中性 `Notification`（标题 + 正文 + 高优 + 🔴 tag），再按渠道翻译——这一层将来「报告推送」可直接复用。
+`notifyFailure` 钩子（`src/lib/runtime/alert.ts`）在 Run 失败时 fire-and-forget 发告警，**按 `ALERT_WEBHOOK` URL 自动识别渠道**并翻译 payload（`ALERT_CHANNEL` 可显式覆盖）。失败先归一到中性 `Notification`（标题 + 正文 + 高优 + 🔴 tag），再按渠道翻译——这一层「报告推送」已复用（见本节末「报告推送」）。
 
 ### 渠道对照（已实现 ✅ / 推后 ⏳）
 
@@ -235,6 +235,19 @@ docker compose exec -T -e ALERT_WEBHOOK=<url> app node /app/ops/probe-alert.mjs
 ```
 
 期望：飞书/ntfy → **手机 App 收到**；generic → webhook.site inbox 可见。
+
+### 报告推送（生成完报告主动推给用户）
+
+`notifyReport` 钩子（`src/lib/runtime/alert.ts`，接在 `runReportGen` 落库之后）复用上面同一渠道层，把新生成的报告推给用户，**点进 = 报告 deep-link**（移动端可读）。与失败告警**共用 `ALERT_WEBHOOK`**，但有独立开关：
+
+| env | 作用 | 缺省 |
+|---|---|---|
+| `REPORT_PUSH=1` | 开启报告推送（独立 opt-in——失败告警是运维信号、报告推送是日常内容流，混同渠道默认全开会刷屏）| 关 |
+| `PUBLIC_BASE_URL` | 用户可达的站点根地址，拼 deep-link（`<base>/reports/<id>`）；缺失则推送照发、仅不带链接。**与容器内网 `APP_URL`（http://app:3000）区分** | 无 |
+
+**推送规则**：`brief` 默认优先级 + 📰 newspaper tag；**空 brief（"本期无重要事件"）自动跳过**，避免每天推噪音；`deep_dive` / `initial_digest` 是用户触发 / 冷启动首报，即便条目少也始终推。非阻塞、永不抛——推送失败绝不连累已落库的报告（report-gen Run 已 done）。
+
+接线：在已配 `ALERT_WEBHOOK` 基础上加 `REPORT_PUSH=1` + `PUBLIC_BASE_URL=https://<域名或 EC2-IP:3000>`。验证：手动触发一次深挖（`/api/topics/[id]/deep-dive`）→ 手机应收到带链接的报告卡片。
 
 ## 13. 定时真模型 eval（A1 回归门 · DCP-3 ②）
 

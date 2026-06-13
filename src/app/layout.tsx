@@ -15,6 +15,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
           <h1>Deep Insight</h1>
           <nav className="muted">
             <a href="/">今日 Brief</a>
+            <a href="/topics">主题</a>
             <a href="/reports">报告库</a>
             <a href="/admin">管理看板</a>
             <a href="/settings">设置</a>

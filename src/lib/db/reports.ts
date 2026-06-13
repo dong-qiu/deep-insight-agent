@@ -196,6 +196,16 @@ export function listReportIndex(db: DB, opts: { limit?: number } = {}): ReportIn
   return rows.map(rowToIndex);
 }
 
+/** 各主题的报告统计（条数 + 最新日期），一次 GROUP BY 拿全——主题列表页用，避免逐主题 N+1 查询。 */
+export function topicReportStats(db: DB): Map<string, { count: number; latestDate: string }> {
+  const rows = db
+    .prepare("SELECT topic_id, COUNT(*) AS count, MAX(date) AS latest FROM report_index GROUP BY topic_id")
+    .all() as Array<{ topic_id: string; count: number; latest: string }>;
+  const m = new Map<string, { count: number; latestDate: string }>();
+  for (const r of rows) m.set(r.topic_id, { count: r.count, latestDate: r.latest });
+  return m;
+}
+
 function rowToIndex(r: any): ReportIndexEntry {
   return {
     report_id: r.report_id, type: r.type, topic_id: r.topic_id, industry: r.industry, date: r.date,
@@ -216,6 +226,7 @@ export interface ReportQuery {
   q?: string;
   type?: string;
   industry?: string;
+  topic?: string;
   from?: string;
   to?: string;
   sort?: string;
@@ -235,6 +246,10 @@ export function queryReportIndex(db: DB, opts: ReportQuery = {}): ReportIndexEnt
   }
   if (opts.industry && INDUSTRY_VALUES.has(opts.industry as Industry)) {
     where.push("industry = ?"); args.push(opts.industry);
+  }
+  // topic_id 是自由字符串（topic 主键），无固定白名单可校验——靠参数化（topic_id = ?）杜绝注入。
+  if (opts.topic && opts.topic.trim()) {
+    where.push("topic_id = ?"); args.push(opts.topic.trim());
   }
   if (opts.from && /^\d{4}-\d{2}-\d{2}$/.test(opts.from)) {
     where.push("date >= ?"); args.push(opts.from);
