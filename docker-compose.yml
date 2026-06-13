@@ -38,6 +38,10 @@ services:
       app:
         condition: service_healthy
     env_file: [.env.local]
+    # 挂同一持久卷：cron 内每日备份任务（ops/backup-db.mjs）要直接读 /data/insight.db
+    # 并把备份写进 /data/backups。SQLite 在线备份 API 对 app 的并发写安全（WAL + 页级锁）。
+    volumes:
+      - insight-data:/data
     environment:
       # crontab 内 curl 的目标（容器网络内按服务名解析）
       APP_URL: http://app:3000

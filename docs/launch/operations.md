@@ -76,9 +76,66 @@ curl -fsS -X POST http://127.0.0.1:3000/api/cron -H "authorization: Bearer $CRON
 
 ## 6. 数据与备份/恢复
 
-所有状态在持久卷 `insight-data`（`/data`）。备份前建议先 `docker compose stop app cron` 静默写入（SQLite WAL），再打包：
+所有状态在持久卷 `insight-data`（`/data`）：SQLite 库 `insight.db`（WAL+FTS5）、报告正文 `reports/<id>.md|.html`（DB 只存 `body_path`，正文在 FS）、原文归档 `raw/`。
+
+### 6.1 自动备份（默认开，无需配置）
+
+`cron` 服务每日 **18:00 UTC**（管线 17:00 跑完后 1 小时，确保当日 brief 已落库）跑 `ops/backup-db.mjs`：
+
+- 用 **SQLite 在线备份 API**（`db.backup()`，对 app 并发写安全，产出**一致**的单文件，避免 tar 活库拿到半截 WAL）导出 `insight.db`；
+- 连同 `reports/` 正文一并落到 `/data/backups/<UTC时间戳>/{insight.db, reports/}`；
+- **保留最近 14 份**（`BACKUP_KEEP` 可调），更早自动删除；
+- `raw/` 原文默认不备（可重抓、体量大），`BACKUP_INCLUDE_RAW=1` 才纳入。
 
 ```bash
+# 手动立即备份（容器内）
+docker compose exec -T cron node --no-warnings /app/ops/backup-db.mjs
+# 查看现有备份
+docker compose exec -T cron ls -1 /data/backups
+```
+
+**恢复某份备份**（停写 → 覆盖 → 起）：
+
+```bash
+docker compose stop app cron
+TS=20260613-180000   # 选定 /data/backups 下的目标时间戳
+docker compose run --rm -T cron sh -c "
+  rm -f /data/insight.db /data/insight.db-wal /data/insight.db-shm
+  cp /data/backups/$TS/insight.db /data/insight.db
+  # 仅当该份确有 reports/ 才覆盖（早期/空库的备份可能没拷 reports，避免 rm 后 cp 失败、把现网正文清空）
+  if [ -d /data/backups/$TS/reports ]; then rm -rf /data/reports && cp -r /data/backups/$TS/reports /data/reports; fi
+"
+docker compose up -d
+```
+
+> ⚠️ **6.1 的备份落在同一持久卷**：可防 DB 损坏 / 坏迁移 / 误删（点时恢复），**不防整卷丢失**（EBS 卷损坏 / 实例销毁 / 误删卷）。整卷丢失由 6.1.1 的 off-box DR 兜底。
+
+#### 6.1.1 off-box DR —— 每日异地同步到 S3（生产已启用）
+
+在 6.1 同卷备份之上多一层**异地副本**：host cron 每日把 `/data/backups` 同步到 S3。
+
+- **S3 桶**：`deep-insight-backups-<账号ID>`（ap-southeast-1，与 EC2 同区→上传**免流量费**）；阻断公开访问 + 版本控制 + SSE-S3 默认加密 + 生命周期（对象 90 天过期、旧版本 30 天清，限成本）。
+- **权限**：EC2 实例角色 `deep-insight-ssm` 加最小内联策略 `s3-dr-backups`（仅本桶 `ListBucket`/`PutObject`/`GetObject`）；**无长期密钥**，走实例角色。
+- **调度**：host `/etc/cron.d/deep-insight-dr`，每日 **18:30 UTC**（在 6.1 容器内 18:00 备份之后）`aws s3 sync /var/lib/docker/volumes/deep-insight_insight-data/_data/backups s3://<桶>/ec2/`（不带 `--delete`→S3 留更长历史，由生命周期限 90 天）；日志 `/var/log/deep-insight-dr.log`。
+- **一次性搭建**（含建桶 / 改 IAM / 装 awscli / 装 cron）：`ops/aws/setup-dr.sh`（幂等，可重跑）。成本：~分厘/月，详见该脚本头注。
+
+桶名是 `<AWS_NAME>-backups-<账号ID>`（setup-dr.sh 计算）。**DR 现场先查出真实桶名**，免得对着占位符抓瞎：
+
+```bash
+# 查真实桶名（按前缀匹配）
+BUCKET=$(aws s3 ls | awk '/deep-insight-backups-/{print $3}')
+echo "$BUCKET"
+# 手动立即异地同步（在 EC2 上跑）
+sudo AWS_DEFAULT_REGION=ap-southeast-1 /usr/local/bin/aws s3 sync \
+  /var/lib/docker/volumes/deep-insight_insight-data/_data/backups "s3://$BUCKET/ec2/" --no-progress
+# 整卷丢失后，从 S3 取回某份到本地，再按 6.1 恢复进新卷
+aws s3 sync "s3://$BUCKET/ec2/20260613-105627/" ./restore-20260613-105627/
+```
+
+### 6.2 全卷冷备（含 raw，需停机）
+
+```bash
+docker compose stop app cron   # 静默 SQLite WAL 写入
 docker run --rm -v deep-insight_insight-data:/data -v "$PWD":/backup alpine \
   tar czf /backup/insight-data-$(date +%F).tgz -C /data .
 # 恢复：tar xzf 到同名卷后 docker compose up -d
