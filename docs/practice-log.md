@@ -397,3 +397,17 @@
   - **成本根因常藏在数据分布里，不在代码里。** "逐 claim 判定"代码上看着合理，是真实报告的"单源高度聚集"特征把重复传输放大成主成本。**审视成本必须拿真实数据跑、看 per-call 明细，不能只读实现。**
   - **轻校验的可溯源是"结构性 + 展示层"保证，不是"逐句"保证。** 护栏拦住了假引用，但裸事实句这个缺口是这套设计的已知代价——dogfood 把它从"纸面开放问题"变成"亲眼所见"，该不该补要按真实使用频率决定。
 - **后续动作**: 已做：一致性判定并行化（延迟 −45%）+ 生成默认回落 sonnet（relay 已验证支持）。待评估（按真实使用决定优先级）：① 按 `content_item_id` 归并判定（同源 claim 合一次调用、源文发一遍）——预计把 token 砍到接近 1×源文，是最大成本杠杆；② 裸事实句补标〔未独立核验〕收口可溯源缺口；③ 把"spec 性能数字 = 假设、须 dogfood 实测验证"补进 `skills/L3-quality.md`。
+
+### 2026-06-13 · 长 fire-and-forget 管线别在 `next dev` 里跑——HMR 重启把 in-flight Run 误判 orphaned
+
+- **日期**: 2026-06-13
+- **情境**: 验证新做的"实体追踪"端到端点亮，需产一份新报告。第一次走 `next dev`（:3007）的 HTTP 端点 `POST /api/topics/[id]/deep-dive`（202 fire-and-forget）触发深挖管线（analyze→validate→report-gen，5–15 分钟）。
+- **观察**:
+  - 管线 `analyze` 跑到 **118s 时被标 `failed`**，错误是 `OrphanedOnRestart`（"进程重启时该 Run 仍在 running，无法继续"）。不是模型/relay 出错——是 `next dev` 在期间**热重载/重编译**，重启了持有 DB 单例的模块，`openDb` 路径上的 `recoverOrphanedRuns` 把所有 `running` 的 Run 一律标 failed（它的设计本意：进程崩溃后清理孤儿 Run）。
+  - 改用**独立 tsx 脚本**直接 `import { runPipelineForTopic }` 跑同一管线（同 env + 钉绝对 `DB_PATH`），**无 Next、无 HMR、无 HTTP**——一次跑通：`rep_0a4bc9c3`，31 洞察/79 引用，实体抽到数十个，主题页渲染 15 标签。
+  - 残留：`/admin` 会看到那条 `OrphanedOnRestart` 的失败 analyze Run（无害，但会污染"失败率"观感）。
+- **经验 / 教训**:
+  - **`next dev` 是为"请求—响应 + HMR"设计的，不是为分钟级后台任务。** 它会在文件变更/路由编译时重启 server 模块；任何"先返回 202、再后台慢慢跑"的进程内任务都可能被腰斩。`recoverOrphanedRuns` 这种"重启即清孤儿"的健壮性机制，在 dev 的频繁重启下反而成了"误杀正在跑的活"。
+  - **验证长管线的正道：脱离 dev server。** 要么独立 tsx 直调函数（最快、最干净，绕开 HTTP/鉴权/HMR），要么 `next build && next start`（无 HMR 的生产模式）。这与 [[validator-uncertain-storms]] / 追问实跑同源——**真实验证要用贴近生产的运行方式，dev 模式的便利会引入假象**。
+  - **fire-and-forget 在单进程 dev 下是双重脆弱**：调用方拿到 202 就走人，进程一重启，任务静默死亡且只在 DB 留一条 failed Run——不盯 `/admin` 根本不知道。生产是容器常驻进程、无 HMR，所以这是 **dev-only 陷阱**，不是管线 bug。
+- **后续动作**: 已用独立 tsx 完成验证（脚本一次性、跑完即删）。建议把"长管线/定时任务验证须脱离 `next dev`（独立 tsx 或 `next start`）"补进 `skills/L3-quality.md` 或 `operations.md`，与"`next build` 绿 ≠ 容器能跑"同属"运行方式差异致假象"系列。`/admin` 的 `OrphanedOnRestart` 残留 Run 可手动重试或忽略。

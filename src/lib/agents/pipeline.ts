@@ -6,7 +6,7 @@ import { saveAnalysisBatch, saveValidationResult } from "../db/analysis.js";
 import { makeConsistencyCache } from "../db/consistency-cache.js";
 import { getContentItem, getSource } from "../db/repos.js";
 import { saveReport } from "../db/reports.js";
-import { notifyFailure } from "../runtime/alert.js";
+import { notifyFailure, notifyReport } from "../runtime/alert.js";
 import { runJob } from "../runtime/jobs.js";
 import type { AnalysisBatch, ContentItem, Report, Topic, ValidationResult } from "../types.js";
 import { analyze, type HistoricalEvent } from "./analyzer.js";
@@ -99,6 +99,17 @@ export async function runReportGen(
         prevReportId: opts.prevReportId,
       });
       saveReport(db, report, index);
+      // 报告推送（B）：落库后主动推给用户（REPORT_PUSH=1 opt-in；空 brief 自动跳过）。
+      // 非阻塞、永不抛——放 saveReport 之后，推送失败绝不影响已落库报告 / Run done。
+      notifyReport({
+        id: report.id,
+        type: report.type,
+        title: report.title,
+        summary: index.summary,
+        topicName: opts.topic.name,
+        citationCount: report.citation_count,
+        insightCount: report.insight_ids.length,
+      });
       return report;
     },
   );

@@ -115,6 +115,8 @@ export function buildReport(input: BuildReportInput): { report: Report; index: R
   const eventIds = uniq(included.map((x) => x.insight.event_id).filter((e): e is string => !!e));
   const importance = included.length ? Math.max(...included.map((x) => x.insight.importance)) : 0;
   const summary = included.slice(0, 3).map((x) => x.insight.statement).join(" ");
+  // 实体追踪：跨纳入洞察聚合关键实体名（去重保序），供主题页「关键实体」按报告频次再聚合。
+  const entityNames = uniq(included.flatMap((x) => (x.insight.entities ?? []).map((e) => e.name.trim()).filter(Boolean)));
 
   const report: Report = {
     id, type: input.type, topic_id: input.topic.id, status: "done", generated_at: now, title,
@@ -128,7 +130,7 @@ export function buildReport(input: BuildReportInput): { report: Report; index: R
   };
   const index: ReportIndexEntry = {
     report_id: id, type: input.type, topic_id: input.topic.id, industry: input.topic.industry, date,
-    source_ids: sourceIds, title, summary, tags, entity_names: [], importance, event_ids: eventIds,
+    source_ids: sourceIds, title, summary, tags, entity_names: entityNames, importance, event_ids: eventIds,
   };
   return { report, index };
 }

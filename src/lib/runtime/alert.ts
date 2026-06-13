@@ -46,6 +46,61 @@ function hostMatches(host: string, domain: string): boolean {
   return host === domain || host.endsWith(`.${domain}`);
 }
 
+/** 报告推送（B · product-definition「推送落地」）：生成完报告后主动推给用户，点进 = 报告 deep-link。
+ *  与失败告警共用渠道层（同 ALERT_WEBHOOK），但**独立 opt-in 开关 `REPORT_PUSH=1`**——
+ *  默认关：失败告警是运维信号、报告推送是日常内容流，混在同一渠道默认全开会刷屏。 */
+export interface ReportPush {
+  id: string;
+  type: "brief" | "deep_dive" | "initial_digest";
+  title: string;
+  summary: string;
+  topicName?: string;
+  citationCount?: number;
+  /** 该报告纳入的洞察条数——用于「空 brief 不推」判定（见 shouldPushReport）。 */
+  insightCount?: number;
+}
+
+const REPORT_TYPE_LABEL: Record<ReportPush["type"], string> = {
+  brief: "今日 Brief",
+  deep_dive: "主题深挖",
+  initial_digest: "初始综述",
+};
+
+/** 纯函数：是否值得推送。空 brief（"本期无重要事件"）每天推 = 噪音，跳过；
+ *  deep_dive / initial_digest 是用户触发 / 冷启动首报，即便条目少也值得知会，始终推。 */
+export function shouldPushReport(r: Pick<ReportPush, "type" | "insightCount">): boolean {
+  if (r.type === "brief" && (r.insightCount ?? 0) === 0) return false;
+  return true;
+}
+
+/** 纯函数：报告 → 中性通知（默认优先级；带 deep-link，baseUrl 缺失则无链接、推送仍发出）。 */
+export function reportToNotification(r: ReportPush, baseUrl?: string): Notification {
+  const label = REPORT_TYPE_LABEL[r.type] ?? "报告";
+  const base = (baseUrl ?? "").trim().replace(/\/+$/, "");
+  const link = base ? `${base}/reports/${r.id}` : undefined;
+  const text = [
+    r.topicName ? `主题：${r.topicName}` : "",
+    r.summary,
+    r.citationCount != null ? `引用：${r.citationCount} 条` : "",
+  ]
+    .filter(Boolean)
+    .join("\n")
+    .slice(0, 1000);
+  return { title: `📰 ${label}：${r.title}`, text, priority: "default", tags: ["newspaper"], link };
+}
+
+/** 生成完报告后调用：`REPORT_PUSH=1` 且值得推（shouldPushReport）则按渠道 fire-and-forget 发送。
+ *  非阻塞、永不抛——与 notifyFailure 同约束，绝不连累已落库的报告生成（report-gen Run 已 done）。 */
+export function notifyReport(r: ReportPush): void {
+  if (process.env.REPORT_PUSH !== "1") return; // opt-in（默认关，见 ReportPush 注释）
+  if (!shouldPushReport(r)) return;
+  try {
+    notify(reportToNotification(r, process.env.PUBLIC_BASE_URL));
+  } catch (e) {
+    runLogger({ stage: "alert" }).warn({ err: e instanceof Error ? e.message : String(e) }, "报告推送构造失败（已忽略）");
+  }
+}
+
 /** 纯函数：Run 失败 → 中性通知（高优 + 🔴 tag；runId/目标内联进正文便于回查）。 */
 export function failureToNotification(a: FailureAlert): Notification {
   const targetStr =

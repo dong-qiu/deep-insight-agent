@@ -24,6 +24,7 @@ const batch: AnalysisBatch = {
       citations: [{ content_item_id: "ci1", quote: "q1", locator: { paragraph_index: 0, char_start: 0, char_end: 2 } }],
       source_count: 1, multi_source: false, time_window: { start: "2026-05-01", end: "2026-05-07" },
       confidence: null, language: "zh", is_followup: false,
+      entities: [{ name: "OpenAI", type: "organization" }, { name: "Codex", type: "product" }],
     },
     {
       id: "i2", topic_id: "t1", type: "trend", event_id: "evt_x", statement: "S2",
@@ -33,7 +34,7 @@ const batch: AnalysisBatch = {
         { content_item_id: "ci2", quote: "q2b", locator: { paragraph_index: 1, char_start: 0, char_end: 4 } },
       ],
       source_count: 2, multi_source: true, time_window: { start: "2026-05-01", end: "2026-05-07" },
-      confidence: "high", language: "zh", is_followup: true,
+      confidence: "high", language: "zh", is_followup: true, entities: [],
     },
   ],
 };

@@ -56,6 +56,15 @@ export interface Citation {
   locator: { paragraph_index: number; char_start: number; char_end: number };
 }
 
+/** 实体（product-definition 洞察「实体追踪」：组织/人物/项目/产品维度的动态聚合）。
+ *  挂在 Insight 上，由 analyzer 抽取；report-gen 跨洞察聚合进 ReportIndexEntry.entity_names，
+ *  主题页按频次展示「关键实体」。 */
+export type EntityType = "organization" | "person" | "project" | "product";
+export interface Entity {
+  name: string;
+  type: EntityType;
+}
+
 /** 洞察对象（architecture 数据模型 · Insight） */
 export interface Insight {
   id: string;
@@ -75,6 +84,8 @@ export interface Insight {
    *  spec："同事件的后续进展可作为'更新'再次出现"——is_followup 区分新事件 vs 续报。
    *  缺省 false（旧库 migration 默认 0）。 */
   is_followup?: boolean;
+  /** 实体追踪：analyzer 抽取的关键实体（缺省 []；旧库 migration 默认 '[]'）。 */
+  entities?: Entity[];
 }
 
 /** 分析批次（architecture 数据模型 · AnalysisBatch） */
@@ -257,6 +268,17 @@ export const LlmInsightSchema = z.object({
     .describe(
       "true=本条是已报告事件的『新进展/更新』（必须复用历史 event_id 且包含实质新信息）；false=新事件（必置 event_id=null）。",
     ),
+  entities: z
+    .array(
+      z.object({
+        name: z.string().describe("实体规范名称（用最常见/官方写法，如 OpenAI、Anthropic、Cursor）"),
+        type: z
+          .enum(["organization", "person", "project", "product"])
+          .describe("organization=组织/公司 · person=人物 · project=项目/研究 · product=产品/模型"),
+      }),
+    )
+    .default([])
+    .describe("本条洞察涉及的关键实体（组织/人物/项目/产品），无则空数组；只列 statement 真实提及的，不臆造"),
 });
 
 /** analyzer 整体输出 */
