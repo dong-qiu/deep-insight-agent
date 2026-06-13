@@ -102,7 +102,8 @@ TS=20260613-180000   # 选定 /data/backups 下的目标时间戳
 docker compose run --rm -T cron sh -c "
   rm -f /data/insight.db /data/insight.db-wal /data/insight.db-shm
   cp /data/backups/$TS/insight.db /data/insight.db
-  rm -rf /data/reports && cp -r /data/backups/$TS/reports /data/reports
+  # 仅当该份确有 reports/ 才覆盖（早期/空库的备份可能没拷 reports，避免 rm 后 cp 失败、把现网正文清空）
+  if [ -d /data/backups/$TS/reports ]; then rm -rf /data/reports && cp -r /data/backups/$TS/reports /data/reports; fi
 "
 docker compose up -d
 ```
@@ -118,12 +119,17 @@ docker compose up -d
 - **调度**：host `/etc/cron.d/deep-insight-dr`，每日 **18:30 UTC**（在 6.1 容器内 18:00 备份之后）`aws s3 sync /var/lib/docker/volumes/deep-insight_insight-data/_data/backups s3://<桶>/ec2/`（不带 `--delete`→S3 留更长历史，由生命周期限 90 天）；日志 `/var/log/deep-insight-dr.log`。
 - **一次性搭建**（含建桶 / 改 IAM / 装 awscli / 装 cron）：`ops/aws/setup-dr.sh`（幂等，可重跑）。成本：~分厘/月，详见该脚本头注。
 
+桶名是 `<AWS_NAME>-backups-<账号ID>`（setup-dr.sh 计算）。**DR 现场先查出真实桶名**，免得对着占位符抓瞎：
+
 ```bash
-# 手动立即异地同步
+# 查真实桶名（按前缀匹配）
+BUCKET=$(aws s3 ls | awk '/deep-insight-backups-/{print $3}')
+echo "$BUCKET"
+# 手动立即异地同步（在 EC2 上跑）
 sudo AWS_DEFAULT_REGION=ap-southeast-1 /usr/local/bin/aws s3 sync \
-  /var/lib/docker/volumes/deep-insight_insight-data/_data/backups s3://deep-insight-backups-<账号ID>/ec2/ --no-progress
-# 从 S3 取回某份到本地再按 6.1 恢复
-aws s3 sync s3://deep-insight-backups-<账号ID>/ec2/20260613-105627/ ./restore-20260613-105627/
+  /var/lib/docker/volumes/deep-insight_insight-data/_data/backups "s3://$BUCKET/ec2/" --no-progress
+# 整卷丢失后，从 S3 取回某份到本地，再按 6.1 恢复进新卷
+aws s3 sync "s3://$BUCKET/ec2/20260613-105627/" ./restore-20260613-105627/
 ```
 
 ### 6.2 全卷冷备（含 raw，需停机）

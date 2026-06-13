@@ -42,7 +42,10 @@ if (existsSync(".env.local")) {
 const DATA_DIR = process.env.DATA_DIR ?? ".data";
 const DB_PATH = process.env.DB_PATH ?? join(DATA_DIR, "insight.db");
 const BACKUP_ROOT = process.env.BACKUP_DIR ?? join(DATA_DIR, "backups");
-const KEEP = Math.max(1, Number(process.env.BACKUP_KEEP ?? 14) || 14);
+// BACKUP_KEEP 加固：非数 / <1 / 负 / 0 一律回退 14（默认安全值），避免负数被 clamp 成 1
+// 而几乎删光所有备份；分数向下取整。
+const keepRaw = Number(process.env.BACKUP_KEEP ?? 14);
+const KEEP = Number.isFinite(keepRaw) && keepRaw >= 1 ? Math.floor(keepRaw) : 14;
 const INCLUDE_RAW = process.env.BACKUP_INCLUDE_RAW === "1";
 
 if (!existsSync(DB_PATH)) {
@@ -57,30 +60,45 @@ const stamp =
   `${now.getUTCFullYear()}${p2(now.getUTCMonth() + 1)}${p2(now.getUTCDate())}` +
   `-${p2(now.getUTCHours())}${p2(now.getUTCMinutes())}${p2(now.getUTCSeconds())}`;
 const dest = join(BACKUP_ROOT, stamp);
+// 同秒重复运行（手动 + cron 撞秒等）会让 mkdirSync(recursive) 静默 no-op、两次合并进同一目录。
+// 宁可拒绝覆盖：已存在即报错退出，保住先前那份完整备份。
+if (existsSync(dest)) {
+  console.error(`✗ 备份目录已存在（同秒重复运行？）：${dest} —— 拒绝覆盖，跳过本次`);
+  process.exit(1);
+}
 mkdirSync(dest, { recursive: true });
 
-// 1) SQLite 在线备份（对活库安全，产出一致单文件；优于 readonly VACUUM INTO——
-//    后者在 app 并发写时跨连接易遇锁/-shm 问题）。
-const db = new Database(DB_PATH);
-try {
-  await db.backup(join(dest, "insight.db"));
-} finally {
-  db.close();
-}
-const dbKb = (statSync(join(dest, "insight.db")).size / 1024).toFixed(0);
-
-// 2) 报告正文 FS（reports/<id>.md|.html；DB 只存 body_path，不拷就丢正文）。
-const reportsDir = join(DATA_DIR, "reports");
+// 备份与拷贝包在 try 里：任一步失败就清掉半截目录再退出。否则残留的 <stamp>/ 会匹配
+// 下面 retention 的正则、被当成有效一份排进“最近 KEEP”，把真正完整的旧备份挤出去删掉。
+let dbKb = "0";
 let reportFiles = 0;
-if (existsSync(reportsDir)) {
-  cpSync(reportsDir, join(dest, "reports"), { recursive: true });
-  reportFiles = readdirSync(join(dest, "reports")).length;
-}
+try {
+  // 1) SQLite 在线备份（对活库安全，产出一致单文件；优于 readonly VACUUM INTO——
+  //    后者在 app 并发写时跨连接易遇锁/-shm 问题）。
+  const db = new Database(DB_PATH);
+  try {
+    await db.backup(join(dest, "insight.db"));
+  } finally {
+    db.close();
+  }
+  dbKb = (statSync(join(dest, "insight.db")).size / 1024).toFixed(0);
 
-// 3) 可选：raw 原文归档（体量大、可重抓，默认跳过）。
-if (INCLUDE_RAW) {
-  const rawDir = join(DATA_DIR, "raw");
-  if (existsSync(rawDir)) cpSync(rawDir, join(dest, "raw"), { recursive: true });
+  // 2) 报告正文 FS（reports/<id>.md|.html；DB 只存 body_path，不拷就丢正文）。
+  const reportsDir = join(DATA_DIR, "reports");
+  if (existsSync(reportsDir)) {
+    cpSync(reportsDir, join(dest, "reports"), { recursive: true });
+    reportFiles = readdirSync(join(dest, "reports")).length;
+  }
+
+  // 3) 可选：raw 原文归档（体量大、可重抓，默认跳过）。
+  if (INCLUDE_RAW) {
+    const rawDir = join(DATA_DIR, "raw");
+    if (existsSync(rawDir)) cpSync(rawDir, join(dest, "raw"), { recursive: true });
+  }
+} catch (e) {
+  rmSync(dest, { recursive: true, force: true });
+  console.error(`✗ 备份失败，已清理半截目录 ${dest}：${e?.message ?? e}`);
+  process.exit(1);
 }
 
 console.log(`✓ 备份完成：${dest}`);

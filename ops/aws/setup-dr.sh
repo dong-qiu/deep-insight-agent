@@ -23,7 +23,11 @@ ROLE="${AWS_NAME}-ssm"   # provision.sh 以 AWS_NAME 为前缀建的实例角色
 IID="$(aws ec2 describe-instances \
   --filters "Name=tag:Name,Values=${AWS_NAME}" "Name=instance-state-name,Values=running" \
   --query 'Reservations[].Instances[].InstanceId' --output text)"
-[ -n "$IID" ] && [ "$IID" != "None" ] || { echo "✗ 找不到运行中的实例（tag:Name=${AWS_NAME}）"; exit 1; }
+# 必须恰好 1 个：多个（蓝绿 / 未清的旧实例）会被 --output text 用 tab 拼成一串，
+# 当成单个 --instance-ids 传给 SSM 会失败或误打到歧义目标。
+if [ "$(printf '%s' "$IID" | wc -w | tr -d ' ')" != "1" ] || [ "$IID" = "None" ]; then
+  echo "✗ 期望恰好 1 个运行中实例（tag:Name=${AWS_NAME}），实得：'${IID:-空}'"; exit 1
+fi
 echo "账号=$ACCT  桶=$BUCKET  角色=$ROLE  实例=$IID  区域=$AWS_REGION"
 
 # 1) S3 桶（幂等）
@@ -31,8 +35,14 @@ if aws s3api head-bucket --bucket "$BUCKET" 2>/dev/null; then
   echo "==> 桶已存在，跳过创建"
 else
   echo "==> 建桶 $BUCKET"
-  aws s3api create-bucket --bucket "$BUCKET" \
-    --create-bucket-configuration "LocationConstraint=${AWS_REGION}" >/dev/null
+  # us-east-1 是 S3 的默认区，传 LocationConstraint=us-east-1 反而报 IllegalLocationConstraint；
+  # 其余区必须带 LocationConstraint。
+  if [ "$AWS_REGION" = "us-east-1" ]; then
+    aws s3api create-bucket --bucket "$BUCKET" >/dev/null
+  else
+    aws s3api create-bucket --bucket "$BUCKET" \
+      --create-bucket-configuration "LocationConstraint=${AWS_REGION}" >/dev/null
+  fi
 fi
 aws s3api put-public-access-block --bucket "$BUCKET" \
   --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
@@ -71,11 +81,11 @@ PARAMS="$(mktemp)"; trap 'rm -f "$POL" "$PARAMS"' EXIT
 cat > "$PARAMS" <<JSON
 { "commands": [
   "if ! command -v aws >/dev/null; then sudo apt-get update -qq && sudo apt-get install -y -qq unzip && curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o /tmp/awscliv2.zip && cd /tmp && unzip -oq awscliv2.zip && sudo ./aws/install && cd /; fi",
-  "aws --version",
+  "/usr/local/bin/aws --version",
   "echo '${CRON_B64}' | base64 -d | sudo tee /etc/cron.d/deep-insight-dr",
   "sudo chmod 644 /etc/cron.d/deep-insight-dr && sudo chown root:root /etc/cron.d/deep-insight-dr",
   "sudo AWS_DEFAULT_REGION=${AWS_REGION} /usr/local/bin/aws s3 sync ${VOL}/backups s3://${BUCKET}/ec2/ --no-progress",
-  "AWS_DEFAULT_REGION=${AWS_REGION} aws s3 ls s3://${BUCKET}/ec2/ --recursive --summarize | tail -3"
+  "AWS_DEFAULT_REGION=${AWS_REGION} /usr/local/bin/aws s3 ls s3://${BUCKET}/ec2/ --recursive --summarize | tail -3"
 ] }
 JSON
 echo "==> SSM 在实例上装 awscli + 写 cron + 首次同步..."
@@ -83,14 +93,24 @@ CID="$(aws ssm send-command --instance-ids "$IID" \
   --document-name AWS-RunShellScript --comment "setup off-box DR" \
   --timeout-seconds 120 --parameters "file://$PARAMS" \
   --query 'Command.CommandId' --output text)"
-for _ in $(seq 1 20); do
+# 轮询上限 30×15s=450s：冷装 awscli v2（apt + 下载 60MB + 首次 s3 sync）可能慢，
+# 预算给足，且把"超时仍 InProgress / 状态读不到"与"真失败 Failed"分开处理。
+ST=""
+for _ in $(seq 1 30); do
   ST="$(aws ssm get-command-invocation --command-id "$CID" --instance-id "$IID" --query Status --output text 2>/dev/null || true)"
   case "$ST" in Success|Failed|Cancelled|TimedOut) break;; esac
-  sleep 12
+  sleep 15
 done
-echo "SSM 状态=$ST"
-aws ssm get-command-invocation --command-id "$CID" --instance-id "$IID" --query 'StandardOutputContent' --output text
-[ "$ST" = "Success" ] || { echo "✗ SSM 步骤失败，查上面输出"; exit 1; }
+echo "SSM 状态=${ST:-未知}"
+aws ssm get-command-invocation --command-id "$CID" --instance-id "$IID" --query 'StandardOutputContent' --output text 2>/dev/null || true
+case "$ST" in
+  Success) ;;
+  InProgress|Pending|"")
+    echo "⚠ SSM 命令 450s 内未结束（仍在跑或状态读取失败）。桶 + IAM 已就绪；实例侧 awscli/cron 可能还在装。"
+    echo "  稍后核对：aws ssm get-command-invocation --command-id $CID --instance-id $IID --query Status --output text --region $AWS_REGION"
+    exit 2 ;;
+  *) echo "✗ SSM 步骤失败（状态=$ST），查上面输出"; exit 1 ;;
+esac
 
 echo ""
 echo "==================================================================="
