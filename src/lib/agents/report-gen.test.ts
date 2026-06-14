@@ -129,6 +129,41 @@ describe("buildReport 派生", () => {
     expect(report.body_html).toContain("待核实");
   });
 
+  it("HTML 引用接 lookup：quote 可点跳源 + 人可读源名 + 日期，不再裸露 ci_xxx", () => {
+    // ci1 有 url + published_at → <a href> 包 quote、源名 Source A、日期 2026-05-07
+    expect(report.body_html).toContain('<a href="https://a.example/q1" target="_blank" rel="noopener noreferrer"><q>「q1」</q></a>');
+    expect(report.body_html).toContain('<span class="src">Source A</span>');
+    expect(report.body_html).toContain("· 2026-05-07");
+    // ci3 有 url 但 published_at=null → 仍包 <a>、但无日期段，显示源名 Source B
+    expect(report.body_html).toContain('<a href="https://b.example/q3" target="_blank" rel="noopener noreferrer"><q>「q3」</q></a> — <span class="src">Source B</span>');
+    // 旧的裸 content_item_id 形式已消失
+    expect(report.body_html).not.toContain("<code>ci");
+  });
+
+  it("HTML 引用 URL scheme 守卫：仅 http(s) 可点，javascript: 退化为纯 quote", () => {
+    const evilLookup = new Map([
+      ["ci1", { source_id: "s_a", source_name: "Src A", tags: [], url: "javascript:alert(1)", published_at: null }],
+    ]);
+    const { report: r } = buildReport({
+      topic, batch: batchOf(), validation, type: "brief", contentLookup: evilLookup, now: "2026-05-07T08:00:00Z",
+    });
+    expect(r.body_html).not.toContain("javascript:"); // 危险 scheme 不进 href
+    expect(r.body_html).not.toContain("<a href"); // ci1 退化为纯 <q>，无链接
+    expect(r.body_html).toContain('<span class="src">Src A</span>'); // 源名仍展示
+  });
+
+  it("HTML href 属性转义：含双引号的 url 不破坏 href 属性", () => {
+    const evilLookup = new Map([
+      ["ci1", { source_id: "s_a", source_name: "Src A", tags: [], url: 'https://a.example/"onmouseover=x', published_at: null }],
+    ]);
+    const { report: r } = buildReport({
+      topic, batch: batchOf(), validation, type: "brief", contentLookup: evilLookup, now: "2026-05-07T08:00:00Z",
+    });
+    // url 内 " 转义为 &quot; 进 href，不提前闭合属性
+    expect(r.body_html).toContain('href="https://a.example/&quot;onmouseover=x"');
+    expect(r.body_html).not.toContain('/"onmouseover'); // 不出现未转义的裸引号
+  });
+
   it("brief 维持扁平：无分节、无详版来源行", () => {
     expect(report.body_md).not.toContain("重点关注");
     expect(report.body_md).not.toContain("- 来源：");

@@ -310,14 +310,37 @@ function renderMarkdown(
 
 const esc = (s: string): string =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+/** 属性上下文转义：在 esc 基础上再转义双引号（href/src 等属性值用）。 */
+const escAttr = (s: string): string => esc(s).replace(/"/g, "&quot;");
 
-/** 单条洞察的 HTML（tag = h2 brief / h3 deep_dive 节内）。detailed 多展示来源。 */
-function insightHtml(x: IncludedInsight, n: number, tag: "h2" | "h3", detailed: boolean): string {
+/** 单条洞察的 HTML（tag = h2 brief / h3 deep_dive 节内）。detailed 多展示来源。
+ *  引用项与 Markdown 版（insightBlockMd）对齐：quote 可点跳源 + 人可读源名 + 发布日，
+ *  替代原先生硬的 ci_xxx（lookup 缺该 content_item 时回退 content_item_id）。 */
+function insightHtml(
+  x: IncludedInsight,
+  n: number,
+  tag: "h2" | "h3",
+  detailed: boolean,
+  lookup: Map<string, CitationDisplay>,
+): string {
   const ins = x.insight;
   const cites = x.citationIndices
     .map((i) => {
       const c = ins.citations[i];
-      return `<li><q>${esc(c.quote)}</q> <code>${esc(c.content_item_id)}</code></li>`;
+      const info = lookup.get(c.content_item_id);
+      const q = `<q>「${esc(c.quote)}」</q>`;
+      // 自包含 HTML 直接在浏览器打开：仅 http(s) 源 URL 可点（挡 javascript:/data: 等危险 scheme，
+      // 呼应 product-definition「引用 URL 安全检查」）；非 http(s) 退化为纯 quote、仍展示源名。
+      const safeUrl = info?.url && /^https?:\/\//i.test(info.url) ? info.url : null;
+      const quoteEl = safeUrl
+        ? `<a href="${escAttr(safeUrl)}" target="_blank" rel="noopener noreferrer">${q}</a>`
+        : q;
+      const srcName = esc(info?.source_name ?? c.content_item_id);
+      const dateIso = info?.published_at && /^\d{4}-\d{2}-\d{2}T/.test(info.published_at)
+        ? info.published_at.slice(0, 10)
+        : null;
+      const datePart = dateIso ? ` · ${dateIso}` : "";
+      return `<li>${quoteEl} — <span class="src">${srcName}</span>${datePart}</li>`;
     })
     .join("");
   const conf = ins.type === "trend" && ins.confidence ? ` · 置信度 ${ins.confidence}` : "";
@@ -344,7 +367,7 @@ function renderHtml(
   if (!included.length) {
     body = "<p><em>本期无重要事件。</em></p>";
   } else if (!deep) {
-    body = included.map((x, n) => insightHtml(x, n + 1, "h2", false)).join("\n");
+    body = included.map((x, n) => insightHtml(x, n + 1, "h2", false, lookup)).join("\n");
   } else {
     // deep_dive 结构化六段，与 Markdown 版式对齐（#19）
     const ordered = orderInsights(included);
@@ -377,14 +400,14 @@ function renderHtml(
       .map(
         (t) =>
           `<h2>${esc(t.label)}（${t.items.length}）</h2>` +
-          t.items.map((x) => insightHtml(x, (n += 1), "h3", true)).join("\n"),
+          t.items.map((x) => insightHtml(x, (n += 1), "h3", true, lookup)).join("\n"),
       )
       .join("\n");
     body = tldr + overview + trend + timeline + detail;
   }
   return `<!doctype html><html lang="${topic.language}"><head><meta charset="utf-8"><title>${esc(
     title,
-  )}</title><style>body{font-family:system-ui,sans-serif;max-width:46rem;margin:2rem auto;padding:0 1rem;line-height:1.6}h1{font-size:1.5rem}h2{font-size:1.1rem;margin-top:1.5rem}h3{font-size:1rem;margin-top:1rem}.meta{color:#666;font-size:.9rem}.meta.blocked{color:#6b7280;font-size:.8rem;margin-top:.25rem}.flag{color:#b45309;font-size:.75rem;border:1px solid #b45309;border-radius:4px;padding:0 .3rem}q{color:#1f2937}code{color:#6b7280;font-size:.85rem}table{border-collapse:collapse;width:100%;font-size:.85rem;margin:.5rem 0}th,td{border:1px solid #e5e7eb;padding:.3rem .5rem;text-align:left}th{background:#f9fafb}.tldr ul{padding-left:1.2rem}.tldr li{margin:.2rem 0}</style></head><body><h1>${esc(
+  )}</title><style>body{font-family:system-ui,sans-serif;max-width:46rem;margin:2rem auto;padding:0 1rem;line-height:1.6}h1{font-size:1.5rem}h2{font-size:1.1rem;margin-top:1.5rem}h3{font-size:1rem;margin-top:1rem}.meta{color:#666;font-size:.9rem}.meta.blocked{color:#6b7280;font-size:.8rem;margin-top:.25rem}.flag{color:#b45309;font-size:.75rem;border:1px solid #b45309;border-radius:4px;padding:0 .3rem}q{color:#1f2937}code{color:#6b7280;font-size:.85rem}.src{color:#6b7280;font-size:.85rem}li a q{cursor:pointer}table{border-collapse:collapse;width:100%;font-size:.85rem;margin:.5rem 0}th,td{border:1px solid #e5e7eb;padding:.3rem .5rem;text-align:left}th{background:#f9fafb}.tldr ul{padding-left:1.2rem}.tldr li{margin:.2rem 0}</style></head><body><h1>${esc(
     title,
   )}</h1><p class="meta">${esc(topic.name)}（${topic.industry}）· ${date} · 共 ${included.length} 条洞察</p>${body}</body></html>`;
 }
