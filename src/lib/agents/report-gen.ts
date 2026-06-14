@@ -121,7 +121,7 @@ export function buildReport(input: BuildReportInput): { report: Report; index: R
   const report: Report = {
     id, type: input.type, topic_id: input.topic.id, status: "done", generated_at: now, title,
     body_md: renderMarkdown(title, input.topic, included, date, input.type !== "brief", input.contentLookup, input.batch.time_window),
-    body_html: renderHtml(title, input.topic, included, date, input.type !== "brief"),
+    body_html: renderHtml(title, input.topic, included, date, input.type !== "brief", input.contentLookup),
     insight_ids: included.map((x) => x.insight.id),
     event_ids: eventIds,
     prev_report_id: input.prevReportId ?? null,
@@ -190,6 +190,48 @@ function insightBlockMd(
 
 const KEY = (x: IncludedInsight): boolean => x.insight.importance >= 4;
 
+// ── deep_dive 结构化版式（#19）共用工具：TL;DR / 概览对比 / 趋势 / 时间线 ──
+const TYPE_CN: Record<Insight["type"], string> = { aggregation: "聚合", trend: "趋势" };
+const CONF_CN: Record<string, string> = { high: "高", medium: "中", low: "低" };
+const confLabel = (x: IncludedInsight): string => (x.insight.confidence ? CONF_CN[x.insight.confidence] : "—");
+const sourceLabel = (x: IncludedInsight): string => `${x.insight.source_count}·${x.insight.multi_source ? "多源" : "单源"}`;
+const TLDR_MAX = 5;
+
+/** 详版与各概览段共用的洞察顺序：重点关注（importance≥4）在前、其他动态在后。
+ *  概览/时间线引用的序号 = 此序中的位次，与详版 `### N.` 标题号一致（便于交叉对照）。 */
+const orderInsights = (included: IncludedInsight[]): IncludedInsight[] => [
+  ...included.filter(KEY),
+  ...included.filter((x) => !KEY(x)),
+];
+
+/** TL;DR 选取：按重要性降序取前 N（稳定，同分保留原序）。 */
+const tldrPick = (included: IncludedInsight[]): IncludedInsight[] =>
+  [...included].sort((a, b) => b.insight.importance - a.insight.importance).slice(0, TLDR_MAX);
+
+const truncate = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+
+/** Markdown 表格单元转义：管道字符转义、换行折叠为空格（防破坏行结构）。 */
+const cellEsc = (s: string): string => s.replace(/\|/g, "\\|").replace(/\n/g, " ");
+
+/** 时间线日期：取该洞察被引来源中最新发布日；无可解析日期则回退洞察证据窗口末。 */
+function insightDate(x: IncludedInsight, lookup: Map<string, CitationDisplay>): string {
+  const dates = x.citationIndices
+    .map((i) => lookup.get(x.insight.citations[i].content_item_id)?.published_at)
+    .filter((d): d is string => !!d && /^\d{4}-\d{2}-\d{2}T/.test(d))
+    .map((d) => d.slice(0, 10));
+  if (dates.length) return dates.sort().at(-1)!;
+  return x.insight.time_window.end.slice(0, 10);
+}
+
+/** 时间线条目：按日期倒序（最新在前，与产品「时间倒序默认」一致）。 */
+const timelineRows = (
+  ordered: IncludedInsight[],
+  lookup: Map<string, CitationDisplay>,
+): { date: string; statement: string }[] =>
+  ordered
+    .map((x) => ({ date: insightDate(x, lookup), statement: x.insight.statement }))
+    .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+
 function renderMarkdown(
   title: string,
   topic: Topic,
@@ -219,10 +261,39 @@ function renderMarkdown(
     });
     return L.join("\n");
   }
-  // deep_dive：按重要性分节（重点 / 其他），节内详版块
+  // deep_dive：结构化六段（spec report-generation.md:31 + product-definition.md:72；#19）。
+  // 上浮可扫读段（TL;DR / 概览 / 趋势 / 时间线）→ 再到详版（关键发现+其他动态，含行内引用清单）。
+  const ordered = orderInsights(included);
+
+  // ① TL;DR —— 可读性优先，结论上浮（product-definition「TL;DR 第一优先」）
+  L.push("## TL;DR", "");
+  for (const x of tldrPick(included)) L.push(`- ${x.insight.statement}`);
+  L.push("");
+
+  // ② 概览（对比表）—— 一行一洞察，类型/重要性/来源/置信度可横向扫读；行号 = 详版 ### 号
+  L.push("## 概览", "", "| # | 洞察 | 类型 | 重要性 | 来源 | 置信度 |", "| --- | --- | --- | --- | --- | --- |");
+  ordered.forEach((x, i) => {
+    const ins = x.insight;
+    L.push(`| ${i + 1} | ${cellEsc(truncate(ins.statement, 40))} | ${TYPE_CN[ins.type]} | ${ins.importance}/5 | ${sourceLabel(x)} | ${confLabel(x)} |`);
+  });
+  L.push("");
+
+  // ③ 趋势分析 —— 仅 trend 型洞察（含置信度）；无则诚实标注「无显著趋势信号」
+  const trends = ordered.filter((x) => x.insight.type === "trend");
+  L.push("## 趋势分析", "");
+  if (trends.length) for (const x of trends) L.push(`- ${x.insight.statement}（置信度 ${confLabel(x)}）`);
+  else L.push("_本期无显著趋势信号。_");
+  L.push("");
+
+  // ④ 时间线 —— 按事件日期倒序
+  L.push("## 时间线", "");
+  for (const t of timelineRows(ordered, lookup)) L.push(`- \`${t.date}\` — ${t.statement}`);
+  L.push("");
+
+  // ⑤+⑥ 关键发现（重点关注）/ 其他动态 —— 详版块（含完整行内引用 = 引用清单）
   const tiers = [
-    { label: "重点关注", items: included.filter(KEY) },
-    { label: "其他动态", items: included.filter((x) => !KEY(x)) },
+    { label: "重点关注", items: ordered.filter(KEY) },
+    { label: "其他动态", items: ordered.filter((x) => !KEY(x)) },
   ];
   let n = 0;
   for (const t of tiers) {
@@ -267,6 +338,7 @@ function renderHtml(
   included: IncludedInsight[],
   date: string,
   deep: boolean,
+  lookup: Map<string, CitationDisplay>,
 ): string {
   let body: string;
   if (!included.length) {
@@ -274,12 +346,33 @@ function renderHtml(
   } else if (!deep) {
     body = included.map((x, n) => insightHtml(x, n + 1, "h2", false)).join("\n");
   } else {
+    // deep_dive 结构化六段，与 Markdown 版式对齐（#19）
+    const ordered = orderInsights(included);
+    const tldr = `<section class="tldr"><h2>TL;DR</h2><ul>${tldrPick(included)
+      .map((x) => `<li>${esc(x.insight.statement)}</li>`)
+      .join("")}</ul></section>`;
+    const rows = ordered
+      .map((x, i) => {
+        const ins = x.insight;
+        return `<tr><td>${i + 1}</td><td>${esc(truncate(ins.statement, 40))}</td><td>${TYPE_CN[ins.type]}</td><td>${ins.importance}/5</td><td>${esc(sourceLabel(x))}</td><td>${confLabel(x)}</td></tr>`;
+      })
+      .join("");
+    const overview = `<section class="overview"><h2>概览</h2><table><thead><tr><th>#</th><th>洞察</th><th>类型</th><th>重要性</th><th>来源</th><th>置信度</th></tr></thead><tbody>${rows}</tbody></table></section>`;
+    const trendItems = ordered.filter((x) => x.insight.type === "trend");
+    const trend = `<section class="trend"><h2>趋势分析</h2>${
+      trendItems.length
+        ? `<ul>${trendItems.map((x) => `<li>${esc(x.insight.statement)}（置信度 ${confLabel(x)}）</li>`).join("")}</ul>`
+        : "<p><em>本期无显著趋势信号。</em></p>"
+    }</section>`;
+    const timeline = `<section class="timeline"><h2>时间线</h2><ul>${timelineRows(ordered, lookup)
+      .map((t) => `<li><code>${t.date}</code> — ${esc(t.statement)}</li>`)
+      .join("")}</ul></section>`;
     const tiers = [
-      { label: "重点关注", items: included.filter(KEY) },
-      { label: "其他动态", items: included.filter((x) => !KEY(x)) },
+      { label: "重点关注", items: ordered.filter(KEY) },
+      { label: "其他动态", items: ordered.filter((x) => !KEY(x)) },
     ];
     let n = 0;
-    body = tiers
+    const detail = tiers
       .filter((t) => t.items.length)
       .map(
         (t) =>
@@ -287,10 +380,11 @@ function renderHtml(
           t.items.map((x) => insightHtml(x, (n += 1), "h3", true)).join("\n"),
       )
       .join("\n");
+    body = tldr + overview + trend + timeline + detail;
   }
   return `<!doctype html><html lang="${topic.language}"><head><meta charset="utf-8"><title>${esc(
     title,
-  )}</title><style>body{font-family:system-ui,sans-serif;max-width:46rem;margin:2rem auto;padding:0 1rem;line-height:1.6}h1{font-size:1.5rem}h2{font-size:1.1rem;margin-top:1.5rem}h3{font-size:1rem;margin-top:1rem}.meta{color:#666;font-size:.9rem}.meta.blocked{color:#6b7280;font-size:.8rem;margin-top:.25rem}.flag{color:#b45309;font-size:.75rem;border:1px solid #b45309;border-radius:4px;padding:0 .3rem}q{color:#1f2937}code{color:#6b7280;font-size:.85rem}</style></head><body><h1>${esc(
+  )}</title><style>body{font-family:system-ui,sans-serif;max-width:46rem;margin:2rem auto;padding:0 1rem;line-height:1.6}h1{font-size:1.5rem}h2{font-size:1.1rem;margin-top:1.5rem}h3{font-size:1rem;margin-top:1rem}.meta{color:#666;font-size:.9rem}.meta.blocked{color:#6b7280;font-size:.8rem;margin-top:.25rem}.flag{color:#b45309;font-size:.75rem;border:1px solid #b45309;border-radius:4px;padding:0 .3rem}q{color:#1f2937}code{color:#6b7280;font-size:.85rem}table{border-collapse:collapse;width:100%;font-size:.85rem;margin:.5rem 0}th,td{border:1px solid #e5e7eb;padding:.3rem .5rem;text-align:left}th{background:#f9fafb}.tldr ul{padding-left:1.2rem}.tldr li{margin:.2rem 0}</style></head><body><h1>${esc(
     title,
   )}</h1><p class="meta">${esc(topic.name)}（${topic.industry}）· ${date} · 共 ${included.length} 条洞察</p>${body}</body></html>`;
 }

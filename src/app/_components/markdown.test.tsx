@@ -47,6 +47,30 @@ describe("Markdown 基础", () => {
     expect(h).toContain("<ul>");
     expect(h.match(/<li/g)?.length).toBe(2);
   });
+
+  it("GFM 表格 → <table>，首行 thead、分隔行跳过、其余 tbody", () => {
+    const h = html("| # | 名 |\n| --- | --- |\n| 1 | A |\n| 2 | B |");
+    expect(h).toContain('class="report-table"');
+    expect(h).toContain("<thead>");
+    expect(h).toMatch(/<th>#<\/th><th>名<\/th>/);
+    // 分隔行（--- ）不渲染成数据行
+    expect(h).not.toContain("---");
+    const rows = h.match(/<tr>/g);
+    expect(rows?.length).toBe(3); // 1 表头 + 2 数据
+    expect(h).toMatch(/<td>1<\/td><td>A<\/td>/);
+  });
+
+  it("表格单元内 [N] 引用锚仍解析；转义管道 \\| 不分列", () => {
+    const h = html("| 洞察 |\n| --- |\n| 句子 [1] |\n| 含 a \\| b 管道 |");
+    expect(h).toContain('href="#cite-1"');
+    expect(h).toContain("含 a | b 管道"); // \\| 还原为字面 | 且不另起一列
+  });
+
+  it("表格遇空行收尾，后续段落不并入表格", () => {
+    const h = html("| a |\n| --- |\n| x |\n\n普通段落");
+    expect(h).toContain("<table");
+    expect(h).toMatch(/<p>普通段落<\/p>/);
+  });
 });
 
 describe("Markdown 引用 [N]（C-2）", () => {

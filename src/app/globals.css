@@ -168,12 +168,25 @@ nav a { margin-right: 1rem; }
 .cite-li a:not(.cite-ref a) { color: #2563eb; text-decoration: none; }
 .cite-li a:not(.cite-ref a):hover { text-decoration: underline; }
 
+/* deep_dive 概览对比表（#19）：紧凑、可横向扫读 */
+.report-body .report-table {
+  border-collapse: collapse; width: 100%; margin: 1rem 0;
+  font-size: .85rem;
+}
+.report-body .report-table th,
+.report-body .report-table td {
+  border: 1px solid #e5e7eb; padding: .35rem .6rem; text-align: left;
+}
+.report-body .report-table th { background: #f9fafb; font-weight: 600; color: #374151; }
+
 @media (prefers-color-scheme: dark) {
   .report-body .hero-meta { background: #1e293b; border-left-color: #60a5fa; color: #d1d5db; }
   .insight-block { background: #0f172a; border-color: #1f2937; border-left-color: #60a5fa; }
   .insight-block > h2, .insight-block > h3 { color: #f3f4f6; }
   .insight-block > ul + ul > li.cite-li { border-top-color: #1f2937; }
   .cite-li a:not(.cite-ref a) { color: #60a5fa; }
+  .report-body .report-table th, .report-body .report-table td { border-color: #1f2937; }
+  .report-body .report-table th { background: #0f172a; color: #d1d5db; }
 }
 /* 设置页 CRUD 表单（B-3）：纵向 label-input 排版 */
 .entity-form { display: flex; flex-direction: column; gap: .4rem; margin-top: .5rem; }

@@ -187,6 +187,55 @@ describe("buildReport · deep_dive（最小确定性深挖）", () => {
     expect(report.insight_ids).toEqual(["i1", "i2"]);
     expect(report.body_md).not.toContain("S3 all blocked");
   });
+
+  // #19：deep_dive 结构化六段（TL;DR / 概览 / 趋势 / 时间线 / 详版关键发现+其他）
+  it("TL;DR 段上浮、按重要性降序（i2 imp5 在 i1 imp4 前）", () => {
+    const md = report.body_md;
+    expect(md).toContain("## TL;DR");
+    const tldrIdx = md.indexOf("## TL;DR");
+    const overviewIdx = md.indexOf("## 概览");
+    // TL;DR 在概览之前；段内 S2 先于 S1（重要性 5 > 4）
+    expect(tldrIdx).toBeGreaterThan(-1);
+    expect(tldrIdx).toBeLessThan(overviewIdx);
+    const tldrBlock = md.slice(tldrIdx, overviewIdx);
+    expect(tldrBlock.indexOf("S2")).toBeLessThan(tldrBlock.indexOf("S1"));
+  });
+  it("概览对比表：GFM 表格 + 类型/重要性/来源/置信度列；行号对应详版序", () => {
+    const md = report.body_md;
+    expect(md).toContain("| # | 洞察 | 类型 | 重要性 | 来源 | 置信度 |");
+    expect(md).toMatch(/\| 1 \| S1 \| 聚合 \| 4\/5 \| 2·多源 \| — \|/);
+    expect(md).toMatch(/\| 2 \| S2 \| 趋势 \| 5\/5 \| 1·单源 \| 高 \|/);
+    // HTML 自包含版同样含 <table>
+    expect(report.body_html).toContain("<table>");
+    expect(report.body_html).toContain("<th>置信度</th>");
+  });
+  it("趋势分析段：仅列 trend 型洞察 + 置信度", () => {
+    const md = report.body_md;
+    const seg = md.slice(md.indexOf("## 趋势分析"), md.indexOf("## 时间线"));
+    expect(seg).toContain("S2（置信度 高）");
+    expect(seg).not.toContain("S1"); // S1 是 aggregation，不进趋势段
+  });
+  it("时间线段：按日期倒序，无可解析发布日时回退洞察窗口末", () => {
+    const md = report.body_md;
+    const seg = md.slice(md.indexOf("## 时间线"), md.indexOf("## 重点关注"));
+    // lookup 为空 → 回退 time_window.end = 2026-05-07
+    expect(seg).toContain("`2026-05-07` — S1");
+    expect(seg).toContain("`2026-05-07` — S2");
+  });
+  it("详版仍在最后，含关键发现分节 + 行内引用", () => {
+    const md = report.body_md;
+    expect(md.indexOf("## 重点关注")).toBeGreaterThan(md.indexOf("## 时间线"));
+    expect(md).toContain("### 1. S1");
+  });
+  it("无趋势型洞察时趋势段诚实标注", () => {
+    const onlyAgg = batchOf();
+    onlyAgg.insights[1].type = "aggregation"; // i2 改为聚合
+    const { report: r } = buildReport({
+      topic, batch: onlyAgg, validation, type: "deep_dive", contentLookup: new Map(), now: "2026-05-07T08:00:00Z",
+    });
+    const seg = r.body_md.slice(r.body_md.indexOf("## 趋势分析"), r.body_md.indexOf("## 时间线"));
+    expect(seg).toContain("无显著趋势信号");
+  });
 });
 
 describe("flagLabel + 校验失败/待核实 区分（C）", () => {

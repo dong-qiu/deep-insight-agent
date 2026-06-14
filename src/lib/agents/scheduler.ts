@@ -252,7 +252,9 @@ export async function runPipelineForTopic(
     });
   }
 
-  const windowHours = opts.windowHours ?? (Number(process.env.DEEP_DIVE_WINDOW_HOURS) || 336); // 14 天
+  // 深挖窗口对齐 spec report-generation.md:27「最近 90 天」（#19 / ADR-0004）。成本由 itemsLimit
+  // 封顶（selectAnalysisItems 排序后取前 N，候选池更大只是选得更准），不随窗口宽度线性涨，故可放宽。
+  const windowHours = opts.windowHours ?? (Number(process.env.DEEP_DIVE_WINDOW_HOURS) || 2160); // 90 天
   const itemsLimit = opts.items ?? (Number(process.env.DEEP_DIVE_ITEMS) || 25);
   const end = Date.now();
   const endIso = new Date(end).toISOString();

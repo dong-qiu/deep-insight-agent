@@ -46,7 +46,7 @@ curl -fsS -X POST http://127.0.0.1:3000/api/cron -H "authorization: Bearer $CRON
 | `CRON_SECRET` | ✅（定时） | `openssl rand -base64 32`；**未设则 `/api/cron` 返回 503、定时管线不工作** |
 | `PIPELINE_WINDOW_HOURS` | 否 | 单轮回看窗口，默认 168（7 天） |
 | `INITIAL_DIGEST_WINDOW_HOURS` / `INITIAL_DIGEST_ITEMS` | 否 | 冷启动首版综述的窗口/条数，默认 720（30 天）/ 25 |
-| `DEEP_DIVE_WINDOW_HOURS` / `DEEP_DIVE_ITEMS` | 否 | 用户触发主题深挖（C-1，`POST /api/topics/[id]/deep-dive`）的窗口/条数，默认 336（14 天）/ 25 |
+| `DEEP_DIVE_WINDOW_HOURS` / `DEEP_DIVE_ITEMS` | 否 | 用户触发主题深挖（C-1，`POST /api/topics/[id]/deep-dive`）的窗口/条数，默认 **2160（90 天，对齐 spec / ADR-0004）** / 25。成本由条数封顶、不随窗口涨；想缩小回看范围才需调低 |
 | `PROMPT_CACHE` | 否 | `0` 关闭 Anthropic prompt caching。**经只写不读的中转站建议设 0**——本 relay 首次定时 eval 实测 `cache r/w 0/17135`（写了付溢价、读 0 无收益）；直连 Anthropic 时不要设（cache read 真省钱）|
 | `CONSISTENCY_CACHE` | 否 | 跨批一致性判定缓存（省 relay 抖动重跑 / 报告重生成的重复 Opus 校验）。默认开；`0` 整体关闭（怀疑缓存返回坏判定时的运维开关）。按「校验模型 + prompt 哈希」版本隔离——改模型/prompt 自动失效重判 |
 | `CONSISTENCY_CACHE_TTL_DAYS` | 否 | 一致性缓存 TTL 天数，默认 14。过期项视为 miss → 重判（给"重跑可纠错"留出口，首跑偶发错判最多冻结一个 TTL）|
