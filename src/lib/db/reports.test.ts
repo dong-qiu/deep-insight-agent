@@ -5,7 +5,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { AnalysisBatch, Report, ReportIndexEntry, Topic, ValidationResult } from "../types.js";
 import { saveAnalysisBatch, saveValidationResult } from "./analysis.js";
 import { type DB, openDb } from "./index.js";
-import { getReport, latestReportForTopicSince, listBlockedChecksForReport, listRecentBriefEvents, queryReportIndex, saveReport, searchReports, topicReportStats } from "./reports.js";
+import { distinctIndexValues, getReport, latestReportForTopicSince, listBlockedChecksForReport, listRecentBriefEvents, queryReportIndex, saveReport, searchReports, topicReportStats } from "./reports.js";
 import { insertTopic } from "./repos.js";
 
 const dir = mkdtempSync(join(tmpdir(), "ia-reports-"));
@@ -129,9 +129,9 @@ it("FS 正文缺失（孤儿 DB 行）→ getReport 兜底占位、不抛", () =
 describe("queryReportIndex（B-1+2 报告库筛/搜/排）", () => {
   // 4 条多样化样本
   const samples: ReportIndexEntry[] = [
-    { report_id: "r1", type: "brief", topic_id: "t_swe", industry: "ai-swe", date: "2026-06-01", source_ids: ["s1"], title: "AI 软件工程·6月1日", summary: "DHH AI 编码", tags: [], entity_names: ["DHH"], importance: 5, event_ids: [] },
-    { report_id: "r2", type: "deep_dive", topic_id: "t_swe", industry: "ai-swe", date: "2026-06-05", source_ids: ["s1"], title: "深度·Coding Agent", summary: "Cursor Composer", tags: [], entity_names: ["Cursor"], importance: 4, event_ids: [] },
-    { report_id: "r3", type: "brief", topic_id: "t_sec", industry: "ai-security", date: "2026-06-03", source_ids: ["s2"], title: "AI 安全·6月3日", summary: "Prompt injection 案例", tags: [], entity_names: [], importance: 3, event_ids: [] },
+    { report_id: "r1", type: "brief", topic_id: "t_swe", industry: "ai-swe", date: "2026-06-01", source_ids: ["s1"], title: "AI 软件工程·6月1日", summary: "DHH AI 编码", tags: ["trend"], entity_names: ["DHH"], importance: 5, event_ids: [] },
+    { report_id: "r2", type: "deep_dive", topic_id: "t_swe", industry: "ai-swe", date: "2026-06-05", source_ids: ["s1", "s3"], title: "深度·Coding Agent", summary: "Cursor Composer", tags: ["trend", "practice"], entity_names: ["Cursor"], importance: 4, event_ids: [] },
+    { report_id: "r3", type: "brief", topic_id: "t_sec", industry: "ai-security", date: "2026-06-03", source_ids: ["s2"], title: "AI 安全·6月3日", summary: "Prompt injection 案例", tags: ["case"], entity_names: [], importance: 3, event_ids: [] },
     { report_id: "r4", type: "initial_digest", topic_id: "t_sec", industry: "ai-security", date: "2026-05-20", source_ids: ["s2"], title: "首版·ATLAS 综述", summary: "MITRE ATLAS", tags: [], entity_names: ["MITRE"], importance: 5, event_ids: [] },
   ];
 
@@ -226,6 +226,42 @@ describe("queryReportIndex（B-1+2 报告库筛/搜/排）", () => {
   it("topic + 日期倒序组合（时间线默认序）", () => {
     const rs = queryReportIndex(db, { topic: "t_sec", sort: "date", dir: "desc" });
     expect(rs.map((r) => r.report_id)).toEqual(["r3", "r4"]); // 06-03 晚于 05-20
+  });
+
+  it("source 筛选 → JSON 数组含该源 id 的报告（r2 多源 s1+s3）", () => {
+    expect(queryReportIndex(db, { source: "s1" }).map((r) => r.report_id).sort()).toEqual(["r1", "r2"]);
+    expect(queryReportIndex(db, { source: "s2" }).map((r) => r.report_id).sort()).toEqual(["r3", "r4"]);
+    expect(queryReportIndex(db, { source: "s3" }).map((r) => r.report_id)).toEqual(["r2"]); // 仅 r2 的第二个源
+    expect(queryReportIndex(db, { source: "nope" }).length).toBe(0); // 不存在的源 → 0 命中
+  });
+
+  it("tag 筛选 → JSON 数组含该标签的报告", () => {
+    expect(queryReportIndex(db, { tag: "trend" }).map((r) => r.report_id).sort()).toEqual(["r1", "r2"]);
+    expect(queryReportIndex(db, { tag: "practice" }).map((r) => r.report_id)).toEqual(["r2"]);
+    expect(queryReportIndex(db, { tag: "case" }).map((r) => r.report_id)).toEqual(["r3"]);
+  });
+
+  it("entity 筛选 → JSON 数组含该实体的报告（主题页关键实体下钻）", () => {
+    expect(queryReportIndex(db, { entity: "DHH" }).map((r) => r.report_id)).toEqual(["r1"]);
+    expect(queryReportIndex(db, { entity: "MITRE" }).map((r) => r.report_id)).toEqual(["r4"]);
+    expect(queryReportIndex(db, { entity: "Unknown" }).length).toBe(0);
+  });
+
+  it("空白 source/tag/entity 静默忽略（不过滤）", () => {
+    expect(queryReportIndex(db, { source: "  " }).length).toBe(4);
+    expect(queryReportIndex(db, { tag: "" }).length).toBe(4);
+    expect(queryReportIndex(db, { entity: "   " }).length).toBe(4);
+  });
+
+  it("source+entity 组合（json_each 多列相关子查询并存）", () => {
+    expect(queryReportIndex(db, { source: "s1", entity: "Cursor" }).map((r) => r.report_id)).toEqual(["r2"]);
+    expect(queryReportIndex(db, { source: "s2", entity: "Cursor" }).length).toBe(0); // s2 报告无 Cursor
+  });
+
+  it("distinctIndexValues：各 JSON 列去重值升序（下拉选项来源）", () => {
+    expect(distinctIndexValues(db, "source_ids")).toEqual(["s1", "s2", "s3"]);
+    expect(distinctIndexValues(db, "tags")).toEqual(["case", "practice", "trend"]);
+    expect(distinctIndexValues(db, "entity_names")).toEqual(["Cursor", "DHH", "MITRE"]); // 空数组的 r3 不贡献项
   });
 
   it("topicReportStats：按主题聚合条数 + MAX(date)", () => {
