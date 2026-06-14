@@ -11,8 +11,9 @@
 - 提交信息：<格式约定，例如 conventional commits>
 - 分支模型：<trunk-based / git-flow>
 - 不允许：force push 到主分支、跳过 hooks
-- **`main` 受分支保护**：不直推 `main`（直推会被拒）。所有改动走 feature 分支 → 独立 review → push `origin` → PR → CI 绿 → 合入 → 删远程分支。
-  单人仓的保护配置基线：required approvals=**0**（独立 Agent review 不等于 GitHub PR approval，也无法自审自批）；必需状态检查选 `ci.yml`；禁止删除 `main`（force push 见上）；保留 admin bypass 作 flaky CI 应急出口；strict "require branches up to date" 暂不开（避免单人迭代徒增 rebase 负担）。
+- **`main` 走 PR 流程，以流程纪律为门**：所有改动走 feature 分支 → 独立 review → push `origin` → PR → CI 绿 → 合入 → 删远程分支。**不直推 `main`**。
+  ⚠️ GitHub **强制**分支保护当前**不可用**——`dong-qiu/deep-insight-agent` 是 private 仓 + 免费计划，classic branch protection 与 Rulesets 的 API 均返回 403（需 GitHub Pro，或将仓转 public）。在升级 / 转 public 之前，直推 `main` 技术上**不会**被 GitHub 拦截，门全靠上面这条纪律自觉。
+  升级 Pro 后按此基线开启保护（API 路径 `PUT /repos/{owner}/{repo}/branches/main/protection`）：require PR before merge、required approvals=**0**（独立 Agent review 不等于 GitHub PR approval，也无法自审自批）；必需状态检查选 `ci.yml` 的两个 job（`typecheck · test · build`、`docker build`）；禁止 force push / 删除 `main`；保留 admin bypass 作 flaky CI 应急出口；strict "require branches up to date" 暂不开（避免单人迭代徒增 rebase 负担）。
 
 ## 安全边界
 
