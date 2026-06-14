@@ -5,7 +5,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { AnalysisBatch, Report, ReportIndexEntry, Topic, ValidationResult } from "../types.js";
 import { saveAnalysisBatch, saveValidationResult } from "./analysis.js";
 import { type DB, openDb } from "./index.js";
-import { getReport, listBlockedChecksForReport, listRecentBriefEvents, queryReportIndex, saveReport, searchReports, topicReportStats } from "./reports.js";
+import { getReport, latestReportForTopicSince, listBlockedChecksForReport, listRecentBriefEvents, queryReportIndex, saveReport, searchReports, topicReportStats } from "./reports.js";
 import { insertTopic } from "./repos.js";
 
 const dir = mkdtempSync(join(tmpdir(), "ia-reports-"));
@@ -38,6 +38,22 @@ const index: ReportIndexEntry = {
 it("saveReport → getReport 往返（正文走 FS）", () => {
   saveReport(db, report, index, { dir });
   expect(getReport(db, "rep_test1")).toEqual(report);
+});
+
+it("latestReportForTopicSince：只认 since 之后本主题最新的【已完成深挖】报告（深挖进度 3.3 终态链接）", () => {
+  const since = "2026-06-14T10:00:00Z";
+  insertTopic(db, { ...topic, id: "t2" });
+  saveReport(db, { ...report, id: "rep_old", type: "deep_dive", generated_at: "2026-06-13T08:00:00Z" }, { ...index, report_id: "rep_old", type: "deep_dive" }, { dir });
+  expect(latestReportForTopicSince(db, "t1", since)).toBeNull(); // 触发前的不算
+  // 窗口内但 type=brief（每日 cron 落库）——绝不能误判为深挖完成（review 实锤的错报告链接 bug）
+  saveReport(db, { ...report, id: "rep_brief", type: "brief", generated_at: "2026-06-14T10:05:00Z" }, { ...index, report_id: "rep_brief", type: "brief" }, { dir });
+  expect(latestReportForTopicSince(db, "t1", since)).toBeNull(); // brief 不算完成
+  // 窗口内但 status=failed 的深挖——也不算完成
+  saveReport(db, { ...report, id: "rep_fail", type: "deep_dive", status: "failed", generated_at: "2026-06-14T10:05:30Z" }, { ...index, report_id: "rep_fail", type: "deep_dive" }, { dir });
+  expect(latestReportForTopicSince(db, "t1", since)).toBeNull(); // failed 不算完成
+  saveReport(db, { ...report, id: "rep_new", type: "deep_dive", generated_at: "2026-06-14T10:06:00Z" }, { ...index, report_id: "rep_new", type: "deep_dive" }, { dir });
+  saveReport(db, { ...report, id: "rep_other", type: "deep_dive", topic_id: "t2", generated_at: "2026-06-14T10:07:00Z" }, { ...index, report_id: "rep_other", topic_id: "t2", type: "deep_dive" }, { dir });
+  expect(latestReportForTopicSince(db, "t1", since)).toEqual({ id: "rep_new", title: report.title, type: "deep_dive" }); // 别主题 rep_other 不串
 });
 
 it("saveReport body_path 始终是绝对路径（dogfood 6/6 防相对路径跨环境失效回退）", () => {

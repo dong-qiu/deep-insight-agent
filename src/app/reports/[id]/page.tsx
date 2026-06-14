@@ -3,6 +3,7 @@ import { getDb } from "../../../lib/db/index.js";
 import { listFollowups } from "../../../lib/db/followup.js";
 import { getReport, listBlockedChecksForReport } from "../../../lib/db/reports.js";
 import { Markdown } from "../../_components/markdown.js";
+import { CitePreview } from "./_components/cite-preview.js";
 import { ExportPptButton } from "./_components/export-ppt-button.js";
 import { FollowupPanel } from "./_components/followup-panel.js";
 
@@ -37,6 +38,7 @@ export default async function ReportPage({ params }: { params: Promise<{ id: str
 
   return (
     <section>
+      <CitePreview />
       <p className="report-header muted">
         <a href="/reports">← 报告库</a>
         <ExportPptButton reportId={id} />
