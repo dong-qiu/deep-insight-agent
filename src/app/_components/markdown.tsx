@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 
-/** 极简 Markdown 渲染：仅覆盖 report-gen 产出的子集（# / ## / ### / > / 列表 / 行内 code / 段落）。
+/** 极简 Markdown 渲染：仅覆盖 report-gen 产出的子集（# / ## / ### / > / 列表 / GFM 表格 / 行内 code / 段落）。
  *  仅用于渲染本系统自产的受控 Markdown；React 自动转义文本，无 XSS 风险。
  *
  *  C-2 引用支持（全局连续编号）：
@@ -17,6 +17,7 @@ export function Markdown({ md, anchorPrefix = "cite-" }: { md: string; anchorPre
   /** 当前洞察 section 的内容容器；null = 不在某条洞察内 */
   let insightNodes: ReactNode[] | null = null;
   let bullets: { text: string; id: string | null; citeNum: string | null }[] = [];
+  let tableLines: string[] = []; // 累积 GFM 表格行（| a | b |），遇非表格行 flush
 
   const target = (): ReactNode[] => insightNodes ?? rootNodes;
   const flushBullets = (): void => {
@@ -34,8 +35,39 @@ export function Markdown({ md, anchorPrefix = "cite-" }: { md: string; anchorPre
     );
     bullets = [];
   };
+  /** GFM 表格：首行表头 + `| --- |` 分隔行 + 其余表体；分隔行缺失则全部当表体。
+   *  单元按未转义管道切分（`\|` 不分列），再还原转义。 */
+  const flushTable = (): void => {
+    if (!tableLines.length) return;
+    const rows = tableLines.map((l) => {
+      const cells = l.trim().split(/(?<!\\)\|/).map((c) => c.trim().replace(/\\\|/g, "|"));
+      if (cells[0] === "") cells.shift();
+      if (cells[cells.length - 1] === "") cells.pop();
+      return cells;
+    });
+    tableLines = [];
+    const isSep = (cells: string[]): boolean => cells.length > 0 && cells.every((c) => /^:?-{1,}:?$/.test(c));
+    const hasHeader = rows.length >= 2 && isSep(rows[1]);
+    const header = hasHeader ? rows[0] : null;
+    const bodyRows = hasHeader ? rows.slice(2) : rows;
+    target().push(
+      <table className="report-table" key={`tb-${target().length}`}>
+        {header ? (
+          <thead>
+            <tr>{header.map((c, i) => <th key={i}>{inline(c)}</th>)}</tr>
+          </thead>
+        ) : null}
+        <tbody>
+          {bodyRows.map((r, ri) => (
+            <tr key={ri}>{r.map((c, ci) => <td key={ci}>{inline(c)}</td>)}</tr>
+          ))}
+        </tbody>
+      </table>,
+    );
+  };
   const flushInsight = (): void => {
     flushBullets();
+    flushTable();
     if (insightNodes) {
       rootNodes.push(
         <section className="insight-block" key={`ins-${rootNodes.length}`}>
@@ -51,6 +83,14 @@ export function Markdown({ md, anchorPrefix = "cite-" }: { md: string; anchorPre
 
   for (const raw of md.split("\n")) {
     const line = raw.trimEnd();
+    const trimmed = line.trim();
+    // GFM 表格行：以 | 开头并以 | 收尾，累积到 tableLines；遇任何非表格行 flush 成 <table>
+    if (/^\|.*\|$/.test(trimmed) && trimmed.length >= 2) {
+      flushBullets();
+      tableLines.push(line);
+      continue;
+    }
+    flushTable();
     if (/^\s*-\s+/.test(line)) {
       const stripped = line.replace(/^\s*-\s+/, "");
       const m = stripped.match(/^\[(\d+)\]\s+(.*)$/);
