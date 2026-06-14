@@ -216,6 +216,24 @@ export function listRuns(db: DB, opts: { status?: Run["status"]; limit?: number 
     .all({ status: opts.status ?? null, limit: opts.limit ?? 100 }) as Record<string, unknown>[];
   return rows.map(rowToRun);
 }
+/** 某主题某次深挖触发后的管线 Run（进度透明 3.3）：analyze / report-gen 直接带 topic_id；
+ *  validate 的 target 只有 batch_id，经 analysis_batch.topic_id 关联回主题。`sinceIso` 锚定
+ *  本次触发时刻（用 started_at ≥ since 把历史轮次隔离掉），started_at 升序还原 采集→分析→报告 时序。 */
+export function listRunsForTopicSince(db: DB, topicId: string, sinceIso: string): Run[] {
+  const rows = db
+    .prepare(
+      `SELECT * FROM run
+       WHERE started_at >= @since AND (
+         (kind IN ('analyze','report-gen') AND json_extract(target, '$.topic_id') = @topic)
+         OR (kind = 'validate' AND json_extract(target, '$.batch_id') IN (
+               SELECT id FROM analysis_batch WHERE topic_id = @topic))
+       )
+       ORDER BY started_at ASC`,
+    )
+    .all({ since: sinceIso, topic: topicId }) as Record<string, unknown>[];
+  return rows.map(rowToRun);
+}
+
 /** 启动期清扫"孤儿 Run"（review follow-up #1）：进程被 SIGTERM / 容器重启时，
  *  正在跑的 Run 留在 `status=running` 永不变 done/failed，/admin 看板显示永久"运行中"。
  *  openDb 触发时把所有 `running` Run 一刀切标 failed，error.type="OrphanedOnRestart"，

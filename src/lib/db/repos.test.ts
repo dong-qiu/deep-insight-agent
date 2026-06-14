@@ -8,7 +8,7 @@ import { type DB, openDb } from "./index.js";
 import {
   contentExists, finishRun, getContentByUrl, getContentItem, getRun, getSource, getTopic,
   hasRunningRun, insertContentItem, insertRun, insertSource, insertTopic, listRuns,
-  listSources, recoverOrphanedRuns, sumRunCostSince, updateContentItem,
+  listRunsForTopicSince, listSources, recoverOrphanedRuns, sumRunCostSince, updateContentItem,
 } from "./repos.js";
 
 let db: DB;
@@ -118,6 +118,41 @@ describe("sumRunCostSince", () => {
 
   it("无任何 Run → 0（COALESCE 兜底，不返 null）", () => {
     expect(sumRunCostSince(db, "2026-01-01T00:00:00.000Z")).toBe(0);
+  });
+});
+
+describe("listRunsForTopicSince（深挖进度 3.3）", () => {
+  const T = "2026-06-14T10:00:00.000Z"; // 触发锚点
+  const mk = (id: string, kind: Run["kind"], target: Run["target"], startedAt: string, status: Run["status"] = "done"): Run => ({
+    id, kind, target, status, started_at: startedAt, ended_at: startedAt, duration_ms: 1, cost: null, error: null, retry_of: null,
+  });
+  const topic: Topic = {
+    id: "t1", name: "Code Agent", keywords: ["swe"],
+    industry: "ai-swe", language: "zh", brief_schedule: "daily", enabled: true,
+  };
+  beforeEach(() => {
+    insertTopic(db, { ...topic, id: "t1" });
+    insertTopic(db, { ...topic, id: "t2" });
+    // 本次深挖：analyze(topic_id) → batch(topic_id) → validate(batch_id) → report-gen(topic_id)
+    db.prepare("INSERT INTO analysis_batch (id,topic_id,time_window,status) VALUES (?,?,?,?)")
+      .run("b1", "t1", "{}", "done");
+  });
+
+  it("把 analyze/report-gen(topic_id) 与 validate(batch_id→topic) 三段按时序归集", () => {
+    insertRun(db, mk("r-an", "analyze", { topic_id: "t1" }, "2026-06-14T10:00:05.000Z"));
+    insertRun(db, mk("r-va", "validate", { batch_id: "b1" }, "2026-06-14T10:02:00.000Z"));
+    insertRun(db, mk("r-rg", "report-gen", { topic_id: "t1", batch_id: "b1" }, "2026-06-14T10:04:00.000Z"));
+    const runs = listRunsForTopicSince(db, "t1", T);
+    expect(runs.map((r) => r.kind)).toEqual(["analyze", "validate", "report-gen"]); // started_at 升序
+  });
+
+  it("隔离别的主题、别的批次、触发前的历史 Run", () => {
+    insertRun(db, mk("old", "analyze", { topic_id: "t1" }, "2026-06-14T09:00:00.000Z")); // 触发前
+    insertRun(db, mk("t2-an", "analyze", { topic_id: "t2" }, "2026-06-14T10:05:00.000Z")); // 别的主题
+    db.prepare("INSERT INTO analysis_batch (id,topic_id,time_window,status) VALUES (?,?,?,?)").run("b2", "t2", "{}", "done");
+    insertRun(db, mk("t2-va", "validate", { batch_id: "b2" }, "2026-06-14T10:06:00.000Z")); // 别批次的校验
+    insertRun(db, mk("mine", "analyze", { topic_id: "t1" }, "2026-06-14T10:05:00.000Z"));
+    expect(listRunsForTopicSince(db, "t1", T).map((r) => r.id)).toEqual(["mine"]);
   });
 });
 

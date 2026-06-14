@@ -68,6 +68,38 @@ nav a { margin-right: 1rem; }
   .cite-num { color: #60a5fa; }
 }
 
+/* 引用 hover 预览卡（3.1）：悬浮 [n] 即见 quote + 源，省去跳底部列表 */
+.cite-preview {
+  position: fixed; z-index: 50; max-width: 360px; padding: .6rem .75rem;
+  background: #fff; border: 1px solid #e5e7eb; border-radius: 8px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, .12); font-size: .85rem; line-height: 1.5;
+  pointer-events: auto;
+}
+.cite-preview-num { font-weight: 600; color: #2563eb; font-variant-numeric: tabular-nums; margin-bottom: .25rem; }
+.cite-preview-body a { color: #2563eb; }
+@media (prefers-color-scheme: dark) {
+  .cite-preview { background: #0f172a; border-color: #374151; box-shadow: 0 6px 24px rgba(0, 0, 0, .5); }
+  .cite-preview-num, .cite-preview-body a { color: #60a5fa; }
+}
+
+/* 深挖进度步进器（3.3）：触发后原地显示 分析→校验→生成报告，省去跳 /admin 数 Run */
+.deepdive-msg { margin-left: .5rem; font-size: .85rem; }
+.deepdive-progress { margin-left: .5rem; font-size: .85rem; display: inline-flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
+.deepdive-step { font-variant-numeric: tabular-nums; }
+.deepdive-step-pending { color: #9ca3af; }
+.deepdive-step-running { color: #2563eb; font-weight: 600; }
+.deepdive-step-done { color: #15803d; }
+.deepdive-step-failed { color: #b91c1c; font-weight: 600; }
+.deepdive-hint { font-size: .8rem; }
+.deepdive-link { font-weight: 600; }
+.deepdive-err { color: #b91c1c; }
+@media (prefers-color-scheme: dark) {
+  .deepdive-step-pending { color: #6b7280; }
+  .deepdive-step-running { color: #60a5fa; }
+  .deepdive-step-done { color: #4ade80; }
+  .deepdive-step-failed, .deepdive-err { color: #f87171; }
+}
+
 /* ────────────────────────────────────────────────────
    报告排版（dogfood feedback：层级清晰 + 业界最佳实践参考）
    Stripe Docs / Notion / Substack 那种"数据密集但易读"的范式：

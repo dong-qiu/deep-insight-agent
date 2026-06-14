@@ -89,6 +89,27 @@ export function topicHasReport(db: DB, topicId: string): boolean {
   return !!db.prepare("SELECT 1 FROM report WHERE topic_id = ? LIMIT 1").get(topicId);
 }
 
+/** 某主题在 sinceIso 之后产出的最新**已完成深挖**报告（进度透明 3.3）：深挖完成后给前端可点链接。
+ *  - `type='deep_dive'`：深挖按钮的完成信号只认深挖产物——否则同主题的每日 brief cron 若在轮询窗口内
+ *    落库一份 brief，会被误判为"深挖完成"并把链接指到错报告（review 实锤，brief/cron 是独立路径，
+ *    `hasRunningRun` 拦不住）；
+ *  - `status='done'`：排除 generating/failed/draft 等中间/失败态，只有真正出片才算完成；
+ *  - generated_at ≥ since 把本次触发的产物与历史报告隔开；倒序取最新一条。返回 null = 还没出。 */
+export function latestReportForTopicSince(
+  db: DB,
+  topicId: string,
+  sinceIso: string,
+): { id: string; title: string; type: string } | null {
+  const r = db
+    .prepare(
+      `SELECT id, title, type FROM report
+       WHERE topic_id = ? AND type = 'deep_dive' AND status = 'done' AND generated_at >= ?
+       ORDER BY generated_at DESC LIMIT 1`,
+    )
+    .get(topicId, sinceIso) as { id: string; title: string; type: string } | undefined;
+  return r ?? null;
+}
+
 /** 校验下钻条目：本报告涉及洞察的所有被 validator 屏蔽的引用（含理由与 quote 全文）。
  *  - 经 report.insight_ids → insight.batch_id 关联到 citation_check；
  *  - 联表 citation 拿原始 quote 与 content_item_id；
