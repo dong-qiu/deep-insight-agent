@@ -4,7 +4,8 @@ import { queryReportIndex } from "../../../lib/db/reports.js";
 
 export const dynamic = "force-dynamic";
 
-/** GET /api/reports?q=&type=&industry=&from=&to=&sort=&dir=  —— 报告库统一查询入口。
+/** GET /api/reports?q=&type=&industry=&topic=&source=&tag=&entity=&from=&to=&sort=&dir=
+ *  —— 报告库统一查询入口。
  *  - q: FTS5（标题/摘要/正文）；无效语法走 fallback（不带 q 重查 + warn 字段）；
  *  - 其他参数白名单 + 参数化 SQL（防注入），见 db/reports.ts queryReportIndex。 */
 export function GET(req: Request) {
@@ -14,6 +15,10 @@ export function GET(req: Request) {
     q: sp.get("q") ?? undefined,
     type: sp.get("type") ?? undefined,
     industry: sp.get("industry") ?? undefined,
+    topic: sp.get("topic") ?? undefined,
+    source: sp.get("source") ?? undefined,
+    tag: sp.get("tag") ?? undefined,
+    entity: sp.get("entity") ?? undefined,
     from: sp.get("from") ?? undefined,
     to: sp.get("to") ?? undefined,
     sort: sp.get("sort") ?? undefined,

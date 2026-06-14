@@ -209,6 +209,24 @@ export function searchReports(db: DB, query: string): string[] {
   return rows.map((x) => x.report_id as string);
 }
 
+/** report_index 里某 JSON 数组列的去重值集合（升序）——报告库筛选下拉的选项来源。
+ *  - column 是**代码内枚举**（非用户输入），白名单约束后才拼进 SQL，无注入面；
+ *  - 经 json_each 展开数组、跳过空串；source_ids 返回的是**源 id**（展示名由调用方 join source 表映射）。 */
+export function distinctIndexValues(
+  db: DB,
+  column: "source_ids" | "tags" | "entity_names",
+): string[] {
+  const rows = db
+    .prepare(
+      `SELECT DISTINCT je.value AS v
+       FROM report_index ri, json_each(ri.${column}) je
+       WHERE je.value IS NOT NULL AND je.value <> ''
+       ORDER BY je.value`,
+    )
+    .all() as Array<{ v: string }>;
+  return rows.map((r) => r.v);
+}
+
 /** 报告索引列表（报告库列表/筛选用），按日期倒序。 */
 export function listReportIndex(db: DB, opts: { limit?: number } = {}): ReportIndexEntry[] {
   const rows = db
@@ -239,6 +257,7 @@ function rowToIndex(r: any): ReportIndexEntry {
 /** 报告库查询：FTS5 + 筛选 + 排序。
  *  - q: 走 FTS5 → 取 report_id 集合再过滤；
  *  - type / industry / from / to (yyyy-mm-dd inclusive)：白名单 + 参数化 SQL；
+ *  - topic / source / tag / entity：参数化精确匹配（source/tag/entity 经 json_each 展开数组列）；
  *  - sort: "date"|"importance"，dir: "asc"|"desc"，默认 date desc——白名单查表映射常量列名；
  *  - 无效字段静默忽略走默认（UI 不应被 400 打断）。
  *  - Sonnet R1 review (2026-06-06)：industry 白名单与 validateSourceInput 复用；
@@ -248,6 +267,9 @@ export interface ReportQuery {
   type?: string;
   industry?: string;
   topic?: string;
+  source?: string;
+  tag?: string;
+  entity?: string;
   from?: string;
   to?: string;
   sort?: string;
@@ -271,6 +293,20 @@ export function queryReportIndex(db: DB, opts: ReportQuery = {}): ReportIndexEnt
   // topic_id 是自由字符串（topic 主键），无固定白名单可校验——靠参数化（topic_id = ?）杜绝注入。
   if (opts.topic && opts.topic.trim()) {
     where.push("topic_id = ?"); args.push(opts.topic.trim());
+  }
+  // source / tag / entity 命中存于 JSON 数组列（source_ids/tags/entity_names）——用 json_each 相关子查询
+  // 做"数组含某值"的精确匹配（exact，非 LIKE 模糊），值参数化杜绝注入。下拉选项来自 distinctIndexValues。
+  if (opts.source && opts.source.trim()) {
+    where.push("EXISTS (SELECT 1 FROM json_each(report_index.source_ids) WHERE value = ?)");
+    args.push(opts.source.trim());
+  }
+  if (opts.tag && opts.tag.trim()) {
+    where.push("EXISTS (SELECT 1 FROM json_each(report_index.tags) WHERE value = ?)");
+    args.push(opts.tag.trim());
+  }
+  if (opts.entity && opts.entity.trim()) {
+    where.push("EXISTS (SELECT 1 FROM json_each(report_index.entity_names) WHERE value = ?)");
+    args.push(opts.entity.trim());
   }
   if (opts.from && /^\d{4}-\d{2}-\d{2}$/.test(opts.from)) {
     where.push("date >= ?"); args.push(opts.from);

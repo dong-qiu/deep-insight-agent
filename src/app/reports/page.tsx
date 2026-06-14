@@ -1,9 +1,10 @@
 /** 报告库（B-1+2）：URL query 驱动的搜索 + 筛选 + 排序——纯服务端组件 + HTML GET 表单。
  *  无客户端 state、无 JS 依赖；浏览器原生提交即可触发重渲染。
- *  搜索：FTS5（标题/摘要/正文）；筛选：type/industry/date 区间；排序：date|importance × asc|desc。 */
+ *  搜索：FTS5（标题/摘要/正文）；筛选：主题/类型/行业/来源/标签/实体/日期区间；
+ *  排序：date|importance × asc|desc。来源/标签/实体下拉只列实际出现过的值（distinctIndexValues）。 */
 import { getDb } from "../../lib/db/index.js";
-import { queryReportIndex } from "../../lib/db/reports.js";
-import { listTopics } from "../../lib/db/repos.js";
+import { distinctIndexValues, queryReportIndex } from "../../lib/db/reports.js";
+import { listSources, listTopics } from "../../lib/db/repos.js";
 
 export const dynamic = "force-dynamic";
 
@@ -25,28 +26,41 @@ export default async function ReportsPage({
 }) {
   const sp = await searchParams;
   const db = getDb();
-  // 拉所有 industry/topic 选项（topic 暂未直接筛但能给读者上下文）
+  // 筛选下拉选项：主题/行业来自配置表；来源/标签/实体只列「实际出现在已有报告里」的值，
+  // 避免给出永远 0 命中的选项。来源在索引里存的是源 id，join source 表映射为展示名。
   const topics = listTopics(db);
   const industries = [...new Set(topics.map((t) => t.industry))];
+  const sourceName = new Map(listSources(db).map((s) => [s.id, s.name]));
+  const sourceOptions = distinctIndexValues(db, "source_ids").map((id) => ({
+    id,
+    name: sourceName.get(id) ?? id, // 源已删除则回退显示 id，不丢可筛性
+  }));
+  const tagOptions = distinctIndexValues(db, "tags");
+  const entityOptions = distinctIndexValues(db, "entity_names");
 
   const q = val(sp, "q");
   const type = val(sp, "type");
   const industry = val(sp, "industry");
+  const topic = val(sp, "topic");
+  const source = val(sp, "source");
+  const tag = val(sp, "tag");
+  const entity = val(sp, "entity");
   const from = val(sp, "from");
   const to = val(sp, "to");
   const sort = val(sp, "sort") || "date";
   const dir = val(sp, "dir") || "desc";
 
+  const filters = { type, industry, topic, source, tag, entity, from, to, sort, dir };
   let rows: ReturnType<typeof queryReportIndex> = [];
   let err: string | null = null;
   try {
-    rows = queryReportIndex(db, { q, type, industry, from, to, sort, dir });
+    rows = queryReportIndex(db, { q, ...filters });
   } catch (e) {
     // FTS5 对 q 的 token 有自己语法（如裸 "-" 会解析报错）；退路 = 不带 q 重查 + 友好提示
     err = `搜索语法不合法："${q}"；已忽略 q 重新列出。`;
-    rows = queryReportIndex(db, { type, industry, from, to, sort, dir });
+    rows = queryReportIndex(db, filters);
   }
-  const hasFilter = !!(q || type || industry || from || to);
+  const hasFilter = !!(q || type || industry || topic || source || tag || entity || from || to);
 
   return (
     <section>
@@ -72,6 +86,36 @@ export default async function ReportsPage({
             <option key={i} value={i}>{i}</option>
           ))}
         </select>
+        <select name="topic" defaultValue={topic} aria-label="主题">
+          <option value="">全部主题</option>
+          {topics.map((t) => (
+            <option key={t.id} value={t.id}>{t.name}</option>
+          ))}
+        </select>
+        {sourceOptions.length ? (
+          <select name="source" defaultValue={source} aria-label="来源">
+            <option value="">全部来源</option>
+            {sourceOptions.map((s) => (
+              <option key={s.id} value={s.id}>{s.name}</option>
+            ))}
+          </select>
+        ) : null}
+        {tagOptions.length ? (
+          <select name="tag" defaultValue={tag} aria-label="标签">
+            <option value="">全部标签</option>
+            {tagOptions.map((t) => (
+              <option key={t} value={t}>{t}</option>
+            ))}
+          </select>
+        ) : null}
+        {entityOptions.length ? (
+          <select name="entity" defaultValue={entity} aria-label="实体">
+            <option value="">全部实体</option>
+            {entityOptions.map((e) => (
+              <option key={e} value={e}>{e}</option>
+            ))}
+          </select>
+        ) : null}
         <input type="date" name="from" defaultValue={from} aria-label="开始日期" />
         <input type="date" name="to" defaultValue={to} aria-label="结束日期" />
         <select name="sort" defaultValue={sort} aria-label="排序字段">
