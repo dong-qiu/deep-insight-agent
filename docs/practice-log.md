@@ -488,3 +488,19 @@
   - **policy 与 enforcement 要在文档里如实分开标注**：纪律门本身有价值（独立 review + 绿 CI 本就把问题挡在 main 外），但若不写明"靠自觉、非平台强制"，后人（含未来的自己）会误以为有硬拦截而松懈。修正后的 L0 既保留策略（不直推），又点明强制层缺失 + 升级后的开启基线，两层都说清。
   - **"计划档位能力"是隐性架构约束**：免费计划的 private 仓没有分支保护，和此前抓到的"Vercel serverless 文件系统是临时的"、"中转站不认某 SDK 字段"同类——**边界写在平台文档 / 计费档位里、撞上才知道**。写流程 / 选型时要把"当前计划能开什么"也当作约束输入，别假设付费档功能默认可用。
 - **后续动作**: 已做：L0 改为"走 PR、纪律门"并删除错误的"会被拒"，附升级 Pro 后的开启基线（API 路径 + 必需状态检查为 `ci.yml` 两个 job `typecheck · test · build` / `docker build` + approvals=0 + 禁 force push/删除 + 留 admin bypass + strict 不开）；两处文档改动各走独立 review→PR→CI 绿→squash 合并→删分支（#30 / #31）；项目记忆同步标注"强制保护当前不可用、纪律门"。待：升级 GitHub Pro（用户决策）后按基线一条命令写上保护。
+
+### 2026-06-15/16 · MVP 真机收口：合入 main ≠ 上线；以及自己埋进仓库的 node_modules 软链坑
+
+- **日期**: 2026-06-15 / 16
+- **情境**: 收口前对 gap 文档里一批"待真机验证"项（成本熔断 / 六段 / 报告推送 / hover / 筛选）逐项上生产 EC2 验证；最后 DCP-4 收口前清理 worktree 时发现 `git status` 不干净。
+- **观察**:
+  - **合入 main / CI 绿 ≠ 上线——真机验证第一步是核对部署版本**：触发的第一次深挖产出的是**旧两段式**报告（白花 ~$5.5）。一查生产镜像 build / 源 mtime 停在约 06-13，而六段（#19）、hover（#18）、筛选（#33/#36）都是 06-14/15 才合入 main。生产是 `deploy.sh` 手动 rsync+build、无 CD 跟 main，所以"main 有"不代表"生产有"。**在旧代码上验新功能 = 必然得出错误结论。** code-only 重部署（SSM 隧道 + rsync + `docker compose up --build`，保留生产 `.env.local`）后才验成。教训入 memory [[verify-check-deployed-version-first]]。
+  - **真机验证的最大产出常常不是"验证通过"，而是暴露部署 / 环境断层**：五项功能代码层面早有单测，真机这轮真正抓到的是"main 与生产之间隔着一次没做的部署"。呼应"文档=假设、求证"系列（[[2026-06-14 文档写的限制根因未必成立]] / [[2026-06-15 MVP 收尾]]）再加一层：**生产现状 ≠ main 现状**，验收要认生产那份运行物。
+  - **工具便利会反噬：自己把 node_modules 软链提交进了 main**：#33 在 worktree 里为省 `npm i` 做了 `ln -s 主仓/node_modules node_modules`，而 `.gitignore` 写的是 `node_modules/`（**尾斜杠只匹配目录、不匹配软链**），于是 `git add -A` 把这条软链纳入并提交（mode 120000、内容是绝对自指向路径）。后果：此后**每个 worktree 检出都 materialize 出 `node_modules -> node_modules` 死循环**，本地模块解析全挂（多次 "Too many levels of symbolic links"）；CI 不受影响（`npm ci` 先删后装）。靠 `git ls-tree HEAD node_modules` 看到 120000 才定位，#38 `git rm --cached` + 去尾斜杠根治。
+  - **临时放宽的"门"要带自恢复**：为放行当日已超额（$6.29>$5）的晚间 cron，把 `COST_LIMIT_DAILY` 临时抬到 $12；但若顺手就改回 $5，会把 1 小时后的 17:00 cron 直接熔断跳过。正确做法是**挂一个等"cron 出报告后再恢复 $5"的后台任务**，而不是按"明天"的直觉立刻改（UTC 与本地日期差还让"明天"判断出错——本地已 06-16、UTC 仍 06-15）。
+- **经验 / 教训**:
+  - **凡"真机/线上验证"，先确认被测物的版本 = 你以为的版本**（镜像 build 时间 / 源 mtime / 特征串 grep）。这步省掉，后面所有观察都可能建在旧物上。
+  - **`.gitignore` 的目录模式对软链无效**：要忽略"无论目录还是软链"的 `node_modules`，写**不带尾斜杠**的 `node_modules`。凡用 symlink 做依赖/产物的便利绕过，`git add` 前要意识到它可能不被既有 ignore 覆盖。
+  - **`git add -A` 对非常规文件类型（软链/特殊 mode）要警惕**；提交后留意 `git status` 里本不该出现的路径。
+  - **跨时区操作按 UTC 推理**：预算窗口、cron 触发都按 UTC，本地日期会误导"今天/明天"的判断；定时类收尾用"等到某事件发生"而非"等到明天"。
+- **后续动作**: 已做：六维筛选补齐（#33/#36）+ 文档同步（#34/#35/#37）；生产 code-only 重部署 + 逐项真机验证（mvp-gap §五）；node_modules 软链根治（#38）；成本上限自恢复后台任务；DCP-4 收口材料备齐（本 PR）。memory 新增 [[verify-check-deployed-version-first]]。待：负责人/架构师对 DCP-4 双签；升级 GitHub Pro 后开分支保护硬门。
