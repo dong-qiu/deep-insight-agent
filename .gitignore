@@ -1,5 +1,7 @@
 # Dependencies
-node_modules/
+# 注意：不带尾部斜杠——尾斜杠模式只匹配目录，不匹配「指向 node_modules 的符号链接」，
+# 导致 worktree 里手动建的 node_modules 软链被 `git add -A` 误纳入（#33 即此回归）。
+node_modules
 .pnp.*
 .yarn/
 
