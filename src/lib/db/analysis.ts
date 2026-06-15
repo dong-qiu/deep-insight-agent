@@ -17,8 +17,8 @@ export function saveAnalysisBatch(db: DB, batch: AnalysisBatch): void {
     });
     const insStmt = db.prepare(
       `INSERT INTO insight
-         (id,batch_id,topic_id,type,event_id,statement,importance,importance_basis,source_count,multi_source,time_window,confidence,language,is_followup,entities)
-       VALUES (@id,@batch_id,@topic_id,@type,@event_id,@statement,@importance,@importance_basis,@source_count,@multi_source,@time_window,@confidence,@language,@is_followup,@entities)`,
+         (id,batch_id,topic_id,type,event_id,statement,importance,importance_basis,source_count,multi_source,time_window,confidence,language,is_followup,entities,tags)
+       VALUES (@id,@batch_id,@topic_id,@type,@event_id,@statement,@importance,@importance_basis,@source_count,@multi_source,@time_window,@confidence,@language,@is_followup,@entities,@tags)`,
     );
     const citStmt = db.prepare(
       `INSERT INTO citation (insight_id,citation_index,content_item_id,quote,locator)
@@ -30,7 +30,7 @@ export function saveAnalysisBatch(db: DB, batch: AnalysisBatch): void {
         statement: ins.statement, importance: ins.importance, importance_basis: ins.importance_basis,
         source_count: ins.source_count, multi_source: b(ins.multi_source),
         time_window: j(ins.time_window), confidence: ins.confidence, language: ins.language,
-        is_followup: b(ins.is_followup ?? false), entities: j(ins.entities ?? []),
+        is_followup: b(ins.is_followup ?? false), entities: j(ins.entities ?? []), tags: j(ins.tags ?? []),
       });
       ins.citations.forEach((c, i) =>
         citStmt.run({
@@ -58,7 +58,7 @@ export function getAnalysisBatch(db: DB, id: string): AnalysisBatch | null {
       })),
       source_count: r.source_count, multi_source: r.multi_source === 1,
       time_window: JSON.parse(r.time_window), confidence: r.confidence ?? null, language: r.language,
-      is_followup: r.is_followup === 1, entities: JSON.parse(r.entities ?? "[]"),
+      is_followup: r.is_followup === 1, entities: JSON.parse(r.entities ?? "[]"), tags: JSON.parse(r.tags ?? "[]"),
     };
   });
   return {
@@ -86,7 +86,7 @@ export function getInsightsByIds(db: DB, ids: string[]): Insight[] {
       })),
       source_count: r.source_count, multi_source: r.multi_source === 1,
       time_window: JSON.parse(r.time_window), confidence: r.confidence ?? null, language: r.language,
-      is_followup: r.is_followup === 1, entities: JSON.parse(r.entities ?? "[]"),
+      is_followup: r.is_followup === 1, entities: JSON.parse(r.entities ?? "[]"), tags: JSON.parse(r.tags ?? "[]"),
     });
   }
   return out;

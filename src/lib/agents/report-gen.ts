@@ -111,7 +111,16 @@ export function buildReport(input: BuildReportInput): { report: Report; index: R
   const sourceIds = uniq(
     citedItemIds.map((cid) => input.contentLookup.get(cid)?.source_id).filter((s): s is string => !!s),
   );
-  const tags = uniq(citedItemIds.flatMap((cid) => input.contentLookup.get(cid)?.tags ?? []));
+  // 标签：以 analyzer 抽取的洞察主题标签为主（content_item.tags 多为空——RSS 少给 category），
+  // 二者并集去重，供报告库「标签」维度筛选。
+  const tags = uniq(
+    [
+      ...included.flatMap((x) => x.insight.tags ?? []),
+      ...citedItemIds.flatMap((cid) => input.contentLookup.get(cid)?.tags ?? []),
+    ]
+      .map((t) => t.trim())
+      .filter(Boolean),
+  );
   const eventIds = uniq(included.map((x) => x.insight.event_id).filter((e): e is string => !!e));
   const importance = included.length ? Math.max(...included.map((x) => x.insight.importance)) : 0;
   const summary = included.slice(0, 3).map((x) => x.insight.statement).join(" ");

@@ -86,6 +86,8 @@ export interface Insight {
   is_followup?: boolean;
   /** 实体追踪：analyzer 抽取的关键实体（缺省 []；旧库 migration 默认 '[]'）。 */
   entities?: Entity[];
+  /** 主题标签：analyzer 抽取的简短主题标签，供报告库「标签」维度筛选（缺省 []；旧库 migration 默认 '[]'）。 */
+  tags?: string[];
 }
 
 /** 分析批次（architecture 数据模型 · AnalysisBatch） */
@@ -279,6 +281,12 @@ export const LlmInsightSchema = z.object({
     )
     .default([])
     .describe("本条洞察涉及的关键实体（组织/人物/项目/产品），无则空数组；只列 statement 真实提及的，不臆造"),
+  tags: z
+    .array(z.string())
+    .default([])
+    .describe(
+      "本条洞察的 1–4 个主题标签（领域子方向/技术主题/事件类型，如 code-agent、供应链安全、benchmark、监管、开源模型），简洁名词短语，无则空数组；宁缺毋滥、不堆砌泛词（如 AI、技术）",
+    ),
 });
 
 /** analyzer 整体输出 */

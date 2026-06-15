@@ -48,6 +48,8 @@ function migrate(db: DB): void {
   ensureColumn(db, "insight", "is_followup", "is_followup INTEGER NOT NULL DEFAULT 0");
   // 实体追踪：analyzer 抽取的关键实体 JSON 数组；旧库补列默认 '[]'（重跑管线写正确值）。
   ensureColumn(db, "insight", "entities", "entities TEXT NOT NULL DEFAULT '[]'");
+  // 主题标签：analyzer 抽取的标签 JSON 数组，供报告库「标签」维度筛选；旧库补列默认 '[]'（重跑管线写正确值）。
+  ensureColumn(db, "insight", "tags", "tags TEXT NOT NULL DEFAULT '[]'");
 }
 
 let _db: DB | null = null;

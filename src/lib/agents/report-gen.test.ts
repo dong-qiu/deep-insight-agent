@@ -22,6 +22,7 @@ function batchOf(): AnalysisBatch {
         ],
         source_count: 2, multi_source: true, time_window: win, confidence: null, language: "zh",
         entities: [{ name: "OpenAI", type: "organization" }, { name: "Codex", type: "product" }],
+        tags: ["code-agent", "benchmark"],
       },
       {
         id: "i2", topic_id: "t1", type: "trend", event_id: null, statement: "S2", importance: 5,
@@ -29,6 +30,7 @@ function batchOf(): AnalysisBatch {
         citations: [{ content_item_id: "ci3", quote: "q3", locator: { paragraph_index: 0, char_start: 0, char_end: 1 } }],
         source_count: 1, multi_source: false, time_window: win, confidence: "high", language: "zh",
         entities: [{ name: "OpenAI", type: "organization" }, { name: "Anthropic", type: "organization" }],
+        tags: ["benchmark", "趋势"],
       },
       {
         id: "i3", topic_id: "t1", type: "aggregation", event_id: null, statement: "S3 all blocked", importance: 3,
@@ -36,6 +38,7 @@ function batchOf(): AnalysisBatch {
         citations: [{ content_item_id: "ci4", quote: "q4", locator: { paragraph_index: 0, char_start: 0, char_end: 1 } }],
         source_count: 1, multi_source: false, time_window: win, confidence: null, language: "zh",
         entities: [{ name: "排除不应出现", type: "project" }],
+        tags: ["排除标签不应出现"],
       },
     ],
   };
@@ -112,7 +115,9 @@ describe("buildReport 派生", () => {
 
   it("index 派生：source_ids / tags / importance / date / entity_names", () => {
     expect(index.source_ids.sort()).toEqual(["s_a", "s_b"]); // ci2(blocked) 不计入
-    expect(index.tags.sort()).toEqual(["t-x", "t-y"]);
+    // tags = analyzer 洞察标签（i1: code-agent/benchmark · i2: benchmark/趋势，去重）∪ content_item 标签（t-x/t-y）
+    expect(index.tags.slice().sort()).toEqual(["benchmark", "code-agent", "t-x", "t-y", "趋势"].sort());
+    expect(index.tags).not.toContain("排除标签不应出现"); // i3 全 blocked，其标签不泄漏
     expect(index.importance).toBe(5); // max(4,5)
     expect(index.date).toBe("2026-05-07");
     // 跨纳入洞察聚合实体名 + 去重（OpenAI 在 i1/i2 各出现一次 → 一次）；i3 全 blocked 被排除，其实体不泄漏
