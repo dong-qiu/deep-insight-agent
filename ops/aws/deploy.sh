@@ -28,6 +28,19 @@ if [ -f "$ROOT/.env" ]; then cp "$ROOT/.env" "$TMP_ENV"; else
 fi
 echo "==> 已准备容器版环境文件（剔除本地 DB_PATH/DATA_DIR；钉 COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT}）"
 
+# 投递前体检：本脚本 scp 会全量覆盖远程 .env.local。若运行时配置（成本熔断/报告推送）
+# 缺失，生产会静默降级——熔断失效=可能意外高成本、推送失效=用户收不到报告。仅告警不阻断
+# （未设=不限/不推 是合法选择）；本意如此可忽略，否则补进 $ROOT/.env.local 后重跑。见 operations.md §8/§14。
+MISS_RUNTIME=""
+for k in COST_LIMIT_DAILY COST_LIMIT_MONTHLY REPORT_PUSH PUBLIC_BASE_URL; do
+  grep -qE "^[[:space:]]*$k=" "$TMP_ENVLOCAL" || MISS_RUNTIME="$MISS_RUNTIME $k"
+done
+[ -n "$MISS_RUNTIME" ] && {
+  echo "⚠️  .env.local 缺运行时配置（非注释赋值）：$MISS_RUNTIME"
+  echo "    deploy 将全量覆盖远程 .env.local——缺这些会令生产「成本熔断 / 报告推送」静默失效。"
+  echo "    有意为之可忽略；否则 Ctrl-C，编辑 $ROOT/.env.local 取消注释填值后重跑。"
+}
+
 # 0) 等 cloud-init 装完 docker（最多 ~4 分钟）
 echo "==> 等待 cloud-init 完成（docker/swap/caddy）..."
 for i in $(seq 1 24); do

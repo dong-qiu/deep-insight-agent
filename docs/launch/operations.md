@@ -173,6 +173,11 @@ docker run --rm -v deep-insight_insight-data:/data -v "$PWD":/backup alpine \
 > - 验证别只看 `HTTP 200`（跨服务调用里 200 ≠ 成功，如飞书回 200+错误码）；用 `docker exec deep-insight-app-1 node /app/ops/probe-alert.mjs` 看渠道 + `code=0` + 真到达。
 > - 实战教训见 `docs/practice-log.md` 2026-06-08 条（接飞书告警时 `up -d` 跑旧 probe 报假成功）。
 
+> ⚠️ **运行时配置持久化（成本熔断 / 报告推送）**：`COST_LIMIT_DAILY`/`COST_LIMIT_MONTHLY`/`COST_ALERT_PCT`/`REPORT_PUSH`/`PUBLIC_BASE_URL` 这几个常在生产手动配。
+> - **`ops/aws/deploy.sh` 路径**：scp **全量覆盖**远程 `.env.local`（源 = 本地 `.env.local`，仅剔除 `DB_PATH`/`DATA_DIR`）。故生产值必须落进**本地** `.env.local`，否则下次 deploy 静默抹掉熔断/推送。已加两道护栏：`gen-env.sh` 重生成时**继承**旧 `.env.local` 的这些值；`deploy.sh` 投递前**体检缺失即告警**。
+> - **`deploy.yml`（CD）路径**：`git pull` 不碰 `.env.local`（operator 手动放服务器），故 CD 不会抹；但首次需在服务器 `.env.local` 配好。
+> - 仅调这几个值时：直接编辑服务器 `.env.local` 后 `docker compose up -d --force-recreate`（§7），**别重跑 `deploy.sh`/`gen-env.sh` 以免连带覆盖**；同时把值同步回本地 `.env.local` 留底。教训见 `docs/verify/mvp-gap-2026-06-07.md` §2.1。
+
 **CD（自动部署 · `.github/workflows/deploy.yml`）**：**手动触发**（Actions → Deploy → Run）或**推送 `v*` tag**（刻意发布）；**不**在 push main 自动部署（避免每次合并即上线）。流程 = SSH 到服务器 → `git pull --ff-only`（跟踪 main）→ 按服务器架构 `docker compose up -d --wait --build` → `image prune`。`up --wait` 不健康即非零退出 → 部署标红（健康门）。
 
 - **必需 secrets**（仓库 Settings → Secrets）：`DEPLOY_HOST` · `DEPLOY_USER` · `DEPLOY_SSH_KEY`（部署用户私钥）· `DEPLOY_KNOWN_HOSTS`（`ssh-keyscan -H 主机` 生成，固定主机公钥防中间人）· `DEPLOY_PATH`（服务器上仓库 clone 路径）·（可选 `DEPLOY_SSH_PORT`，默认 22）。
