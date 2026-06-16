@@ -1,11 +1,12 @@
-/** 主题页（product-definition 核心界面 line 235）：该主题的报告时间线、关键实体、重大事件标注。
+/** 主题页（product-definition 核心界面 line 235）：焦点演化、实体热度趋势、报告时间线。
  *  纯服务端组件 + 一个客户端深挖按钮（复用 settings 的 DeepDiveButton）。
- *  - 时间线：该主题全部报告按日期倒序，重要性 ≥4 标「重大」徽标；
- *  - 关键实体：跨报告聚合 entity_names，按出现频次降序取 Top；
+ *  - 焦点演化（ADR-0005 ①）：≥3 篇报告时按时间展示每期焦点标签的漂移；<3 篇降级隐藏；
+ *  - 实体热度趋势（ADR-0005 ②）：跨报告聚合 entity_names，sparkline + ↑↓→ 趋势 + 覆盖报告数；
+ *  - 报告时间线：该主题全部报告按日期倒序，重要性 ≥4 标「重大」徽标；
  *  - 入口：对该主题触发深挖（analyze→validate→report-gen，type=deep_dive）。 */
 import { notFound } from "next/navigation";
 import { getDb } from "../../../lib/db/index.js";
-import { queryReportIndex } from "../../../lib/db/reports.js";
+import { type EntityTrend, entityTrends, queryReportIndex, topicEvolution } from "../../../lib/db/reports.js";
 import { getTopic } from "../../../lib/db/repos.js";
 import { DeepDiveButton } from "../../settings/_components/deep-dive-button.js";
 
@@ -17,17 +18,18 @@ const TYPE_LABEL: Record<string, string> = {
   initial_digest: "首版综述",
 };
 
-/** 跨报告聚合实体 → [名称, 频次] 降序 Top N（同频次保持首次出现序，靠稳定排序）。 */
-function topEntities(entityLists: string[][], limit = 15): Array<[string, number]> {
-  const freq = new Map<string, number>();
-  for (const names of entityLists) {
-    for (const name of names) {
-      const k = name.trim();
-      if (k) freq.set(k, (freq.get(k) ?? 0) + 1);
-    }
-  }
-  return [...freq.entries()].sort((a, b) => b[1] - a[1]).slice(0, limit);
+// 演化轨迹需至少 N 篇报告才有「演化」可言（ADR-0005 选项 5），否则降级隐藏。
+const EVOLUTION_MIN_REPORTS = 3;
+
+// Unicode 块字符 sparkline——零依赖、随文本渲染（外层 .sparkline 钉等宽字体防错位）。
+const SPARK_BLOCKS = "▁▂▃▄▅▆▇█";
+function sparkline(buckets: number[]): string {
+  const max = Math.max(...buckets, 1);
+  return buckets.map((v) => SPARK_BLOCKS[Math.min(7, Math.round((v / max) * 7))]).join("");
 }
+
+const TREND_GLYPH: Record<EntityTrend["trend"], string> = { up: "↑", down: "↓", flat: "→" };
+const TREND_LABEL: Record<EntityTrend["trend"], string> = { up: "升温", down: "降温", flat: "平稳" };
 
 export default async function TopicPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -36,7 +38,8 @@ export default async function TopicPage({ params }: { params: Promise<{ id: stri
   if (!topic) notFound();
 
   const reports = queryReportIndex(db, { topic: id, sort: "date", dir: "desc", limit: 500 });
-  const entities = topEntities(reports.map((r) => r.entity_names));
+  const evolution = topicEvolution(reports); // 内部按日期升序（过去→现在）
+  const trends = entityTrends(reports);
 
   return (
     <section>
@@ -54,17 +57,56 @@ export default async function TopicPage({ params }: { params: Promise<{ id: stri
       </p>
       {topic.keywords.length ? <p className="muted">关键词：{topic.keywords.join(" / ")}</p> : null}
 
-      {entities.length ? (
+      {evolution.length >= EVOLUTION_MIN_REPORTS ? (
+        <>
+          <h3>焦点演化</h3>
+          <p className="muted evo-hint">每期焦点标签随时间的漂移（← 早 · 近 →）</p>
+          <ol className="evo-track">
+            {evolution.map((p) => {
+              const focus = p.focus_tags.length ? p.focus_tags : p.focus_entities;
+              return (
+                <li className="evo-point" key={p.report_id}>
+                  <a className="evo-date" href={`/reports/${p.report_id}`}>
+                    {p.date.slice(5)}
+                    {p.major ? (
+                      <span className="evo-major" title="重大">
+                        ★
+                      </span>
+                    ) : null}
+                  </a>
+                  <span className="evo-focus">
+                    {/* topicEvolution 已过滤空焦点点，focus 必非空 */}
+                    {focus.map((f) => (
+                      <span key={f} className="entity-tag">
+                        {f}
+                      </span>
+                    ))}
+                  </span>
+                </li>
+              );
+            })}
+          </ol>
+        </>
+      ) : null}
+
+      {trends.length ? (
         <>
           <h3>关键实体</h3>
-          <p>
-            {entities.map(([name, n]) => (
-              <span key={name} className="entity-tag">
-                {name}
-                {n > 1 ? <span className="muted"> ×{n}</span> : null}
-              </span>
+          <p className="muted">跨报告热度（数字 = 出现的报告数，非提及次数）</p>
+          <ul className="entity-trends">
+            {trends.map((e) => (
+              <li key={e.name} className="entity-trend">
+                <span className="entity-tag">{e.name}</span>
+                <span className="sparkline" aria-hidden="true">
+                  {sparkline(e.buckets)}
+                </span>
+                <span className={`trend trend-${e.trend}`} title={TREND_LABEL[e.trend]}>
+                  {TREND_GLYPH[e.trend]}
+                </span>
+                {e.total > 1 ? <span className="muted">×{e.total}</span> : null}
+              </li>
             ))}
-          </p>
+          </ul>
         </>
       ) : null}
 
