@@ -330,3 +330,96 @@ export function queryReportIndex(db: DB, opts: ReportQuery = {}): ReportIndexEnt
   } ORDER BY ${sortCol} ${dir}${tiebreak} LIMIT ${limit}`;
   return (db.prepare(sql).all(...args) as any[]).map(rowToIndex);
 }
+
+// ——— 主题持续聚合（ADR-0005）：确定性视图聚合，纯函数、零 LLM、零成本 ———
+// 数据源为报告级 report_index 行；调用方传入已查到的报告序列（如 queryReportIndex 结果），本层不再查库。
+
+/** 主题演化时间线的一个时间点（ADR-0005 ①）：某报告的焦点快照。
+ *  焦点取该报告 tags/entity_names 前 N——report_index 数组前缀≈高重要性洞察（ADR-0005 选项 3）。 */
+export interface EvolutionPoint {
+  date: string;
+  report_id: string;
+  type: ReportIndexEntry["type"];
+  title: string;
+  importance: number;
+  major: boolean; // importance >= 4
+  focus_tags: string[];
+  focus_entities: string[];
+}
+
+/** 按日期升序比较器（演化从过去到现在）；同日保持入参原序（V8 稳定排序）。 */
+const byDateAsc = (a: ReportIndexEntry, b: ReportIndexEntry): number =>
+  a.date < b.date ? -1 : a.date > b.date ? 1 : 0;
+
+/** 把主题报告序列折成「焦点演化」时间点（日期升序）。纯函数、确定性，不查库。
+ *  **只保留有焦点的点**：tags/entities 皆空的报告（如标签/实体抽取激活前生成的老报告）对「演化」无意义，
+ *  在此过滤——故调用方按返回长度判降级（有焦点点 <3 时整体隐藏，ADR-0005 选项 5）。 */
+export function topicEvolution(reports: ReportIndexEntry[], focusN = 3): EvolutionPoint[] {
+  return [...reports]
+    .sort(byDateAsc)
+    .map((r) => ({
+      date: r.date,
+      report_id: r.report_id,
+      type: r.type,
+      title: r.title,
+      importance: r.importance,
+      major: r.importance >= 4,
+      focus_tags: r.tags.slice(0, focusN),
+      focus_entities: r.entity_names.slice(0, focusN),
+    }))
+    .filter((p) => p.focus_tags.length > 0 || p.focus_entities.length > 0);
+}
+
+export type Trend = "up" | "down" | "flat";
+
+/** 实体热度趋势（ADR-0005 ②）。total = 出现的**报告覆盖数**（非提及次数，受报告级粒度所限）。 */
+export interface EntityTrend {
+  name: string;
+  total: number;
+  buckets: number[]; // 按报告时间序位等分桶的出现计数，供 sparkline
+  trend: Trend;
+}
+
+/** 跨报告聚合实体热度趋势：时间序位分桶画 sparkline + 前后半比较判趋势。纯函数、确定性。
+ *  返回按 total 降序的 Top `limit`（对齐主题页关键实体口径）。
+ *  - buckets：报告按日期升序后等分 N=min(8, 报告数) 桶（rank-based，规避稀疏期空桶/离群日期）；
+ *  - trend：后半段出现数 vs 前半段；total<2 → flat（少样本防抖，ADR-0005 选项 4）。 */
+export function entityTrends(reports: ReportIndexEntry[], limit = 15): EntityTrend[] {
+  const sorted = [...reports].sort(byDateAsc);
+  const len = sorted.length;
+  if (len === 0) return [];
+  const bucketCount = Math.min(8, len);
+  const mid = Math.floor(len / 2);
+
+  const acc = new Map<string, { buckets: number[]; first: number; second: number; total: number }>();
+  sorted.forEach((r, i) => {
+    const bIdx = Math.min(bucketCount - 1, Math.floor((i * bucketCount) / len));
+    const seen = new Set<string>(); // entity_names 本已去重，防御脏数据重复计数
+    for (const raw of r.entity_names) {
+      const name = raw.trim();
+      if (!name || seen.has(name)) continue;
+      seen.add(name);
+      let e = acc.get(name);
+      if (!e) {
+        e = { buckets: new Array(bucketCount).fill(0), first: 0, second: 0, total: 0 };
+        acc.set(name, e);
+      }
+      e.buckets[bIdx] += 1;
+      e.total += 1;
+      if (i < mid) e.first += 1;
+      else e.second += 1;
+    }
+  });
+
+  const out: EntityTrend[] = [];
+  for (const [name, e] of acc) {
+    let trend: Trend = "flat";
+    if (e.total >= 2) {
+      if (e.second > e.first) trend = "up";
+      else if (e.second < e.first) trend = "down";
+    }
+    out.push({ name, total: e.total, buckets: e.buckets, trend });
+  }
+  // total 降序；同频保持 Map 迭代序（≈首次出现序）稳定
+  return out.sort((a, b) => b.total - a.total).slice(0, limit);
+}

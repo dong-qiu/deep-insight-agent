@@ -17,6 +17,22 @@ nav a { margin-right: 1rem; }
 /* 主题页（IA「主题」）：关键实体标签 + 重大事件徽标 */
 .entity-tag { display: inline-block; margin: 0 .4rem .4rem 0; padding: .1rem .5rem; background: #f3f4f6; border-radius: 12px; font-size: .85rem; }
 .major-badge { display: inline-block; margin-left: .5rem; padding: 0 .4rem; background: #b45309; color: #fff; border-radius: 4px; font-size: .75rem; vertical-align: middle; }
+/* 焦点演化轨迹（ADR-0005 ①）：横向时间流，溢出可横向滚动 */
+.evo-hint { margin: 0 0 .5rem; font-size: .85rem; }
+.evo-track { display: flex; gap: 0; list-style: none; padding: 0; margin: 0 0 1rem; overflow-x: auto; }
+.evo-point { flex: 0 0 auto; min-width: 7rem; max-width: 11rem; padding: 0 .75rem; border-left: 2px solid #e5e7eb; }
+.evo-point:first-child { border-left: none; padding-left: 0; }
+.evo-date { display: block; font-size: .85rem; font-weight: 600; margin-bottom: .35rem; white-space: nowrap; }
+.evo-major { margin-left: .25rem; color: #b45309; }
+.evo-focus { display: flex; flex-wrap: wrap; }
+/* 实体热度趋势（ADR-0005 ②）：标签 + sparkline + 趋势徽标一行 */
+.entity-trends { list-style: none; padding: 0; margin: 0 0 1rem; }
+.entity-trend { display: flex; align-items: center; gap: .5rem; margin: .25rem 0; }
+.sparkline { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: -1px; color: #6b7280; line-height: 1; }
+.trend { font-weight: 700; }
+.trend-up { color: #15803d; }
+.trend-down { color: #b45309; }
+.trend-flat { color: #9ca3af; }
 /* 校验下钻（A2）：折叠区，不抢主报告视线 */
 .audit { margin-top: 1.5rem; border-top: 1px dashed #e5e7eb; padding-top: 1rem; }
 .audit > summary { cursor: pointer; font-weight: 600; color: #b45309; }
@@ -224,6 +240,7 @@ nav a { margin-right: 1rem; }
   a { color: #60a5fa; }
   .card { border-color: #1f2937; }
   .entity-tag { background: #1f2937; }
+  .evo-point { border-left-color: #1f2937; }
 }
 
 /* 报告页内追问（A4） */
