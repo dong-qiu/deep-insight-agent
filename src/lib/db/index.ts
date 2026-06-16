@@ -50,6 +50,12 @@ function migrate(db: DB): void {
   ensureColumn(db, "insight", "entities", "entities TEXT NOT NULL DEFAULT '[]'");
   // 主题标签：analyzer 抽取的标签 JSON 数组，供报告库「标签」维度筛选；旧库补列默认 '[]'（重跑管线写正确值）。
   ensureColumn(db, "insight", "tags", "tags TEXT NOT NULL DEFAULT '[]'");
+  // 一句话要点（headline 方案）：analyzer 为每条洞察产出的 ≤40 字浓缩，供列表卡片扫读；
+  // 旧库补列默认 ''（重跑管线写正确值，渲染端回退到 statement）。
+  ensureColumn(db, "insight", "headline", "headline TEXT NOT NULL DEFAULT ''");
+  // 卡片要点列表（headline 方案）：report_index 派生的 headline 数组，取代 summary 拼接长串供卡片分点扫读；
+  // 旧报告补列默认 '[]'（重生报告写正确值，渲染端回退到 summary）。
+  ensureColumn(db, "report_index", "highlights", "highlights TEXT NOT NULL DEFAULT '[]'");
   // 里程碑自动标注（ADR-0006）：report_index 派生的里程碑洞察计数（importance≥5 + 非追加 + aggregation），
   // 供主题页徽标/里程碑时间线；旧报告补列默认 0（重生报告写正确值）。
   ensureColumn(db, "report_index", "milestone_count", "milestone_count INTEGER NOT NULL DEFAULT 0");

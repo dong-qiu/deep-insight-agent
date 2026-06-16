@@ -19,7 +19,7 @@ const batch: AnalysisBatch = {
   status: "done", no_significant_event: false,
   insights: [
     {
-      id: "i1", topic_id: "t1", type: "aggregation", event_id: null, statement: "S1",
+      id: "i1", topic_id: "t1", type: "aggregation", event_id: null, statement: "S1", headline: "H1",
       importance: 4, importance_basis: "basis",
       citations: [{ content_item_id: "ci1", quote: "q1", locator: { paragraph_index: 0, char_start: 0, char_end: 2 } }],
       source_count: 1, multi_source: false, time_window: { start: "2026-05-01", end: "2026-05-07" },
@@ -28,7 +28,7 @@ const batch: AnalysisBatch = {
       tags: ["code-agent", "benchmark"],
     },
     {
-      id: "i2", topic_id: "t1", type: "trend", event_id: "evt_x", statement: "S2",
+      id: "i2", topic_id: "t1", type: "trend", event_id: "evt_x", statement: "S2", headline: "H2",
       importance: 5, importance_basis: "b2",
       citations: [
         { content_item_id: "ci1", quote: "q2a", locator: { paragraph_index: 0, char_start: 3, char_end: 5 } },

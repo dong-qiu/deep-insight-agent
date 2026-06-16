@@ -19,6 +19,10 @@ export interface IncludedInsight {
 /** 里程碑判定的重要性下限（ADR-0006）：可调常量——6/23 看真实里程碑数量再校准（太严=永远没有、太松=稀释）。 */
 export const MILESTONE_MIN_IMPORTANCE = 5;
 
+/** 列表卡片要点上限（headline 方案）：卡片只展示前 N 条 headline 供扫读，其余留详情页。
+ *  5 条够覆盖一期 brief 的重点又不至于把卡片撑回一面墙。 */
+export const HIGHLIGHTS_MAX = 5;
+
 /** 里程碑洞察判定（ADR-0006）：最高重要性 + 新事件（非追加）+ 具体事件聚合（非趋势）。
  *  纯函数、确定性——里程碑 =「主题里发生的重大新事件节点」；趋势变化已由焦点演化（ADR-0005）承载，故排除 trend。
  *  is_followup 仅在 brief 路径精准（analyzer 喂历史 event 池），deep_dive/initial_digest 默认 false，符合「首报即新事件」语义。 */
@@ -140,6 +144,12 @@ export function buildReport(input: BuildReportInput): { report: Report; index: R
   // 里程碑计数（ADR-0006）：纳入洞察中符合里程碑判定的条数，派生进 report_index 供主题页徽标/时间线。
   const milestoneCount = included.filter((x) => isMilestoneInsight(x.insight)).length;
   const summary = included.slice(0, 3).map((x) => x.insight.statement).join(" ");
+  // 卡片要点列表（headline 方案）：按重要性降序取前 N 条洞察的一句话 headline，供列表卡片分点扫读，
+  // 取代把多条长 statement 拼成一坨的 summary。headline 缺失（旧批次/未产出）则回退该条 statement。
+  const highlights = [...included]
+    .sort((a, b) => b.insight.importance - a.insight.importance)
+    .slice(0, HIGHLIGHTS_MAX)
+    .map((x) => x.insight.headline?.trim() || x.insight.statement);
   // 实体追踪：跨纳入洞察聚合关键实体名（去重保序），供主题页「关键实体」按报告频次再聚合。
   const entityNames = uniq(included.flatMap((x) => (x.insight.entities ?? []).map((e) => e.name.trim()).filter(Boolean)));
 
@@ -155,7 +165,7 @@ export function buildReport(input: BuildReportInput): { report: Report; index: R
   };
   const index: ReportIndexEntry = {
     report_id: id, type: input.type, topic_id: input.topic.id, industry: input.topic.industry, date,
-    source_ids: sourceIds, title, summary, tags, entity_names: entityNames, importance, event_ids: eventIds,
+    source_ids: sourceIds, title, summary, highlights, tags, entity_names: entityNames, importance, event_ids: eventIds,
     milestone_count: milestoneCount,
   };
   return { report, index };

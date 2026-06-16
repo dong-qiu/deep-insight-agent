@@ -72,6 +72,9 @@ export interface Insight {
   type: "aggregation" | "trend";
   event_id: string | null;
   statement: string;
+  /** 一句话要点（headline 方案）：statement 的 ≤40 字浓缩，结论/数字/主体前置，供列表卡片扫读。
+   *  analyzer 产出；缺省 ""（旧库 migration 默认 ''，渲染端回退到 statement）。 */
+  headline?: string;
   importance: number; // 1–5
   importance_basis: string;
   citations: Citation[];
@@ -215,6 +218,10 @@ export interface ReportIndexEntry {
   source_ids: string[];
   title: string;
   summary: string;
+  /** 卡片要点列表（headline 方案）：纳入洞察的一句话 headline，按重要性降序取前 N，供列表卡片
+   *  分点扫读（取代把多条 statement 拼成一坨的 summary）。空数组 → 渲染端回退到 summary。
+   *  旧报告 migration 默认 '[]'（重生报告写正确值）。 */
+  highlights: string[];
   tags: string[];
   entity_names: string[];
   importance: number;
@@ -254,6 +261,11 @@ export const LlmCitationSchema = z.object({
 /** analyzer 产出的单条洞察 */
 export const LlmInsightSchema = z.object({
   statement: z.string().describe("结论文本，中性叙述，不预测、不评论"),
+  headline: z
+    .string()
+    .describe(
+      "一句话要点（≤40 字），供列表卡片快速扫读：把最关键的结论/数字/主体放句首，去掉铺垫与从句；须是 statement 的忠实浓缩，不得引入 statement 没有的事实、不得放大。",
+    ),
   type: z.enum(["aggregation", "trend"]).describe("aggregation=主题聚合 / trend=趋势识别"),
   importance: z.number().int().min(1).max(5).describe("重要性 1–5"),
   importance_basis: z.string().describe("评分依据，须可追溯到证据或规则"),

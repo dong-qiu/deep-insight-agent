@@ -147,6 +147,21 @@ describe("buildReport 派生", () => {
     expect(index.milestone_count).toBe(0);
   });
 
+  it("highlights（headline 方案）：按重要性降序取 headline；缺 headline 回退 statement", () => {
+    // 本 fixture 未设 headline → 回退 statement；i2(imp5) 在 i1(imp4) 前；i3 全 blocked 不计入
+    expect(index.highlights).toEqual(["S2", "S1"]);
+  });
+
+  it("highlights：有 headline 时用 headline（不是完整 statement）", () => {
+    const batch = batchOf();
+    batch.insights[0].headline = "H1 要点"; // i1 imp4
+    batch.insights[1].headline = "H2 要点"; // i2 imp5
+    const { index: idx } = buildReport({
+      topic, batch, validation, type: "brief", contentLookup: lookup, now: "2026-05-07T08:00:00Z",
+    });
+    expect(idx.highlights).toEqual(["H2 要点", "H1 要点"]); // imp 降序
+  });
+
   it("milestone_count：importance=5 的新 aggregation 洞察计入（trend/低分不计）", () => {
     const batch = batchOf();
     batch.insights[0].importance = 5; // i1 升到 5 → 里程碑（aggregation · 非 followup · 最高分）
