@@ -17,6 +17,9 @@ nav a { margin-right: 1rem; }
 /* 主题页（IA「主题」）：关键实体标签 + 重大事件徽标 */
 .entity-tag { display: inline-block; margin: 0 .4rem .4rem 0; padding: .1rem .5rem; background: #f3f4f6; border-radius: 12px; font-size: .85rem; }
 .major-badge { display: inline-block; margin-left: .5rem; padding: 0 .4rem; background: #b45309; color: #fff; border-radius: 4px; font-size: .75rem; vertical-align: middle; }
+/* 里程碑（ADR-0006）：重大新事件节点徽标 + 里程碑时间线卡片左饰条 */
+.milestone-badge { display: inline-block; margin-left: .5rem; padding: 0 .4rem; background: #7c3aed; color: #fff; border-radius: 4px; font-size: .75rem; vertical-align: middle; }
+.milestone-card { border-left: 3px solid #7c3aed; }
 /* 焦点演化轨迹（ADR-0005 ①）：横向时间流，溢出可横向滚动 */
 .evo-hint { margin: 0 0 .5rem; font-size: .85rem; }
 .evo-track { display: flex; gap: 0; list-style: none; padding: 0; margin: 0 0 1rem; overflow-x: auto; }

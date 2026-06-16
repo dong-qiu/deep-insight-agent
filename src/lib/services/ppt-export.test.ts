@@ -75,7 +75,7 @@ const report: Report = {
 const reportIndex: ReportIndexEntry = {
   report_id: "rep_t1", type: "brief", topic_id: "t1", industry: "ai-swe", date: "2026-06-07",
   source_ids: ["s1"], title: "测试报告", summary: "x", tags: [], entity_names: [],
-  importance: 5, event_ids: [],
+  importance: 5, event_ids: [], milestone_count: 0,
 };
 
 const PPTX_MAGIC = Buffer.from([0x50, 0x4b, 0x03, 0x04]);

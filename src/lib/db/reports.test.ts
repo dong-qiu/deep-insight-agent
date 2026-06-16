@@ -32,12 +32,18 @@ const report: Report = {
 const index: ReportIndexEntry = {
   report_id: "rep_test1", type: "brief", topic_id: "t1", industry: "ai-swe", date: "2026-05-07",
   source_ids: ["s_a"], title: "Code Agent Brief", summary: "Reward hacking persists.", tags: ["t-x"],
-  entity_names: [], importance: 5, event_ids: ["e1"],
+  entity_names: [], importance: 5, event_ids: ["e1"], milestone_count: 0,
 };
 
 it("saveReport → getReport 往返（正文走 FS）", () => {
   saveReport(db, report, index, { dir });
   expect(getReport(db, "rep_test1")).toEqual(report);
+});
+
+it("report_index 往返保留 milestone_count（ADR-0006）", () => {
+  saveReport(db, report, { ...index, milestone_count: 2 }, { dir });
+  const [row] = queryReportIndex(db, { topic: "t1" });
+  expect(row.milestone_count).toBe(2);
 });
 
 it("latestReportForTopicSince：只认 since 之后本主题最新的【已完成深挖】报告（深挖进度 3.3 终态链接）", () => {
@@ -129,10 +135,10 @@ it("FS 正文缺失（孤儿 DB 行）→ getReport 兜底占位、不抛", () =
 describe("queryReportIndex（B-1+2 报告库筛/搜/排）", () => {
   // 4 条多样化样本
   const samples: ReportIndexEntry[] = [
-    { report_id: "r1", type: "brief", topic_id: "t_swe", industry: "ai-swe", date: "2026-06-01", source_ids: ["s1"], title: "AI 软件工程·6月1日", summary: "DHH AI 编码", tags: ["trend"], entity_names: ["DHH"], importance: 5, event_ids: [] },
-    { report_id: "r2", type: "deep_dive", topic_id: "t_swe", industry: "ai-swe", date: "2026-06-05", source_ids: ["s1", "s3"], title: "深度·Coding Agent", summary: "Cursor Composer", tags: ["trend", "practice"], entity_names: ["Cursor"], importance: 4, event_ids: [] },
-    { report_id: "r3", type: "brief", topic_id: "t_sec", industry: "ai-security", date: "2026-06-03", source_ids: ["s2"], title: "AI 安全·6月3日", summary: "Prompt injection 案例", tags: ["case"], entity_names: [], importance: 3, event_ids: [] },
-    { report_id: "r4", type: "initial_digest", topic_id: "t_sec", industry: "ai-security", date: "2026-05-20", source_ids: ["s2"], title: "首版·ATLAS 综述", summary: "MITRE ATLAS", tags: [], entity_names: ["MITRE"], importance: 5, event_ids: [] },
+    { report_id: "r1", type: "brief", topic_id: "t_swe", industry: "ai-swe", date: "2026-06-01", source_ids: ["s1"], title: "AI 软件工程·6月1日", summary: "DHH AI 编码", tags: ["trend"], entity_names: ["DHH"], importance: 5, event_ids: [], milestone_count: 0 },
+    { report_id: "r2", type: "deep_dive", topic_id: "t_swe", industry: "ai-swe", date: "2026-06-05", source_ids: ["s1", "s3"], title: "深度·Coding Agent", summary: "Cursor Composer", tags: ["trend", "practice"], entity_names: ["Cursor"], importance: 4, event_ids: [], milestone_count: 0 },
+    { report_id: "r3", type: "brief", topic_id: "t_sec", industry: "ai-security", date: "2026-06-03", source_ids: ["s2"], title: "AI 安全·6月3日", summary: "Prompt injection 案例", tags: ["case"], entity_names: [], importance: 3, event_ids: [], milestone_count: 0 },
+    { report_id: "r4", type: "initial_digest", topic_id: "t_sec", industry: "ai-security", date: "2026-05-20", source_ids: ["s2"], title: "首版·ATLAS 综述", summary: "MITRE ATLAS", tags: [], entity_names: ["MITRE"], importance: 5, event_ids: [], milestone_count: 0 },
   ];
 
   beforeEach(() => {
@@ -302,7 +308,7 @@ describe("listRecentBriefEvents（P1 不复报 · 喂 analyzer 的历史事件�
       };
       const idx: ReportIndexEntry = {
         report_id: reportId, type, topic_id: "t1", industry: "ai-swe", date,
-        source_ids: [], title: rep.title, summary: "", tags: [], entity_names: [], importance: 4, event_ids: [],
+        source_ids: [], title: rep.title, summary: "", tags: [], entity_names: [], importance: 4, event_ids: [], milestone_count: 0,
       };
       saveReport(db, rep, idx, { dir });
     };
@@ -350,6 +356,7 @@ describe("主题持续聚合（ADR-0005）纯函数", () => {
     type: "brief", topic_id: "t1", industry: "ai-swe", source_ids: [],
     title: o.report_id, summary: "", tags: [], entity_names: [], importance: 1, event_ids: [],
     ...o,
+    milestone_count: o.milestone_count ?? 0,
   });
 
   describe("topicEvolution", () => {
