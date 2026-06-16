@@ -5,6 +5,7 @@
 import { getDb } from "../../lib/db/index.js";
 import { distinctIndexValues, queryReportIndex } from "../../lib/db/reports.js";
 import { listSources, listTopics } from "../../lib/db/repos.js";
+import { ReportCard } from "../_components/report-card.js";
 
 export const dynamic = "force-dynamic";
 
@@ -146,17 +147,7 @@ export default async function ReportsPage({
             : "暂无报告。后端管线产出后会出现在这里。"}
         </p>
       ) : (
-        rows.map((r) => (
-          <article className="card" key={r.report_id}>
-            <h3>
-              <a href={`/reports/${r.report_id}`}>{r.title}</a>
-            </h3>
-            <p className="muted">
-              {TYPE_LABEL[r.type] ?? r.type} · {r.industry} · {r.date} · 重要性 {r.importance}
-            </p>
-            <p>{r.summary || "（无摘要）"}</p>
-          </article>
-        ))
+        rows.map((r) => <ReportCard entry={r} showTypeLabel key={r.report_id} />)
       )}
     </section>
   );

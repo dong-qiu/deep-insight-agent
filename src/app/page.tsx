@@ -1,5 +1,6 @@
 import { getDb } from "../lib/db/index.js";
 import { listReportIndex } from "../lib/db/reports.js";
+import { ReportCard } from "./_components/report-card.js";
 
 export const dynamic = "force-dynamic";
 
@@ -13,17 +14,7 @@ export default function Home() {
           暂无 Brief。后端定时生成后会出现在这里（全部报告见 <a href="/reports">报告库</a>）。
         </p>
       ) : (
-        briefs.map((r) => (
-          <article className="card" key={r.report_id}>
-            <h3>
-              <a href={`/reports/${r.report_id}`}>{r.title}</a>
-            </h3>
-            <p className="muted">
-              {r.date} · {r.industry} · 重要性 {r.importance}
-            </p>
-            <p>{r.summary || "（无摘要）"}</p>
-          </article>
-        ))
+        briefs.map((r) => <ReportCard entry={r} key={r.report_id} />)
       )}
     </section>
   );

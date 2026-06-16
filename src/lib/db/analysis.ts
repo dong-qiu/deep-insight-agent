@@ -17,8 +17,8 @@ export function saveAnalysisBatch(db: DB, batch: AnalysisBatch): void {
     });
     const insStmt = db.prepare(
       `INSERT INTO insight
-         (id,batch_id,topic_id,type,event_id,statement,importance,importance_basis,source_count,multi_source,time_window,confidence,language,is_followup,entities,tags)
-       VALUES (@id,@batch_id,@topic_id,@type,@event_id,@statement,@importance,@importance_basis,@source_count,@multi_source,@time_window,@confidence,@language,@is_followup,@entities,@tags)`,
+         (id,batch_id,topic_id,type,event_id,statement,headline,importance,importance_basis,source_count,multi_source,time_window,confidence,language,is_followup,entities,tags)
+       VALUES (@id,@batch_id,@topic_id,@type,@event_id,@statement,@headline,@importance,@importance_basis,@source_count,@multi_source,@time_window,@confidence,@language,@is_followup,@entities,@tags)`,
     );
     const citStmt = db.prepare(
       `INSERT INTO citation (insight_id,citation_index,content_item_id,quote,locator)
@@ -27,7 +27,7 @@ export function saveAnalysisBatch(db: DB, batch: AnalysisBatch): void {
     for (const ins of batch.insights) {
       insStmt.run({
         id: ins.id, batch_id: batch.id, topic_id: ins.topic_id, type: ins.type, event_id: ins.event_id,
-        statement: ins.statement, importance: ins.importance, importance_basis: ins.importance_basis,
+        statement: ins.statement, headline: ins.headline ?? "", importance: ins.importance, importance_basis: ins.importance_basis,
         source_count: ins.source_count, multi_source: b(ins.multi_source),
         time_window: j(ins.time_window), confidence: ins.confidence, language: ins.language,
         is_followup: b(ins.is_followup ?? false), entities: j(ins.entities ?? []), tags: j(ins.tags ?? []),
@@ -52,7 +52,7 @@ export function getAnalysisBatch(db: DB, id: string): AnalysisBatch | null {
       .all(r.id) as any[];
     return {
       id: r.id, topic_id: r.topic_id, type: r.type, event_id: r.event_id ?? null,
-      statement: r.statement, importance: r.importance, importance_basis: r.importance_basis,
+      statement: r.statement, headline: r.headline ?? "", importance: r.importance, importance_basis: r.importance_basis,
       citations: cits.map((c) => ({
         content_item_id: c.content_item_id, quote: c.quote, locator: JSON.parse(c.locator),
       })),
@@ -80,7 +80,7 @@ export function getInsightsByIds(db: DB, ids: string[]): Insight[] {
     const cits = citStmt.all(id) as any[];
     out.push({
       id: r.id, topic_id: r.topic_id, type: r.type, event_id: r.event_id ?? null,
-      statement: r.statement, importance: r.importance, importance_basis: r.importance_basis,
+      statement: r.statement, headline: r.headline ?? "", importance: r.importance, importance_basis: r.importance_basis,
       citations: cits.map((c) => ({
         content_item_id: c.content_item_id, quote: c.quote, locator: JSON.parse(c.locator),
       })),

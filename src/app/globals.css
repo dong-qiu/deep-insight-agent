@@ -14,6 +14,23 @@ nav a { margin-right: 1rem; }
 .card { border: 1px solid #e5e7eb; border-radius: 8px; padding: .75rem 1rem; margin: .75rem 0; }
 .card h3 { margin: 0 0 .25rem; font-size: 1.05rem; }
 .card h4 { margin: 0 0 .25rem; font-size: 1rem; }
+/* 卡片要点列表（headline 方案）：把原本拼成一坨的摘要拆成可扫读的一句话要点 */
+.brief-highlights { margin: .35rem 0 0; padding-left: 1.15rem; }
+.brief-highlights li { margin: .25rem 0; line-height: 1.5; }
+/* 卡片 meta 行：让重要性徽标与日期/行业基线对齐 */
+.card-meta { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; }
+/* 重要性彩色徽标（增强①）：替代灰字"重要性 N"，按档位配色，4–5 醒目引导视线 */
+.imp-badge { display: inline-block; padding: 0 .4rem; border-radius: 4px; font-size: .75rem; font-weight: 600; color: #fff; }
+.imp-5 { background: #dc2626; }
+.imp-4 { background: #ea580c; }
+.imp-3 { background: #6b7280; }
+.imp-low { background: #9ca3af; }
+/* 实体 / 标签 chips（增强②）：一眼看出"讲的是谁 / 什么话题"。实体复用 .entity-tag 灰胶囊，标签描边区分 */
+.card-chips { margin: .4rem 0 0; display: flex; flex-wrap: wrap; align-items: center; }
+.tag-chip { display: inline-block; margin: 0 .4rem .4rem 0; padding: .1rem .5rem; border: 1px solid #d1d5db; border-radius: 12px; font-size: .8rem; color: #6b7280; }
+@media (prefers-color-scheme: dark) {
+  .tag-chip { border-color: #374151; }
+}
 /* 主题页（IA「主题」）：关键实体标签 + 重大事件徽标 */
 .entity-tag { display: inline-block; margin: 0 .4rem .4rem 0; padding: .1rem .5rem; background: #f3f4f6; border-radius: 12px; font-size: .85rem; }
 .major-badge { display: inline-block; margin-left: .5rem; padding: 0 .4rem; background: #b45309; color: #fff; border-radius: 4px; font-size: .75rem; vertical-align: middle; }

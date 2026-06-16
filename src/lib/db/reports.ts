@@ -40,12 +40,12 @@ export function saveReport(
         prev_report_id: report.prev_report_id, citation_count: report.citation_count, cost: j(report.cost),
       });
       db.prepare(
-        `INSERT INTO report_index (report_id,type,topic_id,industry,date,source_ids,title,summary,tags,entity_names,importance,event_ids,milestone_count)
-         VALUES (@report_id,@type,@topic_id,@industry,@date,@source_ids,@title,@summary,@tags,@entity_names,@importance,@event_ids,@milestone_count)`,
+        `INSERT INTO report_index (report_id,type,topic_id,industry,date,source_ids,title,summary,highlights,tags,entity_names,importance,event_ids,milestone_count)
+         VALUES (@report_id,@type,@topic_id,@industry,@date,@source_ids,@title,@summary,@highlights,@tags,@entity_names,@importance,@event_ids,@milestone_count)`,
       ).run({
         report_id: index.report_id, type: index.type, topic_id: index.topic_id, industry: index.industry,
         date: index.date, source_ids: j(index.source_ids), title: index.title, summary: index.summary,
-        tags: j(index.tags), entity_names: j(index.entity_names), importance: index.importance,
+        highlights: j(index.highlights), tags: j(index.tags), entity_names: j(index.entity_names), importance: index.importance,
         event_ids: j(index.event_ids), milestone_count: index.milestone_count,
       });
       db.prepare(`INSERT INTO report_fts (report_id,title,summary,body) VALUES (?,?,?,?)`).run(
@@ -249,6 +249,7 @@ function rowToIndex(r: any): ReportIndexEntry {
   return {
     report_id: r.report_id, type: r.type, topic_id: r.topic_id, industry: r.industry, date: r.date,
     source_ids: JSON.parse(r.source_ids), title: r.title, summary: r.summary,
+    highlights: JSON.parse(r.highlights ?? "[]"),
     tags: JSON.parse(r.tags), entity_names: JSON.parse(r.entity_names), importance: r.importance,
     event_ids: JSON.parse(r.event_ids), milestone_count: r.milestone_count ?? 0,
   };
