@@ -156,7 +156,8 @@ CREATE TABLE IF NOT EXISTS report_index (
   tags         TEXT NOT NULL DEFAULT '[]',
   entity_names TEXT NOT NULL DEFAULT '[]',
   importance   INTEGER NOT NULL,
-  event_ids    TEXT NOT NULL DEFAULT '[]'
+  event_ids    TEXT NOT NULL DEFAULT '[]',
+  milestone_count INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_report_index_topic ON report_index(topic_id);
 CREATE INDEX IF NOT EXISTS idx_report_index_date  ON report_index(date);

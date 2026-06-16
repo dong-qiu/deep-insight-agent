@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AnalysisBatch, ContentItem, Topic, ValidationResult } from "../types.js";
-import { buildReport, selectInsights } from "./report-gen.js";
+import { buildReport, isMilestoneInsight, selectInsights } from "./report-gen.js";
 import { flagLabel } from "../utils/citation-verdict.js";
 
 const topic: Topic = {
@@ -53,6 +53,25 @@ const validation: ValidationResult = {
   ],
   report: { total: 4, pass: 1, blocked: 2, flagged: 1, errored: 0, consistency_failure_rate: 0.25, flagged_rate: 0.25, insights_total: 3, insights_includable: 2, releasable: true },
 };
+
+describe("isMilestoneInsight（ADR-0006 里程碑判定真值表）", () => {
+  const base = batchOf().insights[0]; // i1: aggregation；is_followup 未设
+  it("importance=5 + 新事件 + aggregation → 里程碑", () => {
+    expect(isMilestoneInsight({ ...base, importance: 5, type: "aggregation", is_followup: false })).toBe(true);
+  });
+  it("importance=4 未达门槛 → 否", () => {
+    expect(isMilestoneInsight({ ...base, importance: 4, type: "aggregation", is_followup: false })).toBe(false);
+  });
+  it("trend 类（趋势已由焦点演化承载）→ 否", () => {
+    expect(isMilestoneInsight({ ...base, importance: 5, type: "trend", is_followup: false })).toBe(false);
+  });
+  it("追加进展 is_followup=true → 否", () => {
+    expect(isMilestoneInsight({ ...base, importance: 5, type: "aggregation", is_followup: true })).toBe(false);
+  });
+  it("is_followup 缺省（undefined）按新事件 → 里程碑", () => {
+    expect(isMilestoneInsight({ ...base, importance: 5, type: "aggregation" })).toBe(true);
+  });
+});
 
 describe("selectInsights（洞察级纳入判定）", () => {
   const sel = selectInsights(batchOf(), validation);
@@ -124,6 +143,17 @@ describe("buildReport 派生", () => {
     expect(index.entity_names).toEqual(["OpenAI", "Codex", "Anthropic"]);
     expect(index.entity_names).not.toContain("排除不应出现");
     expect(index.title).toContain("Code Agent");
+    // 里程碑（ADR-0006）：i1=aggregation 但 importance 4 未达门槛、i2=trend 排除、i3 全 blocked 排除 → 0
+    expect(index.milestone_count).toBe(0);
+  });
+
+  it("milestone_count：importance=5 的新 aggregation 洞察计入（trend/低分不计）", () => {
+    const batch = batchOf();
+    batch.insights[0].importance = 5; // i1 升到 5 → 里程碑（aggregation · 非 followup · 最高分）
+    const { index: idx } = buildReport({
+      topic, batch, validation, type: "brief", contentLookup: lookup, now: "2026-05-07T08:00:00Z",
+    });
+    expect(idx.milestone_count).toBe(1); // 仅 i1；i2 是 trend、i3 全 blocked 被排除
   });
 
   it("正文含纳入洞察 + 待核实标记，不含被排除洞察", () => {

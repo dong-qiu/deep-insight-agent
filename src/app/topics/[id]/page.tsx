@@ -40,6 +40,7 @@ export default async function TopicPage({ params }: { params: Promise<{ id: stri
   const reports = queryReportIndex(db, { topic: id, sort: "date", dir: "desc", limit: 500 });
   const evolution = topicEvolution(reports); // 内部按日期升序（过去→现在）
   const trends = entityTrends(reports);
+  const milestoneReports = reports.filter((r) => r.milestone_count > 0); // 里程碑时间线（ADR-0006）
 
   return (
     <section>
@@ -110,6 +111,25 @@ export default async function TopicPage({ params }: { params: Promise<{ id: stri
         </>
       ) : null}
 
+      {milestoneReports.length ? (
+        <>
+          <h3>里程碑</h3>
+          <p className="muted">主题里的重大新事件节点（最高重要性 · 新事件 · 非追加进展）</p>
+          {milestoneReports.map((r) => (
+            <article className="card milestone-card" key={r.report_id}>
+              <h4>
+                <a href={`/reports/${r.report_id}`}>{r.title}</a>
+                <span className="milestone-badge">里程碑{r.milestone_count > 1 ? ` ×${r.milestone_count}` : ""}</span>
+              </h4>
+              <p className="muted">
+                {TYPE_LABEL[r.type] ?? r.type} · {r.date}
+              </p>
+              <p>{r.summary || "（无摘要）"}</p>
+            </article>
+          ))}
+        </>
+      ) : null}
+
       <h3>报告时间线</h3>
       {reports.length === 0 ? (
         <p className="muted">
@@ -121,6 +141,7 @@ export default async function TopicPage({ params }: { params: Promise<{ id: stri
             <h4>
               <a href={`/reports/${r.report_id}`}>{r.title}</a>
               {r.importance >= 4 ? <span className="major-badge">重大</span> : null}
+              {r.milestone_count > 0 ? <span className="milestone-badge">里程碑</span> : null}
             </h4>
             <p className="muted">
               {TYPE_LABEL[r.type] ?? r.type} · {r.date} · 重要性 {r.importance}

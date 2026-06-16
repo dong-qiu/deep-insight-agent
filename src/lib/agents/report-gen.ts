@@ -16,6 +16,20 @@ export interface IncludedInsight {
   blockedReasonCounts: Record<string, number>; // 屏蔽理由直方图（如 exaggeration→2、out_of_context→1）
 }
 
+/** 里程碑判定的重要性下限（ADR-0006）：可调常量——6/23 看真实里程碑数量再校准（太严=永远没有、太松=稀释）。 */
+export const MILESTONE_MIN_IMPORTANCE = 5;
+
+/** 里程碑洞察判定（ADR-0006）：最高重要性 + 新事件（非追加）+ 具体事件聚合（非趋势）。
+ *  纯函数、确定性——里程碑 =「主题里发生的重大新事件节点」；趋势变化已由焦点演化（ADR-0005）承载，故排除 trend。
+ *  is_followup 仅在 brief 路径精准（analyzer 喂历史 event 池），deep_dive/initial_digest 默认 false，符合「首报即新事件」语义。 */
+export function isMilestoneInsight(insight: Insight): boolean {
+  return (
+    insight.importance >= MILESTONE_MIN_IMPORTANCE &&
+    !insight.is_followup &&
+    insight.type === "aggregation"
+  );
+}
+
 /** verdict=blocked 时取真实理由：reachability=fail → reachability_reason；
  *  否则（reachability=pass 但 consistency=not_support）→ consistency_reason。
  *  "ok" 视为无信息（理论不应作为 blocked 理由出现，防御性跳过）。 */
@@ -123,6 +137,8 @@ export function buildReport(input: BuildReportInput): { report: Report; index: R
   );
   const eventIds = uniq(included.map((x) => x.insight.event_id).filter((e): e is string => !!e));
   const importance = included.length ? Math.max(...included.map((x) => x.insight.importance)) : 0;
+  // 里程碑计数（ADR-0006）：纳入洞察中符合里程碑判定的条数，派生进 report_index 供主题页徽标/时间线。
+  const milestoneCount = included.filter((x) => isMilestoneInsight(x.insight)).length;
   const summary = included.slice(0, 3).map((x) => x.insight.statement).join(" ");
   // 实体追踪：跨纳入洞察聚合关键实体名（去重保序），供主题页「关键实体」按报告频次再聚合。
   const entityNames = uniq(included.flatMap((x) => (x.insight.entities ?? []).map((e) => e.name.trim()).filter(Boolean)));
@@ -140,6 +156,7 @@ export function buildReport(input: BuildReportInput): { report: Report; index: R
   const index: ReportIndexEntry = {
     report_id: id, type: input.type, topic_id: input.topic.id, industry: input.topic.industry, date,
     source_ids: sourceIds, title, summary, tags, entity_names: entityNames, importance, event_ids: eventIds,
+    milestone_count: milestoneCount,
   };
   return { report, index };
 }

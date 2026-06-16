@@ -50,6 +50,9 @@ function migrate(db: DB): void {
   ensureColumn(db, "insight", "entities", "entities TEXT NOT NULL DEFAULT '[]'");
   // 主题标签：analyzer 抽取的标签 JSON 数组，供报告库「标签」维度筛选；旧库补列默认 '[]'（重跑管线写正确值）。
   ensureColumn(db, "insight", "tags", "tags TEXT NOT NULL DEFAULT '[]'");
+  // 里程碑自动标注（ADR-0006）：report_index 派生的里程碑洞察计数（importance≥5 + 非追加 + aggregation），
+  // 供主题页徽标/里程碑时间线；旧报告补列默认 0（重生报告写正确值）。
+  ensureColumn(db, "report_index", "milestone_count", "milestone_count INTEGER NOT NULL DEFAULT 0");
 }
 
 let _db: DB | null = null;
