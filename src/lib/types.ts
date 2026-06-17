@@ -325,6 +325,23 @@ export const ConsistencyJudgeSchema = z.object({
 });
 export type ConsistencyJudge = z.infer<typeof ConsistencyJudgeSchema>;
 
+/** validator 批量一致性评判输出（成本归并：同一源被多条结论引用时，源文只发一遍、一次调用逐条判）。
+ *  judgments 每项挂 index（=输入清单序号，从 1 起），代码侧按 index 对齐回各结论；要求逐条独立判定、
+ *  每条都有、不遗漏不合并（缺项由 validator 判残缺→重试/记校验失败，绝不默认成 support）。 */
+export const ConsistencyBatchJudgeSchema = z.object({
+  judgments: z
+    .array(
+      z.object({
+        index: z.number().int().describe("对应待校验结论的序号（从 1 起，与输入清单一致）"),
+        consistency: z.enum(["support", "not_support", "uncertain"]),
+        consistency_reason: z.enum(["ok", "out_of_context", "exaggeration", "misattribution", "uncertain"]),
+        rationale: z.string().describe("简短判定理由"),
+      }),
+    )
+    .describe("对清单里每一条结论各输出一项，逐条独立判断 untrusted_source 是否支持它"),
+});
+export type ConsistencyBatchJudge = z.infer<typeof ConsistencyBatchJudgeSchema>;
+
 /** 跨批/跨run 一致性判定缓存的共享契约（DB 实现见 db/consistency-cache.ts，消费方 validator.validateBatch）。
  *  放共享 types 而非 validator——避免 db 层反向依赖 agents 层。
  *  缓存命中即跳过 Opus 调用、不计成本；只存成功判定（调用失败绝不缓存）。

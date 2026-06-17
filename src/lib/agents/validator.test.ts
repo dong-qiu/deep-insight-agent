@@ -167,6 +167,9 @@ function insight(id: string, statement: string, cits: { content_item_id: string;
 }
 const judgeData = (consistency: "support" | "not_support" | "uncertain", reason: string) =>
   ({ data: { consistency, consistency_reason: reason, rationale: "r" } }) as unknown as Awaited<ReturnType<typeof callStructured>>;
+/** 批量判定 mock 返回（judgments 数组，挂 index）。 */
+const batchJudgeData = (judgments: { index: number; consistency: string; consistency_reason: string }[]) =>
+  ({ data: { judgments: judgments.map((j) => ({ ...j, rationale: "r" })) } }) as unknown as Awaited<ReturnType<typeof callStructured>>;
 
 describe("consistencyCacheVersion", () => {
   afterEach(() => { delete process.env.VALIDATOR_THINKING; });
@@ -318,6 +321,104 @@ describe("validateBatch（A 去重 + C 校验失败分账）", () => {
     const { checks } = await validateBatch([ins], items);
     expect(callStructured).toHaveBeenCalledTimes(3); // 1 + 2 retries
     expect(checks[0]).toMatchObject({ consistency: "not_evaluated", verdict: "flagged" });
+  });
+});
+
+describe("validateBatch（B 按源归并批量判定 · 成本最大杠杆）", () => {
+  beforeEach(() => { process.env.VALIDATOR_RETRIES = "0"; process.env.VALIDATOR_RETRY_BACKOFF_MS = "0"; });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    delete process.env.VALIDATOR_RETRIES;
+    delete process.env.VALIDATOR_RETRY_BACKOFF_MS;
+    delete process.env.VALIDATOR_BATCH;
+    delete process.env.CONSISTENCY_BATCH_MAX;
+  });
+
+  it("两洞察引同一源、缓存未命中 → 合并 1 次批量调用，各得对应判定", async () => {
+    const items = [item("ci_b", "Shared source body that supports both claims about X and Y.")];
+    const ins1 = insight("ib1", "结论 X", [{ content_item_id: "ci_b", quote: "supports both" }]);
+    const ins2 = insight("ib2", "结论 Y", [{ content_item_id: "ci_b", quote: "claims about X" }]);
+    vi.mocked(callStructured).mockResolvedValue(batchJudgeData([
+      { index: 1, consistency: "support", consistency_reason: "ok" },
+      { index: 2, consistency: "not_support", consistency_reason: "exaggeration" },
+    ]));
+    const { checks } = await validateBatch([ins1, ins2], items);
+    expect(callStructured).toHaveBeenCalledTimes(1); // 两条同源 → 一次批量（body 只发一遍）
+    expect(checks.map((c) => c.verdict)).toEqual(["pass", "blocked"]); // 按 index 对齐回 ins1/ins2
+  });
+
+  it("批量判定按 index 对齐回各结论（返回乱序也对）", async () => {
+    const items = [item("ci_o", "Body mentions alpha clearly but not beta.")];
+    const ins1 = insight("io1", "alpha 成立", [{ content_item_id: "ci_o", quote: "alpha clearly" }]);
+    const ins2 = insight("io2", "beta 成立", [{ content_item_id: "ci_o", quote: "not beta" }]);
+    vi.mocked(callStructured).mockResolvedValue(batchJudgeData([
+      { index: 2, consistency: "not_support", consistency_reason: "out_of_context" }, // 乱序：先 2 后 1
+      { index: 1, consistency: "support", consistency_reason: "ok" },
+    ]));
+    const { checks } = await validateBatch([ins1, ins2], items);
+    expect(checks[0]).toMatchObject({ consistency: "support", verdict: "pass" }); // ins1 = index 1
+    expect(checks[1]).toMatchObject({ consistency: "not_support", verdict: "blocked" }); // ins2 = index 2
+  });
+
+  it("批量产出残缺（少一条）→ 整组记校验失败，绝不把缺项默认成 support", async () => {
+    const items = [item("ci_p", "Body for partial output case alpha beta.")];
+    const ins1 = insight("ip1", "A", [{ content_item_id: "ci_p", quote: "alpha" }]);
+    const ins2 = insight("ip2", "B", [{ content_item_id: "ci_p", quote: "beta" }]);
+    vi.mocked(callStructured).mockResolvedValue(batchJudgeData([
+      { index: 1, consistency: "support", consistency_reason: "ok" }, // 缺 index 2
+    ]));
+    const { checks } = await validateBatch([ins1, ins2], items);
+    expect(checks.every((c) => c.consistency === "not_evaluated" && c.verdict === "flagged")).toBe(true);
+  });
+
+  it("VALIDATOR_BATCH=0 → 退回逐条判定（两洞察同源 → 2 次单条调用）", async () => {
+    process.env.VALIDATOR_BATCH = "0";
+    const items = [item("ci_k", "Kill switch body alpha beta gamma.")];
+    const ins1 = insight("ik1", "A", [{ content_item_id: "ci_k", quote: "alpha" }]);
+    const ins2 = insight("ik2", "B", [{ content_item_id: "ci_k", quote: "beta" }]);
+    vi.mocked(callStructured).mockResolvedValue(judgeData("support", "ok"));
+    await validateBatch([ins1, ins2], items);
+    expect(callStructured).toHaveBeenCalledTimes(2); // 关批量 → 每条各打一次
+  });
+
+  it("超 CONSISTENCY_BATCH_MAX → 拆多次批量调用（源文各发一遍，仍省于逐条）", async () => {
+    process.env.CONSISTENCY_BATCH_MAX = "2";
+    const items = [item("ci_s", "Split body a1 a2 a3 a4 here.")];
+    const inss = ["a1", "a2", "a3", "a4"].map((q, i) => insight(`is${i}`, `S${i}`, [{ content_item_id: "ci_s", quote: q }]));
+    vi.mocked(callStructured).mockResolvedValue(batchJudgeData([
+      { index: 1, consistency: "support", consistency_reason: "ok" },
+      { index: 2, consistency: "support", consistency_reason: "ok" },
+    ]));
+    await validateBatch(inss, items);
+    expect(callStructured).toHaveBeenCalledTimes(2); // 4 条同源、max=2 → [2,2] 两次批量
+  });
+
+  it("批量里 success 回写缓存、uncertain 不回写", async () => {
+    const items = [item("ci_u", "Body uncertain-mix alpha beta.")];
+    const ins1 = insight("iu1", "A", [{ content_item_id: "ci_u", quote: "alpha" }]);
+    const ins2 = insight("iu2", "B", [{ content_item_id: "ci_u", quote: "beta" }]);
+    const cache = { get: () => undefined, set: vi.fn() };
+    vi.mocked(callStructured).mockResolvedValue(batchJudgeData([
+      { index: 1, consistency: "support", consistency_reason: "ok" },
+      { index: 2, consistency: "uncertain", consistency_reason: "uncertain" },
+    ]));
+    await validateBatch([ins1, ins2], items, undefined, cache);
+    expect(cache.set).toHaveBeenCalledTimes(1); // 只 support 回写、uncertain 不冻结待核实
+  });
+
+  it("部分缓存命中 → 仅未命中的结论进调用", async () => {
+    const items = [item("ci_h", "Body partial cache alpha beta.")];
+    const ins1 = insight("ih1", "结论A", [{ content_item_id: "ci_h", quote: "alpha" }]);
+    const ins2 = insight("ih2", "结论B", [{ content_item_id: "ci_h", quote: "beta" }]);
+    const cache = {
+      get: (s: string) => (s === "结论A" ? { consistency: "support" as const, consistency_reason: "ok" as const, rationale: "(cached)" } : undefined),
+      set: vi.fn(),
+    };
+    vi.mocked(callStructured).mockResolvedValue(judgeData("not_support", "exaggeration")); // 剩 1 条 → 逐条 shape
+    const { checks } = await validateBatch([ins1, ins2], items, undefined, cache);
+    expect(callStructured).toHaveBeenCalledTimes(1); // 仅 结论B 打 LLM
+    expect(checks[0]).toMatchObject({ consistency: "support", verdict: "pass" }); // A 来自缓存
+    expect(checks[1]).toMatchObject({ consistency: "not_support", verdict: "blocked" }); // B 来自 LLM
   });
 });
 

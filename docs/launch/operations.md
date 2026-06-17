@@ -41,6 +41,8 @@ curl -fsS -X POST http://127.0.0.1:3000/api/cron -H "authorization: Bearer $CRON
 | `ANALYZER_MODEL` | 中转站时 ✅ | **Opus-only 中转站必须显式设 Opus**（如 `claude-opus-4-6`），否则打到默认 sonnet → analyze 失败。须 ≠ validator |
 | `VALIDATOR_MODEL` | 否 | 默认 `claude-opus-4-7`；**必须独立于 analyzer**（同源偏差约束，相同则启动报错） |
 | `VALIDATOR_THINKING` | 中转站建议 | 设 `0` 关校验思考（部分中转站 thinking 计价虚高/不稳） |
+| `VALIDATOR_BATCH` | 否 | 一致性判定**按源归并**（同一源被多条结论引用时，源文只发一遍、一次调用逐条独立判 → token 从 ~K×源文砍到 ~1×源文，成本最大杠杆）。默认开；`0` 回退逐条判定（精度回归排查 / 怀疑批量串扰时的运维开关）。判定语义与逐条一致、缓存共享 |
+| `CONSISTENCY_BATCH_MAX` | 否 | 单次批量调用最多判几条结论，默认 8。超出拆多次调用（源文各发一遍，仍远省于逐条）。调小=更稳的输出/更高精度但省得少，调大=更省但单调用输出更长、批内判定数更多 |
 | `AUTH_SECRET` | ✅ | NextAuth 密钥，`openssl rand -base64 32` |
 | `ADMIN_EMAIL` / `ADMIN_PASSWORD` | ✅ | 管理员登录（Credentials） |
 | `CRON_SECRET` | ✅（定时） | `openssl rand -base64 32`；**未设则 `/api/cron` 返回 503、定时管线不工作** |
