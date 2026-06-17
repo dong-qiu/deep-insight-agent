@@ -25,11 +25,12 @@ nav a { margin-right: 1rem; }
 .imp-4 { background: #ea580c; }
 .imp-3 { background: #6b7280; }
 .imp-low { background: #9ca3af; }
-/* 实体 / 标签 chips（增强②）：一眼看出"讲的是谁 / 什么话题"。实体复用 .entity-tag 灰胶囊，标签描边区分 */
+/* 实体 / 标签 chips（增强②）：一眼看出"讲的是谁 / 什么话题"。两类统一成实心灰胶囊（方案 A），
+   标签只靠 # 前缀区分——避免实体实心/标签描边在同一行的廓形·字号·文字色不一致。.tag-chip 与 .entity-tag 同款。 */
 .card-chips { margin: .4rem 0 0; display: flex; flex-wrap: wrap; align-items: center; }
-.tag-chip { display: inline-block; margin: 0 .4rem .4rem 0; padding: .1rem .5rem; border: 1px solid #d1d5db; border-radius: 12px; font-size: .8rem; color: #6b7280; }
+.tag-chip { display: inline-block; margin: 0 .4rem .4rem 0; padding: .1rem .5rem; background: #f3f4f6; border-radius: 12px; font-size: .85rem; }
 @media (prefers-color-scheme: dark) {
-  .tag-chip { border-color: #374151; }
+  .tag-chip { background: #1f2937; }
 }
 /* 主题页（IA「主题」）：关键实体标签 + 重大事件徽标 */
 .entity-tag { display: inline-block; margin: 0 .4rem .4rem 0; padding: .1rem .5rem; background: #f3f4f6; border-radius: 12px; font-size: .85rem; }
