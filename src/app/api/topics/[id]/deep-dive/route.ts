@@ -8,6 +8,7 @@
  *    立即返 202 + topic_id + started_at + Run/Report 出现路径，调用方监控 /admin、/reports；
  *  - 单步失败由 runJob 落 failed Run + notifyFailure；不阻塞响应。 */
 import { NextResponse } from "next/server";
+import { forbidNonAdmin } from "../../../../../lib/auth-guard.js";
 import { runPipelineForTopic } from "../../../../../lib/agents/scheduler.js";
 import { getDb } from "../../../../../lib/db/index.js";
 import { getTopic, hasRunningRun } from "../../../../../lib/db/repos.js";
@@ -20,6 +21,8 @@ export async function POST(
   _req: Request,
   { params }: { params: Promise<{ id: string }> },
 ): Promise<Response> {
+  const denied = await forbidNonAdmin(); // 二道闸：烧钱端点，非 admin 直接 403
+  if (denied) return denied;
   const { id } = await params;
   const db = getDb();
   const topic = getTopic(db, id);
