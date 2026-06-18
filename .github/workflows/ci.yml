@@ -12,6 +12,21 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # eval 门禁兜底：改了 AI 质量面(agents/sources/llm.ts/dataset)的 PR 必须带 Eval-Gate 盖章
+  # （= 已在本地跑过 /eval-gate 对比基线）。与 .githooks/pre-push 同款判定脚本；这里绕不过
+  # （--no-verify / EVAL_GATE_ACK 只绕本地 hook，不影响 CI）。本 job 不跑真模型 eval（要 key/
+  # 预算，见 verify job 注释与 eval.yml）——只校验盖章这个承诺存在。
+  eval-gate:
+    name: eval-gate (trailer)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: require Eval-Gate stamp on AI-quality changes
+        run: bash .githooks/eval-gate-check.sh "${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
+
   verify:
     name: typecheck · test · build
     runs-on: ubuntu-latest

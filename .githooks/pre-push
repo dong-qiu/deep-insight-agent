@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# eval 门禁（本地确定性触发器）。判定逻辑见同目录 eval-gate-check.sh（与 CI 共用）。
+#
+# 本批推送的提交若改了「AI 质量面」(分析/校验 agent、模型配置、数据源、评测集) 却没盖
+# `Eval-Gate:` 章，则阻断 push。盖章由 `/eval-gate` skill 跑完 eval、对比 baseline 后写入。
+# hook 本身不跑 eval（要 key/花钱/慢）——只做「跑没跑过」的策略门：把"记得跑"变成"绕不过"。
+#
+# 逃生口：
+#   EVAL_GATE_ACK=1 git push     # 留痕放行（纯重构误命中、或 eval 设施暂不可用）
+#   git push --no-verify         # git 原生绕过本地 hook —— 但绕不过 CI 的同款检查
+set -uo pipefail
+
+DIR="$(cd "$(dirname "$0")" && pwd)"
+CHECK="$DIR/eval-gate-check.sh"
+is_zero() { case "$1" in ''|*[!0]*) return 1 ;; *) return 0 ;; esac; }
+
+blocked=0
+while read -r local_ref local_sha remote_ref remote_sha; do
+  is_zero "$local_sha" && continue                       # 删除远程分支
+  if is_zero "$remote_sha"; then
+    rev="$local_sha --not --remotes"                     # 新分支：只看尚未在任何远程的提交
+  else
+    rev="$remote_sha..$local_sha"
+  fi
+  if ! bash "$CHECK" $rev; then
+    blocked=1
+    echo "  （ref: ${remote_ref:-?}）" >&2
+  fi
+done
+
+[ "$blocked" = 0 ] && exit 0
+
+if [ -n "${EVAL_GATE_ACK:-}" ]; then
+  echo "⚠️  EVAL_GATE_ACK 已设 —— 跳过 eval 门禁（留痕放行）。请确保 CI 上 eval 不退化。" >&2
+  exit 0
+fi
+
+cat >&2 <<'EOF'
+
+  → 跑 /eval-gate：对比 evals/baseline.json，生成 PR 对比表。
+  → eval 通过后给相关提交盖章（任一提交带 trailer 即可放行整批）：
+       git commit --amend --trailer "Eval-Gate: pass (a1 <date>, baseline ok)"
+  → 确无需重测（纯重构/注释误命中）：盖 "Eval-Gate: skip (<原因>)"。
+  → 应急留痕绕过：EVAL_GATE_ACK=1 git push
+EOF
+exit 1
