@@ -5,7 +5,7 @@
 import type { DB } from "../db/index.js";
 import { getEffectiveSources, loadStaticConfig } from "../config/index.js";
 import { getTopic, listContentForTopic, listTopics } from "../db/repos.js";
-import { listRecentBriefEvents, topicHasReport } from "../db/reports.js";
+import { listRecentBriefEvents, previousReportForTopic, topicHasReport } from "../db/reports.js";
 import { notifyBudget } from "../runtime/alert.js";
 import { getBudgetStatus } from "../runtime/cost-guard.js";
 import { runLogger } from "../runtime/logger.js";
@@ -195,7 +195,10 @@ export async function runScheduledPipeline(
       const history = plan.type === "brief" ? listRecentBriefEvents(db, topic.id) : [];
       const batch = await runAnalysis(db, topic, items, { start: since, end: endIso }, { history });
       const validation = await runValidation(db, batch, items);
-      const report = await runReportGen(db, { topic, batch, validation, type: plan.type });
+      // 前情链接：把同主题同链上一篇 done 报告记为 prev_report_id，串成可回溯的演化链
+      // （本报告尚未落库，此刻"最新 done"即上一篇，不自指）。
+      const prevReportId = previousReportForTopic(db, topic.id, plan.type);
+      const report = await runReportGen(db, { topic, batch, validation, type: plan.type, prevReportId });
       summary.topics.push({
         topic: topic.id,
         items: items.length,
@@ -267,5 +270,6 @@ export async function runPipelineForTopic(
 
   const batch = await runAnalysis(db, topic, items, { start: since, end: endIso });
   const validation = await runValidation(db, batch, items);
-  return runReportGen(db, { topic, batch, validation, type: "deep_dive" });
+  const prevReportId = previousReportForTopic(db, topic.id, "deep_dive");
+  return runReportGen(db, { topic, batch, validation, type: "deep_dive", prevReportId });
 }

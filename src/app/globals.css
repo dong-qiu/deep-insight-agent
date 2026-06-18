@@ -68,6 +68,10 @@ nav a { margin-right: 1rem; }
 .audit-reason { display: inline-block; padding: 0 .4rem; border: 1px solid #b45309; color: #b45309; border-radius: 4px; font-size: .8rem; }
 /* 报告详情·导出 PPT（C）：导航链 + 按钮一行，按钮素一些不抢主报告视线 */
 .report-header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: .5rem; }
+.report-chain { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; margin: .75rem 0; font-size: .9rem; }
+.report-chain a { text-decoration: none; }
+.report-chain a:hover { text-decoration: underline; }
+.report-chain .chain-next { text-align: right; margin-left: auto; }
 .ppt-btn {
   display: inline-block; padding: .35rem .85rem;
   font-size: .85rem; line-height: 1.2;

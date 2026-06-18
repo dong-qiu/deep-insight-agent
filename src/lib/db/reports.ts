@@ -110,6 +110,61 @@ export function latestReportForTopicSince(
   return r ?? null;
 }
 
+/** 报告链——按 type 把同主题报告串成「演化链」，新报告生成时取本批之前的最新一篇作前情。
+ *  - `brief` / `initial_digest` 同属「每日节奏链」：initial_digest 是冷启动首报（链头），后续
+ *    每日 brief 接续——对应产品定义「首份 brief 定义为初始摘要，并以此设定不复报基线」；
+ *  - `deep_dive` 独立成「深挖链」（用户触发的回顾，与日度节奏不同节拍，不混链）；
+ *  - 只认 status='done'：排除 generating/failed/draft，避免链指到半成品；
+ *  - 在 runReportGen **之前**调用——此刻本报告尚未落库，"最新 done" 必是上一篇，不会自指。
+ *  注意：新增 report type 时必须同步 `ops/backfill-report-chain.mjs` 的 CHAIN_GROUPS（决定它进哪条链）。 */
+export function chainTypesFor(type: string): string[] {
+  return type === "deep_dive" ? ["deep_dive"] : ["brief", "initial_digest"];
+}
+
+export function previousReportForTopic(db: DB, topicId: string, type: string): string | null {
+  const types = chainTypesFor(type);
+  const placeholders = types.map(() => "?").join(",");
+  const r = db
+    .prepare(
+      `SELECT id FROM report
+       WHERE topic_id = ? AND type IN (${placeholders}) AND status = 'done'
+       ORDER BY generated_at DESC, id DESC LIMIT 1`, // id 兜底：与 backfill 脚本同序，防同秒落两篇时在线/回填选出不同 prev
+    )
+    .get(topicId, ...types) as { id: string } | undefined;
+  return r?.id ?? null;
+}
+
+/** 报告阅读页的前后导航：prev = 本报告显式记录的前情（report.prev_report_id），
+ *  next = 反查「谁把本报告记为前情」（同链下一篇）。各返 {id,title,type}，title 供链接文案。
+ *  - next 反查可能命中多条（同一前情被重生成过的链分叉）→ 取最新 done 一条，稳定指向当前活跃链；
+ *  - 轻量查询，不读正文文件（区别于 getReport），列表/导航用。
+ *  已知边界：两端都过滤 status='done'——链中段某篇被 archived/deleted 会让链从该点静默断成两截
+ *  （不链到非 done 是"不指半成品"的有意取舍）；当前产品不归档历史报告，故暂不缝合。 */
+export interface ReportNeighbor {
+  id: string;
+  title: string;
+  type: string;
+}
+export function reportNeighbors(
+  db: DB,
+  report: { id: string; prev_report_id: string | null },
+): { prev: ReportNeighbor | null; next: ReportNeighbor | null } {
+  const prev = report.prev_report_id
+    ? (db
+        .prepare("SELECT id, title, type FROM report WHERE id = ? AND status = 'done'")
+        .get(report.prev_report_id) as ReportNeighbor | undefined) ?? null
+    : null;
+  const next =
+    (db
+      .prepare(
+        `SELECT id, title, type FROM report
+         WHERE prev_report_id = ? AND status = 'done'
+         ORDER BY generated_at DESC, id DESC LIMIT 1`, // 分叉（同 prev 被重生成多篇引用）取最新，id 兜底防同秒抖动
+      )
+      .get(report.id) as ReportNeighbor | undefined) ?? null;
+  return { prev, next };
+}
+
 /** 校验下钻条目：本报告涉及洞察的所有被 validator 屏蔽的引用（含理由与 quote 全文）。
  *  - 经 report.insight_ids → insight.batch_id 关联到 citation_check；
  *  - 联表 citation 拿原始 quote 与 content_item_id；
