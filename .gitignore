@@ -66,4 +66,5 @@ evals/dataset/*.local.jsonl
 # .claude/ 默认不入仓（worktrees / settings.local 等本地物），但项目级 skill 要分发须入仓
 .claude/*
 !.claude/skills/
+.claude/skills/**/*.local.*
 deep-insight-cli_accessKeys.csv
