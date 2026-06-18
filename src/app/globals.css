@@ -10,6 +10,11 @@ h1 { font-size: 1.5rem; margin: 0 0 .25rem; }
 h2 { font-size: 1.2rem; }
 header { border-bottom: 1px solid #e5e7eb; margin-bottom: 1.25rem; padding-bottom: .75rem; }
 nav a { margin-right: 1rem; }
+/* 顶栏：标题左、当前账号 + 退出右 */
+.header-top { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+.user-menu { display: inline-flex; align-items: baseline; gap: .5rem; font-size: .85rem; }
+.user-menu form { display: inline; margin: 0; }
+.signout-btn { font-size: .85rem; }
 .muted { color: #6b7280; font-size: .9rem; }
 .card { border: 1px solid #e5e7eb; border-radius: 8px; padding: .75rem 1rem; margin: .75rem 0; }
 .card h3 { margin: 0 0 .25rem; font-size: 1.05rem; }
