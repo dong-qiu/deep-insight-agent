@@ -48,96 +48,139 @@ export default async function ReportsPage({
   const entity = val(sp, "entity");
   const from = val(sp, "from");
   const to = val(sp, "to");
-  const sort = val(sp, "sort") || "date";
+  // 有搜索词且未显式选排序 → 默认按相关度（bm25）；否则按日期。relevance 仅在有 q 时生效（见 queryReportIndex）。
+  const sort = val(sp, "sort") || (q ? "relevance" : "date");
   const dir = val(sp, "dir") || "desc";
+  // select 显示值：无 q 时 relevance 选项不渲染（见下方 JSX），故映射回 date 让选中态显式、不靠浏览器兜底。
+  const sortSelectValue = sort === "relevance" && !q ? "date" : sort;
 
-  const filters = { type, industry, topic, source, tag, entity, from, to, sort, dir };
-  let rows: ReturnType<typeof queryReportIndex> = [];
-  let err: string | null = null;
-  try {
-    rows = queryReportIndex(db, { q, ...filters });
-  } catch (e) {
-    // FTS5 对 q 的 token 有自己语法（如裸 "-" 会解析报错）；退路 = 不带 q 重查 + 友好提示
-    err = `搜索语法不合法："${q}"；已忽略 q 重新列出。`;
-    rows = queryReportIndex(db, filters);
-  }
-  const hasFilter = !!(q || type || industry || topic || source || tag || entity || from || to);
+  // 查询已在 queryReportIndex 内消毒（永不抛错、永不静默丢 q），此处无需再 try/catch 兜底。
+  const rows = queryReportIndex(db, { q, type, industry, topic, source, tag, entity, from, to, sort, dir });
+
+  // 次级筛选（非搜索/排序）是否生效——决定「更多筛选」面板默认展开 + 是否显示「清空」。
+  const secondaryActive = !!(type || industry || topic || source || tag || entity || from || to);
+  const hasFilter = !!q || secondaryActive;
+
+  // 生效筛选 → 可移除 chips。移除链接 = 当前参数去掉该项（排序 sort/dir 始终保留，不作为 chip）。
+  const sourceLabel = new Map(sourceOptions.map((s) => [s.id, s.name]));
+  const topicLabel = new Map(topics.map((t) => [t.id, t.name]));
+  const allParams: Record<string, string> = { q, type, industry, topic, source, tag, entity, from, to, sort, dir };
+  const hrefWithout = (omitKey: string): string => {
+    const params = new URLSearchParams();
+    for (const [k, v] of Object.entries(allParams)) {
+      if (k === omitKey || !v) continue;
+      // 去掉某筛选后，若排序仍是依赖它的 relevance（删 q）则一并回落，避免无 q 的 relevance 空转
+      if (omitKey === "q" && k === "sort" && v === "relevance") continue;
+      params.set(k, v);
+    }
+    const s = params.toString();
+    return s ? `/reports?${s}` : "/reports";
+  };
+  const chips: Array<{ key: string; label: string }> = [];
+  if (q) chips.push({ key: "q", label: `搜索：${q}` });
+  if (type) chips.push({ key: "type", label: TYPE_LABEL[type] ?? type });
+  if (industry) chips.push({ key: "industry", label: industry });
+  if (topic) chips.push({ key: "topic", label: `主题：${topicLabel.get(topic) ?? topic}` });
+  if (source) chips.push({ key: "source", label: `来源：${sourceLabel.get(source) ?? source}` });
+  if (tag) chips.push({ key: "tag", label: `#${tag}` });
+  if (entity) chips.push({ key: "entity", label: entity });
+  if (from) chips.push({ key: "from", label: `从 ${from}` });
+  if (to) chips.push({ key: "to", label: `至 ${to}` });
 
   return (
     <section>
       <h2>报告库</h2>
 
-      <form method="get" className="report-filter">
-        <input
-          type="search"
-          name="q"
-          placeholder="搜索标题 / 摘要 / 正文（FTS5）"
-          defaultValue={q}
-          aria-label="搜索"
-        />
-        <select name="type" defaultValue={type} aria-label="类型">
-          <option value="">全部类型</option>
-          {Object.entries(TYPE_LABEL).map(([k, v]) => (
-            <option key={k} value={k}>{v}</option>
-          ))}
-        </select>
-        <select name="industry" defaultValue={industry} aria-label="行业">
-          <option value="">全部行业</option>
-          {industries.map((i) => (
-            <option key={i} value={i}>{i}</option>
-          ))}
-        </select>
-        <select name="topic" defaultValue={topic} aria-label="主题">
-          <option value="">全部主题</option>
-          {topics.map((t) => (
-            <option key={t.id} value={t.id}>{t.name}</option>
-          ))}
-        </select>
-        {sourceOptions.length ? (
-          <select name="source" defaultValue={source} aria-label="来源">
-            <option value="">全部来源</option>
-            {sourceOptions.map((s) => (
-              <option key={s.id} value={s.id}>{s.name}</option>
-            ))}
+      <form method="get" className="report-search">
+        {/* 主搜索：醒目全宽框 + 排序 + 操作。次级筛选收进 details，降低首屏认知负荷。 */}
+        <div className="report-search-bar">
+          <input
+            type="search"
+            name="q"
+            placeholder="搜索标题 / 摘要 / 正文"
+            defaultValue={q}
+            aria-label="搜索"
+          />
+          <select name="sort" defaultValue={sortSelectValue} aria-label="排序字段">
+            {q ? <option value="relevance">相关度</option> : null}
+            <option value="date">按日期</option>
+            <option value="importance">按重要性</option>
           </select>
-        ) : null}
-        {tagOptions.length ? (
-          <select name="tag" defaultValue={tag} aria-label="标签">
-            <option value="">全部标签</option>
-            {tagOptions.map((t) => (
-              <option key={t} value={t}>{t}</option>
-            ))}
+          <select name="dir" defaultValue={dir} aria-label="排序方向">
+            <option value="desc">降序</option>
+            <option value="asc">升序</option>
           </select>
-        ) : null}
-        {entityOptions.length ? (
-          <select name="entity" defaultValue={entity} aria-label="实体">
-            <option value="">全部实体</option>
-            {entityOptions.map((e) => (
-              <option key={e} value={e}>{e}</option>
-            ))}
-          </select>
-        ) : null}
-        <input type="date" name="from" defaultValue={from} aria-label="开始日期" />
-        <input type="date" name="to" defaultValue={to} aria-label="结束日期" />
-        <select name="sort" defaultValue={sort} aria-label="排序字段">
-          <option value="date">按日期</option>
-          <option value="importance">按重要性</option>
-        </select>
-        <select name="dir" defaultValue={dir} aria-label="排序方向">
-          <option value="desc">降序</option>
-          <option value="asc">升序</option>
-        </select>
-        <button type="submit" className="ppt-btn">应用</button>
-        {hasFilter ? (
-          <a href="/reports" className="ppt-btn-link">清空</a>
-        ) : null}
+          <button type="submit" className="ppt-btn">搜索</button>
+          {hasFilter ? <a href="/reports" className="ppt-btn-link">清空</a> : null}
+        </div>
+
+        <details className="report-filter-more" open={secondaryActive}>
+          <summary>更多筛选</summary>
+          <div className="report-filter-grid">
+            <select name="type" defaultValue={type} aria-label="类型">
+              <option value="">全部类型</option>
+              {Object.entries(TYPE_LABEL).map(([k, v]) => (
+                <option key={k} value={k}>{v}</option>
+              ))}
+            </select>
+            <select name="industry" defaultValue={industry} aria-label="行业">
+              <option value="">全部行业</option>
+              {industries.map((i) => (
+                <option key={i} value={i}>{i}</option>
+              ))}
+            </select>
+            <select name="topic" defaultValue={topic} aria-label="主题">
+              <option value="">全部主题</option>
+              {topics.map((t) => (
+                <option key={t.id} value={t.id}>{t.name}</option>
+              ))}
+            </select>
+            {sourceOptions.length ? (
+              <select name="source" defaultValue={source} aria-label="来源">
+                <option value="">全部来源</option>
+                {sourceOptions.map((s) => (
+                  <option key={s.id} value={s.id}>{s.name}</option>
+                ))}
+              </select>
+            ) : null}
+            {/* 标签/实体可达上百项 → 用原生 datalist 提供零 JS 输入即筛（取代超长 select 滚动地狱）。
+                提交值即输入文本，与 tag/entity 的精确匹配口径一致。 */}
+            {tagOptions.length ? (
+              <input name="tag" list="tag-options" defaultValue={tag} placeholder="标签" aria-label="标签" />
+            ) : null}
+            {entityOptions.length ? (
+              <input name="entity" list="entity-options" defaultValue={entity} placeholder="实体" aria-label="实体" />
+            ) : null}
+            <input type="date" name="from" defaultValue={from} aria-label="开始日期" />
+            <input type="date" name="to" defaultValue={to} aria-label="结束日期" />
+          </div>
+        </details>
+        <datalist id="tag-options">
+          {tagOptions.map((t) => (
+            <option key={t} value={t} />
+          ))}
+        </datalist>
+        <datalist id="entity-options">
+          {entityOptions.map((e) => (
+            <option key={e} value={e} />
+          ))}
+        </datalist>
       </form>
 
-      {err ? <p className="export-ppt-err">{err}</p> : null}
+      {chips.length ? (
+        <p className="filter-chips">
+          {chips.map((c) => (
+            <a className="filter-chip" key={c.key} href={hrefWithout(c.key)} aria-label={`移除筛选 ${c.label}`}>
+              {c.label} <span aria-hidden>✕</span>
+            </a>
+          ))}
+        </p>
+      ) : null}
 
       <p className="muted">
         共 {rows.length} 条
         {hasFilter ? "（已筛选）" : ""}
+        {q ? `· 含「${q}」` : ""}
       </p>
 
       {rows.length === 0 ? (

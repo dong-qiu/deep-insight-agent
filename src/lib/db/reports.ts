@@ -209,6 +209,25 @@ export function searchReports(db: DB, query: string): string[] {
   return rows.map((x) => x.report_id as string);
 }
 
+/** snippet() 命中词的包裹标记——用控制字符（正文里不会出现），渲染端据此拆词加 <mark>，避免注入。 */
+export const SNIPPET_OPEN = "\u0001";
+export const SNIPPET_CLOSE = "\u0002";
+
+/** 把用户原始查询消毒成「永不抛错、永不静默丢弃」的 FTS5 MATCH 表达式。
+ *  - 按空白拆词，去掉词内双引号（防破坏短语语法）；
+ *  - 每词包成 `"term"*`：双引号中和 FTS 操作符（裸 `-`/`*`/`:`/`(` 等不再报错），尾随 `*` 做前缀匹配；
+ *    实测对中英文都成立，尤其无空格中文（`"软件工程"*` 命中，而精确短语 `"软件工程"` 不命中）；
+ *  - 词间空格 = FTS5 隐式 AND（Google 式：全词都需命中）。
+ *  - 全部被过滤（如纯空白/纯标点）→ 返回空串，调用方据此当作「无 q」处理（列全部，不报错）。 */
+export function sanitizeFtsQuery(raw: string): string {
+  return raw
+    .split(/\s+/)
+    .map((t) => t.replace(/"/g, "").trim())
+    .filter(Boolean)
+    .map((t) => `"${t}"*`)
+    .join(" ");
+}
+
 /** report_index 里某 JSON 数组列的去重值集合（升序）——报告库筛选下拉的选项来源。
  *  - column 是**代码内枚举**（非用户输入），白名单约束后才拼进 SQL，无注入面；
  *  - 经 json_each 展开数组、跳过空串；source_ids 返回的是**源 id**（展示名由调用方 join source 表映射）。 */
@@ -252,6 +271,7 @@ function rowToIndex(r: any): ReportIndexEntry {
     highlights: JSON.parse(r.highlights ?? "[]"),
     tags: JSON.parse(r.tags), entity_names: JSON.parse(r.entity_names), importance: r.importance,
     event_ids: JSON.parse(r.event_ids), milestone_count: r.milestone_count ?? 0,
+    snippet: r._snippet ?? undefined,
   };
 }
 
@@ -278,22 +298,24 @@ export interface ReportQuery {
   limit?: number;
 }
 const REPORT_TYPES = new Set(["brief", "deep_dive", "initial_digest"]);
-const SORT_COLS = { date: "date", importance: "importance" } as const;
+const SORT_COLS = { date: "report_index.date", importance: "report_index.importance" } as const;
 const SORT_DIRS = { asc: "ASC", desc: "DESC" } as const;
+// snippet 取自 body 列（cols: 0 report_id,1 title,2 summary,3 body），命中词以控制字符标记包裹、首尾省略号。
+const SNIPPET_EXPR = `snippet(report_fts, 3, '${SNIPPET_OPEN}', '${SNIPPET_CLOSE}', '…', 12)`;
 
 export function queryReportIndex(db: DB, opts: ReportQuery = {}): ReportIndexEntry[] {
   const where: string[] = [];
   const args: unknown[] = [];
 
   if (opts.type && REPORT_TYPES.has(opts.type)) {
-    where.push("type = ?"); args.push(opts.type);
+    where.push("report_index.type = ?"); args.push(opts.type);
   }
   if (opts.industry && INDUSTRY_VALUES.has(opts.industry as Industry)) {
-    where.push("industry = ?"); args.push(opts.industry);
+    where.push("report_index.industry = ?"); args.push(opts.industry);
   }
   // topic_id 是自由字符串（topic 主键），无固定白名单可校验——靠参数化（topic_id = ?）杜绝注入。
   if (opts.topic && opts.topic.trim()) {
-    where.push("topic_id = ?"); args.push(opts.topic.trim());
+    where.push("report_index.topic_id = ?"); args.push(opts.topic.trim());
   }
   // source / tag / entity 命中存于 JSON 数组列（source_ids/tags/entity_names）——用 json_each 相关子查询
   // 做"数组含某值"的精确匹配（exact，非 LIKE 模糊），值参数化杜绝注入。下拉选项来自 distinctIndexValues。
@@ -310,25 +332,41 @@ export function queryReportIndex(db: DB, opts: ReportQuery = {}): ReportIndexEnt
     args.push(opts.entity.trim());
   }
   if (opts.from && /^\d{4}-\d{2}-\d{2}$/.test(opts.from)) {
-    where.push("date >= ?"); args.push(opts.from);
+    where.push("report_index.date >= ?"); args.push(opts.from);
   }
   if (opts.to && /^\d{4}-\d{2}-\d{2}$/.test(opts.to)) {
-    where.push("date <= ?"); args.push(opts.to);
-  }
-  if (opts.q && opts.q.trim()) {
-    where.push("report_id IN (SELECT report_id FROM report_fts WHERE report_fts MATCH ?)");
-    args.push(opts.q.trim());
+    where.push("report_index.date <= ?"); args.push(opts.to);
   }
 
-  // 列名/方向走"输入键 → 常量值"映射（不是字符串校验后拼接），完全消除 ORDER BY 拼接面
-  const sortCol = SORT_COLS[(opts.sort ?? "date") as keyof typeof SORT_COLS] ?? "date";
-  const dir = SORT_DIRS[(opts.dir ?? "desc") as keyof typeof SORT_DIRS] ?? "DESC";
-  const tiebreak = sortCol === "importance" ? ", date DESC" : "";
+  // 全文检索：消毒成永不抛错的 MATCH 表达式（空串 = 视作无 q）。命中时 JOIN report_fts 以取 bm25 排序 + snippet。
+  const match = opts.q && opts.q.trim() ? sanitizeFtsQuery(opts.q) : "";
+  const useFts = match.length > 0;
+
+  // 列名/方向走"输入键 → 常量值"映射（不是字符串校验后拼接），完全消除 ORDER BY 拼接面。
+  // 相关度排序仅在有 q 时有效：显式选 relevance 或「有 q 且未指定 sort」→ 按 bm25（负值，越小越相关）升序。
+  const wantRelevance = opts.sort === "relevance" || (useFts && !opts.sort);
   const limit = Math.min(Math.max(opts.limit ?? 100, 1), 500);
 
-  const sql = `SELECT * FROM report_index ${
-    where.length ? `WHERE ${where.join(" AND ")}` : ""
-  } ORDER BY ${sortCol} ${dir}${tiebreak} LIMIT ${limit}`;
+  let orderBy: string;
+  if (wantRelevance && useFts) {
+    orderBy = "bm25(report_fts) ASC";
+  } else {
+    const sortCol = SORT_COLS[(opts.sort ?? "date") as keyof typeof SORT_COLS] ?? "report_index.date";
+    const dir = SORT_DIRS[(opts.dir ?? "desc") as keyof typeof SORT_DIRS] ?? "DESC";
+    orderBy = `${sortCol} ${dir}${sortCol.endsWith("importance") ? ", report_index.date DESC" : ""}`;
+  }
+
+  if (useFts) {
+    // MATCH 必须是 WHERE 第一个条件 → match 参数排在筛选参数之前
+    const sql = `SELECT report_index.*, ${SNIPPET_EXPR} AS _snippet
+      FROM report_index JOIN report_fts ON report_fts.report_id = report_index.report_id
+      WHERE report_fts MATCH ?${where.length ? ` AND ${where.join(" AND ")}` : ""}
+      ORDER BY ${orderBy} LIMIT ${limit}`;
+    return (db.prepare(sql).all(match, ...args) as any[]).map(rowToIndex);
+  }
+  const sql = `SELECT report_index.* FROM report_index${
+    where.length ? ` WHERE ${where.join(" AND ")}` : ""
+  } ORDER BY ${orderBy} LIMIT ${limit}`;
   return (db.prepare(sql).all(...args) as any[]).map(rowToIndex);
 }
 
