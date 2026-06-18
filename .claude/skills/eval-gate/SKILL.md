@@ -70,4 +70,7 @@ git commit --amend --trailer "Eval-Gate: pass (a1 <date>, baseline ok)"
 - 确认纯重构/注释误命中、无需重测：`Eval-Gate: skip (<原因>)`。
 - eval 设施暂不可用、留痕绕过：让用户 `EVAL_GATE_ACK=1 git push`，并提醒 CI 是最终兜底。
 
+> 盖章是「信任承诺」：hook 与 CI 都只校验 trailer 存在、**不验证 eval 真跑过**。它防的是"忘记跑"，
+> 挡不住"故意盖章不跑"——后者靠独立 review 与 `eval.yml` 定时回归兜底。盖章前请真的跑过对比。
+
 阈值口径以 `docs/verify/eval-criteria.md` 为准（本 skill 与 `run-a1.ts` 均镜像自它，改阈值同步三处）。

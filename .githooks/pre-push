@@ -18,7 +18,9 @@ blocked=0
 while read -r local_ref local_sha remote_ref remote_sha; do
   is_zero "$local_sha" && continue                       # 删除远程分支
   if is_zero "$remote_sha"; then
-    rev="$local_sha --not --remotes"                     # 新分支：只看尚未在任何远程的提交
+    # 新分支：只看尚未在任何远程的提交。注：全新仓库无任何 remote 引用时 --not --remotes
+    # 会退化为整个历史 → 首推可能误命中旧的未盖章提交，用 EVAL_GATE_ACK=1 放行即可。
+    rev="$local_sha --not --remotes"
   else
     rev="$remote_sha..$local_sha"
   fi

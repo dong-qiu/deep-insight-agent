@@ -9,7 +9,11 @@ SENSITIVE_RE='^(src/lib/agents/|src/lib/sources/|src/lib/runtime/llm\.ts|evals/d
 TEST_RE='\.test\.ts$'
 
 rev="$*"
-commits=$(git rev-list $rev 2>/dev/null || true)
+# fail-closed：区分「区间合法但为空」(放行) 与「区间解析失败/端点不可达」(阻断)。
+if ! commits=$(git rev-list $rev 2>/dev/null); then
+  echo "✗ eval 门禁：无法解析提交区间「$rev」——fail-closed 阻断（检查 base/head 是否可达）。" >&2
+  exit 1
+fi
 [ -z "$commits" ] && exit 0
 
 files=$(for c in $commits; do git show --name-only --format= "$c"; done 2>/dev/null | sort -u)
