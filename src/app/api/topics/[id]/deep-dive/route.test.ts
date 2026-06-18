@@ -16,8 +16,12 @@ vi.mock("../../../../../lib/agents/scheduler.js", () => ({
 vi.mock("../../../../../lib/runtime/logger.js", () => ({
   runLogger: () => ({ info: vi.fn(), error: vi.fn() }),
 }));
+// 二道鉴权闸 mock：默认 vi.fn() 返 undefined → handler 放行（admin）；403 短路单独测。
+vi.mock("../../../../../lib/auth-guard.js", () => ({ forbidNonAdmin: vi.fn() }));
 
+import { NextResponse } from "next/server";
 import { runPipelineForTopic } from "../../../../../lib/agents/scheduler.js";
+import { forbidNonAdmin } from "../../../../../lib/auth-guard.js";
 import { getTopic, hasRunningRun } from "../../../../../lib/db/repos.js";
 import { POST } from "./route.js";
 
@@ -26,6 +30,14 @@ function call(id: string): Promise<Response> {
 }
 
 describe("POST /api/topics/[id]/deep-dive", () => {
+  it("非 admin（二道闸 403）→ 直接 403、不触发深挖", async () => {
+    vi.mocked(forbidNonAdmin).mockResolvedValueOnce(NextResponse.json({ error: "forbidden" }, { status: 403 }));
+    const res = await call("t1");
+    expect(res.status).toBe(403);
+    expect(getTopic).not.toHaveBeenCalled(); // 闸在最前，下游一概不跑
+    expect(runPipelineForTopic).not.toHaveBeenCalled();
+  });
+
   it("topic 不存在 → 404", async () => {
     vi.mocked(getTopic).mockReturnValue(null);
     const res = await call("t_nope");

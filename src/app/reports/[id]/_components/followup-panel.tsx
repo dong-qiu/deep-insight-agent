@@ -9,9 +9,12 @@ import type { FollowupQA } from "../../../../lib/types.js";
 export function FollowupPanel({
   reportId,
   initial,
+  canAsk = true,
 }: {
   reportId: string;
   initial: FollowupQA[];
+  /** 是否允许提新问（提问烧 relay → 仅 admin；viewer 仍可读历史问答）。 */
+  canAsk?: boolean;
 }): React.ReactElement {
   const [list, setList] = useState<FollowupQA[]>(initial);
   const [question, setQuestion] = useState("");
@@ -71,20 +74,24 @@ export function FollowupPanel({
         );
       })}
 
-      <form onSubmit={submit} className="followup-form">
-        <textarea
-          value={question}
-          onChange={(e) => setQuestion(e.target.value)}
-          placeholder="就这份报告继续提问…（最多 500 字）"
-          maxLength={500}
-          rows={3}
-          disabled={busy}
-        />
-        <button type="submit" disabled={busy || !question.trim()}>
-          {busy ? "正在核对报告引用源…" : "提问"}
-        </button>
-      </form>
-      {err ? <p className="followup-err">❌ {err}</p> : null}
+      {canAsk ? (
+        <>
+          <form onSubmit={submit} className="followup-form">
+            <textarea
+              value={question}
+              onChange={(e) => setQuestion(e.target.value)}
+              placeholder="就这份报告继续提问…（最多 500 字）"
+              maxLength={500}
+              rows={3}
+              disabled={busy}
+            />
+            <button type="submit" disabled={busy || !question.trim()}>
+              {busy ? "正在核对报告引用源…" : "提问"}
+            </button>
+          </form>
+          {err ? <p className="followup-err">❌ {err}</p> : null}
+        </>
+      ) : null}
     </section>
   );
 }

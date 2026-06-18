@@ -1,4 +1,5 @@
 import { notFound } from "next/navigation";
+import { auth } from "../../../auth.js";
 import { getDb } from "../../../lib/db/index.js";
 import { listFollowups } from "../../../lib/db/followup.js";
 import { getReport, listBlockedChecksForReport } from "../../../lib/db/reports.js";
@@ -23,6 +24,7 @@ const REASON_LABEL: Record<string, string> = {
 
 export default async function ReportPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
+  const isAdmin = (await auth())?.user?.role === "admin"; // PPT 导出/追问烧钱 → 仅 admin（middleware 同步硬拦）
   const db = getDb();
   const report = getReport(db, id);
   if (!report) notFound();
@@ -41,7 +43,7 @@ export default async function ReportPage({ params }: { params: Promise<{ id: str
       <CitePreview />
       <p className="report-header muted">
         <a href="/reports">← 报告库</a>
-        <ExportPptButton reportId={id} />
+        {isAdmin ? <ExportPptButton reportId={id} /> : null}
       </p>
       <Markdown md={report.body_md} />
       <hr />
@@ -90,7 +92,7 @@ export default async function ReportPage({ params }: { params: Promise<{ id: str
       {report.status === "done" ? (
         <>
           <hr />
-          <FollowupPanel reportId={id} initial={followups} />
+          <FollowupPanel reportId={id} initial={followups} canAsk={isAdmin} />
         </>
       ) : null}
     </section>

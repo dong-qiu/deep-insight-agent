@@ -8,7 +8,11 @@ vi.mock("../../../../../lib/db/index.js", () => ({
 vi.mock("../../../../../lib/services/ppt-export.js", () => ({
   exportReportPptx: vi.fn(),
 }));
+// 二道鉴权闸 mock：默认放行（admin）；403 短路单独测。
+vi.mock("../../../../../lib/auth-guard.js", () => ({ forbidNonAdmin: vi.fn() }));
 
+import { NextResponse } from "next/server";
+import { forbidNonAdmin } from "../../../../../lib/auth-guard.js";
 import { exportReportPptx } from "../../../../../lib/services/ppt-export.js";
 import { GET } from "./route.js";
 
@@ -17,6 +21,13 @@ function callGet(url: string, id: string): Promise<Response> {
 }
 
 describe("GET /api/reports/[id]/pptx", () => {
+  it("非 admin（二道闸 403）→ 直接 403、不导出", async () => {
+    vi.mocked(forbidNonAdmin).mockResolvedValueOnce(NextResponse.json({ error: "forbidden" }, { status: 403 }));
+    const res = await callGet("http://x/api/reports/r1/pptx", "r1");
+    expect(res.status).toBe(403);
+    expect(exportReportPptx).not.toHaveBeenCalled();
+  });
+
   it("orchestrator 返 null → 404 + JSON error", async () => {
     vi.mocked(exportReportPptx).mockResolvedValue(null);
     const res = await callGet("http://x/api/reports/nope/pptx", "nope");

@@ -6,6 +6,7 @@
 import { NextResponse } from "next/server";
 import { auth } from "./auth.js";
 import { isPublicPath } from "./lib/runtime/auth-paths.js";
+import { isAdminOnlyPath } from "./lib/runtime/role-paths.js";
 import { RateLimiter } from "./lib/runtime/rate-limit.js";
 
 // 默认每 IP 每分钟 120（与 config.rateLimit 对齐由后续接入）。每个 Edge 实例独立计数。
@@ -28,6 +29,15 @@ export default auth((req) => {
     const url = new URL("/login", req.nextUrl);
     url.searchParams.set("from", pathname);
     return NextResponse.redirect(url);
+  }
+
+  // 角色分权（多账号）：已登录但非 admin 访问 admin-only 路径 → /api 返 403、页面回首页。
+  // 服务端强制是分权的真闸门（UI 隐藏只是体验/纵深）；缺省最小权限（role 非 'admin' 即拦）。
+  if (req.auth?.user && isAdminOnlyPath(pathname) && req.auth.user.role !== "admin") {
+    if (pathname.startsWith("/api")) {
+      return NextResponse.json({ error: "forbidden" }, { status: 403 });
+    }
+    return NextResponse.redirect(new URL("/", req.nextUrl));
   }
 
   return NextResponse.next();

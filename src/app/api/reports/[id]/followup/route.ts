@@ -8,6 +8,7 @@
  *  单用户 MVP：actor 记 "admin"（auth.ts 的用户 id），限流按来源 IP。 */
 import { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
+import { forbidNonAdmin } from "../../../../../lib/auth-guard.js";
 import { answerFollowup } from "../../../../../lib/agents/followup.js";
 import { appendAudit } from "../../../../../lib/db/audit.js";
 import { listFollowups, saveFollowup } from "../../../../../lib/db/followup.js";
@@ -31,6 +32,8 @@ export async function POST(
   req: Request,
   { params }: { params: Promise<{ id: string }> },
 ): Promise<Response> {
+  const denied = await forbidNonAdmin(); // 二道闸：追问烧 relay，非 admin 直接 403
+  if (denied) return denied;
   const { id } = await params;
   const db = getDb();
   const report = getReport(db, id);

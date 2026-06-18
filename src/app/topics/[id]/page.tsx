@@ -5,6 +5,7 @@
  *  - 报告时间线：该主题全部报告按日期倒序，重要性 ≥4 标「重大」徽标；
  *  - 入口：对该主题触发深挖（analyze→validate→report-gen，type=deep_dive）。 */
 import { notFound } from "next/navigation";
+import { auth } from "../../../auth.js";
 import { getDb } from "../../../lib/db/index.js";
 import { type EntityTrend, entityTrends, queryReportIndex, topicEvolution } from "../../../lib/db/reports.js";
 import { getTopic } from "../../../lib/db/repos.js";
@@ -33,6 +34,7 @@ const TREND_LABEL: Record<EntityTrend["trend"], string> = { up: "升温", down: 
 
 export default async function TopicPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
+  const isAdmin = (await auth())?.user?.role === "admin"; // 深挖烧钱 → 仅 admin 可触发（middleware 同步硬拦）
   const db = getDb();
   const topic = getTopic(db, id);
   if (!topic) notFound();
@@ -54,7 +56,7 @@ export default async function TopicPage({ params }: { params: Promise<{ id: stri
       </h2>
       <p className="muted">
         {topic.industry} · {topic.language} · brief {topic.brief_schedule}
-        <DeepDiveButton topicId={topic.id} topicName={topic.name} enabled={topic.enabled} />
+        {isAdmin ? <DeepDiveButton topicId={topic.id} topicName={topic.name} enabled={topic.enabled} /> : null}
       </p>
       {topic.keywords.length ? <p className="muted">关键词：{topic.keywords.join(" / ")}</p> : null}
 

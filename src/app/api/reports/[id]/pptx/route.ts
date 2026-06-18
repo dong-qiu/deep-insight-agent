@@ -4,6 +4,7 @@
  *  - 缺省（A 即时导出）：仅确定性骨架 + statement 首句 + importance_basis；零 LLM 成本。
  *  鉴权由 middleware.ts 已统一拦截，未登录走 401。 */
 import { NextResponse } from "next/server";
+import { forbidNonAdmin } from "../../../../../lib/auth-guard.js";
 import { getDb } from "../../../../../lib/db/index.js";
 import { exportReportPptx } from "../../../../../lib/services/ppt-export.js";
 
@@ -15,6 +16,8 @@ export async function GET(
   req: Request,
   { params }: { params: Promise<{ id: string }> },
 ): Promise<Response> {
+  const denied = await forbidNonAdmin(); // 二道闸：PPT 导出（B 路径 polish 烧钱），非 admin 直接 403
+  if (denied) return denied;
   const { id } = await params;
   const sp = new URL(req.url).searchParams;
   const usePolish = sp.get("polish") === "1";
