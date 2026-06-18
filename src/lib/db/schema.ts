@@ -16,6 +16,16 @@ CREATE TABLE IF NOT EXISTS source (
   updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- 应用用户（多账号 · 受邀只读账号）：admin 在设置页增删；密码 scrypt 哈希存储。
+-- bootstrap admin 走 env ADMIN_EMAIL/ADMIN_PASSWORD、不入此表（不可删、不会被锁死）。
+CREATE TABLE IF NOT EXISTS app_user (
+  email         TEXT PRIMARY KEY,
+  password_hash TEXT NOT NULL,
+  role          TEXT NOT NULL CHECK (role IN ('admin','viewer')),
+  name          TEXT,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS topic (
   id             TEXT PRIMARY KEY,
   name           TEXT NOT NULL,

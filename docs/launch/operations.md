@@ -44,8 +44,7 @@ curl -fsS -X POST http://127.0.0.1:3000/api/cron -H "authorization: Bearer $CRON
 | `VALIDATOR_BATCH` | 否 | 一致性判定**按源归并**（同一源被多条结论引用时，源文只发一遍、一次调用逐条独立判 → token 从 ~K×源文砍到 ~1×源文，成本最大杠杆）。默认开；`0` 回退逐条判定（精度回归排查 / 怀疑批量串扰时的运维开关）。判定语义与逐条一致、缓存共享 |
 | `CONSISTENCY_BATCH_MAX` | 否 | 单次批量调用最多判几条结论，默认 8。超出拆多次调用（源文各发一遍，仍远省于逐条）。调小=更稳的输出/更高精度但省得少，调大=更省但单调用输出更长、批内判定数更多 |
 | `AUTH_SECRET` | ✅ | NextAuth 密钥，`openssl rand -base64 32` |
-| `ADMIN_EMAIL` / `ADMIN_PASSWORD` | ✅ | 管理员登录（Credentials），role=admin（全权） |
-| `APP_USERS` | 否 | 受邀只读账号（对外分享给"几个可信的人"）。JSON 数组：`[{"email":"a@x.com","password":"…","role":"viewer"}]`，`role` 缺省/未知一律 `viewer`。viewer 可读 Brief/报告/主题、不可进配置/管理、不可触发烧钱端点（深挖/追问/PPT polish）——服务端 middleware 强制（`isAdminOnlyPath`）。非法 JSON 自动忽略、不影响 admin 登录。放 `.env.local`（gitignore），明文同 `ADMIN_PASSWORD` 信任模型 |
+| `ADMIN_EMAIL` / `ADMIN_PASSWORD` | ✅ | **内置管理员**（bootstrap，role=admin、全权、不入库、不可删/锁死）。受邀的其他账号在**设置页 → 用户/访问**里增删（存 `app_user` 表、密码 scrypt 哈希，缺省 role=viewer——只读 Brief/报告/主题，不可进配置/管理、不可触发烧钱端点）。对外分享只需建 viewer 账号、把邮箱+密码发对方。鉴权拆 Edge `auth.config.ts`（middleware 读 JWT 角色）/ Node `auth.ts`（查库验密码） |
 | `CRON_SECRET` | ✅（定时） | `openssl rand -base64 32`；**未设则 `/api/cron` 返回 503、定时管线不工作** |
 | `PIPELINE_WINDOW_HOURS` | 否 | 单轮回看窗口，默认 168（7 天） |
 | `INITIAL_DIGEST_WINDOW_HOURS` / `INITIAL_DIGEST_ITEMS` | 否 | 冷启动首版综述的窗口/条数，默认 720（30 天）/ 25 |
