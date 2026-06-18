@@ -23,6 +23,14 @@ function impClass(importance: number): string {
 const ENTITY_MAX = 6; // chips 上限，防一行炸开（数组本已按重要性≈频次排序，取前缀即重点）
 const TAG_MAX = 4;
 
+/** 存储的 title 是规范字段（report-gen.ts：`${topic.name} · ${类型} · ${date}`），被 md/html/ppt/告警复用。
+ *  但卡片里类型与日期已由页头语境 + meta 行承载，标题再带一遍纯属重复——展示层剥掉尾缀，只留主题名。
+ *  按已知模板精确剥（非 split），旧报告模板不匹配时回退原标题，绝不误删主题名里的分隔符。 */
+function displayTitle(r: ReportIndexEntry): string {
+  const suffix = ` · ${TYPE_LABEL[r.type] ?? r.type} · ${r.date}`;
+  return r.title.endsWith(suffix) ? r.title.slice(0, -suffix.length) : r.title;
+}
+
 export function ReportCard({
   entry,
   showTypeLabel = false,
@@ -36,17 +44,17 @@ export function ReportCard({
   return (
     <article className="card">
       <h3>
-        <a href={`/reports/${r.report_id}`}>{r.title}</a>
+        <a href={`/reports/${r.report_id}`}>{displayTitle(r)}</a>
       </h3>
       <p className="muted card-meta">
+        {/* 类型/日期已从标题剥离，meta 行成为其唯一出处：首页 Brief 由页头表明类型，故只留日期；
+            报告库混排多类型/多日期、无页头语境，保留 类型 · 行业 · 日期。行业代码不再与标题主题名重复展示。 */}
         {showTypeLabel ? (
           <>
             {TYPE_LABEL[r.type] ?? r.type} · {r.industry} · {r.date}
           </>
         ) : (
-          <>
-            {r.date} · {r.industry}
-          </>
+          <>{r.date}</>
         )}{" "}
         <span className={impClass(r.importance)}>重要性 {r.importance}</span>
         {r.milestone_count > 0 ? <span className="milestone-badge">里程碑</span> : null}
