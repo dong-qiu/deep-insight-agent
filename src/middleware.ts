@@ -3,11 +3,16 @@
  *  - PUBLIC_PATHS 白名单（/login·/api/health·/api/cron[Bearer 在 handler 自查]）外，无 session 一律拦：
  *    页面 → 重定向 /login（带 from）；/api → 401 JSON；
  *  - Edge 安全模块（auth.ts 不碰 DB；rate-limit 是纯 Map）。审计/脱敏日志在 Node 侧路由处理。 */
+import NextAuth from "next-auth";
 import { NextResponse } from "next/server";
-import { auth } from "./auth.js";
+import { authConfig } from "./auth.config.js";
 import { isPublicPath } from "./lib/runtime/auth-paths.js";
 import { isAdminOnlyPath } from "./lib/runtime/role-paths.js";
 import { RateLimiter } from "./lib/runtime/rate-limit.js";
+
+// middleware 跑在 Edge——用 Edge 安全的 authConfig 自建轻实例（只读 session/JWT 的 role），
+// 绝不引入带 DB/crypto 的 auth.ts（那会把 better-sqlite3 拖进 Edge 包、构建失败）。
+const { auth } = NextAuth(authConfig);
 
 // 默认每 IP 每分钟 120（与 config.rateLimit 对齐由后续接入）。每个 Edge 实例独立计数。
 const limiter = new RateLimiter({ limit: 120, windowMs: 60_000 });

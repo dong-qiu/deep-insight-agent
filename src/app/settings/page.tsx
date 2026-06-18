@@ -5,11 +5,13 @@
 import { getEffectiveModels, loadStaticConfig } from "../../lib/config/index.js";
 import { getDb } from "../../lib/db/index.js";
 import { listSources, listTopics } from "../../lib/db/repos.js";
+import { listUsers } from "../../lib/db/users.js";
 import { CollectButton } from "./_components/collect-button.js";
 import { DeepDiveButton } from "./_components/deep-dive-button.js";
 import { DeleteButton } from "./_components/delete-button.js";
 import { SourceForm } from "./_components/source-form.js";
 import { TopicForm } from "./_components/topic-form.js";
+import { UserAdmin } from "./_components/user-admin.js";
 
 export const dynamic = "force-dynamic";
 
@@ -17,6 +19,7 @@ export default function SettingsPage() {
   const db = getDb();
   const sources = listSources(db);
   const topics = listTopics(db);
+  const users = listUsers(db);
   let models: { analyzer: string; validator: string } | null = null;
   try {
     models = getEffectiveModels(loadStaticConfig());
@@ -36,6 +39,13 @@ export default function SettingsPage() {
       ) : (
         <p className="muted">（模型配置未就绪：检查 ANTHROPIC_API_KEY 环境变量）</p>
       )}
+
+      <h3>用户 / 访问（{users.length}）</h3>
+      <p className="muted">
+        受邀账号——发邮箱+密码给可信的人即可登录。一律 <strong>viewer（只读）</strong>：能看 Brief/报告/主题，
+        不能进配置、不能触发深挖/追问/导出。<strong>唯一管理员是内置账号</strong>（环境变量），不在此列、不可删/不可在此增设。
+      </p>
+      <UserAdmin initial={users} />
 
       <h3>主题（{topics.length}）</h3>
       {topics.length === 0 ? (
