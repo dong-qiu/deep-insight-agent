@@ -31,31 +31,52 @@ function displayTitle(r: ReportIndexEntry): string {
   return r.title.endsWith(suffix) ? r.title.slice(0, -suffix.length) : r.title;
 }
 
+/** 实体 chip 去重：丢掉「文本已出现在本卡 highlights/摘要里」的实体——正文已点名，chip 再列一遍即重复噪声。
+ *  haystack = highlights + summary 全文（小写），实体名作子串匹配命中即剔除。
+ *  ≥2 字才参与（单字实体如 "AI" 易误命中任意正文）；过滤在 slice 之前，保留至多 ENTITY_MAX 个**非重复**实体。 */
+function dedupEntities(r: ReportIndexEntry): string[] {
+  const haystack = `${r.highlights.join(" ")} ${r.summary ?? ""}`.toLowerCase();
+  return r.entity_names
+    .filter((e) => {
+      const name = e.trim().toLowerCase();
+      if (!name) return false; // 空名丢弃
+      if (name.length < 2) return true; // 单字不参与子串去重（易误命中任意正文），原样保留
+      return !haystack.includes(name);
+    })
+    .slice(0, ENTITY_MAX);
+}
+
+/** 在 report 列表里已按某维度筛选时，要从卡片 meta 里隐藏的维度——避免每张卡重复显示恒定的筛选值。 */
+export interface CardOmit {
+  type?: boolean;
+  industry?: boolean;
+}
+
 export function ReportCard({
   entry,
   showTypeLabel = false,
+  omit,
 }: {
   entry: ReportIndexEntry;
   showTypeLabel?: boolean;
+  omit?: CardOmit;
 }) {
   const r = entry;
-  const entities = r.entity_names.slice(0, ENTITY_MAX);
+  const entities = dedupEntities(r);
   const tags = r.tags.slice(0, TAG_MAX);
+  // meta 维度按需拼装：报告库（showTypeLabel）默认 类型 · 行业 · 日期，但已被筛选的维度逐条重复=噪声，故抑制；
+  // 首页 Brief（!showTypeLabel）由页头表明类型，只留日期。日期始终保留（同列表内最常变、定位用）。
+  const metaParts: string[] = [];
+  if (showTypeLabel && !omit?.type) metaParts.push(TYPE_LABEL[r.type] ?? r.type);
+  if (showTypeLabel && !omit?.industry) metaParts.push(r.industry);
+  metaParts.push(r.date);
   return (
     <article className="card">
       <h3>
         <a href={`/reports/${r.report_id}`}>{displayTitle(r)}</a>
       </h3>
       <p className="muted card-meta">
-        {/* 类型/日期已从标题剥离，meta 行成为其唯一出处：首页 Brief 由页头表明类型，故只留日期；
-            报告库混排多类型/多日期、无页头语境，保留 类型 · 行业 · 日期。行业代码不再与标题主题名重复展示。 */}
-        {showTypeLabel ? (
-          <>
-            {TYPE_LABEL[r.type] ?? r.type} · {r.industry} · {r.date}
-          </>
-        ) : (
-          <>{r.date}</>
-        )}{" "}
+        {metaParts.join(" · ")}{" "}
         <span className={impClass(r.importance)}>重要性 {r.importance}</span>
         {r.milestone_count > 0 ? <span className="milestone-badge">里程碑</span> : null}
       </p>

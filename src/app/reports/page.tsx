@@ -147,7 +147,15 @@ export default async function ReportsPage({
             : "暂无报告。后端管线产出后会出现在这里。"}
         </p>
       ) : (
-        rows.map((r) => <ReportCard entry={r} showTypeLabel key={r.report_id} />)
+        rows.map((r) => (
+          <ReportCard
+            entry={r}
+            showTypeLabel
+            // 按主题筛选时行业也恒定（一主题归属唯一行业）→ 一并抑制，与 industry 筛选同等去噪
+            omit={{ type: !!type, industry: !!industry || !!topic }}
+            key={r.report_id}
+          />
+        ))
       )}
     </section>
   );
