@@ -5,7 +5,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { AnalysisBatch, Report, ReportIndexEntry, Topic, ValidationResult } from "../types.js";
 import { saveAnalysisBatch, saveValidationResult } from "./analysis.js";
 import { type DB, openDb } from "./index.js";
-import { distinctIndexValues, entityTrends, getReport, latestReportForTopicSince, listBlockedChecksForReport, listRecentBriefEvents, queryReportIndex, sanitizeFtsQuery, saveReport, searchReports, SNIPPET_CLOSE, SNIPPET_OPEN, topicEvolution, topicReportStats } from "./reports.js";
+import { chainTypesFor, distinctIndexValues, entityTrends, getReport, latestReportForTopicSince, listBlockedChecksForReport, listRecentBriefEvents, previousReportForTopic, queryReportIndex, reportNeighbors, sanitizeFtsQuery, saveReport, searchReports, SNIPPET_CLOSE, SNIPPET_OPEN, topicEvolution, topicReportStats } from "./reports.js";
 import { insertTopic } from "./repos.js";
 
 const dir = mkdtempSync(join(tmpdir(), "ia-reports-"));
@@ -61,6 +61,64 @@ it("latestReportForTopicSince：只认 since 之后本主题最新的【已完�
   saveReport(db, { ...report, id: "rep_new", type: "deep_dive", generated_at: "2026-06-14T10:06:00Z" }, { ...index, report_id: "rep_new", type: "deep_dive" }, { dir });
   saveReport(db, { ...report, id: "rep_other", type: "deep_dive", topic_id: "t2", generated_at: "2026-06-14T10:07:00Z" }, { ...index, report_id: "rep_other", topic_id: "t2", type: "deep_dive" }, { dir });
   expect(latestReportForTopicSince(db, "t1", since)).toEqual({ id: "rep_new", title: report.title, type: "deep_dive" }); // 别主题 rep_other 不串
+});
+
+it("chainTypesFor：brief/initial_digest 同链，deep_dive 独立链", () => {
+  expect(chainTypesFor("brief")).toEqual(["brief", "initial_digest"]);
+  expect(chainTypesFor("initial_digest")).toEqual(["brief", "initial_digest"]);
+  expect(chainTypesFor("deep_dive")).toEqual(["deep_dive"]);
+});
+
+it("previousReportForTopic：本批之前同链最新 done 报告作前情；跨链/跨主题/非 done 不串", () => {
+  insertTopic(db, { ...topic, id: "t2" });
+  // 链头：冷启动 initial_digest
+  saveReport(db, { ...report, id: "rep_init", type: "initial_digest", generated_at: "2026-05-01T08:00:00Z" }, { ...index, report_id: "rep_init", type: "initial_digest" }, { dir });
+  // 第一篇 brief 的前情应回溯到 initial_digest（同属每日节奏链）
+  expect(previousReportForTopic(db, "t1", "brief")).toBe("rep_init");
+  // 深挖链与日度链不混：此刻无 done 深挖 → null
+  expect(previousReportForTopic(db, "t1", "deep_dive")).toBeNull();
+  // 落一篇更晚的 brief → 成为最新前情
+  saveReport(db, { ...report, id: "rep_b1", type: "brief", generated_at: "2026-05-02T08:00:00Z" }, { ...index, report_id: "rep_b1", type: "brief" }, { dir });
+  expect(previousReportForTopic(db, "t1", "brief")).toBe("rep_b1");
+  // failed 不算前情
+  saveReport(db, { ...report, id: "rep_bad", type: "brief", status: "failed", generated_at: "2026-05-03T08:00:00Z" }, { ...index, report_id: "rep_bad", type: "brief" }, { dir });
+  expect(previousReportForTopic(db, "t1", "brief")).toBe("rep_b1");
+  // 别主题不串
+  expect(previousReportForTopic(db, "t2", "brief")).toBeNull();
+});
+
+it("reportNeighbors：prev 取自 prev_report_id，next 反查谁记本报告为前情", () => {
+  saveReport(db, { ...report, id: "rep_a", prev_report_id: null, generated_at: "2026-05-01T08:00:00Z" }, { ...index, report_id: "rep_a" }, { dir });
+  saveReport(db, { ...report, id: "rep_b", title: "B 报告", prev_report_id: "rep_a", generated_at: "2026-05-02T08:00:00Z" }, { ...index, report_id: "rep_b", title: "B 报告" }, { dir });
+  saveReport(db, { ...report, id: "rep_c", title: "C 报告", prev_report_id: "rep_b", generated_at: "2026-05-03T08:00:00Z" }, { ...index, report_id: "rep_c", title: "C 报告" }, { dir });
+  // 中间节点 b：前 a、后 c
+  expect(reportNeighbors(db, { id: "rep_b", prev_report_id: "rep_a" })).toEqual({
+    prev: { id: "rep_a", title: report.title, type: "brief" },
+    next: { id: "rep_c", title: "C 报告", type: "brief" },
+  });
+  // 链头 a：无前、有后 b
+  expect(reportNeighbors(db, { id: "rep_a", prev_report_id: null })).toEqual({
+    prev: null,
+    next: { id: "rep_b", title: "B 报告", type: "brief" },
+  });
+  // 链尾 c：有前 b、无后
+  expect(reportNeighbors(db, { id: "rep_c", prev_report_id: "rep_b" })).toEqual({
+    prev: { id: "rep_b", title: "B 报告", type: "brief" },
+    next: null,
+  });
+});
+
+it("reportNeighbors：next 分叉（同 prev 被多篇重生成引用）取最新 done 一条", () => {
+  saveReport(db, { ...report, id: "rep_h", prev_report_id: null, generated_at: "2026-05-01T08:00:00Z" }, { ...index, report_id: "rep_h" }, { dir });
+  // 两篇都把 rep_h 记为前情（重生成分叉）；next 应取 generated_at 最新的 rep_n2
+  saveReport(db, { ...report, id: "rep_n1", title: "旧分叉", prev_report_id: "rep_h", generated_at: "2026-05-02T08:00:00Z" }, { ...index, report_id: "rep_n1", title: "旧分叉" }, { dir });
+  saveReport(db, { ...report, id: "rep_n2", title: "新分叉", prev_report_id: "rep_h", generated_at: "2026-05-03T08:00:00Z" }, { ...index, report_id: "rep_n2", title: "新分叉" }, { dir });
+  expect(reportNeighbors(db, { id: "rep_h", prev_report_id: null }).next).toEqual({ id: "rep_n2", title: "新分叉", type: "brief" });
+});
+
+it("reportNeighbors：prev 指向不存在/非 done 报告时安全返 null（不崩）", () => {
+  saveReport(db, { ...report, id: "rep_x", prev_report_id: "rep_ghost" }, { ...index, report_id: "rep_x" }, { dir });
+  expect(reportNeighbors(db, { id: "rep_x", prev_report_id: "rep_ghost" })).toEqual({ prev: null, next: null });
 });
 
 it("saveReport body_path 始终是绝对路径（dogfood 6/6 防相对路径跨环境失效回退）", () => {

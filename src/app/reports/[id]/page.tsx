@@ -2,7 +2,7 @@ import { notFound } from "next/navigation";
 import { auth } from "../../../auth.js";
 import { getDb } from "../../../lib/db/index.js";
 import { listFollowups } from "../../../lib/db/followup.js";
-import { getReport, listBlockedChecksForReport } from "../../../lib/db/reports.js";
+import { getReport, listBlockedChecksForReport, reportNeighbors } from "../../../lib/db/reports.js";
 import { Markdown } from "../../_components/markdown.js";
 import { CitePreview } from "./_components/cite-preview.js";
 import { ExportPptButton } from "./_components/export-ppt-button.js";
@@ -30,6 +30,7 @@ export default async function ReportPage({ params }: { params: Promise<{ id: str
   if (!report) notFound();
   const blocked = listBlockedChecksForReport(db, id);
   const followups = listFollowups(db, id);
+  const { prev, next } = reportNeighbors(db, report); // 演化链前后导航（主题持续聚合）
 
   // 按 insight 分组（保持 SQL 顺序）
   const byInsight = new Map<string, { statement: string; rows: typeof blocked }>();
@@ -52,6 +53,25 @@ export default async function ReportPage({ params }: { params: Promise<{ id: str
         {report.generated_at}
         {report.cost ? ` · 成本 $${report.cost.amount.toFixed(4)}` : ""}
       </p>
+
+      {prev || next ? (
+        <nav className="report-chain" aria-label="主题演化链">
+          {prev ? (
+            <a href={`/reports/${prev.id}`} className="chain-prev">
+              ← 前一篇<span className="muted"> · {prev.title}</span>
+            </a>
+          ) : (
+            <span />
+          )}
+          {next ? (
+            <a href={`/reports/${next.id}`} className="chain-next">
+              <span className="muted">{next.title} · </span>后一篇 →
+            </a>
+          ) : (
+            <span />
+          )}
+        </nav>
+      ) : null}
 
       {blocked.length === 0 ? null : (
         <details className="audit">
