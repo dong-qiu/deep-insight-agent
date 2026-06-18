@@ -242,18 +242,37 @@ nav a { margin-right: 1rem; }
   .entity-form input, .entity-form select, .entity-form textarea { border-color: #374151; }
 }
 /* 报告库（B-1+2）：搜索/筛选/排序行——HTML 表单原生提交、无 JS 状态 */
-.report-filter {
-  display: flex; flex-wrap: wrap; gap: .5rem; align-items: center;
-  margin: .75rem 0; padding: .5rem; border: 1px solid #e5e7eb; border-radius: 8px;
-}
-.report-filter input, .report-filter select {
-  font: inherit; font-size: .9rem; padding: .3rem .5rem;
+.report-search { margin: .75rem 0; }
+.report-search input, .report-search select {
+  font: inherit; font-size: .9rem; padding: .35rem .5rem;
   border: 1px solid #d1d5db; border-radius: 4px; background: inherit; color: inherit;
 }
-.report-filter input[type="search"] { min-width: 14rem; flex: 1 1 14rem; }
+/* 主搜索条：搜索框占满、排序/操作跟随，醒目且优先级清晰 */
+.report-search-bar { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
+.report-search-bar input[type="search"] { flex: 1 1 18rem; min-width: 12rem; }
+/* 次级筛选折叠区：summary 可点，展开后栅格排布 */
+.report-filter-more { margin-top: .5rem; border: 1px solid #e5e7eb; border-radius: 8px; padding: .25rem .5rem; }
+.report-filter-more summary { cursor: pointer; font-size: .9rem; color: #6b7280; padding: .25rem 0; }
+.report-filter-grid { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; padding: .35rem 0 .5rem; }
+.report-filter-grid input, .report-filter-grid select { flex: 0 1 11rem; }
+/* 已选筛选 chips：点击移除（链接到去掉该参数的 URL） */
+.filter-chips { display: flex; flex-wrap: wrap; gap: .4rem; margin: .5rem 0; }
+.filter-chip {
+  display: inline-flex; align-items: center; gap: .3rem; padding: .15rem .55rem;
+  font-size: .8rem; border: 1px solid #d1d5db; border-radius: 999px;
+  text-decoration: none; color: inherit; background: #f3f4f6;
+}
+.filter-chip:hover { background: #e5e7eb; }
+.filter-chip span { color: #9ca3af; }
+/* 搜索命中片段 + 高亮 */
+.search-snippet { margin: .4rem 0 0; font-size: .85rem; line-height: 1.5; }
+.search-snippet mark { background: #fde68a; color: inherit; padding: 0 .1rem; border-radius: 2px; }
 @media (prefers-color-scheme: dark) {
-  .report-filter { border-color: #1f2937; }
-  .report-filter input, .report-filter select { border-color: #374151; }
+  .report-search input, .report-search select { border-color: #374151; }
+  .report-filter-more { border-color: #1f2937; }
+  .filter-chip { background: #1f2937; border-color: #374151; }
+  .filter-chip:hover { background: #374151; }
+  .search-snippet mark { background: #92660a; color: #fde68a; }
 }
 /* 管理看板（A3）：紧凑统计表 */
 .stats { width: 100%; border-collapse: collapse; margin-top: .5rem; font-size: .9rem; }

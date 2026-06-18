@@ -5,7 +5,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { AnalysisBatch, Report, ReportIndexEntry, Topic, ValidationResult } from "../types.js";
 import { saveAnalysisBatch, saveValidationResult } from "./analysis.js";
 import { type DB, openDb } from "./index.js";
-import { distinctIndexValues, entityTrends, getReport, latestReportForTopicSince, listBlockedChecksForReport, listRecentBriefEvents, queryReportIndex, saveReport, searchReports, topicEvolution, topicReportStats } from "./reports.js";
+import { distinctIndexValues, entityTrends, getReport, latestReportForTopicSince, listBlockedChecksForReport, listRecentBriefEvents, queryReportIndex, sanitizeFtsQuery, saveReport, searchReports, SNIPPET_CLOSE, SNIPPET_OPEN, topicEvolution, topicReportStats } from "./reports.js";
 import { insertTopic } from "./repos.js";
 
 const dir = mkdtempSync(join(tmpdir(), "ia-reports-"));
@@ -265,6 +265,45 @@ describe("queryReportIndex（B-1+2 报告库筛/搜/排）", () => {
     expect(queryReportIndex(db, { source: "s2", entity: "Cursor" }).length).toBe(0); // s2 报告无 Cursor
   });
 
+  it("q 带 FTS 特殊字符不抛错（旧实现裸 '-' 会抛 FTS5 语法错 → 丢整段 q）", () => {
+    expect(() => queryReportIndex(db, { q: "-" })).not.toThrow(); // 纯操作符 → 消毒后 0 命中、不抛
+    expect(() => queryReportIndex(db, { q: "Cursor!" })).not.toThrow();
+    // 词内标点被分词器剥离，仍命中 r2（"Cursor"）
+    expect(queryReportIndex(db, { q: "Cursor!" }).map((r) => r.report_id)).toContain("r2");
+  });
+
+  it("多词隐式 AND：全部词都需命中（含不存在词 → 0）", () => {
+    expect(queryReportIndex(db, { q: "Cursor Composer" }).map((r) => r.report_id)).toEqual(["r2"]);
+    expect(queryReportIndex(db, { q: "Cursor nonexistentword" }).length).toBe(0);
+  });
+
+  it("q 前缀匹配：部分词 'Curso' 命中 Cursor（r2）", () => {
+    expect(queryReportIndex(db, { q: "Curso" }).map((r) => r.report_id)).toContain("r2");
+  });
+
+  it("q 消毒成空串（纯标点/空白）→ 视作无 q，返回全部", () => {
+    expect(queryReportIndex(db, { q: '  "  ' }).length).toBe(4);
+  });
+
+  it("有 q 时结果带 snippet（命中词以控制字符标记包裹）", () => {
+    const [hit] = queryReportIndex(db, { q: "ATLAS" });
+    expect(hit.report_id).toBe("r4");
+    expect(hit.snippet).toBeTruthy();
+    expect(hit.snippet).toContain(SNIPPET_OPEN); // 命中标记存在
+    expect(hit.snippet).toContain(SNIPPET_CLOSE);
+  });
+
+  it("无 q 时不带 snippet（瞬时字段仅搜索填充）", () => {
+    expect(queryReportIndex(db, { type: "brief" })[0].snippet).toBeUndefined();
+  });
+
+  it("sort=relevance 仅在有 q 时按 bm25；无 q 回退 date desc", () => {
+    // 无 q 选 relevance → 回退默认 date desc（不抛、不空）
+    expect(queryReportIndex(db, { sort: "relevance" }).map((r) => r.report_id)).toEqual(["r2", "r3", "r1", "r4"]);
+    // 有 q 且未指定 sort → 默认相关度，命中项非空
+    expect(queryReportIndex(db, { q: "AI" }).length).toBeGreaterThan(0);
+  });
+
   it("distinctIndexValues：各 JSON 列去重值升序（下拉选项来源）", () => {
     expect(distinctIndexValues(db, "source_ids")).toEqual(["s1", "s2", "s3"]);
     expect(distinctIndexValues(db, "tags")).toEqual(["case", "practice", "trend"]);
@@ -448,5 +487,30 @@ describe("主题持续聚合（ADR-0005）纯函数", () => {
       expect(same.total).toBe(3);
       expect(same.buckets.reduce((a, b) => a + b, 0)).toBe(3);
     });
+  });
+});
+
+describe("sanitizeFtsQuery（查询消毒 → 永不抛错的 MATCH 表达式）", () => {
+  it("普通词 → 每词包成 \"term\"* 隐式 AND", () => {
+    expect(sanitizeFtsQuery("agent security")).toBe('"agent"* "security"*');
+  });
+
+  it("中和 FTS 操作符：裸 '-' / 引号 / 冒号不破坏语法", () => {
+    expect(sanitizeFtsQuery("-foo")).toBe('"-foo"*');
+    expect(sanitizeFtsQuery('a"b')).toBe('"ab"*'); // 词内引号被剥
+    expect(sanitizeFtsQuery("col:val")).toBe('"col:val"*');
+  });
+
+  it("多余空白折叠；纯空白 → 空串", () => {
+    expect(sanitizeFtsQuery("  a   b  ")).toBe('"a"* "b"*');
+    expect(sanitizeFtsQuery("   ")).toBe("");
+  });
+
+  it("纯引号 → 空串（剥引号后无内容）", () => {
+    expect(sanitizeFtsQuery('""')).toBe("");
+  });
+
+  it("中文无空格词整体包裹（前缀使其可命中分词后的库）", () => {
+    expect(sanitizeFtsQuery("软件工程")).toBe('"软件工程"*');
   });
 });

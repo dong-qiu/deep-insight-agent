@@ -4,6 +4,8 @@
  *  - 重要性彩色徽标（替代灰字"重要性 N"，4–5 醒目）+ 里程碑标记（milestone_count>0）；
  *  - 实体 / 标签 chips（externalize entity_names / tags——一眼看出"讲的是谁 / 什么话题"）。
  *  纯服务端组件、零客户端 JS。 */
+import type { ReactNode } from "react";
+import { SNIPPET_CLOSE, SNIPPET_OPEN } from "../../lib/db/reports.js";
 import type { ReportIndexEntry } from "../../lib/types.js";
 
 const TYPE_LABEL: Record<ReportIndexEntry["type"], string> = {
@@ -52,6 +54,23 @@ export interface CardOmit {
   industry?: boolean;
 }
 
+/** 渲染 FTS snippet：按 OPEN/CLOSE 控制字符拆段，命中段包 <mark>。
+ *  控制字符非正则元字符，可直接进 RegExp；文本段作为 React 文本节点会被自动转义，无 XSS 风险。 */
+function renderSnippet(snippet: string): ReactNode {
+  const re = new RegExp(`${SNIPPET_OPEN}(.*?)${SNIPPET_CLOSE}`, "g");
+  const parts: ReactNode[] = [];
+  let last = 0;
+  let m: RegExpExecArray | null;
+  let i = 0;
+  while ((m = re.exec(snippet)) !== null) {
+    if (m.index > last) parts.push(snippet.slice(last, m.index));
+    parts.push(<mark key={i++}>{m[1]}</mark>);
+    last = m.index + m[0].length;
+  }
+  if (last < snippet.length) parts.push(snippet.slice(last));
+  return parts;
+}
+
 export function ReportCard({
   entry,
   showTypeLabel = false,
@@ -89,6 +108,7 @@ export function ReportCard({
       ) : (
         <p>{r.summary || "（无摘要）"}</p>
       )}
+      {r.snippet ? <p className="search-snippet muted">{renderSnippet(r.snippet)}</p> : null}
       {entities.length || tags.length ? (
         <p className="card-chips">
           {entities.map((e) => (

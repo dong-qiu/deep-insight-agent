@@ -229,6 +229,9 @@ export interface ReportIndexEntry {
   /** 里程碑洞察计数（ADR-0006）：本报告纳入的洞察中 importance≥5 + 非追加 + aggregation 的条数。
    *  >0 即在主题页标「里程碑」徽标 + 进里程碑时间线。旧报告 migration 默认 0。 */
   milestone_count: number;
+  /** 全文搜索命中片段（仅 queryReportIndex 带 q 时填充，瞬时展示字段、不落库）：
+   *  来自 FTS5 snippet()，命中词以 … 标记包裹，渲染端拆出加 <mark>。 */
+  snippet?: string;
 }
 
 /** 运行实体（architecture 数据模型 · Run）—— Job Runner 状态追踪 */
