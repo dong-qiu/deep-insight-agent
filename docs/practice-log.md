@@ -522,3 +522,22 @@
   - **想区分两个类别，只动一个信号**：UI 上别同时叠形态 + 尺寸 + 颜色 + 盒高；一个前缀或一处色差就够。**"复用一个既有类 + 另写一个悄悄发散的兄弟类"是不一致的常见来源**——要么共用基座 + 单点差异，要么显式对齐除区分维度外的所有属性。
   - **review 严格度随改动风险缩放**：一个会话跑了 3 轮 PR，2 行 CSS 那轮显式跳过独立 Agent review、保留对带 schema/迁移/数据回填的 #47 做完整 review。门要分轻重，不是每个 PR 都顶格。
 - **后续动作**: 已做：#47（headline 方案 + 两增强）/#48（Dockerfile 带上回填脚本）/#49（chip 统一方案 A）合入并 code-only 上线生产（SSM 隧道 + rsync 去 `--delete` + 容器内 rebuild）；headline 回填生产 27 报告 / 426 条（确定性、无 LLM，幂等）；用真实生产数据离线渲染逐项核对要点化与 chip 一致性；memory [[verify-check-deployed-version-first]] 补"`--delete` 会删 /opt/app 手动沉积的密钥文件"+"新 ops 脚本要加 Dockerfile COPY 才能容器内跑"两坑。待评估：把"自写运维说明须对真实镜像核""破坏性 sync 先 ls/dry-run""区分两类别只动一个信号"提炼进 `skills/L2-workflow.md` 与 `skills/L0-foundation.md`。
+
+### 2026-06-18/19 · 从"打不开"到"对外分享"：真卡点在访问模型不在网络层；部署核验"查产物不查时间戳"再三救场
+
+- **日期**: 2026-06-18 / 19
+- **情境**: 用户报"其他电脑打不开"，一路深挖成"对外分享给几个可信的人"，连做 validator 批量化（成本最大杠杆）+ 整条分享链（Cloudflare Tunnel + 多账号分权 + 用户管理 UI + 登出），9 个 PR（#47–#55，跨两条线）合入上线、viewer 账号端到端实测通过。
+- **观察**:
+  - **"帮我分享/暴露 X"的真卡点是访问模型 / 授权，不是传输层**：用户问"怎么让别的电脑访问"，第一反应差点直接去开安全组端口。但先查了一层——`describe-security-groups` 看到 3000 只放了用户单 IP（这是"别人打不开"的确定原因），再往下想"放开后别人到了登录页也进不去"，才发现**真卡点是应用单 admin 全站强制登录、没有任何只读/多用户能力**。用 AskUserQuestion 把"对外分享=给谁、什么权限"摊开（公开只读 / 单报告链接 / 几个人登录），用户选"几个人登录"——于是先补多账号功能，网络层反而是小事。**没先问授权模型就开端口 = 把后台明文亮给全网还以为在"分享"。**
+  - **Cloudflare Tunnel 是"无域名成本 + 零入站端口 + 绕 GFW"的组合解（国内自托管场景）**：免费域名（Freenom 已死；**DigitalPlat `.dpdns.org/.us.kg` 是当前能托管到 Cloudflare 的免费域名**，DuckDNS 类子域名因不能作 CF zone 用不了）+ 命名隧道 → 公网 HTTPS 自动、**源站零入站端口**（安全组 3000 直接删、IP 不暴露）、cloudflared 出站连边缘对 GFW 比直连新加坡 IP 稳。操作切分清楚：**用户在 dashboard 拿 token + 配 public hostname，我经 SSM 在 EC2 装 cloudflared**——浏览器账号的事归用户、机器的事归我。
+  - **部署核验"查产物不查时间戳"在这几轮 deploy 里反复救场**：rebuild 后 `docker image inspect ... Created` 时间戳两次把我带偏（一次 UTC vs 本地日期差像"旧码"、一次 layer cache 命中时间戳没动），`pgrep docker-compose-up` 还残留进程、容器 uptime 读数也误导。**真凭据永远是：① 运行容器 image ID == 当前 image ID 比对；② 新代码的字符串字面量在 `.next` bundle 里**。而且 grep 要挑**字面量**（prompt 文案 `待校验结论清单`、错误码 `forbidden`、CSS 类 `header-top`）——**函数名会被压缩混淆**（`isAdminOnlyPath` 在 bundle 里查到 0 是假阴性，差点又被骗）。
+  - **SSM 隧道会中途超时掉线，但 detached rebuild 不受影响**：两次 deploy 中途 SSM 隧道断了（`Connection closed by ... 2222`），等待器报 255。但 rebuild 是 EC2 上 `nohup docker compose up -d --build &` **独立跑的**，隧道断只是我丢了核验通道、不影响部署本身。应对：**生产构建一律 detached 在机器上跑；ops 通道死了用独立通道（公网 URL + 线上 CSS/HTML bundle）照样核**。
+  - **独立 review 抓到的真洞是"保留标识符的大小写绕过"（S1）**：多账号里 env admin 邮箱"保留"判定用的是精确大小写比较，且 email 是 PK——`Admin@x.com` 能绕过保留判定建出真账号（还能请求 admin 角色）。**review 是唯一抓到这个的**（tsc/测试都过）。修法：**保留/唯一标识符比较，每个边界都归一（PK / 保留判定 / 查找），并加大小写变体测试**。同轮 S2 把"受邀一律 viewer、唯一 admin 是内置 env 账号"定为最小权限默认。
+- **经验 / 教训**:
+  - **"让别人能访问/用 X"先定授权模型，再碰网络层**：谁能看、什么权限、要不要做功能——这是设计核心；传输层（端口/隧道/域名）是末端。接 [[2026-06-17 治本落数据产出处]]"治本落在数据产出处"的同构：问题摆在网络层、根因在应用的访问模型。
+  - **部署核验只认运行产物**：`image ID 比对` + `bundle 里的字符串字面量`；**别信 image Created 时间戳**（UTC/cache 会骗你），**别 grep 会被压缩的符号名**（查 literal）。这是 [[verify-check-deployed-version-first]] memory 这轮被反复印证 + 加细的一条（新增"时间戳不可信 / 查字面量不查函数名"）。
+  - **生产构建 detached、验证走独立通道**：`nohup ... &` 在机器上跑，SSM/ops 隧道断了部署照常完成、还能用公网 URL 核——别把"构建"和"我的核验通道"绑死。
+  - **保留 / 唯一标识符比较，每个边界都归一 + 测变体**：大小写、空白、Unicode 归一化要在 PK 写入、保留判定、查找三处一致，否则"保留/唯一"的不变量能从某个没归一的边界被绕。这是本轮 review 唯一的真 bug——也再证"安全敏感改动值得独立 review，tsc+测试盖不住授权洞"。
+  - **最小权限做默认**：能只给 viewer 就别在 UI/API 暴露 admin 创建口；分权要**服务端双闸**（middleware 一道 + handler 内 `forbidNonAdmin` 二道，护着花钱端点），**UI 隐藏只是体验、不是闸**。
+  - **Auth.js split-config 让"DB 后端鉴权"与"Edge middleware"共存**：Edge 安全的 `auth.config`（middleware 只读 JWT 里的 role）+ Node 的 `auth.ts`（authorize 查库验密码），JWT 跨两实例搬 role（同 AUTH_SECRET）。**Edge 安全靠 `next build` 权威校验**（肉眼 import 追踪只是辅助）——CI 的 build 绿就是"middleware 没把 better-sqlite3 拖进 Edge 包"的证明。
+- **后续动作**: 已做：validator 批量化（#51）+ A1 eval 精度门（#52，批量 neg-recall 100% == 单条、0 漏网）；卡片要点化系列（#47–#49）；多账号分权（#53）+ 用户管理搬进设置页 DB+scrypt（#54）+ 登出（#55）全部上线；Cloudflare Tunnel（DigitalPlat 免费域名 `insight.dolphinqd.dpdns.org`）+ 删安全组 3000 入站；viewer 账号端到端实测通过。memory [[verify-check-deployed-version-first]] 这轮再被印证并加细（image ID/字面量 vs 时间戳/压缩符号名）。待评估：把"分享/暴露先定授权模型""部署核验查产物三法（image ID/字面量/独立通道）""保留标识符各边界归一"提炼进 `skills/L2-workflow.md`；6/23 跑主题演化回看（[[evolution-review-2026-06-23]]）。
