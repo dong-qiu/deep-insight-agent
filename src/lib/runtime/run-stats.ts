@@ -1,6 +1,6 @@
 /** Run 列表的按 kind 聚合（admin 看板用）：纯函数，零依赖、可单测。
  *  对零成本 Run（ingest/report-gen 不调 LLM）统一返回 0，使表头总和与逐条一致。 */
-import type { Run } from "../types.js";
+import type { Run, Source } from "../types.js";
 
 export interface KindStats {
   kind: Run["kind"];
@@ -72,4 +72,67 @@ export function aggregateDailyCost(
     slot.runCount += 1;
   }
   return dates.map((d) => byDate.get(d)!);
+}
+
+/** 数据源健康（admin 看板 · spec line 304）：每个源的采集成功率 / 最近成功 / 近期错误 / 连续失败。
+ *  纯函数，可单测。spine = 传入的 sources（通常 listSources 全量）；用 ingest Run 叠加健康，
+ *  无 run 的源仍列出（total=0 = "从未采集"，本身是信号）。runs 期望仅 kind='ingest'（调用方过滤）。 */
+export interface SourceHealth {
+  source_id: string;
+  name: string;
+  type: Source["type"] | null;
+  enabled: boolean;
+  total: number;
+  ok: number;
+  failed: number;
+  successRate: number;       // ok/total（total=0 时为 0）
+  lastSuccessAt: string | null;
+  lastError: { at: string; type: string; message: string } | null;
+  consecutiveFails: number;  // 最近一次成功之后的连续失败数（按时间倒序累计）
+}
+
+export function aggregateSourceHealth(ingestRuns: Run[], sources: Source[]): SourceHealth[] {
+  // 每源按 started_at 倒序的 run 列表（用于 last*/连续失败判定）
+  const bySource = new Map<string, Run[]>();
+  for (const r of ingestRuns) {
+    const sid = r.target.source_id;
+    if (!sid) continue;
+    (bySource.get(sid) ?? bySource.set(sid, []).get(sid)!).push(r);
+  }
+  for (const list of bySource.values()) list.sort((a, b) => (a.started_at < b.started_at ? 1 : -1)); // desc
+
+  const health = (sid: string, name: string, type: Source["type"] | null, enabled: boolean): SourceHealth => {
+    const list = bySource.get(sid) ?? [];
+    const ok = list.filter((r) => r.status === "done").length;
+    const failed = list.filter((r) => r.status === "failed").length;
+    const lastSuccess = list.find((r) => r.status === "done");
+    const lastFail = list.find((r) => r.status === "failed");
+    let consecutiveFails = 0;
+    for (const r of list) { // 倒序：从最近开始累计失败，遇到 done/running 停
+      if (r.status === "failed") consecutiveFails += 1;
+      else break;
+    }
+    return {
+      source_id: sid, name, type, enabled,
+      total: list.length, ok, failed,
+      successRate: list.length ? ok / list.length : 0,
+      lastSuccessAt: lastSuccess?.ended_at ?? null,
+      lastError: lastFail?.error ? { at: lastFail.ended_at ?? lastFail.started_at, type: lastFail.error.type, message: lastFail.error.message } : null,
+      consecutiveFails,
+    };
+  };
+
+  const known = new Set(sources.map((s) => s.id));
+  const rows: SourceHealth[] = sources.map((s) => health(s.id, s.name, s.type, s.enabled));
+  // run 里引用但 sources 已删的源——仍列出（"未知源"），避免健康面板漏掉历史失败
+  for (const sid of bySource.keys()) {
+    if (!known.has(sid)) rows.push(health(sid, sid, null, false));
+  }
+  // 排序：需关注的在前——连续失败多 > 成功率低 > 名称
+  return rows.sort(
+    (a, b) =>
+      b.consecutiveFails - a.consecutiveFails ||
+      a.successRate - b.successRate ||
+      a.name.localeCompare(b.name),
+  );
 }

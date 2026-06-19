@@ -209,11 +209,14 @@ export function getRun(db: DB, id: string): Run | null {
   const r = db.prepare("SELECT * FROM run WHERE id = ?").get(id) as Record<string, unknown> | undefined;
   return r ? rowToRun(r) : null;
 }
-export function listRuns(db: DB, opts: { status?: Run["status"]; limit?: number } = {}): Run[] {
-  const where = opts.status ? "WHERE status = @status" : "";
+export function listRuns(db: DB, opts: { kind?: Run["kind"]; status?: Run["status"]; limit?: number } = {}): Run[] {
+  const conds: string[] = [];
+  if (opts.kind) conds.push("kind = @kind");
+  if (opts.status) conds.push("status = @status");
+  const where = conds.length ? `WHERE ${conds.join(" AND ")}` : "";
   const rows = db
     .prepare(`SELECT * FROM run ${where} ORDER BY started_at DESC LIMIT @limit`)
-    .all({ status: opts.status ?? null, limit: opts.limit ?? 100 }) as Record<string, unknown>[];
+    .all({ kind: opts.kind ?? null, status: opts.status ?? null, limit: opts.limit ?? 100 }) as Record<string, unknown>[];
   return rows.map(rowToRun);
 }
 /** 某主题某次深挖触发后的管线 Run（进度透明 3.3）：analyze / report-gen 直接带 topic_id；

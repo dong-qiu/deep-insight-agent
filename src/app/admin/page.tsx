@@ -1,12 +1,56 @@
 import { getDb } from "../../lib/db/index.js";
-import { listRuns } from "../../lib/db/repos.js";
+import { listRuns, listSources } from "../../lib/db/repos.js";
 import { getBudgetStatus, type BudgetStatus } from "../../lib/runtime/cost-guard.js";
-import { aggregateByKind, aggregateDailyCost } from "../../lib/runtime/run-stats.js";
+import { aggregateByKind, aggregateDailyCost, aggregateSourceHealth, type SourceHealth } from "../../lib/runtime/run-stats.js";
 import { RetryButton } from "./_components/retry-button.js";
 
 export const dynamic = "force-dynamic";
 
 const STATUS_LABEL: Record<string, string> = { running: "运行中", done: "完成", failed: "失败" };
+
+/** 源健康判定 → 状态文案 + .dash-badge/.dash-dot 颜色类（停用置灰、连续失败红、无采集/高失败率橙）。 */
+function sourceVerdict(h: SourceHealth): { label: string; cls: "ok" | "alert" | "exceeded" | "off" } {
+  if (!h.enabled) return { label: "停用", cls: "off" };
+  if (h.consecutiveFails >= 3) return { label: `连续失败 ${h.consecutiveFails}`, cls: "exceeded" };
+  if (h.total === 0) return { label: "无采集记录", cls: "alert" };
+  if (h.successRate < 0.5) return { label: "高失败率", cls: "alert" };
+  return { label: "正常", cls: "ok" };
+}
+
+function SourceHealthCard({ health }: { health: SourceHealth[] }) {
+  if (health.length === 0) return null;
+  const problems = health.filter((h) => h.enabled && (h.consecutiveFails >= 3 || h.total === 0 || h.successRate < 0.5)).length;
+  return (
+    <article className="card">
+      <p className="muted dash-card-head">
+        <span>数据源健康 · {health.length} 源</span>
+        {problems > 0 ? <span className="dash-badge alert">⚠️ {problems} 需关注</span> : <span className="dash-badge ok">全部正常</span>}
+      </p>
+      <table className="stats">
+        <thead>
+          <tr><th>源</th><th>状态</th><th>成功率</th><th>最近成功</th><th>近期错误</th></tr>
+        </thead>
+        <tbody>
+          {health.map((h) => {
+            const v = sourceVerdict(h);
+            return (
+              <tr key={h.source_id}>
+                <td>
+                  <span className={`dash-dot ${v.cls}`} /> {h.name}
+                  {h.type ? <span className="muted"> · {h.type}</span> : null}
+                </td>
+                <td><span className={`dash-badge ${v.cls}`}>{v.label}</span></td>
+                <td>{h.total > 0 ? `${Math.round(h.successRate * 100)}% (${h.ok}/${h.total})` : "—"}</td>
+                <td className="muted">{h.lastSuccessAt ? h.lastSuccessAt.slice(0, 10) : "从未"}</td>
+                <td className="muted">{h.lastError ? `${h.lastError.type}: ${h.lastError.message.slice(0, 40)}` : "—"}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </article>
+  );
+}
 
 function fmtDuration(ms: number | null): string {
   if (ms == null) return "—";
@@ -85,6 +129,8 @@ export default function AdminPage() {
   const dailyTotal = daily.reduce((s, d) => s + d.costUSD, 0);
   const dailyMax = Math.max(...daily.map((d) => d.costUSD), 0.001); // 防 0 除
   const budget = getBudgetStatus(db);
+  // 数据源健康：近 500 条 ingest Run 叠加 source 清单（独立查询，避免被 50 条详情截断）
+  const sourceHealth = aggregateSourceHealth(listRuns(db, { kind: "ingest", limit: 500 }), listSources(db));
 
   return (
     <section>
@@ -94,6 +140,8 @@ export default function AdminPage() {
       </p>
 
       <BudgetCard status={budget} />
+
+      <SourceHealthCard health={sourceHealth} />
 
       {stats.length === 0 ? null : (
         <article className="card">

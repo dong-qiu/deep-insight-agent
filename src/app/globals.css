@@ -293,6 +293,12 @@ nav a { margin-right: 1rem; }
 .dash-badge.alert { color: #d97706; }
 .dash-badge.exceeded { color: #dc2626; }
 .dash-note { margin-top: .5rem; font-size: .85rem; }
+.dash-dot { display: inline-block; width: .55rem; height: .55rem; border-radius: 50%; vertical-align: middle; background: #9ca3af; }
+.dash-dot.ok { background: #16a34a; }
+.dash-dot.alert { background: #d97706; }
+.dash-dot.exceeded { background: #dc2626; }
+.dash-dot.off { background: #9ca3af; }
+.dash-badge.off { color: #9ca3af; }
 .dash-budget-row { margin: .4rem 0; }
 .dash-budget-row .label { margin: 0 0 .15rem; font-size: .85rem; }
 .dash-bar { height: 8px; background: #e5e7eb; border-radius: 4px; overflow: hidden; }
