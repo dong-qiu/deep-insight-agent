@@ -314,7 +314,19 @@ docker compose exec -T -e ALERT_WEBHOOK=<url> app node /app/ops/probe-alert.mjs
 
 **推送规则**：`brief` 默认优先级 + 📰 newspaper tag；**空 brief（"本期无重要事件"）自动跳过**，避免每天推噪音；`deep_dive` / `initial_digest` 是用户触发 / 冷启动首报，即便条目少也始终推。非阻塞、永不抛——推送失败绝不连累已落库的报告（report-gen Run 已 done）。
 
-接线：在已配 `ALERT_WEBHOOK` 基础上加 `REPORT_PUSH=1` + `PUBLIC_BASE_URL=https://<域名或 EC2-IP:3000>`。验证：手动触发一次深挖（`/api/topics/[id]/deep-dive`）→ 手机应收到带链接的报告卡片。
+**多渠道扇出**：报告推送会**同时发到所有已配渠道**——飞书 webhook（`ALERT_WEBHOOK`）+ 邮件（SMTP）。各渠道独立、缺配即跳过；**运维告警（失败/预算）不发邮件、仍只走飞书**。邮件渠道（`src/lib/runtime/email.ts`，nodemailer SMTP）：
+
+| env | 作用 | 缺省 |
+|---|---|---|
+| `SMTP_HOST` | SMTP 服务器（QQ `smtp.qq.com` / 163 `smtp.163.com` / Gmail `smtp.gmail.com` / 企业邮）；**与 `REPORT_EMAIL_TO` 都配齐才发邮件** | 无（不发邮件）|
+| `SMTP_PORT` | 465=隐式 TLS / 587=STARTTLS | 465 |
+| `SMTP_USER` / `SMTP_PASS` | 账号 + **客户端授权码**（非登录密码，邮箱设置里生成）| 无 |
+| `SMTP_FROM` | 发件人，缺省回退 `SMTP_USER` | =SMTP_USER |
+| `REPORT_EMAIL_TO` | 收件人，逗号分隔多个 | 无（不发邮件）|
+
+> 邮件用 SMTP 不用邮件服务 API：零注册、零域名验证、用现有邮箱即可，适合低频少收件人的 brief 推送。`REPORT_PUSH`/`SMTP_*`/`REPORT_EMAIL_TO` 同属「生产手动配的运行时配置」，记得持久化进本地 `.env.local`。
+
+接线：在已配 `ALERT_WEBHOOK` 基础上加 `REPORT_PUSH=1` + `PUBLIC_BASE_URL=https://<域名或 EC2-IP:3000>`（飞书），可选再加上面 SMTP 一组（邮件）。验证：手动触发一次深挖（`/api/topics/[id]/deep-dive`）→ 飞书收到卡片、邮箱收到带链接的邮件。
 
 ## 13. 定时真模型 eval（A1 回归门 · DCP-3 ②）
 
