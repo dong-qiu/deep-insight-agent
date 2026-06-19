@@ -8,6 +8,14 @@
  *
  * 自动可测指标：引用可达性 / 一致性合格率 / 失败率 / flagged 率 / 校验器准召。
  * 人工指标（非显然占比、幻觉率）：脚本导出 evals/out/review-queue.json 供人评。
+ *
+ * ── 分形态（stratum）评测（ADR-0007 B2 前置）──
+ * 数据集每条可带 `stratum`（缺省 `arxiv`）。指标**按 stratum 分组**算、各比各的基线，避免
+ * 「转写口语体压低书面体基线」的假告警。reframe（红线=上报可溯源、由 validator blocking 守住）：
+ *  - arxiv：可达率 100% 仍为硬门（书面体下 ≈ shipped 可达，历史口径不变）。
+ *  - transcript：跨段漂移残差被 blocked、不上报 → **可达率降为信息量指标（不计 FAIL）**，
+ *    改用 `yield`（=1-blocked 占比）作硬门（防"挡到没产出"）；一致性 95% / flagged 10% 照旧硬守。
+ * 仅含 arxiv 数据时（当前默认数据集），行为与分形态前一致——arxiv 那组的门槛/退出码逐项不变。
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { analyze, coverageGaps, specificClaims } from "../src/lib/agents/analyzer.js";
@@ -15,14 +23,43 @@ import { judgeConsistency, validateBatch } from "../src/lib/agents/validator.js"
 import { MODELS, assertModelSeparation, getCostReport } from "../src/lib/runtime/llm.js";
 import type { CitationCheck, ContentItem, Insight, Topic } from "../src/lib/types.js";
 
+type Stratum = "arxiv" | "transcript";
+const STRATA: Stratum[] = ["arxiv", "transcript"];
+
+interface Thresholds {
+  reachabilityPass: number;
+  reachabilityOp: ">=" | "info"; // info = 非硬门（仅信息量，恒 PASS）
+  consistencyOk: number;
+  consistencyFailure: number;
+  flagged: number;
+  judgeAccuracy: number;
+  judgeNegRecall: number;
+  yieldMin?: number; // 仅 transcript：上报 yield（1-blocked 占比）下限
+}
+
 // ── eval-criteria.md 上线门槛（镜像；改阈值请同步那份文档） ──
-const THRESHOLDS = {
-  reachabilityPass: 1.0, // 引用可达性通过率 = 100%
-  consistencyOk: 0.95, // 引用一致性合格率 ≥ 95%
-  consistencyFailure: 0.05, // 一致性失败率 ≤ 5%
-  flagged: 0.1, // flagged 率 ≤ 10%
-  judgeAccuracy: 0.9, // 校验器三分类准确率 ≥ 90%
-  judgeNegRecall: 0.95, // 校验器负例召回率 ≥ 95%
+const THRESHOLDS_BY_STRATUM: Record<Stratum, Thresholds> = {
+  // arxiv：历史硬门，逐项不变。
+  arxiv: {
+    reachabilityPass: 1.0, // 引用可达性通过率 = 100%（可溯源底线）
+    reachabilityOp: ">=",
+    consistencyOk: 0.95, // 引用一致性合格率 ≥ 95%
+    consistencyFailure: 0.05, // 一致性失败率 ≤ 5%
+    flagged: 0.1, // flagged 率 ≤ 10%
+    judgeAccuracy: 0.9, // 校验器三分类准确率 ≥ 90%
+    judgeNegRecall: 0.95, // 校验器负例召回率 ≥ 95%
+  },
+  // transcript：可达率转信息量（红线由 blocking 守，见文件头 reframe），加 yield 硬门。
+  transcript: {
+    reachabilityPass: 1.0, // 仍打印对照，但 op=info 不计 FAIL
+    reachabilityOp: "info",
+    consistencyOk: 0.95,
+    consistencyFailure: 0.05,
+    flagged: 0.1,
+    judgeAccuracy: 0.9,
+    judgeNegRecall: 0.95,
+    yieldMin: 0.7, // 上报 yield ≥ 70%（暂定，真实转写跑批后标定）
+  },
 };
 // eval-criteria 评测集规模下限（低于则结论仅供管线验证，不作 DCP 判定依据）
 const MIN_TOPICS = 5;
@@ -32,12 +69,25 @@ interface QualityCase {
   topic: Topic;
   items: ContentItem[];
   time_window: { start: string; end: string };
+  stratum?: Stratum; // 缺省 arxiv
 }
 interface ConsistencyCase {
   statement: string;
   source_text: string;
   expected_consistency: "support" | "not_support" | "uncertain";
   negative_type?: string;
+  stratum?: Stratum; // 缺省 arxiv
+}
+
+interface JudgeStats {
+  judged: number;
+  correct: number;
+  errors: number;
+  negTotal: number;
+  negRecalled: number;
+}
+function emptyJudgeStats(): JudgeStats {
+  return { judged: 0, correct: 0, errors: 0, negTotal: 0, negRecalled: 0 };
 }
 
 function loadEnvLocal(): void {
@@ -59,32 +109,52 @@ function readJsonl<T>(path: string): T[] {
 const pct = (x: number) => `${(x * 100).toFixed(1)}%`;
 
 interface MetricRow {
-  key: string; // 对齐 baseline.json auto_metrics 键（回归对照用）
+  key: string; // 对齐 baseline.json 各 stratum 段的键（回归对照用）
   name: string;
   value: number;
   threshold: number;
-  op: ">=" | "<=";
+  op: ">=" | "<=" | "info";
   pass: boolean;
 }
-function metric(key: string, name: string, value: number, threshold: number, op: ">=" | "<="): MetricRow {
-  const pass = op === ">=" ? value >= threshold : value <= threshold;
+function metric(key: string, name: string, value: number, threshold: number, op: ">=" | "<=" | "info"): MetricRow {
+  const pass = op === "info" ? true : op === ">=" ? value >= threshold : value <= threshold;
   return { key, name, value, threshold, op, pass };
 }
 
-function printMetrics(rows: MetricRow[]): void {
+/** 一个 stratum 的全部自动指标行（含可达率/一致性/flagged/准召；transcript 另加 yield）。 */
+function stratumRows(stratum: Stratum, checks: CitationCheck[], judge: JudgeStats): MetricRow[] {
+  const t = THRESHOLDS_BY_STRATUM[stratum];
+  const total = checks.length;
+  const reachPass = checks.filter((c) => c.reachability === "pass").length;
+  const support = checks.filter((c) => c.consistency === "support").length;
+  const notSupport = checks.filter((c) => c.consistency === "not_support").length;
+  const uncertain = checks.filter((c) => c.consistency === "uncertain").length;
+  const blocked = checks.filter((c) => c.verdict === "blocked").length; // reachability=fail 短路（见 CitationCheck 注释）
+
+  const rows: MetricRow[] = [
+    metric("reachability_pass", "引用可达性通过率", total ? reachPass / total : 0, t.reachabilityPass, t.reachabilityOp),
+    metric("consistency_ok", "引用一致性合格率", total ? support / total : 0, t.consistencyOk, ">="),
+    metric("consistency_failure", "一致性失败率(护栏)", total ? notSupport / total : 0, t.consistencyFailure, "<="),
+    metric("flagged_rate", "flagged率(第二护栏)", total ? uncertain / total : 0, t.flagged, "<="),
+    metric("judge_accuracy", "校验器三分类准确率", judge.judged ? judge.correct / judge.judged : 0, t.judgeAccuracy, ">="),
+    metric("judge_neg_recall", "校验器负例召回率", judge.negTotal ? judge.negRecalled / judge.negTotal : 0, t.judgeNegRecall, ">="),
+  ];
+  // transcript：yield = 上报引用 / 原始引用 = 1 - blocked 占比（量"漂移挡掉多少产出"，防挡到没产出）。
+  if (t.yieldMin != null) {
+    rows.push(metric("yield", "上报yield(1-blocked)", total ? (total - blocked) / total : 1, t.yieldMin, ">="));
+  }
+  return rows;
+}
+
+function printMetrics(stratum: Stratum, rows: MetricRow[]): void {
   const w = Math.max(...rows.map((r) => r.name.length));
-  console.log("\n指标".padEnd(w) + "   实测      门槛       结果");
+  console.log(`\n── 形态：${stratum} ──`);
+  console.log("指标".padEnd(w) + "   实测      门槛       结果");
   console.log("─".repeat(w + 34));
   for (const r of rows) {
-    console.log(
-      r.name.padEnd(w) +
-        "   " +
-        pct(r.value).padStart(7) +
-        "   " +
-        `${r.op} ${pct(r.threshold)}`.padStart(9) +
-        "    " +
-        (r.pass ? "✅ PASS" : "❌ FAIL"),
-    );
+    const gate = r.op === "info" ? "（信息量）" : `${r.op} ${pct(r.threshold)}`;
+    const verdict = r.op === "info" ? "ℹ️ INFO" : r.pass ? "✅ PASS" : "❌ FAIL";
+    console.log(r.name.padEnd(w) + "   " + pct(r.value).padStart(7) + "   " + gate.padStart(9) + "    " + verdict);
   }
 }
 
@@ -112,7 +182,7 @@ async function main(): Promise<void> {
   const cLimit = Number(process.env.A1_CONSISTENCY_LIMIT) || 0;
   const smoke = qLimit > 0 || cLimit > 0;
 
-  // ── Part A：洞察提炼 + 引用双层校验 ──
+  // ── Part A：洞察提炼 + 引用双层校验（按 stratum 分组收集） ──
   // A1_QUALITY_FILE 可指向本地多源集（evals/dataset/*.local.jsonl，不入仓）；默认 arXiv 集
   const qualityFile = process.env.A1_QUALITY_FILE ?? "evals/dataset/insight-quality.jsonl";
   const qualityAll = readJsonl<QualityCase>(qualityFile);
@@ -124,67 +194,61 @@ async function main(): Promise<void> {
         " —— 仅验证真模型链路与成本，不代表 A1 结论。\n",
     );
   }
-  const allChecks: CitationCheck[] = [];
-  const allInsights: Insight[] = [];
+  const checksByStratum: Record<Stratum, CitationCheck[]> = { arxiv: [], transcript: [] };
+  const insightsByStratum: Record<Stratum, Insight[]> = { arxiv: [], transcript: [] };
   for (const c of qualityCases) {
-    process.stdout.write(`[分析] 主题「${c.topic.name}」… `);
+    const stratum: Stratum = c.stratum ?? "arxiv";
+    process.stdout.write(`[分析] 主题「${c.topic.name}」(${stratum})… `);
     try {
       const batch = await analyze(c.topic, c.items, c.time_window);
       const vr = await validateBatch(batch.insights, c.items);
-      allInsights.push(...batch.insights);
-      allChecks.push(...vr.checks);
+      insightsByStratum[stratum].push(...batch.insights);
+      checksByStratum[stratum].push(...vr.checks);
       console.log(`${batch.insights.length} 洞察 / ${vr.checks.length} 引用校验`);
     } catch (e) {
       console.log(`失败，跳过该主题（${(e as Error).message}）`);
     }
   }
 
-  // ── Part B：校验器一致性准召（标注集） ──
+  // ── Part B：校验器一致性准召（标注集，按 stratum 分组） ──
   const consistencyAll = readJsonl<ConsistencyCase>("evals/dataset/citation-consistency.jsonl");
   const consistencyCases = cLimit ? consistencyAll.slice(0, cLimit) : consistencyAll;
-  let judged = 0;
-  let judgeCorrect = 0;
-  let judgeErrors = 0;
-  let negTotal = 0;
-  let negRecalled = 0;
+  const judgeByStratum: Record<Stratum, JudgeStats> = { arxiv: emptyJudgeStats(), transcript: emptyJudgeStats() };
   process.stdout.write(`[校验器准召] ${consistencyCases.length} 组标注对… `);
   for (const c of consistencyCases) {
+    const st = judgeByStratum[c.stratum ?? "arxiv"];
     let j: Awaited<ReturnType<typeof judgeConsistency>>;
     try {
       j = await judgeConsistency(c.statement, c.source_text);
     } catch {
-      judgeErrors++;
+      st.errors++;
       continue;
     }
-    judged++;
-    if (j.consistency === c.expected_consistency) judgeCorrect++;
+    st.judged++;
+    if (j.consistency === c.expected_consistency) st.correct++;
     if (c.expected_consistency === "not_support") {
-      negTotal++;
-      if (j.consistency === "not_support") negRecalled++;
+      st.negTotal++;
+      if (j.consistency === "not_support") st.negRecalled++;
     }
   }
-  console.log(`done（成功 ${judged}/${consistencyCases.length}${judgeErrors ? `，跳过 ${judgeErrors}` : ""}）`);
+  const judgedTotal = STRATA.reduce((n, s) => n + judgeByStratum[s].judged, 0);
+  const errorsTotal = STRATA.reduce((n, s) => n + judgeByStratum[s].errors, 0);
+  console.log(`done（成功 ${judgedTotal}/${consistencyCases.length}${errorsTotal ? `，跳过 ${errorsTotal}` : ""}）`);
 
-  // ── 指标 ──
-  const total = allChecks.length;
-  const reachPass = allChecks.filter((c) => c.reachability === "pass").length;
-  const support = allChecks.filter((c) => c.consistency === "support").length;
-  const notSupport = allChecks.filter((c) => c.consistency === "not_support").length;
-  const uncertain = allChecks.filter((c) => c.consistency === "uncertain").length;
+  // ── 指标（按 stratum 分组打印 + 收集所有硬门行用于退出码） ──
+  const activeStrata = STRATA.filter((s) => checksByStratum[s].length > 0 || judgeByStratum[s].judged > 0);
+  const rowsByStratum: Record<string, MetricRow[]> = {};
+  const allRows: MetricRow[] = [];
+  for (const s of activeStrata) {
+    const rows = stratumRows(s, checksByStratum[s], judgeByStratum[s]);
+    rowsByStratum[s] = rows;
+    printMetrics(s, rows);
+    allRows.push(...rows);
+  }
 
-  const rows = [
-    metric("reachability_pass", "引用可达性通过率", total ? reachPass / total : 0, THRESHOLDS.reachabilityPass, ">="),
-    metric("consistency_ok", "引用一致性合格率", total ? support / total : 0, THRESHOLDS.consistencyOk, ">="),
-    metric("consistency_failure", "一致性失败率(护栏)", total ? notSupport / total : 0, THRESHOLDS.consistencyFailure, "<="),
-    metric("flagged_rate", "flagged率(第二护栏)", total ? uncertain / total : 0, THRESHOLDS.flagged, "<="),
-    metric("judge_accuracy", "校验器三分类准确率", judged ? judgeCorrect / judged : 0, THRESHOLDS.judgeAccuracy, ">="),
-    metric("judge_neg_recall", "校验器负例召回率", negTotal ? negRecalled / negTotal : 0, THRESHOLDS.judgeNegRecall, ">="),
-  ];
-  printMetrics(rows);
-
-  // ── 覆盖度（第三层校验，informational）：结论里的具体声明（数字/实体）被引用直接覆盖的比例。
-  // 统计 analyzer 产出层（用 it.citations 全量、不剔 blocked，与渲染层 〔待补引〕 口径不同）；
-  // 非硬门（暂无基线/阈值），量化「可溯源覆盖度」现状缺口。 ──
+  // ── 覆盖度（第三层校验，informational，全形态合计）：结论里的具体声明（数字/实体）被引用直接
+  // 覆盖的比例。统计 analyzer 产出层（用 it.citations 全量、不剔 blocked）；非硬门，量化缺口现状。 ──
+  const allInsights = STRATA.flatMap((s) => insightsByStratum[s]);
   let claimsTotal = 0;
   let claimsCovered = 0;
   for (const it of allInsights) {
@@ -203,6 +267,7 @@ async function main(): Promise<void> {
 
   // ── 成本（估算，A5 成本可控） ──
   const cost = getCostReport();
+  const checksTotal = STRATA.reduce((n, s) => n + checksByStratum[s].length, 0);
   console.log("\n本次运行成本（估算）：");
   for (const m of cost.byModel) {
     const cache = m.cacheRead || m.cacheWrite ? ` · cache r/w ${m.cacheRead}/${m.cacheWrite}` : "";
@@ -213,7 +278,7 @@ async function main(): Promise<void> {
   }
   console.log(
     `  合计：$${cost.totalUSD.toFixed(4)}` +
-      (total ? ` · 每引用校验 $${(cost.totalUSD / total).toFixed(5)}` : ""),
+      (checksTotal ? ` · 每引用校验 $${(cost.totalUSD / checksTotal).toFixed(5)}` : ""),
   );
 
   // ── 人工指标：导出 review queue（非显然占比、幻觉率需人评） ──
@@ -242,35 +307,46 @@ async function main(): Promise<void> {
     );
   }
 
-  // ── 回归门（eval-criteria：任一指标较基线降 >3pp 告警/阻断）。基线 = arXiv 标准集 ──
+  // ── 回归门（eval-criteria：任一指标较基线降 >3pp 告警/阻断）。各 stratum 各比各的基线段。
+  // baseline.json：arxiv → `auto_metrics`（历史键，向后兼容）；transcript → `transcript`。 ──
   let regressed = false;
   try {
-    const base = (JSON.parse(readFileSync("evals/baseline.json", "utf8")).auto_metrics ?? {}) as Record<string, number>;
+    const baseDoc = JSON.parse(readFileSync("evals/baseline.json", "utf8")) as Record<string, unknown>;
+    const baseForStratum = (s: Stratum): Record<string, number> =>
+      ((s === "arxiv" ? baseDoc.auto_metrics : baseDoc[s]) ?? {}) as Record<string, number>;
     const TOL = 0.03;
-    console.log("\n回归对照（vs baseline.json · arXiv 基线）：");
-    for (const r of rows) {
-      const b = base[r.key];
-      if (typeof b !== "number") continue;
-      const delta = r.value - b;
-      const isReg = r.op === ">=" ? delta < -TOL : delta > TOL; // 升降方向按 op
-      if (isReg) regressed = true;
-      console.log(
-        `  ${r.name.padEnd(18)} ${pct(b)} → ${pct(r.value)}（Δ${delta >= 0 ? "+" : ""}${pct(delta)}）${isReg ? " ⚠️ 回归" : ""}`,
-      );
+    for (const s of activeStrata) {
+      const base = baseForStratum(s);
+      if (!Object.keys(base).length) continue;
+      console.log(`\n回归对照（${s} · vs baseline.json）：`);
+      for (const r of rowsByStratum[s]) {
+        const b = base[r.key];
+        if (typeof b !== "number") continue;
+        const delta = r.value - b;
+        // info 指标仅打印漂移、不触回归门（其红线由 blocking 守，非本指标）
+        const isReg = r.op !== "info" && (r.op === ">=" ? delta < -TOL : delta > TOL);
+        if (isReg) regressed = true;
+        console.log(
+          `  ${r.name.padEnd(18)} ${pct(b)} → ${pct(r.value)}（Δ${delta >= 0 ? "+" : ""}${pct(delta)}）${isReg ? " ⚠️ 回归" : ""}`,
+        );
+      }
     }
     if (regressed) {
       console.log(
-        "  ⚠️ 检测到 >3pp 回归。单次跑有非确定性噪声——标准 arXiv 全量跑下视为阻断；非标准数据集/冒烟仅供参考。",
+        "  ⚠️ 检测到 >3pp 回归。单次跑有非确定性噪声——标准全量跑下视为阻断；非标准数据集/冒烟仅供参考。",
       );
     }
   } catch {
     console.log("\n（无 baseline.json，跳过回归对照）");
   }
 
-  const failed = rows.filter((r) => !r.pass);
-  console.log(`\n自动门槛：${rows.length - failed.length}/${rows.length} 通过。`);
+  const failed = allRows.filter((r) => !r.pass);
+  console.log(`\n自动门槛：${allRows.length - failed.length}/${allRows.length} 通过。`);
+  // 空护栏：无任何可评指标（所有主题失败 + 零一致性对）= 跑批彻底失败，必须判红、不得当通过
+  // （与重构前等价：原版恒 6 行、空数据下四项算 0 → FAIL → exit 1）。
+  if (!allRows.length) console.log("❌ 无任何可评指标（所有主题失败 + 零一致性对）——判失败，非通过。");
   // 阈值 FAIL 或（全量非冒烟下的）>3pp 回归 → 非零退出（带 key 的 job/CI 可据此阻断合并）
-  process.exit(failed.length || (regressed && !smoke) ? 1 : 0);
+  process.exit(!allRows.length || failed.length || (regressed && !smoke) ? 1 : 0);
 }
 
 main().catch((err) => {
