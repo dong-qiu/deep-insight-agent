@@ -57,6 +57,9 @@ COPY --from=builder --chown=app:app /app/.next/static ./.next/static
 COPY --from=builder --chown=app:app /app/public ./public
 # 显式带上原生模块，规避 standalone trace 偶发漏拷 better-sqlite3 的 .node
 COPY --from=builder --chown=app:app /app/node_modules/better-sqlite3 ./node_modules/better-sqlite3
+# 同理显式带 nodemailer（邮件推送渠道）：含动态 require、被外部化后 standalone trace 漏拷 → 运行时
+# require('nodemailer') MODULE_NOT_FOUND（邮件静默发不出）。nodemailer 零依赖，单行 COPY 即够。
+COPY --from=builder --chown=app:app /app/node_modules/nodemailer ./node_modules/nodemailer
 # 运行时读取的静态配置（standalone 不会自动带非 JS 资源，靠 INSIGHT_CONFIG_PATH 定位）
 COPY --from=builder --chown=app:app /app/src/lib/config/defaults.yaml ./config/defaults.yaml
 # 容器内 cron 调度表 + 触发脚本（用 Node fetch，免 curl）
