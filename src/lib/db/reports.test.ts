@@ -5,7 +5,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { AnalysisBatch, Report, ReportIndexEntry, Topic, ValidationResult } from "../types.js";
 import { saveAnalysisBatch, saveValidationResult } from "./analysis.js";
 import { type DB, openDb } from "./index.js";
-import { chainTypesFor, distinctIndexValues, entityTrends, getReport, latestReportForTopicSince, listBlockedChecksForReport, listRecentBriefEvents, previousReportForTopic, queryReportIndex, reportNeighbors, sanitizeFtsQuery, saveReport, searchReports, SNIPPET_CLOSE, SNIPPET_OPEN, topicEvolution, topicReportStats } from "./reports.js";
+import { chainTypesFor, distinctIndexValues, entityTrends, getReport, latestReportForTopicSince, listBlockedChecksForReport, listRecentBriefEvents, listRecentReports, previousReportForTopic, queryReportIndex, reportNeighbors, reportStatusCounts, sanitizeFtsQuery, saveReport, searchReports, SNIPPET_CLOSE, SNIPPET_OPEN, topicEvolution, topicReportStats } from "./reports.js";
 import { insertTopic } from "./repos.js";
 
 const dir = mkdtempSync(join(tmpdir(), "ia-reports-"));
@@ -61,6 +61,17 @@ it("latestReportForTopicSince：只认 since 之后本主题最新的【已完�
   saveReport(db, { ...report, id: "rep_new", type: "deep_dive", generated_at: "2026-06-14T10:06:00Z" }, { ...index, report_id: "rep_new", type: "deep_dive" }, { dir });
   saveReport(db, { ...report, id: "rep_other", type: "deep_dive", topic_id: "t2", generated_at: "2026-06-14T10:07:00Z" }, { ...index, report_id: "rep_other", topic_id: "t2", type: "deep_dive" }, { dir });
   expect(latestReportForTopicSince(db, "t1", since)).toEqual({ id: "rep_new", title: report.title, type: "deep_dive" }); // 别主题 rep_other 不串
+});
+
+it("reportStatusCounts / listRecentReports：全状态计数 + 近 N 份倒序（含瞬态）", () => {
+  saveReport(db, { ...report, id: "r_done", status: "done", generated_at: "2026-05-07T08:00:00Z" }, { ...index, report_id: "r_done" }, { dir });
+  saveReport(db, { ...report, id: "r_fail", status: "failed", generated_at: "2026-05-08T08:00:00Z" }, { ...index, report_id: "r_fail" }, { dir });
+  saveReport(db, { ...report, id: "r_gen", status: "generating", generated_at: "2026-05-09T08:00:00Z" }, { ...index, report_id: "r_gen" }, { dir });
+  expect(reportStatusCounts(db)).toEqual({ done: 1, failed: 1, generating: 1 });
+  const recent = listRecentReports(db, 2);
+  expect(recent.map((r) => r.id)).toEqual(["r_gen", "r_fail"]); // 倒序、limit 生效
+  expect(recent[0]).toMatchObject({ status: "generating", type: "brief" });
+  expect(recent[0].cost).toEqual(report.cost); // cost JSON 解析
 });
 
 it("chainTypesFor：brief/initial_digest 同链，deep_dive 独立链", () => {

@@ -89,6 +89,33 @@ export function topicHasReport(db: DB, topicId: string): boolean {
   return !!db.prepare("SELECT 1 FROM report WHERE topic_id = ? LIMIT 1").get(topicId);
 }
 
+/** 报告生命周期（admin 看板 · spec line 301）：全状态计数（含 draft/generating/failed/archived），
+ *  区别于 report_index（仅发布层 done）。给看板呈现状态流，让"生成中/失败"瞬态也可观测。 */
+export function reportStatusCounts(db: DB): Record<string, number> {
+  const rows = db.prepare("SELECT status, COUNT(*) AS n FROM report GROUP BY status").all() as { status: string; n: number }[];
+  return Object.fromEntries(rows.map((r) => [r.status, r.n]));
+}
+
+/** 近 N 份报告（全状态，倒序）——看板生命周期列表。轻量：不读正文文件（区别于 getReport）。 */
+export interface RecentReport {
+  id: string;
+  type: string;
+  topic_id: string;
+  status: string;
+  generated_at: string;
+  title: string;
+  citation_count: number;
+  cost: Report["cost"];
+}
+export function listRecentReports(db: DB, limit = 15): RecentReport[] {
+  const rows = db
+    .prepare(
+      "SELECT id, type, topic_id, status, generated_at, title, citation_count, cost FROM report ORDER BY generated_at DESC LIMIT ?",
+    )
+    .all(limit) as Array<Omit<RecentReport, "cost"> & { cost: string }>;
+  return rows.map((r) => ({ ...r, cost: JSON.parse(r.cost) as Report["cost"] }));
+}
+
 /** 某主题在 sinceIso 之后产出的最新**已完成深挖**报告（进度透明 3.3）：深挖完成后给前端可点链接。
  *  - `type='deep_dive'`：深挖按钮的完成信号只认深挖产物——否则同主题的每日 brief cron 若在轮询窗口内
  *    落库一份 brief，会被误判为"深挖完成"并把链接指到错报告（review 实锤，brief/cron 是独立路径，

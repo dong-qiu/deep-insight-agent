@@ -299,6 +299,7 @@ nav a { margin-right: 1rem; }
 .dash-dot.exceeded { background: #dc2626; }
 .dash-dot.off { background: #9ca3af; }
 .dash-badge.off { color: #9ca3af; }
+.dash-status-pill { margin-left: .5rem; }
 .dash-budget-row { margin: .4rem 0; }
 .dash-budget-row .label { margin: 0 0 .15rem; font-size: .85rem; }
 .dash-bar { height: 8px; background: #e5e7eb; border-radius: 4px; overflow: hidden; }

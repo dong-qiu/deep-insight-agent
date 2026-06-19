@@ -1,6 +1,7 @@
 import type { Run } from "../../lib/types.js";
 import { getDb } from "../../lib/db/index.js";
 import { listRuns, listSources } from "../../lib/db/repos.js";
+import { listRecentReports, reportStatusCounts, type RecentReport } from "../../lib/db/reports.js";
 import { getBudgetStatus, type BudgetStatus } from "../../lib/runtime/cost-guard.js";
 import { aggregateByKind, aggregateDailyCost, aggregateSourceHealth, type SourceHealth } from "../../lib/runtime/run-stats.js";
 import { RetryButton } from "./_components/retry-button.js";
@@ -8,6 +9,52 @@ import { RetryButton } from "./_components/retry-button.js";
 export const dynamic = "force-dynamic";
 
 const STATUS_LABEL: Record<string, string> = { running: "运行中", done: "完成", failed: "失败" };
+
+/** 报告状态 → 文案 + 颜色类（生命周期视图 · spec line 301）。 */
+const REPORT_STATUS: Record<string, { label: string; cls: "ok" | "alert" | "exceeded" | "off" }> = {
+  done: { label: "完成", cls: "ok" },
+  generating: { label: "生成中", cls: "alert" },
+  failed: { label: "失败", cls: "exceeded" },
+  draft: { label: "草稿", cls: "off" },
+  archived: { label: "归档", cls: "off" },
+  deleted: { label: "删除", cls: "off" },
+};
+
+function ReportLifecycleCard({ counts, recent }: { counts: Record<string, number>; recent: RecentReport[] }) {
+  const total = Object.values(counts).reduce((a, b) => a + b, 0);
+  if (total === 0) return null;
+  const order = ["done", "generating", "failed", "draft", "archived", "deleted"];
+  return (
+    <article className="card">
+      <p className="muted dash-card-head">
+        <span>报告生命周期 · 共 {total}</span>
+        <span>
+          {order.filter((s) => counts[s]).map((s) => (
+            <span key={s} className={`dash-badge ${REPORT_STATUS[s].cls} dash-status-pill`}>{REPORT_STATUS[s].label} {counts[s]}</span>
+          ))}
+        </span>
+      </p>
+      <table className="stats">
+        <thead><tr><th>报告</th><th>类型</th><th>状态</th><th>引用</th><th>成本</th><th>生成于</th></tr></thead>
+        <tbody>
+          {recent.map((r) => {
+            const m = REPORT_STATUS[r.status] ?? { label: r.status, cls: "off" as const };
+            return (
+              <tr key={r.id}>
+                <td>{r.status === "done" ? <a href={`/reports/${r.id}`}>{r.title}</a> : r.title}</td>
+                <td className="muted">{r.type}</td>
+                <td><span className={`dash-dot ${m.cls}`} /> {m.label}</td>
+                <td>{r.citation_count}</td>
+                <td className="muted">{r.cost?.amount ? `$${r.cost.amount.toFixed(4)}` : "—"}</td>
+                <td className="muted">{r.generated_at.slice(0, 10)}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </article>
+  );
+}
 
 /** 源健康判定 → 状态文案 + .dash-badge/.dash-dot 颜色类（停用置灰、连续失败红、无采集/高失败率橙）。 */
 function sourceVerdict(h: SourceHealth): { label: string; cls: "ok" | "alert" | "exceeded" | "off" } {
@@ -141,6 +188,9 @@ export default async function AdminPage({ searchParams }: { searchParams: Promis
   const budget = getBudgetStatus(db);
   // 数据源健康：近 500 条 ingest Run 叠加 source 清单（独立查询，避免被 50 条详情截断）
   const sourceHealth = aggregateSourceHealth(listRuns(db, { kind: "ingest", limit: 500 }), listSources(db));
+  // 报告生命周期：全状态计数 + 近 15 份（含 draft/generating/failed 瞬态）
+  const reportCounts = reportStatusCounts(db);
+  const recentReports = listRecentReports(db, 15);
   // 运行记录（可筛选 + 分页）：多取 1 条判有无下一页
   const pageRuns = listRuns(db, { kind: kindF, status: statusF, limit: PAGE_SIZE + 1, offset: (page - 1) * PAGE_SIZE });
   const hasNext = pageRuns.length > PAGE_SIZE;
@@ -236,6 +286,8 @@ export default async function AdminPage({ searchParams }: { searchParams: Promis
           </>
         )}
       </article>
+
+      <ReportLifecycleCard counts={reportCounts} recent={recentReports} />
 
       <h3 className="dash-runs-title">运行记录</h3>
       <form className="dash-filter" method="get">
