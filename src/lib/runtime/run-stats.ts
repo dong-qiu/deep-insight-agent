@@ -152,7 +152,7 @@ export function aggregateSourceHealth(ingestRuns: Run[], sources: Source[]): Sou
       source_id: sid, name, type, enabled,
       total: list.length, ok, failed,
       successRate: list.length ? ok / list.length : 0,
-      lastSuccessAt: lastSuccess?.ended_at ?? null,
+      lastSuccessAt: lastSuccess?.ended_at ?? lastSuccess?.started_at ?? null, // ended_at 缺失（瞬态）退 started_at，与 lastError.at 口径一致
       lastError: lastFail?.error ? { at: lastFail.ended_at ?? lastFail.started_at, type: lastFail.error.type, message: lastFail.error.message } : null,
       consecutiveFails,
     };

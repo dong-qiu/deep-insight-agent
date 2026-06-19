@@ -222,11 +222,14 @@ export function listRuns(
     .all({ kind: opts.kind ?? null, status: opts.status ?? null, limit: opts.limit ?? 100, offset: opts.offset ?? 0 }) as Record<string, unknown>[];
   return rows.map(rowToRun);
 }
-/** batch_id → topic_id 映射（admin 看板：validate Run 的 target 只有 batch_id，借此解析回主题名）。 */
-export function batchTopicMap(db: DB, limit = 500): Map<string, string> {
+/** batch_id → topic_id 映射（admin 看板：validate Run 的 target 只有 batch_id，借此解析回主题名）。
+ *  按页内实际 batch_id 精确查（WHERE id IN），不设时间窗——避免翻旧页时窗外 batch 静默解析不到。 */
+export function batchTopicMap(db: DB, batchIds: string[]): Map<string, string> {
+  if (!batchIds.length) return new Map();
+  const ph = batchIds.map(() => "?").join(",");
   const rows = db
-    .prepare("SELECT id, topic_id FROM analysis_batch ORDER BY rowid DESC LIMIT ?")
-    .all(limit) as { id: string; topic_id: string }[];
+    .prepare(`SELECT id, topic_id FROM analysis_batch WHERE id IN (${ph})`)
+    .all(...batchIds) as { id: string; topic_id: string }[];
   return new Map(rows.map((r) => [r.id, r.topic_id]));
 }
 

@@ -130,6 +130,11 @@ function fmtTime(iso: string, nowMs: number): string {
   return rel ? `${local} · ${rel}` : local;
 }
 
+/** 仅 HH:MM（北京时区）——轮次区间的结束时刻。 */
+function fmtHm(iso: string): string {
+  return new Date(Date.parse(iso)).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit", hour12: false });
+}
+
 interface RunLookups { topics: Map<string, string>; sources: Map<string, string>; batchTopic: Map<string, string> }
 
 /** 把 target 的内部 ID 解析成人话：topic_id / 经 batch_id → 主题名；source_id → 源名。内部 id 不外露。 */
@@ -250,7 +255,8 @@ export default async function AdminPage({ searchParams }: { searchParams: Promis
   const dailyMax = Math.max(...daily.map((d) => d.costUSD), 0.001); // 防 0 除
   const budget = getBudgetStatus(db);
   // 数据源健康：近 500 条 ingest Run 叠加 source 清单（独立查询，避免被 50 条详情截断）
-  const sourceHealth = aggregateSourceHealth(listRuns(db, { kind: "ingest", limit: 500 }), listSources(db));
+  const sources = listSources(db); // 复用给源健康 + target 解析，避免查两次
+  const sourceHealth = aggregateSourceHealth(listRuns(db, { kind: "ingest", limit: 500 }), sources);
   // 报告生命周期：全状态计数 + 近 15 份（含 draft/generating/failed 瞬态）
   const reportCounts = reportStatusCounts(db);
   const recentReports = listRecentReports(db, 15);
@@ -259,10 +265,11 @@ export default async function AdminPage({ searchParams }: { searchParams: Promis
   const hasNext = pageRuns.length > PAGE_SIZE;
   const shownRuns = pageRuns.slice(0, PAGE_SIZE);
   // 运行记录可理解性：解析 target 内部 ID → 主题/源名；按管线轮次分组（无筛选时）
+  const batchIds = [...new Set(shownRuns.map((r) => r.target.batch_id).filter((b): b is string => !!b))];
   const lk: RunLookups = {
     topics: new Map(listTopics(db).map((t) => [t.id, t.name])),
-    sources: new Map(listSources(db).map((s) => [s.id, s.name])),
-    batchTopic: batchTopicMap(db),
+    sources: new Map(sources.map((s) => [s.id, s.name])),
+    batchTopic: batchTopicMap(db, batchIds),
   };
   const filterActive = !!(kindF || statusF);
   const rounds = groupRunsIntoRounds(shownRuns);
@@ -387,7 +394,7 @@ export default async function AdminPage({ searchParams }: { searchParams: Promis
           <article className="card dash-round" key={round.start}>
             <details open={round.failed > 0}>
               <summary>
-                <strong>📅 {fmtTime(round.start, nowMs)}</strong>
+                <strong>📅 {fmtTime(round.start, nowMs)}{round.end !== round.start ? ` → ${fmtHm(round.end)}` : ""}</strong>
                 <span className="muted">
                   {" "}· 采集{round.counts.ingest} 分析{round.counts.analyze} 校验{round.counts.validate} 生成{round.counts["report-gen"]}
                   {" · "}{round.failed > 0 ? <span className="dash-badge exceeded">⚠️ {round.failed} 失败</span> : <span className="dash-badge ok">全部完成</span>}
