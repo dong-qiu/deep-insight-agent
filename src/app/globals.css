@@ -300,9 +300,15 @@ nav a { margin-right: 1rem; }
 .dash-dot.off { background: #9ca3af; }
 .dash-badge.off { color: #9ca3af; }
 .dash-status-pill { margin-left: .5rem; }
-/* 源健康表：状态/成功率/最近成功单行不换行；近期错误超长截断省略号（hover title 看全），行高统一 */
-.dash-health td, .dash-health th { white-space: nowrap; vertical-align: middle; }
-.dash-health-err { max-width: 16rem; overflow: hidden; text-overflow: ellipsis; }
+/* 源健康表：table-layout:fixed + 各列定宽，所有单元格单行 + 省略号截断（td 的 max-width 在 auto 布局
+   下会被忽略致长错误撑破表格，故改 fixed）。近期错误超长 → 省略号，hover title 看全文。 */
+.dash-health { table-layout: fixed; width: 100%; }
+.dash-health th, .dash-health td { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: middle; }
+.dash-health col.c-src { width: 28%; }
+.dash-health col.c-status { width: 18%; }
+.dash-health col.c-rate { width: 16%; }
+.dash-health col.c-last { width: 13%; }
+.dash-health col.c-err { width: 25%; }
 .dash-budget-row { margin: .4rem 0; }
 .dash-budget-row .label { margin: 0 0 .15rem; font-size: .85rem; }
 .dash-bar { height: 8px; background: #e5e7eb; border-radius: 4px; overflow: hidden; }

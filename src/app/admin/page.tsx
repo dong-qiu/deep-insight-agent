@@ -21,7 +21,10 @@ const REPORT_STATUS: Record<string, { label: string; cls: "ok" | "alert" | "exce
   deleted: { label: "删除", cls: "off" },
 };
 
-function ReportLifecycleCard({ counts, recent }: { counts: Record<string, number>; recent: RecentReport[] }) {
+// 报告类型中文（生命周期表的「类型」列；与 report-gen 标题里的"今日 Brief/深度报告"口径一致）
+const REPORT_TYPE_CN: Record<string, string> = { brief: "简报", deep_dive: "深挖", initial_digest: "综述" };
+
+function ReportLifecycleCard({ counts, recent, topicNames }: { counts: Record<string, number>; recent: RecentReport[]; topicNames: Map<string, string> }) {
   const total = Object.values(counts).reduce((a, b) => a + b, 0);
   if (total === 0) return null;
   const order = ["done", "generating", "failed", "draft", "archived", "deleted"];
@@ -40,10 +43,12 @@ function ReportLifecycleCard({ counts, recent }: { counts: Record<string, number
         <tbody>
           {recent.map((r) => {
             const m = REPORT_STATUS[r.status] ?? { label: r.status, cls: "off" as const };
+            // 报告名简化：只显主题名（类型/日期已是单独列，标题里的"· 类型 · 日期"是重复）；fallback 原标题
+            const name = topicNames.get(r.topic_id) ?? r.title;
             return (
               <tr key={r.id}>
-                <td>{r.status === "done" ? <a href={`/reports/${r.id}`}>{r.title}</a> : r.title}</td>
-                <td className="muted">{r.type}</td>
+                <td title={r.title}>{r.status === "done" ? <a href={`/reports/${r.id}`}>{name}</a> : name}</td>
+                <td className="muted">{REPORT_TYPE_CN[r.type] ?? r.type}</td>
                 <td><span className={`dash-dot ${m.cls}`} /> {m.label}</td>
                 <td>{r.citation_count}</td>
                 <td className="muted">{r.cost?.amount ? `$${r.cost.amount.toFixed(4)}` : "—"}</td>
@@ -76,6 +81,9 @@ function SourceHealthCard({ health }: { health: SourceHealth[] }) {
         {problems > 0 ? <span className="dash-badge alert">⚠️ {problems} 需关注</span> : <span className="dash-badge ok">全部正常</span>}
       </p>
       <table className="stats dash-health">
+        <colgroup>
+          <col className="c-src" /><col className="c-status" /><col className="c-rate" /><col className="c-last" /><col className="c-err" />
+        </colgroup>
         <thead>
           <tr><th>源</th><th>状态</th><th>成功率</th><th>最近成功</th><th>近期错误</th></tr>
         </thead>
@@ -85,14 +93,14 @@ function SourceHealthCard({ health }: { health: SourceHealth[] }) {
             const errText = h.lastError ? `${h.lastError.type}: ${h.lastError.message}` : "";
             return (
               <tr key={h.source_id}>
-                <td>
+                <td title={`${h.name}${h.type ? ` · ${h.type}` : ""}`}>
                   <span className={`dash-dot ${v.cls}`} /> {h.name}
                   {h.type ? <span className="muted"> · {h.type}</span> : null}
                 </td>
                 <td><span className={`dash-badge ${v.cls}`}>{v.label}</span></td>
                 <td>{h.total > 0 ? `${Math.round(h.successRate * 100)}% (${h.ok}/${h.total})` : "—"}</td>
                 <td className="muted">{h.lastSuccessAt ? h.lastSuccessAt.slice(0, 10) : "从未"}</td>
-                <td className="muted dash-health-err" title={errText}>{errText || "—"}</td>
+                <td className="muted" title={errText}>{errText || "—"}</td>
               </tr>
             );
           })}
@@ -271,6 +279,7 @@ export default async function AdminPage({ searchParams }: { searchParams: Promis
   // 报告生命周期：全状态计数 + 近 15 份（含 draft/generating/failed 瞬态）
   const reportCounts = reportStatusCounts(db);
   const recentReports = listRecentReports(db, 15);
+  const topicNames = new Map(listTopics(db).map((t) => [t.id, t.name])); // 复用给生命周期报告名 + 运行记录 target 解析
 
   // 运行记录：浏览模式=按轮次翻页（轮次原子、不腰斩）；筛选模式=平铺按条翻页（查找）。
   const filterActive = !!(kindF || statusF);
@@ -289,7 +298,7 @@ export default async function AdminPage({ searchParams }: { searchParams: Promis
   const renderedRuns = filterActive ? flatRuns : pageRounds.flatMap((r) => r.runs);
   const batchIds = [...new Set(renderedRuns.map((r) => r.target.batch_id).filter((b): b is string => !!b))];
   const lk: RunLookups = {
-    topics: new Map(listTopics(db).map((t) => [t.id, t.name])),
+    topics: topicNames,
     sources: new Map(sources.map((s) => [s.id, s.name])),
     batchTopic: batchTopicMap(db, batchIds),
   };
@@ -385,7 +394,7 @@ export default async function AdminPage({ searchParams }: { searchParams: Promis
         )}
       </article>
 
-      <ReportLifecycleCard counts={reportCounts} recent={recentReports} />
+      <ReportLifecycleCard counts={reportCounts} recent={recentReports} topicNames={topicNames} />
 
       <h3 className="dash-runs-title">运行记录</h3>
       <form className="dash-filter" method="get">
