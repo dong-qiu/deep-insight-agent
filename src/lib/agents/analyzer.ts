@@ -65,16 +65,38 @@ export function isCompleteStatement(s: string): boolean {
  *  要求产品名首字母大写（保护"about 3.2"/"处理 3.2"等真实定量数字不被误剥）。 */
 const VERSION_TOKEN = /\bv\d+(?:\.\d+)+|[A-Z][A-Za-z]+[-\s]\d+(?:\.\d+)+/g;
 
-/** 引用覆盖检测（#14 类）：抽 statement 里的**百分比/小数**（高特异性、低误报；不查年份/小整数，
- *  且先剥版本/型号标识 vX.Y），检查每个是否在某条 citation quote 里出现；返回未被覆盖的数字 =
- *  结论数字无引用支撑（潜在幻觉/应补引）。
- *  非破坏性——仅用于告警 + 人评幻觉跟踪（#14 负责人判定为"补引"而非丢弃，故不在此删洞察）。 */
-export function uncoveredClaims(statement: string, quotes: string[]): string[] {
-  const claims = statement.replace(VERSION_TOKEN, " "); // 先剥版本号，避免把 Opus 4.5 的 "4.5" 当声明
-  const nums = claims.match(/\d+\.\d+%?|\d+%/g) ?? [];
-  if (!nums.length) return [];
-  const hay = quotes.join(" ").replace(/\s+/g, "");
-  return [...new Set(nums.filter((n) => !hay.includes(n.replace(/\s+/g, ""))))];
+const norm = (s: string): string => s.replace(/\s+/g, "");
+
+/** statement 里**所有**需被引用直接覆盖的"具体声明" token（不论是否已覆盖）——覆盖率分母 + coverageGaps 的源：
+ *  ① 数字：百分比 / 小数 / **≥3 位整数**（先剥版本号 vX.Y、尾随句点；≥3 位避开"3 源/14 天"小计数噪音，
+ *     但"900""1507""124"这类定量声明必收；排除 1900-2099 年份）；金额千分位逗号归一后比较。
+ *  ② 实体：复用洞察已抽取的 `entities`（高特异性专有名，命中 dogfood #8/#10/#11）。
+ *  权衡：年份守卫会连带跳过落在该区间的真实定量（如"2048 维"=2048）——外露场景下漏标优于误标，可接受。 */
+export function specificClaims(statement: string, entities: string[]): string[] {
+  const stripped = statement.replace(VERSION_TOKEN, " ");
+  const nums = (stripped.match(/\d[\d,，.]*%?/g) ?? [])
+    .map((n) => n.replace(/[,，]/g, "").replace(/[.．]+$/, "")) // 去千分位 + 剥尾随句点（"900."→"900"），对齐 quote 写法
+    .filter((n) => {
+      if (/%|\.\d/.test(n)) return true; // 百分比/小数：高特异性，任意长
+      const digits = n.replace(/\D/g, "");
+      if (digits.length < 3) return false; // 个/十位小整数（"3 源""14 天"）噪音大，跳
+      const v = Number(digits);
+      if (v >= 1900 && v <= 2099) return false; // 像年份：低覆盖价值、高噪音，跳（"1507"分数 <1900 仍收）
+      return true;
+    });
+  // 只对 statement 里**逐字出现**的实体做覆盖检测：rule 11 本就要求 entities 只列 statement 涉及的，
+  // 但模型偶尔跑偏多列；过滤掉"不在本句"的实体，避免标出一堆与本结论无关的 〔待补引〕 噪音。
+  const ents = entities.filter((e) => e.trim() && statement.includes(e.trim()));
+  return [...new Set([...nums, ...ents])];
+}
+
+/** 覆盖缺口：specificClaims 里未在任何 quote 出现的 token。检测用——report-gen 据此外露 〔待补引〕，
+ *  告诉读者"这条结论的哪个具体数字/实体还没有引用直接覆盖"（诚实兜底，不自动补引避免误导）。
+ *  注：**不**在此自动补引——错补一条同形不同义的逐字短句会被 validator 放行（一致性按整篇 body 判、
+ *  与 quote 无关，见 validator.ts），制造"点开看到了但看错"，比不补更糟。补引需 quote 粒度语义校验。 */
+export function coverageGaps(statement: string, entities: string[], quotes: string[]): string[] {
+  const hay = norm(quotes.join(" "));
+  return specificClaims(statement, entities).filter((t) => !hay.includes(norm(t)));
 }
 
 function computeLocator(body: string, quote: string): Citation["locator"] {
@@ -250,11 +272,12 @@ ${renderItems(items)}`;
     console.warn(`  ⚠️ 丢弃疑似截断洞察：…「${it.statement.trim().slice(-24)}」`);
     return false;
   });
-  // 引用覆盖检测（#14 类）：告警未被引用覆盖的数字（非删除——建议补引；供人评幻觉跟踪）
+  // 覆盖缺口告警（informational；report-gen 在渲染层据已纳入引用外露 〔待补引〕）：结论里未被引用直接
+  // 覆盖的数字/实体，供人评跟踪。仅告警、不改 insight 输出（不自动补引——见 coverageGaps 注释的误导风险）。
   for (const it of insights) {
-    const uncov = uncoveredClaims(it.statement, it.citations.map((c) => c.quote));
-    if (uncov.length) {
-      console.warn(`  ⚠️ 数字未被引用覆盖（#14 类，建议补引）：${uncov.join(", ")} ——「${it.statement.slice(0, 24)}…」`);
+    const gaps = coverageGaps(it.statement, (it.entities ?? []).map((e) => e.name), it.citations.map((c) => c.quote));
+    if (gaps.length) {
+      console.warn(`  ⚠️ 覆盖缺口（建议补引/外露）：${gaps.join("、")} ——「${it.statement.slice(0, 24)}…」`);
     }
   }
   return insights;
