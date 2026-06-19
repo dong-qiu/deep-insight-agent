@@ -1,12 +1,104 @@
+import type { Run } from "../../lib/types.js";
 import { getDb } from "../../lib/db/index.js";
-import { listRuns } from "../../lib/db/repos.js";
+import { batchTopicMap, listRuns, listSources, listTopics } from "../../lib/db/repos.js";
+import { listRecentReports, reportStatusCounts, type RecentReport } from "../../lib/db/reports.js";
 import { getBudgetStatus, type BudgetStatus } from "../../lib/runtime/cost-guard.js";
-import { aggregateByKind, aggregateDailyCost } from "../../lib/runtime/run-stats.js";
+import { aggregateByKind, aggregateDailyCost, aggregateSourceHealth, groupRunsIntoRounds, type SourceHealth } from "../../lib/runtime/run-stats.js";
 import { RetryButton } from "./_components/retry-button.js";
 
 export const dynamic = "force-dynamic";
 
 const STATUS_LABEL: Record<string, string> = { running: "运行中", done: "完成", failed: "失败" };
+
+/** 报告状态 → 文案 + 颜色类（生命周期视图 · spec line 301）。 */
+const REPORT_STATUS: Record<string, { label: string; cls: "ok" | "alert" | "exceeded" | "off" }> = {
+  done: { label: "完成", cls: "ok" },
+  generating: { label: "生成中", cls: "alert" },
+  failed: { label: "失败", cls: "exceeded" },
+  draft: { label: "草稿", cls: "off" },
+  archived: { label: "归档", cls: "off" },
+  deleted: { label: "删除", cls: "off" },
+};
+
+function ReportLifecycleCard({ counts, recent }: { counts: Record<string, number>; recent: RecentReport[] }) {
+  const total = Object.values(counts).reduce((a, b) => a + b, 0);
+  if (total === 0) return null;
+  const order = ["done", "generating", "failed", "draft", "archived", "deleted"];
+  return (
+    <article className="card">
+      <p className="muted dash-card-head">
+        <span>报告生命周期 · 共 {total}</span>
+        <span>
+          {order.filter((s) => counts[s]).map((s) => (
+            <span key={s} className={`dash-badge ${REPORT_STATUS[s].cls} dash-status-pill`}>{REPORT_STATUS[s].label} {counts[s]}</span>
+          ))}
+        </span>
+      </p>
+      <table className="stats">
+        <thead><tr><th>报告</th><th>类型</th><th>状态</th><th>引用</th><th>成本</th><th>生成于</th></tr></thead>
+        <tbody>
+          {recent.map((r) => {
+            const m = REPORT_STATUS[r.status] ?? { label: r.status, cls: "off" as const };
+            return (
+              <tr key={r.id}>
+                <td>{r.status === "done" ? <a href={`/reports/${r.id}`}>{r.title}</a> : r.title}</td>
+                <td className="muted">{r.type}</td>
+                <td><span className={`dash-dot ${m.cls}`} /> {m.label}</td>
+                <td>{r.citation_count}</td>
+                <td className="muted">{r.cost?.amount ? `$${r.cost.amount.toFixed(4)}` : "—"}</td>
+                <td className="muted">{r.generated_at.slice(0, 10)}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </article>
+  );
+}
+
+/** 源健康判定 → 状态文案 + .dash-badge/.dash-dot 颜色类（停用置灰、连续失败红、无采集/高失败率橙）。 */
+function sourceVerdict(h: SourceHealth): { label: string; cls: "ok" | "alert" | "exceeded" | "off" } {
+  if (!h.enabled) return { label: "停用", cls: "off" };
+  if (h.consecutiveFails >= 3) return { label: `连续失败 ${h.consecutiveFails}`, cls: "exceeded" };
+  if (h.total === 0) return { label: "无采集记录", cls: "alert" };
+  if (h.successRate < 0.5) return { label: "高失败率", cls: "alert" };
+  return { label: "正常", cls: "ok" };
+}
+
+function SourceHealthCard({ health }: { health: SourceHealth[] }) {
+  if (health.length === 0) return null;
+  const problems = health.filter((h) => h.enabled && (h.consecutiveFails >= 3 || h.total === 0 || h.successRate < 0.5)).length;
+  return (
+    <article className="card">
+      <p className="muted dash-card-head">
+        <span>数据源健康 · {health.length} 源</span>
+        {problems > 0 ? <span className="dash-badge alert">⚠️ {problems} 需关注</span> : <span className="dash-badge ok">全部正常</span>}
+      </p>
+      <table className="stats">
+        <thead>
+          <tr><th>源</th><th>状态</th><th>成功率</th><th>最近成功</th><th>近期错误</th></tr>
+        </thead>
+        <tbody>
+          {health.map((h) => {
+            const v = sourceVerdict(h);
+            return (
+              <tr key={h.source_id}>
+                <td>
+                  <span className={`dash-dot ${v.cls}`} /> {h.name}
+                  {h.type ? <span className="muted"> · {h.type}</span> : null}
+                </td>
+                <td><span className={`dash-badge ${v.cls}`}>{v.label}</span></td>
+                <td>{h.total > 0 ? `${Math.round(h.successRate * 100)}% (${h.ok}/${h.total})` : "—"}</td>
+                <td className="muted">{h.lastSuccessAt ? h.lastSuccessAt.slice(0, 10) : "从未"}</td>
+                <td className="muted">{h.lastError ? `${h.lastError.type}: ${h.lastError.message.slice(0, 40)}` : "—"}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </article>
+  );
+}
 
 function fmtDuration(ms: number | null): string {
   if (ms == null) return "—";
@@ -21,33 +113,97 @@ function fmtTarget(target: Record<string, unknown>): string {
   return parts.length ? parts.join(" · ") : "（无 target）";
 }
 
-const VERDICT_BADGE: Record<BudgetStatus["verdict"], { label: string; color: string }> = {
-  ok: { label: "正常", color: "#16a34a" },
-  alert: { label: "⚠️ 接近上限", color: "#d97706" },
-  exceeded: { label: "⛔ 已触顶", color: "#dc2626" },
+// 管线段中文化 + 图标（运行记录可理解性）
+const KIND_LABEL: Record<Run["kind"], string> = {
+  ingest: "📥 采集", analyze: "🔍 分析", validate: "✅ 校验", "report-gen": "📝 报告生成",
+};
+
+/** 时间本地化（钉北京时区，生产 EC2 跑 UTC，避免读出 UTC 误导）+ 相对时间。 */
+function fmtTime(iso: string, nowMs: number): string {
+  const t = Date.parse(iso);
+  const local = new Date(t).toLocaleString("zh-CN", {
+    timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false,
+  });
+  const d = nowMs - t;
+  const rel = d < 0 ? "" : d < 60_000 ? "刚刚" : d < 3_600_000 ? `${Math.floor(d / 60_000)}分钟前`
+    : d < 86_400_000 ? `${Math.floor(d / 3_600_000)}小时前` : `${Math.floor(d / 86_400_000)}天前`;
+  return rel ? `${local} · ${rel}` : local;
+}
+
+/** 仅 HH:MM（北京时区）——轮次区间的结束时刻。 */
+function fmtHm(iso: string): string {
+  return new Date(Date.parse(iso)).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit", hour12: false });
+}
+
+interface RunLookups { topics: Map<string, string>; sources: Map<string, string>; batchTopic: Map<string, string> }
+
+/** 把 target 的内部 ID 解析成人话：topic_id / 经 batch_id → 主题名；source_id → 源名。内部 id 不外露。 */
+function resolveTarget(target: Run["target"], lk: RunLookups): string {
+  const parts: string[] = [];
+  const topicId = target.topic_id ?? (target.batch_id ? lk.batchTopic.get(target.batch_id) : undefined);
+  if (topicId) parts.push(`主题：${lk.topics.get(topicId) ?? topicId}`);
+  if (target.source_id) parts.push(`源：${lk.sources.get(target.source_id) ?? target.source_id}`);
+  return parts.join(" · ");
+}
+
+function RunCard({ r, nowMs, lk }: { r: Run; nowMs: number; lk: RunLookups }) {
+  const ctx = resolveTarget(r.target, lk);
+  return (
+    <article className="card">
+      <strong>{KIND_LABEL[r.kind] ?? r.kind}</strong> · {STATUS_LABEL[r.status] ?? r.status}
+      {r.duration_ms != null ? ` · ${fmtDuration(r.duration_ms)}` : ""}
+      {r.cost ? ` · $${r.cost.amount.toFixed(4)}` : ""}
+      <div className="muted dash-run-meta">
+        {ctx ? `${ctx} · ` : ""}{fmtTime(r.started_at, nowMs)}
+        {r.retry_of ? " · 重试" : ""}
+      </div>
+      {r.error ? (
+        <div className="muted">
+          ❌ <strong>{r.error.type}</strong>: {r.error.message}
+          {r.status === "failed" ? <RetryButton runId={r.id} kind={r.kind} /> : null}
+        </div>
+      ) : null}
+      <details className="audit dash-detail">
+        <summary>详情</summary>
+        <p className="muted">运行 ID：<code>{r.id}</code>{r.retry_of ? <> · 重试自 <code>{r.retry_of}</code></> : null}</p>
+        <p className="muted">
+          {r.cost ? `成本 $${r.cost.amount.toFixed(6)} · ${r.cost.tokens.toLocaleString()} tokens` : "成本 —（确定性环节或未调 LLM）"}
+        </p>
+        <p className="muted">target（原始）：<code>{fmtTarget(r.target)}</code></p>
+        {r.error?.stack ? (
+          <details>
+            <summary className="muted">完整错误堆栈</summary>
+            <pre className="audit-row dash-stack">{r.error.stack}</pre>
+          </details>
+        ) : null}
+      </details>
+    </article>
+  );
+}
+
+// 颜色由 CSS .dash-badge.{verdict} 决定；这里只给文案。
+const VERDICT_LABEL: Record<BudgetStatus["verdict"], string> = {
+  ok: "正常",
+  alert: "⚠️ 接近上限",
+  exceeded: "⛔ 已触顶",
 };
 
 /** 单维度预算用量行：spent / limit + 百分比进度条。limit 缺失（未配）显「未设」。
  *  near（橙）阈值用生效的 alertPct，与告警/徽标判定口径一致（非硬编码 80）。 */
 function BudgetRow({ label, spent, limit, ratio, alertPct }: { label: string; spent: number; limit?: number; ratio?: number; alertPct: number }) {
   if (limit == null) {
-    return (
-      <p className="muted" style={{ margin: ".25rem 0", fontSize: ".85rem" }}>
-        {label}：${spent.toFixed(2)} · 未设上限
-      </p>
-    );
+    return <p className="muted dash-note">{label}：${spent.toFixed(2)} · 未设上限</p>;
   }
   const pct = Math.min((ratio ?? 0) * 100, 100);
   const over = (ratio ?? 0) >= 1;
   const near = !over && (ratio ?? 0) * 100 >= alertPct;
-  const barColor = over ? "#dc2626" : near ? "#d97706" : "#2563eb";
   return (
-    <div style={{ margin: ".4rem 0" }}>
-      <p className="muted" style={{ margin: "0 0 .15rem", fontSize: ".85rem" }}>
+    <div className="dash-budget-row">
+      <p className="muted label">
         {label}：${spent.toFixed(2)} / ${limit.toFixed(2)}（{Math.round((ratio ?? 0) * 100)}%）
       </p>
-      <div style={{ height: 8, background: "#e5e7eb", borderRadius: 4, overflow: "hidden" }}>
-        <div style={{ width: `${pct}%`, height: "100%", background: barColor }} />
+      <div className="dash-bar">
+        <i className={over ? "over" : near ? "near" : ""} style={{ width: `${pct}%` }} />
       </div>
     </div>
   );
@@ -55,15 +211,14 @@ function BudgetRow({ label, spent, limit, ratio, alertPct }: { label: string; sp
 
 function BudgetCard({ status }: { status: BudgetStatus }) {
   const noLimits = status.daily == null && status.monthly == null;
-  const badge = VERDICT_BADGE[status.verdict];
   return (
     <article className="card">
-      <p className="muted" style={{ margin: 0, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+      <p className="muted dash-card-head">
         <span>成本预算</span>
-        {!noLimits ? <span style={{ color: badge.color, fontWeight: 600 }}>{badge.label}</span> : null}
+        {!noLimits ? <span className={`dash-badge ${status.verdict}`}>{VERDICT_LABEL[status.verdict]}</span> : null}
       </p>
       {noLimits ? (
-        <p className="muted" style={{ marginTop: ".5rem", fontSize: ".85rem" }}>
+        <p className="muted dash-note">
           未设成本预算上限——配置 <code>COST_LIMIT_DAILY</code> / <code>COST_LIMIT_MONTHLY</code>（USD）后,
           触顶将自动熔断定时管线、告警推送，并在此显示用量。
         </p>
@@ -71,18 +226,25 @@ function BudgetCard({ status }: { status: BudgetStatus }) {
         <>
           <BudgetRow label="今日" spent={status.spentToday} limit={status.daily} ratio={status.dailyRatio} alertPct={status.alertPct} />
           <BudgetRow label="本月" spent={status.spentMonth} limit={status.monthly} ratio={status.monthlyRatio} alertPct={status.alertPct} />
-          {status.reason ? (
-            <p className="muted" style={{ marginTop: ".25rem", fontSize: ".75rem", color: badge.color }}>{status.reason}</p>
-          ) : null}
+          {status.reason ? <p className={`muted dash-reason dash-badge ${status.verdict}`}>{status.reason}</p> : null}
         </>
       )}
     </article>
   );
 }
 
-export default function AdminPage() {
+const KINDS: Run["kind"][] = ["ingest", "analyze", "validate", "report-gen"];
+const STATUSES: Run["status"][] = ["running", "done", "failed"];
+const PAGE_SIZE = 50;
+
+export default async function AdminPage({ searchParams }: { searchParams: Promise<Record<string, string | undefined>> }) {
+  const sp = await searchParams;
+  const kindF = KINDS.includes(sp.kind as Run["kind"]) ? (sp.kind as Run["kind"]) : undefined;
+  const statusF = STATUSES.includes(sp.status as Run["status"]) ? (sp.status as Run["status"]) : undefined;
+  const page = Math.max(1, Number(sp.page) || 1);
+
   const db = getDb();
-  // 看板用近 50 条详情；时序图用近 30 天全量（独立查询，避免 50 条把时序图截掉）
+  // 概览聚合用近 50 条（不随筛选变，恒为最近概况）；时序图用近 30 天全量
   const runs = listRuns(db, { limit: 50 });
   const runsForTimeseries = listRuns(db, { limit: 2000 });
   const stats = aggregateByKind(runs);
@@ -92,6 +254,35 @@ export default function AdminPage() {
   const dailyTotal = daily.reduce((s, d) => s + d.costUSD, 0);
   const dailyMax = Math.max(...daily.map((d) => d.costUSD), 0.001); // 防 0 除
   const budget = getBudgetStatus(db);
+  // 数据源健康：近 500 条 ingest Run 叠加 source 清单（独立查询，避免被 50 条详情截断）
+  const sources = listSources(db); // 复用给源健康 + target 解析，避免查两次
+  const sourceHealth = aggregateSourceHealth(listRuns(db, { kind: "ingest", limit: 500 }), sources);
+  // 报告生命周期：全状态计数 + 近 15 份（含 draft/generating/failed 瞬态）
+  const reportCounts = reportStatusCounts(db);
+  const recentReports = listRecentReports(db, 15);
+  // 运行记录（可筛选 + 分页）：多取 1 条判有无下一页
+  const pageRuns = listRuns(db, { kind: kindF, status: statusF, limit: PAGE_SIZE + 1, offset: (page - 1) * PAGE_SIZE });
+  const hasNext = pageRuns.length > PAGE_SIZE;
+  const shownRuns = pageRuns.slice(0, PAGE_SIZE);
+  // 运行记录可理解性：解析 target 内部 ID → 主题/源名；按管线轮次分组（无筛选时）
+  const batchIds = [...new Set(shownRuns.map((r) => r.target.batch_id).filter((b): b is string => !!b))];
+  const lk: RunLookups = {
+    topics: new Map(listTopics(db).map((t) => [t.id, t.name])),
+    sources: new Map(sources.map((s) => [s.id, s.name])),
+    batchTopic: batchTopicMap(db, batchIds),
+  };
+  const filterActive = !!(kindF || statusF);
+  const rounds = groupRunsIntoRounds(shownRuns);
+  const nowMs = Date.now();
+  // 分页链接保留当前筛选
+  const pageHref = (p: number): string => {
+    const q = new URLSearchParams();
+    if (kindF) q.set("kind", kindF);
+    if (statusF) q.set("status", statusF);
+    if (p > 1) q.set("page", String(p));
+    const s = q.toString();
+    return s ? `/admin?${s}` : "/admin";
+  };
 
   return (
     <section>
@@ -102,9 +293,11 @@ export default function AdminPage() {
 
       <BudgetCard status={budget} />
 
+      <SourceHealthCard health={sourceHealth} />
+
       {stats.length === 0 ? null : (
         <article className="card">
-          <p className="muted" style={{ margin: 0 }}>按管线段分</p>
+          <p className="muted dash-card-title">按管线段分</p>
           <table className="stats">
             <thead>
               <tr>
@@ -123,7 +316,7 @@ export default function AdminPage() {
                   <td><code>{s.kind}</code></td>
                   <td>{s.total}</td>
                   <td>{s.done}</td>
-                  <td className={s.failed > 0 ? "audit-reason" : undefined}>{s.failed}</td>
+                  <td className={s.failed > 0 ? "bad" : undefined}>{s.failed}</td>
                   <td>{s.running}</td>
                   <td>${s.costUSD.toFixed(4)}</td>
                   <td>{fmtDuration(s.avgDurationMs)}</td>
@@ -135,12 +328,12 @@ export default function AdminPage() {
       )}
 
       <article className="card">
-        <p className="muted" style={{ margin: 0 }}>
+        <p className="muted dash-card-title">
           近 30 天成本时序 · 累计 ${dailyTotal.toFixed(4)} · 峰值 ${dailyMax.toFixed(4)}
         </p>
         {dailyTotal === 0 ? (
           /* review #4：全 0 时显占位文案，不渲染 30 个灰柱（视觉噪音）*/
-          <p className="muted" style={{ marginTop: ".5rem", fontSize: ".85rem" }}>
+          <p className="muted dash-note">
             近 30 天暂无成本数据——管线尚未运行或仅跑确定性段（采集/报告生成不调 LLM）。
           </p>
         ) : (
@@ -150,7 +343,7 @@ export default function AdminPage() {
               width="100%"
               height="80"
               preserveAspectRatio="none"
-              style={{ marginTop: ".25rem", display: "block" }}
+              className="dash-chart"
               aria-label="近 30 天成本柱状图"
               role="img"
             >
@@ -166,55 +359,63 @@ export default function AdminPage() {
                 );
               })}
             </svg>
-            <p className="muted" style={{ marginTop: ".25rem", fontSize: ".75rem" }}>
+            <p className="muted dash-chart-foot">
               {daily[0]?.date} → {daily[daily.length - 1]?.date}（悬停柱体看当日明细）
             </p>
           </>
         )}
       </article>
 
-      {runs.length === 0 ? (
-        <p className="muted">暂无运行记录。采集/分析/校验/报告执行后会出现在这里。</p>
+      <ReportLifecycleCard counts={reportCounts} recent={recentReports} />
+
+      <h3 className="dash-runs-title">运行记录</h3>
+      <form className="dash-filter" method="get">
+        <select name="kind" defaultValue={kindF ?? ""} aria-label="按管线段筛选">
+          <option value="">全部段</option>
+          {KINDS.map((k) => <option key={k} value={k}>{k}</option>)}
+        </select>
+        <select name="status" defaultValue={statusF ?? ""} aria-label="按状态筛选">
+          <option value="">全部状态</option>
+          {STATUSES.map((s) => <option key={s} value={s}>{STATUS_LABEL[s]}</option>)}
+        </select>
+        <button type="submit">筛选</button>
+        {kindF || statusF ? <a href="/admin" className="muted dash-filter-clear">清除</a> : null}
+        <span className="muted dash-filter-page">第 {page} 页</span>
+      </form>
+
+      {shownRuns.length === 0 ? (
+        <p className="muted">{filterActive || page > 1 ? "当前筛选/页无运行记录。" : "暂无运行记录。采集/分析/校验/报告执行后会出现在这里。"}</p>
+      ) : filterActive ? (
+        // 筛选模式 = 查找：平铺命中的 Run
+        shownRuns.map((r) => <RunCard key={r.id} r={r} nowMs={nowMs} lk={lk} />)
       ) : (
-        runs.map((r) => (
-          <article className="card" key={r.id}>
-            <strong>{r.kind}</strong> · {STATUS_LABEL[r.status] ?? r.status}
-            {r.duration_ms != null ? ` · ${fmtDuration(r.duration_ms)}` : ""}
-            {r.cost ? ` · $${r.cost.amount.toFixed(4)} / ${r.cost.tokens} tok` : ""}
-            <div className="muted">
-              {r.id} · {r.started_at}
-              {r.retry_of ? ` · 重试自 ${r.retry_of}` : ""}
-            </div>
-            {r.error ? (
-              <div className="muted">
-                ❌ <strong>{r.error.type}</strong>: {r.error.message}
-                {r.status === "failed" ? <RetryButton runId={r.id} kind={r.kind} /> : null}
+        // 浏览模式：按管线轮次分组，一眼看出"这轮干了啥/哪步断了"
+        rounds.map((round) => (
+          <article className="card dash-round" key={round.start}>
+            <details open={round.failed > 0}>
+              <summary>
+                <strong>📅 {fmtTime(round.start, nowMs)}{round.end !== round.start ? ` → ${fmtHm(round.end)}` : ""}</strong>
+                <span className="muted">
+                  {" "}· 采集{round.counts.ingest} 分析{round.counts.analyze} 校验{round.counts.validate} 生成{round.counts["report-gen"]}
+                  {" · "}{round.failed > 0 ? <span className="dash-badge exceeded">⚠️ {round.failed} 失败</span> : <span className="dash-badge ok">全部完成</span>}
+                  {round.costUSD > 0 ? ` · $${round.costUSD.toFixed(2)}` : ""}
+                </span>
+              </summary>
+              <div className="dash-round-runs">
+                {round.runs.map((r) => <RunCard key={r.id} r={r} nowMs={nowMs} lk={lk} />)}
               </div>
-            ) : null}
-            <details className="audit" style={{ marginTop: "0.5rem" }}>
-              <summary>详情</summary>
-              <p className="muted" style={{ marginBottom: "0.25rem" }}>
-                target：<code>{fmtTarget(r.target)}</code>
-              </p>
-              {r.cost ? (
-                <p className="muted" style={{ marginBottom: "0.25rem" }}>
-                  成本：${r.cost.amount.toFixed(6)} · {r.cost.tokens.toLocaleString()} tok
-                </p>
-              ) : (
-                <p className="muted" style={{ marginBottom: "0.25rem" }}>成本：—（确定性环节或未调 LLM）</p>
-              )}
-              {r.error?.stack ? (
-                <details>
-                  <summary className="muted">完整错误堆栈</summary>
-                  <pre className="audit-row" style={{ whiteSpace: "pre-wrap", fontSize: "0.8rem", overflowX: "auto" }}>
-                    {r.error.stack}
-                  </pre>
-                </details>
-              ) : null}
             </details>
           </article>
         ))
       )}
+
+      {page > 1 || hasNext ? (
+        <nav className="dash-pager" aria-label="运行记录分页">
+          {page > 1 ? <a href={pageHref(page - 1)}>← 上一页</a> : <span className="muted">← 上一页</span>}
+          <span className="muted">第 {page} 页</span>
+          {hasNext ? <a href={pageHref(page + 1)}>下一页 →</a> : <span className="muted">下一页 →</span>}
+        </nav>
+      ) : null}
     </section>
   );
 }

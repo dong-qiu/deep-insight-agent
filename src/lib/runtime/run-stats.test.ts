@@ -1,12 +1,19 @@
 import { describe, expect, it } from "vitest";
-import type { Run } from "../types.js";
-import { aggregateByKind, aggregateDailyCost } from "./run-stats.js";
+import type { Run, Source } from "../types.js";
+import { aggregateByKind, aggregateDailyCost, aggregateSourceHealth, groupRunsIntoRounds } from "./run-stats.js";
 
 function run(p: Partial<Run> & Pick<Run, "kind" | "status">): Run {
   return {
     id: "x", target: {}, started_at: "t",
     ended_at: null, duration_ms: null, cost: null, error: null, retry_of: null,
     ...p,
+  };
+}
+
+function src(id: string, p: Partial<Source> = {}): Source {
+  return {
+    id, name: id, type: "rss", endpoint: "e", industry: "ai-swe", topic_ids: [],
+    fetch_interval: "6h", backfill: null, enabled: true, ...p,
   };
 }
 
@@ -101,5 +108,89 @@ describe("aggregateDailyCost", () => {
       { days: 1, todayIso: "2026-06-06T00:00:00Z" },
     );
     expect(out[0]).toMatchObject({ costUSD: 0, runCount: 1 });
+  });
+});
+
+describe("aggregateSourceHealth", () => {
+  const ig = (sid: string, status: Run["status"], p: Partial<Run> = {}) =>
+    run({ kind: "ingest", status, target: { source_id: sid }, ...p });
+
+  it("每源成功率 / 最近成功 / 连续失败 / 近期错误", () => {
+    const runs: Run[] = [
+      ig("s1", "failed", { started_at: "2026-06-19T03:00:00Z", ended_at: "2026-06-19T03:00:01Z", error: { type: "FetchError", message: "fetch failed" } }),
+      ig("s1", "failed", { started_at: "2026-06-19T02:00:00Z", ended_at: "2026-06-19T02:00:01Z", error: { type: "FetchError", message: "fetch failed" } }),
+      ig("s1", "done",   { started_at: "2026-06-19T01:00:00Z", ended_at: "2026-06-19T01:00:02Z" }),
+    ];
+    const [h] = aggregateSourceHealth(runs, [src("s1")]);
+    expect(h).toMatchObject({ source_id: "s1", total: 3, ok: 1, failed: 2, consecutiveFails: 2 });
+    expect(h.successRate).toBeCloseTo(1 / 3);
+    expect(h.lastSuccessAt).toBe("2026-06-19T01:00:02Z");
+    expect(h.lastError).toMatchObject({ type: "FetchError", message: "fetch failed" });
+  });
+
+  it("无 ingest run 的源 → total 0 / lastSuccess null（从未采集）", () => {
+    const [h] = aggregateSourceHealth([], [src("s_new")]);
+    expect(h).toMatchObject({ total: 0, ok: 0, failed: 0, successRate: 0, lastSuccessAt: null, consecutiveFails: 0 });
+  });
+
+  it("最近一次成功后无失败 → consecutiveFails 0", () => {
+    const runs = [
+      run({ kind: "ingest", status: "done", target: { source_id: "s1" }, started_at: "2026-06-19T02:00:00Z" }),
+      run({ kind: "ingest", status: "failed", target: { source_id: "s1" }, started_at: "2026-06-19T01:00:00Z" }),
+    ];
+    expect(aggregateSourceHealth(runs, [src("s1")])[0].consecutiveFails).toBe(0); // 最近是 done
+  });
+
+  it("run 引用了已删除的源 → 仍列出为未知源（enabled=false, type=null）", () => {
+    const runs = [run({ kind: "ingest", status: "failed", target: { source_id: "gone" }, started_at: "t" })];
+    const rows = aggregateSourceHealth(runs, []);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ source_id: "gone", name: "gone", type: null, enabled: false });
+  });
+
+  it("排序：连续失败多的在前，再按成功率升序", () => {
+    const runs = [
+      ig("healthy", "done", { started_at: "t1" }),
+      ig("failing", "failed", { started_at: "t3" }), ig("failing", "failed", { started_at: "t2" }), ig("failing", "failed", { started_at: "t1" }),
+    ];
+    const rows = aggregateSourceHealth(runs, [src("healthy"), src("failing")]);
+    expect(rows.map((r) => r.source_id)).toEqual(["failing", "healthy"]); // failing(3连失)在前
+  });
+});
+
+describe("groupRunsIntoRounds", () => {
+  it("按时间间隔聚成轮次：扎堆同轮、超 gap 新轮；计数/失败/成本", () => {
+    const runs: Run[] = [
+      // 第二轮（较新）：03:00 附近扎堆
+      run({ kind: "report-gen", status: "done", started_at: "2026-06-19T03:05:00Z", cost: { tokens: 0, amount: 0 } }),
+      run({ kind: "validate", status: "failed", started_at: "2026-06-19T03:00:00Z", cost: { tokens: 10, amount: 0.2 } }),
+      run({ kind: "analyze", status: "done", started_at: "2026-06-19T02:50:00Z", cost: { tokens: 100, amount: 0.5 } }),
+      // 第一轮（较旧）：前一天，间隔 > 2h
+      run({ kind: "ingest", status: "done", started_at: "2026-06-18T17:00:00Z" }),
+      run({ kind: "ingest", status: "done", started_at: "2026-06-18T17:01:00Z" }),
+    ];
+    const rounds = groupRunsIntoRounds(runs);
+    expect(rounds).toHaveLength(2);
+    // 第一轮 = 较新那簇
+    expect(rounds[0].counts).toMatchObject({ analyze: 1, validate: 1, "report-gen": 1, ingest: 0 });
+    expect(rounds[0].failed).toBe(1);
+    expect(rounds[0].costUSD).toBeCloseTo(0.7);
+    expect(rounds[0].start).toBe("2026-06-19T02:50:00Z"); // 本轮最早
+    expect(rounds[0].end).toBe("2026-06-19T03:05:00Z");   // 本轮最晚
+    // 第二轮 = 前一天两条 ingest
+    expect(rounds[1].counts.ingest).toBe(2);
+    expect(rounds[1].failed).toBe(0);
+  });
+
+  it("自定义 gap：极小 gap → 每条自成一轮", () => {
+    const runs: Run[] = [
+      run({ kind: "analyze", status: "done", started_at: "2026-06-19T03:00:00Z" }),
+      run({ kind: "analyze", status: "done", started_at: "2026-06-19T02:59:00Z" }),
+    ];
+    expect(groupRunsIntoRounds(runs, 1000)).toHaveLength(2); // 60s 间隔 > 1s gap
+  });
+
+  it("空输入 → 空数组", () => {
+    expect(groupRunsIntoRounds([])).toEqual([]);
   });
 });

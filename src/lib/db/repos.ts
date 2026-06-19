@@ -209,13 +209,30 @@ export function getRun(db: DB, id: string): Run | null {
   const r = db.prepare("SELECT * FROM run WHERE id = ?").get(id) as Record<string, unknown> | undefined;
   return r ? rowToRun(r) : null;
 }
-export function listRuns(db: DB, opts: { status?: Run["status"]; limit?: number } = {}): Run[] {
-  const where = opts.status ? "WHERE status = @status" : "";
+export function listRuns(
+  db: DB,
+  opts: { kind?: Run["kind"]; status?: Run["status"]; limit?: number; offset?: number } = {},
+): Run[] {
+  const conds: string[] = [];
+  if (opts.kind) conds.push("kind = @kind");
+  if (opts.status) conds.push("status = @status");
+  const where = conds.length ? `WHERE ${conds.join(" AND ")}` : "";
   const rows = db
-    .prepare(`SELECT * FROM run ${where} ORDER BY started_at DESC LIMIT @limit`)
-    .all({ status: opts.status ?? null, limit: opts.limit ?? 100 }) as Record<string, unknown>[];
+    .prepare(`SELECT * FROM run ${where} ORDER BY started_at DESC LIMIT @limit OFFSET @offset`)
+    .all({ kind: opts.kind ?? null, status: opts.status ?? null, limit: opts.limit ?? 100, offset: opts.offset ?? 0 }) as Record<string, unknown>[];
   return rows.map(rowToRun);
 }
+/** batch_id → topic_id 映射（admin 看板：validate Run 的 target 只有 batch_id，借此解析回主题名）。
+ *  按页内实际 batch_id 精确查（WHERE id IN），不设时间窗——避免翻旧页时窗外 batch 静默解析不到。 */
+export function batchTopicMap(db: DB, batchIds: string[]): Map<string, string> {
+  if (!batchIds.length) return new Map();
+  const ph = batchIds.map(() => "?").join(",");
+  const rows = db
+    .prepare(`SELECT id, topic_id FROM analysis_batch WHERE id IN (${ph})`)
+    .all(...batchIds) as { id: string; topic_id: string }[];
+  return new Map(rows.map((r) => [r.id, r.topic_id]));
+}
+
 /** 某主题某次深挖触发后的管线 Run（进度透明 3.3）：analyze / report-gen 直接带 topic_id；
  *  validate 的 target 只有 batch_id，经 analysis_batch.topic_id 关联回主题。`sinceIso` 锚定
  *  本次触发时刻（用 started_at ≥ since 把历史轮次隔离掉），started_at 升序还原 采集→分析→报告 时序。 */

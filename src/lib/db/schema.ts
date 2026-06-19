@@ -73,6 +73,10 @@ CREATE TABLE IF NOT EXISTS run (
 );
 CREATE INDEX IF NOT EXISTS idx_run_status ON run(status);
 CREATE INDEX IF NOT EXISTS idx_run_kind   ON run(kind);
+-- 看板全部 listRuns 走 ORDER BY started_at DESC（分页/时序/源健康），run 表随每轮 cron 无界增长
+-- → started_at 加索引避免全表排序；复合 (kind,started_at) 同时覆盖按段筛选+排序。
+CREATE INDEX IF NOT EXISTS idx_run_started      ON run(started_at);
+CREATE INDEX IF NOT EXISTS idx_run_kind_started ON run(kind, started_at);
 
 CREATE TABLE IF NOT EXISTS analysis_batch (
   id                   TEXT PRIMARY KEY,

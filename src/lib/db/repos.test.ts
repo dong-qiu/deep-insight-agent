@@ -97,6 +97,19 @@ describe("Run 状态机", () => {
     expect(getRun(db, "run2")?.error?.type).toBe("Timeout");
     expect(listRuns(db, { status: "running" }).map((r) => r.id)).toEqual(["run1"]);
   });
+
+  it("listRuns 按 kind 过滤 + offset 分页（started_at DESC）", () => {
+    // 三条 ingest + 一条 analyze，started_at 递增
+    insertRun(db, { ...run, id: "a", kind: "ingest", started_at: "2026-06-19T01:00:00Z" });
+    insertRun(db, { ...run, id: "b", kind: "ingest", started_at: "2026-06-19T02:00:00Z" });
+    insertRun(db, { ...run, id: "c", kind: "ingest", started_at: "2026-06-19T03:00:00Z" });
+    insertRun(db, { ...run, id: "d", kind: "analyze", started_at: "2026-06-19T04:00:00Z" });
+    expect(listRuns(db, { kind: "ingest" }).map((r) => r.id)).toEqual(["c", "b", "a"]); // 仅 ingest，倒序
+    expect(listRuns(db, { kind: "analyze" }).map((r) => r.id)).toEqual(["d"]);
+    // 分页：每页 2 条
+    expect(listRuns(db, { kind: "ingest", limit: 2, offset: 0 }).map((r) => r.id)).toEqual(["c", "b"]);
+    expect(listRuns(db, { kind: "ingest", limit: 2, offset: 2 }).map((r) => r.id)).toEqual(["a"]);
+  });
 });
 
 describe("sumRunCostSince", () => {
