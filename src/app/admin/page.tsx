@@ -235,7 +235,9 @@ function BudgetCard({ status }: { status: BudgetStatus }) {
 
 const KINDS: Run["kind"][] = ["ingest", "analyze", "validate", "report-gen"];
 const STATUSES: Run["status"][] = ["running", "done", "failed"];
-const PAGE_SIZE = 50;
+const RUN_WINDOW = 2000;     // 单一取数窗口：所有视图从这一批派生（带 started_at 索引，开销可忽略）
+const ROUNDS_PER_PAGE = 7;   // 浏览模式：每页 7 轮（≈一周日度轮次），轮次原子不腰斩
+const FLAT_PAGE = 50;        // 筛选模式：每页 50 条
 
 export default async function AdminPage({ searchParams }: { searchParams: Promise<Record<string, string | undefined>> }) {
   const sp = await searchParams;
@@ -244,36 +246,51 @@ export default async function AdminPage({ searchParams }: { searchParams: Promis
   const page = Math.max(1, Number(sp.page) || 1);
 
   const db = getDb();
-  // 概览聚合用近 50 条（不随筛选变，恒为最近概况）；时序图用近 30 天全量
-  const runs = listRuns(db, { limit: 50 });
-  const runsForTimeseries = listRuns(db, { limit: 2000 });
-  const stats = aggregateByKind(runs);
-  const failed = runs.filter((r) => r.status === "failed").length;
-  const totalCost = runs.reduce((s, r) => s + (r.cost?.amount ?? 0), 0);
-  const daily = aggregateDailyCost(runsForTimeseries, { days: 30 });
+  const nowMs = Date.now();
+  // 单一数据源：一次取近 RUN_WINDOW 条（带 started_at 索引），所有视图从它派生，作用域统一。
+  // 已知边界：超出窗口的更早轮次翻不到（windowFull 时文案标注）；窗口最末那一轮的更早 Run 可能落窗外、
+  // 致末轮计数略偏小——较旧版"每页边界腰斩"已缩到"仅末轮"，影响极小，暂不为此放大取数。
+  const allRuns = listRuns(db, { limit: RUN_WINDOW });
+  const windowFull = allRuns.length >= RUN_WINDOW;
+  const since30 = new Date(nowMs - 30 * 86_400_000).toISOString();
+
+  // 概览（近似 30 天：recentRuns 按滚动 30×24h 切，与日历桶时序图边界差 <1 天，可忽略）
+  const recentRuns = allRuns.filter((r) => r.started_at >= since30);
+  const stats = aggregateByKind(recentRuns);
+  const failed = recentRuns.filter((r) => r.status === "failed").length;
+  const totalCost = recentRuns.reduce((s, r) => s + (r.cost?.amount ?? 0), 0);
+  const daily = aggregateDailyCost(allRuns, { days: 30 });
   const dailyTotal = daily.reduce((s, d) => s + d.costUSD, 0);
   const dailyMax = Math.max(...daily.map((d) => d.costUSD), 0.001); // 防 0 除
   const budget = getBudgetStatus(db);
-  // 数据源健康：近 500 条 ingest Run 叠加 source 清单（独立查询，避免被 50 条详情截断）
-  const sources = listSources(db); // 复用给源健康 + target 解析，避免查两次
-  const sourceHealth = aggregateSourceHealth(listRuns(db, { kind: "ingest", limit: 500 }), sources);
+  // 源健康：从同一 allRuns 取 ingest 子集（不再单独查）
+  const sources = listSources(db);
+  const sourceHealth = aggregateSourceHealth(allRuns.filter((r) => r.kind === "ingest"), sources);
   // 报告生命周期：全状态计数 + 近 15 份（含 draft/generating/failed 瞬态）
   const reportCounts = reportStatusCounts(db);
   const recentReports = listRecentReports(db, 15);
-  // 运行记录（可筛选 + 分页）：多取 1 条判有无下一页
-  const pageRuns = listRuns(db, { kind: kindF, status: statusF, limit: PAGE_SIZE + 1, offset: (page - 1) * PAGE_SIZE });
-  const hasNext = pageRuns.length > PAGE_SIZE;
-  const shownRuns = pageRuns.slice(0, PAGE_SIZE);
-  // 运行记录可理解性：解析 target 内部 ID → 主题/源名；按管线轮次分组（无筛选时）
-  const batchIds = [...new Set(shownRuns.map((r) => r.target.batch_id).filter((b): b is string => !!b))];
+
+  // 运行记录：浏览模式=按轮次翻页（轮次原子、不腰斩）；筛选模式=平铺按条翻页（查找）。
+  const filterActive = !!(kindF || statusF);
+  const matched = filterActive
+    ? allRuns.filter((r) => (!kindF || r.kind === kindF) && (!statusF || r.status === statusF))
+    : allRuns;
+  const allRounds = filterActive ? [] : groupRunsIntoRounds(allRuns);
+  const flatRuns = filterActive ? matched.slice((page - 1) * FLAT_PAGE, page * FLAT_PAGE) : [];
+  const pageRounds = filterActive ? [] : allRounds.slice((page - 1) * ROUNDS_PER_PAGE, page * ROUNDS_PER_PAGE);
+  const hasNext = filterActive ? matched.length > page * FLAT_PAGE : allRounds.length > page * ROUNDS_PER_PAGE;
+  const totalUnits = filterActive ? matched.length : allRounds.length; // 总条数 / 总轮数
+  const totalPages = Math.max(1, Math.ceil(totalUnits / (filterActive ? FLAT_PAGE : ROUNDS_PER_PAGE)));
+  const isEmpty = (filterActive ? flatRuns : pageRounds).length === 0;
+
+  // target 解析：只对实际渲染的 run；batch_id 精确查
+  const renderedRuns = filterActive ? flatRuns : pageRounds.flatMap((r) => r.runs);
+  const batchIds = [...new Set(renderedRuns.map((r) => r.target.batch_id).filter((b): b is string => !!b))];
   const lk: RunLookups = {
     topics: new Map(listTopics(db).map((t) => [t.id, t.name])),
     sources: new Map(sources.map((s) => [s.id, s.name])),
     batchTopic: batchTopicMap(db, batchIds),
   };
-  const filterActive = !!(kindF || statusF);
-  const rounds = groupRunsIntoRounds(shownRuns);
-  const nowMs = Date.now();
   // 分页链接保留当前筛选
   const pageHref = (p: number): string => {
     const q = new URLSearchParams();
@@ -288,7 +305,7 @@ export default async function AdminPage({ searchParams }: { searchParams: Promis
     <section>
       <h2>管理看板</h2>
       <p className="muted">
-        最近 {runs.length} 条运行 · 失败 {failed} · 估算成本 ${totalCost.toFixed(4)}
+        近 30 天 · {recentRuns.length} 次运行 · 失败 {failed} · 估算成本 ${totalCost.toFixed(4)}
       </p>
 
       <BudgetCard status={budget} />
@@ -297,7 +314,7 @@ export default async function AdminPage({ searchParams }: { searchParams: Promis
 
       {stats.length === 0 ? null : (
         <article className="card">
-          <p className="muted dash-card-title">按管线段分</p>
+          <p className="muted dash-card-title">按管线段分（近 30 天）</p>
           <table className="stats">
             <thead>
               <tr>
@@ -380,17 +397,19 @@ export default async function AdminPage({ searchParams }: { searchParams: Promis
         </select>
         <button type="submit">筛选</button>
         {kindF || statusF ? <a href="/admin" className="muted dash-filter-clear">清除</a> : null}
-        <span className="muted dash-filter-page">第 {page} 页</span>
+        <span className="muted dash-filter-page">
+          {filterActive ? `命中 ${matched.length} 条` : `共 ${totalUnits} 轮`}{windowFull ? "（仅近期窗口）" : ""} · 第 {page}/{totalPages} 页
+        </span>
       </form>
 
-      {shownRuns.length === 0 ? (
+      {isEmpty ? (
         <p className="muted">{filterActive || page > 1 ? "当前筛选/页无运行记录。" : "暂无运行记录。采集/分析/校验/报告执行后会出现在这里。"}</p>
       ) : filterActive ? (
         // 筛选模式 = 查找：平铺命中的 Run
-        shownRuns.map((r) => <RunCard key={r.id} r={r} nowMs={nowMs} lk={lk} />)
+        flatRuns.map((r) => <RunCard key={r.id} r={r} nowMs={nowMs} lk={lk} />)
       ) : (
-        // 浏览模式：按管线轮次分组，一眼看出"这轮干了啥/哪步断了"
-        rounds.map((round) => (
+        // 浏览模式：按管线轮次分组（轮次原子、按轮翻页），一眼看出"这轮干了啥/哪步断了"
+        pageRounds.map((round) => (
           <article className="card dash-round" key={round.start}>
             <details open={round.failed > 0}>
               <summary>
@@ -412,7 +431,7 @@ export default async function AdminPage({ searchParams }: { searchParams: Promis
       {page > 1 || hasNext ? (
         <nav className="dash-pager" aria-label="运行记录分页">
           {page > 1 ? <a href={pageHref(page - 1)}>← 上一页</a> : <span className="muted">← 上一页</span>}
-          <span className="muted">第 {page} 页</span>
+          <span className="muted">第 {page}/{totalPages} 页{filterActive ? "（按条）" : "（按轮次）"}</span>
           {hasNext ? <a href={pageHref(page + 1)}>下一页 →</a> : <span className="muted">下一页 →</span>}
         </nav>
       ) : null}
