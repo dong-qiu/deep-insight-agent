@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AnalysisBatch, ContentItem, Topic, ValidationResult } from "../types.js";
-import { buildReport, isMilestoneInsight, selectInsights } from "./report-gen.js";
+import { buildReport, inlineCitedStatement, isMilestoneInsight, selectInsights } from "./report-gen.js";
 import { flagLabel } from "../utils/citation-verdict.js";
 
 const topic: Topic = {
@@ -53,6 +53,43 @@ const validation: ValidationResult = {
   ],
   report: { total: 4, pass: 1, blocked: 2, flagged: 1, errored: 0, consistency_failure_rate: 0.25, flagged_rate: 0.25, insights_total: 3, insights_includable: 2, releasable: true },
 };
+
+describe("inlineCitedStatement（方案 A · 行内引用锚定）", () => {
+  it("[n] 放到其 quote 覆盖的数字/实体声明之后（逐个贴合）", () => {
+    const s = inlineCitedStatement(
+      "OpenAI 发布 Codex，得分 1507，提升 23%。",
+      [
+        { num: 1, quote: "OpenAI today released Codex" },
+        { num: 2, quote: "scored 1507 on the benchmark" },
+        { num: 3, quote: "a 23% improvement over last gen" },
+      ],
+      ["OpenAI", "Codex"],
+    );
+    expect(s).toBe("OpenAI 发布 Codex[1]，得分 1507[2]，提升 23%[3]。");
+  });
+
+  it("匹配不到 token 的引用回退句末（纯文字声明 / 中英对不上）", () => {
+    expect(inlineCitedStatement("行业出现新动向。", [{ num: 1, quote: "some english quote" }], [])).toBe(
+      "行业出现新动向。 [1]",
+    );
+  });
+
+  it("部分锚定、部分回退：可锚的就近、其余落句末", () => {
+    const s = inlineCitedStatement(
+      "得分 1507，整体向好。",
+      [
+        { num: 1, quote: "scored 1507" },
+        { num: 2, quote: "overall positive trend" },
+      ],
+      [],
+    );
+    expect(s).toBe("得分 1507[1]，整体向好。 [2]");
+  });
+
+  it("无引用时原样返回", () => {
+    expect(inlineCitedStatement("无引用结论。", [], [])).toBe("无引用结论。");
+  });
+});
 
 describe("isMilestoneInsight（ADR-0006 里程碑判定真值表）", () => {
   const base = batchOf().insights[0]; // i1: aggregation；is_followup 未设
@@ -226,13 +263,14 @@ describe("buildReport 派生", () => {
     expect(r.body_html).not.toContain('<span class="coverage-gap">'); // CSS 类定义恒在 <style>，断言 badge 元素本身
   });
 
-  it("HTML 引用接 lookup：quote 可点跳源 + 人可读源名 + 日期，不再裸露 ci_xxx", () => {
-    // ci1 有 url + published_at → <a href> 包 quote、源名 Source A、日期 2026-05-07
-    expect(report.body_html).toContain('<a href="https://a.example/q1" target="_blank" rel="noopener noreferrer"><q>「q1」</q></a>');
-    expect(report.body_html).toContain('<span class="src">Source A</span>');
-    expect(report.body_html).toContain("· 2026-05-07");
-    // ci3 有 url 但 published_at=null → 仍包 <a>、但无日期段，显示源名 Source B
-    expect(report.body_html).toContain('<a href="https://b.example/q3" target="_blank" rel="noopener noreferrer"><q>「q3」</q></a> — <span class="src">Source B</span>');
+  it("HTML 引用按文档分组：源名一次（可点跳源）+ 日期，quote 挂其下，不再裸露 ci_xxx", () => {
+    // 分组后：源名 Source A 包在 <a href>（链接移到源名、每篇一次）、日期 2026-05-07，quote 另起一项
+    expect(report.body_html).toContain('<a href="https://a.example/q1" target="_blank" rel="noopener noreferrer"><span class="src">Source A</span></a> · 2026-05-07');
+    expect(report.body_html).toContain('<li class="cite-quote"><q>「q1」</q></li>');
+    // ci3 有 url 但 published_at=null → 仍包 <a>、无日期段，源名 Source B；quote 挂其下
+    expect(report.body_html).toContain('<a href="https://b.example/q3" target="_blank" rel="noopener noreferrer"><span class="src">Source B</span></a></li><li class="cite-quote"><q>「q3」</q></li>');
+    // 诚实信号：引用 N 句/K 篇（同篇多句不再被误读成多源）
+    expect(report.body_html).toContain("· 引用 1 句/1 篇");
     // 旧的裸 content_item_id 形式已消失
     expect(report.body_html).not.toContain("<code>ci");
   });
@@ -271,10 +309,13 @@ describe("buildReport 派生", () => {
     // i1 留 1 引用 → [1]；i2 留 1 引用 → [2]（跨洞察累计）
     expect(report.body_md).toMatch(/## 1\. S1 \[1\]/);
     expect(report.body_md).toMatch(/## 2\. S2 \[2\]/);
-    // 列表项前缀：每条 quote 行以 [N] 开头；含 url 时 quote 被包成 markdown 链接、
-    // 源名跟在 — 后；published_at 是 ISO 时输出 YYYY-MM-DD 日期，null 时无日期段
-    expect(report.body_md).toMatch(/- \[1\] \[「q1」]\(https:\/\/a\.example\/q1\) — Source A · 2026-05-07/);
-    expect(report.body_md).toMatch(/- \[2\] \[「q3」]\(https:\/\/b\.example\/q3\) — Source B$/m);
+    // 分组渲染：先"引用 N 句 · 来自 K 篇"信号；每篇一行表头（源名链接 + 日期）；
+    // 其下每条 quote 行以全局 [N] 开头（[N] 锚点与缩进无关，markdown.tsx 仍建锚）
+    expect(report.body_md).toMatch(/- 引用：1 句 · 来自 1 篇/);
+    expect(report.body_md).toMatch(/- \[Source A\]\(https:\/\/a\.example\/q1\) · 2026-05-07/);
+    expect(report.body_md).toMatch(/- \[1\] 「q1」/);
+    expect(report.body_md).toMatch(/- \[Source B\]\(https:\/\/b\.example\/q3\)/);
+    expect(report.body_md).toMatch(/- \[2\] 「q3」/);
   });
 
   it("P1 不复报：is_followup=true 的洞察 statement 后渲染 〔更新〕（md）+ <span class=\"followup\">（html）", () => {
