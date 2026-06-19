@@ -1,3 +1,4 @@
+import Link from "next/link";
 import type { Run } from "../../lib/types.js";
 import { getDb } from "../../lib/db/index.js";
 import { batchTopicMap, listRuns, listSources, listTopics } from "../../lib/db/repos.js";
@@ -74,13 +75,14 @@ function SourceHealthCard({ health }: { health: SourceHealth[] }) {
         <span>数据源健康 · {health.length} 源</span>
         {problems > 0 ? <span className="dash-badge alert">⚠️ {problems} 需关注</span> : <span className="dash-badge ok">全部正常</span>}
       </p>
-      <table className="stats">
+      <table className="stats dash-health">
         <thead>
           <tr><th>源</th><th>状态</th><th>成功率</th><th>最近成功</th><th>近期错误</th></tr>
         </thead>
         <tbody>
           {health.map((h) => {
             const v = sourceVerdict(h);
+            const errText = h.lastError ? `${h.lastError.type}: ${h.lastError.message}` : "";
             return (
               <tr key={h.source_id}>
                 <td>
@@ -90,7 +92,7 @@ function SourceHealthCard({ health }: { health: SourceHealth[] }) {
                 <td><span className={`dash-badge ${v.cls}`}>{v.label}</span></td>
                 <td>{h.total > 0 ? `${Math.round(h.successRate * 100)}% (${h.ok}/${h.total})` : "—"}</td>
                 <td className="muted">{h.lastSuccessAt ? h.lastSuccessAt.slice(0, 10) : "从未"}</td>
-                <td className="muted">{h.lastError ? `${h.lastError.type}: ${h.lastError.message.slice(0, 40)}` : "—"}</td>
+                <td className="muted dash-health-err" title={errText}>{errText || "—"}</td>
               </tr>
             );
           })}
@@ -411,7 +413,7 @@ export default async function AdminPage({ searchParams }: { searchParams: Promis
         // 浏览模式：按管线轮次分组（轮次原子、按轮翻页），一眼看出"这轮干了啥/哪步断了"
         pageRounds.map((round) => (
           <article className="card dash-round" key={round.start}>
-            <details open={round.failed > 0}>
+            <details>
               <summary>
                 <strong>📅 {fmtTime(round.start, nowMs)}{round.end !== round.start ? ` → ${fmtHm(round.end)}` : ""}</strong>
                 <span className="muted">
@@ -430,9 +432,9 @@ export default async function AdminPage({ searchParams }: { searchParams: Promis
 
       {page > 1 || hasNext ? (
         <nav className="dash-pager" aria-label="运行记录分页">
-          {page > 1 ? <a href={pageHref(page - 1)}>← 上一页</a> : <span className="muted">← 上一页</span>}
+          {page > 1 ? <Link href={pageHref(page - 1)} scroll={false}>← 上一页</Link> : <span className="muted">← 上一页</span>}
           <span className="muted">第 {page}/{totalPages} 页{filterActive ? "（按条）" : "（按轮次）"}</span>
-          {hasNext ? <a href={pageHref(page + 1)}>下一页 →</a> : <span className="muted">下一页 →</span>}
+          {hasNext ? <Link href={pageHref(page + 1)} scroll={false}>下一页 →</Link> : <span className="muted">下一页 →</span>}
         </nav>
       ) : null}
     </section>
