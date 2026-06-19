@@ -1,3 +1,4 @@
+import type { Run } from "../../lib/types.js";
 import { getDb } from "../../lib/db/index.js";
 import { listRuns, listSources } from "../../lib/db/repos.js";
 import { getBudgetStatus, type BudgetStatus } from "../../lib/runtime/cost-guard.js";
@@ -117,9 +118,18 @@ function BudgetCard({ status }: { status: BudgetStatus }) {
   );
 }
 
-export default function AdminPage() {
+const KINDS: Run["kind"][] = ["ingest", "analyze", "validate", "report-gen"];
+const STATUSES: Run["status"][] = ["running", "done", "failed"];
+const PAGE_SIZE = 50;
+
+export default async function AdminPage({ searchParams }: { searchParams: Promise<Record<string, string | undefined>> }) {
+  const sp = await searchParams;
+  const kindF = KINDS.includes(sp.kind as Run["kind"]) ? (sp.kind as Run["kind"]) : undefined;
+  const statusF = STATUSES.includes(sp.status as Run["status"]) ? (sp.status as Run["status"]) : undefined;
+  const page = Math.max(1, Number(sp.page) || 1);
+
   const db = getDb();
-  // 看板用近 50 条详情；时序图用近 30 天全量（独立查询，避免 50 条把时序图截掉）
+  // 概览聚合用近 50 条（不随筛选变，恒为最近概况）；时序图用近 30 天全量
   const runs = listRuns(db, { limit: 50 });
   const runsForTimeseries = listRuns(db, { limit: 2000 });
   const stats = aggregateByKind(runs);
@@ -131,6 +141,19 @@ export default function AdminPage() {
   const budget = getBudgetStatus(db);
   // 数据源健康：近 500 条 ingest Run 叠加 source 清单（独立查询，避免被 50 条详情截断）
   const sourceHealth = aggregateSourceHealth(listRuns(db, { kind: "ingest", limit: 500 }), listSources(db));
+  // 运行记录（可筛选 + 分页）：多取 1 条判有无下一页
+  const pageRuns = listRuns(db, { kind: kindF, status: statusF, limit: PAGE_SIZE + 1, offset: (page - 1) * PAGE_SIZE });
+  const hasNext = pageRuns.length > PAGE_SIZE;
+  const shownRuns = pageRuns.slice(0, PAGE_SIZE);
+  // 分页链接保留当前筛选
+  const pageHref = (p: number): string => {
+    const q = new URLSearchParams();
+    if (kindF) q.set("kind", kindF);
+    if (statusF) q.set("status", statusF);
+    if (p > 1) q.set("page", String(p));
+    const s = q.toString();
+    return s ? `/admin?${s}` : "/admin";
+  };
 
   return (
     <section>
@@ -214,10 +237,25 @@ export default function AdminPage() {
         )}
       </article>
 
-      {runs.length === 0 ? (
-        <p className="muted">暂无运行记录。采集/分析/校验/报告执行后会出现在这里。</p>
+      <h3 className="dash-runs-title">运行记录</h3>
+      <form className="dash-filter" method="get">
+        <select name="kind" defaultValue={kindF ?? ""} aria-label="按管线段筛选">
+          <option value="">全部段</option>
+          {KINDS.map((k) => <option key={k} value={k}>{k}</option>)}
+        </select>
+        <select name="status" defaultValue={statusF ?? ""} aria-label="按状态筛选">
+          <option value="">全部状态</option>
+          {STATUSES.map((s) => <option key={s} value={s}>{STATUS_LABEL[s]}</option>)}
+        </select>
+        <button type="submit">筛选</button>
+        {kindF || statusF ? <a href="/admin" className="muted dash-filter-clear">清除</a> : null}
+        <span className="muted dash-filter-page">第 {page} 页</span>
+      </form>
+
+      {shownRuns.length === 0 ? (
+        <p className="muted">{kindF || statusF || page > 1 ? "当前筛选/页无运行记录。" : "暂无运行记录。采集/分析/校验/报告执行后会出现在这里。"}</p>
       ) : (
-        runs.map((r) => (
+        shownRuns.map((r) => (
           <article className="card" key={r.id}>
             <strong>{r.kind}</strong> · {STATUS_LABEL[r.status] ?? r.status}
             {r.duration_ms != null ? ` · ${fmtDuration(r.duration_ms)}` : ""}
@@ -254,6 +292,14 @@ export default function AdminPage() {
           </article>
         ))
       )}
+
+      {page > 1 || hasNext ? (
+        <nav className="dash-pager" aria-label="运行记录分页">
+          {page > 1 ? <a href={pageHref(page - 1)}>← 上一页</a> : <span className="muted">← 上一页</span>}
+          <span className="muted">第 {page} 页</span>
+          {hasNext ? <a href={pageHref(page + 1)}>下一页 →</a> : <span className="muted">下一页 →</span>}
+        </nav>
+      ) : null}
     </section>
   );
 }
