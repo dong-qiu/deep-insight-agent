@@ -316,6 +316,10 @@ nav a { margin-right: 1rem; }
 .dash-filter-clear { font-size: .85rem; }
 .dash-filter-page { margin-left: auto; font-size: .85rem; }
 .dash-pager { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin: 1rem 0; font-size: .9rem; }
+.dash-round > summary { cursor: pointer; font-weight: 400; }
+.dash-round > summary strong { font-weight: 600; }
+.dash-round-runs { margin-top: .5rem; padding-left: .5rem; border-left: 2px solid #e5e7eb; }
+.dash-round-runs .card { margin: .5rem 0; }
 .dash-run-meta { margin-top: .15rem; }
 .dash-detail { margin-top: .5rem; }
 .dash-detail p { margin-bottom: .25rem; }
@@ -331,6 +335,7 @@ nav a { margin-right: 1rem; }
   .stats th, .stats td { border-bottom-color: #1f2937; }
   .dash-bar { background: #374151; }
   .dash-filter select { border-color: #374151; }
+  .dash-round-runs { border-left-color: #1f2937; }
 }
 
 /* 报告页内追问（A4） */

@@ -222,6 +222,14 @@ export function listRuns(
     .all({ kind: opts.kind ?? null, status: opts.status ?? null, limit: opts.limit ?? 100, offset: opts.offset ?? 0 }) as Record<string, unknown>[];
   return rows.map(rowToRun);
 }
+/** batch_id → topic_id 映射（admin 看板：validate Run 的 target 只有 batch_id，借此解析回主题名）。 */
+export function batchTopicMap(db: DB, limit = 500): Map<string, string> {
+  const rows = db
+    .prepare("SELECT id, topic_id FROM analysis_batch ORDER BY rowid DESC LIMIT ?")
+    .all(limit) as { id: string; topic_id: string }[];
+  return new Map(rows.map((r) => [r.id, r.topic_id]));
+}
+
 /** 某主题某次深挖触发后的管线 Run（进度透明 3.3）：analyze / report-gen 直接带 topic_id；
  *  validate 的 target 只有 batch_id，经 analysis_batch.topic_id 关联回主题。`sinceIso` 锚定
  *  本次触发时刻（用 started_at ≥ since 把历史轮次隔离掉），started_at 升序还原 采集→分析→报告 时序。 */

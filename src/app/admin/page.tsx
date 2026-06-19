@@ -1,9 +1,9 @@
 import type { Run } from "../../lib/types.js";
 import { getDb } from "../../lib/db/index.js";
-import { listRuns, listSources } from "../../lib/db/repos.js";
+import { batchTopicMap, listRuns, listSources, listTopics } from "../../lib/db/repos.js";
 import { listRecentReports, reportStatusCounts, type RecentReport } from "../../lib/db/reports.js";
 import { getBudgetStatus, type BudgetStatus } from "../../lib/runtime/cost-guard.js";
-import { aggregateByKind, aggregateDailyCost, aggregateSourceHealth, type SourceHealth } from "../../lib/runtime/run-stats.js";
+import { aggregateByKind, aggregateDailyCost, aggregateSourceHealth, groupRunsIntoRounds, type SourceHealth } from "../../lib/runtime/run-stats.js";
 import { RetryButton } from "./_components/retry-button.js";
 
 export const dynamic = "force-dynamic";
@@ -113,6 +113,69 @@ function fmtTarget(target: Record<string, unknown>): string {
   return parts.length ? parts.join(" · ") : "（无 target）";
 }
 
+// 管线段中文化 + 图标（运行记录可理解性）
+const KIND_LABEL: Record<Run["kind"], string> = {
+  ingest: "📥 采集", analyze: "🔍 分析", validate: "✅ 校验", "report-gen": "📝 报告生成",
+};
+
+/** 时间本地化（钉北京时区，生产 EC2 跑 UTC，避免读出 UTC 误导）+ 相对时间。 */
+function fmtTime(iso: string, nowMs: number): string {
+  const t = Date.parse(iso);
+  const local = new Date(t).toLocaleString("zh-CN", {
+    timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false,
+  });
+  const d = nowMs - t;
+  const rel = d < 0 ? "" : d < 60_000 ? "刚刚" : d < 3_600_000 ? `${Math.floor(d / 60_000)}分钟前`
+    : d < 86_400_000 ? `${Math.floor(d / 3_600_000)}小时前` : `${Math.floor(d / 86_400_000)}天前`;
+  return rel ? `${local} · ${rel}` : local;
+}
+
+interface RunLookups { topics: Map<string, string>; sources: Map<string, string>; batchTopic: Map<string, string> }
+
+/** 把 target 的内部 ID 解析成人话：topic_id / 经 batch_id → 主题名；source_id → 源名。内部 id 不外露。 */
+function resolveTarget(target: Run["target"], lk: RunLookups): string {
+  const parts: string[] = [];
+  const topicId = target.topic_id ?? (target.batch_id ? lk.batchTopic.get(target.batch_id) : undefined);
+  if (topicId) parts.push(`主题：${lk.topics.get(topicId) ?? topicId}`);
+  if (target.source_id) parts.push(`源：${lk.sources.get(target.source_id) ?? target.source_id}`);
+  return parts.join(" · ");
+}
+
+function RunCard({ r, nowMs, lk }: { r: Run; nowMs: number; lk: RunLookups }) {
+  const ctx = resolveTarget(r.target, lk);
+  return (
+    <article className="card">
+      <strong>{KIND_LABEL[r.kind] ?? r.kind}</strong> · {STATUS_LABEL[r.status] ?? r.status}
+      {r.duration_ms != null ? ` · ${fmtDuration(r.duration_ms)}` : ""}
+      {r.cost ? ` · $${r.cost.amount.toFixed(4)}` : ""}
+      <div className="muted dash-run-meta">
+        {ctx ? `${ctx} · ` : ""}{fmtTime(r.started_at, nowMs)}
+        {r.retry_of ? " · 重试" : ""}
+      </div>
+      {r.error ? (
+        <div className="muted">
+          ❌ <strong>{r.error.type}</strong>: {r.error.message}
+          {r.status === "failed" ? <RetryButton runId={r.id} kind={r.kind} /> : null}
+        </div>
+      ) : null}
+      <details className="audit dash-detail">
+        <summary>详情</summary>
+        <p className="muted">运行 ID：<code>{r.id}</code>{r.retry_of ? <> · 重试自 <code>{r.retry_of}</code></> : null}</p>
+        <p className="muted">
+          {r.cost ? `成本 $${r.cost.amount.toFixed(6)} · ${r.cost.tokens.toLocaleString()} tokens` : "成本 —（确定性环节或未调 LLM）"}
+        </p>
+        <p className="muted">target（原始）：<code>{fmtTarget(r.target)}</code></p>
+        {r.error?.stack ? (
+          <details>
+            <summary className="muted">完整错误堆栈</summary>
+            <pre className="audit-row dash-stack">{r.error.stack}</pre>
+          </details>
+        ) : null}
+      </details>
+    </article>
+  );
+}
+
 // 颜色由 CSS .dash-badge.{verdict} 决定；这里只给文案。
 const VERDICT_LABEL: Record<BudgetStatus["verdict"], string> = {
   ok: "正常",
@@ -195,6 +258,15 @@ export default async function AdminPage({ searchParams }: { searchParams: Promis
   const pageRuns = listRuns(db, { kind: kindF, status: statusF, limit: PAGE_SIZE + 1, offset: (page - 1) * PAGE_SIZE });
   const hasNext = pageRuns.length > PAGE_SIZE;
   const shownRuns = pageRuns.slice(0, PAGE_SIZE);
+  // 运行记录可理解性：解析 target 内部 ID → 主题/源名；按管线轮次分组（无筛选时）
+  const lk: RunLookups = {
+    topics: new Map(listTopics(db).map((t) => [t.id, t.name])),
+    sources: new Map(listSources(db).map((s) => [s.id, s.name])),
+    batchTopic: batchTopicMap(db),
+  };
+  const filterActive = !!(kindF || statusF);
+  const rounds = groupRunsIntoRounds(shownRuns);
+  const nowMs = Date.now();
   // 分页链接保留当前筛选
   const pageHref = (p: number): string => {
     const q = new URLSearchParams();
@@ -305,41 +377,26 @@ export default async function AdminPage({ searchParams }: { searchParams: Promis
       </form>
 
       {shownRuns.length === 0 ? (
-        <p className="muted">{kindF || statusF || page > 1 ? "当前筛选/页无运行记录。" : "暂无运行记录。采集/分析/校验/报告执行后会出现在这里。"}</p>
+        <p className="muted">{filterActive || page > 1 ? "当前筛选/页无运行记录。" : "暂无运行记录。采集/分析/校验/报告执行后会出现在这里。"}</p>
+      ) : filterActive ? (
+        // 筛选模式 = 查找：平铺命中的 Run
+        shownRuns.map((r) => <RunCard key={r.id} r={r} nowMs={nowMs} lk={lk} />)
       ) : (
-        shownRuns.map((r) => (
-          <article className="card" key={r.id}>
-            <strong>{r.kind}</strong> · {STATUS_LABEL[r.status] ?? r.status}
-            {r.duration_ms != null ? ` · ${fmtDuration(r.duration_ms)}` : ""}
-            {r.cost ? ` · $${r.cost.amount.toFixed(4)} / ${r.cost.tokens} tok` : ""}
-            <div className="muted dash-run-meta">
-              {r.id} · {r.started_at}
-              {r.retry_of ? ` · 重试自 ${r.retry_of}` : ""}
-            </div>
-            {r.error ? (
-              <div className="muted">
-                ❌ <strong>{r.error.type}</strong>: {r.error.message}
-                {r.status === "failed" ? <RetryButton runId={r.id} kind={r.kind} /> : null}
+        // 浏览模式：按管线轮次分组，一眼看出"这轮干了啥/哪步断了"
+        rounds.map((round) => (
+          <article className="card dash-round" key={round.start}>
+            <details open={round.failed > 0}>
+              <summary>
+                <strong>📅 {fmtTime(round.start, nowMs)}</strong>
+                <span className="muted">
+                  {" "}· 采集{round.counts.ingest} 分析{round.counts.analyze} 校验{round.counts.validate} 生成{round.counts["report-gen"]}
+                  {" · "}{round.failed > 0 ? <span className="dash-badge exceeded">⚠️ {round.failed} 失败</span> : <span className="dash-badge ok">全部完成</span>}
+                  {round.costUSD > 0 ? ` · $${round.costUSD.toFixed(2)}` : ""}
+                </span>
+              </summary>
+              <div className="dash-round-runs">
+                {round.runs.map((r) => <RunCard key={r.id} r={r} nowMs={nowMs} lk={lk} />)}
               </div>
-            ) : null}
-            <details className="audit dash-detail">
-              <summary>详情</summary>
-              <p className="muted">
-                target：<code>{fmtTarget(r.target)}</code>
-              </p>
-              {r.cost ? (
-                <p className="muted">
-                  成本：${r.cost.amount.toFixed(6)} · {r.cost.tokens.toLocaleString()} tok
-                </p>
-              ) : (
-                <p className="muted">成本：—（确定性环节或未调 LLM）</p>
-              )}
-              {r.error?.stack ? (
-                <details>
-                  <summary className="muted">完整错误堆栈</summary>
-                  <pre className="audit-row dash-stack">{r.error.stack}</pre>
-                </details>
-              ) : null}
             </details>
           </article>
         ))

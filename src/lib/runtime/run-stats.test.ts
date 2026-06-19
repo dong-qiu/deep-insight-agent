@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Run, Source } from "../types.js";
-import { aggregateByKind, aggregateDailyCost, aggregateSourceHealth } from "./run-stats.js";
+import { aggregateByKind, aggregateDailyCost, aggregateSourceHealth, groupRunsIntoRounds } from "./run-stats.js";
 
 function run(p: Partial<Run> & Pick<Run, "kind" | "status">): Run {
   return {
@@ -155,5 +155,42 @@ describe("aggregateSourceHealth", () => {
     ];
     const rows = aggregateSourceHealth(runs, [src("healthy"), src("failing")]);
     expect(rows.map((r) => r.source_id)).toEqual(["failing", "healthy"]); // failing(3连失)在前
+  });
+});
+
+describe("groupRunsIntoRounds", () => {
+  it("按时间间隔聚成轮次：扎堆同轮、超 gap 新轮；计数/失败/成本", () => {
+    const runs: Run[] = [
+      // 第二轮（较新）：03:00 附近扎堆
+      run({ kind: "report-gen", status: "done", started_at: "2026-06-19T03:05:00Z", cost: { tokens: 0, amount: 0 } }),
+      run({ kind: "validate", status: "failed", started_at: "2026-06-19T03:00:00Z", cost: { tokens: 10, amount: 0.2 } }),
+      run({ kind: "analyze", status: "done", started_at: "2026-06-19T02:50:00Z", cost: { tokens: 100, amount: 0.5 } }),
+      // 第一轮（较旧）：前一天，间隔 > 2h
+      run({ kind: "ingest", status: "done", started_at: "2026-06-18T17:00:00Z" }),
+      run({ kind: "ingest", status: "done", started_at: "2026-06-18T17:01:00Z" }),
+    ];
+    const rounds = groupRunsIntoRounds(runs);
+    expect(rounds).toHaveLength(2);
+    // 第一轮 = 较新那簇
+    expect(rounds[0].counts).toMatchObject({ analyze: 1, validate: 1, "report-gen": 1, ingest: 0 });
+    expect(rounds[0].failed).toBe(1);
+    expect(rounds[0].costUSD).toBeCloseTo(0.7);
+    expect(rounds[0].start).toBe("2026-06-19T02:50:00Z"); // 本轮最早
+    expect(rounds[0].end).toBe("2026-06-19T03:05:00Z");   // 本轮最晚
+    // 第二轮 = 前一天两条 ingest
+    expect(rounds[1].counts.ingest).toBe(2);
+    expect(rounds[1].failed).toBe(0);
+  });
+
+  it("自定义 gap：极小 gap → 每条自成一轮", () => {
+    const runs: Run[] = [
+      run({ kind: "analyze", status: "done", started_at: "2026-06-19T03:00:00Z" }),
+      run({ kind: "analyze", status: "done", started_at: "2026-06-19T02:59:00Z" }),
+    ];
+    expect(groupRunsIntoRounds(runs, 1000)).toHaveLength(2); // 60s 间隔 > 1s gap
+  });
+
+  it("空输入 → 空数组", () => {
+    expect(groupRunsIntoRounds([])).toEqual([]);
   });
 });

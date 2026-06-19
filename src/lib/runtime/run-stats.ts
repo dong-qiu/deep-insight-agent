@@ -74,6 +74,42 @@ export function aggregateDailyCost(
   return dates.map((d) => byDate.get(d)!);
 }
 
+/** 管线轮次分组（admin 看板可理解性）：把一串 Run 按 started_at 的时间间隔聚成"轮次"——
+ *  一次 cron 触发的 采集→分析→校验→生成 各 Run 在分钟级窗口内扎堆，轮次间隔小时/天级。
+ *  纯函数、可测。gapMs（默认 2h）= 超过该间隔即视为新一轮（日度 cron 轮清晰分开，手动深挖自成一轮）。 */
+export interface RunRound {
+  start: string; // 本轮最早 started_at
+  end: string;   // 本轮最晚
+  runs: Run[];   // 倒序（最新在前）
+  counts: Record<Run["kind"], number>;
+  failed: number;
+  costUSD: number;
+}
+
+export function groupRunsIntoRounds(runs: Run[], gapMs = 2 * 3_600_000): RunRound[] {
+  const sorted = [...runs].sort((a, b) => (a.started_at < b.started_at ? 1 : -1)); // desc
+  const rounds: RunRound[] = [];
+  for (const r of sorted) {
+    const last = rounds[rounds.length - 1];
+    // desc 遍历：r 比 last 更早，间隔 = last.start - r.started_at
+    if (last && Date.parse(last.start) - Date.parse(r.started_at) <= gapMs) {
+      last.runs.push(r);
+      last.start = r.started_at; // r 更早 → 更新本轮最早
+      last.counts[r.kind] += 1;
+      last.failed += r.status === "failed" ? 1 : 0;
+      last.costUSD += r.cost?.amount ?? 0;
+    } else {
+      rounds.push({
+        start: r.started_at, end: r.started_at, runs: [r],
+        counts: { ingest: 0, analyze: 0, validate: 0, "report-gen": 0, [r.kind]: 1 } as Record<Run["kind"], number>,
+        failed: r.status === "failed" ? 1 : 0,
+        costUSD: r.cost?.amount ?? 0,
+      });
+    }
+  }
+  return rounds;
+}
+
 /** 数据源健康（admin 看板 · spec line 304）：每个源的采集成功率 / 最近成功 / 近期错误 / 连续失败。
  *  纯函数，可单测。spine = 传入的 sources（通常 listSources 全量）；用 ingest Run 叠加健康，
  *  无 run 的源仍列出（total=0 = "从未采集"，本身是信号）。runs 期望仅 kind='ingest'（调用方过滤）。 */
