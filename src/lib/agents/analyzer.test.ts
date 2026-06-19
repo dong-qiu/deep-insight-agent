@@ -2,9 +2,12 @@
  * analyzer 产出守卫的纯函数单测 —— 无需 API key，CI 可跑（npm test）。
  * 覆盖截断检测（结构化输出偶发把长 statement 提前收尾）。
  */
-import { describe, expect, it } from "vitest";
-import type { ContentItem } from "../types.js";
-import { ANALYZE_BODY_CHARS, chunkByChars, coverageGaps, isCompleteStatement, repairQuote, specificClaims, truncateForAnalyze } from "./analyzer.js";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { Citation, ContentItem, Insight } from "../types.js";
+// callStructured mock 掉——repairCoverage 经 verifyCandidates 调它；无 API key、CI 可跑纯函数。
+vi.mock("../runtime/llm.js", () => ({ callStructured: vi.fn() }));
+import { callStructured } from "../runtime/llm.js";
+import { ANALYZE_BODY_CHARS, carveQuote, chunkByChars, coverageGaps, isCompleteStatement, repairCoverage, repairQuote, specificClaims, truncateForAnalyze } from "./analyzer.js";
 
 function item(id: string, bodyLen: number): ContentItem {
   return {
@@ -167,5 +170,96 @@ describe("specificClaims（覆盖率分母 + 边界）", () => {
   });
   it("specificClaims 返回全部具体声明（不论是否覆盖）——供覆盖率分母", () => {
     expect(specificClaims("OpenAI 与 Chollet 在 1507 分基准", ["OpenAI", "Chollet"]).sort()).toEqual(["1507", "Chollet", "OpenAI"].sort());
+  });
+});
+
+describe("carveQuote（补引候选句抽取）", () => {
+  it("以 token 为锚切逐字短句、扩到句末标点、受上限约束", () => {
+    const body = "Intro here. A survey of 900 developers found burnout. Next part.";
+    const q = carveQuote(body, "900")!;
+    expect(body.includes(q)).toBe(true); // 逐字（body 字面子串）
+    expect(q.includes("900")).toBe(true);
+    expect(q.length).toBeLessThanOrEqual(45);
+  });
+  it("token 不在 body → null", () => {
+    expect(carveQuote("no number here", "900")).toBeNull();
+  });
+});
+
+describe("repairCoverage（真正补引：候选 → Opus 校验 → 仅 support 才补）", () => {
+  const mkItem = (id: string, body: string): ContentItem => ({
+    id, source_id: "s1", url: `https://x/${id}`, title: "T", author: null, published_at: "2026-06-01",
+    fetched_at: "2026-06-01T00:00:00Z", language: "en", topic_ids: ["t1"], tags: [], body,
+    raw_ref: "", content_hash: `h_${id}`, fetch_status: "ok",
+  });
+  const mkInsight = (statement: string, cits: Citation[], entities: { name: string; type: "organization" }[] = []): Insight => ({
+    id: "i1", topic_id: "t1", type: "aggregation", event_id: null, statement, headline: "", importance: 4,
+    importance_basis: "x", citations: cits, source_count: 1, multi_source: false,
+    time_window: { start: "", end: "" }, confidence: null, language: "zh", is_followup: false, entities, tags: [],
+  });
+  const verdicts = (...v: boolean[]) =>
+    ({ data: { verdicts: v.map((supports, i) => ({ index: i + 1, supports })) } }) as unknown as Awaited<ReturnType<typeof callStructured>>;
+
+  beforeEach(() => { vi.mocked(callStructured).mockReset(); delete process.env.COVERAGE_BACKFILL; });
+
+  it("缺口候选经校验 support → 补成逐字 citation", async () => {
+    const it1 = mkItem("it1", "The report covers topics. A survey of 900 developers found rising burnout. End.");
+    const ins = mkInsight("基于 900 份调查显示倦怠上升", [{ content_item_id: "it1", quote: "rising burnout", locator: { paragraph_index: 0, char_start: 0, char_end: 0 } }]);
+    vi.mocked(callStructured).mockResolvedValue(verdicts(true));
+    await repairCoverage([ins], new Map([["it1", it1]]));
+    expect(ins.citations.length).toBe(2); // 补了一条
+    const added = ins.citations[1];
+    expect(it1.body.includes(added.quote)).toBe(true); // 逐字可达
+    expect(added.quote.includes("900")).toBe(true);
+  });
+
+  it("候选校验 not support（同形不同义）→ 不补、留残差", async () => {
+    const it1 = mkItem("it1", "The CEO mentioned 350 parking spots. The survey covered other ground.");
+    const ins = mkInsight("调查覆盖 350 家公司", [{ content_item_id: "it1", quote: "The survey covered other ground", locator: { paragraph_index: 0, char_start: 0, char_end: 0 } }]);
+    vi.mocked(callStructured).mockResolvedValue(verdicts(false)); // Opus 判停车位的 350 ≠ 公司
+    await repairCoverage([ins], new Map([["it1", it1]]));
+    expect(ins.citations.length).toBe(1); // 没补
+    expect(coverageGaps(ins.statement, [], ins.citations.map((c) => c.quote))).toEqual(["350"]); // 仍是残差
+  });
+
+  it("缺项校验结果默认 false（绝不默认补）", async () => {
+    const it1 = mkItem("it1", "A survey of 900 developers. End.");
+    const ins = mkInsight("基于 900 份调查", [{ content_item_id: "it1", quote: "End", locator: { paragraph_index: 0, char_start: 0, char_end: 0 } }]);
+    vi.mocked(callStructured).mockResolvedValue({ data: { verdicts: [] } } as unknown as Awaited<ReturnType<typeof callStructured>>);
+    await repairCoverage([ins], new Map([["it1", it1]]));
+    expect(ins.citations.length).toBe(1); // 缺判定 → 不补
+  });
+
+  it("COVERAGE_BACKFILL=0 → 完全跳过、不调 LLM", async () => {
+    process.env.COVERAGE_BACKFILL = "0";
+    const it1 = mkItem("it1", "A survey of 900 developers found burnout.");
+    const ins = mkInsight("基于 900 份调查", [{ content_item_id: "it1", quote: "burnout", locator: { paragraph_index: 0, char_start: 0, char_end: 0 } }]);
+    await repairCoverage([ins], new Map([["it1", it1]]));
+    expect(ins.citations.length).toBe(1);
+    expect(callStructured).not.toHaveBeenCalled();
+  });
+
+  it("无缺口的洞察 → 不调 LLM", async () => {
+    const ins = mkInsight("覆盖率 38.33%", [{ content_item_id: "it1", quote: "improves to 38.33% overall", locator: { paragraph_index: 0, char_start: 0, char_end: 0 } }]);
+    await repairCoverage([ins], new Map([["it1", mkItem("it1", "improves to 38.33% overall")]]));
+    expect(callStructured).not.toHaveBeenCalled();
+  });
+
+  it("verifyCandidates 抛错 → 跳过补引、不抛出（防被 analyzeWithSplit 误判拒答拆批）", async () => {
+    const it1 = mkItem("it1", "A survey of 900 developers found burnout. End.");
+    const ins = mkInsight("基于 900 份调查", [{ content_item_id: "it1", quote: "End", locator: { paragraph_index: 0, char_start: 0, char_end: 0 } }]);
+    vi.mocked(callStructured).mockRejectedValue(new Error("parse failed"));
+    await expect(repairCoverage([ins], new Map([["it1", it1]]))).resolves.toBeUndefined(); // 不抛
+    expect(ins.citations.length).toBe(1); // 没补
+  });
+
+  it("多候选按 index 对齐：只补 supports=true 的那条", async () => {
+    const it1 = mkItem("it1", "A survey of 900 developers. Score reached 1507 on Arena.");
+    const ins = mkInsight("基于 900 份调查，Arena 得分 1507", [{ content_item_id: "it1", quote: "developers", locator: { paragraph_index: 0, char_start: 0, char_end: 0 } }]);
+    vi.mocked(callStructured).mockResolvedValue(verdicts(true, false)); // 候选1(900) support、候选2(1507) not
+    await repairCoverage([ins], new Map([["it1", it1]]));
+    expect(ins.citations.length).toBe(2); // 只补了 1 条
+    expect(ins.citations[1].quote.includes("900")).toBe(true); // 补的是候选1（900）
+    expect(coverageGaps(ins.statement, [], ins.citations.map((c) => c.quote))).toEqual(["1507"]); // 1507 仍残差
   });
 });
