@@ -8,6 +8,7 @@
  *  - **非阻塞、永不抛/拒**：notifyFailure 全程 try/catch 兜底（构造阶段的 new URL / JSON.stringify 也可能抛），
  *    告警自身失败绝不连累管线——尤其不能顶替 runJob catch 里待重抛的原始错误。 */
 import { createHmac } from "node:crypto";
+import { notifyEmail } from "./email.js";
 import { runLogger } from "./logger.js";
 
 export interface FailureAlert {
@@ -96,11 +97,17 @@ export function reportToNotification(r: ReportPush, baseUrl?: string): Notificat
 export function notifyReport(r: ReportPush): void {
   if (process.env.REPORT_PUSH !== "1") return; // opt-in（默认关，见 ReportPush 注释）
   if (!shouldPushReport(r)) return;
+  let n: Notification;
   try {
-    notify(reportToNotification(r, process.env.PUBLIC_BASE_URL));
+    n = reportToNotification(r, process.env.PUBLIC_BASE_URL);
   } catch (e) {
     runLogger({ stage: "alert" }).warn({ err: e instanceof Error ? e.message : String(e) }, "报告推送构造失败（已忽略）");
+    return;
   }
+  // 扇出到所有已配渠道：飞书 webhook（ALERT_WEBHOOK）+ 邮件（SMTP_HOST+REPORT_EMAIL_TO）。各自内置
+  // try/catch + 未配即 no-op；运维告警（notifyFailure/notifyBudget）不扇出邮件、仍只走 webhook。
+  notify(n);
+  notifyEmail(n);
 }
 
 /** 成本预算告警（A5 · 触顶熔断 / 接近上限）：与失败告警、报告推送共用渠道层（同 ALERT_WEBHOOK）。
