@@ -345,6 +345,21 @@ export const ConsistencyBatchJudgeSchema = z.object({
 });
 export type ConsistencyBatchJudge = z.infer<typeof ConsistencyBatchJudgeSchema>;
 
+/** 覆盖度补引校验输出（quote 粒度）：对每个候选 quote 判它是否真支撑结论里涉及指定 token 的具体声明。
+ *  validator 的 body 级一致性兜不住这步（不看具体 quote），故这里 quote 级独立校验、宁缺毋滥。
+ *  verdicts 每项挂 index（从 1 起）对齐候选清单；缺项默认按 false 处理（不补，绝不默认补）。 */
+export const CoverageRepairSchema = z.object({
+  verdicts: z
+    .array(
+      z.object({
+        index: z.number().int().describe("候选项序号（从 1 起，与输入清单一致）"),
+        supports: z.boolean().describe("该候选 quote 是否真正支撑结论里关于目标 token 的具体声明；不确定→false"),
+      }),
+    )
+    .describe("对每个候选 quote 各输出一项；宁缺毋滥，同形不同义/语境不符判 false"),
+});
+export type CoverageRepair = z.infer<typeof CoverageRepairSchema>;
+
 /** 跨批/跨run 一致性判定缓存的共享契约（DB 实现见 db/consistency-cache.ts，消费方 validator.validateBatch）。
  *  放共享 types 而非 validator——避免 db 层反向依赖 agents 层。
  *  缓存命中即跳过 Opus 调用、不计成本；只存成功判定（调用失败绝不缓存）。
