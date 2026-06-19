@@ -6,7 +6,7 @@ import type {
   AnalysisBatch, ContentItem, Insight, Report, ReportIndexEntry, Topic, ValidationResult,
 } from "../types.js";
 import { flagLabel, isIncludableCheck, isValidationError } from "../utils/citation-verdict.js";
-import { coverageGaps } from "./analyzer.js";
+import { coverageGaps, specificClaims } from "./analyzer.js";
 
 /** 覆盖度外露（诚实兜底）：结论里未被**已渲染引用**（剔除 blocked 后）直接覆盖的具体数字/实体。
  *  只按真正进报告的 quote 算——被屏蔽的引用不在报告里，其覆盖不作数。返回缺口 token（空=全覆盖）。
@@ -188,6 +188,70 @@ function blockedReasonStr(counts: Record<string, number>): string {
   return items.length ? `（理由：${items.map(([r, n]) => `${r} ×${n}`).join(" · ")}）` : "";
 }
 
+/** 把保留的引用按被引文档（content_item_id）分组、保留首次出现顺序。
+ *  同一网页/论文的多条「覆盖度」逐字 quote 归一组，渲染时源名/日期只出现一次——
+ *  避免「一条洞察挂 N 条引用、实则只来自 1 篇」被误读成 N 个独立来源（dogfood 反馈）。 */
+function groupCitationsBySource(x: IncludedInsight): { itemId: string; indices: number[] }[] {
+  const order: string[] = [];
+  const byItem = new Map<string, number[]>();
+  for (const i of x.citationIndices) {
+    const id = x.insight.citations[i].content_item_id;
+    if (!byItem.has(id)) {
+      byItem.set(id, []);
+      order.push(id);
+    }
+    byItem.get(id)!.push(i);
+  }
+  return order.map((id) => ({ itemId: id, indices: byItem.get(id)! }));
+}
+
+/** 启发式行内引用锚定（方案 A）：把每条引用的 [n] 放到它所覆盖的"具体声明 token"（数字/实体）
+ *  在 statement 中的位置之后——复用与 coverageGaps 同口径的数字/实体覆盖判定。匹配不到 token 的引用
+ *  （纯文字声明 / 中英表述对不上 / 同形 token 已被占用）回退到句末。纯函数、确定性、不改 analyzer 输出。
+ *  cites 按渲染顺序，每项含全局显示编号 num；返回带行内 [n] 标记的 statement（末尾追加回退标记）。 */
+export function inlineCitedStatement(
+  statement: string,
+  cites: { num: number; quote: string }[],
+  entityNames: string[],
+): string {
+  if (!cites.length) return statement;
+  const tokens = specificClaims(statement, entityNames); // statement 里需被覆盖的数字/实体 token
+  const anchors: { end: number; num: number }[] = [];
+  const trailing: number[] = [];
+  const usedPos = new Set<number>();
+  for (const c of cites) {
+    const nq = c.quote.replace(/\s+/g, "");
+    let bestPos = -1;
+    let bestEnd = -1;
+    for (const t of tokens) {
+      if (!nq.includes(t.replace(/\s+/g, ""))) continue; // 此 quote 不覆盖该 token
+      const pos = statement.indexOf(t);
+      if (pos < 0 || usedPos.has(pos)) continue; // statement 里定位不到 / 该位置已被别的引用占用
+      if (pos > bestPos) {
+        // 取最靠后的可用 token——贴近最具体的值（如"得分 1507"的 1507 而非句首实体）
+        bestPos = pos;
+        bestEnd = pos + t.length;
+      }
+    }
+    if (bestPos >= 0) {
+      usedPos.add(bestPos);
+      anchors.push({ end: bestEnd, num: c.num });
+    } else {
+      trailing.push(c.num); // 锚不到 → 回退句末
+    }
+  }
+  anchors.sort((a, b) => a.end - b.end || a.num - b.num);
+  let out = "";
+  let cursor = 0;
+  for (const a of anchors) {
+    out += statement.slice(cursor, a.end) + `[${a.num}]`;
+    cursor = a.end;
+  }
+  out += statement.slice(cursor);
+  if (trailing.length) out += " " + trailing.map((n) => `[${n}]`).join("");
+  return out;
+}
+
 /** 单条洞察的 Markdown 块。deep_dive（detailed）多展示来源数 / 多源印证。
  *  citeStart：全局连续引用编号起点（C-2 引用 [n] 行内 + 列表锚）；返回 next 让 caller 串联。 */
 function insightBlockMd(
@@ -198,9 +262,19 @@ function insightBlockMd(
   lookup: Map<string, CitationDisplay>,
 ): { lines: string[]; next: number } {
   const ins = x.insight;
-  const refs = x.citationIndices.length > 0
-    ? " " + x.citationIndices.map((_, i) => `[${citeStart + i}]`).join("")
-    : "";
+  // 引用按文档分组 + 渲染顺序（grouped-flat）；全局编号 numOf 供行内 [n] 与列表 [n] 共用、保持一致。
+  const groups = groupCitationsBySource(x);
+  const orderedCites = groups.flatMap((g) => g.indices);
+  const numOf = new Map<number, number>();
+  orderedCites.forEach((i, p) => numOf.set(i, citeStart + p));
+  // 方案 A：行内引用锚定——[n] 放到对应声明 token 后，匹配不到回退句末（见 inlineCitedStatement）。
+  const statementWithRefs = orderedCites.length
+    ? inlineCitedStatement(
+        ins.statement,
+        orderedCites.map((i) => ({ num: numOf.get(i)!, quote: ins.citations[i].quote })),
+        (ins.entities ?? []).map((e) => e.name),
+      )
+    : ins.statement;
   // P1 不复报：is_followup=true 标 〔更新〕——读者一眼看出"本条是已报告事件的新进展"。
   // analyzer 已在 prompt 层约束"无新进展则不出"，此标记仅作展示提示；与 flagLabel（待核实
   // / 校验失败·待重试）相互正交、可同时出现："〔更新〕 〔待核实〕"。
@@ -210,28 +284,28 @@ function insightBlockMd(
   // 覆盖度外露：结论里有具体数字/实体未被已渲染引用覆盖 → 标 〔待补引：…〕（与 〔更新〕/〔待核实〕正交可叠加）
   const gaps = coverageGapTokens(x);
   const coverageTag = gaps.length ? ` 〔待补引：${gaps.join("、")}〕` : "";
-  const L = [`${heading} ${ins.statement}${refs}${followupTag}${flaggedTag}${coverageTag}`, ""];
+  const L = [`${heading} ${statementWithRefs}${followupTag}${flaggedTag}${coverageTag}`, ""];
   L.push(`- 重要性：${ins.importance}/5 · 依据：${ins.importance_basis}`);
   if (detailed) L.push(`- 来源：${ins.source_count} 个 · ${ins.multi_source ? "多源印证" : "单源"}`);
   if (ins.type === "trend" && ins.confidence) L.push(`- 置信度：${ins.confidence}`);
-  if (x.citationIndices.length > 0) {
-    L.push(`- 引用（${x.citationIndices.length}）：`);
-    x.citationIndices.forEach((i, j) => {
-      const c = ins.citations[i];
-      const info = lookup.get(c.content_item_id);
-      // dogfood feedback：quote 可点跳源；source_name 替代生硬的 ci_xxx；
-      // 日期 YYYY-MM-DD（之前删是因 RFC 2822 截断垃圾——published_at 现已全归一化
-      // ISO 8601 by parsePublishedAt，slice(0,10) 安全得 "2026-03-31"）。
-      const quotePart = info?.url
-        ? `[「${c.quote}」](${info.url})`
-        : `「${c.quote}」`;
-      const sourceLabel = info?.source_name ?? c.content_item_id;
+  if (orderedCites.length > 0) {
+    // 诚实信号：N 句引用来自 K 篇文档——把"同篇多句覆盖引用"与"多个独立来源"分清，
+    // 避免一条洞察挂多条引用、实则只来自 1 篇被误读为多源（dogfood 反馈）。
+    L.push(`- 引用：${x.citationIndices.length} 句 · 来自 ${groups.length} 篇${groups.length >= 2 ? "（多篇印证）" : ""}`);
+    for (const g of groups) {
+      const info = lookup.get(g.itemId);
+      // 每篇一行表头：源名一次、可点跳源 + 日期（替代原先每条 quote 都重复源名/日期）。
+      const sourceLabel = info?.source_name ?? g.itemId;
       const dateIso = info?.published_at && /^\d{4}-\d{2}-\d{2}T/.test(info.published_at)
         ? info.published_at.slice(0, 10)
         : null;
       const datePart = dateIso ? ` · ${dateIso}` : "";
-      L.push(`  - [${citeStart + j}] ${quotePart} — ${sourceLabel}${datePart}`);
-    });
+      L.push(`  - ${info?.url ? `[${sourceLabel}](${info.url})` : sourceLabel}${datePart}`);
+      // 该篇下挂各条逐字 quote（[n] 与行内锚同号；markdown.tsx 按 [n] 建锚，与缩进无关）。
+      for (const i of g.indices) {
+        L.push(`    - [${numOf.get(i)}] 「${ins.citations[i].quote}」`);
+      }
+    }
   }
   if (x.blockedCount > 0) L.push(`- 校验阻断：${x.blockedCount} 条${blockedReasonStr(x.blockedReasonCounts)}`);
   L.push("");
@@ -374,27 +448,35 @@ function insightHtml(
   lookup: Map<string, CitationDisplay>,
 ): string {
   const ins = x.insight;
-  const cites = x.citationIndices
-    .map((i) => {
-      const c = ins.citations[i];
-      const info = lookup.get(c.content_item_id);
-      const q = `<q>「${esc(c.quote)}」</q>`;
+  // 按被引文档分组：源名/日期每篇一次（可点跳源），其下挂该篇各条逐字 quote——
+  // 避免"同篇多句覆盖引用"被渲染成多个来源（dogfood 反馈）。
+  const groups = groupCitationsBySource(x);
+  const cites = groups
+    .map((g) => {
+      const info = lookup.get(g.itemId);
       // 自包含 HTML 直接在浏览器打开：仅 http(s) 源 URL 可点（挡 javascript:/data: 等危险 scheme，
-      // 呼应 product-definition「引用 URL 安全检查」）；非 http(s) 退化为纯 quote、仍展示源名。
+      // 呼应 product-definition「引用 URL 安全检查」）；非 http(s) 退化为纯源名。
       const safeUrl = info?.url && /^https?:\/\//i.test(info.url) ? info.url : null;
-      const quoteEl = safeUrl
-        ? `<a href="${escAttr(safeUrl)}" target="_blank" rel="noopener noreferrer">${q}</a>`
-        : q;
-      const srcName = esc(info?.source_name ?? c.content_item_id);
+      const srcName = esc(info?.source_name ?? g.itemId);
+      const nameEl = safeUrl
+        ? `<a href="${escAttr(safeUrl)}" target="_blank" rel="noopener noreferrer"><span class="src">${srcName}</span></a>`
+        : `<span class="src">${srcName}</span>`;
       const dateIso = info?.published_at && /^\d{4}-\d{2}-\d{2}T/.test(info.published_at)
         ? info.published_at.slice(0, 10)
         : null;
       const datePart = dateIso ? ` · ${dateIso}` : "";
-      return `<li>${quoteEl} — <span class="src">${srcName}</span>${datePart}</li>`;
+      const quotes = g.indices
+        .map((i) => `<li class="cite-quote"><q>「${esc(ins.citations[i].quote)}」</q></li>`)
+        .join("");
+      return `<li class="cite-src">${nameEl}${datePart}</li>${quotes}`;
     })
     .join("");
   const conf = ins.type === "trend" && ins.confidence ? ` · 置信度 ${ins.confidence}` : "";
   const src = detailed ? ` · 来源 ${ins.source_count}（${ins.multi_source ? "多源" : "单源"}）` : "";
+  // 诚实信号：N 句引用来自 K 篇文档（区分"同篇多句"与"多篇印证"，brief/deep 都显）
+  const citeSummary = x.citationIndices.length
+    ? ` · 引用 ${x.citationIndices.length} 句/${groups.length} 篇`
+    : "";
   // 透明信任信号：validator 屏蔽计数 + 理由（仅在有屏蔽时展示）
   const blocked = x.blockedCount > 0
     ? `<p class="meta blocked">校验阻断：${x.blockedCount} 条${esc(blockedReasonStr(x.blockedReasonCounts))}</p>`
@@ -404,7 +486,7 @@ function insightHtml(
   const flaggedBadge = label ? ` <span class="flag">${label}</span>` : "";
   const gaps = coverageGapTokens(x);
   const coverageBadge = gaps.length ? ` <span class="coverage-gap">待补引：${esc(gaps.join("、"))}</span>` : "";
-  return `<section><${tag}>${n}. ${esc(ins.statement)}${followupBadge}${flaggedBadge}${coverageBadge}</${tag}><p class="meta">重要性 ${ins.importance}/5 · ${esc(ins.importance_basis)}${conf}${src}</p><ul>${cites}</ul>${blocked}</section>`;
+  return `<section><${tag}>${n}. ${esc(ins.statement)}${followupBadge}${flaggedBadge}${coverageBadge}</${tag}><p class="meta">重要性 ${ins.importance}/5 · ${esc(ins.importance_basis)}${conf}${src}${citeSummary}</p><ul>${cites}</ul>${blocked}</section>`;
 }
 
 function renderHtml(
@@ -459,7 +541,7 @@ function renderHtml(
   }
   return `<!doctype html><html lang="${topic.language}"><head><meta charset="utf-8"><title>${esc(
     title,
-  )}</title><style>body{font-family:system-ui,sans-serif;max-width:46rem;margin:2rem auto;padding:0 1rem;line-height:1.6}h1{font-size:1.5rem}h2{font-size:1.1rem;margin-top:1.5rem}h3{font-size:1rem;margin-top:1rem}.meta{color:#666;font-size:.9rem}.meta.blocked{color:#6b7280;font-size:.8rem;margin-top:.25rem}.flag{color:#b45309;font-size:.75rem;border:1px solid #b45309;border-radius:4px;padding:0 .3rem}.coverage-gap{color:#6b7280;font-size:.75rem;border:1px dashed #9ca3af;border-radius:4px;padding:0 .3rem}q{color:#1f2937}code{color:#6b7280;font-size:.85rem}.src{color:#6b7280;font-size:.85rem}li a q{cursor:pointer}table{border-collapse:collapse;width:100%;font-size:.85rem;margin:.5rem 0}th,td{border:1px solid #e5e7eb;padding:.3rem .5rem;text-align:left}th{background:#f9fafb}.tldr ul{padding-left:1.2rem}.tldr li{margin:.2rem 0}</style></head><body><h1>${esc(
+  )}</title><style>body{font-family:system-ui,sans-serif;max-width:46rem;margin:2rem auto;padding:0 1rem;line-height:1.6}h1{font-size:1.5rem}h2{font-size:1.1rem;margin-top:1.5rem}h3{font-size:1rem;margin-top:1rem}.meta{color:#666;font-size:.9rem}.meta.blocked{color:#6b7280;font-size:.8rem;margin-top:.25rem}.flag{color:#b45309;font-size:.75rem;border:1px solid #b45309;border-radius:4px;padding:0 .3rem}.coverage-gap{color:#6b7280;font-size:.75rem;border:1px dashed #9ca3af;border-radius:4px;padding:0 .3rem}q{color:#1f2937}code{color:#6b7280;font-size:.85rem}.src{color:#6b7280;font-size:.85rem}.cite-src{list-style:none;margin-top:.35rem;font-weight:500}.cite-quote{margin-left:1.1rem}li a q{cursor:pointer}table{border-collapse:collapse;width:100%;font-size:.85rem;margin:.5rem 0}th,td{border:1px solid #e5e7eb;padding:.3rem .5rem;text-align:left}th{background:#f9fafb}.tldr ul{padding-left:1.2rem}.tldr li{margin:.2rem 0}</style></head><body><h1>${esc(
     title,
   )}</h1><p class="meta">${esc(topic.name)}（${topic.industry}）· ${date} · 共 ${included.length} 条洞察</p>${body}</body></html>`;
 }

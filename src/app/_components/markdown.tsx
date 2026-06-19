@@ -16,7 +16,7 @@ export function Markdown({ md, anchorPrefix = "cite-" }: { md: string; anchorPre
   const rootNodes: ReactNode[] = [];
   /** 当前洞察 section 的内容容器；null = 不在某条洞察内 */
   let insightNodes: ReactNode[] | null = null;
-  let bullets: { text: string; id: string | null; citeNum: string | null }[] = [];
+  let bullets: { text: string; id: string | null; citeNum: string | null; depth: number }[] = [];
   let tableLines: string[] = []; // 累积 GFM 表格行（| a | b |），遇非表格行 flush
 
   const target = (): ReactNode[] => insightNodes ?? rootNodes;
@@ -26,7 +26,12 @@ export function Markdown({ md, anchorPrefix = "cite-" }: { md: string; anchorPre
     target().push(
       <ul key={`ul-${target().length}`}>
         {items.map((b, i) => (
-          <li key={i} id={b.id ?? undefined} className={b.citeNum ? "cite-li" : undefined}>
+          <li
+            key={i}
+            id={b.id ?? undefined}
+            className={b.citeNum ? "cite-li" : undefined}
+            style={b.depth > 0 ? { marginInlineStart: `${b.depth * 1.1}rem` } : undefined}
+          >
             {b.citeNum ? <span className="cite-num">[{b.citeNum}]</span> : null}
             {inline(b.text)}
           </li>
@@ -92,10 +97,14 @@ export function Markdown({ md, anchorPrefix = "cite-" }: { md: string; anchorPre
     }
     flushTable();
     if (/^\s*-\s+/.test(line)) {
+      // 保留缩进深度（report-gen 用 0/2/4 空格表"洞察 meta / 源名表头 / quote"三级）→ 网页版显出层次；
+      // 封顶 2 级防异常深缩进失控。markdown.tsx 原先 replace 掉缩进、列表全拍平，故层次感弱。
+      const indent = line.match(/^( *)/)?.[1].length ?? 0;
+      const depth = Math.min(2, Math.floor(indent / 2));
       const stripped = line.replace(/^\s*-\s+/, "");
       const m = stripped.match(/^\[(\d+)\]\s+(.*)$/);
-      if (m) bullets.push({ text: m[2], id: `${anchorPrefix}${m[1]}`, citeNum: m[1] });
-      else bullets.push({ text: stripped, id: null, citeNum: null });
+      if (m) bullets.push({ text: m[2], id: `${anchorPrefix}${m[1]}`, citeNum: m[1], depth });
+      else bullets.push({ text: stripped, id: null, citeNum: null, depth });
       continue;
     }
     flushBullets();
