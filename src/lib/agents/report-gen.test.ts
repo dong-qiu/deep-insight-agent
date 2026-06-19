@@ -179,6 +179,53 @@ describe("buildReport 派生", () => {
     expect(report.body_html).toContain("待核实");
   });
 
+  it("覆盖度外露：结论里数字/实体未被已渲染引用覆盖 → 标 〔待补引〕（md + html），且只按已渲染引用算", () => {
+    const b: AnalysisBatch = {
+      id: "bc", topic_id: "t1", time_window: win, status: "done", no_significant_event: false,
+      insights: [{
+        id: "ic", topic_id: "t1", type: "aggregation", event_id: null, statement: "基于 900 份调查，Chollet 提出新基准", importance: 4,
+        importance_basis: "x",
+        citations: [
+          { content_item_id: "cc1", quote: "提出新基准方法", locator: { paragraph_index: 0, char_start: 0, char_end: 1 } }, // 不含 900/Chollet
+          { content_item_id: "cc2", quote: "a survey of 900 developers", locator: { paragraph_index: 0, char_start: 0, char_end: 1 } }, // 含 900 但会被 blocked
+        ],
+        source_count: 2, multi_source: true, time_window: win, confidence: null, language: "zh",
+        entities: [{ name: "Chollet", type: "person" }], tags: [],
+      }],
+    };
+    const v: ValidationResult = {
+      checks: [
+        { insight_id: "ic", citation_index: 0, reachability: "pass", reachability_reason: "ok", consistency: "support", consistency_reason: "ok", verdict: "pass" },
+        { insight_id: "ic", citation_index: 1, reachability: "pass", reachability_reason: "ok", consistency: "not_support", consistency_reason: "exaggeration", verdict: "blocked" }, // 含 900 的引用被屏蔽
+      ],
+      report: { total: 2, pass: 1, blocked: 1, flagged: 0, errored: 0, consistency_failure_rate: 0.5, flagged_rate: 0, insights_total: 1, insights_includable: 1, releasable: true },
+    };
+    const { report: r } = buildReport({ topic, batch: b, validation: v, type: "brief", contentLookup: new Map(), now: "2026-05-07T08:00:00Z" });
+    // 含 900 的引用被 blocked 不渲染 → 900 与 Chollet 都未被已渲染引用覆盖 → 都进 〔待补引〕
+    expect(r.body_md).toContain("〔待补引：900、Chollet〕");
+    expect(r.body_html).toContain('<span class="coverage-gap">待补引：900、Chollet</span>');
+  });
+
+  it("覆盖度外露：所有具体声明都被已渲染引用覆盖 → 无 〔待补引〕", () => {
+    const b: AnalysisBatch = {
+      id: "bc2", topic_id: "t1", time_window: win, status: "done", no_significant_event: false,
+      insights: [{
+        id: "ic2", topic_id: "t1", type: "aggregation", event_id: null, statement: "覆盖率达 38.33%", importance: 4,
+        importance_basis: "x",
+        citations: [{ content_item_id: "cc1", quote: "improves to 38.33% overall", locator: { paragraph_index: 0, char_start: 0, char_end: 1 } }],
+        source_count: 1, multi_source: false, time_window: win, confidence: null, language: "zh",
+        entities: [], tags: [],
+      }],
+    };
+    const v: ValidationResult = {
+      checks: [{ insight_id: "ic2", citation_index: 0, reachability: "pass", reachability_reason: "ok", consistency: "support", consistency_reason: "ok", verdict: "pass" }],
+      report: { total: 1, pass: 1, blocked: 0, flagged: 0, errored: 0, consistency_failure_rate: 0, flagged_rate: 0, insights_total: 1, insights_includable: 1, releasable: true },
+    };
+    const { report: r } = buildReport({ topic, batch: b, validation: v, type: "brief", contentLookup: new Map(), now: "2026-05-07T08:00:00Z" });
+    expect(r.body_md).not.toContain("待补引");
+    expect(r.body_html).not.toContain('<span class="coverage-gap">'); // CSS 类定义恒在 <style>，断言 badge 元素本身
+  });
+
   it("HTML 引用接 lookup：quote 可点跳源 + 人可读源名 + 日期，不再裸露 ci_xxx", () => {
     // ci1 有 url + published_at → <a href> 包 quote、源名 Source A、日期 2026-05-07
     expect(report.body_html).toContain('<a href="https://a.example/q1" target="_blank" rel="noopener noreferrer"><q>「q1」</q></a>');

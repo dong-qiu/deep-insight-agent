@@ -10,7 +10,7 @@
  * 人工指标（非显然占比、幻觉率）：脚本导出 evals/out/review-queue.json 供人评。
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { analyze } from "../src/lib/agents/analyzer.js";
+import { analyze, coverageGaps, specificClaims } from "../src/lib/agents/analyzer.js";
 import { judgeConsistency, validateBatch } from "../src/lib/agents/validator.js";
 import { MODELS, assertModelSeparation, getCostReport } from "../src/lib/runtime/llm.js";
 import type { CitationCheck, ContentItem, Insight, Topic } from "../src/lib/types.js";
@@ -181,6 +181,25 @@ async function main(): Promise<void> {
     metric("judge_neg_recall", "校验器负例召回率", negTotal ? negRecalled / negTotal : 0, THRESHOLDS.judgeNegRecall, ">="),
   ];
   printMetrics(rows);
+
+  // ── 覆盖度（第三层校验，informational）：结论里的具体声明（数字/实体）被引用直接覆盖的比例。
+  // 统计 analyzer 产出层（用 it.citations 全量、不剔 blocked，与渲染层 〔待补引〕 口径不同）；
+  // 非硬门（暂无基线/阈值），量化「可溯源覆盖度」现状缺口。 ──
+  let claimsTotal = 0;
+  let claimsCovered = 0;
+  for (const it of allInsights) {
+    const ents = (it.entities ?? []).map((e) => e.name);
+    const quotes = it.citations.map((c) => c.quote);
+    const all = specificClaims(it.statement, ents).length;
+    const gaps = coverageGaps(it.statement, ents, quotes).length;
+    claimsTotal += all;
+    claimsCovered += all - gaps;
+  }
+  const coverageRatio = claimsTotal ? claimsCovered / claimsTotal : 1;
+  console.log(
+    `\n引用覆盖度（informational）：具体声明 ${claimsCovered}/${claimsTotal} 被引用直接覆盖 = ${pct(coverageRatio)}` +
+      `（数字+实体，按 analyzer 产出 quote 直接覆盖；缺口由 report-gen 在渲染层外露 〔待补引〕）`,
+  );
 
   // ── 成本（估算，A5 成本可控） ──
   const cost = getCostReport();

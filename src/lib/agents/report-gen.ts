@@ -6,6 +6,17 @@ import type {
   AnalysisBatch, ContentItem, Insight, Report, ReportIndexEntry, Topic, ValidationResult,
 } from "../types.js";
 import { flagLabel, isIncludableCheck, isValidationError } from "../utils/citation-verdict.js";
+import { coverageGaps } from "./analyzer.js";
+
+/** 覆盖度外露（诚实兜底）：结论里未被**已渲染引用**（剔除 blocked 后）直接覆盖的具体数字/实体。
+ *  只按真正进报告的 quote 算——被屏蔽的引用不在报告里，其覆盖不作数。返回缺口 token（空=全覆盖）。
+ *  不自动补引（错补同形不同义会被 validator 放行、制造"点开看错"，见 analyzer.coverageGaps）。 */
+function coverageGapTokens(x: IncludedInsight): string[] {
+  const ins = x.insight;
+  const ents = (ins.entities ?? []).map((e) => e.name);
+  const quotes = x.citationIndices.map((i) => ins.citations[i].quote);
+  return coverageGaps(ins.statement, ents, quotes);
+}
 
 export interface IncludedInsight {
   insight: Insight;
@@ -196,7 +207,10 @@ function insightBlockMd(
   const followupTag = ins.is_followup ? " 〔更新〕" : "";
   const label = flagLabel(x);
   const flaggedTag = label ? ` 〔${label}〕` : "";
-  const L = [`${heading} ${ins.statement}${refs}${followupTag}${flaggedTag}`, ""];
+  // 覆盖度外露：结论里有具体数字/实体未被已渲染引用覆盖 → 标 〔待补引：…〕（与 〔更新〕/〔待核实〕正交可叠加）
+  const gaps = coverageGapTokens(x);
+  const coverageTag = gaps.length ? ` 〔待补引：${gaps.join("、")}〕` : "";
+  const L = [`${heading} ${ins.statement}${refs}${followupTag}${flaggedTag}${coverageTag}`, ""];
   L.push(`- 重要性：${ins.importance}/5 · 依据：${ins.importance_basis}`);
   if (detailed) L.push(`- 来源：${ins.source_count} 个 · ${ins.multi_source ? "多源印证" : "单源"}`);
   if (ins.type === "trend" && ins.confidence) L.push(`- 置信度：${ins.confidence}`);
@@ -388,7 +402,9 @@ function insightHtml(
   const followupBadge = ins.is_followup ? ' <span class="followup">更新</span>' : "";
   const label = flagLabel(x);
   const flaggedBadge = label ? ` <span class="flag">${label}</span>` : "";
-  return `<section><${tag}>${n}. ${esc(ins.statement)}${followupBadge}${flaggedBadge}</${tag}><p class="meta">重要性 ${ins.importance}/5 · ${esc(ins.importance_basis)}${conf}${src}</p><ul>${cites}</ul>${blocked}</section>`;
+  const gaps = coverageGapTokens(x);
+  const coverageBadge = gaps.length ? ` <span class="coverage-gap">待补引：${esc(gaps.join("、"))}</span>` : "";
+  return `<section><${tag}>${n}. ${esc(ins.statement)}${followupBadge}${flaggedBadge}${coverageBadge}</${tag}><p class="meta">重要性 ${ins.importance}/5 · ${esc(ins.importance_basis)}${conf}${src}</p><ul>${cites}</ul>${blocked}</section>`;
 }
 
 function renderHtml(
@@ -443,7 +459,7 @@ function renderHtml(
   }
   return `<!doctype html><html lang="${topic.language}"><head><meta charset="utf-8"><title>${esc(
     title,
-  )}</title><style>body{font-family:system-ui,sans-serif;max-width:46rem;margin:2rem auto;padding:0 1rem;line-height:1.6}h1{font-size:1.5rem}h2{font-size:1.1rem;margin-top:1.5rem}h3{font-size:1rem;margin-top:1rem}.meta{color:#666;font-size:.9rem}.meta.blocked{color:#6b7280;font-size:.8rem;margin-top:.25rem}.flag{color:#b45309;font-size:.75rem;border:1px solid #b45309;border-radius:4px;padding:0 .3rem}q{color:#1f2937}code{color:#6b7280;font-size:.85rem}.src{color:#6b7280;font-size:.85rem}li a q{cursor:pointer}table{border-collapse:collapse;width:100%;font-size:.85rem;margin:.5rem 0}th,td{border:1px solid #e5e7eb;padding:.3rem .5rem;text-align:left}th{background:#f9fafb}.tldr ul{padding-left:1.2rem}.tldr li{margin:.2rem 0}</style></head><body><h1>${esc(
+  )}</title><style>body{font-family:system-ui,sans-serif;max-width:46rem;margin:2rem auto;padding:0 1rem;line-height:1.6}h1{font-size:1.5rem}h2{font-size:1.1rem;margin-top:1.5rem}h3{font-size:1rem;margin-top:1rem}.meta{color:#666;font-size:.9rem}.meta.blocked{color:#6b7280;font-size:.8rem;margin-top:.25rem}.flag{color:#b45309;font-size:.75rem;border:1px solid #b45309;border-radius:4px;padding:0 .3rem}.coverage-gap{color:#6b7280;font-size:.75rem;border:1px dashed #9ca3af;border-radius:4px;padding:0 .3rem}q{color:#1f2937}code{color:#6b7280;font-size:.85rem}.src{color:#6b7280;font-size:.85rem}li a q{cursor:pointer}table{border-collapse:collapse;width:100%;font-size:.85rem;margin:.5rem 0}th,td{border:1px solid #e5e7eb;padding:.3rem .5rem;text-align:left}th{background:#f9fafb}.tldr ul{padding-left:1.2rem}.tldr li{margin:.2rem 0}</style></head><body><h1>${esc(
     title,
   )}</h1><p class="meta">${esc(topic.name)}（${topic.industry}）· ${date} · 共 ${included.length} 条洞察</p>${body}</body></html>`;
 }

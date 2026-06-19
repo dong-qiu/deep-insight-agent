@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from "vitest";
 import type { ContentItem } from "../types.js";
-import { ANALYZE_BODY_CHARS, chunkByChars, isCompleteStatement, repairQuote, truncateForAnalyze, uncoveredClaims } from "./analyzer.js";
+import { ANALYZE_BODY_CHARS, chunkByChars, coverageGaps, isCompleteStatement, repairQuote, specificClaims, truncateForAnalyze } from "./analyzer.js";
 
 function item(id: string, bodyLen: number): ContentItem {
   return {
@@ -127,30 +127,45 @@ describe("truncateForAnalyze（M3-3 analyze body 上限）", () => {
   });
 });
 
-describe("uncoveredClaims（#14 类·数字引用覆盖检测）", () => {
-  it("数字在引用里 → 无未覆盖", () => {
-    expect(uncoveredClaims("仅 35.7% 的被拒 PR 是失误", ["only 35.7% of rejected PRs reflected failures"])).toEqual([]);
-    expect(uncoveredClaims("可编译率提升至 38.33%", ["improves compilability from 19.34% to 38.33%"])).toEqual([]);
+describe("coverageGaps（覆盖度第三层·数字+实体引用覆盖检测）", () => {
+  it("数字在引用里 → 无缺口", () => {
+    expect(coverageGaps("仅 35.7% 的被拒 PR 是失误", [], ["only 35.7% of rejected PRs reflected failures"])).toEqual([]);
+    expect(coverageGaps("可编译率提升至 38.33%", [], ["improves compilability from 19.34% to 38.33%"])).toEqual([]);
   });
-  it("结论数字不在本条引用（#14 案）→ 报未覆盖", () => {
-    expect(uncoveredClaims("八篇论文审计均分 0.38，经典基准 0.66", ["none of the eight papers disclose inference cost"]).sort()).toEqual(["0.38", "0.66"]);
+  it("结论数字不在本条引用 → 报缺口", () => {
+    expect(coverageGaps("八篇论文审计均分 0.38，经典基准 0.66", [], ["none of the eight papers disclose inference cost"]).sort()).toEqual(["0.38", "0.66"]);
   });
-  it("无百分比/小数 → 空（不查年份/小整数）", () => {
-    expect(uncoveredClaims("2026 年发布的 8 个基准", ["a benchmark"])).toEqual([]);
+  it("纯整数 ≥3 位（dogfood #19/#8）报缺口；小整数/年份不报", () => {
+    expect(coverageGaps("基于 900 份调查", [], ["a survey of developers"])).toEqual(["900"]); // #19
+    expect(coverageGaps("Arena 得分 1507", [], ["topped the leaderboard"])).toEqual(["1507"]); // #8 四位分数 <1900 仍收
+    expect(coverageGaps("2026 年发布的 8 个基准", [], ["a benchmark"])).toEqual([]); // 年份 + 个位整数都跳
+    expect(coverageGaps("覆盖 1,240 万用户", [], ["reached many users"])).toEqual(["1240"]); // 去千分位后比较
+  });
+  it("实体（来自 entities）未在 quote → 报缺口（dogfood #8/#10/#11）", () => {
+    expect(coverageGaps("Chollet 提出新基准", ["Chollet"], ["proposed a new benchmark"])).toEqual(["Chollet"]);
+    expect(coverageGaps("SpaceXAI 合作扩算力", ["SpaceXAI"], ["the partnership on compute, with SpaceXAI scaling"])).toEqual([]); // 实体在 quote 里 → 不报
+    expect(coverageGaps("OpenAI 与 Anthropic 竞争", ["OpenAI", "Anthropic"], ["OpenAI announced"]).sort()).toEqual(["Anthropic"]); // 只报缺的那个
   });
   it("混合：覆盖的不报、未覆盖的报", () => {
-    expect(uncoveredClaims("从 0.25 提升到 0.61，相对增益 99.9%", ["lifts score from 0.25 to 0.61 in a cycle"])).toEqual(["99.9%"]);
+    expect(coverageGaps("从 0.25 提升到 0.61，相对增益 99.9%", [], ["lifts score from 0.25 to 0.61 in a cycle"])).toEqual(["99.9%"]);
   });
-  it("排除版本/型号标识 vX.Y（m3-plan 细化：非定量声明、不报）", () => {
-    // 产品名 + 版本：Opus 4.5 / Gemini 2.5 / GPT-4.1 的小数不当作声明，quote 没有也不报
-    expect(uncoveredClaims("加上 Opus 4.5 等强模型成为转折", ["the emergence of powerful models"])).toEqual([]);
-    expect(uncoveredClaims("用 Gemini 2.5 与 GPT-4.1 双模型", ["a fast LLM in one terminal"])).toEqual([]);
-    // v 前缀（含多段）
-    expect(uncoveredClaims("升级到 v5.1，再到 v5.6.2", ["upgraded the toolchain"])).toEqual([]);
+  it("排除版本/型号标识 vX.Y（非定量声明、不报）", () => {
+    expect(coverageGaps("加上 Opus 4.5 等强模型成为转折", [], ["the emergence of powerful models"])).toEqual([]);
+    expect(coverageGaps("用 Gemini 2.5 与 GPT-4.1 双模型", [], ["a fast LLM in one terminal"])).toEqual([]);
+    expect(coverageGaps("升级到 v5.1，再到 v5.6.2", [], ["upgraded the toolchain"])).toEqual([]);
   });
-  it("版本号排除不误伤真实定量小数（前导非大写产品名）", () => {
-    // "3.2 quadrillion" 前是中文/小写词，仍正常检测；版本 4.5 同句被剥、定量 3.2 保留
-    expect(uncoveredClaims("Opus 4.5 处理超过 3.2 千万亿 token", ["Opus 4.5 is powerful"])).toEqual(["3.2"]);
-    expect(uncoveredClaims("about 0.5 ms 延迟", ["latency dropped"])).toEqual(["0.5"]);
+  it("版本号排除不误伤真实定量小数", () => {
+    expect(coverageGaps("Opus 4.5 处理超过 3.2 千万亿 token", [], ["Opus 4.5 is powerful"])).toEqual(["3.2"]);
+    expect(coverageGaps("about 0.5 ms 延迟", [], ["latency dropped"])).toEqual(["0.5"]);
+  });
+});
+
+describe("specificClaims（覆盖率分母 + 边界）", () => {
+  it("尾随句点剥离（Y5）：'900.' 与 quote 里 '900' 对齐、不误报", () => {
+    expect(coverageGaps("共有 900.", [], ["a survey of 900 developers"])).toEqual([]); // body 写 900，statement 末尾 900. 应对齐
+    expect(specificClaims("覆盖 900 项与 35.7%", [])).toEqual(["900", "35.7%"]); // 小数/整数都收
+  });
+  it("specificClaims 返回全部具体声明（不论是否覆盖）——供覆盖率分母", () => {
+    expect(specificClaims("OpenAI 与 Chollet 在 1507 分基准", ["OpenAI", "Chollet"]).sort()).toEqual(["1507", "Chollet", "OpenAI"].sort());
   });
 });
