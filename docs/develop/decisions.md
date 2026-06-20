@@ -325,3 +325,124 @@ ADR 实现拆为可独立合入的小 PR，`TRANSCRIPT_FETCH` 默认关贯穿前
 - **不做**：音频下载、ASR/转写生成、多模态音频输入——均留长尾兜底，本 ADR 不含。
 
 ---
+
+## ADR-0008: 数据源管理升级——可达性体检结论 + 差异化调度 / 健康自愈 / 按源抓取策略
+
+### 背景
+
+「加 FreeBuf / 安全客」过程中做了一次**全源体检**（2026-06-20，生产实测 24 源 + 运行历史 + 代码层通用性分析），暴露出**源管理**层一批结构性缺口。本 ADR 是这次体检的结论沉淀 + 改进方向定标，供分批实施（不一次性大改，符合 IPD 流程）。
+
+**体检结论（事实，生产实测）：**
+
+- **可达性整体健康**：22 个启用源现在全部 `200` + 出 feed + 在产出。
+- **抖动源**（间歇 failed 但实测可达）：`src_thehackernews`(failed×9)、`src_google_research`(×9)、`src_hn`、`src_arxiv_se`(×7)——多为 FeedBurner / 中转抖动（见 practice-log「Node fetch 代理陷阱」），无退避机制放大了失败计数。
+- **可复活源**：`src_bleeping`（停用、06-06 起连挂、0 条），**实测现在 `200`+15 条正常**——当时挂的原因已恢复，可重新启用。
+- **死源**：`src_freebuf`（阿里云 WAF 按 IP 拦 `405`，海外 IP 无解，保持停用）。
+- **低产出疑点**：`src_owasp_llm`(3 条)、`src_github_eng`(10)、`src_mitre_atlas`(12)——产出极低，疑 feed 稀疏或部分静默失败，待单独核。
+
+**代码层通用性结论（适配器架构评 3/5）：**
+
+- 最强资产 = `RawItem` 中间产物（`sources/types.ts`）把"解析"与"下游归一/去重/落库"彻底解耦，加同族源近零成本。
+- 三类短板（下文逐条定标）：① `fetch_interval` 死字段；② 解析/抽取静默失败；③ 适配器接口空挂 + `api` 半开陷阱。
+
+### 选项与决定
+
+按「收益/成本」分优先级；P1 三项打包成「源管理」专题先做，P2 随相关改动顺带，P3 后置。
+
+**决定① [P2，原 P1，评审降级] `fetch_interval` 差异化调度——依赖调度形态拆分，非零成本小切片。**
+- 现状澄清（评审修正）：`source.fetch_interval`**无任何调度代码消费**（`agents/scheduler.ts` 无条件全采所有 enabled 源，证实），但这**不是被遗忘的 bug，而是有意取舍且已写注解**：`ops/crontab:6-10` 明确「源 `fetch_interval=6h` 是采集层『想多久抓一次』的**提示**，与 cron 触发频率**无关**——前者描述意愿、后者真触发」。当年 dogfood（2026-06-06）把管线从「每 6h」收敛为「**每日 1 次**」（`0 17 * * *`，"一天 4 份 brief 名不副实"），采集与分析/报告**绑死在同一条日跑管线里**。
+- **致命前提**（评审指出）：在「**日跑一次 + 采集-分析-报告一条龙**」的现实下，`fetch_interval` 做「到点二级闸」**没有降流空间**——每天本来就只跑一次，arXiv 6h / 新闻 1h 在「一天一次」面前**全部退化为『每次都到点』**，interval 形同虚设。原 P1 版本假设的「1h 心跳 + interval 二级闸」**与生产实际（日跑）不符**。
+- 决定：**先回答「推翻还是承认当年取舍」**。要让 `fetch_interval` 真有价值，前提是**把调度拆成「高频采集 cron（如 1-2h）+ 日频分析/报告 cron」**——采集解耦后高频跑、interval 才有二级闸意义，分析仍日产（不破 dogfood 的「日 brief」收敛）。这是个**调度形态重构**，远大于「加个到点判定纯函数」，故**降级到 P2**、且明确**前置依赖 = 采集/分析解耦**。在调度不拆之前，本决定不动（避免做出"interval 装作生效但实际无效"的假象）。
+- 若未来拆调度：解析 `fetch_interval`→ms 纯函数 + 单测；按「最近成功 ingest run 时间 + interval」判到点；skipped 语义须与决定②的零产出看门狗**联合定义**（skipped 既不算 fail、也不进零产出计数，否则误判静默失败）。
+
+**决定② [P1] 源健康闭环——从「被动展示」到「软熔断自愈 + 按源告警」。**
+- 现状澄清（评审修正）：`runtime/run-stats.ts` 的 `aggregateSourceHealth` **已算**每源成功率 / 最近成功 / `consecutiveFails`，**且已被 admin 看板消费做展示**（`app/admin/page.tsx:68,76,278`，看板已用 `consecutiveFails>=3` 标红、列问题源计数）。所以缺的不是「计算/展示」，而是**自动处置**——算了、显示了、但没人据此动作。staleness 看门狗（`runtime/staleness.ts`）是**全局**的（管线整体停没停），非按源。**本决定是新增一条控制回路，不是「接通半成品」**（评审纠正：别低估为接通）。
+- 决定（评审加固后）：
+  1. **软停用 + 半开自愈（取代"硬停用等人工"）**：坏源判据**叠加时间维度**——`consecutiveFails >= N`（默认 12，**调高**）**且**最近一次成功距今 `> K 天`（默认 3）才"软停用"。**关键：软停用 ≠ 置 `enabled=0`**——用新列 `disabled_reason`/`disabled_by` 区分**系统熔断 vs 人工停用**（或复用 `audit_log.actor` 反查）。**人工停用的源系统永不自动改**（避免与人工管理打架）。
+  - **半开探测的调度（第二轮评审🔴——原文悬空，须钉死）**：现调度是**日跑一次全管线**，软停用源不进正常采集，那"半开探测"由谁触发?**决定：搭日跑管线的旁路，不引新 cron**——`runScheduledPipeline` 采集阶段对"系统熔断且距上次探测 ≥1 天"的源**额外探一次**（成功则解除熔断、失败则维持），探测在 collector 之外做、不计入正常 ingest 统计。**与决定①口径一致**（不为此新增独立 cron，避免又一个调度面）；这是日跑管线内的一个旁路分支、非新调度形态。
+  2. **⚠️ 先补退避（评审指出的根因）**：当前**只有 arXiv 有 429 退避**（`sources/arxiv.ts`），rss/article 无退避——抖动源（thehackernews `failed×9`、google_research `×9`，均 ADR 自己认定的**实测可达好源**）的失败被无退避**放大**。**若不先补退避就上自动停用，上线第一轮就会误杀这两个好源**（原 P1 版 `>=8` 阈值正会误杀，已撤）。故顺序：**先给 rss/article 加失败退避（连续失败→下几轮跳过该源、指数退避），再上软熔断**；退避吸收抖动、软熔断只对"真死 + 久未成功"动手。
+  3. **按源零产出看门狗**：enabled 源连续 M 轮 `inserted=0`（最近成功 ingest 距今 > 阈值）→ **按源**告警。专治**静默失败**（feed 变标题党 / 解析返 `[]` / WAF 软封 → 成功率显示 100% 但实则 0 产出——体检里 guid bug、决定⑤的相对 URL 丢条目都属此类被掩盖）。
+  4. 告警走已上线的 `runtime/alert.ts`（飞书 + 邮件扇出），文案带源 id + 连失次数 + 最近 error + 熔断/复活状态。
+
+**决定③ [P1] 全文抓取升级为「按源策略」——取代全局开关 + 猜容器。**
+- 现状：`ARTICLE_FETCH` 是**全局**开关，且**仅对空正文**触发（`agents/collector.ts`）；正文容器靠 `sources/article.ts` 的 id/class 白名单**猜**，命名外站点（先知社区）回退整页灌噪声。标题党（安全客=空 description）已能处理，但**短摘要**（先知=80 字 summary）不触发、**无容器站点**抽取脏。
+- 决定：`source` 表加两列——
+  - `fetch_mode TEXT DEFAULT 'feed'`（`feed` = 仅用 feed 正文；`full_text` = 按条目 URL 抓全文）：把"要不要抓全文"从全局猜变成**按源声明**。保留、干净。
+  - **`content_container TEXT`（评审修正，原 `content_selector`，可空）：按源覆盖正文容器，值为单个 `class`/`id` token（如 `js-article`、`rich_media_content`），不是 CSS 选择器。**——**理由（design-must-connect-to-code）**：`article.ts` 抽取引擎是**纯正则 + 同名标签深度配对、无 DOM**（注释三次强调极简无依赖）；用户填 CSS 组合选择器（`div.post > article .body`）这个引擎**执行不了、会静默失效**。收窄为单 token 可**直接喂现有 `CONTAINER_PATTERNS` 正则模板**（把该 token 加进容器定位的优先匹配），**零新依赖**。明确**不承诺 CSS 选择器、不引 cheerio**（引 DOM 解析器 = 破坏极简原则，否决）。无明显容器的站点（先知）手填一次 container token 即可，不靠全局白名单猜。
+  - 触发条件从「空正文」放宽为「`fetch_mode=full_text` 且正文短于阈值」覆盖短摘要源（先知 80 字），但**仅对声明了 `full_text` 的源**（不波及 feed-only 源、不误伤正常短摘要）。**阈值复用已有 `article.ts` 的 `MIN_ARTICLE_CHARS=200`（评审建议），不新增按源旋钮**——避免正文恰在阈值附近的源每轮抓/不抓抖动。
+  - **总闸交互（第二轮评审🟡——须明确，否则收益落空）**：`articleFetchEnabled()`（全局 `ARTICLE_FETCH`，默认关）与按源 `fetch_mode` 的关系——**决定：`fetch_mode=full_text` 的源不受全局总闸约束**（按源声明即抓），否则存量库默认 `ARTICLE_FETCH` 未开 → 决定③上线后先知仍不被抓、收益落空。`ARTICLE_FETCH` 总闸语义改为「**全局应急熔断**」（设 0 时连 `full_text` 源也停，用于一键止血），平时无需开。
+  - **container token 注入须按源隔离（第二轮评审🟡）**：`CONTAINER_PATTERNS` 是**全局共用**正则数组，按源 token 若直接 OR 进全局模板（如某站泛 `content`）会**污染对其他站点的匹配**。**决定：抽取时按当前源的 `content_container` 动态构造一条最高优先级正则、置于全局模板之前**，不改全局数组、不跨源污染。
+- 对标 RSSHub 的 route 级配置：每源自带抓取/抽取策略，而非全局一刀切。
+
+**决定④ [P1（堵陷阱）+ 后置（注册表）] 落地适配器注册表 + 实现 `api` 类型——随「加新源类型」时重构。**（评审：堵 api 提 P1）
+- 现状：`SourceAdapter` 接口（`sources/types.ts`）**定义了但从未用**，`sources/index.ts` 是硬编码 switch；`api` 类型在 schema CHECK / validator 白名单里**允许建源**，但 `index.ts` 适配器直接抛"待实现"→ 用户能建 `api` 源、过校验、每轮采集必抛 failed（半开陷阱）。
+- 决定：① 短期**堵陷阱**——`validateSourceInput` 暂时拒 `api` 类型建源（在适配器实现前），避免 UI 建出必败源；② 中期当真要加 JSON API / GitHub API 等新类型时，**用 `Map<type, SourceAdapter>` 注册表替换 switch**，让 `SourceAdapter` 接口真正落地，新类型 = 加一个适配器文件 + 注册一行。**不为重构而重构**：无新类型需求前不动 switch（当前 rss/arxiv 够用），仅先堵 `api` 陷阱。
+- 注意：加新 type 仍需同步 schema CHECK（`CREATE TABLE IF NOT EXISTS` 不改存量 CHECK → 需 `ensureColumn` 式迁移）/ validator Set / UI 下拉——这部分的「枚举闭合」成本注册表省不掉，文档记之。
+
+**决定⑤ [P1（相对 URL）+ P2（其余）] 解析鲁棒性补强 + robots 缓存。**（评审：相对 URL 提 P1）
+- **相对 URL：`itemUrl` / Atom link 不对 feed base 做 `new URL(link, base)`——评审指出这其实是「静默丢数据」bug**（相对 link → 下游 `new URL(url)` 抛异常 → collector 丢条目，与决定②要治的静默失败同类），故**提 P1（切片1）**：补 feed base 解析。
+  - **⚠️ 副作用（第二轮评审🟡A，两轮才发现）**：唯一索引建在 `content_item.url` 上；修复后同一条目 url 从「相对串/异常」变「绝对串」→ 若该源历史上已用旧形态入过库，会以新 url **再存一份**（url 不同、索引不拦）= 一次性重复。当前用相对 URL 的源极少（体检 24 源均绝对 URL），**实际影响面接近零**；但落地时须确认「上线的源里没有正用相对 URL 入库的」，若有则一次性归一存量 url 或接受短期重复尾巴。
+- RSS 1.0 / RDF（`<rdf:RDF>` 根）→ 现 `parseRss` 返 `[]` 静默 0 条：加 RDF 分支（P2）。
+- robots **每轮每源重拉**（`fetchRobots` 无缓存）：加进程级 `Map<origin, {rules, ts}>` TTL 缓存（决定①降频后压力已小，但全文抓取按文章 origin 各拉一次时收益明显）。
+- `media:content` / `enclosure`、非中英语言检测（`detectLanguage` 只分 zh/en/mixed）：记为已知盲区，按真实需求再补（当前源无此需求）。
+
+**决定⑥ [P3，但属"分析质量"而非"便利性"] 跨源去重 / feed 自动发现——当前后置、接入高重叠源即提级。**（评审改理由）
+- `content_hash` 当前只做**同 URL** 变更检测，唯一索引建在 url 上 → 同文不同 URL（转载/镜像）各存一份。**评审纠正定性**：对洞察系统而言，跨源去重**不是便利性、是分析质量问题**——重复内容进 analyzer 会**虚高某事件的"热度/共识"信号**（同一篇被 N 家转载 → 误判为「广泛报道的重要事件」），污染洞察排序。
+- 决定：**当前源以一手源（arXiv/官方博客/厂商）为主、重叠低，故后置可接受**；但**一旦接入新闻聚合类高重叠源（如多家安全媒体转载同一漏洞通告）须立即提级**。决定②的零产出看门狗可顺带统计跨源标题相似度作为提级触发信号。feed 自动发现属纯便利性，后置。
+
+**决定⑦ [P1-新增，评审最重要遗漏] 按源成本 / ROI——洞察系统源管理的第一性约束。**
+- 评审指出：这是个 **LLM 洞察系统**，源管理的第一性约束**不是抓取频率、而是每源每轮的分析花费**。现状只有 **topic 级**成本熔断（`scheduler.ts:155` A5、`runtime/cost-guard.ts` `getBudgetStatus`/`notifyBudget`），**没有按源成本归因**。整份原 ADR 零字谈成本——缺了最贵那一维。
+- 真问题：体检里的**低产出源**（`owasp_llm` 3 条、`github_eng` 10 条、`mitre_atlas` 12 条）——它们的条目**每轮仍占用 analyzer 预算**，但产出/被采纳的洞察极少。该回答的核心是：**每源的 cost-per-adopted-insight（单位成本产出多少被纳入报告的洞察）是多少？低 ROI 源是否值得继续每轮花分析钱？**
+- 决定：归因**每源 → 贡献的洞察数 / 被采纳进报告数 / 摊到的分析成本**，产出**按源 ROI 看板 + 低 ROI 告警**。
+- **⚠️ 归因链现状（第二轮评审纠正——原文"数据已落库"夸大，须诚实）**：
+  - **分子（被采纳洞察）可拉通、但口径有限**：唯一真路径是 `citation.content_item_id → content_item.source_id`（即"洞察引了哪些 item、item 属哪些源"）。`insight`/`analysis_batch` 表**本身无 source 维度**（`schema.ts` insight 只有 `source_count`/`multi_source` 计数、batch 只有 `topic_id`），所以"insight→batch→source"这条路**不存在**——只能经 citation 链，且**只覆盖被引用的洞察**。
+  - **分母（每源分析成本）无现成数据、须摊派估算**：analyze 的 `run.cost` 是按 `(topic, window)` **批记**的（`agents/pipeline.ts` analyze run target=topic_id），一个 batch 跨多源，**成本无法从现有数据拆到源**——只能按"该源贡献的 item 数 / batch 内总 item 数"**摊派**，这是个**建模假设、不是取数**。（注：`ingest` run 的 target 有 `source_id`、采集成本可按源归因，但采集非 LLM 大头。）
+  - 故：决定⑦是**建模/口径设计任务**（先定 ROI 公式 + 摊派口径），不是"拉个现成数"。
+- **健康与 ROI 是两个正交维度，不可混（第二轮评审纠正🔴）**：health 坏（连失+久未成功）≠ ROI 低（如 OWASP 权威但稀疏、health 满分 ROI 低）。**决定②的软熔断只读 health 信号、绝不读 ROI**；**ROI 仅产出看板 + 告警供人工决策、绝不自动触发停源**（删去原文"指导自动停启"的自相矛盾表述）。成本低≠不重要。
+- 落地依赖：归因口径设计先行，**技术上不依赖切片②③**（citation 链已落库），可独立/并行做。
+
+### 理由
+
+- **多数建立在已有资产上**：决定②复用**已算好**的 `consecutiveFails` + 已上线告警扇出 + 已有 `audit_log.actor`；决定③复用 `article.ts` 抽取 + `MIN_ARTICLE_CHARS`；决定⑦的归因数据（`run.cost`/`insight`/`report`）已落库。**但评审纠正：决定② 是新增控制回路（软熔断状态机 + 退避）、不是"接通"，成本别低估**；决定① 依赖调度形态重构、更非小切片。
+- **直击体检暴露的真问题**：死字段（①）、静默失败被掩盖（②的零产出看门狗 + ③的按源抽取）、半开陷阱（④）——都是这次实测/分析**确证**的缺口，不是臆想。
+- **对标业界但不过度**：差异化调度（①）、健康自愈（②）、route 级抓取策略（③）、适配器插件化（④）是 RSSHub / Huginn / Scrapy 的核心能力；跨源去重 / 自动发现（⑥）是锦上添花，按自托管单人/小团队规模后置。
+- **风险可控**：每项可独立小 PR 合入；决定①②有「跳过/停用」语义，逻辑错也只影响调度不毁数据；决定③加列走 `ensureColumn` 幂等补列（沿用 ADR-0007「派生即正确、零回填」），存量源默认 `feed` 行为不变。
+
+### 影响
+
+- **改**（按重排后切片）：`db/validate.ts`（切片1 ④堵 api、切片2 ③新字段校验）、`sources/rss.ts`（切片1 ⑤相对 URL `new URL(link,base)`；切片5 RDF 分支）、`agents/collector.ts`（切片2 ③按 fetch_mode 触发）、`sources/article.ts`（切片2 ③container token 覆盖）、设置页 `source-form.tsx`（切片2 ③fetch_mode/container 表单）、`sources/<adapter>.ts` + `sources/robots.ts`（切片3 ②失败退避）、`agents/scheduler.ts`（切片3 ②软熔断半开）、`runtime/run-stats.ts` 或新 `source-watchdog`（切片3 ②零产出 + 切片4 ⑦按源 ROI 归因）、`sources/robots.ts`（切片5 缓存）。决定① scheduler 到点判定**待调度拆分后**（P2）。
+- **schema**：`source` 加 `fetch_mode TEXT NOT NULL DEFAULT 'feed'` + `content_container TEXT`（决定③，单 class/id token 非 CSS）；决定②的「系统熔断 vs 人工停用」区分可加 `disabled_reason`/`disabled_by` 或复用 `audit_log.actor` 反查（落地时定）。均走 `db/index.ts` `ensureColumn` 幂等补列、存量默认值、无破坏性迁移、无回填（同 ADR-0007 手法）。
+- **配置**：`fetch_mode`/`content_container` 进 `defaults.yaml` 源定义（仅对新空库 seed 有意义，存量改 DB——见 MEMORY「DB 覆盖 config 源配置」）；env（决定②加固后）：`SOURCE_CIRCUIT_FAILS`(12) + `SOURCE_CIRCUIT_DAYS`(3)（连失**且**久未成功双条件）、`SOURCE_ZERO_YIELD_ROUNDS`(M)、`ARTICLE_FETCH` 保留为总闸。
+- **eval**：本 ADR 改动集中在**采集/调度层**，不碰 analyzer/validator/report-gen 提示与评分 → eval-gate 多为 `skip`（决定③改变入库内容形态时，若影响下游分析，按 eval-gate 评估是否需重测）。
+- **不破护城河**：可溯源/一致性闸门不动；决定③抓的全文仍走 `normalizeBody` 逐字清洗 + 下游 validator 同一闸门。
+
+### 切片化落地（评审重排后——按「低风险 + 高价值」真实排序）
+
+原版把"看着小、实则牵动调度形态/误杀风险/引擎重写"的三项排进 P1，真正零风险的反在 P2。评审重排后：
+
+- **切片1（真·零风险，先做）**：决定④ 堵 `api` 陷阱（`validate.ts` 拒建 api 源，5 行）+ 决定⑤ 相对 URL `new URL(link,base)` 解析（治静默丢条目）。无 schema、无行为变化、即时收益。
+- **切片2**：决定③ 按源全文策略（`source` 加 `fetch_mode` + **`content_container` 单 token**（非 CSS）两列 + collector 按 mode 触发 + 复用 `MIN_ARTICLE_CHARS` 阈值 + 设置页表单）。落地后**先知社区**等短摘要/无容器源可接入。`ensureColumn` 幂等补列、存量默认 `feed`。
+- **切片3（"需重新设计"的 P1，非"接通"）**：决定② 健康闭环——**先**给 rss/article 加失败退避（吸收抖动），**再**上软熔断半开自愈（叠加时间维度 N 次连失 **且** 久未成功，区分系统/人工停用）+ 按源零产出看门狗。**顺序不可颠倒**（不先退避就上停用 = 误杀抖动好源）。
+- **切片4（技术上不依赖②③、可并行）**：决定⑦ 按源 ROI——**先出归因口径设计**（分子=citation→source 链/分母=batch 成本按 item 占比摊派，见决定⑦），再实现看板 + 低 ROI 告警（决策信息，**只进看板、不喂决定②软熔断**）。
+- **后置（P2/P3）**：决定① `fetch_interval`（**前置依赖：采集/分析调度解耦**——在拆调度前不做，避免"装作生效"）；决定⑤ 其余（RDF 分支 / robots 缓存）；决定⑥ 跨源去重（接入高重叠源即提级）。
+- **不做（本 ADR）**：注册表重构（无新类型需求前 YAGNI）；feed 自动发现；ASR；多模态。
+
+### 评审修订记录（第一轮，独立 AI 评审 2026-06-20）
+
+独立架构评审对 v1 的修正（已并入上文）：
+- **事实纠错**：① 决定②原称 `consecutiveFails`「无人消费」**错**——已被 admin 看板消费做展示（`admin/page.tsx:68`），实为「有展示、无自动处置」，措辞已改。② 决定①原假设「cron 1h 心跳」**与生产不符**——实为日跑一次（`crontab:11`）且 `fetch_interval` 是有意取舍（`crontab:6-10` 注解），已改为"直面历史取舍 + 依赖调度拆分 + 降 P2"。
+- **取舍加固**：决定②阈值 `>=8` 会**误杀** ADR 自认的抖动好源（thehackernews/google_research），已改为"先退避 + 时间维度 + 软熔断半开"；决定③ `content_selector`（CSS）与无 DOM 正则引擎不兼容，已收窄为 `content_container` 单 token（不引 cheerio）。
+- **优先级重排**：④堵api + ⑤相对URL 提 P1（真零风险）；① 降 P2（依赖调度拆分）。
+- **新增决定⑦（成本/ROI）**：评审指出"LLM 系统源管理第一性约束是成本"，原 ADR 零字谈成本——补按源 cost-per-adopted-insight 维度。
+- **定性纠正**：决定⑥跨源去重从"便利性"改为"分析质量问题"（重复内容虚高热度信号）。
+
+**第二轮（独立 AI 评审 2026-06-20，结论 GO + 切片1 可立即实施）。** v2 修正：
+- 🔴 **决定⑦归因链"数据已落库"夸大**——核 `schema.ts`：`insight`/`analysis_batch` 无 source 维度，"insight→batch→source"不存在；分子只能经 `citation→content_item.source_id`（仅覆盖被引用洞察），分母（每源分析成本）无现成数据、须按 batch 内 item 占比**摊派估算**。改为诚实口径：⑦是建模任务非取数。
+- 🔴 **决定②半开探测调度悬空**——日跑形态下软停用源不进采集，半开由谁触发未定。钉死：**搭日跑管线旁路、不引新 cron**（与①降级口径一致）。
+- 🔴 **决定⑦ ROI 与决定②软熔断联动自相矛盾**——health 与 ROI 正交，删去"ROI 指导自动停源"；软熔断只读 health、ROI 只进看板。
+- 🟡 决定③ 总闸交互（`full_text` 源不受 `ARTICLE_FETCH` 约束、总闸降为应急熔断）+ container token 须按源隔离不污染全局正则。
+- 🟡 决定⑤ 相对 URL 修复改变 url 形态→唯一索引→潜在一次性重复（当前源全绝对 URL、影响≈零，落地核一遍）。
+- 切片4 标注「不依赖②③、可并行」。
+- **GO 结论**：切片1（堵 api + 相对 URL）真零风险、无🔴阻塞，可立即开做；切片3/4 启动前先消化上述🔴（先出半开调度/ROI 归因口径设计、接上 `pipeline.ts` target 与 crontab 调度形态再开工）。
+
+---
