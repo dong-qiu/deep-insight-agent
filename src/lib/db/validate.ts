@@ -87,6 +87,11 @@ export function validateSourceInput(body: unknown, opts: { existingId?: string }
   if (!SOURCE_TYPES.has(type as Source["type"])) {
     return { ok: false, message: `type 必须是 ${[...SOURCE_TYPES].join("/")}` };
   }
+  // ADR-0008 决定④：堵 api 半开陷阱——type 枚举/schema 保留 api（留作未来类型），但适配器未实现
+  // （sources/index.ts 对 api 直接抛错）；若放行建源 → 每轮采集必抛 failed。建源阶段显式拒，给清晰原因。
+  if (type === "api") {
+    return { ok: false, message: "api 类型适配器尚未实现，暂不可创建该类型源（ADR-0008 决定④）" };
+  }
 
   const endpoint = s(o.endpoint, "endpoint", 500);
   if (typeof endpoint !== "string") return { ok: false, message: endpoint.fail };

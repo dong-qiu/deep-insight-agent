@@ -91,6 +91,12 @@ describe("validateSourceInput", () => {
     expect(v.ok).toBe(false);
   });
 
+  it("api 类型 → 拒（适配器未实现，堵半开陷阱 ADR-0008 决定④）", () => {
+    const v = validateSourceInput({ ...valid, type: "api" });
+    expect(v.ok).toBe(false);
+    if (!v.ok) expect(v.message).toContain("api");
+  });
+
   it("endpoint 非 URL → 422", () => {
     const v = validateSourceInput({ ...valid, endpoint: "not a url" });
     expect(v.ok).toBe(false);

@@ -78,6 +78,33 @@ describe("parseRss", () => {
     expect(parseRss(feed)[0].url).toBe("https://ex.com/real");
   });
 
+  it("相对 <link> + feed base → 归一为绝对 URL（决定⑤，防下游 new URL 抛错丢条目）", () => {
+    const feed = `<?xml version="1.0"?><rss version="2.0"><channel>
+      <item><title>T</title><link>/posts/42</link><description>b</description></item></channel></rss>`;
+    expect(parseRss(feed, "https://blog.example.com/feed.xml")[0].url).toBe("https://blog.example.com/posts/42");
+  });
+
+  it("绝对 <link> + base → 原样不变（base 不覆盖绝对）", () => {
+    const feed = `<?xml version="1.0"?><rss version="2.0"><channel>
+      <item><title>T</title><link>https://other.com/x</link><description>b</description></item></channel></rss>`;
+    expect(parseRss(feed, "https://blog.example.com/feed.xml")[0].url).toBe("https://other.com/x");
+  });
+
+  it("非 http scheme 的 <link>（tag:/mailto:）→ 丢弃，不灌进 url（即便有 base 也不放行）", () => {
+    const feed = `<?xml version="1.0"?><rss version="2.0"><channel>
+      <item><title>T</title><link>mailto:x@ex.com</link><guid>tag:ex.com,2026:1</guid><description>b</description></item></channel></rss>`;
+    expect(parseRss(feed, "https://blog.example.com/feed.xml")[0].url).toBe("");
+  });
+
+  it("相对 <link> 无 base → 丢弃（不灌非法 url）；Atom 相对 alt + base → 归一", () => {
+    const rss = `<?xml version="1.0"?><rss version="2.0"><channel>
+      <item><title>T</title><link>/rel</link><description>b</description></item></channel></rss>`;
+    expect(parseRss(rss)[0].url).toBe("");
+    const atom = `<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom">
+      <entry><title>A</title><link href="/news/9" rel="alternate"/><content>c</content></entry></feed>`;
+    expect(parseRss(atom, "https://site.example/atom")[0].url).toBe("https://site.example/news/9");
+  });
+
   it("guid isPermaLink=false 或非 URL → 不当 url（仍空，避免拿 id 当链接）", () => {
     const f1 = `<?xml version="1.0"?><rss version="2.0"><channel>
       <item><title>T</title><guid isPermaLink="false">https://ex.com/x</guid><description>b</description></item></channel></rss>`;
