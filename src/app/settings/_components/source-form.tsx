@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import type { Source, Topic } from "../../../lib/types.js";
+import { useSettingsStatus } from "./settings-status.js";
 
 export function SourceForm({
   mode,
@@ -16,6 +17,7 @@ export function SourceForm({
   onDone?: () => void;
 }): React.ReactElement {
   const router = useRouter();
+  const notify = useSettingsStatus();
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [form, setForm] = useState<Source>(
@@ -54,9 +56,11 @@ export function SourceForm({
       }
       onDone?.();
       if (detailsEl) detailsEl.open = false;
+      notify(`✅ 数据源已${mode === "create" ? "创建" : "保存"}：${form.name}`);
       router.refresh();
     } catch (e) {
       setErr((e as Error).message);
+      notify(`❌ 数据源保存失败：${(e as Error).message}`, "err");
     } finally {
       setBusy(false);
     }
@@ -102,7 +106,7 @@ export function SourceForm({
         <button type="submit" className="ppt-btn" disabled={busy}>
           {busy ? "保存中…" : mode === "create" ? "创建" : "保存"}
         </button>
-        {err ? <span className="export-ppt-err"> · {err}</span> : null}
+        {err ? <span className="form-err"> · {err}</span> : null}
       </div>
     </form>
   );
