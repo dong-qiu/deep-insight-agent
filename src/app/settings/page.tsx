@@ -11,6 +11,7 @@ import { CollectButton } from "./_components/collect-button.js";
 import { DeepDiveButton } from "./_components/deep-dive-button.js";
 import { DeleteButton } from "./_components/delete-button.js";
 import { RecipientAdmin } from "./_components/recipient-admin.js";
+import { SettingsStatusProvider } from "./_components/settings-status.js";
 import { SourceForm } from "./_components/source-form.js";
 import { TopicForm } from "./_components/topic-form.js";
 import { UserAdmin } from "./_components/user-admin.js";
@@ -31,26 +32,41 @@ export default function SettingsPage() {
   }
 
   return (
+    <SettingsStatusProvider>
     <section>
       <h2>设置</h2>
 
-      <h3>模型对子</h3>
-      {models ? (
-        <p className="muted">
-          分析 <code>{models.analyzer}</code> · 校验 <code>{models.validator}</code>
-        </p>
-      ) : (
-        <p className="muted">（模型配置未就绪：检查 ANTHROPIC_API_KEY 环境变量）</p>
-      )}
+      {/* 长页面锚点导航：标题带计数，点击直达对应分区（零 JS 纯锚点）*/}
+      <nav className="muted" style={{ margin: ".25rem 0 1rem" }}>
+        <a href="#users">用户（{users.length}）</a>
+        <a href="#recipients">收件人（{recipients.length}）</a>
+        <a href="#topics">主题（{topics.length}）</a>
+        <a href="#sources">数据源（{sources.length}）</a>
+      </nav>
 
-      <h3>用户 / 访问（{users.length}）</h3>
+      {/* 只读模型对子：低频查看，折叠收起避免占据顶部最显眼位 */}
+      <details style={{ margin: ".5rem 0" }}>
+        <summary className="muted" style={{ cursor: "pointer" }}>
+          模型对子{models ? `（分析 ${models.analyzer} · 校验 ${models.validator}）` : "（未就绪）"}
+        </summary>
+        {models ? (
+          <p className="muted" style={{ marginTop: ".5rem" }}>
+            分析 <code>{models.analyzer}</code> · 校验 <code>{models.validator}</code>。
+            由环境变量 / config 配置（只读）；更换模型需改配置并重启服务。
+          </p>
+        ) : (
+          <p className="muted" style={{ marginTop: ".5rem" }}>（模型配置未就绪：检查 ANTHROPIC_API_KEY 环境变量）</p>
+        )}
+      </details>
+
+      <h3 id="users">用户 / 访问（{users.length}）</h3>
       <p className="muted">
         受邀账号——发邮箱+密码给可信的人即可登录。一律 <strong>viewer（只读）</strong>：能看 Brief/报告/主题，
         不能进配置、不能触发深挖/追问/导出。<strong>唯一管理员是内置账号</strong>（环境变量），不在此列、不可删/不可在此增设。
       </p>
       <UserAdmin initial={users} />
 
-      <h3>邮件分发收件人（{recipients.length}）</h3>
+      <h3 id="recipients">邮件分发收件人（{recipients.length}）</h3>
       <p className="muted">
         每份 Brief / 报告推送会发到这里启用的邮箱（与飞书并行）。<strong>名单为空时回落到环境变量
         REPORT_EMAIL_TO</strong>（兜底）；只要库里有启用收件人，就以此名单为准。停用＝暂停发送但保留，删除＝移出名单。
@@ -58,7 +74,7 @@ export default function SettingsPage() {
       </p>
       <RecipientAdmin initial={recipients} />
 
-      <h3>主题（{topics.length}）</h3>
+      <h3 id="topics">主题（{topics.length}）</h3>
       {topics.length === 0 ? (
         <p className="muted">暂无主题（首次运行会从默认配置播种）。</p>
       ) : (
@@ -84,7 +100,7 @@ export default function SettingsPage() {
         <TopicForm mode="create" />
       </details>
 
-      <h3>数据源（{sources.length}）</h3>
+      <h3 id="sources">数据源（{sources.length}）</h3>
       {sources.length === 0 ? (
         <p className="muted">暂无数据源。</p>
       ) : (
@@ -110,5 +126,6 @@ export default function SettingsPage() {
         <SourceForm mode="create" topics={topics.map((t) => ({ id: t.id, name: t.name }))} />
       </details>
     </section>
+    </SettingsStatusProvider>
   );
 }

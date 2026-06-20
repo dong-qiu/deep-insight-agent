@@ -3,6 +3,7 @@
  *  FK 违例时后端返 409 + 中文文案，提示用户改 enabled=false。 */
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { useSettingsStatus } from "./settings-status.js";
 
 export function DeleteButton({
   entity,
@@ -14,6 +15,7 @@ export function DeleteButton({
   name: string;
 }): React.ReactElement {
   const router = useRouter();
+  const notify = useSettingsStatus();
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -26,9 +28,11 @@ export function DeleteButton({
         const j = (await res.json()) as { message?: string; error?: string };
         throw new Error(j.message ?? j.error ?? `HTTP ${res.status}`);
       }
+      notify(`✅ 已删除：${name}`);
       router.refresh();
     } catch (e) {
       setErr((e as Error).message);
+      notify(`❌ 删除失败：${(e as Error).message}`, "err");
     } finally {
       setBusy(false);
     }
@@ -45,7 +49,7 @@ export function DeleteButton({
       >
         {busy ? "删除中…" : "删除"}
       </button>
-      {err ? <span className="export-ppt-err" style={{ marginLeft: ".5rem" }}>{err}</span> : null}
+      {err ? <span className="form-err" style={{ marginLeft: ".5rem" }}>{err}</span> : null}
     </span>
   );
 }

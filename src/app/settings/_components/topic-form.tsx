@@ -11,6 +11,7 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import type { Topic } from "../../../lib/types.js";
+import { useSettingsStatus } from "./settings-status.js";
 
 export function TopicForm({
   mode,
@@ -22,6 +23,7 @@ export function TopicForm({
   onDone?: () => void;
 }): React.ReactElement {
   const router = useRouter();
+  const notify = useSettingsStatus();
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [form, setForm] = useState<Omit<Topic, "keywords">>(
@@ -57,9 +59,11 @@ export function TopicForm({
       onDone?.();
       // 保存成功 → 关闭外层 <details>（编辑框收回）；refresh 让 server 拉新数据
       if (detailsEl) detailsEl.open = false;
+      notify(`✅ 主题已${mode === "create" ? "创建" : "保存"}：${form.name}`);
       router.refresh();
     } catch (e) {
       setErr((e as Error).message);
+      notify(`❌ 主题保存失败：${(e as Error).message}`, "err");
     } finally {
       setBusy(false);
     }
@@ -93,7 +97,7 @@ export function TopicForm({
         <button type="submit" className="ppt-btn" disabled={busy}>
           {busy ? "保存中…" : mode === "create" ? "创建" : "保存"}
         </button>
-        {err ? <span className="export-ppt-err"> · {err}</span> : null}
+        {err ? <span className="form-err"> · {err}</span> : null}
       </div>
     </form>
   );

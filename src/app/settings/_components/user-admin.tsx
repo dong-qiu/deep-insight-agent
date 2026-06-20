@@ -4,6 +4,7 @@
  *  bootstrap admin（env ADMIN_*）不在此列、不可删。 */
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { useSettingsStatus } from "./settings-status.js";
 
 interface Row {
   email: string;
@@ -14,6 +15,7 @@ interface Row {
 
 export function UserAdmin({ initial }: { initial: Row[] }): React.ReactElement {
   const router = useRouter();
+  const notify = useSettingsStatus();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -22,6 +24,9 @@ export function UserAdmin({ initial }: { initial: Row[] }): React.ReactElement {
   async function add(e: React.FormEvent): Promise<void> {
     e.preventDefault();
     if (busy) return;
+    // currentTarget 须在 await 前抓——成功后收起「+ 添加账号」外层 details
+    const detailsEl = (e.currentTarget as HTMLFormElement).closest("details");
+    const addr = email.trim();
     setBusy(true);
     setErr(null);
     try {
@@ -29,7 +34,7 @@ export function UserAdmin({ initial }: { initial: Row[] }): React.ReactElement {
       const res = await fetch("/api/admin/users", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ email: email.trim(), password }),
+        body: JSON.stringify({ email: addr, password }),
       });
       if (!res.ok) {
         const b = (await res.json().catch(() => ({}))) as { message?: string; error?: string };
@@ -37,24 +42,29 @@ export function UserAdmin({ initial }: { initial: Row[] }): React.ReactElement {
       }
       setEmail("");
       setPassword("");
+      if (detailsEl) detailsEl.open = false;
+      notify(`✅ 已添加账号：${addr}（viewer）`);
       router.refresh();
     } catch (e) {
       setErr((e as Error).message);
+      notify(`❌ 添加账号失败：${(e as Error).message}`, "err");
     } finally {
       setBusy(false);
     }
   }
 
   async function remove(target: string): Promise<void> {
-    if (busy || !confirm(`删除账号 ${target}？`)) return;
+    if (busy || !confirm(`删除账号 ${target}？\n对方将立即无法登录（如只是临时禁用，建议保留账号）。`)) return;
     setBusy(true);
     setErr(null);
     try {
       const res = await fetch(`/api/admin/users?email=${encodeURIComponent(target)}`, { method: "DELETE" });
       if (!res.ok) throw new Error(`删除失败 HTTP ${res.status}`);
+      notify(`✅ 已删除账号：${target}`);
       router.refresh();
     } catch (e) {
       setErr((e as Error).message);
+      notify(`❌ 删除账号失败：${(e as Error).message}`, "err");
     } finally {
       setBusy(false);
     }
@@ -97,7 +107,7 @@ export function UserAdmin({ initial }: { initial: Row[] }): React.ReactElement {
           <button type="submit" className="ppt-btn" disabled={busy} style={{ alignSelf: "flex-start" }}>
             {busy ? "保存中…" : "保存账号"}
           </button>
-          {err ? <p className="followup-err">❌ {err}</p> : null}
+          {err ? <p className="form-err" style={{ marginLeft: 0 }}>❌ {err}</p> : null}
         </form>
       </details>
     </div>

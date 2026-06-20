@@ -4,6 +4,7 @@
  *  库里有启用收件人即以库为准；全删/全停则报告邮件回落 env REPORT_EMAIL_TO（兜底）。 */
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { useSettingsStatus } from "./settings-status.js";
 
 interface Row {
   email: string;
@@ -14,13 +15,15 @@ interface Row {
 
 export function RecipientAdmin({ initial }: { initial: Row[] }): React.ReactElement {
   const router = useRouter();
+  const notify = useSettingsStatus();
   const [email, setEmail] = useState("");
   const [label, setLabel] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  /** 调 API；成功返 true（调用方据此决定是否清空表单），失败 setErr 并返 false。 */
-  async function call(fn: () => Promise<Response>): Promise<boolean> {
+  /** 调 API；成功返 true（调用方据此决定是否清空表单/收起表单），失败 setErr 并返 false。
+   *  okMsg 给定则成功时弹状态条；失败统一弹错误条。 */
+  async function call(fn: () => Promise<Response>, okMsg?: string): Promise<boolean> {
     if (busy) return false;
     setBusy(true);
     setErr(null);
@@ -30,10 +33,12 @@ export function RecipientAdmin({ initial }: { initial: Row[] }): React.ReactElem
         const b = (await res.json().catch(() => ({}))) as { message?: string; error?: string };
         throw new Error(b.message ?? b.error ?? `HTTP ${res.status}`);
       }
+      if (okMsg) notify(okMsg);
       router.refresh();
       return true;
     } catch (e) {
       setErr((e as Error).message);
+      notify(`❌ 收件人操作失败：${(e as Error).message}`, "err");
       return false;
     } finally {
       setBusy(false);
@@ -42,32 +47,40 @@ export function RecipientAdmin({ initial }: { initial: Row[] }): React.ReactElem
 
   async function add(e: React.FormEvent): Promise<void> {
     e.preventDefault();
+    // currentTarget 必须在 await 前抓——保存成功后收起「+ 添加收件人」外层 details（借鉴 Topic/Source 表单）
+    const detailsEl = (e.currentTarget as HTMLFormElement).closest("details");
+    const addr = email.trim();
     const ok = await call(() =>
       fetch("/api/admin/recipients", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ email: email.trim(), label: label.trim() }),
+        body: JSON.stringify({ email: addr, label: label.trim() }),
       }),
+      `✅ 已添加收件人：${addr}`,
     );
     if (ok) {
       setEmail(""); // 仅成功才清空，失败保留输入便于改正重试
       setLabel("");
+      if (detailsEl) detailsEl.open = false;
     }
   }
 
   const toggle = (target: string, enabled: boolean): Promise<boolean> =>
-    call(() =>
-      fetch("/api/admin/recipients", {
-        method: "PATCH",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ email: target, enabled }),
-      }),
+    call(
+      () =>
+        fetch("/api/admin/recipients", {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ email: target, enabled }),
+        }),
+      `✅ 已${enabled ? "启用" : "停用"}：${target}`,
     );
 
   async function remove(target: string): Promise<void> {
     if (!confirm(`从分发名单移除 ${target}？`)) return;
-    await call(() =>
-      fetch(`/api/admin/recipients?email=${encodeURIComponent(target)}`, { method: "DELETE" }),
+    await call(
+      () => fetch(`/api/admin/recipients?email=${encodeURIComponent(target)}`, { method: "DELETE" }),
+      `✅ 已移除收件人：${target}`,
     );
   }
 
@@ -142,7 +155,7 @@ export function RecipientAdmin({ initial }: { initial: Row[] }): React.ReactElem
           <button type="submit" className="ppt-btn" disabled={busy} style={{ alignSelf: "flex-start" }}>
             {busy ? "保存中…" : "保存收件人"}
           </button>
-          {err ? <p className="followup-err">❌ {err}</p> : null}
+          {err ? <p className="form-err" style={{ marginLeft: 0 }}>❌ {err}</p> : null}
         </form>
       </details>
     </div>
