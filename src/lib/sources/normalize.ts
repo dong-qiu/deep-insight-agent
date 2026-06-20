@@ -110,6 +110,7 @@ export function rawToContentItem(raw: RawItem, source: Source, fetchedAt: string
     topic_ids: source.topic_ids,
     tags: [],
     body,
+    body_kind: raw.body_kind ?? "article", // 适配器未标则默认 article（ADR-0007；transcript 由 rss 适配器在切片2 设）
     raw_ref: "",
     content_hash: hash,
     fetch_status: truncated ? "partial" : "ok",

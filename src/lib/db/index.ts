@@ -59,6 +59,14 @@ function migrate(db: DB): void {
   // 里程碑自动标注（ADR-0006）：report_index 派生的里程碑洞察计数（importance≥5 + 非追加 + aggregation），
   // 供主题页徽标/里程碑时间线；旧报告补列默认 0（重生报告写正确值）。
   ensureColumn(db, "report_index", "milestone_count", "milestone_count INTEGER NOT NULL DEFAULT 0");
+  // 料源形态（ADR-0007 播客接入）：旧库补列默认 'article'（存量全是网页/论文/show_notes 文摘，
+  // 重采才写真值）；CHECK 已实测可随 ADD COLUMN 加（默认值满足约束）。
+  ensureColumn(
+    db,
+    "content_item",
+    "body_kind",
+    "body_kind TEXT NOT NULL DEFAULT 'article' CHECK (body_kind IN ('article','show_notes','transcript'))",
+  );
 }
 
 let _db: DB | null = null;

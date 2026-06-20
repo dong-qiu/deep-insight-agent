@@ -43,7 +43,7 @@ describe("ContentItem", () => {
   const item: ContentItem = {
     id: "ci1", source_id: "src_arxiv_swe", url: "https://arxiv.org/abs/2605.1",
     title: "T", author: null, published_at: "2026-05-20", fetched_at: "2026-05-25T00:00:00Z",
-    language: "en", topic_ids: ["t1"], tags: [], body: "hello", raw_ref: "raw://1",
+    language: "en", topic_ids: ["t1"], tags: [], body: "hello", body_kind: "article", raw_ref: "raw://1",
     content_hash: "h1", fetch_status: "ok",
   };
   beforeEach(() => insertSource(db, sampleSource));
@@ -70,6 +70,14 @@ describe("ContentItem", () => {
     expect(after.body).toBe("new body");
     expect(after.fetched_at).toBe("2026-05-26T01:00:00Z");
     expect((db.prepare("SELECT COUNT(*) c FROM content_item").get() as { c: number }).c).toBe(1); // 不新增
+  });
+
+  it("body_kind 往返（CHECK 接受 transcript）+ 可更新（show_notes→transcript 场景铺路）", () => {
+    const tr: ContentItem = { ...item, id: "ci_tr", url: "https://x/tr", body_kind: "transcript" };
+    insertContentItem(db, tr);
+    expect(getContentItem(db, "ci_tr")!.body_kind).toBe("transcript");
+    updateContentItem(db, { ...tr, body_kind: "show_notes", content_hash: "h9" });
+    expect(getContentItem(db, "ci_tr")!.body_kind).toBe("show_notes");
   });
 });
 

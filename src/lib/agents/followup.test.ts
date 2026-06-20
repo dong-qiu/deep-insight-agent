@@ -35,7 +35,7 @@ function contentItem(): ContentItem {
   return {
     id: "ci_1", source_id: "src1", url: "https://x.com/a", title: "t", author: null,
     published_at: "2026-06-01T00:00:00Z", fetched_at: "2026-06-01T00:00:00Z", language: "zh",
-    topic_ids: ["t1"], tags: ["test"], body: BODY, raw_ref: "raw://ci_1",
+    topic_ids: ["t1"], tags: ["test"], body: BODY, body_kind: "article", raw_ref: "raw://ci_1",
     content_hash: "h1", fetch_status: "ok",
   };
 }
