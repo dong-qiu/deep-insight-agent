@@ -29,13 +29,25 @@ function pickTranscriptUrl(node: any): string | undefined {
   return text(tags[0]["@_url"]) || undefined;
 }
 
+/** 取 RSS 2.0 条目 URL：优先 <link>；缺省回退 <guid>。RSS 2.0 的 guid 默认 isPermaLink=true，
+ *  即文章永久链接——部分 feed（如安全客 api.anquanke.com）只给 <guid> 不给 <link>，旧版只读 link
+ *  导致 url 为空、条目被 collector 丢弃。仅当 guid 是 http(s) 且未显式 isPermaLink="false" 才用。 */
+function itemUrl(it: any): string {
+  const link = text(it.link).trim();
+  if (link) return link;
+  const guid = it.guid;
+  if (guid && typeof guid === "object" && guid["@_isPermaLink"] === "false") return ""; // 显式非永久链接 = 仅作 id
+  const g = text(guid).trim();
+  return /^https?:\/\//i.test(g) ? g : "";
+}
+
 export function parseRss(feedXml: string): RawItem[] {
   const doc = xml.parse(feedXml) as any;
 
   // RSS 2.0
   if (doc?.rss?.channel) {
     return asArray<any>(doc.rss.channel.item).map((it): RawItem => ({
-      url: text(it.link),
+      url: itemUrl(it),
       title: text(it.title).replace(/\s+/g, " ").trim(),
       author: it.author ? text(it.author) : it["dc:creator"] ? text(it["dc:creator"]) : null,
       published_at: it.pubDate ? text(it.pubDate) : null,

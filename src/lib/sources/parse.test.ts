@@ -64,6 +64,29 @@ describe("parseRss", () => {
     expect(items[0].url).toBe("https://ex.com/a?utm_source=x"); // 规范化在 rawToContentItem
     expect(items[0].body).toBe("Body one.");
   });
+  it("无 <link>、URL 在 <guid>（安全客式）→ 回退 guid 作 url", () => {
+    const feed = `<?xml version="1.0"?><rss version="2.0"><channel>
+      <item><title>T</title><guid>https://www.anquanke.com/post/id/1</guid><description></description></item>
+    </channel></rss>`;
+    expect(parseRss(feed)[0].url).toBe("https://www.anquanke.com/post/id/1");
+  });
+
+  it("<link> 存在时优先 link，不被 guid 覆盖", () => {
+    const feed = `<?xml version="1.0"?><rss version="2.0"><channel>
+      <item><title>T</title><link>https://ex.com/real</link><guid>tag:ex.com,2026:1</guid><description>b</description></item>
+    </channel></rss>`;
+    expect(parseRss(feed)[0].url).toBe("https://ex.com/real");
+  });
+
+  it("guid isPermaLink=false 或非 URL → 不当 url（仍空，避免拿 id 当链接）", () => {
+    const f1 = `<?xml version="1.0"?><rss version="2.0"><channel>
+      <item><title>T</title><guid isPermaLink="false">https://ex.com/x</guid><description>b</description></item></channel></rss>`;
+    expect(parseRss(f1)[0].url).toBe("");
+    const f2 = `<?xml version="1.0"?><rss version="2.0"><channel>
+      <item><title>T</title><guid>tag:ex.com,2026:42</guid><description>b</description></item></channel></rss>`;
+    expect(parseRss(f2)[0].url).toBe("");
+  });
+
   it("Atom entry", () => {
     const items = parseRss(ATOM);
     expect(items).toHaveLength(1);
