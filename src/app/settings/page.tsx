@@ -5,8 +5,9 @@
 import { getEffectiveModels, loadStaticConfig } from "../../lib/config/index.js";
 import { getDb } from "../../lib/db/index.js";
 import { listRecipients } from "../../lib/db/recipients.js";
-import { listSources, listTopics } from "../../lib/db/repos.js";
+import { getSourceBodyKinds, listSources, listTopics } from "../../lib/db/repos.js";
 import { listUsers } from "../../lib/db/users.js";
+import { INDUSTRY_ORDER, sourceForm } from "./source-display.js";
 import { CollectButton } from "./_components/collect-button.js";
 import { DeepDiveButton } from "./_components/deep-dive-button.js";
 import { DeleteButton } from "./_components/delete-button.js";
@@ -21,7 +22,16 @@ export const dynamic = "force-dynamic";
 export default function SettingsPage() {
   const db = getDb();
   const sources = listSources(db);
+  const bodyKinds = getSourceBodyKinds(db); // source_id → 已产出形态集（标转写用）
   const topics = listTopics(db);
+
+  // 按行业分组渲染；任何不在 INDUSTRY_ORDER 的 industry 归入「其他」兜底组，
+  // 确保设置页（唯一 CRUD 入口）不会静默丢源。
+  const known = new Set<string>(INDUSTRY_ORDER.map((g) => g.id));
+  const sourceGroups = [
+    ...INDUSTRY_ORDER.map((g) => ({ key: g.id, label: g.label, items: sources.filter((s) => s.industry === g.id) })),
+    { key: "__other__", label: "其他", items: sources.filter((s) => !known.has(s.industry)) },
+  ].filter((g) => g.items.length > 0);
   const users = listUsers(db);
   const recipients = listRecipients(db);
   let models: { analyzer: string; validator: string } | null = null;
@@ -104,22 +114,41 @@ export default function SettingsPage() {
       {sources.length === 0 ? (
         <p className="muted">暂无数据源。</p>
       ) : (
-        sources.map((s) => (
-          <div className="card" key={s.id}>
-            <strong>{s.name}</strong>
-            <code className="muted" style={{ marginLeft: ".5rem", fontSize: ".8rem" }}>{s.id}</code>
-            <div className="muted">
-              {s.type} · {s.industry} · 每 {s.fetch_interval} · 主题 {s.topic_ids.join("、")}
-              {s.enabled ? "" : " · 已停用"}
-              <CollectButton sourceId={s.id} sourceName={s.name} enabled={s.enabled} />
-              <DeleteButton entity="sources" id={s.id} name={s.name} />
+        sourceGroups.map(({ key, label, items }) => {
+          const offCount = items.filter((s) => !s.enabled).length;
+          return (
+            <div key={key} style={{ marginBottom: "1rem" }}>
+              <h4 className="muted" style={{ margin: "1rem 0 .5rem", fontWeight: 600 }}>
+                {label}（{items.length}
+                {offCount ? ` · ${offCount} 已停用` : ""}）
+              </h4>
+              {items.map((s) => {
+                const kinds = bodyKinds.get(s.id);
+                const form = sourceForm(s, kinds);
+                const hasTranscript = kinds?.has("transcript") ?? false;
+                return (
+                  <div className="card" key={s.id}>
+                    <span aria-hidden title={form.label} style={{ marginRight: ".4rem" }}>{form.icon}</span>
+                    <strong>{s.name}</strong>
+                    <code className="muted" style={{ marginLeft: ".5rem", fontSize: ".8rem" }}>{s.id}</code>
+                    <div className="muted">
+                      {form.label}
+                      {hasTranscript ? " · 有转写" : ""} · {s.type} · 每 {s.fetch_interval} · 主题{" "}
+                      {s.topic_ids.join("、")}
+                      {s.enabled ? "" : " · 已停用"}
+                      <CollectButton sourceId={s.id} sourceName={s.name} enabled={s.enabled} />
+                      <DeleteButton entity="sources" id={s.id} name={s.name} />
+                    </div>
+                    <details style={{ marginTop: ".5rem" }}>
+                      <summary className="muted" style={{ cursor: "pointer", fontSize: ".85rem" }}>编辑</summary>
+                      <SourceForm mode="edit" initial={s} topics={topics.map((t) => ({ id: t.id, name: t.name }))} />
+                    </details>
+                  </div>
+                );
+              })}
             </div>
-            <details style={{ marginTop: ".5rem" }}>
-              <summary className="muted" style={{ cursor: "pointer", fontSize: ".85rem" }}>编辑</summary>
-              <SourceForm mode="edit" initial={s} topics={topics.map((t) => ({ id: t.id, name: t.name }))} />
-            </details>
-          </div>
-        ))
+          );
+        })
       )}
       <details className="card">
         <summary style={{ cursor: "pointer", fontWeight: 600 }}>+ 新建数据源</summary>
