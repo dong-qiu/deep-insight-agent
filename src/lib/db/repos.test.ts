@@ -6,9 +6,10 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { ContentItem, Run, Source, Topic } from "../types.js";
 import { type DB, openDb } from "./index.js";
 import {
-  contentExists, finishRun, getContentByUrl, getContentItem, getRun, getSource, getTopic,
-  hasRunningRun, insertContentItem, insertRun, insertSource, insertTopic, listRuns,
-  listRunsForTopicSince, listSources, recoverOrphanedRuns, sumRunCostSince, updateContentItem,
+  contentExists, finishRun, getContentByUrl, getContentItem, getRun, getSource,
+  getSourceBodyKinds, getTopic, hasRunningRun, insertContentItem, insertRun, insertSource,
+  insertTopic, listRuns, listRunsForTopicSince, listSources, recoverOrphanedRuns,
+  sumRunCostSince, updateContentItem,
 } from "./repos.js";
 
 let db: DB;
@@ -78,6 +79,19 @@ describe("ContentItem", () => {
     expect(getContentItem(db, "ci_tr")!.body_kind).toBe("transcript");
     updateContentItem(db, { ...tr, body_kind: "show_notes", content_hash: "h9" });
     expect(getContentItem(db, "ci_tr")!.body_kind).toBe("show_notes");
+  });
+
+  it("getSourceBodyKinds 按 source_id 聚合去重形态（设置页标转写用）", () => {
+    insertSource(db, { ...sampleSource, id: "src_pod" });
+    insertContentItem(db, { ...item, id: "a", url: "https://x/a", body_kind: "article" });
+    insertContentItem(db, { ...item, id: "b", url: "https://x/b", body_kind: "show_notes" });
+    insertContentItem(db, { ...item, id: "c", url: "https://x/c", body_kind: "show_notes" }); // 重复形态去重
+    insertContentItem(db, { ...item, id: "d", url: "https://x/d", source_id: "src_pod", body_kind: "transcript" });
+    const map = getSourceBodyKinds(db);
+    expect(map.get("src_arxiv_swe")).toEqual(new Set(["article", "show_notes"]));
+    expect(map.get("src_pod")?.has("transcript")).toBe(true);
+    expect(map.get("src_pod")?.has("article")).toBe(false);
+    expect(map.has("src_nonexistent")).toBe(false); // 无内容的源不在 map 里
   });
 });
 

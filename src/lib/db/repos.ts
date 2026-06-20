@@ -52,6 +52,20 @@ export function updateSource(db: DB, s: Source): number {
 export function deleteSource(db: DB, id: string): number {
   return db.prepare("DELETE FROM source WHERE id = ?").run(id).changes;
 }
+/** 每个源历史产出过的正文形态（body_kind 去重集）。
+ *  设置页据此标「播客是否已产出转写」——body_kind 只在 content_item 层，
+ *  source 层无法直接得知形态，故按 source_id 聚合回填。返 Map<source_id, Set<body_kind>>。 */
+export function getSourceBodyKinds(db: DB): Map<string, Set<string>> {
+  const rows = db
+    .prepare("SELECT source_id, body_kind FROM content_item GROUP BY source_id, body_kind")
+    .all() as { source_id: string; body_kind: string }[];
+  const map = new Map<string, Set<string>>();
+  for (const r of rows) {
+    if (!map.has(r.source_id)) map.set(r.source_id, new Set());
+    map.get(r.source_id)!.add(r.body_kind);
+  }
+  return map;
+}
 
 // ── Topic ──
 export function insertTopic(db: DB, t: Topic): void {
