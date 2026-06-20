@@ -3,8 +3,12 @@ import type { Notification } from "./alert.js";
 // nodemailer mock——notifyEmail 经 sendEmail 调它；无 SMTP、CI 可跑。
 const sendMail = vi.fn().mockResolvedValue({});
 vi.mock("nodemailer", () => ({ default: { createTransport: vi.fn(() => ({ sendMail })) } }));
+// DB 层 mock——单测保持隔离不碰真库；默认收件人表为空 → notifyEmail 回落 env REPORT_EMAIL_TO。
+const enabledRecipients = vi.fn<() => string[]>(() => []);
+vi.mock("../db/index.js", () => ({ getDb: vi.fn(() => ({})) }));
+vi.mock("../db/recipients.js", () => ({ listEnabledRecipientEmails: () => enabledRecipients() }));
 import nodemailer from "nodemailer";
-import { notifyEmail, reportToEmail } from "./email.js";
+import { notifyEmail, reportToEmail, resolveRecipientEmails } from "./email.js";
 
 const n: Notification = { title: "📰 今日 Brief：AI 软件工程", text: "主题：AI 软件工程\n要点摘要", priority: "default", link: "https://x.example/reports/rep_1" };
 
@@ -32,7 +36,7 @@ describe("reportToEmail（纯函数）", () => {
 
 describe("notifyEmail（门控 + 扇出）", () => {
   const ENV = { ...process.env };
-  beforeEach(() => { sendMail.mockClear(); });
+  beforeEach(() => { sendMail.mockClear(); enabledRecipients.mockReturnValue([]); });
   afterEach(() => { process.env = { ...ENV }; });
 
   it("未配 SMTP_HOST → no-op、不发", () => {
@@ -63,6 +67,34 @@ describe("notifyEmail（门控 + 扇出）", () => {
     delete process.env.SMTP_FROM; delete process.env.SMTP_USER;
     notifyEmail(n);
     expect(sendMail).not.toHaveBeenCalled();
+  });
+
+  // 收件人来源迁移：DB 启用名单优先，库空回落 env
+  it("DB 有启用收件人 → 以库为准（覆盖 env REPORT_EMAIL_TO）", () => {
+    process.env.SMTP_HOST = "smtp.x.com"; process.env.SMTP_FROM = "bot@x.com";
+    process.env.REPORT_EMAIL_TO = "envonly@x.com"; // 应被库覆盖
+    enabledRecipients.mockReturnValue(["a@db.com", "b@db.com"]);
+    notifyEmail(n);
+    expect(sendMail.mock.calls[0][0].to).toBe("a@db.com,b@db.com");
+  });
+  it("DB 名单空 → 回落 env REPORT_EMAIL_TO", () => {
+    process.env.SMTP_HOST = "smtp.x.com"; process.env.SMTP_FROM = "bot@x.com";
+    process.env.REPORT_EMAIL_TO = "fallback@x.com";
+    enabledRecipients.mockReturnValue([]);
+    notifyEmail(n);
+    expect(sendMail.mock.calls[0][0].to).toBe("fallback@x.com");
+  });
+  it("DB 与 env 皆空 → no-op、不发", () => {
+    process.env.SMTP_HOST = "smtp.x.com"; process.env.SMTP_FROM = "bot@x.com";
+    delete process.env.REPORT_EMAIL_TO;
+    enabledRecipients.mockReturnValue([]);
+    notifyEmail(n);
+    expect(sendMail).not.toHaveBeenCalled();
+  });
+  it("读库抛错 → 回落 env、仍发（resolveRecipientEmails 不抛）", () => {
+    process.env.REPORT_EMAIL_TO = "fallback@x.com";
+    enabledRecipients.mockImplementationOnce(() => { throw new Error("db locked"); });
+    expect(resolveRecipientEmails()).toBe("fallback@x.com");
   });
 
   // 核心不变量：推送失败绝不连累已落库报告 → notifyEmail 永不抛

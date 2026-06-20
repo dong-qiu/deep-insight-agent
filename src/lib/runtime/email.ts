@@ -4,6 +4,8 @@
  *  - **非阻塞、永不抛**：与 notify/notifyFailure 同约束，邮件失败绝不连累已落库报告。
  *  - operator 配置、非用户输入，直连 SMTP（不走 SSRF 防护，那是给不可信源的）。 */
 import nodemailer from "nodemailer";
+import { getDb } from "../db/index.js";
+import { listEnabledRecipientEmails } from "../db/recipients.js";
 import type { Notification } from "./alert.js";
 import { runLogger } from "./logger.js";
 
@@ -42,11 +44,27 @@ export async function sendEmail(mail: Mail, timeoutMs = 10_000): Promise<void> {
   await transport.sendMail(mail);
 }
 
-/** 报告推送的邮件渠道入口：配了 SMTP_HOST + REPORT_EMAIL_TO 才发；fire-and-forget、永不抛。
- *  REPORT_EMAIL_TO 支持逗号分隔多收件人（nodemailer 直接收逗号串）。 */
+/** 解析收件人（逗号串，给 nodemailer）：**DB 启用收件人优先，库空/读取失败才回落 env REPORT_EMAIL_TO**。
+ *  收件名单从"改服务器 env"迁到"设置页管理"——库里有启用收件人即以库为准；兜底保证迁移期/库异常时不断流。 */
+export function resolveRecipientEmails(): string {
+  try {
+    const emails = listEnabledRecipientEmails(getDb());
+    if (emails.length) return emails.join(",");
+  } catch (e) {
+    // 库不可用（迁移未跑 / 连接异常）→ 回落 env，绝不让收件人解析抛断推送
+    runLogger({ stage: "alert" }).warn(
+      { err: e instanceof Error ? e.message : String(e) },
+      "读取邮件收件人表失败，回落 REPORT_EMAIL_TO",
+    );
+  }
+  return (process.env.REPORT_EMAIL_TO ?? "").trim();
+}
+
+/** 报告推送的邮件渠道入口：配了 SMTP_HOST + 收件人 + 发件人才发；fire-and-forget、永不抛。
+ *  收件人 = DB 启用名单（设置页管理）优先，库空回落 env REPORT_EMAIL_TO（见 resolveRecipientEmails）。 */
 export function notifyEmail(n: Notification): void {
   const host = process.env.SMTP_HOST;
-  const to = process.env.REPORT_EMAIL_TO;
+  const to = resolveRecipientEmails();
   const from = (process.env.SMTP_FROM ?? process.env.SMTP_USER ?? "").trim();
   if (!host || !to || !from) return; // 未配置（缺 host / 收件人 / 发件人）→ no-op，绝不发空 from
   try {
