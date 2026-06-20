@@ -8,6 +8,7 @@ export interface RawItem {
   published_at: string | null; // 原始发布时间字符串（可能非 ISO，下游不强转）
   body: string;
   body_kind?: BodyKind; // 料源形态（ADR-0007）；适配器不设则归一化时默认 article
+  transcript_url?: string; // 播客转写稿 URL（parseRss 从 <podcast:transcript> 解析；fetchRss 按开关抓取）
   raw: string; // 原始片段（JSON 串），collector 存档供校验反查
 }
 

@@ -67,6 +67,44 @@ export function normalizeBody(body: string): string {
   return stripHtml(body).replace(/\s+/g, " ").trim();
 }
 
+/** VTT/SRT cue 时间轴行：**行首时间戳** + `-->`（HH:)?MM:SS(.|,mmm)? --> …。
+ *  要求行首时间戳，避免把口播里的 "A --> B" / 含箭头代码整行误删（评审 M2）。 */
+const CUE_TIMELINE = /^\d{1,2}:\d{2}(?::\d{2})?(?:[.,]\d{1,3})?\s*-->/;
+
+/** 清洗转写稿（VTT / SRT / 纯文本）→ 干净正文（ADR-0007 切片2）：
+ *  剥 WEBVTT 头、NOTE/STYLE/REGION 元数据块（延续到空行）、cue 时间轴行、SRT cue 序号（纯数字 + 后随时间轴）。
+ *  **不误伤正文**：纯数字行仅在「下一行是时间轴」时才当 SRT 序号删（评审 M1）；时间轴按行首时间戳判（评审 M2）；
+ *  NOTE/STYLE/REGION 按块删到空行（评审 M3）。HTML 形态转写交由下游 normalizeBody 的 stripHtml（两段清洗叠加、幂等）。
+ *  保留说话人标签（如 "John: …"）：内容歧义大、剥除易误伤，analyzer 可直接消费。 */
+export function stripTranscript(raw: string): string {
+  const lines = raw.replace(/^﻿/, "").split(/\r?\n/); // 去 BOM
+  const out: string[] = [];
+  let skipBlock = false; // VTT NOTE/STYLE/REGION 块延续到空行
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i].trim();
+    if (!l) {
+      skipBlock = false; // 空行结束块
+      continue;
+    }
+    if (skipBlock) continue;
+    if (/^WEBVTT/i.test(l)) continue; // VTT 头
+    if (/^(NOTE|STYLE|REGION)\b/.test(l)) {
+      skipBlock = true; // 块起始 → 丢到下一空行
+      continue;
+    }
+    if (CUE_TIMELINE.test(l)) continue; // 时间轴行
+    // SRT cue 序号：纯数字行且**下一非空行是时间轴**才删——否则是正文里的独立数字（口播 "2024"/"42"）。
+    // 跳过中间空行（部分生成器产出 "N\n\n时间轴"）后再判，避免序号泄漏进正文。
+    if (/^\d+$/.test(l)) {
+      let j = i + 1;
+      while (j < lines.length && !lines[j].trim()) j++;
+      if (CUE_TIMELINE.test((lines[j] ?? "").trim())) continue;
+    }
+    out.push(l);
+  }
+  return out.join(" ").replace(/\s+/g, " ").trim();
+}
+
 /** 内容指纹 = 规范化 body 的 sha256，用于同 URL 内容更新检测。 */
 export function contentHash(body: string): string {
   return createHash("sha256").update(normalizeBody(body)).digest("hex");
