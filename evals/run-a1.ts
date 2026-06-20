@@ -204,7 +204,9 @@ async function main(): Promise<void> {
   }
 
   // ── Part B：校验器一致性准召（标注集，按 stratum 分组） ──
-  const consistencyAll = readJsonl<ConsistencyCase>("evals/dataset/citation-consistency.jsonl");
+  // A1_CONSISTENCY_FILE 可指向分形态集（如 transcript 专集），默认 arXiv 标注集。
+  const consistencyFile = process.env.A1_CONSISTENCY_FILE ?? "evals/dataset/citation-consistency.jsonl";
+  const consistencyAll = readJsonl<ConsistencyCase>(consistencyFile);
   const consistencyCases = cLimit ? consistencyAll.slice(0, cLimit) : consistencyAll;
   const judgeByStratum: Record<Stratum, JudgeStats> = { arxiv: emptyJudgeStats(), transcript: emptyJudgeStats() };
   process.stdout.write(`[校验器准召] ${consistencyCases.length} 组标注对… `);

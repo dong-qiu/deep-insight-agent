@@ -30,5 +30,24 @@
     "note": "可达性 98.3%(arXiv)→24.1%(多源裸跑)→54.3%(repairQuote)→88.6%(+逐字纪律/公开新闻框定，M3-6)。security 主题原拒答跳过，框定后产出 4 洞察。剩 ~11% 真改写被可达性闸门正确挡下（安全保住、产出率略损）；88.6%<100% 硬门槛，进一步逼近收益递减，留 body 清洗后续。安全闸门始终守住。",
     "cost_usd": 1.14
   },
+  "transcript": {
+    "_about": "transcript 形态首版基线（6c 真机，2026-06-20，ADR-0007）。run-a1 按 stratum 读本段（键即指标）。**provisional 小样本**：可达率=信息量门（红线由 blocking 守）；yield/一致性受单集影响大，待扩样重标。",
+    "provenance": {
+      "date": "2026-06-20",
+      "run": "A1_QUALITY_FILE=insight-quality-transcript.jsonl A1_CONSISTENCY_FILE=citation-consistency-transcript.jsonl tsx evals/run-a1.ts",
+      "config": "analyzer=claude-opus-4-7 · validator=claude-opus-4-8 · thinking=off · 经中转站(yibuapi)",
+      "dataset": "2 集 Practical AI 真转写（Zero Trust for AI Agents / Stanford AI Index Report，各 ~41k 字）+ 5 一致性对（AI 构造标注：3 support / 2 not_support·夸大）",
+      "caveats": "样本远低于 DCP 规模（主题 2/5、一致性对 5/100），仅 provisional 不作 DCP 判据。其中 1 集 analyzer schema 偶发失败（no_significant_event 字段，coerce 不覆盖）→ 0 洞察，故 auto_metrics 实由 1 集 13 引用 + 5 对得出。yield 0.692 略低于暂定门 0.7——口语内容 analyzer 过度引申更多（30.8% 被 validator 正确判 not_support·blocked），待扩样 + 提升 analyzer transcript 精度后重标。"
+    },
+    "reachability_pass": 1.0,
+    "consistency_ok": 0.692,
+    "consistency_failure": 0.308,
+    "flagged_rate": 0.0,
+    "judge_accuracy": 1.0,
+    "judge_neg_recall": 1.0,
+    "yield": 0.692,
+    "cost_usd": 0.3045,
+    "note": "可达性 100%（真转写每条 quote 逐字可达全量 body）；validator 5/5 对全判对、负召 100%。yield 69.2%：13 引用中 4 条被判 not_support·blocked（口语内容 analyzer 过度引申）。特性管线成立，精度待迭代。"
+  },
   "thresholds_ref": "docs/verify/eval-criteria.md（上线门槛 + 成本阈值，后者 2026-05-27 按 Opus 现实重标）"
 }
