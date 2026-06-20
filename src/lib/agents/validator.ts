@@ -283,6 +283,54 @@ function chunk<T>(xs: T[], size: number): T[][] {
  *  既省成本，又消除「相同输入跑多次 → LLM 非确定性互相矛盾 → 任一次 uncertain 误标整条待核实」的伪阳性。 */
 const pairKey = (statement: string, itemId: string): string => `${statement}\x00${itemId}`;
 
+/** 决定⑤ 一致性校验窗口大小（citation locator 各 ±N 字邻域）。env 可调。 */
+export const CONSISTENCY_WINDOW_CHARS = Number(process.env.CONSISTENCY_WINDOW_CHARS) || 600;
+const WINDOW_SEPARATOR = "\n[…]\n";
+
+/** 决定⑤（ADR-0007）：为 transcript item 构造「citation-locator 邻域窗口」喂一致性 judge（替全量 body）。
+ *  窗口 = 该 item 全部 citation 的 [char_start,char_end] 各 ±N 邻域并集，从**全量 body** 逐字切片拼接
+ *  → judge 源文贴近被引证据、成本封顶（不随转写长度膨胀）；reachability（Pass1）仍比全量 body，不受影响。
+ *  仅 body_kind==='transcript' 走窗口；任一 citation locator 无效(-1) → 该 item 退回全量 body（保正确性）。
+ *  纯函数、可测；非 transcript / 无 transcript 时返回空 Map（调用方全程退回全量 body，零回归）。 */
+export function buildWindowByItem(
+  insights: Insight[],
+  byId: Map<string, ContentItem>,
+  windowChars: number = CONSISTENCY_WINDOW_CHARS,
+): Map<string, string> {
+  const rangesByItem = new Map<string, Array<[number, number]>>();
+  const invalid = new Set<string>();
+  for (const ins of insights) {
+    for (const cit of ins.citations) {
+      const item = byId.get(cit.content_item_id);
+      if (!item || item.body_kind !== "transcript") continue;
+      const { char_start, char_end } = cit.locator;
+      if (char_start < 0 || char_end < 0) {
+        invalid.add(cit.content_item_id); // fold-pass/raw-miss 等 → 该 item 退回全量 body
+        continue;
+      }
+      const lo = Math.max(0, char_start - windowChars);
+      const hi = Math.min(item.body.length, char_end + windowChars);
+      let r = rangesByItem.get(cit.content_item_id);
+      if (!r) rangesByItem.set(cit.content_item_id, (r = []));
+      r.push([lo, hi]);
+    }
+  }
+  const windowByItem = new Map<string, string>();
+  for (const [itemId, ranges] of rangesByItem) {
+    if (invalid.has(itemId)) continue; // 有无效 locator → 不进 Map → 退回全量 body
+    const body = byId.get(itemId)!.body;
+    ranges.sort((a, b) => a[0] - b[0]);
+    const merged: Array<[number, number]> = [];
+    for (const [lo, hi] of ranges) {
+      const last = merged[merged.length - 1];
+      if (last && lo <= last[1]) last[1] = Math.max(last[1], hi); // 重叠/相邻并集
+      else merged.push([lo, hi]);
+    }
+    windowByItem.set(itemId, merged.map(([lo, hi]) => body.slice(lo, hi)).join(WINDOW_SEPARATOR));
+  }
+  return windowByItem;
+}
+
 export async function validateBatch(
   insights: Insight[],
   items: ContentItem[],
@@ -304,6 +352,11 @@ export async function validateBatch(
     }
   }
 
+  // 决定⑤：transcript 一致性 judge 喂 citation-locator 邻域窗口（非全量 body）；其余 item 退回全量 body。
+  // cache key 随 judgeBody 文本自动变（window vs 全量），无需 bump version。
+  const windowByItem = buildWindowByItem(insights, byId);
+  const judgeBody = (itemId: string): string => windowByItem.get(itemId) ?? byId.get(itemId)!.body;
+
   // ── Pass 2：解析每个唯一「(结论,源) 对」的判定。先查缓存命中，未命中按源归并成一次批量调用。 ──
   const outcomes = new Map<string, JudgeOutcome>();
   const missByItem = new Map<string, string[]>(); // itemId → 待判结论清单（去重）
@@ -313,7 +366,7 @@ export async function validateBatch(
     const k = pairKey(r.statement, r.itemId);
     if (seen.has(k)) continue;
     seen.add(k);
-    const body = byId.get(r.itemId)!.body;
+    const body = judgeBody(r.itemId); // 决定⑤：transcript 喂窗口、其余全量
     const cached = cache?.get(r.statement, body); // 跨批缓存命中 → 跳过 Opus（不计成本、不重试）
     if (cached) {
       outcomes.set(k, cached);
@@ -335,7 +388,7 @@ export async function validateBatch(
   };
 
   for (const [itemId, stmts] of missByItem) {
-    const body = byId.get(itemId)!.body;
+    const body = judgeBody(itemId); // 决定⑤：transcript 喂窗口、其余全量（与缓存键同源）
     for (const group of chunk(stmts, maxPer)) {
       if (batchOn && group.length > 1) {
         // 批量：源文发一遍，逐条独立判。整组失败（瞬时抖动/产出残缺）→ 本组全记校验失败（不静默漏）。

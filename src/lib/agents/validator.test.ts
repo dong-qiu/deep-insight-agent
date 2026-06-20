@@ -11,8 +11,61 @@ vi.mock("../runtime/llm.js", () => ({
 }));
 
 import { callStructured } from "../runtime/llm.js";
-import { checkReachability, consistencyCacheVersion, insightInclusion, isValidationDegraded, summarize, validateBatch, verdictFor } from "./validator.js";
+import { buildWindowByItem, checkReachability, consistencyCacheVersion, insightInclusion, isValidationDegraded, summarize, validateBatch, verdictFor } from "./validator.js";
 import type { CitationCheck, ContentItem, Insight } from "../types.js";
+
+describe("buildWindowByItem（决定⑤ · transcript citation-locator 窗口）", () => {
+  const mkItem = (id: string, body: string, kind: ContentItem["body_kind"]): ContentItem => ({
+    id, source_id: "s", url: `https://x/${id}`, title: "t", author: null, published_at: null,
+    fetched_at: "2026-06-20T00:00:00Z", language: "en", topic_ids: [], tags: [], body,
+    body_kind: kind, raw_ref: "", content_hash: `h_${id}`, fetch_status: "ok",
+  });
+  const mkInsight = (cits: { content_item_id: string; char_start: number; char_end: number }[]): Insight => ({
+    id: "i", topic_id: "t", type: "aggregation", event_id: null, statement: "S", headline: "", importance: 4,
+    importance_basis: "x",
+    citations: cits.map((c) => ({ content_item_id: c.content_item_id, quote: "q", locator: { paragraph_index: 0, char_start: c.char_start, char_end: c.char_end } })),
+    source_count: 1, multi_source: false, time_window: { start: "2026-06-01", end: "2026-06-07" },
+    confidence: null, language: "en", is_followup: false, entities: [], tags: [],
+  });
+
+  it("transcript：窗口=locator ±N 邻域、verbatim 切片、< 全量 body", () => {
+    const body = "x".repeat(2000) + "TARGET_QUOTE" + "y".repeat(2000); // quote 在 [2000,2012)
+    const byId = new Map([["ci_t", mkItem("ci_t", body, "transcript")]]);
+    const w = buildWindowByItem([mkInsight([{ content_item_id: "ci_t", char_start: 2000, char_end: 2012 }])], byId, 500).get("ci_t")!;
+    expect(w).toContain("TARGET_QUOTE");
+    expect(w.length).toBeLessThan(body.length);
+    expect(body).toContain(w); // 单段 → body 逐字子串
+  });
+
+  it("非 transcript / 无效 locator(-1) → 不进 Map（调用方退回全量 body）", () => {
+    const byId = new Map([
+      ["ci_a", mkItem("ci_a", "a".repeat(3000), "article")],
+      ["ci_b", mkItem("ci_b", "b".repeat(3000), "transcript")],
+    ]);
+    const win = buildWindowByItem(
+      [mkInsight([
+        { content_item_id: "ci_a", char_start: 100, char_end: 101 }, // article → 跳过
+        { content_item_id: "ci_b", char_start: -1, char_end: -1 }, // 无效 locator → 退回
+      ])],
+      byId, 500,
+    );
+    expect(win.has("ci_a")).toBe(false);
+    expect(win.has("ci_b")).toBe(false);
+  });
+
+  it("同 item 多 citation 邻域重叠 → 合并为单段（无分隔符）", () => {
+    const byId = new Map([["ci_t", mkItem("ci_t", "z".repeat(5000), "transcript")]]);
+    const w = buildWindowByItem(
+      [mkInsight([
+        { content_item_id: "ci_t", char_start: 1000, char_end: 1010 }, // ±500 → [500,1510]
+        { content_item_id: "ci_t", char_start: 1200, char_end: 1210 }, // ±500 → [700,1710]，与上重叠
+      ])],
+      byId, 500,
+    ).get("ci_t")!;
+    expect(w).not.toContain("[…]"); // 合并为单段
+    expect(w.length).toBe(1710 - 500);
+  });
+});
 
 function item(id: string, body: string): ContentItem {
   return {
