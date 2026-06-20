@@ -61,7 +61,7 @@ describe("ContentItem", () => {
 
   it("AC2 同 url 内容更新：原地更新、行数不增、id 不变", () => {
     insertContentItem(db, item);
-    expect(getContentByUrl(db, item.url)).toEqual({ id: "ci1", content_hash: "h1" });
+    expect(getContentByUrl(db, item.url)).toEqual({ id: "ci1", content_hash: "h1", body_kind: "article" });
     const updated: ContentItem = { ...item, content_hash: "h2", body: "new body", fetched_at: "2026-05-26T01:00:00Z" };
     updateContentItem(db, updated);
     const after = getContentItem(db, "ci1")!;

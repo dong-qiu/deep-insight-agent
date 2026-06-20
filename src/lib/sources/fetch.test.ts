@@ -1,6 +1,6 @@
-/** fetchRss 转写抓取（ADR-0007 切片2）：mock 出网 + robots，覆盖开关三态。
- *  纯逻辑（pickTranscriptUrl / stripTranscript）在 parse.test / normalize.test 已覆盖；
- *  此处验证 fetchRss 编排：开关门、body 替换、body_kind 赋值、抓取失败回退。 */
+/** fetchRss 只解析不抓（ADR-0007 6a：转写抓取已移到 collector 去重后、只对新 url 抓）。
+ *  此处守住「fetchRss 不抓转写」不变量——即便开关开，fetchRss 也只解析 transcript_url、body 仍 show notes。
+ *  B族抓取/不降级的实际行为在 collector.test 覆盖。 */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Source } from "../types.js";
 
@@ -41,30 +41,14 @@ afterEach(() => {
   responses.clear();
 });
 
-describe("fetchRss 转写抓取（ADR-0007 切片2）", () => {
-  it("开关关：transcript_url 解析但不抓，body 仍 show notes、body_kind 未设（→ 归一化默认 article）", async () => {
+describe("fetchRss 只解析不抓（6a）", () => {
+  it("只解析 transcript_url，body 仍 show notes、body_kind 未设——即便开关开也不抓（抓取在 collector）", async () => {
+    process.env.TRANSCRIPT_FETCH = "1"; // 开关开
     responses.set("https://pod/feed", { ok: true, text: FEED });
+    // 不为 transcript URL 设响应——若 fetchRss 误抓会 throw "unmocked fetch"
     const items = await fetchRss(source);
     expect(items[0].body).toBe("Show notes.");
     expect(items[0].transcript_url).toBe("https://pod/ep.txt");
     expect(items[0].body_kind).toBeUndefined();
-  });
-
-  it("开关开 + 抓到转写：body=清洗后转写、body_kind=transcript", async () => {
-    process.env.TRANSCRIPT_FETCH = "1";
-    responses.set("https://pod/feed", { ok: true, text: FEED });
-    responses.set("https://pod/ep.txt", { ok: true, text: "WEBVTT\n\n1\n00:00 --> 00:01\nReal transcript." });
-    const items = await fetchRss(source);
-    expect(items[0].body).toBe("Real transcript.");
-    expect(items[0].body_kind).toBe("transcript");
-  });
-
-  it("开关开 + 抓取失败（非 2xx）：回退 show notes、body_kind=show_notes", async () => {
-    process.env.TRANSCRIPT_FETCH = "1";
-    responses.set("https://pod/feed", { ok: true, text: FEED });
-    responses.set("https://pod/ep.txt", { ok: false, text: "" });
-    const items = await fetchRss(source);
-    expect(items[0].body).toBe("Show notes.");
-    expect(items[0].body_kind).toBe("show_notes");
   });
 });

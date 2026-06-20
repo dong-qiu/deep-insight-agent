@@ -10,6 +10,7 @@ import type { Source } from "../types.js";
 import { articleFetchEnabled, fetchArticleBody } from "../sources/article.js";
 import { fetchFromSource } from "../sources/index.js";
 import { normalizeUrl, rawToContentItem } from "../sources/normalize.js";
+import { fetchTranscript, transcriptFetchEnabled } from "../sources/rss.js";
 
 export interface CollectResult {
   runId: string;
@@ -79,8 +80,19 @@ export async function collectSource(
         raw.body = body;
         raw.body_kind = "article";
       }
-      const item = rawToContentItem(raw, source, fetchedAt);
+      let item = rawToContentItem(raw, source, fetchedAt);
       const existing = getContentByUrl(db, item.url);
+      // B族·不降级（6a）：已是 transcript 的 item 不被 show_notes/article 覆盖——防转写被降级 + 旧引用失效（Major6）。
+      if (existing?.body_kind === "transcript" && item.body_kind !== "transcript") {
+        skipped++;
+        continue;
+      }
+      // B族·只抓新（6a）：库里没有的 url + 有 transcript_url + 开关开 → 抓转写、重建为 transcript item。
+      // 「只对新 url 抓」既避免每轮全抓 50 集，又确保已入库 item 永不被原地从 show_notes 改成 transcript（根除 Major6）。
+      if (!existing && raw.transcript_url && transcriptFetchEnabled()) {
+        const transcript = await fetchTranscript(raw.transcript_url);
+        if (transcript) item = rawToContentItem({ ...raw, body: transcript, body_kind: "transcript" }, source, fetchedAt);
+      }
       if (existing && existing.content_hash === item.content_hash) {
         skipped++; // 同 URL + 同指纹 = 完全重复（AC2 ①）
         continue;
