@@ -322,11 +322,13 @@ docker compose exec -T -e ALERT_WEBHOOK=<url> app node /app/ops/probe-alert.mjs
 | `SMTP_PORT` | 465=隐式 TLS / 587=STARTTLS | 465 |
 | `SMTP_USER` / `SMTP_PASS` | 账号 + **客户端授权码**（非登录密码，邮箱设置里生成）| 无 |
 | `SMTP_FROM` | 发件人，缺省回退 `SMTP_USER` | =SMTP_USER |
-| `REPORT_EMAIL_TO` | 收件人，逗号分隔多个 | 无（不发邮件）|
+| `REPORT_EMAIL_TO` | 收件人【兜底】：现以**设置页→邮件分发收件人**（入库）为准，库里有启用收件人即以库为准；本 env 仅在库为空时回落。逗号分隔多个 | 无（库也空时不发邮件）|
 
 > 邮件用 SMTP 不用邮件服务 API：零注册、零域名验证、用现有邮箱即可，适合低频少收件人的 brief 推送。`REPORT_PUSH`/`SMTP_*`/`REPORT_EMAIL_TO` 同属「生产手动配的运行时配置」，记得持久化进本地 `.env.local`。
 
-接线：在已配 `ALERT_WEBHOOK` 基础上加 `REPORT_PUSH=1` + `PUBLIC_BASE_URL=https://<域名或 EC2-IP:3000>`（飞书），可选再加上面 SMTP 一组（邮件）。验证：手动触发一次深挖（`/api/topics/[id]/deep-dive`）→ 飞书收到卡片、邮箱收到带链接的邮件。
+**收件人管理（设置页）**：收件名单已从「改服务器 env」迁到 **设置页 → 邮件分发收件人**（admin only，存 `email_recipient` 表）：增删、停用（暂停但保留）、备注。`notifyEmail` 取**启用收件人**拼逗号串发送；**库里有启用收件人即以库为准、`REPORT_EMAIL_TO` 被忽略**；全删/全停或库不可用才回落 `REPORT_EMAIL_TO`（兜底，零回归）。SMTP 发信账号（`SMTP_HOST/USER/PASS/FROM`）仍由 env 配置——只有「发给谁」搬进了网页。
+
+接线：在已配 `ALERT_WEBHOOK` 基础上加 `REPORT_PUSH=1` + `PUBLIC_BASE_URL=https://<域名或 EC2-IP:3000>`（飞书），可选再加上面 SMTP 一组（邮件）+ 在设置页加收件人。验证：手动触发一次深挖（`/api/topics/[id]/deep-dive`）→ 飞书收到卡片、邮箱收到带链接的邮件。
 
 ## 13. 定时真模型 eval（A1 回归门 · DCP-3 ②）
 

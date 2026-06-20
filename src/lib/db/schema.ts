@@ -26,6 +26,16 @@ CREATE TABLE IF NOT EXISTS app_user (
   created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- 邮件分发收件人（报告推送的邮件渠道收件名单）：admin 在设置页增删/启停。
+-- 取代「改服务器 env REPORT_EMAIL_TO」——库里有启用收件人即以库为准，库空才回落 env（兜底、零回归）。
+-- email 为 PK（规范化小写存，天然去重）；enabled=0 暂停而不删；label 备注（谁/用途，可空）。
+CREATE TABLE IF NOT EXISTS email_recipient (
+  email      TEXT PRIMARY KEY,
+  label      TEXT,
+  enabled    INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS topic (
   id             TEXT PRIMARY KEY,
   name           TEXT NOT NULL,

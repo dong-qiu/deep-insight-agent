@@ -4,11 +4,13 @@
  *  - 表单通过客户端组件（TopicForm/SourceForm）调 /api/admin/* 路由，成功后 router.refresh()。 */
 import { getEffectiveModels, loadStaticConfig } from "../../lib/config/index.js";
 import { getDb } from "../../lib/db/index.js";
+import { listRecipients } from "../../lib/db/recipients.js";
 import { listSources, listTopics } from "../../lib/db/repos.js";
 import { listUsers } from "../../lib/db/users.js";
 import { CollectButton } from "./_components/collect-button.js";
 import { DeepDiveButton } from "./_components/deep-dive-button.js";
 import { DeleteButton } from "./_components/delete-button.js";
+import { RecipientAdmin } from "./_components/recipient-admin.js";
 import { SourceForm } from "./_components/source-form.js";
 import { TopicForm } from "./_components/topic-form.js";
 import { UserAdmin } from "./_components/user-admin.js";
@@ -20,6 +22,7 @@ export default function SettingsPage() {
   const sources = listSources(db);
   const topics = listTopics(db);
   const users = listUsers(db);
+  const recipients = listRecipients(db);
   let models: { analyzer: string; validator: string } | null = null;
   try {
     models = getEffectiveModels(loadStaticConfig());
@@ -46,6 +49,14 @@ export default function SettingsPage() {
         不能进配置、不能触发深挖/追问/导出。<strong>唯一管理员是内置账号</strong>（环境变量），不在此列、不可删/不可在此增设。
       </p>
       <UserAdmin initial={users} />
+
+      <h3>邮件分发收件人（{recipients.length}）</h3>
+      <p className="muted">
+        每份 Brief / 报告推送会发到这里启用的邮箱（与飞书并行）。<strong>名单为空时回落到环境变量
+        REPORT_EMAIL_TO</strong>（兜底）；只要库里有启用收件人，就以此名单为准。停用＝暂停发送但保留，删除＝移出名单。
+        SMTP 发信账号仍由环境变量（SMTP_HOST/USER/PASS）配置。
+      </p>
+      <RecipientAdmin initial={recipients} />
 
       <h3>主题（{topics.length}）</h3>
       {topics.length === 0 ? (

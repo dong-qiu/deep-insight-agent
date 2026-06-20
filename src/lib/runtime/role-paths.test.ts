@@ -3,7 +3,7 @@ import { isAdminOnlyPath } from "./role-paths.js";
 
 describe("isAdminOnlyPath（多账号分权闸门）", () => {
   it("管理/配置面 → admin only", () => {
-    for (const p of ["/admin", "/admin/", "/settings", "/api/admin/sources", "/api/admin/topics/t1", "/api/admin/runs/r1/retry"]) {
+    for (const p of ["/admin", "/admin/", "/settings", "/api/admin/sources", "/api/admin/topics/t1", "/api/admin/runs/r1/retry", "/api/admin/recipients"]) {
       expect(isAdminOnlyPath(p)).toBe(true);
     }
   });
