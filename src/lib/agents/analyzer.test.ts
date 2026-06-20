@@ -7,7 +7,43 @@ import type { Citation, ContentItem, Insight } from "../types.js";
 // callStructured mock 掉——repairCoverage 经 verifyCandidates 调它；无 API key、CI 可跑纯函数。
 vi.mock("../runtime/llm.js", () => ({ callStructured: vi.fn() }));
 import { callStructured } from "../runtime/llm.js";
-import { ANALYZE_BODY_CHARS, carveQuote, chunkByChars, coverageGaps, isCompleteStatement, repairCoverage, repairQuote, specificClaims, truncateForAnalyze } from "./analyzer.js";
+import { ANALYZE_BODY_CHARS, SELECT_SEPARATOR, carveQuote, chunkByChars, chunkWindows, coverageGaps, isCompleteStatement, repairCoverage, repairQuote, selectForAnalyze, specificClaims, truncateForAnalyze } from "./analyzer.js";
+
+describe("selectForAnalyze（ADR-0007 决定② 话题制导选段）", () => {
+  it("body ≤ budget：原样返回", () => {
+    expect(selectForAnalyze("short text", ["k"], 100)).toBe("short text");
+  });
+
+  it("超 budget：取含关键词的段（非前缀），段间插分隔，且每段是 body 逐字切片", () => {
+    const filler = "intro banter words here ".repeat(15); // 无关键词的开场
+    const topical = "the codex benchmark scored high again ".repeat(4); // 含 codex
+    const body = filler + topical;
+    const out = selectForAnalyze(body, ["codex"], 120, 60); // 小窗口 → 多窗可选
+    expect(out).toContain("codex"); // 取到了正题，而非只截前缀寒暄
+    expect(out.length).toBeLessThanOrEqual(120); // 永不超 budget（含分隔符开销已精确计入）
+    for (const seg of out.split(SELECT_SEPARATOR).map((s) => s.trim()).filter(Boolean)) {
+      expect(body).toContain(seg); // 每段是 body 逐字切片 → 可达性成立
+    }
+    expect(SELECT_SEPARATOR).toContain("␟"); // 哨兵在位（防 fold 后与真实 [...] 碰撞）
+  });
+
+  it("无关键词命中：退化为前缀（与 truncate 同效）", () => {
+    const body = "x".repeat(60) + " " + "y".repeat(60);
+    const out = selectForAnalyze(body, ["zzz"], 50);
+    expect(body.startsWith(out)).toBe(true); // 取最前的窗
+  });
+
+  it("chunkWindows：snap 到空格、不切词，每窗为原文子串", () => {
+    const src = "alpha bravo charlie delta echo foxtrot";
+    const ws = chunkWindows(src, 12);
+    expect(ws.length).toBeGreaterThan(1);
+    for (const w of ws) {
+      expect(src).toContain(w);
+      expect(w).not.toMatch(/^\s|\s$/); // 已 trim
+    }
+    expect(ws.join(" ")).toBe(src); // 无损重组（窗边界都在空格）
+  });
+});
 
 function item(id: string, bodyLen: number): ContentItem {
   return {

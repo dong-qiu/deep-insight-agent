@@ -230,12 +230,87 @@ export function truncateForAnalyze(body: string): string {
   return body.length > ANALYZE_BODY_CHARS ? body.slice(0, ANALYZE_BODY_CHARS) : body;
 }
 
-function renderItems(items: ContentItem[]): string {
+/** 选段定长窗 + 段间分隔标记（ADR-0007 决定②）。转写经 stripTranscript 收敛成单行（无空行/说话人换行），
+ *  故按定长窗切。分隔标记非 body 一部分 → 模型跨段引用的 quote 不在 body、被可达性闸门挡下（防 Major4 漂移）。 */
+export const SELECT_WINDOW_CHARS = Number(process.env.SELECT_WINDOW_CHARS) || 1000;
+// 分隔标记：`[…]` 对模型可读（表省略、勿跨段引用）+ 哨兵 ␟（UNIT SEPARATOR）防碰撞——
+// fold 后仍含 ␟（评审实证），而真实转写永不含它，故跨段拼接的 quote 必不可达、被闸门正确挡下（Major4）。
+export const SELECT_SEPARATOR = "\n[…]␟\n";
+
+/** 把长文按定长窗切分（窗边界就近 snap 到空格、不切词）；返回各窗 trim 后文本（仍是 body 的逐字连续切片）。 */
+export function chunkWindows(body: string, size: number = SELECT_WINDOW_CHARS): string[] {
+  const out: string[] = [];
+  let start = 0;
+  while (start < body.length) {
+    let end = Math.min(start + size, body.length);
+    if (end < body.length) {
+      const sp = body.lastIndexOf(" ", end);
+      if (sp > start) end = sp; // snap 到空格，避免切词
+    }
+    const seg = body.slice(start, end).trim();
+    if (seg) out.push(seg);
+    start = end;
+  }
+  return out;
+}
+
+/** 窗内关键词命中次数（不分大小写，子串计数；中英皆可）。 */
+function keywordHits(text: string, keywordsLower: string[]): number {
+  const lower = text.toLowerCase();
+  let n = 0;
+  for (const k of keywordsLower) {
+    let from = 0;
+    for (;;) {
+      const at = lower.indexOf(k, from);
+      if (at < 0) break;
+      n++;
+      from = at + k.length;
+    }
+  }
+  return n;
+}
+
+/** 话题制导抽取式选段（ADR-0007 决定②）：替代 transcript 的前缀截断（前 N 字=开场寒暄、丢正题）。
+ *  按定长窗切 → 按关键词命中密度打分 → 取分最高的若干窗拼到 budget 内 → **按原序**还原、段间插分隔标记。
+ *  不变量：每段是 body 逐字连续切片 → quote ⊂ 段 ⊂ body，reachability 成立（computeLocator/repairQuote 不变）。
+ *  无关键词信号（全 0 命中）→ 退化为前缀（与 truncate 同效）。body ≤ budget → 原样返回。 */
+export function selectForAnalyze(
+  body: string,
+  keywords: string[],
+  budget: number = ANALYZE_BODY_CHARS,
+  windowSize: number = SELECT_WINDOW_CHARS,
+): string {
+  if (body.length <= budget) return body;
+  const kw = keywords.map((k) => k.toLowerCase().trim()).filter(Boolean);
+  const windows = chunkWindows(body, windowSize).map((text, i) => ({ i, text, score: keywordHits(text, kw) }));
+  // 选：按分降序（同分按原序）累计到 budget（含分隔符开销）；放不下的跳过继续找更小窗。
+  windows.sort((a, b) => b.score - a.score || a.i - b.i);
+  const chosen: typeof windows = [];
+  let total = 0;
+  for (const w of windows) {
+    const add = w.text.length + (chosen.length ? SELECT_SEPARATOR.length : 0);
+    if (total + add > budget) continue;
+    chosen.push(w);
+    total += add;
+  }
+  if (!chosen.length) return body.slice(0, budget); // 兜底（单窗已超 budget 等极端）
+  chosen.sort((a, b) => a.i - b.i); // 还原原序，读起来按时间脉络
+  return chosen.map((w) => w.text).join(SELECT_SEPARATOR);
+}
+
+function renderItems(items: ContentItem[], keywords: string[]): string {
   // 外部内容包 <untrusted-source>，防 prompt injection（architecture 安全设计「输入防护」）
   return items
     .map((it) => {
-      const body = truncateForAnalyze(it.body);
-      const label = body.length < it.body.length ? `正文（过长，仅取前 ${ANALYZE_BODY_CHARS} 字）` : "正文";
+      // transcript（ADR-0007 决定②）走话题制导选段——前缀截断对口语长稿丢正题；其余沿用前缀截断（零回归）。
+      const isTranscript = it.body_kind === "transcript";
+      const body = isTranscript ? selectForAnalyze(it.body, keywords) : truncateForAnalyze(it.body);
+      const label =
+        body.length >= it.body.length
+          ? "正文"
+          : isTranscript
+            ? `正文（转写·话题选段，约 ${ANALYZE_BODY_CHARS} 字；[…] 表省略，勿跨段引用）`
+            : `正文（过长，仅取前 ${ANALYZE_BODY_CHARS} 字）`;
       return `<untrusted-source id="${it.id}" url="${it.url}">\n标题：${it.title}\n来源：${it.source_id} · 时间：${it.published_at ?? "未知"}\n${label}：\n${body}\n</untrusted-source>`;
     })
     .join("\n");
@@ -301,7 +376,7 @@ async function analyzeChunk(
 该主题最近 14 天已报告事件清单（用于 event_id / is_followup 判定）：${renderHistory(history)}
 已采集内容（共 ${items.length} 条）：
 
-${renderItems(items)}`;
+${renderItems(items, topic.keywords)}`;
 
   const { data } = await callStructured({
     role: "analyzer",
