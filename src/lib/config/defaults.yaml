@@ -130,6 +130,16 @@ defaultSources:
     topic_ids: [t_code_agents]
     fetch_interval: 24h
     enabled: true
+  # Lex Fridman：转写不在 feed、官网有规律转写页（ADR-0007 6d 金牌源适配器）。选题极宽，
+  # 由 podcast-golden.ts 的标题筛子只留 AI/CS/SWE 集（实测命中率约 1/4），转写 URL 由单集页推导。
+  - id: src_lex_fridman
+    name: Lex Fridman Podcast（播客 · 转写 · AI/SWE 筛选）
+    type: rss
+    endpoint: https://lexfridman.com/feed/podcast/
+    industry: ai-swe
+    topic_ids: [t_code_agents]
+    fetch_interval: 24h
+    enabled: true
   - id: src_qbitai
     name: 量子位
     type: rss

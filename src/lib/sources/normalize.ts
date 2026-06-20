@@ -9,6 +9,13 @@ const TRACKING = /^(utm_|ref$|fbclid$|gclid$|mc_|spm$)/i;
 /** 单条 ContentItem 正文字符上限（data-collection AC9）：超限截断并标 fetch_status=partial，
  *  防异常大正文撑爆库 / 拖垮分析 token；下游可据 partial 决定是否回源补全。 */
 export const MAX_BODY_CHARS = 50_000;
+/** 转写（transcript）正文上限放宽（ADR-0007「MAX_BODY_CHARS 按 kind 取值」）：长访谈单集
+ *  动辄 3-4 万词（如 Lex ~34k 词≈200k 字符），50k 会截到 1/4。放宽到 300k 让 selectForAnalyze
+ *  能在全篇按话题制导选段；analyzer 实际 token 仍由 select 预算封顶，不随体量线性涨。 */
+export const MAX_TRANSCRIPT_CHARS = 300_000;
+function bodyCapFor(kind: ContentItem["body_kind"]): number {
+  return kind === "transcript" ? MAX_TRANSCRIPT_CHARS : MAX_BODY_CHARS;
+}
 
 /** 去 fragment / 跟踪参数 / 末尾斜杠，host 小写。解析失败则原样 trim。 */
 export function normalizeUrl(raw: string): string {
@@ -105,6 +112,23 @@ export function stripTranscript(raw: string): string {
   return out.join(" ").replace(/\s+/g, " ").trim();
 }
 
+/** 从结构化 HTML 转写页抽取正文（ADR-0007 切片6d，金牌源）：针对 Lex Fridman 式标记——
+ *  每段 `<span class="ts-name">说话人</span> <span class="ts-timestamp">…</span> <span class="ts-text">正文</span>`。
+ *  **单次有序扫描** ts-name / ts-text：遇 name 更新「当前说话人」，遇 text 用当前说话人发一行 "说话人: 正文"。
+ *  如此即便某段缺 ts-name 也不会错位（沿用上一说话人）——避免 index 配对在缺段时整体错位（review M1）。
+ *  保留说话人标签（同 stripTranscript）；ts-text 内联标签交 stripHtml 剥；无 ts-text 则返空串——交调用方回退。 */
+const TS_SPAN = /<span[^>]*class="[^"]*\bts-(name|text)\b[^"]*"[^>]*>([\s\S]*?)<\/span>/gi;
+export function extractHtmlTranscript(html: string): string {
+  const lines: string[] = [];
+  let speaker = "";
+  for (const m of html.matchAll(TS_SPAN)) {
+    const val = stripHtml(m[2]).replace(/\s+/g, " ").trim();
+    if (m[1].toLowerCase() === "name") speaker = val;
+    else if (val) lines.push(speaker ? `${speaker}: ${val}` : val); // ts-text，仅非空
+  }
+  return lines.join("\n").trim();
+}
+
 /** 内容指纹 = 规范化 body 的 sha256，用于同 URL 内容更新检测。 */
 export function contentHash(body: string): string {
   return createHash("sha256").update(normalizeBody(body)).digest("hex");
@@ -129,8 +153,9 @@ export function contentItemId(url: string): string {
  *  正文超 MAX_BODY_CHARS 则截断并标 partial（AC9）；指纹按截断后正文计（去重判定一致）。 */
 export function rawToContentItem(raw: RawItem, source: Source, fetchedAt: string): ContentItem {
   const full = normalizeBody(raw.body);
-  const truncated = full.length > MAX_BODY_CHARS;
-  const body = truncated ? full.slice(0, MAX_BODY_CHARS) : full;
+  const cap = bodyCapFor(raw.body_kind ?? "article"); // 按形态取上限：转写放宽（ADR-0007）
+  const truncated = full.length > cap;
+  const body = truncated ? full.slice(0, cap) : full;
   const hash = contentHash(body);
   const url = normalizeUrl(raw.url);
   return {
