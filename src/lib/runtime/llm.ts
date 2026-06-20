@@ -159,6 +159,36 @@ export interface StructuredResult<T> {
 
 const STRUCTURED_TOOL_NAME = "respond_with_structured_output";
 
+/** 模型/中转站偶发把应为 array/object 的字段返成 JSON 字符串（6b 真机：opus-4-7 经中转站把 insights 返字符串）。
+ *  按 zod invalid_type 报错路径，对「期望 array/object、实得 string」的字段就地 JSON.parse；返修正副本，无可修正返 null。
+ *  仅对否则会被丢弃的非法输出生效，不触碰合法输出。 */
+export function coerceStringifiedFields(
+  input: unknown,
+  issues: readonly { code: string; path: readonly PropertyKey[]; expected?: string }[],
+): unknown | null {
+  if (typeof input !== "object" || input === null) return null;
+  const clone = structuredClone(input);
+  let changed = false;
+  for (const issue of issues) {
+    if (issue.code !== "invalid_type" || (issue.expected !== "array" && issue.expected !== "object")) continue;
+    if (!issue.path.length) continue;
+    /* eslint-disable @typescript-eslint/no-explicit-any */
+    let node: any = clone;
+    for (let i = 0; i < issue.path.length - 1; i++) node = node?.[issue.path[i]];
+    const key = issue.path[issue.path.length - 1];
+    if (node && typeof node[key] === "string") {
+      try {
+        node[key] = JSON.parse(node[key]);
+        changed = true;
+      } catch {
+        /* 不可解析则放弃该字段 */
+      }
+    }
+    /* eslint-enable @typescript-eslint/no-explicit-any */
+  }
+  return changed ? clone : null;
+}
+
 export async function callStructured<T extends z.ZodType>(
   opts: StructuredCall<T>,
 ): Promise<StructuredResult<z.infer<T>>> {
@@ -233,6 +263,13 @@ export async function callStructured<T extends z.ZodType>(
   // 走 safeParse 拿明确错误而非 ZodError 黑盒。
   const parsed = opts.schema.safeParse(toolUse.input);
   if (!parsed.success) {
+    // 防御：模型偶发把应为 array/object 的字段返成 JSON 字符串（6b 真机）——按报错路径定点 parse 后重试一次。
+    const coerced = coerceStringifiedFields(toolUse.input, parsed.error.issues);
+    const retry = coerced != null ? opts.schema.safeParse(coerced) : null;
+    if (retry?.success) {
+      console.warn(`  ⚠️ 结构化输出字段被序列化成字符串、已定点 JSON.parse 修正（role=${opts.role}）`);
+      return { data: retry.data, usage: res.usage, cost };
+    }
     throw new Error(
       `结构化输出 schema 校验失败（role=${opts.role}）：${parsed.error.issues
         .slice(0, 3)
