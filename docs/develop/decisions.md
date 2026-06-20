@@ -316,8 +316,12 @@ ADR 实现拆为可独立合入的小 PR，`TRANSCRIPT_FETCH` 默认关贯穿前
 - **切片1**（#76）数据模型地基：`content_item` 加 `body_kind`。
 - **切片2**（#78）`rss.ts` 读 `<podcast:transcript>` + 抓取 + `stripTranscript`（开关默认关）。
 - **切片3**（#80）`selectForAnalyze`（决定② transcript 话题制导选段 + `[…]␟` 分隔哨兵）。
-- **切片4**（本 PR）决定⑤ `buildWindowByItem`（per-item locator 窗口，validator 一致性校验降本）。
-- **切片6**（待）翻开关 + B 族（Major6 + 只抓新性能）+ transcript 数据集/baseline（前置依赖段的 eval-harness #70 已落地）。
+- **切片4**（#81）决定⑤ `buildWindowByItem`（per-item locator 窗口，validator 一致性校验降本）。
+- **切片6**（待，「点亮」刀，拆 3 子刀，2026-06-20 规划）——开关仍关贯穿 6a/6b：
+  - **6a B 族重构**（代码、开关关、行为中性）：转写抓取从 `fetchRss` **移到 collector 去重后**——`fetchRss` 只解析 `transcript_url`、不抓；collector 对**库里没有的 url** 才抓转写（`fetchTranscript` 提为 sources 导出 helper、`getContentByUrl` 多返 `body_kind`），并**不降级**（已是 transcript 的 item 不被 show_notes 覆盖）。一举解决 Major6（根除跨 kind 原地改 body）+ 性能（不再每轮抓 50 集）。代价：迟到的转写不收（边缘）。
+  - **6b transcript eval 数据集 + baseline 段**：`evals/dataset` 加 `stratum:"transcript"` 真实样本，跑 transcript eval、`baseline.json` 开 `transcript:{}` 段、标定 yield 阈值。**硬前置**：analyzer 模型可达（中转站对 `claude-sonnet-4-6` 曾返 403，6a 后先探）。
+  - **6c 翻开关 + 真机验证**（go-live）：`defaults.yaml` 源标记 + 翻 `TRANSCRIPT_FETCH`；真抓一集→采集/选段/分析/校验，核 yield/上报可达/成本/窗口退回率；eval-gate **真跑 transcript 对比出表**盖章（不再 skip）。
+  - **6d 金牌源专用适配器**（最后/并入 6c 后续）：Practical AI→Changelog GitHub 全文稿、Darknet→官网 `/transcript/`（这些不在 feed 放 `podcast:transcript` 标签）。6c v1 只做 feed 带标签的源。
 - **不做**：音频下载、ASR/转写生成、多模态音频输入——均留长尾兜底，本 ADR 不含。
 
 ---
