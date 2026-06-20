@@ -61,6 +61,7 @@ curl -fsS -X POST http://127.0.0.1:3000/api/cron -H "authorization: Bearer $CRON
 | `COST_LIMIT_DAILY` | 否 | 日成本上限（**USD**）；触顶自动熔断定时管线（跳过剩余 topic）+ 告警。未设 = 不限（见 §14）|
 | `COST_LIMIT_MONTHLY` | 否 | 月成本上限（**USD**，自然月 UTC）；同上熔断 + 告警。未设 = 不限 |
 | `COST_ALERT_PCT` | 否 | 触顶前的告警阈值百分比，默认 80；任一维度达此比例发一次「接近上限」告警 |
+| `TRANSCRIPT_FETCH` | 否 | `1`=对带 `<podcast:transcript>` 的源抓全文转写做分析（ADR-0007）；空/`0`=只用 show notes。生产默认 `1`（gen-env.sh 写入，2026-06-20 上线）。属「生产手动配的运行时配置」，记得持久化进 `.env.local`（见 §8） |
 | `DATA_DIR`/`DB_PATH`/`INSIGHT_CONFIG_PATH` | 容器已设 | 勿在本地 dev 设；Dockerfile 已指向 `/data` 与打包内 `defaults.yaml` |
 
 ## 4. ⚠️ 中转站（Opus-only）约束
@@ -175,7 +176,7 @@ docker run --rm -v deep-insight_insight-data:/data -v "$PWD":/backup alpine \
 > - 验证别只看 `HTTP 200`（跨服务调用里 200 ≠ 成功，如飞书回 200+错误码）；用 `docker exec deep-insight-app-1 node /app/ops/probe-alert.mjs` 看渠道 + `code=0` + 真到达。
 > - 实战教训见 `docs/practice-log.md` 2026-06-08 条（接飞书告警时 `up -d` 跑旧 probe 报假成功）。
 
-> ⚠️ **运行时配置持久化（成本熔断 / 报告推送）**：`COST_LIMIT_DAILY`/`COST_LIMIT_MONTHLY`/`COST_ALERT_PCT`/`REPORT_PUSH`/`PUBLIC_BASE_URL` 这几个常在生产手动配。
+> ⚠️ **运行时配置持久化（成本熔断 / 报告推送 / 转写采集）**：`COST_LIMIT_DAILY`/`COST_LIMIT_MONTHLY`/`COST_ALERT_PCT`/`REPORT_PUSH`/`PUBLIC_BASE_URL`/`TRANSCRIPT_FETCH` 这几个常在生产手动配。
 > - **`ops/aws/deploy.sh` 路径**：scp **全量覆盖**远程 `.env.local`（源 = 本地 `.env.local`，仅剔除 `DB_PATH`/`DATA_DIR`）。故生产值必须落进**本地** `.env.local`，否则下次 deploy 静默抹掉熔断/推送。已加两道护栏：`gen-env.sh` 重生成时**继承**旧 `.env.local` 的这些值；`deploy.sh` 投递前**体检缺失即告警**。
 > - **`deploy.yml`（CD）路径**：`git pull` 不碰 `.env.local`（operator 手动放服务器），故 CD 不会抹；但首次需在服务器 `.env.local` 配好。
 > - 仅调这几个值时：直接编辑服务器 `.env.local` 后 `docker compose up -d --force-recreate`（§7），**别重跑 `deploy.sh`/`gen-env.sh` 以免连带覆盖**；同时把值同步回本地 `.env.local` 留底。教训见 `docs/verify/mvp-gap-2026-06-07.md` §2.1。
