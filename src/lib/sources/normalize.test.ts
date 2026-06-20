@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { Source } from "../types.js";
 import {
-  MAX_BODY_CHARS, contentHash, contentItemId, detectLanguage, normalizeBody, normalizeUrl,
-  rawToContentItem, stripHtml, stripTranscript,
+  MAX_BODY_CHARS, MAX_TRANSCRIPT_CHARS, contentHash, contentItemId, detectLanguage,
+  extractHtmlTranscript, normalizeBody, normalizeUrl, rawToContentItem, stripHtml, stripTranscript,
 } from "./normalize.js";
 import type { RawItem } from "./types.js";
 
@@ -156,5 +156,62 @@ describe("rawToContentItem 正文上限（AC9 partial）", () => {
     const item = rawToContentItem(raw("short body"), SRC, "2026-05-26T00:00:00Z");
     expect(item.body).toBe("short body");
     expect(item.fetch_status).toBe("ok");
+  });
+
+  it("transcript 形态走更高上限：50k–300k 间不截断、标 ok（ADR-0007 按 kind 取值）", () => {
+    const big = "y".repeat(MAX_BODY_CHARS + 100_000); // 150k：超 article 上限、未超 transcript 上限
+    const tr = rawToContentItem({ ...raw(big), body_kind: "transcript" }, SRC, "2026-05-26T00:00:00Z");
+    expect(tr.body.length).toBe(big.length); // 完整保留
+    expect(tr.fetch_status).toBe("ok");
+    const art = rawToContentItem(raw(big), SRC, "2026-05-26T00:00:00Z"); // 同样长度的 article → 截断
+    expect(art.body.length).toBe(MAX_BODY_CHARS);
+    expect(art.fetch_status).toBe("partial");
+  });
+
+  it("transcript 超 300k 仍截断到 transcript 上限", () => {
+    const huge = "z".repeat(MAX_TRANSCRIPT_CHARS + 10_000);
+    const tr = rawToContentItem({ ...raw(huge), body_kind: "transcript" }, SRC, "2026-05-26T00:00:00Z");
+    expect(tr.body.length).toBe(MAX_TRANSCRIPT_CHARS);
+    expect(tr.fetch_status).toBe("partial");
+  });
+});
+
+describe("extractHtmlTranscript（ADR-0007 切片6d：Lex 式 .ts-segment）", () => {
+  const seg = (name: string, text: string) =>
+    `<div class="ts-segment"><span class="ts-name">${name}</span> ` +
+    `<span class="ts-timestamp"><a href="#">(00:01:00)</a></span> <span class="ts-text">${text}</span></div>`;
+
+  it("逐段抽 ts-text、配 ts-name 成 '说话人: 正文'", () => {
+    const html = `<html><body>${seg("Lex Fridman", "Hello there.")}${seg("Guest", "Hi Lex.")}</body></html>`;
+    expect(extractHtmlTranscript(html)).toBe("Lex Fridman: Hello there.\nGuest: Hi Lex.");
+  });
+
+  it("ts-text 内联标签被剥（stripHtml）", () => {
+    const html = seg("Lex", 'See <a href="x">this <strong>paper</strong></a> now.');
+    expect(extractHtmlTranscript(html)).toBe("Lex: See this paper now.");
+  });
+
+  it("不混入 ts-text 之外的页面 chrome（赞助/导航）", () => {
+    const html = `<nav>Sponsor: BetterHelp</nav>${seg("Lex", "Real content.")}<footer>© 2026</footer>`;
+    const out = extractHtmlTranscript(html);
+    expect(out).toBe("Lex: Real content.");
+    expect(out).not.toContain("Sponsor");
+  });
+
+  it("无 ts-text 结构 → 空串（交调用方回退，不误把整页当转写）", () => {
+    expect(extractHtmlTranscript("<html><body><p>just a page</p></body></html>")).toBe("");
+  });
+
+  it("某段缺 ts-name 不致说话人错位（review M1）：续段沿用上一说话人，不串味", () => {
+    const html =
+      `<span class="ts-name">Lex</span><span class="ts-text">First.</span>` +
+      `<span class="ts-text">Still Lex, no name span.</span>` + // 续段：缺 ts-name
+      `<span class="ts-name">Guest</span><span class="ts-text">Guest now.</span>`;
+    // 有序扫描：续段归到上一个说话人 Lex，Guest 仍正确——而非整体错位
+    expect(extractHtmlTranscript(html)).toBe("Lex: First.\nLex: Still Lex, no name span.\nGuest: Guest now.");
+  });
+
+  it("text 先于任何 name 出现 → 无前缀（不臆造说话人）", () => {
+    expect(extractHtmlTranscript('<span class="ts-text">Orphan line.</span>')).toBe("Orphan line.");
   });
 });
