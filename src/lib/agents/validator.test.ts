@@ -27,6 +27,7 @@ function item(id: string, body: string): ContentItem {
     topic_ids: [],
     tags: [],
     body,
+    body_kind: "article",
     raw_ref: `raw://${id}`,
     content_hash: `h_${id}`,
     fetch_status: "ok",

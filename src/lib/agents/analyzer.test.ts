@@ -13,7 +13,7 @@ function item(id: string, bodyLen: number): ContentItem {
   return {
     id, source_id: "s", url: `https://x/${id}`, title: "t", author: null, published_at: null,
     fetched_at: "2026-05-27T00:00:00Z", language: "en", topic_ids: ["t"], tags: [],
-    body: "x".repeat(bodyLen), raw_ref: "", content_hash: `h_${id}`, fetch_status: "ok",
+    body: "x".repeat(bodyLen), body_kind: "article", raw_ref: "", content_hash: `h_${id}`, fetch_status: "ok",
   };
 }
 
@@ -189,7 +189,7 @@ describe("carveQuote（补引候选句抽取）", () => {
 describe("repairCoverage（真正补引：候选 → Opus 校验 → 仅 support 才补）", () => {
   const mkItem = (id: string, body: string): ContentItem => ({
     id, source_id: "s1", url: `https://x/${id}`, title: "T", author: null, published_at: "2026-06-01",
-    fetched_at: "2026-06-01T00:00:00Z", language: "en", topic_ids: ["t1"], tags: [], body,
+    fetched_at: "2026-06-01T00:00:00Z", language: "en", topic_ids: ["t1"], tags: [], body, body_kind: "article",
     raw_ref: "", content_hash: `h_${id}`, fetch_status: "ok",
   });
   const mkInsight = (statement: string, cits: Citation[], entities: { name: string; type: "organization" }[] = []): Insight => ({

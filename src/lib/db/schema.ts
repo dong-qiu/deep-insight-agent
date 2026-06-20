@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS content_item (
   topic_ids    TEXT NOT NULL DEFAULT '[]',
   tags         TEXT NOT NULL DEFAULT '[]',
   body         TEXT NOT NULL,
+  body_kind    TEXT NOT NULL DEFAULT 'article' CHECK (body_kind IN ('article','show_notes','transcript')),
   raw_ref      TEXT NOT NULL,
   content_hash TEXT NOT NULL,
   fetch_status TEXT NOT NULL CHECK (fetch_status IN ('ok','partial'))

@@ -5,6 +5,9 @@
 import { z } from "zod/v4";
 
 export type Language = "zh" | "en" | "mixed";
+/** 正文料源形态（ADR-0007 播客接入）：article=网页/论文正文；show_notes=播客 RSS 摘要；
+ *  transcript=播客全文转写。驱动选段/校验策略与人评区分；存量与默认均为 article。 */
+export type BodyKind = "article" | "show_notes" | "transcript";
 export type Industry = "ai-swe" | "ai-security";
 
 /** 数据源配置（architecture 数据模型 · Source） */
@@ -44,6 +47,7 @@ export interface ContentItem {
   topic_ids: string[];
   tags: string[];
   body: string;
+  body_kind: BodyKind; // 料源形态（ADR-0007）；默认 article
   raw_ref: string;
   content_hash: string;
   fetch_status: "ok" | "partial";

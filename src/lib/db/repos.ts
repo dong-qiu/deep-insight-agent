@@ -99,12 +99,12 @@ export function deleteTopic(db: DB, id: string): number {
 export function insertContentItem(db: DB, c: ContentItem): void {
   db.prepare(
     `INSERT INTO content_item
-       (id,source_id,url,title,author,published_at,fetched_at,language,topic_ids,tags,body,raw_ref,content_hash,fetch_status)
-     VALUES (@id,@source_id,@url,@title,@author,@published_at,@fetched_at,@language,@topic_ids,@tags,@body,@raw_ref,@content_hash,@fetch_status)`,
+       (id,source_id,url,title,author,published_at,fetched_at,language,topic_ids,tags,body,body_kind,raw_ref,content_hash,fetch_status)
+     VALUES (@id,@source_id,@url,@title,@author,@published_at,@fetched_at,@language,@topic_ids,@tags,@body,@body_kind,@raw_ref,@content_hash,@fetch_status)`,
   ).run({
     id: c.id, source_id: c.source_id, url: c.url, title: c.title, author: c.author,
     published_at: c.published_at, fetched_at: c.fetched_at, language: c.language,
-    topic_ids: j(c.topic_ids), tags: j(c.tags), body: c.body, raw_ref: c.raw_ref,
+    topic_ids: j(c.topic_ids), tags: j(c.tags), body: c.body, body_kind: c.body_kind, raw_ref: c.raw_ref,
     content_hash: c.content_hash, fetch_status: c.fetch_status,
   });
 }
@@ -131,11 +131,11 @@ export function updateContentItem(db: DB, c: ContentItem): void {
   db.prepare(
     `UPDATE content_item
        SET title=@title, author=@author, fetched_at=@fetched_at, language=@language,
-           tags=@tags, body=@body, raw_ref=@raw_ref, content_hash=@content_hash, fetch_status=@fetch_status
+           tags=@tags, body=@body, body_kind=@body_kind, raw_ref=@raw_ref, content_hash=@content_hash, fetch_status=@fetch_status
      WHERE url=@url`,
   ).run({
     url: c.url, title: c.title, author: c.author, fetched_at: c.fetched_at, language: c.language,
-    tags: j(c.tags), body: c.body, raw_ref: c.raw_ref, content_hash: c.content_hash,
+    tags: j(c.tags), body: c.body, body_kind: c.body_kind, raw_ref: c.raw_ref, content_hash: c.content_hash,
     fetch_status: c.fetch_status,
   });
 }
@@ -170,7 +170,8 @@ function rowToContentItem(r: Record<string, unknown>): ContentItem {
     title: r.title as string, author: (r.author as string) ?? null,
     published_at: (r.published_at as string) ?? null, fetched_at: r.fetched_at as string,
     language: r.language as ContentItem["language"], topic_ids: JSON.parse(r.topic_ids as string),
-    tags: JSON.parse(r.tags as string), body: r.body as string, raw_ref: r.raw_ref as string,
+    tags: JSON.parse(r.tags as string), body: r.body as string,
+    body_kind: (r.body_kind as ContentItem["body_kind"]) ?? "article", raw_ref: r.raw_ref as string,
     content_hash: r.content_hash as string, fetch_status: r.fetch_status as ContentItem["fetch_status"],
   };
 }

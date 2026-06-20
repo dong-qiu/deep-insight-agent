@@ -7,7 +7,7 @@ function ci(id: string, source_id: string, text: string): ContentItem {
   return {
     id, source_id, url: `https://x/${id}`, title: text, author: null, published_at: null,
     fetched_at: "2026-05-27T00:00:00Z", language: "en", topic_ids: ["t"], tags: [],
-    body: text, raw_ref: "", content_hash: `h_${id}`, fetch_status: "ok",
+    body: text, body_kind: "article", raw_ref: "", content_hash: `h_${id}`, fetch_status: "ok",
   };
 }
 const KW = ["coding agent", "swe-bench"];

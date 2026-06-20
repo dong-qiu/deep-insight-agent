@@ -33,7 +33,7 @@ const source: Source = {
 const contentItem: ContentItem = {
   id: "ci1", source_id: "s1", url: "https://x.example/a", title: "A",
   author: null, published_at: "2026-06-01", fetched_at: "2026-06-01",
-  language: "en", topic_ids: ["t1"], tags: [], body: "原文。",
+  language: "en", topic_ids: ["t1"], tags: [], body: "原文。", body_kind: "article",
   raw_ref: "", content_hash: "h1", fetch_status: "ok",
 };
 
