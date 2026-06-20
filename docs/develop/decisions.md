@@ -317,11 +317,11 @@ ADR 实现拆为可独立合入的小 PR，`TRANSCRIPT_FETCH` 默认关贯穿前
 - **切片2**（#78）`rss.ts` 读 `<podcast:transcript>` + 抓取 + `stripTranscript`（开关默认关）。
 - **切片3**（#80）`selectForAnalyze`（决定② transcript 话题制导选段 + `[…]␟` 分隔哨兵）。
 - **切片4**（#81）决定⑤ `buildWindowByItem`（per-item locator 窗口，validator 一致性校验降本）。
-- **切片6**（待，「点亮」刀，拆 3 子刀，2026-06-20 规划）——开关仍关贯穿 6a/6b：
+- **切片6**（✅ 已上线，「点亮」刀，2026-06-20）——开关仍关贯穿 6a/6b、6c 翻开关上线：
   - **6a B 族重构**（代码、开关关、行为中性）：转写抓取从 `fetchRss` **移到 collector 去重后**——`fetchRss` 只解析 `transcript_url`、不抓；collector 对**库里没有的 url** 才抓转写（`fetchTranscript` 提为 sources 导出 helper、`getContentByUrl` 多返 `body_kind`），并**不降级**（已是 transcript 的 item 不被 show_notes 覆盖）。一举解决 Major6（根除跨 kind 原地改 body）+ 性能（不再每轮抓 50 集）。代价：迟到的转写不收（边缘）。
-  - **6b transcript eval 数据集 + baseline 段**：`evals/dataset` 加 `stratum:"transcript"` 真实样本，跑 transcript eval、`baseline.json` 开 `transcript:{}` 段、标定 yield 阈值。**硬前置**：analyzer 模型可达（中转站对 `claude-sonnet-4-6` 曾返 403，6a 后先探）。
-  - **6c 翻开关 + 真机验证**（go-live）：`defaults.yaml` 源标记 + 翻 `TRANSCRIPT_FETCH`；真抓一集→采集/选段/分析/校验，核 yield/上报可达/成本/窗口退回率；eval-gate **真跑 transcript 对比出表**盖章（不再 skip）。
-  - **6d 金牌源专用适配器**（最后/并入 6c 后续）：Practical AI→Changelog GitHub 全文稿、Darknet→官网 `/transcript/`（这些不在 feed 放 `podcast:transcript` 标签）。6c v1 只做 feed 带标签的源。
+  - **6b transcript eval 数据集 + baseline 段**（✅ #88）：`evals/dataset` 加 `stratum:"transcript"` 真实样本（2 集 Practical AI 真转写 + 5 一致性对），跑 transcript eval、`baseline.json` 开 `transcript:{}` 段。真机结果：可达 100% / judge 100% / yield 0.692（provisional 小样本，yield 略低于暂定门 0.7，待扩样重标）。analyzer 模型可达性已探明（中转站 opus-4-7/4-8 可用、sonnet-4-6 403）。
+  - **6c 翻开关 + 真机验证**（✅ go-live，2026-06-20）：`TRANSCRIPT_FETCH=1` 固化进 `gen-env.sh`（#89）+ 经 SSM 翻生产 `.env.local` 开关 + `force-recreate`；生产实抓真实转写 **HTTP 200 + 合法 VTT**（Practical AI 44KB / Darknet 52KB，AWS 新加坡 IP 未被拦）；红线由已部署 validator blocking 守。collector「只抓新条目」→ 从上线时刻起对新发布剧集生效。
+  - **6d 金牌源专用适配器** ——**经 2026-06-20 实测，现有源不需要**：Practical AI（`feeds.transistor.fm/...`）feed 内带 `<podcast:transcript>` **280/362**、Darknet（`podcast.darknetdiaries.com/`）**172/175**，**走标准 6c 路径即可**，无需 Changelog GitHub / 官网 `/transcript/` 专用适配器（本 ADR 早先"这些不在 feed 放标签"的前提已被证伪）。Risky Business（`risky.biz/feeds/...`）**0/100 且 feed/单集页/站点均无转写**——6d 也无从抓起，正确维持 `show_notes`。**结论：6d 对当前 3 源全部 N/A，仅当未来接入"转写在 feed 之外"的播客才需要，本 ADR 范围内不做。**
 - **不做**：音频下载、ASR/转写生成、多模态音频输入——均留长尾兜底，本 ADR 不含。
 
 ---
