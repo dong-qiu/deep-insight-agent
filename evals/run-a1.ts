@@ -17,7 +17,8 @@
  *    改用 `yield`（=1-blocked 占比）作硬门（防"挡到没产出"）；一致性 95% / flagged 10% 照旧硬守。
  * 仅含 arxiv 数据时（当前默认数据集），行为与分形态前一致——arxiv 那组的门槛/退出码逐项不变。
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import "./load-env.js"; // 必须最先 import：载 .env.local，早于 MODELS（llm.ts 模块加载时求值）
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { analyze, coverageGaps, specificClaims } from "../src/lib/agents/analyzer.js";
 import { judgeConsistency, validateBatch } from "../src/lib/agents/validator.js";
 import { MODELS, assertModelSeparation, getCostReport } from "../src/lib/runtime/llm.js";
@@ -90,14 +91,6 @@ function emptyJudgeStats(): JudgeStats {
   return { judged: 0, correct: 0, errors: 0, negTotal: 0, negRecalled: 0 };
 }
 
-function loadEnvLocal(): void {
-  if (!existsSync(".env.local")) return;
-  for (const line of readFileSync(".env.local", "utf8").split("\n")) {
-    const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/);
-    if (m && !process.env[m[1]]) process.env[m[1]] = m[2].replace(/^["']|["']$/g, "");
-  }
-}
-
 function readJsonl<T>(path: string): T[] {
   return readFileSync(path, "utf8")
     .split("\n")
@@ -159,7 +152,7 @@ function printMetrics(stratum: Stratum, rows: MetricRow[]): void {
 }
 
 async function main(): Promise<void> {
-  loadEnvLocal();
+  // .env.local 已由顶部 `import "./load-env.js"` 在 MODELS 求值前载入（见该模块注释）。
   if (!process.env.ANTHROPIC_API_KEY) {
     console.error(
       "缺少 ANTHROPIC_API_KEY。\n" +
