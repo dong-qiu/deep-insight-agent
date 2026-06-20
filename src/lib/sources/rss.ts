@@ -69,10 +69,9 @@ export function parseRss(feedXml: string): RawItem[] {
  *  RSS 惯例为新到在前，取前 N 即最近 N 条；env RSS_MAX_ITEMS 可覆盖。 */
 export const RSS_MAX_ITEMS = Number(process.env.RSS_MAX_ITEMS) || 50;
 
-/** 播客转写抓取开关（ADR-0007 切片2）：默认关——关时 transcript_url 已解析但不消费，行为与接入前一致。
- *  开启（=1/true）后对带 <podcast:transcript> 的条目抓全文转写。调用时读 env（非模块加载常量）：便于运行期切换 + 单测两态。
- *  ⚠️ 当前为**串行全抓**：一个 feed 最多 50 集 × (fetchRobots + safeFetch 各 15s 超时)，会阻塞单次 collectSource 很久。
- *  **切片6 翻开关前必做**：① 只抓新条目（dedup 后再抓）② origin→robots 缓存 ③ 并发限制 + 单次总预算。否则拖垮 collector。 */
+/** 播客转写抓取开关（ADR-0007）：默认关——关时 transcript_url 已解析但不抓，行为与接入前一致。
+ *  开启（=1/true）后由 **collector**（去重后、只对新 url）抓转写——见 collector.ts（B族：6a）。
+ *  调用时读 env（非模块加载常量）：便于运行期切换 + 单测两态。 */
 export function transcriptFetchEnabled(): boolean {
   return process.env.TRANSCRIPT_FETCH === "1" || process.env.TRANSCRIPT_FETCH === "true";
 }
@@ -83,26 +82,15 @@ export async function fetchRss(source: Source): Promise<RawItem[]> {
   if (!isAllowed(rules, pathname)) throw new Error(`robots.txt 禁止抓取：${source.endpoint}`);
   const res = await safeFetch(source.endpoint, { headers: { "user-agent": UA } });
   if (!res.ok) throw new Error(`rss fetch ${res.status}：${source.endpoint}`);
-  const items = parseRss(await readTextCapped(res)).slice(0, RSS_MAX_ITEMS);
-  if (!transcriptFetchEnabled()) return items; // 开关关：现状行为（transcript_url 已解析、不消费）
-  // 开关开：对有 transcript_url 的条目抓转写稿——成功则替换 body + 标 transcript；
-  // 失败（robots/网络/超限/空）回退 show notes 文本、标 show_notes。其余条目不变（→ 归一化默认 article）。
-  for (const it of items) {
-    if (!it.transcript_url) continue;
-    const transcript = await fetchTranscript(it.transcript_url);
-    if (transcript) {
-      it.body = transcript;
-      it.body_kind = "transcript";
-    } else {
-      it.body_kind = "show_notes";
-    }
-  }
-  return items;
+  // 6a：fetchRss 只解析（含 transcript_url）、**不抓转写**——抓取移到 collector 去重后、只对新 url 抓
+  // （B族：避免每轮全抓 50 集，且根除 show_notes→transcript 原地改 body 的 Major6）。
+  return parseRss(await readTextCapped(res)).slice(0, RSS_MAX_ITEMS);
 }
 
 /** 抓取并清洗单集转写稿：对其 origin **单独**查 robots（与 feed 常不同源，评审 Major 5）+ SSRF 安全出网
- *  + 大小封顶 + VTT/SRT 噪声清洗。任何失败（robots 禁止 / 非 2xx / 网络 / 超限 / 清洗后空）返 null。 */
-async function fetchTranscript(url: string): Promise<string | null> {
+ *  + 大小封顶 + VTT/SRT 噪声清洗。任何失败（robots 禁止 / 非 2xx / 网络 / 超限 / 清洗后空）返 null。
+ *  由 collector 在去重后对**新 url** 调用（6a）。 */
+export async function fetchTranscript(url: string): Promise<string | null> {
   try {
     const { origin, pathname } = new URL(url);
     const rules = await fetchRobots(origin);

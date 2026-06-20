@@ -119,10 +119,13 @@ export function contentExists(db: DB, url: string, contentHash: string): boolean
     undefined
   );
 }
-/** 按规范化 url 查已存条目的 id + content_hash（去重/更新判定用）。 */
-export function getContentByUrl(db: DB, url: string): { id: string; content_hash: string } | null {
-  const r = db.prepare("SELECT id, content_hash FROM content_item WHERE url = ?").get(url) as
-    | { id: string; content_hash: string }
+/** 按规范化 url 查已存条目的 id + content_hash + body_kind（去重/更新判定 + B族不降级用）。 */
+export function getContentByUrl(
+  db: DB,
+  url: string,
+): { id: string; content_hash: string; body_kind: ContentItem["body_kind"] } | null {
+  const r = db.prepare("SELECT id, content_hash, body_kind FROM content_item WHERE url = ?").get(url) as
+    | { id: string; content_hash: string; body_kind: ContentItem["body_kind"] }
     | undefined;
   return r ?? null;
 }
