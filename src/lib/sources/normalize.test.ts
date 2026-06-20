@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Source } from "../types.js";
 import {
   MAX_BODY_CHARS, contentHash, contentItemId, detectLanguage, normalizeBody, normalizeUrl,
-  rawToContentItem, stripHtml,
+  rawToContentItem, stripHtml, stripTranscript,
 } from "./normalize.js";
 import type { RawItem } from "./types.js";
 
@@ -25,6 +25,40 @@ describe("contentHash", () => {
   it("空白不敏感、内容变则变", () => {
     expect(contentHash("a  b\nc")).toBe(contentHash("a b c"));
     expect(contentHash("a b c")).not.toBe(contentHash("a b d"));
+  });
+});
+
+describe("stripTranscript（ADR-0007 切片2）", () => {
+  it("VTT：剥头/时间轴/NOTE，保留台词", () => {
+    const vtt = "WEBVTT\n\nNOTE recorded 2026\n\n1\n00:00:01.000 --> 00:00:03.000\nHello world.\n\n2\n00:00:03.500 --> 00:00:06.000\nSecond line here.";
+    expect(stripTranscript(vtt)).toBe("Hello world. Second line here.");
+  });
+  it("SRT：剥 cue 序号 + 时间轴", () => {
+    const srt = "1\n00:00:01,000 --> 00:00:02,000\nFirst.\n\n2\n00:00:02,000 --> 00:00:03,000\nSecond.";
+    expect(stripTranscript(srt)).toBe("First. Second.");
+  });
+  it("纯文本原样收敛空白；幂等", () => {
+    const out = stripTranscript("  Plain   transcript\n\ntext.  ");
+    expect(out).toBe("Plain transcript text.");
+    expect(stripTranscript(out)).toBe(out); // 幂等
+  });
+  it("保留说话人标签（不误剥）", () => {
+    expect(stripTranscript("00:00:01.000 --> 00:00:02.000\nJohn: hi there")).toBe("John: hi there");
+  });
+  it("不误删正文：独立数字行 + 含 --> 的台词保留（评审 M1/M2）", () => {
+    // "42" 后随正文（非时间轴）→ 不当 SRT 序号删；含 --> 但非行首时间戳 → 不当时间轴删
+    expect(stripTranscript("In 2024\n42\npeople agreed")).toBe("In 2024 42 people agreed");
+    expect(stripTranscript("The pipeline A --> B is key")).toBe("The pipeline A --> B is key");
+  });
+  it("VTT NOTE 多行块整块删（评审 M3）", () => {
+    const vtt = "WEBVTT\n\nNOTE\nrecorded in studio\nby the team\n\n00:00:01.000 --> 00:00:02.000\nReal line.";
+    expect(stripTranscript(vtt)).toBe("Real line.");
+  });
+  it("SRT 序号与时间轴间有空行：跳空行后仍认出序号（二轮 M1 边界）", () => {
+    expect(stripTranscript("1\n\n00:00:01,000 --> 00:00:02,000\nHi there")).toBe("Hi there");
+  });
+  it("末尾纯数字行（无后随时间轴）保留为正文", () => {
+    expect(stripTranscript("总数是\n100")).toBe("总数是 100");
   });
 });
 

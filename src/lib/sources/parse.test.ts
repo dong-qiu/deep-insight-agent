@@ -74,4 +74,46 @@ describe("parseRss", () => {
   it("无法识别的 XML → 空数组", () => {
     expect(parseRss("<x/>")).toEqual([]);
   });
+
+  it("无 <podcast:transcript> → transcript_url undefined（普通 feed 不受影响）", () => {
+    expect(parseRss(RSS)[0].transcript_url).toBeUndefined();
+    expect(parseRss(ATOM)[0].transcript_url).toBeUndefined();
+  });
+
+  it("<podcast:transcript> 多格式：按 MIME 优先级选（plain>vtt），跳过 rel=captions", () => {
+    const feed = `<?xml version="1.0"?>
+<rss version="2.0" xmlns:podcast="https://podcastindex.org/namespace/1.0"><channel>
+  <item>
+    <title>Ep 1</title>
+    <link>https://pod.example/ep1</link>
+    <description>Show notes.</description>
+    <podcast:transcript url="https://pod.example/ep1.vtt" type="text/vtt"/>
+    <podcast:transcript url="https://pod.example/ep1.txt" type="text/plain"/>
+    <podcast:transcript url="https://pod.example/ep1.srt" type="application/x-subrip" rel="captions"/>
+  </item>
+</channel></rss>`;
+    const items = parseRss(feed);
+    expect(items[0].body).toBe("Show notes."); // body 仍是 show notes（抓取在 fetchRss、按开关）
+    expect(items[0].transcript_url).toBe("https://pod.example/ep1.txt"); // text/plain 优先、srt 因 captions 被跳
+  });
+
+  it("Atom 分支也解析 <podcast:transcript>", () => {
+    const feed = `<?xml version="1.0"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:podcast="https://podcastindex.org/namespace/1.0">
+  <entry><title>E</title><link href="https://p/e" rel="alternate"/><content>notes</content>
+    <podcast:transcript url="https://p/e.txt" type="text/plain"/>
+  </entry>
+</feed>`;
+    expect(parseRss(feed)[0].transcript_url).toBe("https://p/e.txt");
+  });
+
+  it("<podcast:transcript> 仅 captions → 无可用转写 URL", () => {
+    const feed = `<?xml version="1.0"?>
+<rss version="2.0" xmlns:podcast="https://podcastindex.org/namespace/1.0"><channel>
+  <item><title>E</title><link>https://p/e</link><description>n</description>
+    <podcast:transcript url="https://p/e.srt" type="application/x-subrip" rel="captions"/>
+  </item>
+</channel></rss>`;
+    expect(parseRss(feed)[0].transcript_url).toBeUndefined();
+  });
 });
