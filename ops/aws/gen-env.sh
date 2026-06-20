@@ -54,6 +54,7 @@ PREV_COST_M="$(extract_prev COST_LIMIT_MONTHLY)"
 PREV_COST_PCT="$(extract_prev COST_ALERT_PCT)"
 PREV_PUSH="$(extract_prev REPORT_PUSH)"
 PREV_BASE="$(extract_prev PUBLIC_BASE_URL)"
+PREV_TRANSCRIPT="$(extract_prev TRANSCRIPT_FETCH)"
 
 # —— .env.local（容器运行时）——
 # 注意：云上不钉 DB_PATH/DATA_DIR，用容器默认 /data（挂持久卷）。
@@ -86,6 +87,9 @@ EOF
   echo "${PREV_PUSH:-# REPORT_PUSH=1}"
   echo "# 站点根地址，拼报告 deep-link（如 http://<EC2-IP>:3000）；缺则推送不带链接"
   echo "${PREV_BASE:-# PUBLIC_BASE_URL=}"
+  echo "# 播客转写采集（ADR-0007）：1=对带 <podcast:transcript> 的源抓全文转写；空/0=只用 show notes。"
+  echo "# 红线由 validator blocking 守（过度引申的引用判 not_support·不上报）；上线于 2026-06-20。"
+  echo "${PREV_TRANSCRIPT:-TRANSCRIPT_FETCH=1}"
 } >> "$ROOT/.env.local"
 
 chmod 600 "$ROOT/.env.local"
