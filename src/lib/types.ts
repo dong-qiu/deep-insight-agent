@@ -25,6 +25,10 @@ export interface Source {
   //  设可选以免存量 fixture 与部分构造处全部改写；缺省即旧行为）：
   fetch_mode?: "feed" | "full_text"; // feed=仅用 feed 正文；full_text=正文空/过短时按 URL 抓文章页补全
   content_container?: string | null; // 正文容器 class/id token（非 CSS 选择器），覆盖全局猜测
+  // ADR-0008 决定② 源健康自愈（可选，DB 行总有；缺省=未熔断）：
+  disabled_reason?: string | null; // 'circuit_open'=系统熔断；NULL=人工停用或正常（区分系统 vs 人工，系统永不改人工停用）
+  disabled_at?: string | null; // 系统熔断时间
+  circuit_reset_at?: string | null; // consecutiveFails 计数锚点——只统计其后的 run（防复活后旧失败反扑）
 }
 
 /** 用户订阅主题（architecture 数据模型 · Topic） */

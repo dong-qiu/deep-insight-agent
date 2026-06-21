@@ -172,3 +172,53 @@ export function aggregateSourceHealth(ingestRuns: Run[], sources: Source[]): Sou
       a.name.localeCompare(b.name),
   );
 }
+
+// ── 源健康自愈：熔断判定（ADR-0008 决定② / 切片3b）──
+
+export interface CircuitConfig {
+  fails: number; // 连续失败下限（默认 5，env SOURCE_CIRCUIT_FAILS）——须 > 抖动源单日抖动量
+  days: number; // 距最近成功天数下限（默认 3，env SOURCE_CIRCUIT_DAYS）——时间为主、计数防抖（评审）
+}
+export function circuitConfig(): CircuitConfig {
+  return {
+    fails: Number(process.env.SOURCE_CIRCUIT_FAILS) || 5,
+    days: Number(process.env.SOURCE_CIRCUIT_DAYS) || 3,
+  };
+}
+
+export interface CircuitEval {
+  open: boolean; // 是否该熔断
+  consecutiveFails: number; // 锚定后的连续失败数（供告警/审计）
+  lastErrorMsg: string | null;
+}
+
+/** 判某源是否该系统熔断（双条件 + circuit_reset_at 锚定 + 排除 probe run）。纯函数、可单测。
+ *  - 只对 `enabled 且未熔断` 的源判 open（不重复熔断、不碰人工停用）。
+ *  - **只统计 circuit_reset_at 之后的 ingest run**（防复活/人工 re-enable 后旧失败立刻反扑——评审🔴）。
+ *  - 排除半开探测 run（target.probe，3b-2；现无 probe run，前向兼容）。
+ *  - 熔断 = 连续失败 >= fails **且** 距最近成功（无则距锚点/最早失败）> days 天（时间为主、计数防抖）。 */
+export function evaluateCircuit(
+  ingestRunsForSource: Run[],
+  source: Source,
+  now: number,
+  cfg: CircuitConfig = circuitConfig(),
+): CircuitEval {
+  const reset = source.circuit_reset_at ? Date.parse(source.circuit_reset_at) : 0;
+  const runs = ingestRunsForSource
+    .filter((r) => !(r.target as { probe?: boolean }).probe && Date.parse(r.started_at) > reset)
+    .sort((a, b) => (a.started_at < b.started_at ? 1 : -1)); // desc
+  let consecutiveFails = 0;
+  for (const r of runs) {
+    if (r.status === "failed") consecutiveFails += 1;
+    else break; // 遇 done/running 停
+  }
+  const lastErrorMsg = runs.find((r) => r.status === "failed")?.error?.message ?? null;
+  if (!source.enabled || source.disabled_reason === "circuit_open" || consecutiveFails < cfg.fails) {
+    return { open: false, consecutiveFails, lastErrorMsg };
+  }
+  const lastSuccess = runs.find((r) => r.status === "done");
+  const refMs = lastSuccess
+    ? Date.parse(lastSuccess.ended_at ?? lastSuccess.started_at)
+    : reset || (runs.length ? Date.parse(runs[runs.length - 1].started_at) : now); // 无成功 → 锚点 / 最早失败
+  return { open: now - refMs > cfg.days * 86_400_000, consecutiveFails, lastErrorMsg };
+}

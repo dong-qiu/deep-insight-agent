@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Run, Source } from "../types.js";
-import { aggregateByKind, aggregateDailyCost, aggregateSourceHealth, groupRunsIntoRounds } from "./run-stats.js";
+import { aggregateByKind, aggregateDailyCost, aggregateSourceHealth, evaluateCircuit, groupRunsIntoRounds } from "./run-stats.js";
 
 function run(p: Partial<Run> & Pick<Run, "kind" | "status">): Run {
   return {
@@ -192,5 +192,67 @@ describe("groupRunsIntoRounds", () => {
 
   it("空输入 → 空数组", () => {
     expect(groupRunsIntoRounds([])).toEqual([]);
+  });
+});
+
+describe("evaluateCircuit（源熔断判定 · 切片3b）", () => {
+  const CFG = { fails: 5, days: 3 };
+  const NOW = Date.parse("2026-06-21T00:00:00Z");
+  const DAY = 86_400_000;
+  // n 条 failed ingest run，最新在 startMsAgo 天前往回（每条隔 1 小时）
+  const fails = (sid: string, n: number, newestDaysAgo: number): Run[] =>
+    Array.from({ length: n }, (_, i) =>
+      run({ kind: "ingest", status: "failed", target: { source_id: sid }, started_at: new Date(NOW - newestDaysAgo * DAY - i * 3_600_000).toISOString(), error: { type: "net", message: "boom" } }),
+    );
+  const ok = (sid: string, daysAgo: number): Run =>
+    run({ kind: "ingest", status: "done", target: { source_id: sid }, started_at: new Date(NOW - daysAgo * DAY).toISOString() });
+
+  it("连失不足阈值 → 不熔断", () => {
+    const ev = evaluateCircuit(fails("s", 4, 0), src("s"), NOW, CFG);
+    expect(ev.open).toBe(false);
+    expect(ev.consecutiveFails).toBe(4);
+  });
+
+  it("连失够 但最近成功在 days 内 → 不熔断（时间条件未满）", () => {
+    const runs = [...fails("s", 6, 0), ok("s", 1)]; // 6 连失 + 1 天前成功
+    expect(evaluateCircuit(runs, src("s"), NOW, CFG).open).toBe(false);
+  });
+
+  it("连失够 且 距最近成功 > days 天 → 熔断", () => {
+    const runs = [...fails("s", 6, 0), ok("s", 5)]; // 6 连失 + 最近成功 5 天前
+    const ev = evaluateCircuit(runs, src("s"), NOW, CFG);
+    expect(ev.open).toBe(true);
+    expect(ev.consecutiveFails).toBe(6);
+    expect(ev.lastErrorMsg).toBe("boom");
+  });
+
+  it("circuit_reset_at 锚定：reset 之前的旧失败不计 → 不熔断（防复活后反扑）", () => {
+    // 10 条旧失败（都在 reset 之前 10 天），reset 设在昨天 → 锚定后无失败可数
+    const old = fails("s", 10, 10);
+    const source = src("s", { circuit_reset_at: new Date(NOW - 1 * DAY).toISOString() });
+    expect(evaluateCircuit(old, source, NOW, CFG).consecutiveFails).toBe(0);
+    expect(evaluateCircuit(old, source, NOW, CFG).open).toBe(false);
+  });
+
+  it("已熔断（disabled_reason=circuit_open）→ 不重复熔断", () => {
+    const runs = [...fails("s", 8, 0), ok("s", 9)];
+    expect(evaluateCircuit(runs, src("s", { enabled: false, disabled_reason: "circuit_open" }), NOW, CFG).open).toBe(false);
+  });
+
+  it("人工停用（enabled=false, reason=null）→ 不熔断", () => {
+    const runs = [...fails("s", 8, 0), ok("s", 9)];
+    expect(evaluateCircuit(runs, src("s", { enabled: false }), NOW, CFG).open).toBe(false);
+  });
+
+  it("排除半开探测 run（target.probe）", () => {
+    const probeRuns = Array.from({ length: 8 }, (_, i) =>
+      run({ kind: "ingest", status: "failed", target: { source_id: "s", probe: true } as Run["target"], started_at: new Date(NOW - i * 3_600_000).toISOString() }),
+    );
+    expect(evaluateCircuit(probeRuns, src("s"), NOW, CFG).consecutiveFails).toBe(0); // probe 不计
+  });
+
+  it("从未成功 + 连失够 + 距最早失败 > days → 熔断", () => {
+    const runs = fails("s", 6, 4); // 全失败，最新在 4 天前（最早更早）
+    expect(evaluateCircuit(runs, src("s"), NOW, CFG).open).toBe(true);
   });
 });

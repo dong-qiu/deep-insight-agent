@@ -14,6 +14,9 @@ CREATE TABLE IF NOT EXISTS source (
   enabled        INTEGER NOT NULL DEFAULT 1,
   fetch_mode     TEXT NOT NULL DEFAULT 'feed' CHECK (fetch_mode IN ('feed','full_text')),
   content_container TEXT,
+  disabled_reason TEXT,
+  disabled_at     TEXT,
+  circuit_reset_at TEXT,
   created_at     TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
 );

@@ -285,6 +285,21 @@ export async function sendAlert(req: AlertRequest, timeoutMs = 5000): Promise<vo
 /** Run 失败时调用：ALERT_WEBHOOK 配置则按渠道 fire-and-forget 发送。
  *  全程 try/catch——构造阶段（detectChannel/buildAlertRequest 的 new URL、failureToNotification 的 JSON.stringify）
  *  也可能抛，绝不能逃逸到 runJob catch 顶替待重抛的原始错误。 */
+/** 按源系统熔断告警（ADR-0008 决定② / 切片3b）：某源连续失败到阈值被自动停采时发——
+ *  比 notifyFailure 的「每轮每失败一条」更聚焦（只在熔断那一刻发一条）。fire-and-forget、永不抛。 */
+export function notifySourceCircuit(a: { sourceId: string; name: string; consecutiveFails: number; lastError?: string | null }): void {
+  try {
+    notify({
+      title: `🚫 数据源自动停采：${a.name}`,
+      text: `源 ${a.sourceId}（${a.name}）连续失败 ${a.consecutiveFails} 次且多日无成功，已自动熔断停采。\n最近错误：${a.lastError ?? "未知"}\n恢复后会自动半开复活；也可在设置页手动重新启用。`,
+      priority: "high",
+      tags: ["warning"],
+    });
+  } catch (e) {
+    runLogger({ stage: "alert" }).warn({ err: e instanceof Error ? e.message : String(e) }, "源熔断告警构造失败（已忽略）");
+  }
+}
+
 export function notifyFailure(a: FailureAlert): void {
   // failureToNotification 的 JSON.stringify(target) 可能抛（循环引用）——必须在 try 内构造，
   // 绝不逃逸到 runJob catch 顶替待重抛的原始错误。
