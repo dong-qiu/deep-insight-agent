@@ -4,12 +4,13 @@
  *  由 /api/cron 触发（系统 cron / supercronic 定时 curl）；含真模型调用，需 ANTHROPIC_API_KEY。 */
 import type { DB } from "../db/index.js";
 import { getEffectiveSources, loadStaticConfig } from "../config/index.js";
-import { getTopic, listContentForTopic, listTopics } from "../db/repos.js";
+import { getSource, getTopic, listContentForTopic, listRuns, listTopics, setCircuit } from "../db/repos.js";
 import { listRecentBriefEvents, previousReportForTopic, topicHasReport } from "../db/reports.js";
-import { notifyBudget } from "../runtime/alert.js";
+import { notifyBudget, notifySourceCircuit } from "../runtime/alert.js";
 import { getBudgetStatus } from "../runtime/cost-guard.js";
 import { runLogger } from "../runtime/logger.js";
-import type { ContentItem, Report, Topic } from "../types.js";
+import { circuitConfig, evaluateCircuit } from "../runtime/run-stats.js";
+import type { ContentItem, Report, Run, Topic } from "../types.js";
 import { collectSource } from "./collector.js";
 import { runAnalysis, runReportGen, runValidation } from "./pipeline.js";
 
@@ -22,6 +23,8 @@ export interface ScheduleSummary {
   errors: string[];
   /** 成本预算触顶 → 本轮剩余 topic 被自动熔断跳过（A5）；未配预算或未触顶时省略。 */
   budgetStopped?: boolean;
+  /** 本轮被系统熔断停采的源 id（ADR-0008 决定②）：正常处置、不计入 errors（评审）。 */
+  circuitOpened?: string[];
 }
 
 /** 冷启动决策（纯函数，可测）：topic 无历史报告 → 首版综述 initial_digest（更宽窗口 / 更多条，
@@ -149,6 +152,31 @@ export async function runScheduledPipeline(
       summary.collected.push({ source: s.id, error: errMsg(e) });
       summary.errors.push(`collect ${s.id}: ${errMsg(e)}`);
     }
+  }
+
+  // 1b. 源健康自愈——本轮采集后判熔断（ADR-0008 决定② / 切片3b）：连续失败到阈值且多日无成功的源
+  // 自动停采 + 按源告警，停止无谓重试。整段 try/catch 兜底，绝不连累已采数据 / 后续分析。
+  try {
+    const cfg = circuitConfig();
+    const recentIngest = listRuns(db, { kind: "ingest", limit: 1000 });
+    const bySrc = new Map<string, Run[]>();
+    for (const r of recentIngest) {
+      const sid = r.target.source_id;
+      if (sid) (bySrc.get(sid) ?? bySrc.set(sid, []).get(sid)!).push(r);
+    }
+    const now = Date.now();
+    for (const s of sources) {
+      const fresh = getSource(db, s.id); // 取最新熔断态（本轮采集 run 已落库）
+      if (!fresh) continue;
+      const ev = evaluateCircuit(bySrc.get(s.id) ?? [], fresh, now, cfg);
+      if (ev.open) {
+        setCircuit(db, s.id);
+        notifySourceCircuit({ sourceId: s.id, name: s.name, consecutiveFails: ev.consecutiveFails, lastError: ev.lastErrorMsg });
+        (summary.circuitOpened ??= []).push(s.id); // 正常处置、独立字段，不污染 errors 语义
+      }
+    }
+  } catch (e) {
+    summary.errors.push(`circuit-check: ${errMsg(e)}`);
   }
 
   // 2-4. 每个启用 Topic：冷启动决策 → 分析→校验→生成报告（首版综述 / brief / deep_dive）

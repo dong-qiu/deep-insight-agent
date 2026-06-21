@@ -37,10 +37,18 @@ function rowToSource(r: Record<string, unknown>): Source {
     // 旧库行（ensureColumn 前查到的）可能无该字段 → 取默认；空串视为未设
     fetch_mode: r.fetch_mode === "full_text" ? "full_text" : "feed",
     content_container: r.content_container ? (r.content_container as string) : null,
+    disabled_reason: (r.disabled_reason as string) || null,
+    disabled_at: (r.disabled_at as string) || null,
+    circuit_reset_at: (r.circuit_reset_at as string) || null,
   };
 }
-/** 更新 source（id 不变，覆盖其他字段）。返 changes 数（应 = 1）。 */
+/** 更新 source（id 不变，覆盖表单字段）。**不碰熔断态列**（disabled_reason/disabled_at/circuit_reset_at）——
+ *  那由 setCircuit/clearCircuit 专管。但**人工把系统熔断源拉回 enabled=1 → 自动 clearCircuit**（ADR-0008 决定②，
+ *  评审🔴：否则留 enabled=1∧reason=circuit_open 脏态 + consecutiveFails 反扑）。返 changes 数。 */
 export function updateSource(db: DB, s: Source): number {
+  const prev = db.prepare("SELECT disabled_reason FROM source WHERE id=?").get(s.id) as
+    | { disabled_reason: string | null }
+    | undefined;
   const r = db.prepare(
     `UPDATE source SET name=@name,type=@type,endpoint=@endpoint,industry=@industry,
        topic_ids=@topic_ids,fetch_interval=@fetch_interval,backfill=@backfill,enabled=@enabled,
@@ -52,7 +60,24 @@ export function updateSource(db: DB, s: Source): number {
     backfill: s.backfill ? j(s.backfill) : null, enabled: b(s.enabled),
     fetch_mode: s.fetch_mode ?? "feed", content_container: s.content_container ?? null,
   });
+  // 人工拉回启用一个系统熔断源 → 清熔断态（写 circuit_reset_at 干净重数 consecutiveFails）
+  if (s.enabled && prev?.disabled_reason === "circuit_open") clearCircuit(db, s.id);
   return r.changes;
+}
+
+/** 系统熔断软停用（ADR-0008 决定②）：enabled=0 + 标 circuit_open + 锚定 circuit_reset_at。 */
+export function setCircuit(db: DB, id: string): void {
+  db.prepare(
+    "UPDATE source SET enabled=0, disabled_reason='circuit_open', disabled_at=datetime('now'), circuit_reset_at=datetime('now') WHERE id=?",
+  ).run(id);
+}
+
+/** 清熔断态（半开复活 / 人工拉回启用）：清 reason/disabled_at + 写 circuit_reset_at（重数 consecutiveFails）。
+ *  不强改 enabled（调用方决定）——半开复活时调用方另置 enabled=1；人工 re-enable 时 updateSource 已置。 */
+export function clearCircuit(db: DB, id: string): void {
+  db.prepare(
+    "UPDATE source SET disabled_reason=NULL, disabled_at=NULL, circuit_reset_at=datetime('now') WHERE id=?",
+  ).run(id);
 }
 /** 物理删 source；FK 违例（被 content_item 引用）由调用方 catch 返友好错。 */
 export function deleteSource(db: DB, id: string): number {

@@ -6,10 +6,10 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { ContentItem, Run, Source, Topic } from "../types.js";
 import { type DB, openDb } from "./index.js";
 import {
-  contentExists, finishRun, getContentByUrl, getContentItem, getRun, getSource,
+  clearCircuit, contentExists, finishRun, getContentByUrl, getContentItem, getRun, getSource,
   getSourceBodyKinds, getTopic, hasRunningRun, insertContentItem, insertRun, insertSource,
   insertTopic, listRuns, listRunsForTopicSince, listSources, recoverOrphanedRuns,
-  sumRunCostSince, updateContentItem,
+  setCircuit, sumRunCostSince, updateContentItem, updateSource,
 } from "./repos.js";
 
 let db: DB;
@@ -23,7 +23,45 @@ const sampleSource: Source = {
   topic_ids: ["t1", "t2"], fetch_interval: "6h",
   backfill: { depth: "90d", max_cost: 5 }, enabled: true,
   fetch_mode: "feed", content_container: null,
+  disabled_reason: null, disabled_at: null, circuit_reset_at: null,
 };
+
+describe("源熔断态（切片3b）", () => {
+  beforeEach(() => insertSource(db, { ...sampleSource, id: "s1", topic_ids: [] }));
+
+  it("setCircuit → enabled=0 + reason=circuit_open + 写 circuit_reset_at", () => {
+    setCircuit(db, "s1");
+    const s = getSource(db, "s1")!;
+    expect(s.enabled).toBe(false);
+    expect(s.disabled_reason).toBe("circuit_open");
+    expect(s.disabled_at).toBeTruthy();
+    expect(s.circuit_reset_at).toBeTruthy();
+  });
+
+  it("clearCircuit → 清 reason/disabled_at + 重写 circuit_reset_at（不强改 enabled）", () => {
+    setCircuit(db, "s1");
+    clearCircuit(db, "s1");
+    const s = getSource(db, "s1")!;
+    expect(s.disabled_reason).toBeNull();
+    expect(s.disabled_at).toBeNull();
+    expect(s.circuit_reset_at).toBeTruthy();
+  });
+
+  it("人工把熔断源拉回 enabled=1（updateSource）→ 自动 clearCircuit、不留脏态（评审🔴）", () => {
+    setCircuit(db, "s1");
+    updateSource(db, { ...sampleSource, id: "s1", topic_ids: [], enabled: true }); // 人工勾选启用保存
+    const s = getSource(db, "s1")!;
+    expect(s.enabled).toBe(true);
+    expect(s.disabled_reason).toBeNull(); // 脏态已清
+  });
+
+  it("非熔断源的普通 updateSource → 不动熔断态（不误写 circuit_reset_at）", () => {
+    updateSource(db, { ...sampleSource, id: "s1", topic_ids: [], name: "改名" });
+    const s = getSource(db, "s1")!;
+    expect(s.disabled_reason).toBeNull();
+    expect(s.circuit_reset_at).toBeNull(); // 普通编辑不触发清态
+  });
+});
 
 it("Source 往返：JSON 数组 / backfill / bool", () => {
   insertSource(db, sampleSource);

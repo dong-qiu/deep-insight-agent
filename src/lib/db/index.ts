@@ -76,6 +76,11 @@ function migrate(db: DB): void {
     "fetch_mode TEXT NOT NULL DEFAULT 'feed' CHECK (fetch_mode IN ('feed','full_text'))",
   );
   ensureColumn(db, "source", "content_container", "content_container TEXT");
+  // 源健康自愈（ADR-0008 决定② / 切片3b）：系统熔断态。旧库补列默认 NULL（未熔断）。
+  // disabled_reason='circuit_open' 标系统熔断（区分人工停用=NULL）；circuit_reset_at 锚定 consecutiveFails 计数起点。
+  ensureColumn(db, "source", "disabled_reason", "disabled_reason TEXT");
+  ensureColumn(db, "source", "disabled_at", "disabled_at TEXT");
+  ensureColumn(db, "source", "circuit_reset_at", "circuit_reset_at TEXT");
 }
 
 let _db: DB | null = null;
