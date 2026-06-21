@@ -2,7 +2,7 @@
 import type { Source } from "../types.js";
 import { extractHtmlTranscript, stripTranscript } from "./normalize.js";
 import { UA, fetchRobots, isAllowed } from "./robots.js";
-import { readTextCapped, safeFetch } from "./safe-fetch.js";
+import { fetchWithRetry, readTextCapped, safeFetch } from "./safe-fetch.js";
 import type { RawItem } from "./types.js";
 import { asArray, text, xml } from "./xml.js";
 
@@ -108,7 +108,7 @@ export async function fetchRss(source: Source): Promise<RawItem[]> {
   const { origin, pathname } = new URL(source.endpoint);
   const rules = await fetchRobots(origin);
   if (!isAllowed(rules, pathname)) throw new Error(`robots.txt 禁止抓取：${source.endpoint}`);
-  const res = await safeFetch(source.endpoint, { headers: { "user-agent": UA } });
+  const res = await fetchWithRetry(source.endpoint, { headers: { "user-agent": UA } }); // 切片3a：feed 瞬时失败退避重试
   if (!res.ok) throw new Error(`rss fetch ${res.status}：${source.endpoint}`);
   // 6a：fetchRss 只解析（含 transcript_url）、**不抓转写**——抓取移到 collector 去重后、只对新 url 抓
   // （B族：避免每轮全抓 50 集，且根除 show_notes→transcript 原地改 body 的 Major6）。

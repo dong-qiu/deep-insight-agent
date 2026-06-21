@@ -7,15 +7,19 @@ import type { Source } from "../types.js";
 // vi.hoisted：mock 工厂被提升到 import 之上，需用 hoisted 共享受控响应表。
 const { responses } = vi.hoisted(() => ({ responses: new Map<string, { ok: boolean; text: string }>() }));
 
-vi.mock("./safe-fetch.js", () => ({
-  MAX_RESPONSE_BYTES: 8_000_000,
-  safeFetch: vi.fn(async (url: string) => {
+vi.mock("./safe-fetch.js", () => {
+  const mockFetch = async (url: string) => {
     const r = responses.get(url);
     if (!r) throw new Error(`unmocked fetch ${url}`);
     return { ok: r.ok, _text: r.text } as unknown as Response;
-  }),
-  readTextCapped: vi.fn(async (res: { _text: string }) => res._text),
-}));
+  };
+  return {
+    MAX_RESPONSE_BYTES: 8_000_000,
+    safeFetch: vi.fn(mockFetch),
+    fetchWithRetry: vi.fn(mockFetch), // 切片3a：fetchRss feed 抓取改用退避包装
+    readTextCapped: vi.fn(async (res: { _text: string }) => res._text),
+  };
+});
 vi.mock("./robots.js", () => ({
   UA: "Bot",
   fetchRobots: vi.fn(async () => ({ disallow: [] })),

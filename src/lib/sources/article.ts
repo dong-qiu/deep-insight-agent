@@ -7,7 +7,7 @@
  *  cron 重抓已采文章 hammer 源（吸取 transcript 串行全抓的教训）。 */
 import { normalizeBody } from "./normalize.js";
 import { UA, fetchRobots, isAllowed } from "./robots.js";
-import { readTextCapped, safeFetch } from "./safe-fetch.js";
+import { fetchWithRetry, readTextCapped } from "./safe-fetch.js";
 
 /** 全局全文抓取开关（**legacy / 向后兼容**，默认关）：feed 模式源 + 空正文时才据此决定抓不抓
  *  （安全客等切片2 前的旧配置依赖它）。切片2 后规范做法是按源 `fetch_mode='full_text'`（见 collector）。
@@ -94,7 +94,7 @@ export async function fetchArticleBody(url: string, container?: string | null): 
     const { origin, pathname } = new URL(url);
     const rules = await fetchRobots(origin);
     if (!isAllowed(rules, pathname)) return null;
-    const res = await safeFetch(url, { headers: { "user-agent": UA } });
+    const res = await fetchWithRetry(url, { headers: { "user-agent": UA } }); // 切片3a：文章页瞬时失败退避重试
     if (!res.ok) return null;
     if (!/html/i.test(res.headers.get("content-type") ?? "")) return null; // 只处理 HTML 页
     const main = extractArticleHtml(await readTextCapped(res), container);
