@@ -67,6 +67,15 @@ function migrate(db: DB): void {
     "body_kind",
     "body_kind TEXT NOT NULL DEFAULT 'article' CHECK (body_kind IN ('article','show_notes','transcript'))",
   );
+  // 按源全文策略（ADR-0008 决定③）：旧库补列——存量源默认 'feed'（行为不变）、content_container NULL。
+  // CHECK 随 ADD COLUMN 加（默认值 'feed' 满足约束，同 body_kind 实测）。
+  ensureColumn(
+    db,
+    "source",
+    "fetch_mode",
+    "fetch_mode TEXT NOT NULL DEFAULT 'feed' CHECK (fetch_mode IN ('feed','full_text'))",
+  );
+  ensureColumn(db, "source", "content_container", "content_container TEXT");
 }
 
 let _db: DB | null = null;

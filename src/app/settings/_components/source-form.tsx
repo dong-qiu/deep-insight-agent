@@ -24,7 +24,7 @@ export function SourceForm({
     initial ?? {
       id: "", name: "", type: "rss", endpoint: "",
       industry: "ai-swe", topic_ids: [], fetch_interval: "1h",
-      backfill: null, enabled: true,
+      backfill: null, enabled: true, fetch_mode: "feed", content_container: null,
     },
   );
 
@@ -101,6 +101,20 @@ export function SourceForm({
           </label>
         ))}
       </fieldset>
+      <label>抓取模式 <select
+        value={form.fetch_mode ?? "feed"}
+        onChange={(e) => setForm({ ...form, fetch_mode: e.target.value as Source["fetch_mode"] })}
+      >
+        <option value="feed">feed（仅用 feed 正文）</option>
+        <option value="full_text">full_text（正文空/过短时抓文章页全文）</option>
+      </select></label>
+      {form.fetch_mode === "full_text" ? (
+        <label>正文容器（可选）<input
+          value={form.content_container ?? ""}
+          onChange={(e) => setForm({ ...form, content_container: e.target.value.trim() || null })}
+          placeholder="正文容器 class/id，如 js-article（留空=自动猜；非 CSS 选择器）"
+        /></label>
+      ) : null}
       <label><input type="checkbox" checked={form.enabled} onChange={(e) => setForm({ ...form, enabled: e.target.checked })} /> 启用</label>
       <div>
         <button type="submit" className="ppt-btn" disabled={busy}>

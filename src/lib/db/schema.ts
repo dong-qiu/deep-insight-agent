@@ -12,6 +12,8 @@ CREATE TABLE IF NOT EXISTS source (
   fetch_interval TEXT NOT NULL,
   backfill       TEXT,
   enabled        INTEGER NOT NULL DEFAULT 1,
+  fetch_mode     TEXT NOT NULL DEFAULT 'feed' CHECK (fetch_mode IN ('feed','full_text')),
+  content_container TEXT,
   created_at     TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
 );

@@ -47,6 +47,20 @@ describe("extractArticleHtml（抽正文容器，纯函数）", () => {
     expect(out).not.toContain("版权页脚");
   });
 
+  it("按源 container token 最高优先（决定③）：命中指定容器、压过全局白名单", () => {
+    // 页面里有泛 content（全局白名单会命中），但正文在自定义容器 entry-main 里
+    const html = `<body><div class="content">导航和推荐</div>
+      <div class="entry-main"><p>真正文在自定义容器里足够长</p></div></body>`;
+    const out = extractArticleHtml(html, "entry-main");
+    expect(out).toContain("真正文在自定义容器");
+    expect(out).not.toContain("导航和推荐");
+  });
+
+  it("container token 正则注入安全（特殊字符被转义、不报错）", () => {
+    const out = extractArticleHtml(`<body><div class="x"><p>正文</p></div></body>`, "a.b(c)[d]");
+    expect(typeof out).toBe("string"); // 不抛；找不到该容器 → 回退
+  });
+
   it("丢弃 script/style，不被其中的标签字符串干扰配对", () => {
     const html = `<body><article><script>var x="</article>"</script><p>真正文</p><style>.a{}</style></article><footer>脚</footer></body>`;
     const out = extractArticleHtml(html);

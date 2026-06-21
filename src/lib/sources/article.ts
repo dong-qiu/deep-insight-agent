@@ -9,14 +9,30 @@ import { normalizeBody } from "./normalize.js";
 import { UA, fetchRobots, isAllowed } from "./robots.js";
 import { readTextCapped, safeFetch } from "./safe-fetch.js";
 
-/** 全文抓取开关（默认关——关时空正文条目维持现状被跳过，对既有源零行为变化）。
- *  开（=1/true）后 collector 对空正文条目按 URL 抓文章页补全。运行期读 env，便于切换 + 单测两态。 */
+/** 全局全文抓取开关（**legacy / 向后兼容**，默认关）：feed 模式源 + 空正文时才据此决定抓不抓
+ *  （安全客等切片2 前的旧配置依赖它）。切片2 后规范做法是按源 `fetch_mode='full_text'`（见 collector）。
+ *  运行期读 env，便于切换 + 单测两态。 */
 export function articleFetchEnabled(): boolean {
   return process.env.ARTICLE_FETCH === "1" || process.env.ARTICLE_FETCH === "true";
 }
 
-/** 抽取后纯文本下限：低于此视为没抽到真正文（抽到空壳/导航/版权条），返 null 而非灌垃圾。 */
-const MIN_ARTICLE_CHARS = 200;
+/** 全局应急熔断（ADR-0008 决定③）：`ARTICLE_FETCH=0/false` 时连 `fetch_mode='full_text'` 源也停抓，
+ *  用于一键止血。未设/非 0 时 full_text 源照常抓（按源声明优先、不受默认关约束）。 */
+export function articleFetchKilled(): boolean {
+  return process.env.ARTICLE_FETCH === "0" || process.env.ARTICLE_FETCH === "false";
+}
+
+/** 抽取后纯文本下限：低于此视为没抽到真正文（抽到空壳/导航/版权条），返 null 而非灌垃圾。
+ *  也复用为 collector 判「正文过短需抓全文」的阈值（决定③，不另设按源旋钮）。 */
+export const MIN_ARTICLE_CHARS = 200;
+
+/** 按源 container token（class/id）构造一条**最高优先级**容器定位正则（ADR-0008 决定③）。
+ *  注意：必须按源现造、置于全局模板之前，**不可** OR 进 CONTAINER_PATTERNS（全局共用、会跨源污染）。
+ *  token 经转义防正则注入；同时匹配 id 或 class 含该 token 的 div/article/main/section 开标签。 */
+function containerPattern(token: string): RegExp {
+  const t = token.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`<(article|main|div|section)\\b[^>]*\\b(?:id|class)\\s*=\\s*["'][^"']*${t}[^"']*["'][^>]*>`, "i");
+}
 
 /** 常见正文容器定位（按特异性从高到低试，先命中先用）：id 带 article/post/content 最可靠，
  *  其次具名正文 class，再次语义 <article>，最后兜底泛 content class。匹配的是**开标签**，
@@ -29,15 +45,18 @@ const CONTAINER_PATTERNS: RegExp[] = [
 ];
 
 /** 从整页 HTML 抽正文容器子树（返回 HTML 片段，下游 rawToContentItem→normalizeBody 统一剥标签）。
- *  找不到容器则回退 <body> 内容；都没有返回清洗后的整页。纯正则 + 深度计数，无 DOM 依赖（沿用本项目极简风）。 */
-export function extractArticleHtml(html: string): string {
+ *  `container` = 按源覆盖的容器 token（决定③），给定则**最高优先**试它、再回退全局白名单；找不到回退 <body>。
+ *  纯正则 + 深度计数，无 DOM 依赖（沿用本项目极简风）。 */
+export function extractArticleHtml(html: string, container?: string | null): string {
   // 先整段丢 script/style/noscript/注释——否则其中的 "<div>" 字符串会干扰容器配对计数
   const cleaned = html
     .replace(/<!--[\s\S]*?-->/g, " ")
     .replace(/<(script|style|noscript)\b[^>]*>[\s\S]*?<\/\1>/gi, " ");
 
+  // 按源 container 现造一条最高优先级正则、不污染全局 CONTAINER_PATTERNS（决定③）
+  const patterns = container?.trim() ? [containerPattern(container), ...CONTAINER_PATTERNS] : CONTAINER_PATTERNS;
   let open: RegExpMatchArray | null = null;
-  for (const re of CONTAINER_PATTERNS) {
+  for (const re of patterns) {
     open = cleaned.match(re);
     if (open && open.index != null) break;
     open = null;
@@ -70,7 +89,7 @@ export function extractArticleHtml(html: string): string {
 
 /** 按文章 URL 抓全文：origin 单独查 robots（文章页常与 feed 不同源）+ SSRF 安全出网 + 大小封顶 + 抽正文。
  *  失败（robots 禁止 / 非 2xx / 非 HTML / 网络 / 抽取后过短）一律返 null —— collector 视为抽取失败、跳过该条。 */
-export async function fetchArticleBody(url: string): Promise<string | null> {
+export async function fetchArticleBody(url: string, container?: string | null): Promise<string | null> {
   try {
     const { origin, pathname } = new URL(url);
     const rules = await fetchRobots(origin);
@@ -78,7 +97,7 @@ export async function fetchArticleBody(url: string): Promise<string | null> {
     const res = await safeFetch(url, { headers: { "user-agent": UA } });
     if (!res.ok) return null;
     if (!/html/i.test(res.headers.get("content-type") ?? "")) return null; // 只处理 HTML 页
-    const main = extractArticleHtml(await readTextCapped(res));
+    const main = extractArticleHtml(await readTextCapped(res), container);
     if (normalizeBody(main).length < MIN_ARTICLE_CHARS) return null; // 抽取后过短 = 没抽到真正文
     return main; // HTML 片段，下游统一 normalizeBody 剥标签
   } catch {

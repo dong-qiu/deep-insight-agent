@@ -22,6 +22,7 @@ const sampleSource: Source = {
   endpoint: "http://export.arxiv.org/api/query", industry: "ai-swe",
   topic_ids: ["t1", "t2"], fetch_interval: "6h",
   backfill: { depth: "90d", max_cost: 5 }, enabled: true,
+  fetch_mode: "feed", content_container: null,
 };
 
 it("Source 往返：JSON 数组 / backfill / bool", () => {

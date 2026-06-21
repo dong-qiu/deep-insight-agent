@@ -11,12 +11,13 @@ const b = (v: boolean): number => (v ? 1 : 0);
 // ── Source ──
 export function insertSource(db: DB, s: Source): void {
   db.prepare(
-    `INSERT INTO source (id,name,type,endpoint,industry,topic_ids,fetch_interval,backfill,enabled)
-     VALUES (@id,@name,@type,@endpoint,@industry,@topic_ids,@fetch_interval,@backfill,@enabled)`,
+    `INSERT INTO source (id,name,type,endpoint,industry,topic_ids,fetch_interval,backfill,enabled,fetch_mode,content_container)
+     VALUES (@id,@name,@type,@endpoint,@industry,@topic_ids,@fetch_interval,@backfill,@enabled,@fetch_mode,@content_container)`,
   ).run({
     id: s.id, name: s.name, type: s.type, endpoint: s.endpoint, industry: s.industry,
     topic_ids: j(s.topic_ids), fetch_interval: s.fetch_interval,
     backfill: s.backfill ? j(s.backfill) : null, enabled: b(s.enabled),
+    fetch_mode: s.fetch_mode ?? "feed", content_container: s.content_container ?? null,
   });
 }
 export function getSource(db: DB, id: string): Source | null {
@@ -33,18 +34,23 @@ function rowToSource(r: Record<string, unknown>): Source {
     endpoint: r.endpoint as string, industry: r.industry as Source["industry"],
     topic_ids: JSON.parse(r.topic_ids as string), fetch_interval: r.fetch_interval as string,
     backfill: r.backfill ? JSON.parse(r.backfill as string) : null, enabled: r.enabled === 1,
+    // 旧库行（ensureColumn 前查到的）可能无该字段 → 取默认；空串视为未设
+    fetch_mode: r.fetch_mode === "full_text" ? "full_text" : "feed",
+    content_container: r.content_container ? (r.content_container as string) : null,
   };
 }
 /** 更新 source（id 不变，覆盖其他字段）。返 changes 数（应 = 1）。 */
 export function updateSource(db: DB, s: Source): number {
   const r = db.prepare(
     `UPDATE source SET name=@name,type=@type,endpoint=@endpoint,industry=@industry,
-       topic_ids=@topic_ids,fetch_interval=@fetch_interval,backfill=@backfill,enabled=@enabled
+       topic_ids=@topic_ids,fetch_interval=@fetch_interval,backfill=@backfill,enabled=@enabled,
+       fetch_mode=@fetch_mode,content_container=@content_container
      WHERE id=@id`,
   ).run({
     id: s.id, name: s.name, type: s.type, endpoint: s.endpoint, industry: s.industry,
     topic_ids: j(s.topic_ids), fetch_interval: s.fetch_interval,
     backfill: s.backfill ? j(s.backfill) : null, enabled: b(s.enabled),
+    fetch_mode: s.fetch_mode ?? "feed", content_container: s.content_container ?? null,
   });
   return r.changes;
 }
