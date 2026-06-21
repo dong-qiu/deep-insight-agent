@@ -285,6 +285,21 @@ export async function sendAlert(req: AlertRequest, timeoutMs = 5000): Promise<vo
 /** Run 失败时调用：ALERT_WEBHOOK 配置则按渠道 fire-and-forget 发送。
  *  全程 try/catch——构造阶段（detectChannel/buildAlertRequest 的 new URL、failureToNotification 的 JSON.stringify）
  *  也可能抛，绝不能逃逸到 runJob catch 顶替待重抛的原始错误。 */
+/** 按源零产出告警（ADR-0008 决定② / 切片3b-3）：曾稳定产出的源突然连续 N 轮采集成功但 0 入库——
+ *  典型静默失败（feed 变标题党 / 解析返 [] / WAF 软封）。只陈述「未产出」、不断言「源坏」，判断交人。fire-and-forget、永不抛。 */
+export function notifySourceZeroYield(a: { sourceId: string; name: string; consecutiveZero: number }): void {
+  try {
+    notify({
+      title: `🟡 数据源零产出：${a.name}`,
+      text: `源 ${a.sourceId}（${a.name}）连续 ${a.consecutiveZero} 轮采集成功但 0 入库（曾有产出）。\n可能：feed 改版 / 解析失配 / 被软封。请核查源是否仍正常。`,
+      priority: "default",
+      tags: ["warning"],
+    });
+  } catch (e) {
+    runLogger({ stage: "alert" }).warn({ err: e instanceof Error ? e.message : String(e) }, "源零产出告警构造失败（已忽略）");
+  }
+}
+
 /** 按源半开复活告警（ADR-0008 决定② / 切片3b-2）：熔断源探测成功、自动恢复采集时发一条。fire-and-forget、永不抛。 */
 export function notifySourceRevived(a: { sourceId: string; name: string }): void {
   try {

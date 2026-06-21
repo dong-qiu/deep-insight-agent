@@ -259,6 +259,7 @@ export interface Run {
   cost: Cost | null;
   error: { type: string; message: string; stack?: string } | null;
   retry_of: string | null;
+  inserted?: number | null; // ingest run 本轮入库条数（切片3b-3 零产出看门狗）；非 ingest / 旧 run 为 null
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

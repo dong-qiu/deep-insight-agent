@@ -3,7 +3,7 @@
  *  （与 analyze/validate/report-gen 一致：单调时钟耗时 + 失败捕获 + 可重试）。 */
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { getContentByUrl, insertContentItem, updateContentItem } from "../db/repos.js";
+import { getContentByUrl, insertContentItem, setRunInserted, updateContentItem } from "../db/repos.js";
 import type { DB } from "../db/index.js";
 import { runJob } from "../runtime/jobs.js";
 import type { Source } from "../types.js";
@@ -123,5 +123,6 @@ export async function collectSource(
       return { fetched: raws.length, inserted, updated, skipped };
     },
   );
+  if (!opts.probe) setRunInserted(db, run.id, result.inserted); // 切片3b-3：回填本轮入库数（探测 run 不算）
   return { runId: run.id, ...result };
 }

@@ -86,7 +86,8 @@ CREATE TABLE IF NOT EXISTS run (
   duration_ms INTEGER,
   cost        TEXT,
   error       TEXT,
-  retry_of    TEXT REFERENCES run(id)
+  retry_of    TEXT REFERENCES run(id),
+  inserted    INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_run_status ON run(status);
 CREATE INDEX IF NOT EXISTS idx_run_kind   ON run(kind);

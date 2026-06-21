@@ -7,10 +7,10 @@ import { getEffectiveSources, loadStaticConfig } from "../config/index.js";
 import { appendAudit } from "../db/audit.js";
 import { getSource, getTopic, listContentForTopic, listProbeCandidates, listRuns, listTopics, reviveSource, setCircuit, setLastProbe } from "../db/repos.js";
 import { listRecentBriefEvents, previousReportForTopic, topicHasReport } from "../db/reports.js";
-import { notifyBudget, notifySourceCircuit, notifySourceRevived } from "../runtime/alert.js";
+import { notifyBudget, notifySourceCircuit, notifySourceRevived, notifySourceZeroYield } from "../runtime/alert.js";
 import { getBudgetStatus } from "../runtime/cost-guard.js";
 import { runLogger } from "../runtime/logger.js";
-import { circuitConfig, evaluateCircuit } from "../runtime/run-stats.js";
+import { circuitConfig, evaluateCircuit, evaluateZeroYield } from "../runtime/run-stats.js";
 import type { ContentItem, Report, Run, Topic } from "../types.js";
 import { collectSource } from "./collector.js";
 import { runAnalysis, runReportGen, runValidation } from "./pipeline.js";
@@ -28,6 +28,8 @@ export interface ScheduleSummary {
   circuitOpened?: string[];
   /** 本轮半开探测成功、自动复活的源 id（切片3b-2）。 */
   circuitRevived?: string[];
+  /** 本轮触发零产出告警的源 id（切片3b-3）。 */
+  zeroYield?: string[];
 }
 
 /** 冷启动决策（纯函数，可测）：topic 无历史报告 → 首版综述 initial_digest（更宽窗口 / 更多条，
@@ -211,6 +213,27 @@ export async function runScheduledPipeline(
     }
   } catch (e) {
     summary.errors.push(`half-open: ${errMsg(e)}`);
+  }
+
+  // 1d. 零产出看门狗（ADR-0008 决定② / 切片3b-3）：曾稳定产出的源突然连续 N 轮采集成功但 0 入库
+  // （静默失败：feed 改版/解析失配/软封）→ 按源告警（边沿触发、只报不停用，交人核查）。整段 try/catch 兜底。
+  try {
+    const zeroRounds = Number(process.env.SOURCE_ZERO_YIELD_ROUNDS) || 5;
+    const recent = listRuns(db, { kind: "ingest", limit: 1000 }); // 含本轮采集 + 半开复活后的新 run
+    const bySrc = new Map<string, Run[]>();
+    for (const r of recent) {
+      const sid = r.target.source_id;
+      if (sid) (bySrc.get(sid) ?? bySrc.set(sid, []).get(sid)!).push(r);
+    }
+    for (const s of sources) {
+      const ze = evaluateZeroYield(bySrc.get(s.id) ?? [], zeroRounds);
+      if (ze.alert) {
+        notifySourceZeroYield({ sourceId: s.id, name: s.name, consecutiveZero: ze.consecutiveZero });
+        (summary.zeroYield ??= []).push(s.id);
+      }
+    }
+  } catch (e) {
+    summary.errors.push(`zero-yield: ${errMsg(e)}`);
   }
 
   // 2-4. 每个启用 Topic：冷启动决策 → 分析→校验→生成报告（首版综述 / brief / deep_dive）

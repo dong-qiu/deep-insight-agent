@@ -83,6 +83,8 @@ function migrate(db: DB): void {
   ensureColumn(db, "source", "circuit_reset_at", "circuit_reset_at TEXT");
   // 半开探测时间（切片3b-2）：节流，每源每天最多探一次。
   ensureColumn(db, "source", "last_probe_at", "last_probe_at TEXT");
+  // ingest 本轮入库条数（切片3b-3 零产出看门狗）：旧 run NULL=未知不计入；新 ingest run 由 collectSource 回填。
+  ensureColumn(db, "run", "inserted", "inserted INTEGER");
 }
 
 let _db: DB | null = null;

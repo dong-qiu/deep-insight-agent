@@ -9,7 +9,7 @@ import {
   clearCircuit, contentExists, finishRun, getContentByUrl, getContentItem, getRun, getSource,
   getSourceBodyKinds, getTopic, hasRunningRun, insertContentItem, insertRun, insertSource,
   insertTopic, listProbeCandidates, listRuns, listRunsForTopicSince, listSources, recoverOrphanedRuns,
-  reviveSource, setCircuit, setLastProbe, sumRunCostSince, updateContentItem, updateSource,
+  reviveSource, setCircuit, setLastProbe, setRunInserted, sumRunCostSince, updateContentItem, updateSource,
 } from "./repos.js";
 
 let db: DB;
@@ -177,6 +177,13 @@ describe("Run 状态机", () => {
     expect(r.cost).toEqual({ tokens: 1200, amount: 0.05 });
     expect(r.ended_at).not.toBeNull();
     expect(r.duration_ms).toBeGreaterThanOrEqual(0);
+  });
+
+  it("setRunInserted 回填本轮入库数（切片3b-3）；新 run 默认 inserted=null", () => {
+    insertRun(db, run);
+    expect(getRun(db, "run1")!.inserted).toBeNull(); // 未回填 = NULL
+    setRunInserted(db, "run1", 7);
+    expect(getRun(db, "run1")!.inserted).toBe(7);
   });
 
   it("finish(failed) 写 error；listRuns 按 status 过滤", () => {
