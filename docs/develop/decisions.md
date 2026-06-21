@@ -446,3 +446,85 @@ ADR 实现拆为可独立合入的小 PR，`TRANSCRIPT_FETCH` 默认关贯穿前
 - **GO 结论**：切片1（堵 api + 相对 URL）真零风险、无🔴阻塞，可立即开做；切片3/4 启动前先消化上述🔴（先出半开调度/ROI 归因口径设计、接上 `pipeline.ts` target 与 crontab 调度形态再开工）。
 
 ---
+
+## ADR-0009: 增量分析——消除时间维度的重复分析（analyze 结果复用）
+
+### 背景
+
+2026-06-21 做了一次**全管线成本体检**（生产实测 `run.cost`）。结论：**analyze 占 LLM 成本 84%**（近 7 天 $35.51 / validate $6.56），且暴露一个结构性浪费——**同一条内容跨日被反复分析**。
+
+**事实（生产实测，2026-06-21）：**
+- 近 7 天 **19 个 analysis_batch**；统计「同一 content_item 被几个不同 batch 的洞察引用」：被 1 个 batch 引 62 条、2 个 28 条、3 个 17 条、4 个 13 条、5 个 8 条、**6 个 4 条** → 被引证内容**平均被 ~2.2 个 batch 分析**。**注：这只统计了产出引证的；被 `rankAndDiversify` 选中但没产出的同样每轮被重选重析，真实冗余更高。**
+- **根因（connect to code）**：`scheduler.ts:runScheduledPipeline` → `selectAnalysisItems(since = now − PIPELINE_WINDOW_HOURS)`（默认 168h/7天）→ `rankAndDiversify(candidates, keywords, limit=PIPELINE_ITEMS_PER_TOPIC=15)`，**无任何「已分析则跳过」**。窗口 7 天 + 每日跑 + 相关性排序稳定 → 今天的 top-15 ≈ 昨天 top-15 → **~50-70% 的 analyze 在重析昨天已析过的内容**。
+- **可行性前提（已验证）**：`analyze` 是 **chunk 级**（`chunkByChars` → 每 chunk 一次 `callStructured`，多 item 同喂 → 能产跨条洞察）；但**单源洞察占比 96%**（生产 citation 实测：546 洞察引 1 条 item、16 引 2、8 引 3、1 引 5）。即 **96% 的洞察可归因到单一 item**。
+  - **⚠️ 评审纠正（Major 1）：单源「引证」≠ 生成「独立」。** chunk 级分析下，一个 item 产不产洞察、怎么框，会受 chunk 内邻居影响（**新颖性抑制**：同一事件被更新的 item 覆盖时，analyzer 本会压掉重复洞察）。故「96% 单源 → 逐条缓存**基本无损**」是**过度声称**。正确口径：复用旧洞察保证的是**事实可靠**（`content_hash` 守内容未变、quote 仍逐字可达、当初已校验），**风险是冗余/陈旧而非造假**；冗余交由 report-gen 的排序/去重消化（已有机制），并由 eval 对照守底。按条缓存前提**成立但需配冗余治理**，非裸用。
+
+**与 ADR-0008 的关系（用户要求一同考虑）**：本 ADR 与 ADR-0008 同属「管线成本/效率」专题，但**攻不同维度、正交可叠加**：
+- ADR-0008 **决定⑦（按源 ROI）**：管「**哪些源/item 值得分析**」（低 ROI 源是否还每轮花分析钱）。
+- 本 ADR（增量分析）：管「**同一 item 别跨天重析**」（时间维度去重）。
+- ADR-0008 **决定⑥（跨源去重）**：管「**同一内容别跨源重复进 analyzer**」（空间维度去重，防热度虚高）。
+- 三者乘性叠加：⑦ 砍源 × 本ADR 砍时间冗余 × ⑥ 砍跨源重复。
+- ADR-0008 **决定①（采集/分析解耦、高频采集+日频分析）**：若落地，采集变高频、分析仍日产——**本 ADR 让"日产分析"无论频次都廉价**，两者组合。
+- **共享的数据约束**（沿用 ADR-0008 ⑦ 第二轮评审的诚实结论）：`analyze` 的 `run.cost` 按 `(topic, window)` **批记**、无法拆到单 item/源（只能摊派）。故本 ADR 的「省了多少」也只能**按"减少的 analyze 调用数/重析 item 数"估**，不是从 cost 列直接取数。
+
+### 选项与决定
+
+**选项 A：逐条分析缓存（镜像 `CONSISTENCY_CACHE`）。** 按 `(content_hash, topic_id, analyzer_version)` 缓存 analyzer 对该 item 的洞察；内容未变 + 版本未变 → 命中即复用、不调 Opus。版本随 analyzer prompt/模型变自动失效（同 `consistency-cache.ts` 的「模型+prompt 哈希」隔离）。**痛点**：analyze 是 chunk 级、一个 item 的洞察理论上受 chunk 内邻居影响——但 96% 单源使该影响对绝大多数洞察可忽略。
+
+**选项 B：增量选取（只析新进窗 item）。** `selectAnalysisItems` 排除「本主题已在仍有效的旧 batch 里分析过」的 item，只把**新 item** 喂 analyzer；brief = 复用旧洞察（仍在窗的已析 item）+ 新洞察。选取级、非缓存级。**痛点**：丢「新 item × 旧 item」的跨条综合（4% 风险面）。
+
+**选项 C（决定）：A+B 混合 + 跨条综合兜底。**
+1. **逐条洞察存储 + 复用（A 核）**：新增「item 分析结果」缓存（见下「关键设计」），键 `(content_hash, topic_id, analyzer_version)`，存该 item 产出的单源洞察。
+2. **增量选取（B 核）**：每轮 `rankAndDiversify` 仍对**全量在窗候选**排序取 top-N（保证 brief 覆盖最相关的 N 条，复用+新混合），但**只对其中缓存未命中的（新 item / content_hash 变了的）调 analyzer**；命中的直接取缓存洞察。
+3. **跨条综合兜底（治 4%）**：跨条洞察不进逐条缓存。两条候选路径，落地时选一：
+   - **(a) 周期性全析**：每日增量 + **每周一次全窗 full re-analyze**（跨条综合按周刷新，成本仍砍 ~6/7）；
+   - **(b) 综合子 pass**：增量时把「新 item + 近期洞察 headline 摘要」一起喂一个轻量综合 pass，让 analyzer 能跨新旧综合。
+   - 默认倾向 (a)（更简、风险低）；(b) 留待 (a) 实测综合洞察损失偏高时再上。
+
+### 关键设计（connect-to-code，落地前须接上真实结构）
+
+1. **洞察存储与复用的载体**：现 `insight` 表挂 `batch_id`（每 batch 一套洞察），无 `(content_hash, topic)` 维度、无直接 `content_item_id`（经 `citation` 多对多）。复用需二选一：**(i) 新增 `analysis_cache` 表**（`content_hash + topic_id + analyzer_version → 洞察 JSON`，镜像 `consistency-cache.ts`，最干净、不动 insight 表语义）；**(ii) 让 insight 携带 `content_hash` 并跨 batch 复制进新 batch**（动 insight 表 + batch 语义，复杂）。**倾向 (i)**：新 batch 组装时，命中缓存的 item 把缓存洞察「实例化」进本 batch（新 insight 行、新 batch_id，但跳过 LLM）。**⚠️ 实例化机制须落细（评审 Minor）**：insight 行有 `batch_id` 外键 + citation 行挂 `insight_id` → 实例化要**重生成 insight id + 复制 citation 行**；且校验结果按 batch 存（`saveValidationResult(batch.id)`），复用洞察须**在新 batch 重挂校验判定**——靠 `CONSISTENCY_CACHE` 命中（同 statement+body → 0 成本复判）自然重得，但「validate 仍要对复用洞察跑一遍（缓存命中、近零成本）」这一步不能省，否则新 batch 的洞察无校验记录、report-gen 取不到可溯源状态。即：**analyze 跳过、validate 不跳过（但走缓存）**。
+2. **缓存键的正确性**：`content_hash`（已有，`normalize.ts:contentHash`）保证内容变即重析；`analyzer_version` = analyzer prompt + 模型的哈希（仿 `consistency-cache` 的版本隔离），prompt/模型一改全体失效、强制重析（防旧 prompt 的洞察泄漏进新版报告）。
+3. **跨条洞察的标记**：缓存只存「citations 全部指向本 item」的单源洞察；多源洞察（4%）不缓存、由 C-3 的兜底路径产出。组装 brief 时去重（同 content_hash 的缓存洞察不重复实例化）。
+4. **校验侧顺带省**：复用的洞察其 `(statement, source)` 多半已判过 → `CONSISTENCY_CACHE`（已上线）命中、validate 也跟着省。本 ADR 不改 validator，纯靠现有一致性缓存吃这部分。
+5. **选取交互**：`rankAndDiversify` 不变（仍按相关性+多样性对全量在窗候选取 top-N），只在「取到 N 条后」按缓存命中分流（命中→复用、未命中→析）。**保证 brief 覆盖面与现状一致**，只是省掉重复的 LLM 调用。
+6. **正确性闸（eval 必做）**：增量产出的 brief 必须与「全析」brief **质量等价**。风险=跨条综合损失（4%）。**eval-gate：跑 A1 对照——同一窗分别用「全析」vs「增量(C)」产 brief，比 reachability/一致性/洞察数/被采纳数**；若增量版洞察数/质量掉 >阈值，回退到周期性全析(a) 兜底或上综合子 pass(b)。**这条是本 ADR 从"省钱"变成"无损省钱"的关键，不可跳。**
+
+### 理由
+
+- **直击 84% 大头的结构性浪费**：实测冗余 ~2.2×（且低估），砍重析 = 砍掉大量重复 analyze **调用**。
+  - **⚠️ 评审纠正（Major 2）：~50% 是「砍掉的 item-分析次数」的上界、不是「省下的 token/钱」。** 只析新 item → chunk 变小 → analyzer 的**巨大稳定指令前缀按 chunk 重付**、摊销变差。在当前 **Opus-only 无 cache 中转站**上（`PROMPT_CACHE=0`，relay 不读 cache），小 chunk 会**重付前缀**、吃掉相当部分省幅。**故本 ADR 的实际省幅与杠杆2（prompt caching / 直连 key）强耦合**——caching 开着时（前缀≈1/10 价），增量的小 chunk 几乎不为重付付代价、省幅接近调用数降幅；caching 关着时省幅明显缩水。**结论：ADR-0009 与「拿直连 key 开 caching」叠加才显著，单独上（当前 relay）收益打折。落地前用切片1 实测「前缀占 analyze token 比」定量化此折扣。**
+- **建立在已有资产上**：镜像 `consistency-cache.ts` 的版本化缓存模式（已验证可靠）；`content_hash` 派生即正确、零回填（同 ADR-0007 手法）；校验侧白吃现有一致性缓存。
+- **不破护城河**：可溯源/一致性闸门不动；复用的洞察当初已逐字校验过，content_hash 守住「内容没变」。
+- **与 ADR-0008 正交**：源 ROI（⑦）砍源、跨源去重（⑥）砍空间重复、本 ADR 砍时间重复——同一成本目标的三条独立战线，互不依赖、可分别落地。
+
+### 影响
+
+- **改**：`agents/scheduler.ts`（`selectAnalysisItems` 后加缓存分流）、`agents/pipeline.ts` 或 `agents/analyzer.ts`（`analyze` 前查缓存、命中跳过 LLM、未命中析完写缓存）、新 `db/analysis-cache.ts`（仿 `consistency-cache.ts`）、`agents/report-gen.ts`（brief 组装去重——大体不变，洞察来源透明）。
+- **schema**：新增 `analysis_cache` 表（`content_hash TEXT, topic_id TEXT, analyzer_version TEXT, insights_json TEXT, created_at` + 复合键），走 `db/index.ts` 建表；TTL 清理仿 `CONSISTENCY_CACHE_TTL_DAYS`。**不动 `insight`/`citation`/`source` 表**。
+- **env**：`ANALYSIS_CACHE`（默认开、`0` 关用于排查）、`ANALYSIS_CACHE_TTL_DAYS`（默认 14，对齐一致性缓存）、`FULL_REANALYZE_CRON`/周期（兜底(a)用）。
+- **eval**：**本 ADR 必须过 eval-gate**（改 analyzer 调用路径 → 直接影响 analyze 产出），不可 skip。**⚠️ 评审纠正（Minor）：现有 `evals/run-a1.ts` 是「固定数据集上 analyze→validate 质量」、不做「时序的增量 vs 全析对照」**——后者要在同一多日窗上分别跑「逐日全析」与「逐日增量」、比末日 brief 的洞察集/可达/一致/被采纳。**需新建一个时序对照 harness（非 run-a1 现成能力）**，不是画饼但要单列工作量。作为缓和：切片1「只写不读」阶段可先离线用缓存命中率 + 「命中项的缓存洞察 vs 当轮实析洞察」逐条 diff 验「复用是否等价」，成本低、先验证再上读路径。
+- **切片化（建议）**：切片1 = `analysis_cache` 表 + 写缓存（行为中性，先只写不读、验证命中率与内容稳定性）；切片2 = 读缓存分流 + 跨条兜底 + eval 对照；切片3 = 监控（缓存命中率 / 省下的调用数 / 综合损失）。
+- **与 ADR-0008 的耦合（评审纠正 Major 3——原"正交可并行"低估）**：概念上正交（砍时间冗余 vs ⑦砍源/⑥砍空间重复），但落地有两处真耦合，须协调而非裸并行：
+  - **文件合并面**：本 ADR 改 `scheduler.ts`/`pipeline.ts`，ADR-0008 ②⑦也改 `scheduler.ts` + `run-stats.ts`/新 watchdog → 同文件编辑面，须排序合入或一人统筹（避免 #82 式并行撞车，见 MEMORY「删分支前先确认 MERGED」）。
+  - **⑦成本口径联动**：ADR-0008 ⑦按源 ROI 用「该源 item 数 / batch 内总 item 数」**摊派** batch 成本。本 ADR 改变「被分析的 item 集」（只析新 item、复用旧的）→ batch 不再覆盖全部在窗 item → **⑦的摊派分母变了**。两者落地须共定口径：ROI 的成本分母应按「**实际触发 LLM 的新 item**」算，否则复用的旧 item 会被错记零成本或重复记账。建议：⑦的归因口径设计**显式纳入缓存命中维度**（命中=该轮零增量成本）。
+- **技术前提已落库**：citation/content_hash/consistency-cache 模式均在产，本 ADR 不引新外部依赖。
+
+### 风险
+
+- **跨条综合损失（主要质量风险）**：4% 多源洞察。由 C-3 兜底 + eval 对照守；若实测损失偏高，周期性全析(a) 是确定性回退。
+- **缓存命中率不及预期**：若内容/选取波动大、命中率低，省幅缩水。切片1「先只写不读 + 量命中率」先验证、再决定切片2 是否值得。
+- **版本失效抖动**：analyzer prompt 频繁微调会使缓存频繁全失效。缓解：版本哈希只纳入「影响产出的稳定前缀」，小注释改动不触发失效（落地时定哈希口径）。
+- **正确性**：复用旧洞察须保证 content_hash 严格一致（内容一字未变）——`contentHash` 基于 `normalizeBody`，清洗逻辑一改即全失效重析，安全。
+
+### 评审修订记录（第一轮，独立评审 2026-06-21）
+
+实读 `analyzer.ts`/`scheduler.ts`/`consistency-cache.ts`/schema 核对 connect-to-code，发现 3 Major + 3 Minor，均已据实修订（非推翻、是收口诚实化）：
+
+- **Major 1（已纠正）**：「96% 单源 → 逐条缓存基本无损」混淆了「单源**引证**」与「生成**独立**」。chunk 级分析下 item 的洞察受邻居影响（新颖性抑制）。改口径为「复用保证**事实可靠**（content_hash + quote 逐字 + 已校验），风险是**冗余/陈旧非造假**，冗余交 report-gen 排序去重 + eval 守」。
+- **Major 2（已纠正）**：~50% 是「砍掉的分析次数」上界、非省下的 token。只析新 item → chunk 变小 → analyzer 巨大前缀**按 chunk 重付**；当前 Opus-only **无 cache** relay 上会吃掉大部分省幅。**本 ADR 收益与杠杆2（prompt caching/直连 key）强耦合**，叠加才显著，单独上打折。已标注 + 切片1 量化前缀占比。
+- **Major 3（已纠正）**：与 ADR-0008「正交可并行」低估耦合——① 同改 `scheduler.ts`/`pipeline.ts`（合并面，须排序合入）；② 本 ADR 改「被分析 item 集」→ 改变 ⑦按源成本摊派的分母，须共定口径（ROI 成本分母按「实际触发 LLM 的新 item」算、显式纳入缓存命中维度）。
+- **Minor（已纠正）**：①「实例化进 batch」须重生成 insight id + 复制 citation + **validate 不跳过但走缓存**（否则无校验记录）；② eval「全析 vs 增量」非 run-a1 现成能力，需新建**时序对照 harness**，切片1 阶段先用「命中项缓存洞察 vs 当轮实析」逐条 diff 低成本先验；③ 省幅 ~50% 待切片1 实测命中率定。
+- **Nit**：`consistency_cache` 是 1 判定/键、`analysis_cache` 是 N 洞察/键——「镜像」指版本化+TTL+首写定模式，非值形态，已在关键设计1澄清。
+
+**结论：可作为实现依据，但须按上述修订执行**——尤其（a）切片1「只写不读」先量化命中率 + 前缀占比，用真数据校准省幅再决定切片2 是否值得；（b）与 ADR-0008 ②⑦合入排序 + ⑦口径联动须事前对齐；（c）落地必过新建的时序 eval 对照。本 ADR 的价值不取决于「单独能省多少」，而在于**与杠杆2（caching/直连 key）叠加后的数量级降本**——两者应作为同一「analyze 降本」工程统筹推进。
