@@ -113,12 +113,26 @@ export function validateSourceInput(body: unknown, opts: { existingId?: string }
   if (typeof interval !== "string") return { ok: false, message: interval.fail };
   if (!/^\d+[smhd]$/.test(interval)) return { ok: false, message: "fetch_interval 须形如 1h / 30m / 1d" };
 
+  // ADR-0008 决定③：fetch_mode（默认 feed）+ content_container（可选容器 token，非 CSS 选择器）
+  const fetchMode = o.fetch_mode === "full_text" ? "full_text" : "feed";
+  let container: string | null = null;
+  if (o.content_container != null && o.content_container !== "") {
+    const c = s(o.content_container, "content_container", 64);
+    if (typeof c !== "string") return { ok: false, message: c.fail };
+    // 单个 class/id token：限字母数字/-/_/:（防 CSS 组合选择器误填、与无 DOM 正则引擎不兼容——ADR 决定③）
+    if (!/^[a-zA-Z0-9_:-]+$/.test(c)) {
+      return { ok: false, message: "content_container 须是单个 class/id 名（字母数字/-/_/:），不支持 CSS 选择器" };
+    }
+    container = c;
+  }
+
   return {
     ok: true,
     value: {
       id, name, type: type as Source["type"], endpoint,
       industry: ind as Industry, topic_ids: topicIds.map((t) => String(t).trim()).filter(Boolean),
       fetch_interval: interval, backfill: null, enabled: o.enabled !== false,
+      fetch_mode: fetchMode, content_container: container,
     },
   };
 }

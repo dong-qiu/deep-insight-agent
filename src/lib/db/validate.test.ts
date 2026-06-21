@@ -102,6 +102,19 @@ describe("validateSourceInput", () => {
     expect(v.ok).toBe(false);
   });
 
+  it("fetch_mode 缺省 feed / full_text + container 接受（决定③）", () => {
+    const d = validateSourceInput(valid);
+    if (d.ok) expect(d.value.fetch_mode).toBe("feed");
+    const f = validateSourceInput({ ...valid, fetch_mode: "full_text", content_container: "js-article" });
+    expect(f.ok).toBe(true);
+    if (f.ok) expect(f.value).toMatchObject({ fetch_mode: "full_text", content_container: "js-article" });
+  });
+
+  it("content_container 是 CSS 选择器（含空格/>）→ 拒（须单 class/id token）", () => {
+    const v = validateSourceInput({ ...valid, content_container: "div.post > article" });
+    expect(v.ok).toBe(false);
+  });
+
   it("fetch_interval 非法格式 → 422", () => {
     const v = validateSourceInput({ ...valid, fetch_interval: "very fast" });
     expect(v.ok).toBe(false);

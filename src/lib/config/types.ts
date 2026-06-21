@@ -11,6 +11,9 @@ export const SourceConfigSchema = z.object({
   fetch_interval: z.string(),
   backfill: z.object({ depth: z.string(), max_cost: z.number() }).nullable().default(null),
   enabled: z.boolean().default(true),
+  // ADR-0008 决定③ 按源全文策略（yaml 不填则默认 feed / 无容器覆盖）
+  fetch_mode: z.enum(["feed", "full_text"]).default("feed"),
+  content_container: z.string().nullable().default(null),
 });
 
 export const TopicConfigSchema = z.object({

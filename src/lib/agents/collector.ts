@@ -7,7 +7,7 @@ import { getContentByUrl, insertContentItem, updateContentItem } from "../db/rep
 import type { DB } from "../db/index.js";
 import { runJob } from "../runtime/jobs.js";
 import type { Source } from "../types.js";
-import { articleFetchEnabled, fetchArticleBody } from "../sources/article.js";
+import { MIN_ARTICLE_CHARS, articleFetchEnabled, articleFetchKilled, fetchArticleBody } from "../sources/article.js";
 import { fetchFromSource } from "../sources/index.js";
 import { normalizeUrl, rawToContentItem } from "../sources/normalize.js";
 import { fetchTranscript, transcriptFetchEnabled } from "../sources/rss.js";
@@ -53,16 +53,21 @@ export async function collectSource(
     let articleFetches = 0; // 本轮已抓全文条数（绑首轮全量回填的串行规模，剩余留下轮）
     const articleBudget = articleFetchMaxPerRun();
     for (const raw of raws) {
-      if (!raw.body.trim()) {
-        // 标题党 feed（body 空，如安全客）：开关开时按 URL 抓文章页补全全文。
-        // **抓前去重**：已采过该 URL（库里有非空正文）→ 跳过、不重抓（只抓新文章，避免每轮 cron hammer 源）。
-        if (!articleFetchEnabled()) {
-          skipped++; // 开关关 → 维持现状：空正文视为抽取失败、不产出条目
-          continue;
-        }
-        // collector 从不插入空正文条目（见下方分支），故该 URL 库里有任何行 = 已采过且有正文 → 不重抓。
+      // ADR-0008 决定③ 按源全文策略：决定是否按 URL 抓文章页补全正文。
+      //  - full_text 源：正文空或过短(<MIN) → 抓；只受应急熔断 ARTICLE_FETCH=0 约束（不受 legacy 默认关约束）。
+      //  - feed 源（默认）：仅全局 ARTICLE_FETCH 开 + 正文为空 → 抓（向后兼容安全客等切片2 前旧配置）。
+      const bodyLen = raw.body.trim().length;
+      const wantFullText =
+        source.fetch_mode === "full_text"
+          ? bodyLen < MIN_ARTICLE_CHARS && !articleFetchKilled()
+          : bodyLen === 0 && articleFetchEnabled();
+      if (wantFullText) {
+        // **抓前去重 = 每 URL 一次性抓取**：已采过该 URL → 跳过、不重抓（只抓新文章，避免每轮 cron hammer 源）。
+        // 取舍（ADR-0008 决定③ / 评审）：full_text 源若首轮文章页**临时**失败 → 回退落库短摘要后**永不重试**全文，
+        // 该条永久停在短摘要。**有意为之**——替代方案「库里现有 <MIN 就重抓」会让**真正短的文章**
+        // （fetchArticleBody 因抽取 <MIN 返 null）每轮无限重抓、hammer 源，更糟。临时失败罕见且短摘要非空（仍有内容），可接受。
         if (getContentByUrl(db, normalizeUrl(raw.url))) {
-          skipped++; // 该文章已采 → 复用、不重抓（抓前去重，避免每轮 cron 重抓）
+          skipped++;
           continue;
         }
         // 单轮全文抓取硬上限：串行抓 robots+page 各有超时，首轮一个 feed 全是新文时防阻塞 collectSource
@@ -72,13 +77,16 @@ export async function collectSource(
           continue;
         }
         articleFetches++;
-        const body = await fetchArticleBody(raw.url);
-        if (!body) {
-          skipped++; // 抓取/抽取失败 → 仍视为抽取失败
-          continue;
+        const body = await fetchArticleBody(raw.url, source.content_container);
+        if (body) {
+          raw.body = body;
+          raw.body_kind = "article";
         }
-        raw.body = body;
-        raw.body_kind = "article";
+        // 抓失败：full_text 短正文 → 保留原短摘要落库（回退）；空正文 → 落到下面判空跳过。
+      }
+      if (!raw.body.trim()) {
+        skipped++; // 仍空（feed 模式空正文 / 全文抓取失败且原本就空）→ 不产出条目
+        continue;
       }
       let item = rawToContentItem(raw, source, fetchedAt);
       const existing = getContentByUrl(db, item.url);
