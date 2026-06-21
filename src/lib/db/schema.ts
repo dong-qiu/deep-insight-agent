@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS source (
   disabled_reason TEXT,
   disabled_at     TEXT,
   circuit_reset_at TEXT,
+  last_probe_at   TEXT,
   created_at     TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
 );

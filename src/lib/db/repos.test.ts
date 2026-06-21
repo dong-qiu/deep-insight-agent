@@ -8,8 +8,8 @@ import { type DB, openDb } from "./index.js";
 import {
   clearCircuit, contentExists, finishRun, getContentByUrl, getContentItem, getRun, getSource,
   getSourceBodyKinds, getTopic, hasRunningRun, insertContentItem, insertRun, insertSource,
-  insertTopic, listRuns, listRunsForTopicSince, listSources, recoverOrphanedRuns,
-  setCircuit, sumRunCostSince, updateContentItem, updateSource,
+  insertTopic, listProbeCandidates, listRuns, listRunsForTopicSince, listSources, recoverOrphanedRuns,
+  reviveSource, setCircuit, setLastProbe, sumRunCostSince, updateContentItem, updateSource,
 } from "./repos.js";
 
 let db: DB;
@@ -23,7 +23,7 @@ const sampleSource: Source = {
   topic_ids: ["t1", "t2"], fetch_interval: "6h",
   backfill: { depth: "90d", max_cost: 5 }, enabled: true,
   fetch_mode: "feed", content_container: null,
-  disabled_reason: null, disabled_at: null, circuit_reset_at: null,
+  disabled_reason: null, disabled_at: null, circuit_reset_at: null, last_probe_at: null,
 };
 
 describe("源熔断态（切片3b）", () => {
@@ -60,6 +60,34 @@ describe("源熔断态（切片3b）", () => {
     const s = getSource(db, "s1")!;
     expect(s.disabled_reason).toBeNull();
     expect(s.circuit_reset_at).toBeNull(); // 普通编辑不触发清态
+  });
+
+  // ── 半开自愈（3b-2）──
+  it("listProbeCandidates：只选系统熔断源、节流过滤、按 last_probe_at 升序（NULL 最前）", () => {
+    setCircuit(db, "s1"); // 系统熔断、last_probe_at NULL
+    insertSource(db, { ...sampleSource, id: "s_manual", topic_ids: [], enabled: false }); // 人工停用（reason NULL）
+    insertSource(db, { ...sampleSource, id: "s_probed", topic_ids: [] });
+    setCircuit(db, "s_probed");
+    setLastProbe(db, "s_probed"); // 刚探过 → 在 1 天节流内被过滤
+    const now = new Date().toISOString();
+    const cands = listProbeCandidates(db, now, 86_400_000, 5);
+    expect(cands.map((c) => c.id)).toEqual(["s1"]); // s_manual 人工停用不入选；s_probed 节流内
+  });
+
+  it("setLastProbe → 记探测时间（节流锚点）", () => {
+    setCircuit(db, "s1");
+    setLastProbe(db, "s1");
+    expect(getSource(db, "s1")!.last_probe_at).toBeTruthy();
+  });
+
+  it("reviveSource → enabled=1 + 清熔断态 + 清 last_probe_at", () => {
+    setCircuit(db, "s1");
+    setLastProbe(db, "s1");
+    reviveSource(db, "s1");
+    const s = getSource(db, "s1")!;
+    expect(s.enabled).toBe(true);
+    expect(s.disabled_reason).toBeNull();
+    expect(s.last_probe_at).toBeNull();
   });
 });
 
