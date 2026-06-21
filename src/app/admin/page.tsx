@@ -1,7 +1,7 @@
 import Link from "next/link";
 import type { Run } from "../../lib/types.js";
 import { getDb } from "../../lib/db/index.js";
-import { batchTopicMap, listRuns, listSources, listTopics } from "../../lib/db/repos.js";
+import { batchTopicMap, listRuns, listSources, listTopics, sourceContribution } from "../../lib/db/repos.js";
 import { listRecentReports, reportStatusCounts, type RecentReport } from "../../lib/db/reports.js";
 import { getBudgetStatus, type BudgetStatus } from "../../lib/runtime/cost-guard.js";
 import { aggregateByKind, aggregateDailyCost, aggregateSourceHealth, groupRunsIntoRounds, type SourceHealth } from "../../lib/runtime/run-stats.js";
@@ -71,7 +71,7 @@ function sourceVerdict(h: SourceHealth): { label: string; cls: "ok" | "alert" | 
   return { label: "正常", cls: "ok" };
 }
 
-function SourceHealthCard({ health }: { health: SourceHealth[] }) {
+function SourceHealthCard({ health, contribution }: { health: SourceHealth[]; contribution: Map<string, number> }) {
   if (health.length === 0) return null;
   const problems = health.filter((h) => h.enabled && (h.consecutiveFails >= 3 || h.total === 0 || h.successRate < 0.5)).length;
   return (
@@ -82,15 +82,16 @@ function SourceHealthCard({ health }: { health: SourceHealth[] }) {
       </p>
       <table className="stats dash-health">
         <colgroup>
-          <col className="c-src" /><col className="c-status" /><col className="c-rate" /><col className="c-last" /><col className="c-err" />
+          <col className="c-src" /><col className="c-status" /><col className="c-rate" /><col className="c-last" /><col className="c-contrib" /><col className="c-err" />
         </colgroup>
         <thead>
-          <tr><th>源</th><th>状态</th><th>成功率</th><th>最近成功</th><th>近期错误</th></tr>
+          <tr><th>源</th><th>状态</th><th>成功率</th><th>最近成功</th><th title="近 30 天被已上报报告引用的洞察数（揪常年 0 贡献源）">贡献</th><th>近期错误</th></tr>
         </thead>
         <tbody>
           {health.map((h) => {
             const v = sourceVerdict(h);
             const errText = h.lastError ? `${h.lastError.type}: ${h.lastError.message}` : "";
+            const contrib = contribution.get(h.source_id) ?? 0;
             return (
               <tr key={h.source_id}>
                 <td title={`${h.name}${h.type ? ` · ${h.type}` : ""}`}>
@@ -100,6 +101,7 @@ function SourceHealthCard({ health }: { health: SourceHealth[] }) {
                 <td><span className={`dash-badge ${v.cls}`}>{v.label}</span></td>
                 <td>{h.total > 0 ? `${Math.round(h.successRate * 100)}% (${h.ok}/${h.total})` : "—"}</td>
                 <td className="muted">{h.lastSuccessAt ? h.lastSuccessAt.slice(0, 10) : "从未"}</td>
+                <td className={contrib === 0 && h.enabled ? "dash-zero-contrib" : "muted"} title="近 30 天被已上报报告引用的洞察数">{contrib}</td>
                 <td className="muted" title={errText}>{errText || "—"}</td>
               </tr>
             );
@@ -276,6 +278,9 @@ export default async function AdminPage({ searchParams }: { searchParams: Promis
   // 源健康：从同一 allRuns 取 ingest 子集（不再单独查）
   const sources = listSources(db);
   const sourceHealth = aggregateSourceHealth(allRuns.filter((r) => r.kind === "ingest"), sources);
+  // 按源贡献（ADR-0008 决定⑦ 切片4）：近 30 天已上报报告里被引用的洞察数（读时聚合，揪常年 0 贡献源）
+  const contribSince = new Date(Date.now() - 30 * 86_400_000).toISOString();
+  const contribution = sourceContribution(db, contribSince);
   // 报告生命周期：全状态计数 + 近 15 份（含 draft/generating/failed 瞬态）
   const reportCounts = reportStatusCounts(db);
   const recentReports = listRecentReports(db, 15);
@@ -321,7 +326,7 @@ export default async function AdminPage({ searchParams }: { searchParams: Promis
 
       <BudgetCard status={budget} />
 
-      <SourceHealthCard health={sourceHealth} />
+      <SourceHealthCard health={sourceHealth} contribution={contribution} />
 
       {stats.length === 0 ? null : (
         <article className="card">
