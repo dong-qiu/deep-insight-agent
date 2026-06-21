@@ -81,6 +81,8 @@ function migrate(db: DB): void {
   ensureColumn(db, "source", "disabled_reason", "disabled_reason TEXT");
   ensureColumn(db, "source", "disabled_at", "disabled_at TEXT");
   ensureColumn(db, "source", "circuit_reset_at", "circuit_reset_at TEXT");
+  // 半开探测时间（切片3b-2）：节流，每源每天最多探一次。
+  ensureColumn(db, "source", "last_probe_at", "last_probe_at TEXT");
 }
 
 let _db: DB | null = null;

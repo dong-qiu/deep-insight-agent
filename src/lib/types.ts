@@ -29,6 +29,7 @@ export interface Source {
   disabled_reason?: string | null; // 'circuit_open'=系统熔断；NULL=人工停用或正常（区分系统 vs 人工，系统永不改人工停用）
   disabled_at?: string | null; // 系统熔断时间
   circuit_reset_at?: string | null; // consecutiveFails 计数锚点——只统计其后的 run（防复活后旧失败反扑）
+  last_probe_at?: string | null; // 半开探测时间（3b-2）：节流，每源每天最多探一次
 }
 
 /** 用户订阅主题（architecture 数据模型 · Topic） */
@@ -250,7 +251,7 @@ export interface ReportIndexEntry {
 export interface Run {
   id: string;
   kind: "ingest" | "analyze" | "validate" | "report-gen";
-  target: { topic_id?: string; source_id?: string; batch_id?: string; report_id?: string };
+  target: { topic_id?: string; source_id?: string; batch_id?: string; report_id?: string; probe?: boolean };
   status: "running" | "done" | "failed";
   started_at: string;
   ended_at: string | null;

@@ -39,11 +39,17 @@ function archiveRaw(id: string, raw: string): string {
 export async function collectSource(
   db: DB,
   source: Source,
-  opts: { retryOf?: string | null } = {},
+  opts: { retryOf?: string | null; probe?: boolean } = {},
 ): Promise<CollectResult> {
   const { run, result } = await runJob(
     db,
-    { kind: "ingest", target: { source_id: source.id }, retryOf: opts.retryOf ?? null },
+    {
+      kind: "ingest",
+      // 半开探测（3b-2）：target 打 probe 标记（evaluateCircuit 排除、不污染 consecutiveFails）+ silent（失败不刷告警）
+      target: { source_id: source.id, ...(opts.probe ? { probe: true } : {}) },
+      retryOf: opts.retryOf ?? null,
+      silent: opts.probe,
+    },
     async () => {
     const raws = await fetchFromSource(source);
     const fetchedAt = new Date().toISOString();

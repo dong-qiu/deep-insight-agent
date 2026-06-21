@@ -40,6 +40,7 @@ function rowToSource(r: Record<string, unknown>): Source {
     disabled_reason: (r.disabled_reason as string) || null,
     disabled_at: (r.disabled_at as string) || null,
     circuit_reset_at: (r.circuit_reset_at as string) || null,
+    last_probe_at: (r.last_probe_at as string) || null,
   };
 }
 /** 更新 source（id 不变，覆盖表单字段）。**不碰熔断态列**（disabled_reason/disabled_at/circuit_reset_at）——
@@ -77,6 +78,33 @@ export function setCircuit(db: DB, id: string): void {
 export function clearCircuit(db: DB, id: string): void {
   db.prepare(
     "UPDATE source SET disabled_reason=NULL, disabled_at=NULL, circuit_reset_at=datetime('now') WHERE id=?",
+  ).run(id);
+}
+
+/** 半开探测候选（切片3b-2）：系统熔断（enabled=0 ∧ circuit_open）且距上次探测 > throttleMs 的源，取前 limit 个。
+ *  按 last_probe_at 升序（最久没探的优先），NULL（从未探）排最前。人工停用（reason≠circuit_open）不入选。 */
+export function listProbeCandidates(db: DB, nowIso: string, throttleMs: number, limit: number): Source[] {
+  const rows = db
+    .prepare(
+      `SELECT * FROM source
+       WHERE enabled=0 AND disabled_reason='circuit_open'
+         AND (last_probe_at IS NULL OR (julianday(@now) - julianday(last_probe_at)) * 86400000 > @throttle)
+       ORDER BY last_probe_at IS NOT NULL, last_probe_at ASC LIMIT @limit`,
+    )
+    .all({ now: nowIso, throttle: throttleMs, limit }) as Record<string, unknown>[];
+  return rows.map(rowToSource);
+}
+
+/** 记一次半开探测时间（节流锚点）。探测前调用——即便探测进程崩溃也已节流，防探测风暴。 */
+export function setLastProbe(db: DB, id: string): void {
+  db.prepare("UPDATE source SET last_probe_at=datetime('now') WHERE id=?").run(id);
+}
+
+/** 半开探测成功 → 自动复活：enabled=1 + 清熔断态 + 写 circuit_reset_at（重数 consecutiveFails）+ 清 last_probe_at。
+ *  单条 UPDATE（原子，评审🟡）。 */
+export function reviveSource(db: DB, id: string): void {
+  db.prepare(
+    "UPDATE source SET enabled=1, disabled_reason=NULL, disabled_at=NULL, circuit_reset_at=datetime('now'), last_probe_at=NULL WHERE id=?",
   ).run(id);
 }
 /** 物理删 source；FK 违例（被 content_item 引用）由调用方 catch 返友好错。 */

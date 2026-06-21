@@ -11,6 +11,7 @@ export interface JobSpec {
   kind: Run["kind"];
   target: Run["target"];
   retryOf?: string | null;
+  silent?: boolean; // 失败不发 notifyFailure（半开探测用，3b-2：探测失败不刷告警）
 }
 export interface JobCtx {
   runId: string;
@@ -55,8 +56,11 @@ export async function runJob<T>(
       status: "failed", cost, duration_ms: elapsed(),
       error: { type: err.name, message: err.message, stack: err.stack },
     });
-    // 失败告警（运维附条件②）：fire-and-forget，ALERT_WEBHOOK 未配置则 no-op，永不连累抛出
-    notifyFailure({ runId, kind: spec.kind, target: spec.target, errorType: err.name, message: err.message });
+    // 失败告警（运维附条件②）：fire-and-forget，ALERT_WEBHOOK 未配置则 no-op，永不连累抛出。
+    // silent（半开探测）→ 跳过：探测失败属预期、不刷告警（ADR-0008 决定② / 切片3b-2，评审🔴）。
+    if (!spec.silent) {
+      notifyFailure({ runId, kind: spec.kind, target: spec.target, errorType: err.name, message: err.message });
+    }
     throw e;
   }
 }

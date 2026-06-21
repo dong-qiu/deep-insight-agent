@@ -1,11 +1,33 @@
-import { beforeEach, expect, it } from "vitest";
+import { beforeEach, expect, it, vi } from "vitest";
 import { type DB, openDb } from "../db/index.js";
 import { listRuns } from "../db/repos.js";
+import { notifyFailure } from "./alert.js";
 import { retryJob, runJob } from "./jobs.js";
+
+vi.mock("./alert.js", () => ({ notifyFailure: vi.fn() }));
 
 let db: DB;
 beforeEach(() => {
   db = openDb(":memory:");
+  vi.mocked(notifyFailure).mockClear();
+});
+
+it("runJob 失败 + silent → 不发 notifyFailure（半开探测，3b-2）", async () => {
+  await expect(
+    runJob(db, { kind: "ingest", target: { source_id: "s", probe: true }, silent: true }, async () => {
+      throw new Error("probe fail");
+    }),
+  ).rejects.toThrow("probe fail");
+  expect(notifyFailure).not.toHaveBeenCalled();
+});
+
+it("runJob 失败 + 非 silent → 发 notifyFailure", async () => {
+  await expect(
+    runJob(db, { kind: "ingest", target: { source_id: "s" } }, async () => {
+      throw new Error("real fail");
+    }),
+  ).rejects.toThrow();
+  expect(notifyFailure).toHaveBeenCalledTimes(1);
 });
 
 it("runJob 成功：Run done + 累加成本", async () => {

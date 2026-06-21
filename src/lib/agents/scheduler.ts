@@ -4,9 +4,10 @@
  *  由 /api/cron 触发（系统 cron / supercronic 定时 curl）；含真模型调用，需 ANTHROPIC_API_KEY。 */
 import type { DB } from "../db/index.js";
 import { getEffectiveSources, loadStaticConfig } from "../config/index.js";
-import { getSource, getTopic, listContentForTopic, listRuns, listTopics, setCircuit } from "../db/repos.js";
+import { appendAudit } from "../db/audit.js";
+import { getSource, getTopic, listContentForTopic, listProbeCandidates, listRuns, listTopics, reviveSource, setCircuit, setLastProbe } from "../db/repos.js";
 import { listRecentBriefEvents, previousReportForTopic, topicHasReport } from "../db/reports.js";
-import { notifyBudget, notifySourceCircuit } from "../runtime/alert.js";
+import { notifyBudget, notifySourceCircuit, notifySourceRevived } from "../runtime/alert.js";
 import { getBudgetStatus } from "../runtime/cost-guard.js";
 import { runLogger } from "../runtime/logger.js";
 import { circuitConfig, evaluateCircuit } from "../runtime/run-stats.js";
@@ -25,6 +26,8 @@ export interface ScheduleSummary {
   budgetStopped?: boolean;
   /** 本轮被系统熔断停采的源 id（ADR-0008 决定②）：正常处置、不计入 errors（评审）。 */
   circuitOpened?: string[];
+  /** 本轮半开探测成功、自动复活的源 id（切片3b-2）。 */
+  circuitRevived?: string[];
 }
 
 /** 冷启动决策（纯函数，可测）：topic 无历史报告 → 首版综述 initial_digest（更宽窗口 / 更多条，
@@ -177,6 +180,37 @@ export async function runScheduledPipeline(
     }
   } catch (e) {
     summary.errors.push(`circuit-check: ${errMsg(e)}`);
+  }
+
+  // 1c. 半开自愈（ADR-0008 决定② / 切片3b-2）：对系统熔断源每天探一次，成功则自动复活。
+  // 落点=日跑管线旁路（不引新 cron，与决定①一致）；探测 silent（失败不刷告警）+ 单源超时 + 每轮上限。
+  try {
+    const max = Number(process.env.SOURCE_PROBE_MAX_PER_RUN) || 5;
+    const probeTimeoutMs = Number(process.env.SOURCE_PROBE_TIMEOUT_MS) || 15_000;
+    const candidates = listProbeCandidates(db, new Date().toISOString(), 86_400_000, max); // 节流 1 天
+    for (const s of candidates) {
+      setLastProbe(db, s.id); // 探测前先记（即便探测崩溃也已节流，防探测风暴）
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        // 单源超时：探测挂住不拖垮当天 brief（后台 fetch 自行结束，无害）。
+        await Promise.race([
+          collectSource(db, s, { probe: true }),
+          new Promise((_, rej) => {
+            timer = setTimeout(() => rej(new Error("probe timeout")), probeTimeoutMs);
+          }),
+        ]);
+        reviveSource(db, s.id); // 探测成功（collectSource 未抛）→ 复活
+        notifySourceRevived({ sourceId: s.id, name: s.name });
+        appendAudit(db, { actor: "system", action: "source_circuit_revive", target: s.id, detail: null });
+        (summary.circuitRevived ??= []).push(s.id);
+      } catch {
+        // 探测失败 → 维持熔断（last_probe_at 已记，下次按节流再探），不告警
+      } finally {
+        if (timer) clearTimeout(timer); // 快速胜出时清掉超时定时器，不留挂起 timer
+      }
+    }
+  } catch (e) {
+    summary.errors.push(`half-open: ${errMsg(e)}`);
   }
 
   // 2-4. 每个启用 Topic：冷启动决策 → 分析→校验→生成报告（首版综述 / brief / deep_dive）
