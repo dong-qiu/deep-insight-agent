@@ -323,11 +323,15 @@ h3[id] { scroll-margin-top: .5rem; }
    下会被忽略致长错误撑破表格，故改 fixed）。近期错误超长 → 省略号，hover title 看全文。 */
 .dash-health { table-layout: fixed; width: 100%; }
 .dash-health th, .dash-health td { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: middle; }
-.dash-health col.c-src { width: 28%; }
-.dash-health col.c-status { width: 18%; }
-.dash-health col.c-rate { width: 16%; }
-.dash-health col.c-last { width: 13%; }
-.dash-health col.c-err { width: 25%; }
+.dash-health col.c-src { width: 26%; }
+.dash-health col.c-status { width: 16%; }
+.dash-health col.c-rate { width: 14%; }
+.dash-health col.c-last { width: 12%; }
+.dash-health col.c-contrib { width: 8%; }
+.dash-health col.c-err { width: 24%; }
+/* 启用却近 30 天 0 贡献的源（决定⑦）：暗红提示，交人核查值不值得继续花分析钱 */
+.dash-zero-contrib { color: #b91c1c; font-weight: 600; }
+@media (prefers-color-scheme: dark) { .dash-zero-contrib { color: #fca5a5; } }
 .dash-budget-row { margin: .4rem 0; }
 .dash-budget-row .label { margin: 0 0 .15rem; font-size: .85rem; }
 .dash-bar { height: 8px; background: #e5e7eb; border-radius: 4px; overflow: hidden; }

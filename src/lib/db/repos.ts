@@ -81,6 +81,25 @@ export function clearCircuit(db: DB, id: string): void {
   ).run(id);
 }
 
+/** 按源贡献（ADR-0008 决定⑦ 降级版 / 切片4）：每源在 sinceIso 后**已上报报告**里被引用的 distinct 洞察数。
+ *  纯读时聚合、零新表——沿用 reports.ts 的 instr(insight_ids) JOIN 先例：
+ *  report(done) → insight(在 insight_ids 里) → citation → content_item.source_id，按源数 distinct insight。
+ *  multi-source 洞察对每个被引源各计 1（计数口径，非均摊——护稀疏权威源）。返 Map<source_id, 贡献数>。 */
+export function sourceContribution(db: DB, sinceIso: string): Map<string, number> {
+  const rows = db
+    .prepare(
+      `SELECT ci.source_id AS source_id, COUNT(DISTINCT i.id) AS cnt
+       FROM report r
+       JOIN insight i ON instr(r.insight_ids, '"' || i.id || '"') > 0
+       JOIN citation c ON c.insight_id = i.id
+       JOIN content_item ci ON ci.id = c.content_item_id
+       WHERE r.status = 'done' AND r.generated_at >= @since
+       GROUP BY ci.source_id`,
+    )
+    .all({ since: sinceIso }) as { source_id: string; cnt: number }[];
+  return new Map(rows.map((r) => [r.source_id, r.cnt]));
+}
+
 /** 半开探测候选（切片3b-2）：系统熔断（enabled=0 ∧ circuit_open）且距上次探测 > throttleMs 的源，取前 limit 个。
  *  按 last_probe_at 升序（最久没探的优先），NULL（从未探）排最前。人工停用（reason≠circuit_open）不入选。 */
 export function listProbeCandidates(db: DB, nowIso: string, throttleMs: number, limit: number): Source[] {
