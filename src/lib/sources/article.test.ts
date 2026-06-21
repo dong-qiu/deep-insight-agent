@@ -6,9 +6,8 @@ const { responses } = vi.hoisted(() => ({
   responses: new Map<string, { ok: boolean; text: string; ct?: string }>(),
 }));
 
-vi.mock("./safe-fetch.js", () => ({
-  MAX_RESPONSE_BYTES: 8_000_000,
-  safeFetch: vi.fn(async (url: string) => {
+vi.mock("./safe-fetch.js", () => {
+  const mockFetch = async (url: string) => {
     const r = responses.get(url);
     if (!r) throw new Error(`unmocked fetch ${url}`);
     return {
@@ -16,9 +15,14 @@ vi.mock("./safe-fetch.js", () => ({
       _text: r.text,
       headers: { get: (k: string) => (k.toLowerCase() === "content-type" ? (r.ct ?? "text/html") : null) },
     } as unknown as Response;
-  }),
-  readTextCapped: vi.fn(async (res: { _text: string }) => res._text),
-}));
+  };
+  return {
+    MAX_RESPONSE_BYTES: 8_000_000,
+    safeFetch: vi.fn(mockFetch),
+    fetchWithRetry: vi.fn(mockFetch), // 切片3a：article.ts 改用退避包装；测试里等价于直接 mock fetch
+    readTextCapped: vi.fn(async (res: { _text: string }) => res._text),
+  };
+});
 const { robotsRules } = vi.hoisted(() => ({ robotsRules: { value: { disallow: [] as string[] } } }));
 vi.mock("./robots.js", () => ({
   UA: "Bot",

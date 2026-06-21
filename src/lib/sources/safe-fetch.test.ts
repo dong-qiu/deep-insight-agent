@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { isPrivateOrReserved, safeFetch } from "./safe-fetch.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { fetchWithRetry, isPrivateOrReserved, safeFetch } from "./safe-fetch.js";
 
 describe("isPrivateOrReserved", () => {
   it("私有 / 保留 IPv4 → true", () => {
@@ -38,5 +38,58 @@ describe("safeFetch 拦截（不触网即拒）", () => {
   });
   it("拒非法 URL", async () => {
     await expect(safeFetch("http://")).rejects.toThrow();
+  });
+});
+
+describe("fetchWithRetry 瞬时退避（切片3a）", () => {
+  const URL_PUB = "http://8.8.8.8/feed"; // 公网 IP 字面量 → 绕 DNS，assertPublicHost 直接放行
+  const res = (status: number): Response =>
+    ({ status, ok: status >= 200 && status < 300, headers: { get: () => null } }) as unknown as Response;
+  afterEach(() => vi.restoreAllMocks());
+
+  it("5xx 后成功 → 退避重试、返 200", async () => {
+    const f = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(res(503)).mockResolvedValueOnce(res(200));
+    const r = await fetchWithRetry(URL_PUB, {}, [0, 0]);
+    expect(r.status).toBe(200);
+    expect(f).toHaveBeenCalledTimes(2);
+  });
+
+  it("抛错（网络/超时）后成功 → 重试、返 200", async () => {
+    const f = vi.spyOn(globalThis, "fetch").mockRejectedValueOnce(new Error("network")).mockResolvedValueOnce(res(200));
+    const r = await fetchWithRetry(URL_PUB, {}, [0, 0]);
+    expect(r.status).toBe(200);
+    expect(f).toHaveBeenCalledTimes(2);
+  });
+
+  it("4xx → 不重试、直接返", async () => {
+    const f = vi.spyOn(globalThis, "fetch").mockResolvedValue(res(404));
+    const r = await fetchWithRetry(URL_PUB, {}, [0, 0]);
+    expect(r.status).toBe(404);
+    expect(f).toHaveBeenCalledTimes(1);
+  });
+
+  it("SSRF 拦截 → 不重试、立即抛（fetch 都没调）", async () => {
+    const f = vi.spyOn(globalThis, "fetch");
+    await expect(fetchWithRetry("http://127.0.0.1/x", {}, [0, 0])).rejects.toThrow(/SSRF/);
+    expect(f).not.toHaveBeenCalled();
+  });
+
+  it("持续 5xx → 重试用尽后返最后的 5xx（attempts=3）", async () => {
+    const f = vi.spyOn(globalThis, "fetch").mockResolvedValue(res(503));
+    const r = await fetchWithRetry(URL_PUB, {}, [0, 0]);
+    expect(r.status).toBe(503);
+    expect(f).toHaveBeenCalledTimes(3); // 1 + 2 重试
+  });
+
+  it("持续抛错 → 重试用尽后抛", async () => {
+    const f = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("timeout"));
+    await expect(fetchWithRetry(URL_PUB, {}, [0, 0])).rejects.toThrow(/timeout/);
+    expect(f).toHaveBeenCalledTimes(3);
+  });
+
+  it("非瞬时错误（命中 NON_TRANSIENT）→ 立即抛、不重试（红线：改文案漏更新 regex 即退化为误重试）", async () => {
+    const f = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("重定向次数过多"));
+    await expect(fetchWithRetry(URL_PUB, {}, [0, 0])).rejects.toThrow(/重定向次数过多/);
+    expect(f).toHaveBeenCalledTimes(1); // 没重试
   });
 });

@@ -79,6 +79,35 @@ export async function readTextCapped(res: Response, maxBytes: number = MAX_RESPO
 }
 
 /** 安全出网：协议白名单 + 逐跳私有地址拦截 + 手动跟跳复检 + 超时。 */
+/** 瞬时失败退避重试（ADR-0008 决定② / 切片3a）：**opt-in 包装** safeFetch——对【fetch 抛错（超时/网络/DNS）
+ *  + 5xx 响应】退避重试，对【4xx / SSRF 拦截 / 非法 URL / 不允许协议 / 重定向过多】**不重试**（非瞬时）。
+ *  吸收抖动源（FeedBurner 偶发）→ 单次抖动不再记一条 failed run、不放大 consecutiveFails。
+ *  **不改 safeFetch 本身**（避免与其 redirect/SSRF 语义纠缠，评审裁决）；仅 fetchRss/fetchArticleBody 调用此包装。
+ *  delaysMs 退避序列（默认 1s/3s、最多重试 2 次）；单测传 `[0,0]` 免真 sleep。 */
+const NON_TRANSIENT = /^(非法 URL|不允许的协议|SSRF 拦截|重定向次数过多)/;
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+export async function fetchWithRetry(
+  input: string,
+  opts: SafeFetchOptions = {},
+  delaysMs: number[] = [1000, 3000],
+): Promise<Response> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const res = await safeFetch(input, opts);
+      if (res.status >= 500 && attempt < delaysMs.length) {
+        await sleep(delaysMs[attempt]); // 5xx 瞬时 → 退避重试
+        continue;
+      }
+      return res; // 2xx / 4xx（非瞬时，不重试）
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (NON_TRANSIENT.test(msg) || attempt >= delaysMs.length) throw e; // 非瞬时 / 重试用尽
+      await sleep(delaysMs[attempt]);
+    }
+  }
+}
+
 export async function safeFetch(input: string, opts: SafeFetchOptions = {}): Promise<Response> {
   const timeoutMs = opts.timeoutMs ?? 15_000;
   const maxRedirects = opts.maxRedirects ?? 5;
