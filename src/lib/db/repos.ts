@@ -386,5 +386,11 @@ function rowToRun(r: Record<string, unknown>): Run {
     ended_at: (r.ended_at as string) ?? null, duration_ms: (r.duration_ms as number) ?? null,
     cost: r.cost ? JSON.parse(r.cost as string) : null,
     error: r.error ? JSON.parse(r.error as string) : null, retry_of: (r.retry_of as string) ?? null,
+    inserted: r.inserted == null ? null : (r.inserted as number),
   };
+}
+
+/** 回填 ingest run 的本轮入库条数（切片3b-3 零产出看门狗）。collectSource 在 runJob 完成后调。 */
+export function setRunInserted(db: DB, runId: string, inserted: number): void {
+  db.prepare("UPDATE run SET inserted=? WHERE id=?").run(inserted, runId);
 }

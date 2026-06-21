@@ -222,3 +222,30 @@ export function evaluateCircuit(
     : reset || (runs.length ? Date.parse(runs[runs.length - 1].started_at) : now); // 无成功 → 锚点 / 最早失败
   return { open: now - refMs > cfg.days * 86_400_000, consecutiveFails, lastErrorMsg };
 }
+
+// ── 零产出看门狗（治静默失败 · 切片3b-3）──
+// 「采集成功但 inserted=0」= feed 变标题党 / 解析返 [] / WAF 软封 → 成功率显示 100% 实则 0 产出，
+// 被健康面板掩盖（体检里 guid bug、相对 URL 丢条目都属此类）。判据须带**产出基线**降假阳：
+// 仅「历史有过非零产出的源，突然连续 N 次 done 但 inserted=0」才报——避免生来稀疏源（owasp 3 条）误报。
+
+export interface ZeroYieldEval {
+  consecutiveZero: number; // 最近连续「done 且 inserted=0」的轮数
+  hasBaseline: boolean; // 历史是否有过 inserted>0（曾稳定产出）
+  alert: boolean; // 刚跨过阈值（== rounds）且有基线 → 报一次
+}
+
+/** 判某源是否触发零产出告警。纯函数。排除 probe run；inserted=null（旧 run/失败）打断连零计数（NULL=未知）。
+ *  alert 仅在「恰好连续 N 次」那一刻为 true（边沿触发、天然去重，不每轮重复报）。 */
+export function evaluateZeroYield(ingestRunsForSource: Run[], rounds: number): ZeroYieldEval {
+  const runs = ingestRunsForSource
+    .filter((r) => !(r.target as { probe?: boolean }).probe)
+    .sort((a, b) => (a.started_at < b.started_at ? 1 : a.started_at > b.started_at ? -1 : 0)); // desc，相等返 0（稳定）
+  // 注：「轮」= 一次 ingest run（含手动 /collect、/retry），非自然日——inserted 是**新增**条数（updated 不算）。
+  let consecutiveZero = 0;
+  for (const r of runs) {
+    if (r.status === "done" && r.inserted === 0) consecutiveZero += 1;
+    else break; // 失败 / running / inserted>0 / inserted=null 都打断
+  }
+  const hasBaseline = runs.some((r) => r.inserted != null && r.inserted > 0);
+  return { consecutiveZero, hasBaseline, alert: hasBaseline && consecutiveZero === rounds };
+}

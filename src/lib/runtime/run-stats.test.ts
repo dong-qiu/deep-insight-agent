@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Run, Source } from "../types.js";
-import { aggregateByKind, aggregateDailyCost, aggregateSourceHealth, evaluateCircuit, groupRunsIntoRounds } from "./run-stats.js";
+import { aggregateByKind, aggregateDailyCost, aggregateSourceHealth, evaluateCircuit, evaluateZeroYield, groupRunsIntoRounds } from "./run-stats.js";
 
 function run(p: Partial<Run> & Pick<Run, "kind" | "status">): Run {
   return {
@@ -254,5 +254,57 @@ describe("evaluateCircuit（源熔断判定 · 切片3b）", () => {
   it("从未成功 + 连失够 + 距最早失败 > days → 熔断", () => {
     const runs = fails("s", 6, 4); // 全失败，最新在 4 天前（最早更早）
     expect(evaluateCircuit(runs, src("s"), NOW, CFG).open).toBe(true);
+  });
+});
+
+describe("evaluateZeroYield（零产出看门狗 · 切片3b-3）", () => {
+  // 倒序：传入数组按 started_at 排，这里直接给 ISO 控制顺序
+  const ig = (n: number, status: Run["status"], inserted: number | null, probe = false): Run =>
+    run({ kind: "ingest", status, started_at: new Date(Date.parse("2026-06-21T00:00:00Z") - n * 3_600_000).toISOString(), inserted, target: { source_id: "s", ...(probe ? { probe: true } : {}) } });
+
+  it("有基线 + 恰好连续 N 次 done且inserted=0 → 报警一次（边沿）", () => {
+    const runs = [ig(0, "done", 0), ig(1, "done", 0), ig(2, "done", 0), ig(3, "done", 5)]; // 3 连零 + 基线
+    const ev = evaluateZeroYield(runs, 3);
+    expect(ev).toMatchObject({ consecutiveZero: 3, hasBaseline: true, alert: true });
+  });
+
+  it("连续零 > N（已过阈值）→ 不再报（只在 ==N 那刻报）", () => {
+    const runs = [ig(0, "done", 0), ig(1, "done", 0), ig(2, "done", 0), ig(3, "done", 0), ig(4, "done", 9)];
+    expect(evaluateZeroYield(runs, 3).alert).toBe(false); // 4 > 3
+  });
+
+  it("无基线（从未产出，如生来稀疏源）→ 不报（降假阳）", () => {
+    const runs = [ig(0, "done", 0), ig(1, "done", 0), ig(2, "done", 0)];
+    expect(evaluateZeroYield(runs, 3)).toMatchObject({ consecutiveZero: 3, hasBaseline: false, alert: false });
+  });
+
+  it("inserted=null（旧 run/未知）打断连零计数", () => {
+    const runs = [ig(0, "done", 0), ig(1, "done", null), ig(2, "done", 5)];
+    expect(evaluateZeroYield(runs, 3).consecutiveZero).toBe(1);
+  });
+
+  it("最近有产出（inserted>0）→ 连零 0", () => {
+    expect(evaluateZeroYield([ig(0, "done", 3), ig(1, "done", 0)], 3).consecutiveZero).toBe(0);
+  });
+
+  it("失败 run 打断连零（失败归熔断管，非零产出）", () => {
+    const runs = [ig(0, "done", 0), ig(1, "failed", null), ig(2, "done", 0), ig(3, "done", 5)];
+    expect(evaluateZeroYield(runs, 3).consecutiveZero).toBe(1);
+  });
+
+  it("排除 probe run", () => {
+    const runs = [ig(0, "done", 0, true), ig(1, "done", 0), ig(2, "done", 0), ig(3, "done", 0), ig(4, "done", 5)];
+    expect(evaluateZeroYield(runs, 3)).toMatchObject({ consecutiveZero: 3, alert: true }); // probe 不计，真零 3
+  });
+
+  it("未到阈值（<N）→ 不报", () => {
+    const runs = [ig(0, "done", 0), ig(1, "done", 0), ig(2, "done", 5)]; // 2 连零 + 基线，rounds=3
+    expect(evaluateZeroYield(runs, 3)).toMatchObject({ consecutiveZero: 2, hasBaseline: true, alert: false });
+  });
+
+  it("inserted=0 即算零产出（updated 不计，inserted 是新增数）", () => {
+    // 即便源在更新旧条目（updated>0），只要 inserted=0 仍算零产出——「无新内容」是要暴露的信号
+    const runs = [ig(0, "done", 0), ig(1, "done", 0), ig(2, "done", 0), ig(3, "done", 7)];
+    expect(evaluateZeroYield(runs, 3).alert).toBe(true);
   });
 });

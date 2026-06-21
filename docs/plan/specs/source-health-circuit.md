@@ -57,10 +57,10 @@
 
 ### 5. 按源零产出看门狗（治静默失败）
 
-- 需 ingest run 的 `inserted` 可回溯：**加 `run.inserted INTEGER` 独立列**（评审裁决，否决塞 run.cost JSON——污染成本语义）。CollectResult.inserted 已有，让 ingest 的 runJob 把它透传进 `finishRun`。旧行 NULL = 未知、不计入。
+- 需 ingest run 的 `inserted` 可回溯：**加 `run.inserted INTEGER` 独立列**（评审裁决，否决塞 run.cost JSON——污染成本语义）。CollectResult.inserted 已有，collectSource 在 runJob 完成后 `setRunInserted` 回填（probe run 不回填）。旧行 NULL = 未知、不计入。
 - 判据（评审改，降假阳）：**「历史有过稳定产出的源，突然连续 N 次（默认 5）done 但 inserted=0」**才告警——纯「连续 0」对生来稀疏源（owasp_llm 3 条属正常）高假阳。需先建立「该源有过产出」基线。
 - 动作：**按源告警，不自动停用**（0 产出≠源坏）。**与切片4 去重**：零产出只管「采集层成功但 inserted=0」；切片4 的「被采纳=0」是分析价值层、不重复告警。
-- 保守起步：先只上**看板标记**，自动告警待基线判据验证后再开。
+- **直接开告警（更新：原「先只看板」已据实改）**：当初「先只看板」是怕纯连零的假阳。但本切片落地了**双重防噪**——① **产出基线**（owasp 等生来稀疏源 hasBaseline=false 永不报）+ ② **边沿触发**（`consecutiveZero === N` 那一刻只报一次、不每轮刷）。两者正是当初要「先验证」的判据，已设计到位且单测覆盖，故**直接开自动告警**、不再等看板。看板标记并入切片4「源健康看板」一并做（本切片不含 UI）。
 
 ## 验收标准 (AC)
 
@@ -69,7 +69,7 @@
 - [ ] AC3: 熔断源被半开探测命中、collectSource 成功 → 自动复活（clearCircuit）+ 告警；探测失败**不告警**、只更 last_probe_at；探测节流（每源每天≤1）+ 每轮探测数上限。
 - [ ] AC4: **人工管理优先**：① 人工停用（enabled=0 且 reason 非 circuit）永不被系统复活；② 人工把熔断源拉回 enabled=1 → 自动 clearCircuit、不留脏态、consecutiveFails 干净重数。
 - [ ] AC5: 复活后再失败**不会因旧 consecutiveFails 立即再熔断**（circuit_reset_at 锚定生效）。
-- [ ] AC6: 有产出基线的源连续 5 次 done+inserted=0 → 看板标记/告警；有产出即重置。
+- [ ] AC6: 有产出基线的源连续 N 次 done+inserted=0 → **告警一次（边沿==N）**；无基线（生来稀疏）不报；有产出即重置。看板标记并入切片4。
 - [ ] AC7: rss 网络瞬时失败重试后成功 → 不记 failed run（退避生效）。
 
 ## 非功能要求
@@ -90,7 +90,7 @@
 2. 据分布定标熔断阈值（2）+ 落 schema 新列。
 3. setCircuit/clearCircuit + circuit_reset_at 锚定（必修1/2）。
 4. 半开探测旁路（必修3：绕 notifyFailure + 超时 + 数量上限 + probe 标记）。
-5. 零产出看门狗（基线判据，先只看板）。
+5. 零产出看门狗（基线判据 + 边沿触发双重防噪，直接开告警；看板标记并入切片4）。
 
 ## 开放问题（已裁决，留痕）
 
