@@ -2,6 +2,7 @@
  *  返 { ok: true, value } | { ok: false, message }——调用方按 message 返 422。 */
 import { randomBytes } from "node:crypto";
 import { ARCHETYPE_VALUES, isArchetype } from "../topics/archetype.js";
+import { DOMAIN_VALUES, deriveFacetsFromIndustry, isValidFacet } from "../topics/facets.js";
 import type { Industry, Language, Source, Topic } from "../types.js";
 
 /** 自动生成 id 末尾 4 位随机十六进制（review #8b：替代 Date.now().toString(36).slice(-4)
@@ -66,6 +67,15 @@ export function validateTopicInput(body: unknown, opts: { existingId?: string } 
   if (!isArchetype(arch)) {
     return { ok: false, message: `archetype 必须是 ${[...ARCHETYPE_VALUES].join("/")}` };
   }
+  // ADR-0010 Step2a 分面标签：未提供则从 industry 派生（兼容旧客户端）；提供则逐个 app 校验。
+  let facets: string[];
+  if (o.facets === undefined) {
+    facets = deriveFacetsFromIndustry(ind as Industry);
+  } else if (Array.isArray(o.facets) && o.facets.every(isValidFacet)) {
+    facets = o.facets as string[];
+  } else {
+    return { ok: false, message: `facets 必须是合法分面标签数组（如 domain:${[...DOMAIN_VALUES].join("/domain:")}）` };
+  }
 
   return {
     ok: true,
@@ -75,6 +85,7 @@ export function validateTopicInput(body: unknown, opts: { existingId?: string } 
       brief_schedule: bs as Topic["brief_schedule"],
       enabled: o.enabled !== false,
       archetype: arch,
+      facets,
     },
   };
 }
