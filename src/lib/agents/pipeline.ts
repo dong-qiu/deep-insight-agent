@@ -3,13 +3,14 @@
  *  端到端需 ANTHROPIC_API_KEY，由团队/定时任务跑。 */
 import type { DB } from "../db/index.js";
 import { saveAnalysisBatch, saveValidationResult } from "../db/analysis.js";
+import { analysisCacheEnabled, recordAnalysisCache } from "../db/analysis-cache.js";
 import { makeConsistencyCache } from "../db/consistency-cache.js";
 import { getContentItem, getSource } from "../db/repos.js";
 import { saveReport } from "../db/reports.js";
 import { notifyFailure, notifyReport } from "../runtime/alert.js";
 import { runJob } from "../runtime/jobs.js";
 import type { AnalysisBatch, ContentItem, Report, Topic, ValidationResult } from "../types.js";
-import { analyze, type HistoricalEvent } from "./analyzer.js";
+import { analyze, analyzerCacheVersion, type HistoricalEvent } from "./analyzer.js";
 import { buildReport, type CitationDisplay } from "./report-gen.js";
 import { consistencyCacheVersion, isValidationDegraded, validateBatch } from "./validator.js";
 
@@ -25,6 +26,11 @@ export async function runAnalysis(
   const { result } = await runJob(db, { kind: "analyze", target: { topic_id: topic.id } }, async (ctx) => {
     const batch = await analyze(topic, items, window, ctx.recordCost, { history: opts.history });
     saveAnalysisBatch(db, batch);
+    // ADR-0009 切片1（行为中性·只写不读）：旁路记录每 item 的分析结果 + 量化跨日重析命中率。
+    // 在 analyze/落库**之后**，不改任何输出；recordAnalysisCache 内部全捕获、绝不连累管线。
+    if (analysisCacheEnabled()) {
+      recordAnalysisCache(db, topic.id, items, batch.insights, analyzerCacheVersion());
+    }
     return batch;
   });
   return result;
