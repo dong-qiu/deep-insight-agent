@@ -17,6 +17,9 @@ system:
 
 # 行业级宽主题（每行业 1 个），吃下该行业全部源；id 保持稳定（被源/评测/历史报告引用，不可改）。
 # 关键词放宽到覆盖行业全貌，analyzer 据此在宽源里提炼本行业相关洞察。
+# 例外：t_ai_industry（AI 产业动态）是 ai-swe 行业下的第二个、窄主题——专收泛 AI 厂商 PR
+# （如 OpenAI News）：这类源信号广但与「软件工程」相关度低，挂 t_code_agents 从不被引（贡献 0），
+# 故单列归口，让其在对的池子里竞争（2026-06-22；复用 industry=ai-swe 以免新增 industry 枚举的 schema 迁移）。
 defaultTopics:
   - id: t_code_agents
     name: AI 时代的软件工程
@@ -36,10 +39,21 @@ defaultTopics:
     language: zh
     brief_schedule: daily
     enabled: true
+  # 泛 AI 厂商动态（窄主题，例外见上）：归口 OpenAI News 等泛 PR 源。industry 复用 ai-swe。
+  - id: t_ai_industry
+    name: AI 产业动态
+    keywords:
+      [OpenAI, Anthropic, GPT, ChatGPT, 模型发布, 产品发布, API, 开发者工具, AI 融资, 监管政策,
+       行业应用, 大模型, AI 商业化, 算力]
+    industry: ai-swe
+    language: zh
+    brief_schedule: daily
+    enabled: true
 
 # MVP 首版接入清单（source-feasibility.md 末节，17 ✅ 推荐源 → 23 feed）。
 # 全部走现有 rss / arxiv 适配器（GitHub Atom、播客 RSS 均由 rss 适配器的 Atom/RSS 分支处理）。
-# topic_ids 暂按行业映射到现有 2 主题；主题偏窄、未充分利用源广度，待后续按行业扩主题（见 roadmap）。
+# topic_ids 按主题映射：两个行业宽主题（t_code_agents / t_prompt_injection）+ 窄主题例外
+# t_ai_industry（归口泛 AI 厂商 PR）；宽主题偏窄、未充分利用源广度，待后续按行业扩主题（见 roadmap）。
 defaultSources:
   # ── AI 时代的软件工程（ai-swe → t_code_agents）──
   - id: src_hn
@@ -79,7 +93,9 @@ defaultSources:
     type: rss
     endpoint: https://openai.com/news/rss.xml
     industry: ai-swe
-    topic_ids: [t_code_agents]
+    # 泛 AI 厂商 PR（健康/化学/产品），176 字 SPA 摘要 full_text 救不了；挂 t_code_agents 从不被引（贡献 0）。
+    # 2026-06-22 改归口到 t_ai_industry（AI 产业动态），让它在对的主题池里竞争。
+    topic_ids: [t_ai_industry]
     fetch_interval: 6h
     enabled: true
   - id: src_google_research
