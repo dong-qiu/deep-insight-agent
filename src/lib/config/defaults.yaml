@@ -90,6 +90,9 @@ defaultSources:
     topic_ids: [t_code_agents]
     fetch_interval: 6h
     enabled: true
+    # RSS 仅给摘要(~20字)→ 按 URL 抓文章页全文(ADR-0008 决定③);正文容器 class=rich_text(生产实测)
+    fetch_mode: full_text
+    content_container: rich_text
   - id: src_githubnext
     name: GitHub Next
     type: rss
@@ -148,6 +151,9 @@ defaultSources:
     topic_ids: [t_code_agents]
     fetch_interval: 6h
     enabled: true
+    # RSS 仅给标题(~17字)→ 按 URL 抓文章页全文(ADR-0008 决定③);正文容器 class=article(生产实测 47→4926字)
+    fetch_mode: full_text
+    content_container: article
   - id: src_infoq_ai
     name: InfoQ AI/ML/Data
     type: rss
