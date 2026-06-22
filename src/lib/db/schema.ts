@@ -50,6 +50,8 @@ CREATE TABLE IF NOT EXISTS topic (
   language       TEXT NOT NULL CHECK (language IN ('zh','en','mixed')),
   brief_schedule TEXT NOT NULL CHECK (brief_schedule IN ('daily','weekly')),
   enabled        INTEGER NOT NULL DEFAULT 1,
+  -- ADR-0010 行为原型：无 DB CHECK（app 层 ARCHETYPE_VALUES 校验，加原型零迁移，reference-data 模式）
+  archetype      TEXT NOT NULL DEFAULT 'deep_vertical',
   created_at     TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
 );

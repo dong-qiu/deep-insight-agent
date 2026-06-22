@@ -85,6 +85,8 @@ function migrate(db: DB): void {
   ensureColumn(db, "source", "last_probe_at", "last_probe_at TEXT");
   // ingest 本轮入库条数（切片3b-3 零产出看门狗）：旧 run NULL=未知不计入；新 ingest run 由 collectSource 回填。
   ensureColumn(db, "run", "inserted", "inserted INTEGER");
+  // 主题行为原型（ADR-0010）：存量主题派生默认 deep_vertical=现状行为，零回填。无 CHECK（app 校验）。
+  ensureColumn(db, "topic", "archetype", "archetype TEXT NOT NULL DEFAULT 'deep_vertical'");
 }
 
 let _db: DB | null = null;
