@@ -236,6 +236,19 @@ CREATE TABLE IF NOT EXISTS consistency_cache (
   created_at          TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- 增量分析缓存（ADR-0009 切片1，行为中性·只写不读）：记录每 (item content_hash, topic, analyzer 版本)
+-- 产出的单源洞察 + 同键重复出现次数（hit_count = would-be cache hit），用于量化「同内容跨日重析」冗余/命中率。
+-- 切片1 不读不复用（LLM 照常跑、输出不变）；切片2 才据此跳过重析。版本隔离 + TTL 同 consistency_cache。
+CREATE TABLE IF NOT EXISTS analysis_cache (
+  key            TEXT PRIMARY KEY,            -- sha256(analyzer_version ⊥ topic_id ⊥ content_hash)
+  topic_id       TEXT NOT NULL,
+  content_hash   TEXT NOT NULL,
+  insights_json  TEXT NOT NULL,               -- 该 item 的单源洞察数组（首写定；空数组=分析了但没产出）
+  hit_count      INTEGER NOT NULL DEFAULT 0,  -- 同键重复写入次数 = would-be 命中（切片1 命中率度量）
+  created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+  last_seen      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- 报告页内追问（Follow-up Q&A，A4）：用户就某报告内容提问 → 受限于该报告引用池的可溯源回答。
 -- thread_id / turn_index 为多轮升级预留：v1 单轮恒 thread_id=自身id、turn_index=0；
 -- 升级多轮时按 thread_id 归并、turn_index 排序，无需迁移。
