@@ -148,11 +148,12 @@ export function getSourceBodyKinds(db: DB): Map<string, Set<string>> {
 // ── Topic ──
 export function insertTopic(db: DB, t: Topic): void {
   db.prepare(
-    `INSERT INTO topic (id,name,keywords,industry,language,brief_schedule,enabled)
-     VALUES (@id,@name,@keywords,@industry,@language,@brief_schedule,@enabled)`,
+    `INSERT INTO topic (id,name,keywords,industry,language,brief_schedule,enabled,archetype)
+     VALUES (@id,@name,@keywords,@industry,@language,@brief_schedule,@enabled,@archetype)`,
   ).run({
     id: t.id, name: t.name, keywords: j(t.keywords), industry: t.industry,
     language: t.language, brief_schedule: t.brief_schedule, enabled: b(t.enabled),
+    archetype: t.archetype ?? "deep_vertical", // 写入边界兜底（fixture 可省，DB NOT NULL）
   });
 }
 export function getTopic(db: DB, id: string): Topic | null {
@@ -168,17 +169,20 @@ function rowToTopic(r: Record<string, unknown>): Topic {
     id: r.id as string, name: r.name as string, keywords: JSON.parse(r.keywords as string),
     industry: r.industry as Topic["industry"], language: r.language as Topic["language"],
     brief_schedule: r.brief_schedule as Topic["brief_schedule"], enabled: r.enabled === 1,
+    // ADR-0010：存量行经 ensureColumn 默认 deep_vertical；仍兜底防 NULL（旧库/异常）。
+    archetype: (r.archetype as Topic["archetype"]) ?? "deep_vertical",
   };
 }
 /** 更新 topic。返 changes 数。 */
 export function updateTopic(db: DB, t: Topic): number {
   const r = db.prepare(
     `UPDATE topic SET name=@name,keywords=@keywords,industry=@industry,
-       language=@language,brief_schedule=@brief_schedule,enabled=@enabled
+       language=@language,brief_schedule=@brief_schedule,enabled=@enabled,archetype=@archetype
      WHERE id=@id`,
   ).run({
     id: t.id, name: t.name, keywords: j(t.keywords), industry: t.industry,
     language: t.language, brief_schedule: t.brief_schedule, enabled: b(t.enabled),
+    archetype: t.archetype ?? "deep_vertical", // 写入边界兜底
   });
   return r.changes;
 }

@@ -57,6 +57,37 @@ describe("rankAndDiversify", () => {
     ];
     expect(rankAndDiversify(items, kws, 2)[0].id).toBe("paper");
   });
+
+  // ADR-0010 horizontal_pulse：relevanceFloor 四态 + floor 保护
+  describe("relevanceFloor（horizontal_pulse 硬下限，ADR-0010）", () => {
+    it("候选 ≤ limit 也跑过滤：horizontal 砍掉 0 命中项（vs 软策略整池返回）", () => {
+      const items = [ci("rel", "s1", "coding agent study"), ci("noise", "s2", "image model launch")];
+      // 软策略（无 floor）：≤ limit 整池返回（含 noise）
+      expect(rankAndDiversify(items, KW, 5).map((x) => x.id)).toEqual(["rel", "noise"]);
+      // 硬下限 floor=1：noise（0 命中）被砍，只剩 rel
+      expect(rankAndDiversify(items, KW, 5, { relevanceFloor: 1 }).map((x) => x.id)).toEqual(["rel"]);
+    });
+
+    it("deep_vertical（无 floor）保留 0 命中项（护研究源）", () => {
+      const items = [ci("rel", "s1", "coding agent"), ci("zero", "s2", "unrelated")];
+      expect(rankAndDiversify(items, KW, 5).map((x) => x.id)).toContain("zero");
+    });
+
+    it("过滤后不足 limit：返回过滤后的子集（不兜底捞回离题项）", () => {
+      const items = [
+        ci("rel", "s1", "coding agent swe-bench"),
+        ci("n1", "s2", "noise a"), ci("n2", "s3", "noise b"), ci("n3", "s4", "noise c"),
+      ];
+      const out = rankAndDiversify(items, KW, 4, { relevanceFloor: 1 });
+      expect(out.map((x) => x.id)).toEqual(["rel"]); // 只 1 条相关，不被 n* 兜底补齐
+    });
+
+    it("floor 保护：全部 0 命中则回退软策略（不产 0 条 → 防空 brief）", () => {
+      const items = [ci("a", "s1", "foo"), ci("b", "s2", "bar")];
+      const out = rankAndDiversify(items, KW, 5, { relevanceFloor: 1 });
+      expect(out.length).toBe(2); // 滤空 → 回退、保留全部
+    });
+  });
 });
 
 describe("reportPlan（冷启动 → 首版综述）", () => {

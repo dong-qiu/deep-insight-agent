@@ -1,6 +1,7 @@
 /** 设置页 CRUD 输入校验（B-3）：纯函数，无 IO，可单测。
  *  返 { ok: true, value } | { ok: false, message }——调用方按 message 返 422。 */
 import { randomBytes } from "node:crypto";
+import { ARCHETYPE_VALUES, isArchetype } from "../topics/archetype.js";
 import type { Industry, Language, Source, Topic } from "../types.js";
 
 /** 自动生成 id 末尾 4 位随机十六进制（review #8b：替代 Date.now().toString(36).slice(-4)
@@ -60,6 +61,11 @@ export function validateTopicInput(body: unknown, opts: { existingId?: string } 
   if (!BRIEF_SCHEDULES.has(bs as Topic["brief_schedule"])) {
     return { ok: false, message: "brief_schedule 必须是 daily/weekly" };
   }
+  // ADR-0010 行为原型：缺省 deep_vertical（= 现状行为）；app 层校验（无 DB CHECK）。
+  const arch = typeof o.archetype === "string" ? o.archetype : "deep_vertical";
+  if (!isArchetype(arch)) {
+    return { ok: false, message: `archetype 必须是 ${[...ARCHETYPE_VALUES].join("/")}` };
+  }
 
   return {
     ok: true,
@@ -68,6 +74,7 @@ export function validateTopicInput(body: unknown, opts: { existingId?: string } 
       industry: ind as Industry, language: lang as Language,
       brief_schedule: bs as Topic["brief_schedule"],
       enabled: o.enabled !== false,
+      archetype: arch,
     },
   };
 }

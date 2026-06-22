@@ -24,6 +24,8 @@ export const TopicConfigSchema = z.object({
   language: z.enum(["zh", "en", "mixed"]),
   brief_schedule: z.enum(["daily", "weekly"]),
   enabled: z.boolean().default(true),
+  // ADR-0010 行为原型；缺省 deep_vertical（= 现状行为），defaults.yaml 可显式标 horizontal_pulse。
+  archetype: z.enum(["deep_vertical", "horizontal_pulse"]).default("deep_vertical"),
 });
 
 export const AppConfigSchema = z.object({

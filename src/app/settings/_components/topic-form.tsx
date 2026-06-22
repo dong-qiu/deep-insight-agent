@@ -10,6 +10,7 @@
  *  显示同步走 raw（避免 round-trip 截断中文/空格）。 */
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { ARCHETYPE_VALUES } from "../../../lib/topics/archetype.js";
 import type { Topic } from "../../../lib/types.js";
 import { useSettingsStatus } from "./settings-status.js";
 
@@ -27,9 +28,9 @@ export function TopicForm({
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [form, setForm] = useState<Omit<Topic, "keywords">>(
-    initial ? { ...initial } : {
+    initial ? { ...initial, archetype: initial.archetype ?? "deep_vertical" } : {
       id: "", name: "", industry: "ai-swe", language: "zh",
-      brief_schedule: "daily", enabled: true,
+      brief_schedule: "daily", enabled: true, archetype: "deep_vertical",
     },
   );
   // keywords 单独 raw string state，避免 round-trip trim 吃空格 / 中文
@@ -82,6 +83,9 @@ export function TopicForm({
       <label>行业 <select value={form.industry} onChange={(e) => setForm({ ...form, industry: e.target.value as Topic["industry"] })}>
         <option value="ai-swe">ai-swe</option>
         <option value="ai-security">ai-security</option>
+      </select></label>
+      <label>原型 <select value={form.archetype} onChange={(e) => setForm({ ...form, archetype: e.target.value as Topic["archetype"] })}>
+        {ARCHETYPE_VALUES.map((a) => <option key={a} value={a}>{a}</option>)}
       </select></label>
       <label>语言 <select value={form.language} onChange={(e) => setForm({ ...form, language: e.target.value as Topic["language"] })}>
         <option value="zh">zh</option>

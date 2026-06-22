@@ -32,6 +32,10 @@ export interface Source {
   last_probe_at?: string | null; // 半开探测时间（3b-2）：节流，每源每天最多探一次
 }
 
+/** 主题行为原型（ADR-0010）：决定采/筛/选材策略。deep_vertical=深挖（软相关、护研究源）；
+ *  horizontal_pulse=态势感知（宽源、相关性硬下限砍纯噪声）。profile 见 lib/topics/archetype.ts。 */
+export type Archetype = "deep_vertical" | "horizontal_pulse";
+
 /** 用户订阅主题（architecture 数据模型 · Topic） */
 export interface Topic {
   id: string;
@@ -41,6 +45,9 @@ export interface Topic {
   language: Language;
   brief_schedule: "daily" | "weekly";
   enabled: boolean;
+  /** ADR-0010 行为原型。**DB 层 NOT NULL DEFAULT 'deep_vertical'**；TS 设可选仅为兼容存量手搭 fixture——
+   *  运行时 rowToTopic/validate/config 总赋值，写入边界(insert/update)兜底默认，读取(archetypeProfile)容 undefined。 */
+  archetype?: Archetype;
 }
 
 /** 采集产出的标准化内容（architecture 数据模型 · ContentItem） */

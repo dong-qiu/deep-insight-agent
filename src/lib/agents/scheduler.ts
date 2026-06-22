@@ -12,6 +12,7 @@ import { getBudgetStatus } from "../runtime/cost-guard.js";
 import { runLogger } from "../runtime/logger.js";
 import { circuitConfig, evaluateCircuit, evaluateZeroYield } from "../runtime/run-stats.js";
 import type { ContentItem, Report, Run, Topic } from "../types.js";
+import { archetypeProfile } from "../topics/archetype.js";
 import { collectSource } from "./collector.js";
 import { runAnalysis, runReportGen, runValidation } from "./pipeline.js";
 
@@ -67,20 +68,30 @@ function relevanceScore(item: ContentItem, tokens: string[]): number {
 }
 
 /** 纯函数：从候选池按「相关度优先 + 来源多样」选出 ≤ limit 条用于分析。
- *  - 全量按相关度（token 命中数）降序，同分保持 recency；不再硬过滤 0 命中——
+ *  - 全量按相关度（token 命中数）降序，同分保持 recency；默认**不硬过滤 0 命中**（软策略，deep_vertical）——
  *    研究源（如 arXiv）即便措辞不同也多能命中 token；万一全 0 也由来源多样化兜底纳入；
  *  - 每源最多 ceil(limit/3) 条，避免高产源（如 OpenAI 全历史 backlog）独占切片淹没相关内容；
- *  - 名额没填满则放开每源上限补齐。 */
+ *  - 名额没填满则放开每源上限补齐。
+ *
+ *  ADR-0010：`opts.relevanceFloor`（horizontal_pulse 主题给）= **相关性硬下限**——命中 token 数 < floor 的
+ *  候选先滤掉再排选（砍纯噪声）。两条保护：① **滤空回退**（全被滤则退回软策略，避免 0 条 → `skipped-no-content`/空 brief）；
+ *  ② cap+兜底在**已滤池**上进行（兜底不会捞回被滤离题项，故无需「跳兜底」、也不损 brief 厚度）。
+ *  软策略（无 floor）下「候选 ≤ limit 整池返回」短路保留（行为不变）。 */
 export function rankAndDiversify(
   candidates: ContentItem[],
   keywords: string[],
   limit: number,
+  opts: { relevanceFloor?: number } = {},
 ): ContentItem[] {
-  if (candidates.length <= limit) return candidates;
+  const { relevanceFloor } = opts;
+  if (relevanceFloor === undefined && candidates.length <= limit) return candidates; // 软策略短路（护研究源）
   const tokens = keywordTokens(keywords);
-  const ranked = candidates
-    .map((it, i) => ({ it, s: relevanceScore(it, tokens), i }))
-    .sort((a, b) => b.s - a.s || a.i - b.i);
+  let scored = candidates.map((it, i) => ({ it, s: relevanceScore(it, tokens), i }));
+  if (relevanceFloor !== undefined) {
+    const kept = scored.filter((x) => x.s >= relevanceFloor);
+    scored = kept.length > 0 ? kept : scored; // floor 保护：滤空则回退软策略（不产 0 条）
+  }
+  const ranked = scored.sort((a, b) => b.s - a.s || a.i - b.i);
 
   const perSourceCap = Math.max(2, Math.ceil(limit / 3));
   const bySource = new Map<string, number>();
@@ -107,11 +118,13 @@ export function rankAndDiversify(
   return out;
 }
 
-/** 取某主题窗口内候选（recency 前 candidatePool 条）→ 相关+多样选 ≤ limit 条喂给 analyzer。 */
+/** 取某主题窗口内候选（recency 前 candidatePool 条）→ 相关+多样选 ≤ limit 条喂给 analyzer。
+ *  ADR-0010：按 topic.archetype 取 profile.relevanceFloor 驱动 rankAndDiversify（horizontal_pulse 砍纯噪声）；
+ *  **冷启动（initial_digest 首报）豁免硬下限**（用软策略给足份量，避免新横向主题首报被掐空）。 */
 export function selectAnalysisItems(
   db: DB,
   topic: Topic,
-  opts: { since: string; limit?: number; candidatePool?: number },
+  opts: { since: string; limit?: number; candidatePool?: number; coldStart?: boolean },
 ): ContentItem[] {
   const limit = opts.limit ?? 15;
   // 候选池放大到覆盖 F1 后全行业量（每源 ≤50 × 源数），避免高产源按 recency 把研究源（arXiv）
@@ -120,7 +133,9 @@ export function selectAnalysisItems(
     since: opts.since,
     limit: opts.candidatePool ?? 800,
   });
-  return rankAndDiversify(candidates, topic.keywords, limit);
+  // ADR-0010：冷启动豁免硬下限（首报用软策略）；否则按 archetype profile 取 relevanceFloor。
+  const relevanceFloor = opts.coldStart ? undefined : archetypeProfile(topic.archetype).relevanceFloor;
+  return rankAndDiversify(candidates, topic.keywords, limit, { relevanceFloor });
 }
 
 /** 触发一次完整管线。库为空时 getEffectiveSources 会先播种默认 Topic/Source（首跑自举）。 */
@@ -269,7 +284,10 @@ export async function runScheduledPipeline(
       { windowHours: coldWindowHours, items: coldItems },
     );
     const since = new Date(end - plan.windowHours * 3_600_000).toISOString();
-    const items = selectAnalysisItems(db, topic, { since, limit: plan.items });
+    // ADR-0010：initial_digest（冷启动首报）豁免 archetype 硬下限——给新横向主题足量首报。
+    const items = selectAnalysisItems(db, topic, {
+      since, limit: plan.items, coldStart: plan.type === "initial_digest",
+    });
     if (items.length === 0) {
       summary.topics.push({ topic: topic.id, items: 0, status: "skipped-no-content", type: plan.type });
       continue;
@@ -348,7 +366,11 @@ export async function runPipelineForTopic(
   const endIso = new Date(end).toISOString();
   const since = new Date(end - windowHours * 3_600_000).toISOString();
 
-  const items = selectAnalysisItems(db, topic, { since, limit: itemsLimit });
+  // ADR-0010：与定时路径口径一致——topic 首报（无历史报告）豁免 archetype 硬下限，给足份量首报；
+  // 已有历史的深挖则套用 horizontal 相关性过滤（用户要的是相关深挖、非噪声）。floor-empty 保护防 0 条。
+  const items = selectAnalysisItems(db, topic, {
+    since, limit: itemsLimit, coldStart: !topicHasReport(db, topic.id),
+  });
   if (items.length === 0) {
     throw new Error(`窗口 ${windowHours}h 内无可分析内容（请先触发 /api/cron 采集或扩大窗口）`);
   }

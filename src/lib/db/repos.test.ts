@@ -100,6 +100,7 @@ it("Topic 往返 + enabledOnly 过滤", () => {
   const t: Topic = {
     id: "t1", name: "Code Agent", keywords: ["coding agent", "swe"],
     industry: "ai-swe", language: "zh", brief_schedule: "daily", enabled: true,
+    archetype: "deep_vertical", // ADR-0010：往返须含（insert 默认 deep_vertical，读回带它）
   };
   insertTopic(db, t);
   insertTopic(db, { ...t, id: "t2", enabled: false });
