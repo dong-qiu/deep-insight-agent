@@ -2,6 +2,7 @@
  * 实体仓储（CRUD）。JSON 字段在此序列化/反序列化，bool ↔ 0/1。
  * 增量1 覆盖 Source / Topic / ContentItem / Run；其余实体随后续增量加。
  */
+import { deriveFacetsFromIndustry } from "../topics/facets.js";
 import type { ContentItem, Cost, Run, Source, Topic } from "../types.js";
 import type { DB } from "./index.js";
 
@@ -148,12 +149,13 @@ export function getSourceBodyKinds(db: DB): Map<string, Set<string>> {
 // ── Topic ──
 export function insertTopic(db: DB, t: Topic): void {
   db.prepare(
-    `INSERT INTO topic (id,name,keywords,industry,language,brief_schedule,enabled,archetype)
-     VALUES (@id,@name,@keywords,@industry,@language,@brief_schedule,@enabled,@archetype)`,
+    `INSERT INTO topic (id,name,keywords,industry,language,brief_schedule,enabled,archetype,facets)
+     VALUES (@id,@name,@keywords,@industry,@language,@brief_schedule,@enabled,@archetype,@facets)`,
   ).run({
     id: t.id, name: t.name, keywords: j(t.keywords), industry: t.industry,
     language: t.language, brief_schedule: t.brief_schedule, enabled: b(t.enabled),
     archetype: t.archetype ?? "deep_vertical", // 写入边界兜底（fixture 可省，DB NOT NULL）
+    facets: j(t.facets ?? deriveFacetsFromIndustry(t.industry)), // 边界兜底：缺省从 industry 派生
   });
 }
 export function getTopic(db: DB, id: string): Topic | null {
@@ -171,18 +173,32 @@ function rowToTopic(r: Record<string, unknown>): Topic {
     brief_schedule: r.brief_schedule as Topic["brief_schedule"], enabled: r.enabled === 1,
     // ADR-0010：存量行经 ensureColumn 默认 deep_vertical；仍兜底防 NULL（旧库/异常）。
     archetype: (r.archetype as Topic["archetype"]) ?? "deep_vertical",
+    // ADR-0010 Step2a：facets 空（存量默认 '[]'）→ 从 industry 派生（零回填、派生即正确）。
+    facets: parseFacetsOrDerive(r.facets, r.industry as Topic["industry"]),
   };
+}
+
+/** rowToTopic 用：facets JSON 非空则解析，空/异常则从 industry 派生（Step2a 零回填）。 */
+function parseFacetsOrDerive(raw: unknown, industry: Topic["industry"]): string[] {
+  try {
+    const parsed = typeof raw === "string" ? JSON.parse(raw) : [];
+    if (Array.isArray(parsed) && parsed.length > 0) return parsed as string[];
+  } catch {
+    /* 落到派生 */
+  }
+  return deriveFacetsFromIndustry(industry);
 }
 /** 更新 topic。返 changes 数。 */
 export function updateTopic(db: DB, t: Topic): number {
   const r = db.prepare(
     `UPDATE topic SET name=@name,keywords=@keywords,industry=@industry,
-       language=@language,brief_schedule=@brief_schedule,enabled=@enabled,archetype=@archetype
+       language=@language,brief_schedule=@brief_schedule,enabled=@enabled,archetype=@archetype,facets=@facets
      WHERE id=@id`,
   ).run({
     id: t.id, name: t.name, keywords: j(t.keywords), industry: t.industry,
     language: t.language, brief_schedule: t.brief_schedule, enabled: b(t.enabled),
     archetype: t.archetype ?? "deep_vertical", // 写入边界兜底
+    facets: j(t.facets ?? deriveFacetsFromIndustry(t.industry)),
   });
   return r.changes;
 }

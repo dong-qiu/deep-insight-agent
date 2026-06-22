@@ -87,6 +87,8 @@ function migrate(db: DB): void {
   ensureColumn(db, "run", "inserted", "inserted INTEGER");
   // 主题行为原型（ADR-0010）：存量主题派生默认 deep_vertical=现状行为，零回填。无 CHECK（app 校验）。
   ensureColumn(db, "topic", "archetype", "archetype TEXT NOT NULL DEFAULT 'deep_vertical'");
+  // 主题分面标签（ADR-0010 Step2a）：存量默认 '[]'，rowToTopic 读时空则从 industry 派生（零回填）。
+  ensureColumn(db, "topic", "facets", "facets TEXT NOT NULL DEFAULT '[]'");
 }
 
 let _db: DB | null = null;

@@ -101,11 +101,26 @@ it("Topic 往返 + enabledOnly 过滤", () => {
     id: "t1", name: "Code Agent", keywords: ["coding agent", "swe"],
     industry: "ai-swe", language: "zh", brief_schedule: "daily", enabled: true,
     archetype: "deep_vertical", // ADR-0010：往返须含（insert 默认 deep_vertical，读回带它）
+    facets: ["domain:ai-swe"], // ADR-0010 Step2a：空 facets 读回时从 industry 派生 domain:ai-swe，往返须含
   };
   insertTopic(db, t);
   insertTopic(db, { ...t, id: "t2", enabled: false });
   expect(getTopic(db, "t1")).toEqual(t);
   expect(getTopic(db, "t2")?.enabled).toBe(false);
+});
+
+it("Topic.facets 坏 JSON / 空数组均回退到从 industry 派生（零回填）", () => {
+  const t: Topic = {
+    id: "tf", name: "X", keywords: ["k"], industry: "ai-security",
+    language: "zh", brief_schedule: "daily", enabled: true, archetype: "deep_vertical",
+    facets: ["domain:ai-security"],
+  };
+  insertTopic(db, t);
+  // 模拟存量坏值：直接把 facets 列写成非法 JSON 与空数组，读回都应派生 domain:ai-security
+  for (const bad of ["not json", "[]"]) {
+    db.prepare("UPDATE topic SET facets=? WHERE id='tf'").run(bad);
+    expect(getTopic(db, "tf")?.facets).toEqual(["domain:ai-security"]);
+  }
 });
 
 describe("ContentItem", () => {

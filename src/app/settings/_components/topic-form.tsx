@@ -11,6 +11,7 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { ARCHETYPE_VALUES } from "../../../lib/topics/archetype.js";
+import { DOMAIN_VALUES, domainFacet } from "../../../lib/topics/facets.js";
 import type { Topic } from "../../../lib/types.js";
 import { useSettingsStatus } from "./settings-status.js";
 
@@ -28,11 +29,15 @@ export function TopicForm({
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [form, setForm] = useState<Omit<Topic, "keywords">>(
-    initial ? { ...initial, archetype: initial.archetype ?? "deep_vertical" } : {
+    initial ? { ...initial, archetype: initial.archetype ?? "deep_vertical", facets: initial.facets ?? [] } : {
       id: "", name: "", industry: "ai-swe", language: "zh",
-      brief_schedule: "daily", enabled: true, archetype: "deep_vertical",
+      brief_schedule: "daily", enabled: true, archetype: "deep_vertical", facets: [],
     },
   );
+  const facets = form.facets ?? [];
+  function toggleFacet(f: string): void {
+    setForm({ ...form, facets: facets.includes(f) ? facets.filter((x) => x !== f) : [...facets, f] });
+  }
   // keywords 单独 raw string state，避免 round-trip trim 吃空格 / 中文
   const [keywordsRaw, setKeywordsRaw] = useState((initial?.keywords ?? []).join(", "));
 
@@ -87,6 +92,14 @@ export function TopicForm({
       <label>原型 <select value={form.archetype} onChange={(e) => setForm({ ...form, archetype: e.target.value as Topic["archetype"] })}>
         {ARCHETYPE_VALUES.map((a) => <option key={a} value={a}>{a}</option>)}
       </select></label>
+      <label style={{ alignItems: "flex-start" }}>分面（domain）<span style={{ display: "flex", gap: ".75rem", flexWrap: "wrap" }}>
+        {DOMAIN_VALUES.map((d) => {
+          const f = domainFacet(d);
+          return <label key={d} style={{ fontWeight: "normal" }}>
+            <input type="checkbox" checked={facets.includes(f)} onChange={() => toggleFacet(f)} /> {d}
+          </label>;
+        })}
+      </span></label>
       <label>语言 <select value={form.language} onChange={(e) => setForm({ ...form, language: e.target.value as Topic["language"] })}>
         <option value="zh">zh</option>
         <option value="en">en</option>

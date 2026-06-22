@@ -31,6 +31,7 @@ defaultTopics:
     brief_schedule: daily
     enabled: true
     archetype: deep_vertical
+    facets: [domain:ai-swe]
   - id: t_prompt_injection
     name: AI 时代的安全
     keywords:
@@ -41,6 +42,7 @@ defaultTopics:
     brief_schedule: daily
     enabled: true
     archetype: deep_vertical
+    facets: [domain:ai-security]
   # 泛 AI 厂商动态（窄主题，例外见上）：归口 OpenAI News 等泛 PR 源。industry 复用 ai-swe。
   - id: t_ai_industry
     name: AI 产业动态
@@ -52,6 +54,7 @@ defaultTopics:
     brief_schedule: daily
     enabled: true
     archetype: horizontal_pulse  # ADR-0010：态势感知型——相关性硬下限砍纯噪声
+    facets: [domain:ai-industry]  # 产业域（独立于 ai-swe/ai-security；industry 字段塞不下，正是 facets 之因）
 
 # MVP 首版接入清单（source-feasibility.md 末节，17 ✅ 推荐源 → 23 feed）。
 # 全部走现有 rss / arxiv 适配器（GitHub Atom、播客 RSS 均由 rss 适配器的 Atom/RSS 分支处理）。

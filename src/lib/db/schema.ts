@@ -52,6 +52,8 @@ CREATE TABLE IF NOT EXISTS topic (
   enabled        INTEGER NOT NULL DEFAULT 1,
   -- ADR-0010 行为原型：无 DB CHECK（app 层 ARCHETYPE_VALUES 校验，加原型零迁移，reference-data 模式）
   archetype      TEXT NOT NULL DEFAULT 'deep_vertical',
+  -- ADR-0010 Step2a 分面标签（JSON 数组，如 ["domain:ai-swe"]）：空时 rowToTopic 从 industry 派生。Step2b 迁 report 筛选。
+  facets         TEXT NOT NULL DEFAULT '[]',
   created_at     TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
 );

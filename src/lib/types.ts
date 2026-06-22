@@ -48,6 +48,9 @@ export interface Topic {
   /** ADR-0010 行为原型。**DB 层 NOT NULL DEFAULT 'deep_vertical'**；TS 设可选仅为兼容存量手搭 fixture——
    *  运行时 rowToTopic/validate/config 总赋值，写入边界(insert/update)兜底默认，读取(archetypeProfile)容 undefined。 */
   archetype?: Archetype;
+  /** ADR-0010 分面标签（Step2a），如 `["domain:ai-swe"]`，多值。DB NOT NULL DEFAULT '[]'；
+   *  TS 可选仅兼容 fixture——rowToTopic 空时从 industry 派生、validate/config 总赋值。Step2b 才迁 report 库筛选。 */
+  facets?: string[];
 }
 
 /** 采集产出的标准化内容（architecture 数据模型 · ContentItem） */
