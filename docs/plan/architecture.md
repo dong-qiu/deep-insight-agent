@@ -106,6 +106,26 @@ Source ─采集▶ ContentItem ─分析▶ AnalysisBatch(Insight+Citation) ─
 > text / object / `T[]`），最终以 develop 阶段 TS 类型为准。
 > **必填**列：Y = 字段必须存在且非空；N = 可空 / 可缺省；数组型 Y 表示字段必须存在（可为空数组）。
 
+### 分类字段总览（ADR-0010）
+
+跨实体的「分类相关」字段一览，避免散落各表难以对齐。`facets`/`domain` 是**领域分类的唯一事实源**
+（ADR-0010 Step2c 起，旧单值 `industry` 已彻底移除）；词表落代码常量（`lib/topics/facets.ts` /
+`archetype.ts`），加值零迁移、app 层校验、无 DB CHECK。
+
+| 维度 | 字段 | 载体实体 | 取值 / 词表 | 角色 |
+|---|---|---|---|---|
+| **路由** | `topic_id(s)` | Source / ContentItem / Insight / Report / ReportIndex | topic 主键 | 骨架：源配 `topic_ids` → 采集给内容烙 `topic_ids` → 报告按 topic 生成/筛 |
+| **领域** | `facets` (`domain:*`) | Topic / ReportIndex | `domain:ai-swe` / `ai-security` / `ai-industry`（多值，`DOMAIN_VALUES`） | 领域分类**唯一维度**；报告库筛选/展示。**源无此字段**，其域由 topic 派生（`sourceDomains`） |
+| **行为** | `archetype` | Topic | `deep_vertical` / `horizontal_pulse`（`ARCHETYPE_REGISTRY`） | 行为档（采/筛/选材策略），与领域正交，非内容分类 |
+| **内容标签** | `tags` | ContentItem / Insight / ReportIndex | 自由词表（analyzer 抽取） | 报告库「标签」筛选 |
+| **实体** | `entity_names` | ReportIndex（聚合自 `Entity`） | `{name, type: organization/person/project/product}` | 报告库「实体」筛选 + 主题页关键实体 |
+| **报告类型** | `type` | Report / ReportIndex | `brief` / `deep_dive` / `initial_digest` | 报告类型筛选 |
+| **料源形态** | `body_kind` | ContentItem | `article` / `show_notes` / `transcript`（ADR-0007） | 内容形态（影响渲染/分析），非领域分类 |
+| **语言** | `language` | Topic / ContentItem | `zh` / `en` / `mixed` | 语言维度 |
+
+> 一句话：「谁的内容」走 `topic_id(s)`；「哪个领域」走 `facets/domain`；「用什么策略处理」走 `archetype`；
+> 「报告库怎么筛」靠 `facets / tags / entity_names / type`。源不自存领域分类，由其 topic 的 `facets` 派生。
+
 ### 数据源 (Source) · 配置
 
 采集的源配置；由用户 / 管理员配置维护。
@@ -116,8 +136,7 @@ Source ─采集▶ ContentItem ─分析▶ AnalysisBatch(Insight+Citation) ─
 | `name` | string | Y | 源名称 |
 | `type` | enum | Y | `rss` / `arxiv` / `api`（MVP 三类） |
 | `endpoint` | string | Y | URL 或 API endpoint |
-| `industry` | enum | Y | 所属行业（`ai-swe` / `ai-security`） |
-| `topic_ids` | string[] | Y | 关联主题 |
+| `topic_ids` | string[] | Y | 关联主题 —— **也是源的「域」来源**：源的领域由其 topic 的 `facets` 派生（ADR-0010 Step2c：源不自存分类） |
 | `fetch_interval` | duration | Y | 增量抓取周期 |
 | `backfill` | object | N | 历史回填配置 `{depth, max_cost}`；缺省为不回填 |
 | `enabled` | bool | Y | 启停 |
@@ -131,7 +150,8 @@ Source ─采集▶ ContentItem ─分析▶ AnalysisBatch(Insight+Citation) ─
 | `id` | string | Y | 主题 ID |
 | `name` | string | Y | 主题名 |
 | `keywords` | string[] | Y | 关键词 |
-| `industry` | enum | Y | 所属行业 |
+| `facets` | string[] | Y | **领域分类**（多值，受控词表 `domain:ai-swe` / `ai-security` / `ai-industry`）—— 分类唯一维度（ADR-0010；取代旧 `industry`）。输入必填 ≥1 |
+| `archetype` | enum | Y | **行为原型**（`deep_vertical` / `horizontal_pulse`）—— 驱动采/筛/选材策略（ADR-0010）；DB 缺省 `deep_vertical` |
 | `language` | enum | Y | 输出语言 `zh` / `en` / `mixed` |
 | `brief_schedule` | enum | Y | brief 周期 `daily` / `weekly` |
 | `enabled` | bool | Y | 启停 |
@@ -285,7 +305,8 @@ Source ─采集▶ ContentItem ─分析▶ AnalysisBatch(Insight+Citation) ─
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
 | `report_id` | string | Y | → `Report.id` |
-| `type` / `topic_id` / `industry` / `date` | — | Y | 筛选维度 |
+| `type` / `topic_id` / `date` | — | Y | 筛选维度 |
+| `facets` | string[] | Y | 领域筛选维度（`domain:*`，写入端取 `Topic.facets`）—— 取代旧 `industry`（ADR-0010 Step2b/2c） |
 | `source_ids` | string[] | Y | 报告涉及的源 —— 支撑「按来源筛选」 |
 | `title` / `summary` | string | Y | 搜索字段（正文进 FTS5） |
 | `tags` / `entity_names` | string[] | N | 筛选维度，可为空数组 |
