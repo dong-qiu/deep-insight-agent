@@ -9,6 +9,7 @@ import { auth } from "../../../auth.js";
 import { getDb } from "../../../lib/db/index.js";
 import { type EntityTrend, entityTrends, queryReportIndex, topicEvolution } from "../../../lib/db/reports.js";
 import { getTopic } from "../../../lib/db/repos.js";
+import { facetLabel } from "../../../lib/topics/facets.js";
 import { DeepDiveButton } from "../../settings/_components/deep-dive-button.js";
 
 export const dynamic = "force-dynamic";
@@ -55,7 +56,7 @@ export default async function TopicPage({ params }: { params: Promise<{ id: stri
         {topic.enabled ? null : <span className="muted"> · 停用中</span>}
       </h2>
       <p className="muted">
-        {topic.industry} · {topic.language} · brief {topic.brief_schedule}
+        {(topic.facets ?? []).map(facetLabel).join("·")} · {topic.language} · brief {topic.brief_schedule}
         {isAdmin ? <DeepDiveButton topicId={topic.id} topicName={topic.name} enabled={topic.enabled} /> : null}
       </p>
       {topic.keywords.length ? <p className="muted">关键词：{topic.keywords.join(" / ")}</p> : null}

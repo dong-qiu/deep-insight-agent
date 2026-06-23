@@ -8,15 +8,14 @@ export type Language = "zh" | "en" | "mixed";
 /** 正文料源形态（ADR-0007 播客接入）：article=网页/论文正文；show_notes=播客 RSS 摘要；
  *  transcript=播客全文转写。驱动选段/校验策略与人评区分；存量与默认均为 article。 */
 export type BodyKind = "article" | "show_notes" | "transcript";
-export type Industry = "ai-swe" | "ai-security";
 
-/** 数据源配置（architecture 数据模型 · Source） */
+/** 数据源配置（architecture 数据模型 · Source）。
+ *  分类（领域）不在源上存——源的「域」由其 topic_ids 对应 topic 的 facets 派生（ADR-0010 Step2c 砍 industry）。 */
 export interface Source {
   id: string;
   name: string;
   type: "rss" | "arxiv" | "api";
   endpoint: string;
-  industry: Industry;
   topic_ids: string[];
   fetch_interval: string; // duration，如 "1h" / "30m"
   backfill: { depth: string; max_cost: number } | null;
@@ -41,15 +40,14 @@ export interface Topic {
   id: string;
   name: string;
   keywords: string[];
-  industry: Industry;
   language: Language;
   brief_schedule: "daily" | "weekly";
   enabled: boolean;
   /** ADR-0010 行为原型。**DB 层 NOT NULL DEFAULT 'deep_vertical'**；TS 设可选仅为兼容存量手搭 fixture——
    *  运行时 rowToTopic/validate/config 总赋值，写入边界(insert/update)兜底默认，读取(archetypeProfile)容 undefined。 */
   archetype?: Archetype;
-  /** ADR-0010 分面标签（Step2a），如 `["domain:ai-swe"]`，多值。DB NOT NULL DEFAULT '[]'；
-   *  TS 可选仅兼容 fixture——rowToTopic 空时从 industry 派生、validate/config 总赋值。Step2b 才迁 report 库筛选。 */
+  /** ADR-0010 分面标签，如 `["domain:ai-swe"]`，多值——**分类（领域）唯一维度**（Step2c 砍 industry 后）。
+   *  DB NOT NULL DEFAULT '[]'；TS 可选仅兼容 fixture——rowToTopic/validate/config 总赋值，输入要求 ≥1 domain。 */
   facets?: string[];
 }
 
@@ -236,12 +234,8 @@ export interface ReportIndexEntry {
   report_id: string;
   type: Report["type"];
   topic_id: string;
-  /** @deprecated ADR-0010 Step2b 起报告库不再按 industry 筛/展示——改用 facets/domain。
-   *  本字段仍写入（NOT NULL 列）+ 作 facets 空时的派生兜底，但非分类主维度。 */
-  industry: Industry;
-  /** 分面标签（ADR-0010 Step2b）：报告库筛选/展示主维度（domain:ai-swe 等）。
-   *  落库 report_index.facets；空/缺省时 rowToIndex 从 industry 派生（零回填）。
-   *  写入端（buildReport）取 topic.facets。可选：旧 ReportIndexEntry 字面量省略时 saveReport 派生。 */
+  /** 分面标签（ADR-0010）：报告库筛选/展示的领域维度（domain:ai-swe 等）；写入端取 topic.facets。
+   *  DB NOT NULL DEFAULT '[]'；TS 可选仅兼容旧字面量——saveReport 缺省落 '[]'。 */
   facets?: string[];
   date: string;
   source_ids: string[];

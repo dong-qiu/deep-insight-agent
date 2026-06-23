@@ -30,7 +30,7 @@ export function TopicForm({
   const [err, setErr] = useState<string | null>(null);
   const [form, setForm] = useState<Omit<Topic, "keywords">>(
     initial ? { ...initial, archetype: initial.archetype ?? "deep_vertical", facets: initial.facets ?? [] } : {
-      id: "", name: "", industry: "ai-swe", language: "zh",
+      id: "", name: "", language: "zh",
       brief_schedule: "daily", enabled: true, archetype: "deep_vertical", facets: [],
     },
   );
@@ -85,14 +85,10 @@ export function TopicForm({
         rows={4}
         style={{ flex: 1, fontFamily: "inherit", resize: "vertical", minHeight: "5rem" }}
       /></label>
-      <label>行业 <select value={form.industry} onChange={(e) => setForm({ ...form, industry: e.target.value as Topic["industry"] })}>
-        <option value="ai-swe">ai-swe</option>
-        <option value="ai-security">ai-security</option>
-      </select></label>
       <label>原型 <select value={form.archetype} onChange={(e) => setForm({ ...form, archetype: e.target.value as Topic["archetype"] })}>
         {ARCHETYPE_VALUES.map((a) => <option key={a} value={a}>{a}</option>)}
       </select></label>
-      <label style={{ alignItems: "flex-start" }}>分面（domain）<span style={{ display: "flex", gap: ".75rem", flexWrap: "wrap" }}>
+      <label style={{ alignItems: "flex-start" }}>领域（domain，至少选一）<span style={{ display: "flex", gap: ".75rem", flexWrap: "wrap" }}>
         {DOMAIN_VALUES.map((d) => {
           const f = domainFacet(d);
           return <label key={d} style={{ fontWeight: "normal" }}>

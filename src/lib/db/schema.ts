@@ -7,7 +7,6 @@ CREATE TABLE IF NOT EXISTS source (
   name           TEXT NOT NULL,
   type           TEXT NOT NULL CHECK (type IN ('rss','arxiv','api')),
   endpoint       TEXT NOT NULL,
-  industry       TEXT NOT NULL CHECK (industry IN ('ai-swe','ai-security')),
   topic_ids      TEXT NOT NULL DEFAULT '[]',
   fetch_interval TEXT NOT NULL,
   backfill       TEXT,
@@ -46,13 +45,12 @@ CREATE TABLE IF NOT EXISTS topic (
   id             TEXT PRIMARY KEY,
   name           TEXT NOT NULL,
   keywords       TEXT NOT NULL DEFAULT '[]',
-  industry       TEXT NOT NULL CHECK (industry IN ('ai-swe','ai-security')),
   language       TEXT NOT NULL CHECK (language IN ('zh','en','mixed')),
   brief_schedule TEXT NOT NULL CHECK (brief_schedule IN ('daily','weekly')),
   enabled        INTEGER NOT NULL DEFAULT 1,
   -- ADR-0010 行为原型：无 DB CHECK（app 层 ARCHETYPE_VALUES 校验，加原型零迁移，reference-data 模式）
   archetype      TEXT NOT NULL DEFAULT 'deep_vertical',
-  -- ADR-0010 Step2a 分面标签（JSON 数组，如 ["domain:ai-swe"]）：空时 rowToTopic 从 industry 派生。Step2b 迁 report 筛选。
+  -- ADR-0010 分面标签（JSON 数组，如 ["domain:ai-swe"]）：分类唯一维度（Step2c 砍 industry 后）。
   facets         TEXT NOT NULL DEFAULT '[]',
   created_at     TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
@@ -185,7 +183,6 @@ CREATE TABLE IF NOT EXISTS report_index (
   report_id    TEXT PRIMARY KEY REFERENCES report(id),
   type         TEXT NOT NULL,
   topic_id     TEXT NOT NULL,
-  industry     TEXT NOT NULL,
   facets       TEXT NOT NULL DEFAULT '[]',
   date         TEXT NOT NULL,
   source_ids   TEXT NOT NULL DEFAULT '[]',

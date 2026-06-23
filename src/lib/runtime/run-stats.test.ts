@@ -12,7 +12,7 @@ function run(p: Partial<Run> & Pick<Run, "kind" | "status">): Run {
 
 function src(id: string, p: Partial<Source> = {}): Source {
   return {
-    id, name: id, type: "rss", endpoint: "e", industry: "ai-swe", topic_ids: [],
+    id, name: id, type: "rss", endpoint: "e", topic_ids: [],
     fetch_interval: "6h", backfill: null, enabled: true, ...p,
   };
 }

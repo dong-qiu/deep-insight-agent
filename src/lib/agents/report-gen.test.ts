@@ -4,7 +4,7 @@ import { buildReport, inlineCitedStatement, isMilestoneInsight, selectInsights }
 import { flagLabel } from "../utils/citation-verdict.js";
 
 const topic: Topic = {
-  id: "t1", name: "Code Agent", keywords: ["a"], industry: "ai-swe", language: "zh",
+  id: "t1", name: "Code Agent", keywords: ["a"], language: "zh",
   brief_schedule: "daily", enabled: true,
 };
 const win = { start: "2026-05-01", end: "2026-05-07" };

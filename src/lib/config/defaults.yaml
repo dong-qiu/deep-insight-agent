@@ -15,18 +15,17 @@ system:
   ingestConcurrency: 1
   reportP50TargetMin: 10
 
-# 行业级宽主题（每行业 1 个），吃下该行业全部源；id 保持稳定（被源/评测/历史报告引用，不可改）。
-# 关键词放宽到覆盖行业全貌，analyzer 据此在宽源里提炼本行业相关洞察。
-# 例外：t_ai_industry（AI 产业动态）是 ai-swe 行业下的第二个、窄主题——专收泛 AI 厂商 PR
+# 领域级宽主题（每域 1 个），吃下该域全部源；id 保持稳定（被源/评测/历史报告引用，不可改）。
+# 关键词放宽到覆盖领域全貌，analyzer 据此在宽源里提炼本域相关洞察。域分类靠 facets（domain:*）。
+# 例外：t_ai_industry（AI 产业动态，domain:ai-industry）是窄主题——专收泛 AI 厂商 PR
 # （如 OpenAI News）：这类源信号广但与「软件工程」相关度低，挂 t_code_agents 从不被引（贡献 0），
-# 故单列归口，让其在对的池子里竞争（2026-06-22；复用 industry=ai-swe 以免新增 industry 枚举的 schema 迁移）。
+# 故单列归口，让其在对的池子里竞争（2026-06-22；ADR-0010 Step2c 起领域唯一维度 = facets，已无 industry）。
 defaultTopics:
   - id: t_code_agents
     name: AI 时代的软件工程
     keywords:
       [coding agent, autonomous software engineering, SWE-bench, AI 辅助编程, 代码生成, code review,
        developer tools, RAG 检索增强, LLM agent 评测, LLM 推理与服务优化]
-    industry: ai-swe
     language: zh
     brief_schedule: daily
     enabled: true
@@ -37,19 +36,17 @@ defaultTopics:
     keywords:
       [prompt injection, indirect prompt injection, jailbreak, LLM/agent 安全, agent 越权, guardrails,
        漏洞与威胁情报, CVE, 供应链安全, OWASP LLM Top 10, MITRE ATLAS, AI 安全合规]
-    industry: ai-security
     language: zh
     brief_schedule: daily
     enabled: true
     archetype: deep_vertical
     facets: [domain:ai-security]
-  # 泛 AI 厂商动态（窄主题，例外见上）：归口 OpenAI News 等泛 PR 源。industry 复用 ai-swe。
+  # 泛 AI 厂商动态（窄主题，例外见上）：归口 OpenAI News 等泛 PR 源。域 = domain:ai-industry。
   - id: t_ai_industry
     name: AI 产业动态
     keywords:
       [OpenAI, Anthropic, GPT, ChatGPT, 模型发布, 产品发布, API, 开发者工具, AI 融资, 监管政策,
        行业应用, 大模型, AI 商业化, 算力]
-    industry: ai-swe
     language: zh
     brief_schedule: daily
     enabled: true
@@ -66,7 +63,6 @@ defaultSources:
     name: Hacker News
     type: rss
     endpoint: https://news.ycombinator.com/rss
-    industry: ai-swe
     topic_ids: [t_code_agents]
     fetch_interval: 1h
     enabled: true
@@ -74,7 +70,6 @@ defaultSources:
     name: arXiv cs.SE
     type: arxiv
     endpoint: http://export.arxiv.org/api/query?search_query=cat:cs.SE&sortBy=submittedDate&sortOrder=descending&max_results=30
-    industry: ai-swe
     topic_ids: [t_code_agents]
     fetch_interval: 6h
     enabled: true
@@ -82,7 +77,6 @@ defaultSources:
     name: arXiv cs.CL
     type: arxiv
     endpoint: http://export.arxiv.org/api/query?search_query=cat:cs.CL&sortBy=submittedDate&sortOrder=descending&max_results=30
-    industry: ai-swe
     topic_ids: [t_code_agents]
     fetch_interval: 6h
     enabled: true
@@ -90,7 +84,6 @@ defaultSources:
     name: arXiv cs.AI
     type: arxiv
     endpoint: http://export.arxiv.org/api/query?search_query=cat:cs.AI&sortBy=submittedDate&sortOrder=descending&max_results=30
-    industry: ai-swe
     topic_ids: [t_code_agents]
     fetch_interval: 6h
     enabled: true
@@ -98,7 +91,6 @@ defaultSources:
     name: OpenAI News
     type: rss
     endpoint: https://openai.com/news/rss.xml
-    industry: ai-swe
     # 泛 AI 厂商 PR（健康/化学/产品），176 字 SPA 摘要 full_text 救不了；挂 t_code_agents 从不被引（贡献 0）。
     # 2026-06-22 改归口到 t_ai_industry（AI 产业动态），让它在对的主题池里竞争。
     topic_ids: [t_ai_industry]
@@ -108,7 +100,6 @@ defaultSources:
     name: Google Research Blog
     type: rss
     endpoint: https://research.google/blog/rss/
-    industry: ai-swe
     topic_ids: [t_code_agents]
     fetch_interval: 6h
     enabled: true
@@ -119,7 +110,6 @@ defaultSources:
     name: GitHub Next
     type: rss
     endpoint: https://githubnext.com/rss.xml
-    industry: ai-swe
     topic_ids: [t_code_agents]
     fetch_interval: 24h
     enabled: true
@@ -127,7 +117,6 @@ defaultSources:
     name: GitHub Engineering Blog
     type: rss
     endpoint: https://github.blog/category/engineering/feed/
-    industry: ai-swe
     topic_ids: [t_code_agents]
     fetch_interval: 24h
     enabled: true
@@ -135,7 +124,6 @@ defaultSources:
     name: Latent Space
     type: rss
     endpoint: https://www.latent.space/feed
-    industry: ai-swe
     topic_ids: [t_code_agents]
     fetch_interval: 12h
     enabled: true
@@ -143,7 +131,6 @@ defaultSources:
     name: The Pragmatic Engineer
     type: rss
     endpoint: https://newsletter.pragmaticengineer.com/feed
-    industry: ai-swe
     topic_ids: [t_code_agents]
     fetch_interval: 24h
     enabled: true
@@ -151,7 +138,6 @@ defaultSources:
     name: Practical AI（播客 · 元数据）
     type: rss
     endpoint: https://feeds.transistor.fm/practical-ai-machine-learning-data-science-llm
-    industry: ai-swe
     topic_ids: [t_code_agents]
     fetch_interval: 24h
     enabled: true
@@ -161,7 +147,6 @@ defaultSources:
     name: Lex Fridman Podcast（播客 · 转写 · AI/SWE 筛选）
     type: rss
     endpoint: https://lexfridman.com/feed/podcast/
-    industry: ai-swe
     topic_ids: [t_code_agents]
     fetch_interval: 24h
     enabled: true
@@ -169,7 +154,6 @@ defaultSources:
     name: 量子位
     type: rss
     endpoint: https://www.qbitai.com/feed
-    industry: ai-swe
     topic_ids: [t_code_agents]
     fetch_interval: 6h
     enabled: true
@@ -180,7 +164,6 @@ defaultSources:
     name: InfoQ AI/ML/Data
     type: rss
     endpoint: https://feed.infoq.com/ai-ml-data-eng
-    industry: ai-swe
     topic_ids: [t_code_agents]
     fetch_interval: 6h
     enabled: true
@@ -190,7 +173,6 @@ defaultSources:
     name: The Hacker News
     type: rss
     endpoint: https://feeds.feedburner.com/TheHackersNews
-    industry: ai-security
     topic_ids: [t_prompt_injection]
     fetch_interval: 6h
     enabled: true
@@ -198,7 +180,6 @@ defaultSources:
     name: KrebsOnSecurity
     type: rss
     endpoint: https://krebsonsecurity.com/feed/
-    industry: ai-security
     topic_ids: [t_prompt_injection]
     fetch_interval: 12h
     enabled: true
@@ -206,7 +187,6 @@ defaultSources:
     name: Bleeping Computer
     type: rss
     endpoint: https://www.bleepingcomputer.com/feed/
-    industry: ai-security
     topic_ids: [t_prompt_injection]
     fetch_interval: 6h
     # 2026-05-31 实测：Cloudflare 主动挑战（cf-mitigated=challenge，"Just a moment..." JS 页），
@@ -217,7 +197,6 @@ defaultSources:
     name: arXiv cs.CR
     type: arxiv
     endpoint: http://export.arxiv.org/api/query?search_query=cat:cs.CR&sortBy=submittedDate&sortOrder=descending&max_results=30
-    industry: ai-security
     topic_ids: [t_prompt_injection]
     fetch_interval: 6h
     enabled: true
@@ -225,7 +204,6 @@ defaultSources:
     name: OWASP LLM Top 10（GitHub releases）
     type: rss
     endpoint: https://github.com/OWASP/www-project-top-10-for-large-language-model-applications/releases.atom
-    industry: ai-security
     topic_ids: [t_prompt_injection]
     fetch_interval: 24h
     enabled: true
@@ -233,7 +211,6 @@ defaultSources:
     name: OWASP AI Exchange（GitHub commits）
     type: rss
     endpoint: https://github.com/OWASP/www-project-ai-security-and-privacy-guide/commits.atom
-    industry: ai-security
     topic_ids: [t_prompt_injection]
     fetch_interval: 24h
     enabled: true
@@ -241,7 +218,6 @@ defaultSources:
     name: MITRE ATLAS（GitHub releases）
     type: rss
     endpoint: https://github.com/mitre-atlas/atlas-data/releases.atom
-    industry: ai-security
     topic_ids: [t_prompt_injection]
     fetch_interval: 24h
     enabled: true
@@ -249,7 +225,6 @@ defaultSources:
     name: Risky Business（播客 · show notes）
     type: rss
     endpoint: https://risky.biz/feeds/risky-business/
-    industry: ai-security
     topic_ids: [t_prompt_injection]
     fetch_interval: 24h
     enabled: true
@@ -257,7 +232,6 @@ defaultSources:
     name: Darknet Diaries（播客 · show notes）
     type: rss
     endpoint: https://podcast.darknetdiaries.com/
-    industry: ai-security
     topic_ids: [t_prompt_injection]
     fetch_interval: 24h
     enabled: true
@@ -265,7 +239,6 @@ defaultSources:
     name: FreeBuf
     type: rss
     endpoint: https://www.freebuf.com/feed
-    industry: ai-security
     topic_ids: [t_prompt_injection]
     fetch_interval: 6h
     # 2026-05-31 实测：URL 正确（本机 curl 200 + 真 RSS XML），但容器内被阿里云盾边缘节点

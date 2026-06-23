@@ -23,7 +23,7 @@ export function SourceForm({
   const [form, setForm] = useState<Source>(
     initial ?? {
       id: "", name: "", type: "rss", endpoint: "",
-      industry: "ai-swe", topic_ids: [], fetch_interval: "1h",
+      topic_ids: [], fetch_interval: "1h",
       backfill: null, enabled: true, fetch_mode: "feed", content_container: null,
     },
   );
@@ -80,10 +80,7 @@ export function SourceForm({
         placeholder="https://example.com/feed.xml"
         required
       /></label>
-      <label>行业 <select value={form.industry} onChange={(e) => setForm({ ...form, industry: e.target.value as Source["industry"] })}>
-        <option value="ai-swe">ai-swe</option>
-        <option value="ai-security">ai-security</option>
-      </select></label>
+      {/* Step2c：源不再选行业——源的「域」由其关联主题的 facets 自动派生（设置页按域分组）。 */}
       <label>抓取间隔 <input
         value={form.fetch_interval}
         onChange={(e) => setForm({ ...form, fetch_interval: e.target.value })}

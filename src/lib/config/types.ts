@@ -7,7 +7,6 @@ export const SourceConfigSchema = z.object({
   name: z.string(),
   type: z.enum(["rss", "arxiv", "api"]),
   endpoint: z.string(),
-  industry: z.enum(["ai-swe", "ai-security"]),
   topic_ids: z.array(z.string()),
   fetch_interval: z.string(),
   backfill: z.object({ depth: z.string(), max_cost: z.number() }).nullable().default(null),
@@ -21,17 +20,15 @@ export const TopicConfigSchema = z.object({
   id: z.string(),
   name: z.string(),
   keywords: z.array(z.string()),
-  industry: z.enum(["ai-swe", "ai-security"]),
   language: z.enum(["zh", "en", "mixed"]),
   brief_schedule: z.enum(["daily", "weekly"]),
   enabled: z.boolean().default(true),
   // ADR-0010 行为原型；缺省 deep_vertical（= 现状行为），defaults.yaml 可显式标 horizontal_pulse。
   archetype: z.enum(["deep_vertical", "horizontal_pulse"]).default("deep_vertical"),
-  // ADR-0010 Step2a 分面标签；缺省 []（rowToTopic 读时从 industry 派生），defaults.yaml 可显式标。
-  // 对齐 archetype 的 z.enum 先例：配置层也校词表（防 defaults.yaml 拼错静默入库，与 validate.ts 同口径）。
-  facets: z.array(z.string()).refine((arr) => arr.every(isValidFacet), {
-    message: "facets 含非法分面标签（须为受控 domain:<值>）",
-  }).default([]),
+  // ADR-0010 分面标签——分类唯一维度（Step2c 砍 industry 后**必填 ≥1**）；配置层校词表 + 非空，与 validate.ts 同口径。
+  facets: z.array(z.string()).refine((arr) => arr.length > 0 && arr.every(isValidFacet), {
+    message: "facets 必填且须为受控 domain:<值>（至少一个）",
+  }),
 });
 
 export const AppConfigSchema = z.object({

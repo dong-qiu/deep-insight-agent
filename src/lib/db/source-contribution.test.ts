@@ -14,10 +14,10 @@ const dir = mkdtempSync(join(tmpdir(), "ia-contrib-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
 const src = (id: string): Source => ({
-  id, name: id, type: "rss", endpoint: "e", industry: "ai-swe", topic_ids: ["t1"],
+  id, name: id, type: "rss", endpoint: "e", topic_ids: ["t1"],
   fetch_interval: "1h", backfill: null, enabled: true,
 });
-const topic: Topic = { id: "t1", name: "T", keywords: [], industry: "ai-swe", language: "zh", brief_schedule: "daily", enabled: true };
+const topic: Topic = { id: "t1", name: "T", keywords: [], language: "zh", brief_schedule: "daily", enabled: true };
 const ci = (id: string, source_id: string): ContentItem => ({
   id, source_id, url: `https://x/${id}`, title: "T", author: null, published_at: null,
   fetched_at: "2026-05-25T00:00:00Z", language: "en", topic_ids: ["t1"], tags: [], body: "b",
@@ -32,7 +32,7 @@ const ins = (id: string, citeItems: string[]) => ({
   is_followup: false, entities: [], tags: [],
 });
 const index = (rid: string): ReportIndexEntry => ({
-  report_id: rid, type: "brief", topic_id: "t1", industry: "ai-swe", date: "2026-06-20",
+  report_id: rid, type: "brief", topic_id: "t1", date: "2026-06-20",
   source_ids: [], title: "T", summary: "s", highlights: [], tags: [], entity_names: [], importance: 4, event_ids: [], milestone_count: 0,
 });
 const report = (rid: string, insight_ids: string[], status: Report["status"], generated_at: string): Report => ({

@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
-  DOMAIN_VALUES, deriveFacetsFromIndustry, domainFacet, domainValueOf, facetLabel,
-  isDomainValue, isValidFacet, parseFacetsOrDerive,
+  DOMAIN_VALUES, domainFacet, domainValueOf, facetLabel,
+  isDomainValue, isValidFacet, parseFacets,
 } from "./facets.js";
 
-describe("facets 受控词表（ADR-0010 Step2a）", () => {
+describe("facets 受控词表（ADR-0010）", () => {
   it("domainFacet 构造 domain:<值>", () => {
     expect(domainFacet("ai-swe")).toBe("domain:ai-swe");
     expect(domainFacet("ai-industry")).toBe("domain:ai-industry");
@@ -21,17 +21,6 @@ describe("facets 受控词表（ADR-0010 Step2a）", () => {
     expect(isValidFacet("")).toBe(false);
     expect(isValidFacet(null)).toBe(false);
     expect(isValidFacet(42)).toBe(false);
-  });
-
-  it("deriveFacetsFromIndustry 把 industry slug 映成单个 domain facet", () => {
-    expect(deriveFacetsFromIndustry("ai-swe")).toEqual(["domain:ai-swe"]);
-    expect(deriveFacetsFromIndustry("ai-security")).toEqual(["domain:ai-security"]);
-  });
-
-  it("派生结果必然是合法 facet（派生即正确）", () => {
-    for (const ind of ["ai-swe", "ai-security"] as const) {
-      expect(deriveFacetsFromIndustry(ind).every(isValidFacet)).toBe(true);
-    }
   });
 });
 
@@ -56,10 +45,11 @@ describe("facets 取值/标签辅助（ADR-0010 Step2b）", () => {
     expect(facetLabel("topic:foo")).toBe("topic:foo"); // 非 domain facet 原样返
   });
 
-  it("parseFacetsOrDerive：非空数组原样、空/坏 JSON 派生自 industry", () => {
-    expect(parseFacetsOrDerive('["domain:ai-industry"]', "ai-swe")).toEqual(["domain:ai-industry"]);
-    expect(parseFacetsOrDerive("[]", "ai-security")).toEqual(["domain:ai-security"]);
-    expect(parseFacetsOrDerive("not json", "ai-swe")).toEqual(["domain:ai-swe"]);
-    expect(parseFacetsOrDerive(undefined, "ai-swe")).toEqual(["domain:ai-swe"]);
+  it("parseFacets：合法 JSON 数组原样、空/坏 JSON/非串 → []（Step2c 派生锚已退役）", () => {
+    expect(parseFacets('["domain:ai-industry"]')).toEqual(["domain:ai-industry"]);
+    expect(parseFacets("[]")).toEqual([]);
+    expect(parseFacets("not json")).toEqual([]);
+    expect(parseFacets(undefined)).toEqual([]);
+    expect(parseFacets(42)).toEqual([]);
   });
 });

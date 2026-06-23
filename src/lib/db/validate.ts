@@ -2,8 +2,8 @@
  *  返 { ok: true, value } | { ok: false, message }——调用方按 message 返 422。 */
 import { randomBytes } from "node:crypto";
 import { ARCHETYPE_VALUES, isArchetype } from "../topics/archetype.js";
-import { DOMAIN_VALUES, deriveFacetsFromIndustry, isValidFacet } from "../topics/facets.js";
-import type { Industry, Language, Source, Topic } from "../types.js";
+import { DOMAIN_VALUES, isValidFacet } from "../topics/facets.js";
+import type { Language, Source, Topic } from "../types.js";
 
 /** 自动生成 id 末尾 4 位随机十六进制（review #8b：替代 Date.now().toString(36).slice(-4)
  *  的时间戳熵——并发批量创建时 ts36 末 4 位可能撞车，64K 随机空间冲突率显著更低）。 */
@@ -11,7 +11,6 @@ function rand4(): string {
   return randomBytes(2).toString("hex");
 }
 
-export const INDUSTRY_VALUES = new Set<Industry>(["ai-swe", "ai-security"]);
 export const LANGUAGE_VALUES = new Set<Language>(["zh", "en", "mixed"]);
 export const SOURCE_TYPES = new Set<Source["type"]>(["rss", "arxiv", "api"]);
 export const BRIEF_SCHEDULES = new Set<Topic["brief_schedule"]>(["daily", "weekly"]);
@@ -50,10 +49,6 @@ export function validateTopicInput(body: unknown, opts: { existingId?: string } 
     if (k.trim().length > 100) return { ok: false, message: `keyword "${k.slice(0, 20)}…" 超过 100 字符上限` };
   }
 
-  const ind = typeof o.industry === "string" ? o.industry : "";
-  if (!INDUSTRY_VALUES.has(ind as Industry)) {
-    return { ok: false, message: `industry 必须是 ${[...INDUSTRY_VALUES].join("/")}` };
-  }
   const lang = typeof o.language === "string" ? o.language : "zh";
   if (!LANGUAGE_VALUES.has(lang as Language)) {
     return { ok: false, message: `language 必须是 ${[...LANGUAGE_VALUES].join("/")}` };
@@ -67,21 +62,17 @@ export function validateTopicInput(body: unknown, opts: { existingId?: string } 
   if (!isArchetype(arch)) {
     return { ok: false, message: `archetype 必须是 ${[...ARCHETYPE_VALUES].join("/")}` };
   }
-  // ADR-0010 Step2a 分面标签：未提供则从 industry 派生（兼容旧客户端）；提供则逐个 app 校验。
-  let facets: string[];
-  if (o.facets === undefined) {
-    facets = deriveFacetsFromIndustry(ind as Industry);
-  } else if (Array.isArray(o.facets) && o.facets.every(isValidFacet)) {
-    facets = o.facets as string[];
-  } else {
-    return { ok: false, message: `facets 必须是合法分面标签数组（如 domain:${[...DOMAIN_VALUES].join("/domain:")}）` };
+  // ADR-0010 分面标签：Step2c 砍 industry 后 facets 是领域**必填**维度——须为 ≥1 个合法 domain facet。
+  if (!Array.isArray(o.facets) || o.facets.length === 0 || !o.facets.every(isValidFacet)) {
+    return { ok: false, message: `facets 必须是非空合法分面标签数组（如 domain:${[...DOMAIN_VALUES].join("/domain:")}）` };
   }
+  const facets = o.facets as string[];
 
   return {
     ok: true,
     value: {
       id, name, keywords: kws.map((k) => String(k).trim()).filter(Boolean),
-      industry: ind as Industry, language: lang as Language,
+      language: lang as Language,
       brief_schedule: bs as Topic["brief_schedule"],
       enabled: o.enabled !== false,
       archetype: arch,
@@ -119,11 +110,7 @@ export function validateSourceInput(body: unknown, opts: { existingId?: string }
     return { ok: false, message: "endpoint 必须是合法 URL（含 protocol）" };
   }
 
-  const ind = typeof o.industry === "string" ? o.industry : "";
-  if (!INDUSTRY_VALUES.has(ind as Industry)) {
-    return { ok: false, message: `industry 必须是 ${[...INDUSTRY_VALUES].join("/")}` };
-  }
-
+  // ADR-0010 Step2c：源不再带 industry/领域分类——源的「域」由其 topic 的 facets 派生（见设置页分组）。
   const topicIds = arr<string>(o.topic_ids, "topic_ids");
   if (!Array.isArray(topicIds)) return { ok: false, message: topicIds.fail };
 
@@ -148,7 +135,7 @@ export function validateSourceInput(body: unknown, opts: { existingId?: string }
     ok: true,
     value: {
       id, name, type: type as Source["type"], endpoint,
-      industry: ind as Industry, topic_ids: topicIds.map((t) => String(t).trim()).filter(Boolean),
+      topic_ids: topicIds.map((t) => String(t).trim()).filter(Boolean),
       fetch_interval: interval, backfill: null, enabled: o.enabled !== false,
       fetch_mode: fetchMode, content_container: container,
     },

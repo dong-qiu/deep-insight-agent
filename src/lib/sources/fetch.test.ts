@@ -36,7 +36,7 @@ const FEED = `<?xml version="1.0"?>
 </channel></rss>`;
 
 const source: Source = {
-  id: "s", name: "S", type: "rss", endpoint: "https://pod/feed", industry: "ai-swe",
+  id: "s", name: "S", type: "rss", endpoint: "https://pod/feed",
   topic_ids: ["t1"], fetch_interval: "1h", backfill: null, enabled: true,
 };
 

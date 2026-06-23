@@ -6,7 +6,7 @@ import { insertTopic } from "./repos.js";
 
 let db: DB;
 const topic: Topic = {
-  id: "t1", name: "T", keywords: ["k"], industry: "ai-swe", language: "zh",
+  id: "t1", name: "T", keywords: ["k"], language: "zh",
   brief_schedule: "daily", enabled: true,
 };
 beforeEach(() => {
