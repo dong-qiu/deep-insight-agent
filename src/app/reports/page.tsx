@@ -5,7 +5,7 @@
 import { getDb } from "../../lib/db/index.js";
 import { distinctIndexValues, queryReportIndex } from "../../lib/db/reports.js";
 import { listSources, listTopics } from "../../lib/db/repos.js";
-import { domainValueOf, facetLabel } from "../../lib/topics/facets.js";
+import { domainValueOf, facetLabel, lensValueOf } from "../../lib/topics/facets.js";
 import { ReportCard } from "../_components/report-card.js";
 
 export const dynamic = "force-dynamic";
@@ -35,12 +35,20 @@ export default async function ReportsPage({
   // 每项 = { value: 裸 domain 值（URL 参数 + 匹配用）, label: 人类标签 }。
   const domainOptions: { value: string; label: string }[] = [];
   const seenDomain = new Set<string>();
+  // 视角(lens)筛选选项：同理取主题实际持有的 lens facets（ADR-0010 后续 lens 轴）。
+  const lensOptions: { value: string; label: string }[] = [];
+  const seenLens = new Set<string>();
   for (const t of topics) {
     for (const f of t.facets ?? []) {
-      const v = domainValueOf(f);
-      if (v && !seenDomain.has(v)) {
-        seenDomain.add(v);
-        domainOptions.push({ value: v, label: facetLabel(f) });
+      const dv = domainValueOf(f);
+      if (dv && !seenDomain.has(dv)) {
+        seenDomain.add(dv);
+        domainOptions.push({ value: dv, label: facetLabel(f) });
+      }
+      const lv = lensValueOf(f);
+      if (lv && !seenLens.has(lv)) {
+        seenLens.add(lv);
+        lensOptions.push({ value: lv, label: facetLabel(f) });
       }
     }
   }
@@ -55,6 +63,7 @@ export default async function ReportsPage({
   const q = val(sp, "q");
   const type = val(sp, "type");
   const domain = val(sp, "domain");
+  const lens = val(sp, "lens");
   const topic = val(sp, "topic");
   const source = val(sp, "source");
   const tag = val(sp, "tag");
@@ -68,16 +77,16 @@ export default async function ReportsPage({
   const sortSelectValue = sort === "relevance" && !q ? "date" : sort;
 
   // 查询已在 queryReportIndex 内消毒（永不抛错、永不静默丢 q），此处无需再 try/catch 兜底。
-  const rows = queryReportIndex(db, { q, type, domain, topic, source, tag, entity, from, to, sort, dir });
+  const rows = queryReportIndex(db, { q, type, domain, lens, topic, source, tag, entity, from, to, sort, dir });
 
   // 次级筛选（非搜索/排序）是否生效——决定「更多筛选」面板默认展开 + 是否显示「清空」。
-  const secondaryActive = !!(type || domain || topic || source || tag || entity || from || to);
+  const secondaryActive = !!(type || domain || lens || topic || source || tag || entity || from || to);
   const hasFilter = !!q || secondaryActive;
 
   // 生效筛选 → 可移除 chips。移除链接 = 当前参数去掉该项（排序 sort/dir 始终保留，不作为 chip）。
   const sourceLabel = new Map(sourceOptions.map((s) => [s.id, s.name]));
   const topicLabel = new Map(topics.map((t) => [t.id, t.name]));
-  const allParams: Record<string, string> = { q, type, domain, topic, source, tag, entity, from, to, sort, dir };
+  const allParams: Record<string, string> = { q, type, domain, lens, topic, source, tag, entity, from, to, sort, dir };
   const hrefWithout = (omitKey: string): string => {
     const params = new URLSearchParams();
     for (const [k, v] of Object.entries(allParams)) {
@@ -96,6 +105,10 @@ export default async function ReportsPage({
     // 标签优先取当前主题下拉项；若筛的 domain 当前无主题持有（仍合法），回退 facetLabel 取词表标签。
     const domainLabel = domainOptions.find((o) => o.value === domain)?.label ?? facetLabel(`domain:${domain}`);
     chips.push({ key: "domain", label: domainLabel });
+  }
+  if (lens) {
+    const lensLabel = lensOptions.find((o) => o.value === lens)?.label ?? facetLabel(`lens:${lens}`);
+    chips.push({ key: "lens", label: lensLabel });
   }
   if (topic) chips.push({ key: "topic", label: `主题：${topicLabel.get(topic) ?? topic}` });
   if (source) chips.push({ key: "source", label: `来源：${sourceLabel.get(source) ?? source}` });
@@ -146,6 +159,14 @@ export default async function ReportsPage({
                 <option key={o.value} value={o.value}>{o.label}</option>
               ))}
             </select>
+            {lensOptions.length ? (
+              <select name="lens" defaultValue={lens} aria-label="视角">
+                <option value="">全部视角</option>
+                {lensOptions.map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+            ) : null}
             <select name="topic" defaultValue={topic} aria-label="主题">
               <option value="">全部主题</option>
               {topics.map((t) => (

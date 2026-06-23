@@ -11,7 +11,7 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { ARCHETYPE_VALUES } from "../../../lib/topics/archetype.js";
-import { DOMAIN_VALUES, domainFacet } from "../../../lib/topics/facets.js";
+import { DOMAIN_VALUES, LENS_VALUES, domainFacet, lensFacet } from "../../../lib/topics/facets.js";
 import type { Topic } from "../../../lib/types.js";
 import { useSettingsStatus } from "./settings-status.js";
 
@@ -93,6 +93,14 @@ export function TopicForm({
           const f = domainFacet(d);
           return <label key={d} style={{ fontWeight: "normal" }}>
             <input type="checkbox" checked={facets.includes(f)} onChange={() => toggleFacet(f)} /> {d}
+          </label>;
+        })}
+      </span></label>
+      <label style={{ alignItems: "flex-start" }}>视角（lens，选填；不选视作 technical）<span style={{ display: "flex", gap: ".75rem", flexWrap: "wrap" }}>
+        {LENS_VALUES.map((l) => {
+          const f = lensFacet(l);
+          return <label key={l} style={{ fontWeight: "normal" }}>
+            <input type="checkbox" checked={facets.includes(f)} onChange={() => toggleFacet(f)} /> {l}
           </label>;
         })}
       </span></label>

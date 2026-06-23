@@ -2,7 +2,7 @@
  *  返 { ok: true, value } | { ok: false, message }——调用方按 message 返 422。 */
 import { randomBytes } from "node:crypto";
 import { ARCHETYPE_VALUES, isArchetype } from "../topics/archetype.js";
-import { DOMAIN_VALUES, isValidFacet } from "../topics/facets.js";
+import { DOMAIN_VALUES, hasDomainFacet, isValidFacet } from "../topics/facets.js";
 import type { Language, Source, Topic } from "../types.js";
 
 /** 自动生成 id 末尾 4 位随机十六进制（review #8b：替代 Date.now().toString(36).slice(-4)
@@ -62,9 +62,13 @@ export function validateTopicInput(body: unknown, opts: { existingId?: string } 
   if (!isArchetype(arch)) {
     return { ok: false, message: `archetype 必须是 ${[...ARCHETYPE_VALUES].join("/")}` };
   }
-  // ADR-0010 分面标签：Step2c 砍 industry 后 facets 是领域**必填**维度——须为 ≥1 个合法 domain facet。
-  if (!Array.isArray(o.facets) || o.facets.length === 0 || !o.facets.every(isValidFacet)) {
-    return { ok: false, message: `facets 必须是非空合法分面标签数组（如 domain:${[...DOMAIN_VALUES].join("/domain:")}）` };
+  // ADR-0010 分面标签：每项须是合法 facet（domain:<值> 或 lens:<值>），且**至少含一个 domain**
+  // （domain 必填、lens 选填——后续 lens 视角轴；未标 lens 视作 technical 缺省）。
+  if (!Array.isArray(o.facets) || !o.facets.every(isValidFacet)) {
+    return { ok: false, message: `facets 每项须为受控分面（domain:${[...DOMAIN_VALUES].join("/domain:")} 或 lens:technical/lens:business）` };
+  }
+  if (!hasDomainFacet(o.facets as string[])) {
+    return { ok: false, message: `facets 至少需 1 个 domain（如 domain:${DOMAIN_VALUES[0]}）` };
   }
   const facets = o.facets as string[];
 

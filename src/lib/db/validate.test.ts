@@ -4,7 +4,7 @@ import { validateSourceInput, validateTopicInput } from "./validate.js";
 describe("validateTopicInput", () => {
   const valid = {
     name: "AI 软件工程", keywords: ["coding", "agent"],
-    facets: ["domain:ai-swe"], language: "zh", brief_schedule: "daily",
+    facets: ["domain:software-engineering"], language: "zh", brief_schedule: "daily",
   };
 
   it("最小合法输入 → ok + 自动生成 id", () => {
@@ -44,13 +44,23 @@ describe("validateTopicInput", () => {
 
   it("facets 含非法标签 → 422", () => {
     expect(validateTopicInput({ ...valid, facets: ["domain:garbage"] }).ok).toBe(false);
-    expect(validateTopicInput({ ...valid, facets: ["ai-swe"] }).ok).toBe(false); // 缺 domain: 前缀
+    expect(validateTopicInput({ ...valid, facets: ["software-engineering"] }).ok).toBe(false); // 缺 domain: 前缀
+    expect(validateTopicInput({ ...valid, facets: ["lens:garbage"] }).ok).toBe(false); // lens 词表外
   });
 
-  it("facets 合法多值 → ok 原样保留", () => {
-    const v = validateTopicInput({ ...valid, facets: ["domain:ai-swe", "domain:ai-industry"] });
+  it("facets 只含 lens（无 domain）→ 422（domain 必填）", () => {
+    expect(validateTopicInput({ ...valid, facets: ["lens:business"] }).ok).toBe(false);
+  });
+
+  it("facets 合法多值（domain + lens）→ ok 原样保留", () => {
+    const v = validateTopicInput({ ...valid, facets: ["domain:foundation-models", "lens:business"] });
     expect(v.ok).toBe(true);
-    if (v.ok) expect(v.value.facets).toEqual(["domain:ai-swe", "domain:ai-industry"]);
+    if (v.ok) expect(v.value.facets).toEqual(["domain:foundation-models", "lens:business"]);
+  });
+
+  it("facets 仅 domain（lens 选填省略）→ ok", () => {
+    const v = validateTopicInput({ ...valid, facets: ["domain:security"] });
+    expect(v.ok).toBe(true);
   });
 
   it("language 缺省 → 默认 zh", () => {

@@ -110,6 +110,26 @@ function migrate(db: DB): void {
     }
   }
   if (columnExists(db, "source", "industry")) db.exec("ALTER TABLE source DROP COLUMN industry");
+
+  // ADR-0010 后续（lens 视角轴 + domain 去 ai- 前缀）：**自包含幂等迁移**（无需手动改库）。
+  // ① 先给旧「产业」主题补 lens:business——keyed on 旧值 domain:ai-industry（仅 t_ai_industry 持有），
+  //    json_each 判定（whitespace 健壮）+ 无 lens 守卫（幂等，不重复追加）。须在 ② 重命名之前跑（之后该 token 消失）。
+  //    只动 topic 表：report_index 历史行不臆造 lens（且 ai-industry 历史曾回填为 ai-swe，无从辨认——同 Step2c 历史口径）。
+  db.exec(
+    `UPDATE topic SET facets = json_insert(facets, '$[#]', 'lens:business')
+     WHERE EXISTS (SELECT 1 FROM json_each(topic.facets) WHERE value = 'domain:ai-industry')
+       AND NOT EXISTS (SELECT 1 FROM json_each(topic.facets) WHERE value LIKE 'lens:%')`,
+  );
+  // ② domain 值去 ai- 前缀 / 产业域改名（topic + report_index 两表 facets 列）。三 token 互不为子串、
+  //    新值不含旧 token → 链式 REPLACE 顺序无关、且天然幂等（旧 token 已无 → no-op，可每次启动跑）。
+  for (const table of ["topic", "report_index"]) {
+    db.exec(
+      `UPDATE ${table} SET facets = REPLACE(REPLACE(REPLACE(facets,
+         'domain:ai-swe', 'domain:software-engineering'),
+         'domain:ai-security', 'domain:security'),
+         'domain:ai-industry', 'domain:foundation-models')`,
+    );
+  }
 }
 
 let _db: DB | null = null;

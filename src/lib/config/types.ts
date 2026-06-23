@@ -1,6 +1,6 @@
 /** 静态配置 schema（架构「配置分离」）。Source/Topic 配置形状与 types.ts 实体一致，可直接落库。 */
 import { z } from "zod/v4";
-import { isValidFacet } from "../topics/facets.js";
+import { hasDomainFacet, isValidFacet } from "../topics/facets.js";
 
 export const SourceConfigSchema = z.object({
   id: z.string(),
@@ -25,9 +25,9 @@ export const TopicConfigSchema = z.object({
   enabled: z.boolean().default(true),
   // ADR-0010 行为原型；缺省 deep_vertical（= 现状行为），defaults.yaml 可显式标 horizontal_pulse。
   archetype: z.enum(["deep_vertical", "horizontal_pulse"]).default("deep_vertical"),
-  // ADR-0010 分面标签——分类唯一维度（Step2c 砍 industry 后**必填 ≥1**）；配置层校词表 + 非空，与 validate.ts 同口径。
-  facets: z.array(z.string()).refine((arr) => arr.length > 0 && arr.every(isValidFacet), {
-    message: "facets 必填且须为受控 domain:<值>（至少一个）",
+  // ADR-0010 分面标签：每项受控 facet（domain:<值> 或 lens:<值>），且至少含 1 个 domain（lens 选填）；与 validate.ts 同口径。
+  facets: z.array(z.string()).refine((arr) => arr.every(isValidFacet) && hasDomainFacet(arr), {
+    message: "facets 每项须为受控 domain:/lens: 值，且至少含一个 domain",
   }),
 });
 

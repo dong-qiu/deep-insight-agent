@@ -13,7 +13,7 @@ afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
 let db: DB;
 const topic: Topic = {
-  id: "t1", name: "T", keywords: ["k"], facets: ["domain:ai-swe"], language: "zh",
+  id: "t1", name: "T", keywords: ["k"], facets: ["domain:software-engineering"], language: "zh",
   brief_schedule: "daily", enabled: true,
 };
 beforeEach(() => {
@@ -30,7 +30,7 @@ const report: Report = {
   cost: { tokens: 0, amount: 0 },
 };
 const index: ReportIndexEntry = {
-  report_id: "rep_test1", type: "brief", topic_id: "t1", facets: ["domain:ai-swe"], date: "2026-05-07",
+  report_id: "rep_test1", type: "brief", topic_id: "t1", facets: ["domain:software-engineering"], date: "2026-05-07",
   source_ids: ["s_a"], title: "Code Agent Brief", summary: "Reward hacking persists.",
   highlights: ["Reward hacking 仍在"], tags: ["t-x"],
   entity_names: [], importance: 5, event_ids: ["e1"], milestone_count: 0,
@@ -205,15 +205,15 @@ it("FS 正文缺失（孤儿 DB 行）→ getReport 兜底占位、不抛", () =
 describe("queryReportIndex（B-1+2 报告库筛/搜/排）", () => {
   // 4 条多样化样本
   const samples: ReportIndexEntry[] = [
-    { report_id: "r1", type: "brief", topic_id: "t_swe", facets: ["domain:ai-swe"], date: "2026-06-01", source_ids: ["s1"], title: "AI 软件工程·6月1日", summary: "DHH AI 编码", highlights: [], tags: ["trend"], entity_names: ["DHH"], importance: 5, event_ids: [], milestone_count: 0 },
-    { report_id: "r2", type: "deep_dive", topic_id: "t_swe", facets: ["domain:ai-swe"], date: "2026-06-05", source_ids: ["s1", "s3"], title: "深度·Coding Agent", summary: "Cursor Composer", highlights: [], tags: ["trend", "practice"], entity_names: ["Cursor"], importance: 4, event_ids: [], milestone_count: 0 },
-    { report_id: "r3", type: "brief", topic_id: "t_sec", facets: ["domain:ai-security"], date: "2026-06-03", source_ids: ["s2"], title: "AI 安全·6月3日", summary: "Prompt injection 案例", highlights: [], tags: ["case"], entity_names: [], importance: 3, event_ids: [], milestone_count: 0 },
-    { report_id: "r4", type: "initial_digest", topic_id: "t_sec", facets: ["domain:ai-security"], date: "2026-05-20", source_ids: ["s2"], title: "首版·ATLAS 综述", summary: "MITRE ATLAS", highlights: [], tags: [], entity_names: ["MITRE"], importance: 5, event_ids: [], milestone_count: 0 },
+    { report_id: "r1", type: "brief", topic_id: "t_swe", facets: ["domain:software-engineering"], date: "2026-06-01", source_ids: ["s1"], title: "AI 软件工程·6月1日", summary: "DHH AI 编码", highlights: [], tags: ["trend"], entity_names: ["DHH"], importance: 5, event_ids: [], milestone_count: 0 },
+    { report_id: "r2", type: "deep_dive", topic_id: "t_swe", facets: ["domain:software-engineering"], date: "2026-06-05", source_ids: ["s1", "s3"], title: "深度·Coding Agent", summary: "Cursor Composer", highlights: [], tags: ["trend", "practice"], entity_names: ["Cursor"], importance: 4, event_ids: [], milestone_count: 0 },
+    { report_id: "r3", type: "brief", topic_id: "t_sec", facets: ["domain:security"], date: "2026-06-03", source_ids: ["s2"], title: "AI 安全·6月3日", summary: "Prompt injection 案例", highlights: [], tags: ["case"], entity_names: [], importance: 3, event_ids: [], milestone_count: 0 },
+    { report_id: "r4", type: "initial_digest", topic_id: "t_sec", facets: ["domain:security"], date: "2026-05-20", source_ids: ["s2"], title: "首版·ATLAS 综述", summary: "MITRE ATLAS", highlights: [], tags: [], entity_names: ["MITRE"], importance: 5, event_ids: [], milestone_count: 0 },
   ];
 
   beforeEach(() => {
-    insertTopic(db, { id: "t_swe", name: "SWE", keywords: [], facets: ["domain:ai-swe"], language: "zh", brief_schedule: "daily", enabled: true });
-    insertTopic(db, { id: "t_sec", name: "SEC", keywords: [], facets: ["domain:ai-security"], language: "zh", brief_schedule: "daily", enabled: true });
+    insertTopic(db, { id: "t_swe", name: "SWE", keywords: [], facets: ["domain:software-engineering"], language: "zh", brief_schedule: "daily", enabled: true });
+    insertTopic(db, { id: "t_sec", name: "SEC", keywords: [], facets: ["domain:security"], language: "zh", brief_schedule: "daily", enabled: true });
     for (const idx of samples) {
       const rep: Report = {
         id: idx.report_id, type: idx.type, topic_id: idx.topic_id, status: "done",
@@ -236,8 +236,8 @@ describe("queryReportIndex（B-1+2 报告库筛/搜/排）", () => {
     expect(rs.map((r) => r.report_id).sort()).toEqual(["r1", "r3"]);
   });
 
-  it("domain=ai-security → r3 + r4（facets 含 domain:ai-security）", () => {
-    const rs = queryReportIndex(db, { domain: "ai-security" });
+  it("domain=security → r3 + r4（facets 含 domain:security）", () => {
+    const rs = queryReportIndex(db, { domain: "security" });
     expect(rs.map((r) => r.report_id).sort()).toEqual(["r3", "r4"]);
   });
 
@@ -285,19 +285,19 @@ describe("queryReportIndex（B-1+2 报告库筛/搜/排）", () => {
 
   it("组合筛选：type+domain+from → 单条命中", () => {
     const rs = queryReportIndex(db, {
-      type: "deep_dive", domain: "ai-swe", from: "2026-06-01",
+      type: "deep_dive", domain: "software-engineering", from: "2026-06-01",
     });
     expect(rs.map((r) => r.report_id)).toEqual(["r2"]);
   });
 
   // domain 筛选读 facets **存储列**（json_each），非 rowToIndex 派生值——故存量行的 facets 必须落库才可筛。
   it("domain 筛选吃 facets 存储列：清空则漏、写回则命中", () => {
-    // 清空 r1 的存储 facets → domain=ai-swe 不再命中（证明筛选吃存储列）。
+    // 清空 r1 的存储 facets → domain=software-engineering 不再命中（证明筛选吃存储列）。
     db.prepare("UPDATE report_index SET facets='[]' WHERE report_id='r1'").run();
-    expect(queryReportIndex(db, { domain: "ai-swe" }).map((r) => r.report_id)).not.toContain("r1");
+    expect(queryReportIndex(db, { domain: "software-engineering" }).map((r) => r.report_id)).not.toContain("r1");
     // 写回正确 facets → r1 重新可筛。
-    db.prepare(`UPDATE report_index SET facets='["domain:ai-swe"]' WHERE report_id='r1'`).run();
-    expect(queryReportIndex(db, { domain: "ai-swe" }).map((r) => r.report_id)).toContain("r1");
+    db.prepare(`UPDATE report_index SET facets='["domain:software-engineering"]' WHERE report_id='r1'`).run();
+    expect(queryReportIndex(db, { domain: "software-engineering" }).map((r) => r.report_id)).toContain("r1");
   });
 
   it("topic 筛选 → 仅该主题报告（主题页时间线用）", () => {
@@ -426,7 +426,7 @@ describe("listRecentBriefEvents（P1 不复报 · 喂 analyzer 的历史事件�
         citation_count: 0, cost: { tokens: 0, amount: 0 },
       };
       const idx: ReportIndexEntry = {
-        report_id: reportId, type, topic_id: "t1", facets: ["domain:ai-swe"], date,
+        report_id: reportId, type, topic_id: "t1", facets: ["domain:software-engineering"], date,
         source_ids: [], title: rep.title, summary: "", highlights: [], tags: [], entity_names: [], importance: 4, event_ids: [], milestone_count: 0,
       };
       saveReport(db, rep, idx, { dir });
@@ -472,7 +472,7 @@ describe("listRecentBriefEvents（P1 不复报 · 喂 analyzer 的历史事件�
 describe("主题持续聚合（ADR-0005）纯函数", () => {
   // report_index fixture 工厂：必填 date/report_id，其余给默认、可覆盖
   const mk = (o: Partial<ReportIndexEntry> & { date: string; report_id: string }): ReportIndexEntry => ({
-    type: "brief", topic_id: "t1", facets: ["domain:ai-swe"], source_ids: [],
+    type: "brief", topic_id: "t1", facets: ["domain:software-engineering"], source_ids: [],
     title: o.report_id, summary: "", highlights: [], tags: [], entity_names: [], importance: 1, event_ids: [],
     ...o,
     milestone_count: o.milestone_count ?? 0,
@@ -620,18 +620,52 @@ describe("Step2c 砍 industry 迁移（自包含：回填 facets + DROP COLUMN�
     db1.close();
     // 3) 重新 openDb → Step2c migrate：industry 列存在 → 回填空 facets → DROP COLUMN ×3。
     const db2 = openDb(file);
-    // 空 facets 从 industry 回填：topic 读回 + report 可按 domain 筛。
-    expect(getTopic(db2, "t_sec")?.facets).toEqual(["domain:ai-security"]);
-    expect(queryReportIndex(db2, { domain: "ai-security" }).map((r) => r.report_id)).toContain("rep_legacy");
-    // **已设的 facets 不被覆盖**：t_ind 仍是 domain:ai-industry，不因 industry=ai-swe 被改成 domain:ai-swe。
-    expect(getTopic(db2, "t_ind")?.facets).toEqual(["domain:ai-industry"]);
+    // 空 facets 从 industry 回填，再经 lens 后续迁移把旧 domain 值去 ai- 前缀（ai-security→security）：
+    // topic 读回 + report 可按新 domain 值筛。
+    expect(getTopic(db2, "t_sec")?.facets).toEqual(["domain:security"]);
+    expect(queryReportIndex(db2, { domain: "security" }).map((r) => r.report_id)).toContain("rep_legacy");
+    // **已设的 facets 不被覆盖**：t_ind 的 domain:ai-industry 未被回填覆盖，再经后续迁移 → foundation-models + 补 lens:business。
+    expect(getTopic(db2, "t_ind")?.facets).toEqual(["domain:foundation-models", "lens:business"]);
     // industry 列已从三表 DROP。
     for (const t of ["topic", "report_index", "source"]) expect(columnNames(db2, t)).not.toContain("industry");
     db2.close();
-    // 4) 二次 openDb：industry 列已无 → guard 跳过（不抛），数据不变。
+    // 4) 二次 openDb：industry 列已无 → guard 跳过；rename 幂等（旧 token 已无）、lens guard 防重复追加 → 数据不变。
     const db3 = openDb(file);
-    expect(getTopic(db3, "t_sec")?.facets).toEqual(["domain:ai-security"]);
+    expect(getTopic(db3, "t_sec")?.facets).toEqual(["domain:security"]);
+    expect(getTopic(db3, "t_ind")?.facets).toEqual(["domain:foundation-models", "lens:business"]);
     expect(columnNames(db3, "source")).not.toContain("industry");
+    db3.close();
+  });
+});
+
+// ADR-0010 后续（lens 视角轴 + domain 去 ai- 前缀）迁移 guard：模拟 Step2c-era 生产库（旧 domain 值）
+// 重开后自动重命名 + 给旧产业主题补 lens:business；幂等。
+describe("lens 后续迁移（domain 去前缀 + 补 lens:business）", () => {
+  it("旧 domain 值重开后重命名；domain:ai-industry 主题补 lens:business；二次幂等", () => {
+    const file = join(dir, "lens-migrate.db");
+    const db1 = openDb(file);
+    insertTopic(db1, { id: "t_swe", name: "SWE", keywords: ["k"], facets: ["domain:software-engineering"], language: "zh", brief_schedule: "daily", enabled: true });
+    insertTopic(db1, { id: "t_ind", name: "IND", keywords: ["k"], facets: ["domain:foundation-models"], language: "zh", brief_schedule: "daily", enabled: true });
+    saveReport(db1, { ...report, id: "rep_swe", topic_id: "t_swe" }, { ...index, report_id: "rep_swe", topic_id: "t_swe", facets: ["domain:ai-swe"] }, { dir });
+    // 降级为 Step2c-era 旧值（绕过 validate 直写）：topic 旧 domain + 无 lens；report_index 旧 domain。
+    db1.exec("UPDATE topic SET facets='[\"domain:ai-swe\"]' WHERE id='t_swe'");
+    db1.exec("UPDATE topic SET facets='[\"domain:ai-industry\"]' WHERE id='t_ind'");
+    db1.exec("UPDATE report_index SET facets='[\"domain:ai-swe\"]' WHERE report_id='rep_swe'");
+    db1.close();
+
+    const db2 = openDb(file);
+    // 去前缀重命名（topic + report_index 两表）。
+    expect(getTopic(db2, "t_swe")?.facets).toEqual(["domain:software-engineering"]);
+    expect(queryReportIndex(db2, { domain: "software-engineering" }).map((r) => r.report_id)).toContain("rep_swe");
+    // 旧产业主题（domain:ai-industry）→ foundation-models + 自动补 lens:business（lens 视角从 domain 解放）。
+    expect(getTopic(db2, "t_ind")?.facets).toEqual(["domain:foundation-models", "lens:business"]);
+    // report_index 历史行不臆造 lens（仅重命名 domain）。
+    expect(queryReportIndex(db2, { lens: "business" }).length).toBe(0);
+    db2.close();
+
+    // 二次幂等：旧 token 已无 → rename no-op；lens guard 防重复追加。
+    const db3 = openDb(file);
+    expect(getTopic(db3, "t_ind")?.facets).toEqual(["domain:foundation-models", "lens:business"]);
     db3.close();
   });
 });
