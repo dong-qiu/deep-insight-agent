@@ -2,7 +2,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { domainFacet, isDomainValue, parseFacets } from "../topics/facets.js";
+import { domainFacet, isDomainValue, isLensValue, lensFacet, parseFacets } from "../topics/facets.js";
 import type { Report, ReportIndexEntry } from "../types.js";
 import type { DB } from "./index.js";
 
@@ -371,8 +371,10 @@ function rowToIndex(r: any): ReportIndexEntry {
 export interface ReportQuery {
   q?: string;
   type?: string;
-  /** ADR-0010 Step2b：领域筛选（裸 domain 值，如 "ai-swe"）；匹配 facets 含 domain:<值>。 */
+  /** ADR-0010 Step2b：领域筛选（裸 domain 值，如 "software-engineering"）；匹配 facets 含 domain:<值>。 */
   domain?: string;
+  /** ADR-0010 后续：视角筛选（裸 lens 值，如 "business"）；匹配 facets 含 lens:<值>。 */
+  lens?: string;
   topic?: string;
   source?: string;
   tag?: string;
@@ -400,6 +402,11 @@ export function queryReportIndex(db: DB, opts: ReportQuery = {}): ReportIndexEnt
   if (opts.domain && isDomainValue(opts.domain)) {
     where.push("EXISTS (SELECT 1 FROM json_each(report_index.facets) WHERE value = ?)");
     args.push(domainFacet(opts.domain));
+  }
+  // 视角筛选（ADR-0010 后续 lens 轴）：白名单裸 lens 值 → facets 含 lens:<值>（与 domain 同口径，可叠加）。
+  if (opts.lens && isLensValue(opts.lens)) {
+    where.push("EXISTS (SELECT 1 FROM json_each(report_index.facets) WHERE value = ?)");
+    args.push(lensFacet(opts.lens));
   }
   // topic_id 是自由字符串（topic 主键），无固定白名单可校验——靠参数化（topic_id = ?）杜绝注入。
   if (opts.topic && opts.topic.trim()) {

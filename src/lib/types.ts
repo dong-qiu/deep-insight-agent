@@ -46,8 +46,8 @@ export interface Topic {
   /** ADR-0010 行为原型。**DB 层 NOT NULL DEFAULT 'deep_vertical'**；TS 设可选仅为兼容存量手搭 fixture——
    *  运行时 rowToTopic/validate/config 总赋值，写入边界(insert/update)兜底默认，读取(archetypeProfile)容 undefined。 */
   archetype?: Archetype;
-  /** ADR-0010 分面标签，如 `["domain:ai-swe"]`，多值——**分类（领域）唯一维度**（Step2c 砍 industry 后）。
-   *  DB NOT NULL DEFAULT '[]'；TS 可选仅兼容 fixture——rowToTopic/validate/config 总赋值，输入要求 ≥1 domain。 */
+  /** ADR-0010 分面标签，如 `["domain:software-engineering","lens:business"]`，多值。domain（学科域）**必填 ≥1**、
+   *  lens（视角）选填（未标视作 technical）。DB NOT NULL DEFAULT '[]'；TS 可选仅兼容 fixture——rowToTopic/validate/config 总赋值。 */
   facets?: string[];
 }
 
@@ -234,7 +234,7 @@ export interface ReportIndexEntry {
   report_id: string;
   type: Report["type"];
   topic_id: string;
-  /** 分面标签（ADR-0010）：报告库筛选/展示的领域维度（domain:ai-swe 等）；写入端取 topic.facets。
+  /** 分面标签（ADR-0010）：报告库筛选/展示的分类维度（domain:software-engineering / lens:business 等）；写入端取 topic.facets。
    *  DB NOT NULL DEFAULT '[]'；TS 可选仅兼容旧字面量——saveReport 缺省落 '[]'。 */
   facets?: string[];
   date: string;

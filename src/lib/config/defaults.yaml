@@ -16,10 +16,12 @@ system:
   reportP50TargetMin: 10
 
 # 领域级宽主题（每域 1 个），吃下该域全部源；id 保持稳定（被源/评测/历史报告引用，不可改）。
-# 关键词放宽到覆盖领域全貌，analyzer 据此在宽源里提炼本域相关洞察。域分类靠 facets（domain:*）。
-# 例外：t_ai_industry（AI 产业动态，domain:ai-industry）是窄主题——专收泛 AI 厂商 PR
-# （如 OpenAI News）：这类源信号广但与「软件工程」相关度低，挂 t_code_agents 从不被引（贡献 0），
-# 故单列归口，让其在对的池子里竞争（2026-06-22；ADR-0010 Step2c 起领域唯一维度 = facets，已无 industry）。
+# 关键词放宽到覆盖领域全貌，analyzer 据此在宽源里提炼本域相关洞察。分类靠 facets：
+#   - domain（学科域，必填）：software-engineering / security / foundation-models（无 ai- 前缀——AI 是产品级恒定前提）。
+#   - lens（视角，选填；不标视作 technical）：technical / business。把「产业视角」从 domain 解放（取代旧 domain:ai-industry）。
+# 例外：t_ai_industry（AI 产业动态）是窄主题——专收泛 AI 厂商 PR（如 OpenAI News）：这类源信号广但与
+# 「软件工程」相关度低，挂 t_code_agents 从不被引（贡献 0），故单列归口、让其在对的池子里竞争
+# （2026-06-22；ADR-0010 后续：域=foundation-models、视角 lens:business）。
 defaultTopics:
   - id: t_code_agents
     name: AI 时代的软件工程
@@ -30,7 +32,7 @@ defaultTopics:
     brief_schedule: daily
     enabled: true
     archetype: deep_vertical
-    facets: [domain:ai-swe]
+    facets: [domain:software-engineering, lens:technical]
   - id: t_prompt_injection
     name: AI 时代的安全
     keywords:
@@ -40,8 +42,8 @@ defaultTopics:
     brief_schedule: daily
     enabled: true
     archetype: deep_vertical
-    facets: [domain:ai-security]
-  # 泛 AI 厂商动态（窄主题，例外见上）：归口 OpenAI News 等泛 PR 源。域 = domain:ai-industry。
+    facets: [domain:security, lens:technical]
+  # 泛 AI 厂商动态（窄主题，例外见上）：归口 OpenAI News 等泛 PR 源。域=基础模型、视角=产业。
   - id: t_ai_industry
     name: AI 产业动态
     keywords:
@@ -51,14 +53,14 @@ defaultTopics:
     brief_schedule: daily
     enabled: true
     archetype: horizontal_pulse  # ADR-0010：态势感知型——相关性硬下限砍纯噪声
-    facets: [domain:ai-industry]  # 产业域（独立于 ai-swe/ai-security；industry 字段塞不下，正是 facets 之因）
+    facets: [domain:foundation-models, lens:business]  # 基础模型域 + 产业视角（lens 把产业视角从 domain 解放）
 
 # MVP 首版接入清单（source-feasibility.md 末节，17 ✅ 推荐源 → 23 feed）。
 # 全部走现有 rss / arxiv 适配器（GitHub Atom、播客 RSS 均由 rss 适配器的 Atom/RSS 分支处理）。
 # topic_ids 按主题映射：两个行业宽主题（t_code_agents / t_prompt_injection）+ 窄主题例外
 # t_ai_industry（归口泛 AI 厂商 PR）；宽主题偏窄、未充分利用源广度，待后续按行业扩主题（见 roadmap）。
 defaultSources:
-  # ── AI 时代的软件工程（ai-swe → t_code_agents）──
+  # ── AI 时代的软件工程（software-engineering → t_code_agents）──
   - id: src_hn
     name: Hacker News
     type: rss
@@ -168,7 +170,7 @@ defaultSources:
     fetch_interval: 6h
     enabled: true
 
-  # ── AI 时代的安全（ai-security → t_prompt_injection）──
+  # ── AI 时代的安全（security → t_prompt_injection）──
   - id: src_thehackernews
     name: The Hacker News
     type: rss

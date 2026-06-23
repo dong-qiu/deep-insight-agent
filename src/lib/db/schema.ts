@@ -50,7 +50,7 @@ CREATE TABLE IF NOT EXISTS topic (
   enabled        INTEGER NOT NULL DEFAULT 1,
   -- ADR-0010 行为原型：无 DB CHECK（app 层 ARCHETYPE_VALUES 校验，加原型零迁移，reference-data 模式）
   archetype      TEXT NOT NULL DEFAULT 'deep_vertical',
-  -- ADR-0010 分面标签（JSON 数组，如 ["domain:ai-swe"]）：分类唯一维度（Step2c 砍 industry 后）。
+  -- ADR-0010 分面标签（JSON 数组，如 ["domain:software-engineering","lens:business"]）：分类维度 domain(必填)+lens(选填)。
   facets         TEXT NOT NULL DEFAULT '[]',
   created_at     TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at     TEXT NOT NULL DEFAULT (datetime('now'))

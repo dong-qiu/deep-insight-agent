@@ -10,7 +10,9 @@ function entry(over: Partial<ReportIndexEntry> = {}): ReportIndexEntry {
     report_id: "r1",
     type: "brief",
     topic_id: "t1",
-    facets: ["domain:ai-swe"],
+    // 用 foundation-models（标签「基础模型」）：其标签不是 title「AI 时代的软件工程」的子串，
+    // 故领域抑制的负断言（not.toContain）不会被标题误命中。
+    facets: ["domain:foundation-models"],
     date: "2026-06-18",
     source_ids: [],
     title: "AI 时代的软件工程 · 今日 Brief · 2026-06-18",
@@ -75,30 +77,30 @@ describe("ReportCard 实体 chip 去重", () => {
 describe("ReportCard 已筛选维度抑制", () => {
   it("报告库默认 meta 含 类型 · 领域 · 日期（domain 标签）", () => {
     const h = html(entry(), { showTypeLabel: true });
-    expect(h).toContain("今日 Brief · AI 软件工程 · 2026-06-18");
+    expect(h).toContain("今日 Brief · 基础模型 · 2026-06-18");
   });
 
   it("omit.type 时 meta 不含类型", () => {
     const h = html(entry(), { showTypeLabel: true, omit: { type: true } });
     expect(h).not.toContain("今日 Brief");
-    expect(h).toContain("AI 软件工程 · 2026-06-18");
+    expect(h).toContain("基础模型 · 2026-06-18");
   });
 
   it("omit.domain 时 meta 不含领域", () => {
     const h = html(entry(), { showTypeLabel: true, omit: { domain: true } });
-    expect(h).not.toContain("AI 软件工程");
+    expect(h).not.toContain("基础模型");
     expect(h).toContain("今日 Brief · 2026-06-18");
   });
 
-  it("多 domain facets 以 · 连接展示", () => {
-    const h = html(entry({ facets: ["domain:ai-swe", "domain:ai-industry"] }), { showTypeLabel: true });
-    expect(h).toContain("AI 软件工程 · AI 产业动态");
+  it("domain + lens facets 一并以 · 连接展示", () => {
+    const h = html(entry({ facets: ["domain:foundation-models", "lens:business"] }), { showTypeLabel: true });
+    expect(h).toContain("基础模型 · 产业");
   });
 
   it("facets 为空时领域段跳过（仅 类型 · 日期）", () => {
     const h = html(entry({ facets: [] }), { showTypeLabel: true });
     expect(h).toContain("今日 Brief · 2026-06-18");
-    expect(h).not.toContain("AI 软件工程");
+    expect(h).not.toContain("基础模型");
   });
 
   it("两者都 omit 时只剩日期", () => {
@@ -108,7 +110,7 @@ describe("ReportCard 已筛选维度抑制", () => {
 
   it("首页（!showTypeLabel）只显示日期", () => {
     const h = html(entry());
-    expect(h).not.toContain("AI 软件工程");
+    expect(h).not.toContain("基础模型");
     expect(h).toMatch(/card-meta">2026-06-18 </);
   });
 });

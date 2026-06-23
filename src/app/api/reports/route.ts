@@ -4,10 +4,11 @@ import { queryReportIndex } from "../../../lib/db/reports.js";
 
 export const dynamic = "force-dynamic";
 
-/** GET /api/reports?q=&type=&domain=&topic=&source=&tag=&entity=&from=&to=&sort=&dir=
+/** GET /api/reports?q=&type=&domain=&lens=&topic=&source=&tag=&entity=&from=&to=&sort=&dir=
  *  —— 报告库统一查询入口。
  *  - q: FTS5（标题/摘要/正文）；无效语法走 fallback（不带 q 重查 + warn 字段）；
  *  - domain: ADR-0010 Step2b 分类筛选（取代 industry，匹配 facets 含 domain:<值>）；
+ *  - lens: ADR-0010 后续视角筛选（匹配 facets 含 lens:<值>，与 domain 正交可叠加）；
  *  - 其他参数白名单 + 参数化 SQL（防注入），见 db/reports.ts queryReportIndex。 */
 export function GET(req: Request) {
   const db = getDb();
@@ -16,6 +17,7 @@ export function GET(req: Request) {
     q: sp.get("q") ?? undefined,
     type: sp.get("type") ?? undefined,
     domain: sp.get("domain") ?? undefined,
+    lens: sp.get("lens") ?? undefined,
     topic: sp.get("topic") ?? undefined,
     source: sp.get("source") ?? undefined,
     tag: sp.get("tag") ?? undefined,
