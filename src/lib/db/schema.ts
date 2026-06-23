@@ -186,6 +186,7 @@ CREATE TABLE IF NOT EXISTS report_index (
   type         TEXT NOT NULL,
   topic_id     TEXT NOT NULL,
   industry     TEXT NOT NULL,
+  facets       TEXT NOT NULL DEFAULT '[]',
   date         TEXT NOT NULL,
   source_ids   TEXT NOT NULL DEFAULT '[]',
   title        TEXT NOT NULL,

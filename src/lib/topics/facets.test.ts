@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { DOMAIN_VALUES, deriveFacetsFromIndustry, domainFacet, isValidFacet } from "./facets.js";
+import {
+  DOMAIN_VALUES, deriveFacetsFromIndustry, domainFacet, domainValueOf, facetLabel,
+  isDomainValue, isValidFacet, parseFacetsOrDerive,
+} from "./facets.js";
 
 describe("facets 受控词表（ADR-0010 Step2a）", () => {
   it("domainFacet 构造 domain:<值>", () => {
@@ -29,5 +32,34 @@ describe("facets 受控词表（ADR-0010 Step2a）", () => {
     for (const ind of ["ai-swe", "ai-security"] as const) {
       expect(deriveFacetsFromIndustry(ind).every(isValidFacet)).toBe(true);
     }
+  });
+});
+
+describe("facets 取值/标签辅助（ADR-0010 Step2b）", () => {
+  it("isDomainValue 校验裸 domain 值白名单", () => {
+    expect(isDomainValue("ai-swe")).toBe(true);
+    expect(isDomainValue("ai-industry")).toBe(true);
+    expect(isDomainValue("garbage")).toBe(false);
+    expect(isDomainValue("domain:ai-swe")).toBe(false); // 这是 facet 不是裸值
+    expect(isDomainValue(null)).toBe(false);
+  });
+
+  it("domainValueOf 剥前缀回裸值；非法 → null", () => {
+    expect(domainValueOf("domain:ai-swe")).toBe("ai-swe");
+    expect(domainValueOf("domain:unknown")).toBeNull();
+    expect(domainValueOf("ai-swe")).toBeNull();
+  });
+
+  it("facetLabel 映人类标签；未知/非 domain 回退原串", () => {
+    expect(facetLabel("domain:ai-swe")).toBe("AI 软件工程");
+    expect(facetLabel("domain:ai-industry")).toBe("AI 产业动态");
+    expect(facetLabel("topic:foo")).toBe("topic:foo"); // 非 domain facet 原样返
+  });
+
+  it("parseFacetsOrDerive：非空数组原样、空/坏 JSON 派生自 industry", () => {
+    expect(parseFacetsOrDerive('["domain:ai-industry"]', "ai-swe")).toEqual(["domain:ai-industry"]);
+    expect(parseFacetsOrDerive("[]", "ai-security")).toEqual(["domain:ai-security"]);
+    expect(parseFacetsOrDerive("not json", "ai-swe")).toEqual(["domain:ai-swe"]);
+    expect(parseFacetsOrDerive(undefined, "ai-swe")).toEqual(["domain:ai-swe"]);
   });
 });

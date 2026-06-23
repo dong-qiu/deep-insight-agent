@@ -89,6 +89,20 @@ function migrate(db: DB): void {
   ensureColumn(db, "topic", "archetype", "archetype TEXT NOT NULL DEFAULT 'deep_vertical'");
   // 主题分面标签（ADR-0010 Step2a）：存量默认 '[]'，rowToTopic 读时空则从 industry 派生（零回填）。
   ensureColumn(db, "topic", "facets", "facets TEXT NOT NULL DEFAULT '[]'");
+  // 报告分面标签（ADR-0010 Step2b）：报告库筛选/展示主维度。存量行补列默认 '[]'。
+  // 与 topic 不同：report_index 行多、筛选在 SQL 层（无法逐行派生），故对历史行做一次性回填——
+  // 从该行 industry 串映成 domain facet（json_array('domain:'||industry)），让历史报告仍可按 domain 筛。
+  // 注：t_ai_industry 历史报告 industry=ai-swe → 回填 domain:ai-swe（历史口径，非 domain:ai-industry）；
+  // 新报告由 buildReport 取 topic.facets 写正确值（生产 topic.facets 校正后即对）。详见 ADR-0010 Step2b。
+  const reportFacetsExists = (db.prepare("PRAGMA table_info(report_index)").all() as { name: string }[])
+    .some((c) => c.name === "facets");
+  ensureColumn(db, "report_index", "facets", "facets TEXT NOT NULL DEFAULT '[]'");
+  if (!reportFacetsExists) {
+    db.exec(
+      `UPDATE report_index SET facets = json_array('domain:' || industry)
+       WHERE facets IN ('[]', '') AND industry <> ''`,
+    );
+  }
 }
 
 let _db: DB | null = null;

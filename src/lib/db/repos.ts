@@ -2,7 +2,7 @@
  * 实体仓储（CRUD）。JSON 字段在此序列化/反序列化，bool ↔ 0/1。
  * 增量1 覆盖 Source / Topic / ContentItem / Run；其余实体随后续增量加。
  */
-import { deriveFacetsFromIndustry } from "../topics/facets.js";
+import { deriveFacetsFromIndustry, parseFacetsOrDerive } from "../topics/facets.js";
 import type { ContentItem, Cost, Run, Source, Topic } from "../types.js";
 import type { DB } from "./index.js";
 
@@ -178,16 +178,6 @@ function rowToTopic(r: Record<string, unknown>): Topic {
   };
 }
 
-/** rowToTopic 用：facets JSON 非空则解析，空/异常则从 industry 派生（Step2a 零回填）。 */
-function parseFacetsOrDerive(raw: unknown, industry: Topic["industry"]): string[] {
-  try {
-    const parsed = typeof raw === "string" ? JSON.parse(raw) : [];
-    if (Array.isArray(parsed) && parsed.length > 0) return parsed as string[];
-  } catch {
-    /* 落到派生 */
-  }
-  return deriveFacetsFromIndustry(industry);
-}
 /** 更新 topic。返 changes 数。 */
 export function updateTopic(db: DB, t: Topic): number {
   const r = db.prepare(

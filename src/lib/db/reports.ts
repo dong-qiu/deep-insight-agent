@@ -2,9 +2,9 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import type { Industry, Report, ReportIndexEntry } from "../types.js";
+import { domainFacet, isDomainValue, parseFacetsOrDerive } from "../topics/facets.js";
+import type { Report, ReportIndexEntry } from "../types.js";
 import type { DB } from "./index.js";
-import { INDUSTRY_VALUES } from "./validate.js";
 
 const j = (v: unknown): string => JSON.stringify(v);
 
@@ -40,10 +40,12 @@ export function saveReport(
         prev_report_id: report.prev_report_id, citation_count: report.citation_count, cost: j(report.cost),
       });
       db.prepare(
-        `INSERT INTO report_index (report_id,type,topic_id,industry,date,source_ids,title,summary,highlights,tags,entity_names,importance,event_ids,milestone_count)
-         VALUES (@report_id,@type,@topic_id,@industry,@date,@source_ids,@title,@summary,@highlights,@tags,@entity_names,@importance,@event_ids,@milestone_count)`,
+        `INSERT INTO report_index (report_id,type,topic_id,industry,facets,date,source_ids,title,summary,highlights,tags,entity_names,importance,event_ids,milestone_count)
+         VALUES (@report_id,@type,@topic_id,@industry,@facets,@date,@source_ids,@title,@summary,@highlights,@tags,@entity_names,@importance,@event_ids,@milestone_count)`,
       ).run({
         report_id: index.report_id, type: index.type, topic_id: index.topic_id, industry: index.industry,
+        // facets 主维度（Step2b）：写入端缺省（旧字面量）时从 industry 派生兜底，保证 NOT NULL 列非空且可筛。
+        facets: j(index.facets ?? parseFacetsOrDerive(undefined, index.industry)),
         date: index.date, source_ids: j(index.source_ids), title: index.title, summary: index.summary,
         highlights: j(index.highlights), tags: j(index.tags), entity_names: j(index.entity_names), importance: index.importance,
         event_ids: j(index.event_ids), milestone_count: index.milestone_count,
@@ -348,7 +350,8 @@ export function topicReportStats(db: DB): Map<string, { count: number; latestDat
 
 function rowToIndex(r: any): ReportIndexEntry {
   return {
-    report_id: r.report_id, type: r.type, topic_id: r.topic_id, industry: r.industry, date: r.date,
+    report_id: r.report_id, type: r.type, topic_id: r.topic_id, industry: r.industry,
+    facets: parseFacetsOrDerive(r.facets, r.industry), date: r.date,
     source_ids: JSON.parse(r.source_ids), title: r.title, summary: r.summary,
     highlights: JSON.parse(r.highlights ?? "[]"),
     tags: JSON.parse(r.tags), entity_names: JSON.parse(r.entity_names), importance: r.importance,
@@ -359,16 +362,17 @@ function rowToIndex(r: any): ReportIndexEntry {
 
 /** 报告库查询：FTS5 + 筛选 + 排序。
  *  - q: 走 FTS5 → 取 report_id 集合再过滤；
- *  - type / industry / from / to (yyyy-mm-dd inclusive)：白名单 + 参数化 SQL；
- *  - topic / source / tag / entity：参数化精确匹配（source/tag/entity 经 json_each 展开数组列）；
+ *  - type / domain / from / to (yyyy-mm-dd inclusive)：白名单 + 参数化 SQL；
+ *  - topic / source / tag / entity / domain：参数化精确匹配（数组列经 json_each 展开做"含某值"）；
  *  - sort: "date"|"importance"，dir: "asc"|"desc"，默认 date desc——白名单查表映射常量列名；
  *  - 无效字段静默忽略走默认（UI 不应被 400 打断）。
- *  - Sonnet R1 review (2026-06-06)：industry 白名单与 validateSourceInput 复用；
+ *  - ADR-0010 Step2b：分类筛选由 industry 等值迁为 domain 分面包含（facets 列 json_each）。
  *    ORDER BY 用 SORT_COLS 常量映射隔离任意字符串拼接面。 */
 export interface ReportQuery {
   q?: string;
   type?: string;
-  industry?: string;
+  /** ADR-0010 Step2b：领域筛选（裸 domain 值，如 "ai-swe"）；匹配 facets 含 domain:<值>。 */
+  domain?: string;
   topic?: string;
   source?: string;
   tag?: string;
@@ -392,8 +396,10 @@ export function queryReportIndex(db: DB, opts: ReportQuery = {}): ReportIndexEnt
   if (opts.type && REPORT_TYPES.has(opts.type)) {
     where.push("report_index.type = ?"); args.push(opts.type);
   }
-  if (opts.industry && INDUSTRY_VALUES.has(opts.industry as Industry)) {
-    where.push("report_index.industry = ?"); args.push(opts.industry);
+  // 领域筛选（Step2b）：白名单裸 domain 值 → facets 含 domain:<值>（json_each 展开数组列，参数化）。
+  if (opts.domain && isDomainValue(opts.domain)) {
+    where.push("EXISTS (SELECT 1 FROM json_each(report_index.facets) WHERE value = ?)");
+    args.push(domainFacet(opts.domain));
   }
   // topic_id 是自由字符串（topic 主键），无固定白名单可校验——靠参数化（topic_id = ?）杜绝注入。
   if (opts.topic && opts.topic.trim()) {

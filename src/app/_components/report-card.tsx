@@ -6,6 +6,7 @@
  *  纯服务端组件、零客户端 JS。 */
 import type { ReactNode } from "react";
 import { SNIPPET_CLOSE, SNIPPET_OPEN } from "../../lib/db/reports.js";
+import { facetLabel } from "../../lib/topics/facets.js";
 import type { ReportIndexEntry } from "../../lib/types.js";
 
 const TYPE_LABEL: Record<ReportIndexEntry["type"], string> = {
@@ -51,7 +52,8 @@ function dedupEntities(r: ReportIndexEntry): string[] {
 /** 在 report 列表里已按某维度筛选时，要从卡片 meta 里隐藏的维度——避免每张卡重复显示恒定的筛选值。 */
 export interface CardOmit {
   type?: boolean;
-  industry?: boolean;
+  /** ADR-0010 Step2b：领域(domain) 维度（原 industry）。 */
+  domain?: boolean;
 }
 
 /** 渲染 FTS snippet：按 OPEN/CLOSE 控制字符拆段，命中段包 <mark>。
@@ -83,11 +85,15 @@ export function ReportCard({
   const r = entry;
   const entities = dedupEntities(r);
   const tags = r.tags.slice(0, TAG_MAX);
-  // meta 维度按需拼装：报告库（showTypeLabel）默认 类型 · 行业 · 日期，但已被筛选的维度逐条重复=噪声，故抑制；
+  // meta 维度按需拼装：报告库（showTypeLabel）默认 类型 · 领域 · 日期，但已被筛选的维度逐条重复=噪声，故抑制；
   // 首页 Brief（!showTypeLabel）由页头表明类型，只留日期。日期始终保留（同列表内最常变、定位用）。
+  // 领域(domain)：ADR-0010 Step2b 取代 industry，展示 facets 的人类标签（多 domain 以 · 连接）。
   const metaParts: string[] = [];
   if (showTypeLabel && !omit?.type) metaParts.push(TYPE_LABEL[r.type] ?? r.type);
-  if (showTypeLabel && !omit?.industry) metaParts.push(r.industry);
+  if (showTypeLabel && !omit?.domain) {
+    const domainLabels = (r.facets ?? []).map(facetLabel).filter(Boolean);
+    if (domainLabels.length) metaParts.push(domainLabels.join(" · "));
+  }
   metaParts.push(r.date);
   return (
     <article className="card">

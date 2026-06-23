@@ -236,8 +236,8 @@ describe("queryReportIndex（B-1+2 报告库筛/搜/排）", () => {
     expect(rs.map((r) => r.report_id).sort()).toEqual(["r1", "r3"]);
   });
 
-  it("industry=ai-security → r3 + r4", () => {
-    const rs = queryReportIndex(db, { industry: "ai-security" });
+  it("domain=ai-security → r3 + r4（facets 从 industry 派生兜底，含 domain:ai-security）", () => {
+    const rs = queryReportIndex(db, { domain: "ai-security" });
     expect(rs.map((r) => r.report_id).sort()).toEqual(["r3", "r4"]);
   });
 
@@ -267,8 +267,8 @@ describe("queryReportIndex（B-1+2 报告库筛/搜/排）", () => {
     expect(rs.length).toBe(4);
   });
 
-  it("非法 industry 静默忽略（Sonnet R1 critical：与 type 同口径白名单）", () => {
-    const rs = queryReportIndex(db, { industry: "garbage" });
+  it("非法 domain 静默忽略（与 type 同口径白名单，Step2b）", () => {
+    const rs = queryReportIndex(db, { domain: "garbage" });
     expect(rs.length).toBe(4); // 不过滤、全返
   });
 
@@ -283,11 +283,27 @@ describe("queryReportIndex（B-1+2 报告库筛/搜/排）", () => {
     expect(rs.length).toBe(4);
   });
 
-  it("组合筛选：type+industry+from → 单条命中", () => {
+  it("组合筛选：type+domain+from → 单条命中", () => {
     const rs = queryReportIndex(db, {
-      type: "deep_dive", industry: "ai-swe", from: "2026-06-01",
+      type: "deep_dive", domain: "ai-swe", from: "2026-06-01",
     });
     expect(rs.map((r) => r.report_id)).toEqual(["r2"]);
+  });
+
+  // Step2b 迁移 load-bearing：domain 筛选读 facets **存储列**（json_each），非 rowToIndex 派生值。
+  // 故存量行（facets='[]'）必须靠 db/index.ts 一次性回填才可筛——此处模拟历史态 + 回填，固化该保证。
+  it("历史行 facets='[]' 经回填后可按 domain 筛（堵 SQL 读存储列盲区）", () => {
+    // 模拟 facets 列引入前的存量行：把 r1（industry=ai-swe）的 facets 重置为空数组。
+    db.prepare("UPDATE report_index SET facets='[]' WHERE report_id='r1'").run();
+    // 回填前：domain=ai-swe 不再命中 r1（证明筛选吃存储列，不吃派生）。
+    expect(queryReportIndex(db, { domain: "ai-swe" }).map((r) => r.report_id)).not.toContain("r1");
+    // 回填（镜像 db/index.ts migrate 的一次性 UPDATE）。
+    db.exec(
+      `UPDATE report_index SET facets = json_array('domain:' || industry)
+       WHERE facets IN ('[]', '') AND industry <> ''`,
+    );
+    // 回填后：r1 重新可筛。
+    expect(queryReportIndex(db, { domain: "ai-swe" }).map((r) => r.report_id)).toContain("r1");
   });
 
   it("topic 筛选 → 仅该主题报告（主题页时间线用）", () => {
@@ -581,5 +597,32 @@ describe("sanitizeFtsQuery（查询消毒 → 永不抛错的 MATCH 表达式）
 
   it("中文无空格词整体包裹（前缀使其可命中分词后的库）", () => {
     expect(sanitizeFtsQuery("软件工程")).toBe('"软件工程"*');
+  });
+});
+
+// Step2b 迁移 guard 级回归：真正驱动 openDb→migrate() 的"补列 + 一次性回填 + 二次跳过"全链路。
+// 用 DROP COLUMN 把已建好的库降级回"facets 引入前"的真实 legacy 形态，再 openDb 触发迁移。
+describe("report_index.facets 迁移回填（ADR-0010 Step2b · guard 级）", () => {
+  it("legacy 库（无 facets 列）openDb 后历史行被回填、可按 domain 筛；二次 openDb 不重复回填", () => {
+    const file = join(dir, "legacy-migrate.db");
+    // 1) 正常建库 + 落一条 ai-security 报告（saveReport 此时已派生 facets=domain:ai-security）。
+    const db1 = openDb(file);
+    insertTopic(db1, { ...topic, id: "t_sec", industry: "ai-security" });
+    const rep = { ...report, id: "rep_legacy", topic_id: "t_sec" };
+    saveReport(db1, rep, { ...index, report_id: "rep_legacy", topic_id: "t_sec", industry: "ai-security" }, { dir });
+    // 2) 降级：删掉 facets 列 → 该行回到"facets 引入前"的 legacy 形态。
+    db1.exec("ALTER TABLE report_index DROP COLUMN facets");
+    db1.close();
+    // 3) 重新 openDb → migrate 的 guard 见列缺失 → 补列（默认 '[]'）+ 一次性回填（domain:'||industry）。
+    const db2 = openDb(file);
+    expect(queryReportIndex(db2, { domain: "ai-security" }).map((r) => r.report_id)).toContain("rep_legacy");
+    // 回填值来自该行 industry（ai-security），证明走的是存储列而非默认空。
+    const row = db2.prepare("SELECT facets FROM report_index WHERE report_id='rep_legacy'").get() as { facets: string };
+    expect(JSON.parse(row.facets)).toEqual(["domain:ai-security"]);
+    db2.close();
+    // 4) 二次 openDb：列已存在 → guard 跳过回填（不抛、不改已有值），行仍可筛。
+    const db3 = openDb(file);
+    expect(queryReportIndex(db3, { domain: "ai-security" }).map((r) => r.report_id)).toContain("rep_legacy");
+    db3.close();
   });
 });
