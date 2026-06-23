@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import type {
   AnalysisBatch, ContentItem, Insight, Report, ReportIndexEntry, Topic, ValidationResult,
 } from "../types.js";
-import { deriveFacetsFromIndustry } from "../topics/facets.js";
+import { facetLabel } from "../topics/facets.js";
 import { flagLabel, isIncludableCheck, isValidationError } from "../utils/citation-verdict.js";
 import { coverageGaps, specificClaims } from "./analyzer.js";
 
@@ -176,9 +176,9 @@ export function buildReport(input: BuildReportInput): { report: Report; index: R
     cost: { tokens: 0, amount: 0 },
   };
   const index: ReportIndexEntry = {
-    report_id: id, type: input.type, topic_id: input.topic.id, industry: input.topic.industry,
-    // ADR-0010 Step2b：报告分类主维度取 topic.facets（rowToTopic 已保证非空、缺省派生自 industry）。
-    facets: input.topic.facets ?? deriveFacetsFromIndustry(input.topic.industry),
+    report_id: id, type: input.type, topic_id: input.topic.id,
+    // ADR-0010：报告分类维度取 topic.facets（rowToTopic 保证非空；Step2c 砍 industry 后这是唯一来源）。
+    facets: input.topic.facets ?? [],
     date, source_ids: sourceIds, title, summary, highlights, tags, entity_names: entityNames, importance, event_ids: eventIds,
     milestone_count: milestoneCount,
   };
@@ -371,7 +371,7 @@ function renderMarkdown(
   const keyN = included.filter(KEY).length;
   // dogfood feedback：hero 元数据条加"内容窗口"，让读者知道这是哪段时间发布的内容
   const windowLabel = `${timeWindow.start.slice(0, 10)} ~ ${timeWindow.end.slice(0, 10)}`;
-  const summary = `> 主题：${topic.name}（${topic.industry}）· 内容窗口：${windowLabel} · 共 ${included.length} 条洞察${
+  const summary = `> 主题：${topic.name}（${(topic.facets ?? []).map(facetLabel).join("·")}）· 内容窗口：${windowLabel} · 共 ${included.length} 条洞察${
     deep ? `（重点 ${keyN} 条）` : ""
   } · 生成于 ${date}`;
   const L: string[] = [`# ${title}`, "", summary, ""];
@@ -546,5 +546,5 @@ function renderHtml(
     title,
   )}</title><style>body{font-family:system-ui,sans-serif;max-width:46rem;margin:2rem auto;padding:0 1rem;line-height:1.6}h1{font-size:1.5rem}h2{font-size:1.1rem;margin-top:1.5rem}h3{font-size:1rem;margin-top:1rem}.meta{color:#666;font-size:.9rem}.meta.blocked{color:#6b7280;font-size:.8rem;margin-top:.25rem}.flag{color:#b45309;font-size:.75rem;border:1px solid #b45309;border-radius:4px;padding:0 .3rem}.coverage-gap{color:#6b7280;font-size:.75rem;border:1px dashed #9ca3af;border-radius:4px;padding:0 .3rem}q{color:#1f2937}code{color:#6b7280;font-size:.85rem}.src{color:#6b7280;font-size:.85rem}.cite-src{list-style:none;margin-top:.35rem;font-weight:500}.cite-quote{margin-left:1.1rem}li a q{cursor:pointer}table{border-collapse:collapse;width:100%;font-size:.85rem;margin:.5rem 0}th,td{border:1px solid #e5e7eb;padding:.3rem .5rem;text-align:left}th{background:#f9fafb}.tldr ul{padding-left:1.2rem}.tldr li{margin:.2rem 0}</style></head><body><h1>${esc(
     title,
-  )}</h1><p class="meta">${esc(topic.name)}（${topic.industry}）· ${date} · 共 ${included.length} 条洞察</p>${body}</body></html>`;
+  )}</h1><p class="meta">${esc(topic.name)}（${esc((topic.facets ?? []).map(facetLabel).join("·"))}）· ${date} · 共 ${included.length} 条洞察</p>${body}</body></html>`;
 }

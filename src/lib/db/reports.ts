@@ -2,7 +2,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { domainFacet, isDomainValue, parseFacetsOrDerive } from "../topics/facets.js";
+import { domainFacet, isDomainValue, parseFacets } from "../topics/facets.js";
 import type { Report, ReportIndexEntry } from "../types.js";
 import type { DB } from "./index.js";
 
@@ -40,12 +40,12 @@ export function saveReport(
         prev_report_id: report.prev_report_id, citation_count: report.citation_count, cost: j(report.cost),
       });
       db.prepare(
-        `INSERT INTO report_index (report_id,type,topic_id,industry,facets,date,source_ids,title,summary,highlights,tags,entity_names,importance,event_ids,milestone_count)
-         VALUES (@report_id,@type,@topic_id,@industry,@facets,@date,@source_ids,@title,@summary,@highlights,@tags,@entity_names,@importance,@event_ids,@milestone_count)`,
+        `INSERT INTO report_index (report_id,type,topic_id,facets,date,source_ids,title,summary,highlights,tags,entity_names,importance,event_ids,milestone_count)
+         VALUES (@report_id,@type,@topic_id,@facets,@date,@source_ids,@title,@summary,@highlights,@tags,@entity_names,@importance,@event_ids,@milestone_count)`,
       ).run({
-        report_id: index.report_id, type: index.type, topic_id: index.topic_id, industry: index.industry,
-        // facets 主维度（Step2b）：写入端缺省（旧字面量）时从 industry 派生兜底，保证 NOT NULL 列非空且可筛。
-        facets: j(index.facets ?? parseFacetsOrDerive(undefined, index.industry)),
+        report_id: index.report_id, type: index.type, topic_id: index.topic_id,
+        // facets 是领域分类维度（Step2c：industry 已退役）；写入端取 topic.facets，缺省落 '[]'。
+        facets: j(index.facets ?? []),
         date: index.date, source_ids: j(index.source_ids), title: index.title, summary: index.summary,
         highlights: j(index.highlights), tags: j(index.tags), entity_names: j(index.entity_names), importance: index.importance,
         event_ids: j(index.event_ids), milestone_count: index.milestone_count,
@@ -350,8 +350,8 @@ export function topicReportStats(db: DB): Map<string, { count: number; latestDat
 
 function rowToIndex(r: any): ReportIndexEntry {
   return {
-    report_id: r.report_id, type: r.type, topic_id: r.topic_id, industry: r.industry,
-    facets: parseFacetsOrDerive(r.facets, r.industry), date: r.date,
+    report_id: r.report_id, type: r.type, topic_id: r.topic_id,
+    facets: parseFacets(r.facets), date: r.date,
     source_ids: JSON.parse(r.source_ids), title: r.title, summary: r.summary,
     highlights: JSON.parse(r.highlights ?? "[]"),
     tags: JSON.parse(r.tags), entity_names: JSON.parse(r.entity_names), importance: r.importance,

@@ -19,7 +19,7 @@ beforeEach(() => {
 
 const sampleSource: Source = {
   id: "src_arxiv_swe", name: "arXiv cs.SE", type: "arxiv",
-  endpoint: "http://export.arxiv.org/api/query", industry: "ai-swe",
+  endpoint: "http://export.arxiv.org/api/query",
   topic_ids: ["t1", "t2"], fetch_interval: "6h",
   backfill: { depth: "90d", max_cost: 5 }, enabled: true,
   fetch_mode: "feed", content_container: null,
@@ -99,9 +99,9 @@ it("Source 往返：JSON 数组 / backfill / bool", () => {
 it("Topic 往返 + enabledOnly 过滤", () => {
   const t: Topic = {
     id: "t1", name: "Code Agent", keywords: ["coding agent", "swe"],
-    industry: "ai-swe", language: "zh", brief_schedule: "daily", enabled: true,
+    language: "zh", brief_schedule: "daily", enabled: true,
     archetype: "deep_vertical", // ADR-0010：往返须含（insert 默认 deep_vertical，读回带它）
-    facets: ["domain:ai-swe"], // ADR-0010 Step2a：空 facets 读回时从 industry 派生 domain:ai-swe，往返须含
+    facets: ["domain:ai-swe"], // ADR-0010：分类唯一维度，往返须含
   };
   insertTopic(db, t);
   insertTopic(db, { ...t, id: "t2", enabled: false });
@@ -109,17 +109,17 @@ it("Topic 往返 + enabledOnly 过滤", () => {
   expect(getTopic(db, "t2")?.enabled).toBe(false);
 });
 
-it("Topic.facets 坏 JSON / 空数组均回退到从 industry 派生（零回填）", () => {
+it("Topic.facets 坏 JSON / 空数组读回 → []（Step2c：派生锚已退役，纯解析）", () => {
   const t: Topic = {
-    id: "tf", name: "X", keywords: ["k"], industry: "ai-security",
+    id: "tf", name: "X", keywords: ["k"],
     language: "zh", brief_schedule: "daily", enabled: true, archetype: "deep_vertical",
     facets: ["domain:ai-security"],
   };
   insertTopic(db, t);
-  // 模拟存量坏值：直接把 facets 列写成非法 JSON 与空数组，读回都应派生 domain:ai-security
+  // 模拟存量坏值：直接把 facets 列写成非法 JSON 与空数组，读回都应是 []（不再从 industry 派生）
   for (const bad of ["not json", "[]"]) {
     db.prepare("UPDATE topic SET facets=? WHERE id='tf'").run(bad);
-    expect(getTopic(db, "tf")?.facets).toEqual(["domain:ai-security"]);
+    expect(getTopic(db, "tf")?.facets).toEqual([]);
   }
 });
 
@@ -253,7 +253,7 @@ describe("listRunsForTopicSince（深挖进度 3.3）", () => {
   });
   const topic: Topic = {
     id: "t1", name: "Code Agent", keywords: ["swe"],
-    industry: "ai-swe", language: "zh", brief_schedule: "daily", enabled: true,
+    language: "zh", brief_schedule: "daily", enabled: true,
   };
   beforeEach(() => {
     insertTopic(db, { ...topic, id: "t1" });

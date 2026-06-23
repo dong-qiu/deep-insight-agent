@@ -35,14 +35,14 @@ const { collectSource } = await import("./collector.js");
 
 const sourceAnq: Source = {
   id: "s_anq", name: "安全客", type: "rss", endpoint: "https://api.anquanke.com/data/v1/rss",
-  industry: "ai-security", topic_ids: ["t_sec"], fetch_interval: "1h", backfill: null, enabled: true,
+  topic_ids: ["t_sec"], fetch_interval: "1h", backfill: null, enabled: true,
 };
 const sourcePod: Source = {
-  id: "s1", name: "Pod", type: "rss", endpoint: "https://pod/feed", industry: "ai-swe",
+  id: "s1", name: "Pod", type: "rss", endpoint: "https://pod/feed",
   topic_ids: ["t1"], fetch_interval: "1h", backfill: null, enabled: true,
 };
 const sourceFullText: Source = {
-  id: "s_ft", name: "先知式", type: "rss", endpoint: "https://xz.example/feed", industry: "ai-security",
+  id: "s_ft", name: "先知式", type: "rss", endpoint: "https://xz.example/feed",
   topic_ids: ["t_sec"], fetch_interval: "1h", backfill: null, enabled: true, fetch_mode: "full_text", content_container: null,
 };
 

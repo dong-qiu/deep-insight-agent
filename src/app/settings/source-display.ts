@@ -1,12 +1,22 @@
 /** 设置页数据源「分组 + 形态 badge」的纯展示逻辑（与渲染分离，便于单测）。 */
-import type { Industry, Source } from "../../lib/types.js";
+import { DOMAIN_LABELS, DOMAIN_VALUES, type DomainValue, domainValueOf } from "../../lib/topics/facets.js";
+import type { Source, Topic } from "../../lib/types.js";
 
-/** 行业分组顺序与友好标签。satisfies 只防 id 写错（typo → 编译报错），**不**保证穷举
- *  Industry；新增枚举但漏配此表的源不会消失，会落进 page.tsx 的「其他」兜底组（真正的安全网）。 */
-export const INDUSTRY_ORDER = [
-  { id: "ai-swe", label: "AI 软件工程" },
-  { id: "ai-security", label: "AI 安全" },
-] as const satisfies readonly { id: Industry; label: string }[];
+/** 域分组顺序与友好标签（Step2c：源不再自带 industry，按域分组）。来自受控词表 DOMAIN_VALUES。 */
+export const DOMAIN_ORDER = DOMAIN_VALUES.map((d) => ({ id: d, label: DOMAIN_LABELS[d] }));
+
+/** 源的「域」= 其 topic_ids 对应 topic 的 facets 的 domain 值并集（Step2c：源的分类由 topic 派生、不自存）。
+ *  一源跨多域 → 在多组各出现一次（诚实）；无 topic/无域 → 空集（page.tsx 归「未分类」）。 */
+export function sourceDomains(s: Source, topicById: Map<string, Topic>): Set<DomainValue> {
+  const out = new Set<DomainValue>();
+  for (const tid of s.topic_ids) {
+    for (const f of topicById.get(tid)?.facets ?? []) {
+      const v = domainValueOf(f);
+      if (v) out.add(v);
+    }
+  }
+  return out;
+}
 
 export interface SourceForm {
   icon: string;

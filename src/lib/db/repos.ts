@@ -2,7 +2,7 @@
  * 实体仓储（CRUD）。JSON 字段在此序列化/反序列化，bool ↔ 0/1。
  * 增量1 覆盖 Source / Topic / ContentItem / Run；其余实体随后续增量加。
  */
-import { deriveFacetsFromIndustry, parseFacetsOrDerive } from "../topics/facets.js";
+import { parseFacets } from "../topics/facets.js";
 import type { ContentItem, Cost, Run, Source, Topic } from "../types.js";
 import type { DB } from "./index.js";
 
@@ -12,10 +12,10 @@ const b = (v: boolean): number => (v ? 1 : 0);
 // ── Source ──
 export function insertSource(db: DB, s: Source): void {
   db.prepare(
-    `INSERT INTO source (id,name,type,endpoint,industry,topic_ids,fetch_interval,backfill,enabled,fetch_mode,content_container)
-     VALUES (@id,@name,@type,@endpoint,@industry,@topic_ids,@fetch_interval,@backfill,@enabled,@fetch_mode,@content_container)`,
+    `INSERT INTO source (id,name,type,endpoint,topic_ids,fetch_interval,backfill,enabled,fetch_mode,content_container)
+     VALUES (@id,@name,@type,@endpoint,@topic_ids,@fetch_interval,@backfill,@enabled,@fetch_mode,@content_container)`,
   ).run({
-    id: s.id, name: s.name, type: s.type, endpoint: s.endpoint, industry: s.industry,
+    id: s.id, name: s.name, type: s.type, endpoint: s.endpoint,
     topic_ids: j(s.topic_ids), fetch_interval: s.fetch_interval,
     backfill: s.backfill ? j(s.backfill) : null, enabled: b(s.enabled),
     fetch_mode: s.fetch_mode ?? "feed", content_container: s.content_container ?? null,
@@ -32,7 +32,7 @@ export function listSources(db: DB, opts: { enabledOnly?: boolean } = {}): Sourc
 function rowToSource(r: Record<string, unknown>): Source {
   return {
     id: r.id as string, name: r.name as string, type: r.type as Source["type"],
-    endpoint: r.endpoint as string, industry: r.industry as Source["industry"],
+    endpoint: r.endpoint as string,
     topic_ids: JSON.parse(r.topic_ids as string), fetch_interval: r.fetch_interval as string,
     backfill: r.backfill ? JSON.parse(r.backfill as string) : null, enabled: r.enabled === 1,
     // 旧库行（ensureColumn 前查到的）可能无该字段 → 取默认；空串视为未设
@@ -52,12 +52,12 @@ export function updateSource(db: DB, s: Source): number {
     | { disabled_reason: string | null }
     | undefined;
   const r = db.prepare(
-    `UPDATE source SET name=@name,type=@type,endpoint=@endpoint,industry=@industry,
+    `UPDATE source SET name=@name,type=@type,endpoint=@endpoint,
        topic_ids=@topic_ids,fetch_interval=@fetch_interval,backfill=@backfill,enabled=@enabled,
        fetch_mode=@fetch_mode,content_container=@content_container
      WHERE id=@id`,
   ).run({
-    id: s.id, name: s.name, type: s.type, endpoint: s.endpoint, industry: s.industry,
+    id: s.id, name: s.name, type: s.type, endpoint: s.endpoint,
     topic_ids: j(s.topic_ids), fetch_interval: s.fetch_interval,
     backfill: s.backfill ? j(s.backfill) : null, enabled: b(s.enabled),
     fetch_mode: s.fetch_mode ?? "feed", content_container: s.content_container ?? null,
@@ -149,13 +149,13 @@ export function getSourceBodyKinds(db: DB): Map<string, Set<string>> {
 // ── Topic ──
 export function insertTopic(db: DB, t: Topic): void {
   db.prepare(
-    `INSERT INTO topic (id,name,keywords,industry,language,brief_schedule,enabled,archetype,facets)
-     VALUES (@id,@name,@keywords,@industry,@language,@brief_schedule,@enabled,@archetype,@facets)`,
+    `INSERT INTO topic (id,name,keywords,language,brief_schedule,enabled,archetype,facets)
+     VALUES (@id,@name,@keywords,@language,@brief_schedule,@enabled,@archetype,@facets)`,
   ).run({
-    id: t.id, name: t.name, keywords: j(t.keywords), industry: t.industry,
+    id: t.id, name: t.name, keywords: j(t.keywords),
     language: t.language, brief_schedule: t.brief_schedule, enabled: b(t.enabled),
     archetype: t.archetype ?? "deep_vertical", // 写入边界兜底（fixture 可省，DB NOT NULL）
-    facets: j(t.facets ?? deriveFacetsFromIndustry(t.industry)), // 边界兜底：缺省从 industry 派生
+    facets: j(t.facets ?? []), // Step2c：industry 派生锚已退役，facets 处处显式；缺省落 '[]'
   });
 }
 export function getTopic(db: DB, id: string): Topic | null {
@@ -169,26 +169,26 @@ export function listTopics(db: DB, opts: { enabledOnly?: boolean } = {}): Topic[
 function rowToTopic(r: Record<string, unknown>): Topic {
   return {
     id: r.id as string, name: r.name as string, keywords: JSON.parse(r.keywords as string),
-    industry: r.industry as Topic["industry"], language: r.language as Topic["language"],
+    language: r.language as Topic["language"],
     brief_schedule: r.brief_schedule as Topic["brief_schedule"], enabled: r.enabled === 1,
     // ADR-0010：存量行经 ensureColumn 默认 deep_vertical；仍兜底防 NULL（旧库/异常）。
     archetype: (r.archetype as Topic["archetype"]) ?? "deep_vertical",
-    // ADR-0010 Step2a：facets 空（存量默认 '[]'）→ 从 industry 派生（零回填、派生即正确）。
-    facets: parseFacetsOrDerive(r.facets, r.industry as Topic["industry"]),
+    // ADR-0010 Step2c：facets 是分类唯一维度；migrate 已把存量从 industry 回填，读时纯解析。
+    facets: parseFacets(r.facets),
   };
 }
 
 /** 更新 topic。返 changes 数。 */
 export function updateTopic(db: DB, t: Topic): number {
   const r = db.prepare(
-    `UPDATE topic SET name=@name,keywords=@keywords,industry=@industry,
+    `UPDATE topic SET name=@name,keywords=@keywords,
        language=@language,brief_schedule=@brief_schedule,enabled=@enabled,archetype=@archetype,facets=@facets
      WHERE id=@id`,
   ).run({
-    id: t.id, name: t.name, keywords: j(t.keywords), industry: t.industry,
+    id: t.id, name: t.name, keywords: j(t.keywords),
     language: t.language, brief_schedule: t.brief_schedule, enabled: b(t.enabled),
     archetype: t.archetype ?? "deep_vertical", // 写入边界兜底
-    facets: j(t.facets ?? deriveFacetsFromIndustry(t.industry)),
+    facets: j(t.facets ?? []),
   });
   return r.changes;
 }

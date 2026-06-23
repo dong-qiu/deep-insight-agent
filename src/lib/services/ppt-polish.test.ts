@@ -15,7 +15,7 @@ afterEach(() => {
 });
 
 const topic: Topic = {
-  id: "t1", name: "AI 软件工程", keywords: ["k"], industry: "ai-swe", language: "zh",
+  id: "t1", name: "AI 软件工程", keywords: ["k"], language: "zh",
   brief_schedule: "daily", enabled: true,
 };
 

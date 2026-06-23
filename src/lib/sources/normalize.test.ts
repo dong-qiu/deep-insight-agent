@@ -7,7 +7,7 @@ import {
 import type { RawItem } from "./types.js";
 
 const SRC: Source = {
-  id: "s1", name: "S", type: "rss", endpoint: "https://ex.com/feed", industry: "ai-swe",
+  id: "s1", name: "S", type: "rss", endpoint: "https://ex.com/feed",
   topic_ids: ["t1"], fetch_interval: "1h", backfill: null, enabled: true,
 };
 
@@ -121,7 +121,7 @@ it("contentItemId 仅按 url 稳定（同 url 内容变 id 不变；不同 url �
 
 it("rawToContentItem 归一化 + 继承 Source.topic_ids", () => {
   const source: Source = {
-    id: "s1", name: "S", type: "rss", endpoint: "https://ex.com/feed", industry: "ai-swe",
+    id: "s1", name: "S", type: "rss", endpoint: "https://ex.com/feed",
     topic_ids: ["t1", "t2"], fetch_interval: "1h", backfill: null, enabled: true,
   };
   const raw: RawItem = {

@@ -12,6 +12,7 @@
  *  低于单 PPT \$0.20 上限。并发跑（Promise.all），中转站不稳时自动走重试链路。 */
 import { z } from "zod/v4";
 import { callStructured } from "../runtime/llm.js";
+import { facetLabel } from "../topics/facets.js";
 import type { Cost, Insight, Topic } from "../types.js";
 import type { IncludedInsightLite } from "./ppt-gen.js";
 
@@ -46,7 +47,7 @@ async function polishInsight(
     const { data } = await callStructured({
       role: "analyzer",
       system: SYSTEM_INSIGHT,
-      user: `主题：${topic.name}（受众：内部工程团队，关注 ${topic.industry}）
+      user: `主题：${topic.name}（受众：内部工程团队，关注 ${(topic.facets ?? []).map(facetLabel).join("、") || topic.name}）
 
 洞察 statement：
 ${ins.statement}
@@ -85,7 +86,7 @@ async function polishExecutive(
     const { data } = await callStructured({
       role: "analyzer",
       system: SYSTEM_EXECUTIVE,
-      user: `主题：${topic.name}（受众：内部工程团队，关注 ${topic.industry}）
+      user: `主题：${topic.name}（受众：内部工程团队，关注 ${(topic.facets ?? []).map(facetLabel).join("、") || topic.name}）
 
 本期 ${keyInsights.length} 条重点洞察：
 ${numbered}

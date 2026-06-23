@@ -35,13 +35,13 @@ describe("selectAnalysisItems × archetype（集成·字段贯通，B-1）", () 
     db = openDb(":memory:");
     // content_item.source_id 有 FK → 先插入源 s1（否则插入失败、listContentForTopic 返 0）
     insertSource(db, {
-      id: "s1", name: "S1", type: "rss", endpoint: "https://x/feed", industry: "ai-swe",
+      id: "s1", name: "S1", type: "rss", endpoint: "https://x/feed",
       topic_ids: [], fetch_interval: "24h", backfill: null, enabled: true,
     } as Source);
   });
 
   const mkTopic = (id: string, archetype: Topic["archetype"]): Topic => ({
-    id, name: id, keywords: ["coding agent", "swe-bench"], industry: "ai-swe",
+    id, name: id, keywords: ["coding agent", "swe-bench"],
     language: "en", brief_schedule: "daily", enabled: true, archetype,
   });
   const mkCI = (id: string, topicId: string, text: string): ContentItem => ({

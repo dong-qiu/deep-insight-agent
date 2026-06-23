@@ -10,7 +10,7 @@ import {
 
 let db: DB;
 const topic: Topic = {
-  id: "t1", name: "AI 软件工程", keywords: ["k"], industry: "ai-swe", language: "zh",
+  id: "t1", name: "AI 软件工程", keywords: ["k"], language: "zh",
   brief_schedule: "daily", enabled: true,
 };
 function ins(id: string, statement: string, basis = "x"): Pick<Insight, "id" | "statement" | "importance_basis"> {

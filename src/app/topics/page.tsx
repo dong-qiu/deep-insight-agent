@@ -4,6 +4,7 @@
 import { getDb } from "../../lib/db/index.js";
 import { topicReportStats } from "../../lib/db/reports.js";
 import { listTopics } from "../../lib/db/repos.js";
+import { facetLabel } from "../../lib/topics/facets.js";
 
 export const dynamic = "force-dynamic";
 
@@ -31,7 +32,7 @@ export default async function TopicsPage() {
                 {t.enabled ? null : <span className="muted"> · 停用中</span>}
               </h3>
               <p className="muted">
-                {t.industry} · {t.language}
+                {(t.facets ?? []).map(facetLabel).join("·")} · {t.language}
                 {" · "}
                 {s ? `${s.count} 份报告 · 最新 ${s.latestDate}` : "暂无报告"}
               </p>

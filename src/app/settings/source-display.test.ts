@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import type { Source } from "../../lib/types.js";
-import { INDUSTRY_ORDER, sourceForm } from "./source-display.js";
+import type { Source, Topic } from "../../lib/types.js";
+import { DOMAIN_ORDER, sourceDomains, sourceForm } from "./source-display.js";
 
 const base: Source = {
   id: "s", name: "Some Feed", type: "rss", endpoint: "https://example.com/feed",
-  industry: "ai-swe", topic_ids: [], fetch_interval: "6h", backfill: null, enabled: true,
+  topic_ids: [], fetch_interval: "6h", backfill: null, enabled: true,
 };
 const mk = (o: Partial<Source>): Source => ({ ...base, ...o });
 
@@ -41,8 +41,35 @@ describe("sourceForm", () => {
   });
 });
 
-describe("INDUSTRY_ORDER", () => {
-  it("列出已知 Industry 的展示顺序（漏配由「其他」组兜底，非编译期穷举）", () => {
-    expect(INDUSTRY_ORDER.map((g) => g.id).sort()).toEqual(["ai-security", "ai-swe"]);
+describe("DOMAIN_ORDER", () => {
+  it("来自受控词表 DOMAIN_VALUES（含 ai-industry）", () => {
+    expect(DOMAIN_ORDER.map((g) => g.id)).toEqual(["ai-swe", "ai-security", "ai-industry"]);
+    expect(DOMAIN_ORDER.find((g) => g.id === "ai-industry")?.label).toBe("AI 产业动态");
+  });
+});
+
+describe("sourceDomains（Step2c：源的域由 topic.facets 派生）", () => {
+  const t = (id: string, facets: string[]): Topic => ({
+    id, name: id, keywords: [], language: "zh", brief_schedule: "daily", enabled: true, facets,
+  });
+  const topicById = new Map<string, Topic>([
+    ["t_swe", t("t_swe", ["domain:ai-swe"])],
+    ["t_sec", t("t_sec", ["domain:ai-security"])],
+    ["t_ind", t("t_ind", ["domain:ai-industry"])],
+  ]);
+
+  it("取源全部 topic 的 domain 并集", () => {
+    expect([...sourceDomains(mk({ topic_ids: ["t_swe"] }), topicById)]).toEqual(["ai-swe"]);
+    expect([...sourceDomains(mk({ topic_ids: ["t_ind"] }), topicById)]).toEqual(["ai-industry"]);
+  });
+
+  it("跨多 topic → 多域并集去重", () => {
+    const d = sourceDomains(mk({ topic_ids: ["t_swe", "t_sec"] }), topicById);
+    expect([...d].sort()).toEqual(["ai-security", "ai-swe"]);
+  });
+
+  it("无 topic / 未知 topic → 空集（page.tsx 归「未分类」）", () => {
+    expect(sourceDomains(mk({ topic_ids: [] }), topicById).size).toBe(0);
+    expect(sourceDomains(mk({ topic_ids: ["nope"] }), topicById).size).toBe(0);
   });
 });

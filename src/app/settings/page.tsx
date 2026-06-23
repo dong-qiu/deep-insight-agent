@@ -7,7 +7,8 @@ import { getDb } from "../../lib/db/index.js";
 import { listRecipients } from "../../lib/db/recipients.js";
 import { getSourceBodyKinds, listSources, listTopics } from "../../lib/db/repos.js";
 import { listUsers } from "../../lib/db/users.js";
-import { INDUSTRY_ORDER, sourceForm } from "./source-display.js";
+import { facetLabel } from "../../lib/topics/facets.js";
+import { DOMAIN_ORDER, sourceDomains, sourceForm } from "./source-display.js";
 import { CollectButton } from "./_components/collect-button.js";
 import { DeepDiveButton } from "./_components/deep-dive-button.js";
 import { DeleteButton } from "./_components/delete-button.js";
@@ -25,12 +26,16 @@ export default function SettingsPage() {
   const bodyKinds = getSourceBodyKinds(db); // source_id → 已产出形态集（标转写用）
   const topics = listTopics(db);
 
-  // 按行业分组渲染；任何不在 INDUSTRY_ORDER 的 industry 归入「其他」兜底组，
-  // 确保设置页（唯一 CRUD 入口）不会静默丢源。
-  const known = new Set<string>(INDUSTRY_ORDER.map((g) => g.id));
+  // 按域分组渲染（Step2c：源的域由其 topic 的 facets 派生）；无域的源归「未分类」兜底组，
+  // 确保设置页（唯一 CRUD 入口）不会静默丢源。一源跨多域会在多组各出现一次。
+  const topicById = new Map(topics.map((t) => [t.id, t]));
   const sourceGroups = [
-    ...INDUSTRY_ORDER.map((g) => ({ key: g.id, label: g.label, items: sources.filter((s) => s.industry === g.id) })),
-    { key: "__other__", label: "其他", items: sources.filter((s) => !known.has(s.industry)) },
+    ...DOMAIN_ORDER.map((g) => ({
+      key: g.id,
+      label: g.label,
+      items: sources.filter((s) => sourceDomains(s, topicById).has(g.id)),
+    })),
+    { key: "__other__", label: "未分类", items: sources.filter((s) => sourceDomains(s, topicById).size === 0) },
   ].filter((g) => g.items.length > 0);
   const users = listUsers(db);
   const recipients = listRecipients(db);
@@ -93,7 +98,7 @@ export default function SettingsPage() {
             <strong>{t.name}</strong>
             <code className="muted" style={{ marginLeft: ".5rem", fontSize: ".8rem" }}>{t.id}</code>
             <div className="muted">
-              {t.industry} · {t.language} · brief {t.brief_schedule} · 关键词 {t.keywords.join("、")}
+              {(t.facets ?? []).map(facetLabel).join("·")} · {t.language} · brief {t.brief_schedule} · 关键词 {t.keywords.join("、")}
               {t.enabled ? "" : " · 已停用"}
               <DeepDiveButton topicId={t.id} topicName={t.name} enabled={t.enabled} />
               <DeleteButton entity="topics" id={t.id} name={t.name} />

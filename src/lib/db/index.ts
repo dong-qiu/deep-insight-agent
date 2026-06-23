@@ -37,6 +37,10 @@ function ensureColumn(db: DB, table: string, column: string, ddl: string): void 
   if (!cols.some((c) => c.name === column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
 }
 
+function columnExists(db: DB, table: string, column: string): boolean {
+  return (db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).some((c) => c.name === column);
+}
+
 function migrate(db: DB): void {
   // 洞察级护栏字段（round2）：旧库补列，已存在行取 DEFAULT 0（重跑管线即写入正确值）
   ensureColumn(db, "validation_result", "insights_total", "insights_total INTEGER NOT NULL DEFAULT 0");
@@ -87,22 +91,25 @@ function migrate(db: DB): void {
   ensureColumn(db, "run", "inserted", "inserted INTEGER");
   // 主题行为原型（ADR-0010）：存量主题派生默认 deep_vertical=现状行为，零回填。无 CHECK（app 校验）。
   ensureColumn(db, "topic", "archetype", "archetype TEXT NOT NULL DEFAULT 'deep_vertical'");
-  // 主题分面标签（ADR-0010 Step2a）：存量默认 '[]'，rowToTopic 读时空则从 industry 派生（零回填）。
+  // 主题/报告分面标签（ADR-0010）：分类维度。存量行补列默认 '[]'（industry→facets 回填见下方 Step2c 块）。
   ensureColumn(db, "topic", "facets", "facets TEXT NOT NULL DEFAULT '[]'");
-  // 报告分面标签（ADR-0010 Step2b）：报告库筛选/展示主维度。存量行补列默认 '[]'。
-  // 与 topic 不同：report_index 行多、筛选在 SQL 层（无法逐行派生），故对历史行做一次性回填——
-  // 从该行 industry 串映成 domain facet（json_array('domain:'||industry)），让历史报告仍可按 domain 筛。
-  // 注：t_ai_industry 历史报告 industry=ai-swe → 回填 domain:ai-swe（历史口径，非 domain:ai-industry）；
-  // 新报告由 buildReport 取 topic.facets 写正确值（生产 topic.facets 校正后即对）。详见 ADR-0010 Step2b。
-  const reportFacetsExists = (db.prepare("PRAGMA table_info(report_index)").all() as { name: string }[])
-    .some((c) => c.name === "facets");
   ensureColumn(db, "report_index", "facets", "facets TEXT NOT NULL DEFAULT '[]'");
-  if (!reportFacetsExists) {
-    db.exec(
-      `UPDATE report_index SET facets = json_array('domain:' || industry)
-       WHERE facets IN ('[]', '') AND industry <> ''`,
-    );
+  // ADR-0010 Step2c：砍 industry——分类唯一维度归 facets/domain。**自包含迁移**（无需手动改库）：
+  // 对每张带 industry 列的表，先把空 facets 从该行 industry 串映成 domain facet 回填
+  // （json_array('domain:'||industry)，不覆盖已设值——如 Step2b 部署时已设的 t_ai_industry=domain:ai-industry），
+  // 再 DROP COLUMN。守卫「列存在才执行」→ fresh DB（schema 已不含 industry）跳过、旧库迁移一次。
+  // 注：t_ai_industry 历史报告 industry=ai-swe → 回填 domain:ai-swe（历史口径，新报告取 topic.facets 即对）。
+  // 列级 CHECK 随列一起 DROP（SQLite 3.35+）；三列均无索引/FK，可安全 DROP。source 无 facets（域由 topic 派生）→ 只删。
+  for (const table of ["topic", "report_index"]) {
+    if (columnExists(db, table, "industry")) {
+      db.exec(
+        `UPDATE ${table} SET facets = json_array('domain:' || industry)
+         WHERE facets IN ('[]', '') AND industry <> ''`,
+      );
+      db.exec(`ALTER TABLE ${table} DROP COLUMN industry`);
+    }
   }
+  if (columnExists(db, "source", "industry")) db.exec("ALTER TABLE source DROP COLUMN industry");
 }
 
 let _db: DB | null = null;

@@ -4,7 +4,7 @@ import { validateSourceInput, validateTopicInput } from "./validate.js";
 describe("validateTopicInput", () => {
   const valid = {
     name: "AI 软件工程", keywords: ["coding", "agent"],
-    industry: "ai-swe", language: "zh", brief_schedule: "daily",
+    facets: ["domain:ai-swe"], language: "zh", brief_schedule: "daily",
   };
 
   it("最小合法输入 → ok + 自动生成 id", () => {
@@ -33,9 +33,24 @@ describe("validateTopicInput", () => {
     expect(v.ok).toBe(false);
   });
 
-  it("industry 非白名单 → 422", () => {
-    const v = validateTopicInput({ ...valid, industry: "garbage" });
-    expect(v.ok).toBe(false);
+  it("facets 缺省 → 422（Step2c：领域必填，不再从 industry 派生）", () => {
+    const { facets: _, ...rest } = valid;
+    expect(validateTopicInput(rest).ok).toBe(false);
+  });
+
+  it("facets 空数组 → 422（须 ≥1 domain）", () => {
+    expect(validateTopicInput({ ...valid, facets: [] }).ok).toBe(false);
+  });
+
+  it("facets 含非法标签 → 422", () => {
+    expect(validateTopicInput({ ...valid, facets: ["domain:garbage"] }).ok).toBe(false);
+    expect(validateTopicInput({ ...valid, facets: ["ai-swe"] }).ok).toBe(false); // 缺 domain: 前缀
+  });
+
+  it("facets 合法多值 → ok 原样保留", () => {
+    const v = validateTopicInput({ ...valid, facets: ["domain:ai-swe", "domain:ai-industry"] });
+    expect(v.ok).toBe(true);
+    if (v.ok) expect(v.value.facets).toEqual(["domain:ai-swe", "domain:ai-industry"]);
   });
 
   it("language 缺省 → 默认 zh", () => {
@@ -74,7 +89,7 @@ describe("validateTopicInput", () => {
 describe("validateSourceInput", () => {
   const valid = {
     name: "ArXiv cs.CL", type: "arxiv", endpoint: "https://export.arxiv.org/api/query",
-    industry: "ai-swe", topic_ids: ["t_swe"], fetch_interval: "1h",
+    topic_ids: ["t_swe"], fetch_interval: "1h",
   };
 
   it("合法输入 → ok + id 自动生成 / type/endpoint 保留", () => {

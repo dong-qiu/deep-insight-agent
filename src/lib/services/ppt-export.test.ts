@@ -23,12 +23,12 @@ afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
 let db: DB;
 const topic: Topic = {
-  id: "t1", name: "AI 软件工程", keywords: ["k"], industry: "ai-swe", language: "zh",
+  id: "t1", name: "AI 软件工程", keywords: ["k"], language: "zh",
   brief_schedule: "daily", enabled: true,
 };
 const source: Source = {
   id: "s1", name: "Latent Space", type: "rss", endpoint: "https://x.example/feed",
-  industry: "ai-swe", topic_ids: ["t1"], fetch_interval: "1h", backfill: null, enabled: true,
+  topic_ids: ["t1"], fetch_interval: "1h", backfill: null, enabled: true,
 };
 const contentItem: ContentItem = {
   id: "ci1", source_id: "s1", url: "https://x.example/a", title: "A",
@@ -73,7 +73,7 @@ const report: Report = {
   cost: { tokens: 0, amount: 0 },
 };
 const reportIndex: ReportIndexEntry = {
-  report_id: "rep_t1", type: "brief", topic_id: "t1", industry: "ai-swe", date: "2026-06-07",
+  report_id: "rep_t1", type: "brief", topic_id: "t1", date: "2026-06-07",
   source_ids: ["s1"], title: "测试报告", summary: "x", highlights: [], tags: [], entity_names: [],
   importance: 5, event_ids: [], milestone_count: 0,
 };

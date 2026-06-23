@@ -3,7 +3,7 @@ import type { Insight, Report, Topic } from "../types.js";
 import { briefSummary, buildPptx, type IncludedInsightLite, type PptGenInput } from "./ppt-gen.js";
 
 const topic: Topic = {
-  id: "t1", name: "测试主题", keywords: ["k"], industry: "ai-swe", language: "zh",
+  id: "t1", name: "测试主题", keywords: ["k"], language: "zh",
   brief_schedule: "daily", enabled: true,
 };
 

@@ -10,7 +10,6 @@ function entry(over: Partial<ReportIndexEntry> = {}): ReportIndexEntry {
     report_id: "r1",
     type: "brief",
     topic_id: "t1",
-    industry: "ai-swe",
     facets: ["domain:ai-swe"],
     date: "2026-06-18",
     source_ids: [],
