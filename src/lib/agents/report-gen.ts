@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import type {
   AnalysisBatch, ContentItem, Insight, Report, ReportIndexEntry, Topic, ValidationResult,
 } from "../types.js";
+import { deriveFacetsFromIndustry } from "../topics/facets.js";
 import { flagLabel, isIncludableCheck, isValidationError } from "../utils/citation-verdict.js";
 import { coverageGaps, specificClaims } from "./analyzer.js";
 
@@ -175,8 +176,10 @@ export function buildReport(input: BuildReportInput): { report: Report; index: R
     cost: { tokens: 0, amount: 0 },
   };
   const index: ReportIndexEntry = {
-    report_id: id, type: input.type, topic_id: input.topic.id, industry: input.topic.industry, date,
-    source_ids: sourceIds, title, summary, highlights, tags, entity_names: entityNames, importance, event_ids: eventIds,
+    report_id: id, type: input.type, topic_id: input.topic.id, industry: input.topic.industry,
+    // ADR-0010 Step2b：报告分类主维度取 topic.facets（rowToTopic 已保证非空、缺省派生自 industry）。
+    facets: input.topic.facets ?? deriveFacetsFromIndustry(input.topic.industry),
+    date, source_ids: sourceIds, title, summary, highlights, tags, entity_names: entityNames, importance, event_ids: eventIds,
     milestone_count: milestoneCount,
   };
   return { report, index };

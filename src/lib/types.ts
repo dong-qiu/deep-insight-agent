@@ -236,7 +236,13 @@ export interface ReportIndexEntry {
   report_id: string;
   type: Report["type"];
   topic_id: string;
+  /** @deprecated ADR-0010 Step2b 起报告库不再按 industry 筛/展示——改用 facets/domain。
+   *  本字段仍写入（NOT NULL 列）+ 作 facets 空时的派生兜底，但非分类主维度。 */
   industry: Industry;
+  /** 分面标签（ADR-0010 Step2b）：报告库筛选/展示主维度（domain:ai-swe 等）。
+   *  落库 report_index.facets；空/缺省时 rowToIndex 从 industry 派生（零回填）。
+   *  写入端（buildReport）取 topic.facets。可选：旧 ReportIndexEntry 字面量省略时 saveReport 派生。 */
+  facets?: string[];
   date: string;
   source_ids: string[];
   title: string;

@@ -11,6 +11,7 @@ function entry(over: Partial<ReportIndexEntry> = {}): ReportIndexEntry {
     type: "brief",
     topic_id: "t1",
     industry: "ai-swe",
+    facets: ["domain:ai-swe"],
     date: "2026-06-18",
     source_ids: [],
     title: "AI 时代的软件工程 · 今日 Brief · 2026-06-18",
@@ -73,31 +74,42 @@ describe("ReportCard 实体 chip 去重", () => {
 });
 
 describe("ReportCard 已筛选维度抑制", () => {
-  it("报告库默认 meta 含 类型 · 行业 · 日期", () => {
+  it("报告库默认 meta 含 类型 · 领域 · 日期（domain 标签）", () => {
     const h = html(entry(), { showTypeLabel: true });
-    expect(h).toContain("今日 Brief · ai-swe · 2026-06-18");
+    expect(h).toContain("今日 Brief · AI 软件工程 · 2026-06-18");
   });
 
   it("omit.type 时 meta 不含类型", () => {
     const h = html(entry(), { showTypeLabel: true, omit: { type: true } });
     expect(h).not.toContain("今日 Brief");
-    expect(h).toContain("ai-swe · 2026-06-18");
+    expect(h).toContain("AI 软件工程 · 2026-06-18");
   });
 
-  it("omit.industry 时 meta 不含行业", () => {
-    const h = html(entry(), { showTypeLabel: true, omit: { industry: true } });
-    expect(h).not.toContain("ai-swe");
+  it("omit.domain 时 meta 不含领域", () => {
+    const h = html(entry(), { showTypeLabel: true, omit: { domain: true } });
+    expect(h).not.toContain("AI 软件工程");
     expect(h).toContain("今日 Brief · 2026-06-18");
   });
 
+  it("多 domain facets 以 · 连接展示", () => {
+    const h = html(entry({ facets: ["domain:ai-swe", "domain:ai-industry"] }), { showTypeLabel: true });
+    expect(h).toContain("AI 软件工程 · AI 产业动态");
+  });
+
+  it("facets 为空时领域段跳过（仅 类型 · 日期）", () => {
+    const h = html(entry({ facets: [] }), { showTypeLabel: true });
+    expect(h).toContain("今日 Brief · 2026-06-18");
+    expect(h).not.toContain("AI 软件工程");
+  });
+
   it("两者都 omit 时只剩日期", () => {
-    const h = html(entry(), { showTypeLabel: true, omit: { type: true, industry: true } });
+    const h = html(entry(), { showTypeLabel: true, omit: { type: true, domain: true } });
     expect(h).toMatch(/card-meta">2026-06-18 </);
   });
 
   it("首页（!showTypeLabel）只显示日期", () => {
     const h = html(entry());
-    expect(h).not.toContain("ai-swe");
+    expect(h).not.toContain("AI 软件工程");
     expect(h).toMatch(/card-meta">2026-06-18 </);
   });
 });
