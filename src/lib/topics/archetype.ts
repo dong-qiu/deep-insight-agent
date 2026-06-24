@@ -11,6 +11,12 @@ import type { Archetype } from "../types.js";
 
 export const ARCHETYPE_VALUES = ["deep_vertical", "horizontal_pulse"] as const;
 
+/** archetype 值 → 人类可读标签（设置页「策略预设」下拉用）。括号点出行为，底层值不变。 */
+export const ARCHETYPE_LABELS: Record<Archetype, string> = {
+  deep_vertical: "深度垂直（软相关·护研究源）",
+  horizontal_pulse: "横向态势（硬下限·砍噪声）",
+};
+
 export interface ArchetypeProfile {
   /** 相关性硬下限：命中关键词 token 数 < 此值的候选落选。undefined = 软策略（不过滤）。 */
   relevanceFloor?: number;
