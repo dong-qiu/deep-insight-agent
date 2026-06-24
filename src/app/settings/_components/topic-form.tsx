@@ -10,8 +10,8 @@
  *  显示同步走 raw（避免 round-trip 截断中文/空格）。 */
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { ARCHETYPE_VALUES } from "../../../lib/topics/archetype.js";
-import { DOMAIN_VALUES, LENS_VALUES, domainFacet, lensFacet } from "../../../lib/topics/facets.js";
+import { ARCHETYPE_LABELS, ARCHETYPE_VALUES } from "../../../lib/topics/archetype.js";
+import { DOMAIN_LABELS, DOMAIN_VALUES, LENS_LABELS, LENS_VALUES, domainFacet, lensFacet } from "../../../lib/topics/facets.js";
 import type { Topic } from "../../../lib/types.js";
 import { useSettingsStatus } from "./settings-status.js";
 
@@ -78,6 +78,25 @@ export function TopicForm({
   return (
     <form onSubmit={submit} className="entity-form">
       <label>名称 <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required /></label>
+      <label style={{ alignItems: "flex-start" }}>领域（domain，至少选一）<span style={{ display: "flex", gap: ".75rem", flexWrap: "wrap" }}>
+        {DOMAIN_VALUES.map((d) => {
+          const f = domainFacet(d);
+          return <label key={d} style={{ fontWeight: "normal" }}>
+            <input type="checkbox" checked={facets.includes(f)} onChange={() => toggleFacet(f)} /> {DOMAIN_LABELS[d]}
+          </label>;
+        })}
+      </span></label>
+      <label style={{ alignItems: "flex-start" }}>视角（lens，选填；不选视作技术）<span style={{ display: "flex", gap: ".75rem", flexWrap: "wrap" }}>
+        {LENS_VALUES.map((l) => {
+          const f = lensFacet(l);
+          return <label key={l} style={{ fontWeight: "normal" }}>
+            <input type="checkbox" checked={facets.includes(f)} onChange={() => toggleFacet(f)} /> {LENS_LABELS[l]}
+          </label>;
+        })}
+      </span></label>
+      <label>策略预设 <select value={form.archetype} onChange={(e) => setForm({ ...form, archetype: e.target.value as Topic["archetype"] })}>
+        {ARCHETYPE_VALUES.map((a) => <option key={a} value={a}>{ARCHETYPE_LABELS[a]}</option>)}
+      </select></label>
       <label style={{ alignItems: "flex-start" }}>关键词（逗号或换行分隔） <textarea
         value={keywordsRaw}
         onChange={(e) => setKeywordsRaw(e.target.value)}
@@ -85,33 +104,14 @@ export function TopicForm({
         rows={4}
         style={{ flex: 1, fontFamily: "inherit", resize: "vertical", minHeight: "5rem" }}
       /></label>
-      <label>原型 <select value={form.archetype} onChange={(e) => setForm({ ...form, archetype: e.target.value as Topic["archetype"] })}>
-        {ARCHETYPE_VALUES.map((a) => <option key={a} value={a}>{a}</option>)}
+      <label>Brief 频率 <select value={form.brief_schedule} onChange={(e) => setForm({ ...form, brief_schedule: e.target.value as Topic["brief_schedule"] })}>
+        <option value="daily">daily</option>
+        <option value="weekly">weekly</option>
       </select></label>
-      <label style={{ alignItems: "flex-start" }}>领域（domain，至少选一）<span style={{ display: "flex", gap: ".75rem", flexWrap: "wrap" }}>
-        {DOMAIN_VALUES.map((d) => {
-          const f = domainFacet(d);
-          return <label key={d} style={{ fontWeight: "normal" }}>
-            <input type="checkbox" checked={facets.includes(f)} onChange={() => toggleFacet(f)} /> {d}
-          </label>;
-        })}
-      </span></label>
-      <label style={{ alignItems: "flex-start" }}>视角（lens，选填；不选视作 technical）<span style={{ display: "flex", gap: ".75rem", flexWrap: "wrap" }}>
-        {LENS_VALUES.map((l) => {
-          const f = lensFacet(l);
-          return <label key={l} style={{ fontWeight: "normal" }}>
-            <input type="checkbox" checked={facets.includes(f)} onChange={() => toggleFacet(f)} /> {l}
-          </label>;
-        })}
-      </span></label>
       <label>语言 <select value={form.language} onChange={(e) => setForm({ ...form, language: e.target.value as Topic["language"] })}>
         <option value="zh">zh</option>
         <option value="en">en</option>
         <option value="mixed">mixed</option>
-      </select></label>
-      <label>Brief 频率 <select value={form.brief_schedule} onChange={(e) => setForm({ ...form, brief_schedule: e.target.value as Topic["brief_schedule"] })}>
-        <option value="daily">daily</option>
-        <option value="weekly">weekly</option>
       </select></label>
       <label><input type="checkbox" checked={form.enabled} onChange={(e) => setForm({ ...form, enabled: e.target.checked })} /> 启用</label>
       <div>
