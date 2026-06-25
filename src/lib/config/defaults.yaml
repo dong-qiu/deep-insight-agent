@@ -47,8 +47,9 @@ defaultTopics:
   - id: t_ai_industry
     name: AI 产业动态
     keywords:
-      [OpenAI, Anthropic, GPT, ChatGPT, 模型发布, 产品发布, API, 开发者工具, AI 融资, 监管政策,
-       行业应用, 大模型, AI 商业化, 算力]
+      [OpenAI, Anthropic, Claude, Gemini, Llama, GPT, ChatGPT, Nvidia, 模型发布, 产品发布, API,
+       开发者工具, AI 融资, funding, valuation, acquisition, IPO, 并购, 监管政策, 行业应用, 大模型,
+       AI 商业化, 算力, compute, GPU, data center, 数据中心, 芯片]
     language: zh
     brief_schedule: daily
     enabled: true
@@ -98,6 +99,46 @@ defaultSources:
     topic_ids: [t_ai_industry]
     fetch_interval: 6h
     enabled: true
+
+  # ── AI 产业动态（foundation-models / business → t_ai_industry）补充源 ──
+  # 2026-06-26 生产 IP 实测可达 + 内容契合后接入（详见 practice-log）。
+  - id: src_semianalysis
+    name: SemiAnalysis
+    type: rss
+    endpoint: https://www.semianalysis.com/feed
+    # 算力/基建/供应链/资本支出经济学（Dylan Patel）。全文在 feed（content:encoded）→ 无需 full_text。
+    topic_ids: [t_ai_industry]
+    fetch_interval: 24h
+    enabled: true
+  - id: src_importai
+    name: Import AI（Jack Clark · newsletter）
+    type: rss
+    endpoint: https://importai.substack.com/feed
+    # 政策+产业周报，全文在 feed（content:encoded）→ 无需 full_text，低噪声。
+    topic_ids: [t_ai_industry]
+    fetch_interval: 24h
+    enabled: true
+  - id: src_anthropic_news
+    name: Anthropic News（社区 feed）
+    type: rss
+    # 官方无 RSS，用社区维护 feed（可行性文档实测有效）；与 OpenAI News 对称。content-type 为 text/plain，
+    # rss 适配器按内容解析。feed 仅短摘要 → full_text 抓 anthropic.com/news 文章页（服务端渲染，2026-06-26 实测 6.7K 字；
+    # 无具名容器，回退 <body>，过 MIN_ARTICLE_CHARS；上线后视噪声再定 content_container）。
+    endpoint: https://raw.githubusercontent.com/Olshansk/rss-feeds/main/feeds/feed_anthropic_news.xml
+    topic_ids: [t_ai_industry]
+    fetch_interval: 6h
+    enabled: true
+    fetch_mode: full_text
+  - id: src_techcrunch_ai
+    name: TechCrunch AI
+    type: rss
+    endpoint: https://techcrunch.com/category/artificial-intelligence/feed/
+    # 融资/并购/创业。feed 仅短摘要 → full_text 抓文章页；正文容器 class=entry-content（WordPress 标准，2026-06-26 实测）。
+    topic_ids: [t_ai_industry]
+    fetch_interval: 6h
+    enabled: true
+    fetch_mode: full_text
+    content_container: entry-content
   - id: src_google_research
     name: Google Research Blog
     type: rss
