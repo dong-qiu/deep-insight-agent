@@ -210,6 +210,36 @@ defaultSources:
     topic_ids: [t_code_agents]
     fetch_interval: 6h
     enabled: true
+  # ── t_code_agents 补充源（2026-06-26 接入）：补「从业者/工程学科」与「编码 agent 工具」两轴，
+  #    平衡原集合偏研究 + 偏实验室官博。生产 SG IP 实测可达（无 WAF 拦）+ 正文容器抽取见 ops/aws/probe-sources.sh。
+  - id: src_simonwillison
+    name: Simon Willison's Weblog
+    type: rss
+    endpoint: https://simonwillison.net/atom/everything/
+    topic_ids: [t_code_agents]
+    fetch_interval: 6h
+    enabled: true
+    # 实用 LLM/编码工具最高信噪比个人作者，近日更。feed 仅 <summary> → full_text 抓正文页
+    # （生产实测全局容器命中 1847 字，无需 content_container 覆盖；2026-06-26）。
+    fetch_mode: full_text
+  - id: src_martinfowler
+    name: Martin Fowler
+    type: rss
+    endpoint: https://martinfowler.com/feed.atom
+    topic_ids: [t_code_agents]
+    fetch_interval: 24h
+    enabled: true
+    # 「软件工程学科」轴（Böckeler「Exploring Gen AI」系列）。全文在 feed <content>（长文分期连载，
+    # 每条给一截，>200 下限）→ 无需 full_text（2026-06-26 生产实测）。
+  - id: src_aider
+    name: Aider
+    type: rss
+    endpoint: https://aider.chat/feed.xml
+    topic_ids: [t_code_agents]
+    fetch_interval: 24h
+    enabled: true
+    # 编码 agent/评测轴（绑定 SWE-bench/polyglot 关键词）。feed.xml 整篇带全文（实测首条 10746 字）
+    # → 无需 full_text（2026-06-26 生产实测，纠正先验 full_text 猜测）。
 
   # ── AI 时代的安全（security → t_prompt_injection）──
   - id: src_thehackernews
