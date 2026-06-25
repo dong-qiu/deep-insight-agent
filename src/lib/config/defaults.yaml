@@ -307,7 +307,9 @@ defaultSources:
     endpoint: https://podcast.darknetdiaries.com/
     topic_ids: [t_prompt_injection]
     fetch_interval: 24h
-    enabled: true
+    # 2026-06-26 生产数据审计停用：175 条入库、**0 被引、0 洞察**——叙事型黑客故事播客，
+    # 与「AI 时代的安全」（注入/agent/漏洞情报）主题错配，在 deep_vertical 不过滤下纯稀释分析池。
+    enabled: false
   - id: src_freebuf
     name: FreeBuf
     type: rss
@@ -318,3 +320,45 @@ defaultSources:
     # 拦下伪 405（server=Tengine 而非起源 fbserver/1.1），按出口段 + TLS 指纹反爬，UA 无效；
     # 本地 + 境内 VPS 均拦，境外 VPS 待测。下架，境外部署时可试重启。
     enabled: false
+
+  # ── AI 安全垂直补充源（2026-06-26 生产数据审计后接入，填「AI-专属源」缺口）──
+  # 现状短板：主题叫「AI 安全」但垂直源几乎只有 arXiv，资讯靠通用网安站顺带捞。均生产 IP 实测可达。
+  - id: src_embracethered
+    name: Embrace The Red（Johann Rehberger · LLM/agent 攻击）
+    type: rss
+    endpoint: https://embracethered.com/blog/index.xml
+    # 实战 LLM/agent 攻击（注入/数据外泄/agent 越权），AI-安全关键词命中 1069（最高）、标题全同频。
+    # feed 仅短摘要 → full_text 抓文章页（Hugo 服务端渲染，无具名容器回退 <body>）。
+    topic_ids: [t_prompt_injection]
+    fetch_interval: 24h
+    enabled: true
+    fetch_mode: full_text
+  - id: src_trailofbits
+    name: Trail of Bits Blog
+    type: rss
+    endpoint: https://blog.trailofbits.com/feed/
+    # appsec/crypto/工具 + 部分 AI/ML 安全。feed 短摘要 → full_text，容器 class=entry-content（WordPress 实测）。
+    topic_ids: [t_prompt_injection]
+    fetch_interval: 24h
+    enabled: true
+    fetch_mode: full_text
+    content_container: entry-content
+  - id: src_project_zero
+    name: Google Project Zero
+    type: rss
+    endpoint: https://googleprojectzero.blogspot.com/feeds/posts/default
+    # 精英漏洞研究（全文在 feed，无需 full_text）。偏通用、AI 占比低 → 当漏洞情报补充，上线后看采纳定去留。
+    topic_ids: [t_prompt_injection]
+    fetch_interval: 24h
+    enabled: true
+  # 注：src_simonwillison（everything feed）已存在、归 t_code_agents；本条是**另一个 feed**
+  # （prompt-injection tag）专供安全主题，故用独立 id，不与之冲突。
+  - id: src_simonwillison_promptinj
+    name: Simon Willison（prompt-injection tag）
+    type: rss
+    # "prompt injection" 一词提出者；用 prompt-injection tag feed（实测命中密度 960，远胜 everything/llms/security
+    # 全量 feed 的 datasette/dev 噪声）。link-blog 短评全文在 atom，无需 full_text。
+    endpoint: https://simonwillison.net/tags/prompt-injection.atom
+    topic_ids: [t_prompt_injection]
+    fetch_interval: 12h
+    enabled: true
