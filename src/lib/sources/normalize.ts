@@ -129,6 +129,32 @@ export function extractHtmlTranscript(html: string): string {
   return lines.join("\n").trim();
 }
 
+/** 从 `<cite>/<p>` 式 HTML 转写页抽取正文（Changelog 网络转写页，2026-06-26）：每段
+ *  `<cite>说话人:</cite> <p>[00:00] 正文…</p>`。同 extractHtmlTranscript 的单次有序扫描——
+ *  遇 <cite> 更新当前说话人（去尾冒号），遇 <p> 用当前说话人发一行 "说话人: 正文"（去首部 [时间戳]）。
+ *  只扫 <body> 内（避开 <head>/<title>）；内联标签交 stripHtml 剥；无配对返空串——交调用方回退。
+ *  **契约比 ts-text 版宽**：收 <body> 内**每个** <p>（非按 class 限定）。Changelog 转写页 body 即纯转写、
+ *  cite/p 平衡无 chrome（2026-06-26 实测 15/15），故安全；若将来页面混入页脚 <p>，会带上一说话人名泄漏，
+ *  接新的 cite/p 源前须先核页结构（见 ops/aws/probe-podcast-transcripts.sh 的 sample 输出）。 */
+const CITE_OR_P = /<(cite|p)\b[^>]*>([\s\S]*?)<\/\1>/gi;
+const LEADING_TS = /^\[\d{1,2}:\d{2}(?::\d{2})?\]\s*/;
+export function extractCiteTranscript(html: string): string {
+  const body = html.match(/<body\b[^>]*>([\s\S]*?)<\/body>/i);
+  const scope = body ? body[1] : html;
+  const lines: string[] = [];
+  let speaker = "";
+  for (const m of scope.matchAll(CITE_OR_P)) {
+    const val = stripHtml(m[2]).replace(/\s+/g, " ").trim();
+    if (m[1].toLowerCase() === "cite") {
+      speaker = val.replace(/:\s*$/, ""); // 去说话人尾冒号
+    } else if (val) {
+      const t = val.replace(LEADING_TS, "").trim(); // 去首部 [时间戳]
+      if (t) lines.push(speaker ? `${speaker}: ${t}` : t);
+    }
+  }
+  return lines.join("\n").trim();
+}
+
 /** 内容指纹 = 规范化 body 的 sha256，用于同 URL 内容更新检测。 */
 export function contentHash(body: string): string {
   return createHash("sha256").update(normalizeBody(body)).digest("hex");
