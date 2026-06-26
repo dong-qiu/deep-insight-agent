@@ -10,6 +10,7 @@ import {
   getSourceBodyKinds, getTopic, hasRunningRun, insertContentItem, insertRun, insertSource,
   insertTopic, listProbeCandidates, listRuns, listRunsForTopicSince, listSources, recoverOrphanedRuns,
   reviveSource, setCircuit, setLastProbe, setRunInserted, sumRunCostSince, updateContentItem, updateSource,
+  updateTopic,
 } from "./repos.js";
 
 let db: DB;
@@ -121,6 +122,27 @@ it("Topic.facets 坏 JSON / 空数组读回 → []（Step2c：派生锚已退役
     db.prepare("UPDATE topic SET facets=? WHERE id='tf'").run(bad);
     expect(getTopic(db, "tf")?.facets).toEqual([]);
   }
+});
+
+it("updateTopic / updateSource 会 bump updated_at（审计可区分 seed 与人改；旧版漏写致时间戳骗人）", () => {
+  const t: Topic = {
+    id: "tu", name: "X", keywords: ["k"],
+    language: "zh", brief_schedule: "daily", enabled: true, archetype: "deep_vertical", facets: [],
+  };
+  insertTopic(db, t);
+  insertSource(db, { ...sampleSource, id: "su", topic_ids: [] });
+  // 把两行 updated_at 强写成久远值，模拟 seed 时刻
+  const OLD = "2000-01-01 00:00:00";
+  db.prepare("UPDATE topic SET updated_at=? WHERE id='tu'").run(OLD);
+  db.prepare("UPDATE source SET updated_at=? WHERE id='su'").run(OLD);
+
+  updateTopic(db, { ...t, name: "改名" });
+  updateSource(db, { ...sampleSource, id: "su", topic_ids: [], name: "改名" });
+
+  const tu = db.prepare("SELECT updated_at FROM topic WHERE id='tu'").get() as { updated_at: string };
+  const su = db.prepare("SELECT updated_at FROM source WHERE id='su'").get() as { updated_at: string };
+  expect(tu.updated_at).not.toBe(OLD);
+  expect(su.updated_at).not.toBe(OLD);
 });
 
 describe("ContentItem", () => {
