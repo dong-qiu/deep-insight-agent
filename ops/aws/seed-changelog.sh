@@ -17,6 +17,26 @@ ASSERT=0
 
 read -r -d '' SEED <<'JS' || true
 "use strict";
+// 部署守卫：在 Next bundle 里找 extractCiteTranscript 的 **regex 字面量** `(cite|p)`——regex/字符串字面量
+// 不被 minify 改写（symbol 会，故不可用），命中=新代码确已部署。用 node fs（免 shell 引号坑）。
+// 未命中且非 --deployed（argv[2]='1' 人工断言）→ exit 3 拒绝，防在旧代码上 seed 致 Changelog 转写抓垃圾。
+(function deployGuard() {
+  const fs = require('fs'), path = require('path');
+  const NEEDLE = "(cite|p)", ASSERT = process.argv[2] === '1';
+  let hit = false;
+  (function walk(p) {
+    if (hit) return;
+    let st; try { st = fs.statSync(p); } catch { return; }
+    if (st.isDirectory()) { for (const f of fs.readdirSync(p)) walk(path.join(p, f)); return; }
+    if (!/\.(js|cjs|mjs)$/.test(p)) return;
+    let s; try { s = fs.readFileSync(p, 'utf8'); } catch { return; }
+    if (s.includes(NEEDLE)) hit = true;
+  })('/app/.next');
+  if (hit) { console.log("guard:bundle-has-cite-regex（确已部署）"); return; }
+  if (ASSERT) { console.log("guard:operator-asserted-deployed（--deployed 跳过）"); return; }
+  console.log("guard:FAIL——bundle 无 (cite|p) regex，本次代码疑未部署，拒绝 seed（防 Changelog 抓垃圾转写）。先部署，或确信已部署用 --deployed。");
+  process.exit(3);
+})();
 const db = new (require('better-sqlite3'))('/data/insight.db'); // 读写
 // 列/默认严格对齐 repos.ts insertSource；与 defaults.yaml 的 src_changelog 一致。
 const S = { id:"src_changelog", name:"The Changelog（播客 · 转写）", type:"rss",
@@ -41,18 +61,12 @@ for (const r of db.prepare(
 JS
 
 B64=$(printf %s "$SEED" | base64 | tr -d '\n')
-# 部署守卫（remote INNER 保持纯 ASCII + 免引号：marker=字母符号、grep -F 免引号、消息单 token）。
-# 符号命中=确已部署→放行；未命中：ASSERT=1（--deployed 人工断言）放行，否则 exit 3 拒绝。
-if [ "$ASSERT" = 1 ]; then
-  GUARD='if grep -rqsF extractCiteTranscript /app/.next /app/server.js 2>/dev/null; then echo guard:symbol-present; else echo guard:operator-asserted-deployed; fi'
-else
-  GUARD='if grep -rqsF extractCiteTranscript /app/.next /app/server.js 2>/dev/null; then echo guard:symbol-present; else echo guard:FAIL-not-deployed-rerun-with---deployed; exit 3; fi'
-fi
-
+# 守卫已并入 SEED 的 node 脚本（regex 字面量检测，见上）；ASSERT 经 argv 传入。守卫 exit 3 → 整条 node
+# 进程退出、不 INSERT。命令保持纯 ASCII + 免引号（base64 无特殊字符、ASSERT 是 0/1）。
 PARAMS="$(mktemp)"
 trap 'rm -f "$PARAMS"' EXIT
 cat > "$PARAMS" <<EOF
-{"commands":["docker exec -w /app deep-insight-app-1 sh -c '$GUARD; printf %s $B64 | base64 -d > /tmp/seed.js && NODE_PATH=/app/node_modules node /tmp/seed.js'"]}
+{"commands":["docker exec -w /app deep-insight-app-1 sh -c 'printf %s $B64 | base64 -d > /tmp/seed.js && NODE_PATH=/app/node_modules node /tmp/seed.js $ASSERT'"]}
 EOF
 
 echo "下发 SSM seed（带部署守卫；ASSERT=${ASSERT}；生产库写入，幂等）..."
