@@ -54,7 +54,8 @@ export function updateSource(db: DB, s: Source): number {
   const r = db.prepare(
     `UPDATE source SET name=@name,type=@type,endpoint=@endpoint,
        topic_ids=@topic_ids,fetch_interval=@fetch_interval,backfill=@backfill,enabled=@enabled,
-       fetch_mode=@fetch_mode,content_container=@content_container
+       fetch_mode=@fetch_mode,content_container=@content_container,
+       updated_at=datetime('now')
      WHERE id=@id`,
   ).run({
     id: s.id, name: s.name, type: s.type, endpoint: s.endpoint,
@@ -182,7 +183,8 @@ function rowToTopic(r: Record<string, unknown>): Topic {
 export function updateTopic(db: DB, t: Topic): number {
   const r = db.prepare(
     `UPDATE topic SET name=@name,keywords=@keywords,
-       language=@language,brief_schedule=@brief_schedule,enabled=@enabled,archetype=@archetype,facets=@facets
+       language=@language,brief_schedule=@brief_schedule,enabled=@enabled,archetype=@archetype,facets=@facets,
+       updated_at=datetime('now')
      WHERE id=@id`,
   ).run({
     id: t.id, name: t.name, keywords: j(t.keywords),

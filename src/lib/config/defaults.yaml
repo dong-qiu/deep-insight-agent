@@ -22,12 +22,18 @@ system:
 # 例外：t_ai_industry（AI 产业动态）是窄主题——专收泛 AI 厂商 PR（如 OpenAI News）：这类源信号广但与
 # 「软件工程」相关度低，挂 t_code_agents 从不被引（贡献 0），故单列归口、让其在对的池子里竞争
 # （2026-06-22；ADR-0010 后续：域=foundation-models、视角 lens:business）。
+#
+# ⚠️ keywords 真相源是生产 DB（设置页可在线精修）；本处仅在「空库 seed」时生效，按 id 幂等、永不覆盖已存在 topic。
+# 下列 keywords 已于 2026-06-27 反向同步自生产库 UI 精修的英文 taxonomy，使 DR/全新部署 re-seed 不再回退到旧草稿。
+# 若日后在设置页改了关键词，务必同步回此处（注意 updateTopic 的 updated_at 已修复会 bump，可据时间戳判断是否漂移）。
 defaultTopics:
   - id: t_code_agents
     name: AI 时代的软件工程
     keywords:
-      [coding agent, autonomous software engineering, SWE-bench, AI 辅助编程, 代码生成, code review,
-       developer tools, RAG 检索增强, LLM agent 评测, LLM 推理与服务优化]
+      ["Coding Agent", "Code Agent", "Agentic Software Engineering", "Agentic SWE", "AI-Native Development",
+       "Prompt Engineering", "Context Engineering", "Harness Engineering", "Code Model",
+       "Intelligent Software Engineering", "Vibe Coding", "Claude Code", "Codex", "Cursor", "Devin",
+       "SPEC", "Skills", "Trustworthy AI Code", "Provenance & Traceability", "AI Code Review"]
     language: zh
     brief_schedule: daily
     enabled: true
@@ -36,8 +42,13 @@ defaultTopics:
   - id: t_prompt_injection
     name: AI 时代的安全
     keywords:
-      [prompt injection, indirect prompt injection, jailbreak, LLM/agent 安全, agent 越权, guardrails,
-       漏洞与威胁情报, CVE, 供应链安全, OWASP LLM Top 10, MITRE ATLAS, AI 安全合规]
+      ["Prompt Injection", "Jailbreaking", "Data Poisoning", "Model Poisoning", "Model Extraction",
+       "Adversarial Examples", "Training Data Leakage", "Membership Inference", "OWASP LLM Top 10",
+       "Agentic Security", "AI Supply Chain", "AI-Powered Attacks", "Automated Vuln Discovery", "Deepfake",
+       "AI Phishing", "Malicious Code Generation", "Scaled Social Engineering", "AI-Driven Threat Detection",
+       "AI-Augmented SOC", "Automated Incident Response", "AI Security Review", "Automated Patching",
+       "AI Red Teaming", "AI Alignment & Safety", "Trustworthy AI", "AI Governance",
+       "Data Privacy & Sovereignty", "Guardrails", "Zero Trust for AI"]
     language: zh
     brief_schedule: daily
     enabled: true
