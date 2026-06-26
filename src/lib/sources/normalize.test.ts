@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { Source } from "../types.js";
 import {
   MAX_BODY_CHARS, MAX_TRANSCRIPT_CHARS, contentHash, contentItemId, detectLanguage,
-  extractHtmlTranscript, normalizeBody, normalizeUrl, rawToContentItem, stripHtml, stripTranscript,
+  extractCiteTranscript, extractHtmlTranscript, normalizeBody, normalizeUrl, rawToContentItem,
+  stripHtml, stripTranscript,
 } from "./normalize.js";
 import type { RawItem } from "./types.js";
 
@@ -213,5 +214,43 @@ describe("extractHtmlTranscript（ADR-0007 切片6d：Lex 式 .ts-segment）", (
 
   it("text 先于任何 name 出现 → 无前缀（不臆造说话人）", () => {
     expect(extractHtmlTranscript('<span class="ts-text">Orphan line.</span>')).toBe("Orphan line.");
+  });
+});
+
+describe("extractCiteTranscript（Changelog 网络 <cite>/<p> 转写页，2026-06-26）", () => {
+  it("基本：<cite>说话人:</cite><p>[时间] 正文</p> → '说话人: 正文'，去尾冒号 + 去时间戳", () => {
+    const html =
+      `<html><head><title>Transcript</title></head><body>` +
+      `<cite>Adam Stacoviak:</cite><p>[00:00] Welcome, friends.</p>` +
+      `<cite>Jerod Santo:</cite><p>[01:23] Glad to be here.</p>` +
+      `</body></html>`;
+    expect(extractCiteTranscript(html)).toBe("Adam Stacoviak: Welcome, friends.\nJerod Santo: Glad to be here.");
+  });
+
+  it("同一说话人多个 <p>：各成一行、沿用当前说话人", () => {
+    const html = `<body><cite>Host:</cite><p>One.</p><p>[1:02:03] Two.</p></body>`;
+    expect(extractCiteTranscript(html)).toBe("Host: One.\nHost: Two.");
+  });
+
+  it("只扫 <body>：<head>/<title> 里的 <p> 不入正文", () => {
+    const html = `<head><p>nav junk</p></head><body><cite>A:</cite><p>real.</p></body>`;
+    expect(extractCiteTranscript(html)).toBe("A: real.");
+  });
+
+  it("内联标签交 stripHtml 剥（加粗/链接不污染）", () => {
+    const html = `<body><cite>A:</cite><p>see <strong>this</strong> <a href="x">link</a> now.</p></body>`;
+    expect(extractCiteTranscript(html)).toBe("A: see this link now.");
+  });
+
+  it("<p> 先于任何 <cite> → 无前缀（不臆造说话人）", () => {
+    expect(extractCiteTranscript("<body><p>Intro line.</p><cite>A:</cite><p>real.</p></body>")).toBe("Intro line.\nA: real.");
+  });
+
+  it("无 <body> 标签 → 回退整段扫描（防漏）", () => {
+    expect(extractCiteTranscript("<cite>A:</cite><p>no body wrapper.</p>")).toBe("A: no body wrapper.");
+  });
+
+  it("无 <cite>/<p> 配对 → 返空串（交调用方回退）", () => {
+    expect(extractCiteTranscript("<body><div>just a page</div></body>")).toBe("");
   });
 });

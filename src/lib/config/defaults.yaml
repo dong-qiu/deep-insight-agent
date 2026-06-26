@@ -178,12 +178,24 @@ defaultSources:
     fetch_interval: 24h
     enabled: true
   - id: src_practical_ai
-    name: Practical AI（播客 · 元数据）
+    name: Practical AI（播客 · 转写）
     type: rss
     endpoint: https://feeds.transistor.fm/practical-ai-machine-learning-data-science-llm
     topic_ids: [t_code_agents]
     fetch_interval: 24h
     enabled: true
+    # feed 自带 <podcast:transcript type=text/plain>（非 captions）全文转写 → pickTranscriptUrl 直接取、
+    # ADR-0007 已上线（2026-06-20 golive 实测带 transcript）。旧名「元数据」是上线前旧文，此处订正。
+  - id: src_changelog
+    name: The Changelog（播客 · 转写）
+    type: rss
+    endpoint: https://changelog.com/podcast/feed
+    topic_ids: [t_code_agents]
+    fetch_interval: 24h
+    enabled: true
+    # 软件工程本体播客，AI 编码工具覆盖密。feed 自带 <podcast:transcript type=text/html> 转写 URL
+    # （changelog.com/.../transcript）→ parseRss 自动取，无需金牌适配器；转写页为 <cite>/<p> 极简结构，
+    # 由 fetchTranscript 的 extractCiteTranscript 抽取（2026-06-26 生产实测）。
   # Lex Fridman：转写不在 feed、官网有规律转写页（ADR-0007 6d 金牌源适配器）。选题极宽，
   # 由 podcast-golden.ts 的标题筛子只留 AI/CS/SWE 集（实测命中率约 1/4），转写 URL 由单集页推导。
   - id: src_lex_fridman

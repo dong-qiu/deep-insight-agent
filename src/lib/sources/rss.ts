@@ -1,6 +1,6 @@
 /** RSS 2.0 + Atom 适配器；抓取前查 robots.txt。Source.endpoint = feed URL。 */
 import type { Source } from "../types.js";
-import { extractHtmlTranscript, stripTranscript } from "./normalize.js";
+import { extractCiteTranscript, extractHtmlTranscript, stripTranscript } from "./normalize.js";
 import { UA, fetchRobots, isAllowed } from "./robots.js";
 import { fetchWithRetry, readTextCapped, safeFetch } from "./safe-fetch.js";
 import type { RawItem } from "./types.js";
@@ -127,8 +127,13 @@ export async function fetchTranscript(url: string): Promise<string | null> {
     const res = await safeFetch(url, { headers: { "user-agent": UA } });
     if (!res.ok) return null;
     const raw = await readTextCapped(res);
-    // 结构化 HTML 转写页（Lex 式 .ts-text，金牌源 6d）走专用抽取；VTT/SRT/纯文本走 stripTranscript。
-    const cleaned = /class="[^"]*\bts-text\b/i.test(raw) ? extractHtmlTranscript(raw) : stripTranscript(raw);
+    // 结构化 HTML 转写页走专用抽取（抽空 → null，不灌垃圾）：Lex 式 .ts-text（6d）、Changelog 式 <cite>/<p>
+    // （2026-06-26）；其余 VTT/SRT/纯文本走 stripTranscript。
+    const cleaned = /class="[^"]*\bts-text\b/i.test(raw)
+      ? extractHtmlTranscript(raw)
+      : /<cite\b[^>]*>/i.test(raw) && /<\/p>/i.test(raw)
+        ? extractCiteTranscript(raw)
+        : stripTranscript(raw);
     return cleaned || null;
   } catch {
     return null;
