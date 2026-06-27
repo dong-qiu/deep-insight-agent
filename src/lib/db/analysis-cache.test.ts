@@ -1,12 +1,13 @@
 /** analysis-cache（ADR-0009 切片1）单测 —— 内存库，无需 API key，CI 可跑。
  *  重点：键稳定 + 版本隔离、单源归属、hit_count 计 would-be 命中、命中率度量、行为中性（异常吞）。 */
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ContentItem, Insight } from "../types.js";
 import type { HistoricalEvent } from "../agents/analyzer.js";
 import {
   analysisCacheStats,
   computeAnalysisKey,
   instantiateCachedInsights,
+  isFullReanalyzeToday,
   lookupCachedInsights,
   recordAnalysisCache,
 } from "./analysis-cache.js";
@@ -172,6 +173,37 @@ describe("lookupCachedInsights（切片2 读分流）", () => {
     const r = lookupCachedInsights(db, "t1", [mkItem("ci_new", "h1")], "v1");
     expect(r.hits).toEqual([]); // 不复用断引洞察
     expect(r.missItems.map((x) => x.id)).toEqual(["ci_new"]); // 退回重析（安全）
+  });
+});
+
+describe("isFullReanalyzeToday（切片2c 周期全析兜底）", () => {
+  const saved = process.env.FULL_REANALYZE_DOW;
+  afterEach(() => {
+    if (saved === undefined) delete process.env.FULL_REANALYZE_DOW;
+    else process.env.FULL_REANALYZE_DOW = saved;
+  });
+  const day = new Date(Date.UTC(2026, 0, 5, 12, 0, 0)); // 某固定 UTC 日
+  const dow = day.getUTCDay();
+
+  it("FULL_REANALYZE_DOW 匹配当日 dow → 全析日；不匹配 → 否", () => {
+    process.env.FULL_REANALYZE_DOW = String(dow);
+    expect(isFullReanalyzeToday(day)).toBe(true);
+    process.env.FULL_REANALYZE_DOW = String((dow + 1) % 7);
+    expect(isFullReanalyzeToday(day)).toBe(false);
+  });
+
+  it("缺省（未设）= 每周一（dow=1）", () => {
+    delete process.env.FULL_REANALYZE_DOW;
+    expect(isFullReanalyzeToday(day)).toBe(dow === 1);
+  });
+
+  it("-1 / 非法值 → 关闭兜底（任何日都 false）", () => {
+    for (const v of ["-1", "7", "x", ""]) {
+      process.env.FULL_REANALYZE_DOW = v;
+      // 空串走缺省=1，需单独判
+      if (v === "") expect(isFullReanalyzeToday(day)).toBe(dow === 1);
+      else expect(isFullReanalyzeToday(day)).toBe(false);
+    }
   });
 });
 

@@ -5,7 +5,7 @@ import type { DB } from "../db/index.js";
 import { saveAnalysisBatch, saveValidationResult } from "../db/analysis.js";
 import {
   analysisCacheEnabled, analysisCacheReadEnabled, instantiateCachedInsights,
-  lookupCachedInsights, recordAnalysisCache,
+  isFullReanalyzeToday, lookupCachedInsights, recordAnalysisCache,
 } from "../db/analysis-cache.js";
 import { makeConsistencyCache } from "../db/consistency-cache.js";
 import { getContentItem, getSource } from "../db/repos.js";
@@ -31,7 +31,8 @@ export async function runAnalysis(
     const history = opts.history ?? [];
     let batch: AnalysisBatch;
     let newInsightsForCache: AnalysisBatch["insights"];
-    if (analysisCacheReadEnabled()) {
+    // 切片2c：读路径已开 **且** 今天不是周期全析日 → 走增量；全析日临时绕过读路径全量析（兜底捞跨条综合）。
+    if (analysisCacheReadEnabled() && !isFullReanalyzeToday()) {
       // ADR-0009 切片2（据缓存跳过重析）：只把**未命中**（新 item / content_hash 变了）喂 analyzer；
       // 命中的复用缓存洞察、实例化进本 batch（重生 id + 按当前 history 重判 is_followup）。LLM 只跑 miss。
       // ⚠️ 跨条综合（新 item × 旧 item）会丢——靠周期性全析兜底（切片2c：FULL_REANALYZE 时关闭读路径全析）。
