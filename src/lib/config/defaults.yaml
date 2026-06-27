@@ -309,7 +309,11 @@ defaultSources:
     endpoint: https://github.com/OWASP/www-project-ai-security-and-privacy-guide/commits.atom
     topic_ids: [t_prompt_injection]
     fetch_interval: 24h
-    enabled: true
+    # 2026-06-27 生产数据审计停用：满曝光 27 天、采 46 条、**0 被引、0 洞察**（Darknet 同款）。
+    # 根因=endpoint 用 commits.atom，全是 "update X.md/permalink" 型碎片提交、不可引；releases/tags
+    # 均空壳（仅 v0.0.0 占位）、owaspai.org 无 RSS → 无可用替代 feed。标准/框架基线由 mitre_atlas
+    # （2 条→15 洞察，证明知识库源能被引）+ owasp_llm 兜。下线。
+    enabled: false
   - id: src_mitre_atlas
     name: MITRE ATLAS（GitHub releases）
     type: rss
@@ -371,6 +375,8 @@ defaultSources:
     type: rss
     endpoint: https://googleprojectzero.blogspot.com/feeds/posts/default
     # 精英漏洞研究（全文在 feed，无需 full_text）。偏通用、AI 占比低 → 当漏洞情报补充，上线后看采纳定去留。
+    # 2026-06-27 审计：feed 正常（200/10 条），但 PZ 月更级低频、最新帖 45 天前（早于 30 天冷启动窗）→
+    # 6/25 接入后 0 采集是预期正确行为，非故障。保留，下次 PZ 发帖即采。
     topic_ids: [t_prompt_injection]
     fetch_interval: 24h
     enabled: true
@@ -385,3 +391,14 @@ defaultSources:
     topic_ids: [t_prompt_injection]
     fetch_interval: 12h
     enabled: true
+  # 2026-06-20 直接 seed 进生产、未回流本配置（config 漂移）；2026-06-27 审计实证有效（采 25 / 被引 14 /
+  # 3 洞察，AWS 新加坡 IP 可达，feasibility 列 backlog 的 api.anquanke.com RSS 成立）→ 反向同步进此处，
+  # 否则 DR/全新部署 re-seed 会丢掉这个能用的中文源。中文综合安全资讯，feed 短摘要 → full_text。
+  - id: src_anquanke
+    name: 安全客
+    type: rss
+    endpoint: https://api.anquanke.com/data/v1/rss
+    topic_ids: [t_prompt_injection]
+    fetch_interval: 2h
+    enabled: true
+    fetch_mode: full_text
