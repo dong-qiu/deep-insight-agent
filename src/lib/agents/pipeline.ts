@@ -3,7 +3,10 @@
  *  端到端需 ANTHROPIC_API_KEY，由团队/定时任务跑。 */
 import type { DB } from "../db/index.js";
 import { saveAnalysisBatch, saveValidationResult } from "../db/analysis.js";
-import { analysisCacheEnabled, recordAnalysisCache } from "../db/analysis-cache.js";
+import {
+  analysisCacheEnabled, analysisCacheReadEnabled, instantiateCachedInsights,
+  lookupCachedInsights, recordAnalysisCache,
+} from "../db/analysis-cache.js";
 import { makeConsistencyCache } from "../db/consistency-cache.js";
 import { getContentItem, getSource } from "../db/repos.js";
 import { saveReport } from "../db/reports.js";
@@ -24,12 +27,30 @@ export async function runAnalysis(
   opts: { history?: HistoricalEvent[] } = {},
 ): Promise<AnalysisBatch> {
   const { result } = await runJob(db, { kind: "analyze", target: { topic_id: topic.id } }, async (ctx) => {
-    const batch = await analyze(topic, items, window, ctx.recordCost, { history: opts.history });
+    const version = analyzerCacheVersion();
+    const history = opts.history ?? [];
+    let batch: AnalysisBatch;
+    let newInsightsForCache: AnalysisBatch["insights"];
+    if (analysisCacheReadEnabled()) {
+      // ADR-0009 切片2（据缓存跳过重析）：只把**未命中**（新 item / content_hash 变了）喂 analyzer；
+      // 命中的复用缓存洞察、实例化进本 batch（重生 id + 按当前 history 重判 is_followup）。LLM 只跑 miss。
+      // ⚠️ 跨条综合（新 item × 旧 item）会丢——靠周期性全析兜底（切片2c：FULL_REANALYZE 时关闭读路径全析）。
+      const { hits, missItems } = lookupCachedInsights(db, topic.id, items, version);
+      batch = await analyze(topic, missItems, window, ctx.recordCost, { history });
+      newInsightsForCache = [...batch.insights]; // 本轮真析产出（写缓存用），须在追加复用洞察前快照
+      const instantiated = instantiateCachedInsights(hits, batch.id, history, batch.insights.length);
+      batch.insights.push(...instantiated);
+      batch.no_significant_event = batch.insights.length === 0;
+    } else {
+      batch = await analyze(topic, items, window, ctx.recordCost, { history });
+      newInsightsForCache = batch.insights;
+    }
     saveAnalysisBatch(db, batch);
-    // ADR-0009 切片1（行为中性·只写不读）：旁路记录每 item 的分析结果 + 量化跨日重析命中率。
-    // 在 analyze/落库**之后**，不改任何输出；recordAnalysisCache 内部全捕获、绝不连累管线。
+    // 写缓存（切片1，写路径默认开）：对全部 item 按键 upsert（命中++ 计度量 + 刷 last_seen），
+    // insights_json 取**本轮真析产出**（miss 的新洞察；命中键 ON CONFLICT 不覆写、复用洞察不重记）。
+    // recordAnalysisCache 内部全捕获、绝不连累管线。
     if (analysisCacheEnabled()) {
-      recordAnalysisCache(db, topic.id, items, batch.insights, analyzerCacheVersion());
+      recordAnalysisCache(db, topic.id, items, newInsightsForCache, version);
     }
     return batch;
   });

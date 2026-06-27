@@ -2,9 +2,12 @@
  *  重点：键稳定 + 版本隔离、单源归属、hit_count 计 would-be 命中、命中率度量、行为中性（异常吞）。 */
 import { beforeEach, describe, expect, it } from "vitest";
 import type { ContentItem, Insight } from "../types.js";
+import type { HistoricalEvent } from "../agents/analyzer.js";
 import {
   analysisCacheStats,
   computeAnalysisKey,
+  instantiateCachedInsights,
+  lookupCachedInsights,
   recordAnalysisCache,
 } from "./analysis-cache.js";
 import { type DB, openDb } from "./index.js";
@@ -119,5 +122,81 @@ describe("行为中性 / 健壮", () => {
   it("空 items → 不报错、零写入", () => {
     expect(recordAnalysisCache(db, "t1", [], [], "v1")).toEqual({ writes: 0, wouldHit: 0 });
     expect(analysisCacheStats(db)).toEqual({ distinctKeys: 0, totalAnalyses: 0, wouldHit: 0, wouldHitRate: 0 });
+  });
+});
+
+describe("lookupCachedInsights（切片2 读分流）", () => {
+  it("已缓存 item → 命中（取回单源洞察）；新 item → 未命中", () => {
+    recordAnalysisCache(db, "t1", [mkItem("ci1", "h1")], [mkInsight("i1", ["ci1"])], "v1");
+    const r = lookupCachedInsights(db, "t1", [mkItem("ci1", "h1"), mkItem("ci2", "h2")], "v1");
+    expect(r.hits.map((x) => x.id)).toEqual(["i1"]);
+    expect(r.missItems.map((x) => x.id)).toEqual(["ci2"]);
+    expect(r.hitItemCount).toBe(1);
+  });
+
+  it("零产出 item 命中 = 空洞察但不算 miss（不重析）", () => {
+    recordAnalysisCache(db, "t1", [mkItem("ci1", "h1")], [], "v1"); // 当初没产出
+    const r = lookupCachedInsights(db, "t1", [mkItem("ci1", "h1")], "v1");
+    expect(r.hits).toEqual([]);
+    expect(r.missItems).toEqual([]); // 命中（键存在）→ 不重析
+    expect(r.hitItemCount).toBe(1);
+  });
+
+  it("版本不符 → 全未命中（按版本失效）", () => {
+    recordAnalysisCache(db, "t1", [mkItem("ci1", "h1")], [mkInsight("i1", ["ci1"])], "v1");
+    const r = lookupCachedInsights(db, "t1", [mkItem("ci1", "h1")], "v2");
+    expect(r.hits).toEqual([]);
+    expect(r.missItems.map((x) => x.id)).toEqual(["ci1"]);
+  });
+
+  it("坏 JSON → 当未命中重析（安全）", () => {
+    db.prepare(
+      "INSERT INTO analysis_cache (key,topic_id,content_hash,insights_json,hit_count,created_at,last_seen) VALUES (?,?,?,?,0,datetime('now'),datetime('now'))",
+    ).run(computeAnalysisKey("v1", "t1", "h1"), "t1", "h1", "not json");
+    const r = lookupCachedInsights(db, "t1", [mkItem("ci1", "h1")], "v1");
+    expect(r.hits).toEqual([]);
+    expect(r.missItems.map((x) => x.id)).toEqual(["ci1"]); // 坏 JSON → miss
+  });
+
+  it("同轮同 content_hash 去重：只处理首个", () => {
+    recordAnalysisCache(db, "t1", [mkItem("ci1", "hS")], [mkInsight("i1", ["ci1"])], "v1");
+    const r = lookupCachedInsights(db, "t1", [mkItem("ci1", "hS"), mkItem("ci2", "hS")], "v1");
+    expect(r.hitItemCount).toBe(1); // 第二个同指纹 item 被跳过、不重复实例化
+    expect(r.hits.map((x) => x.id)).toEqual(["i1"]);
+  });
+
+  it("M1 防御：被引 id 不在当前窗口（同内容换了 id）→ 退回重析、不复用断引洞察", () => {
+    // 缓存：item ci_old(h1) 产 insight 引 ci_old
+    recordAnalysisCache(db, "t1", [mkItem("ci_old", "h1")], [mkInsight("i1", ["ci_old"])], "v1");
+    // 本轮窗口里是 ci_new（同内容 h1、不同 id；ci_old 已不在窗）→ 命中键但被引 ci_old 不在窗
+    const r = lookupCachedInsights(db, "t1", [mkItem("ci_new", "h1")], "v1");
+    expect(r.hits).toEqual([]); // 不复用断引洞察
+    expect(r.missItems.map((x) => x.id)).toEqual(["ci_new"]); // 退回重析（安全）
+  });
+});
+
+describe("instantiateCachedInsights（切片2 实例化）", () => {
+  const cached: Insight[] = [
+    { ...mkInsight("old1", ["ci1"]), event_id: "evt_A" },
+    { ...mkInsight("old2", ["ci2"]), event_id: "evt_B" },
+  ];
+
+  it("重生 id（从 startIdx 续号）+ 保持 event_id", () => {
+    const out = instantiateCachedInsights(cached, "batch_X", [], 3);
+    expect(out.map((x) => x.id)).toEqual(["ins_batch_X_3", "ins_batch_X_4"]);
+    expect(out.map((x) => x.event_id)).toEqual(["evt_A", "evt_B"]); // 事件身份稳定
+  });
+
+  it("is_followup 按当前 history 重判（事件已报告 → true）", () => {
+    const history: HistoricalEvent[] = [{ event_id: "evt_A", statement: "s", date: "2026-06-25" }];
+    const out = instantiateCachedInsights(cached, "batch_X", history, 0);
+    expect(out.find((x) => x.event_id === "evt_A")?.is_followup).toBe(true); // 在历史 → 复报标记
+    expect(out.find((x) => x.event_id === "evt_B")?.is_followup).toBe(false); // 不在历史 → 当新
+  });
+
+  it("statement / citations 原样复用", () => {
+    const out = instantiateCachedInsights(cached, "b", [], 0);
+    expect(out[0].statement).toBe("s_old1");
+    expect(out[0].citations).toEqual(cached[0].citations);
   });
 });
