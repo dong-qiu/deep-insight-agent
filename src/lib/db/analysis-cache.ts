@@ -94,6 +94,17 @@ export function analysisCacheReadEnabled(): boolean {
   return process.env.ANALYSIS_CACHE_READ === "1";
 }
 
+/** 周期性全析日（切片2c 兜底安全网）：增量只析新 item、丢「新×旧」跨条综合；故每周一次**全窗 full re-analyze**
+ *  把损失上界钉在 ≤1 周（2b eval caveat 要求）。默认每周一（UTC dow=1）；`FULL_REANALYZE_DOW` 0–6 可调，
+ *  设为 -1（或非 0–6）则**关闭兜底**（增量天天跑、不再周期全析——仅在确证无综合损失后才用）。
+ *  仅当读路径已开（ANALYSIS_CACHE_READ=1）时才有意义：runAnalysis 在全析日临时绕过读路径、全量析。 */
+export function isFullReanalyzeToday(now: Date = new Date()): boolean {
+  const raw = process.env.FULL_REANALYZE_DOW;
+  const target = raw === undefined || raw === "" ? 1 : Number(raw);
+  if (!Number.isInteger(target) || target < 0 || target > 6) return false; // 关闭兜底
+  return now.getUTCDay() === target;
+}
+
 /** 读缓存分流（切片2）：按 (version, topic, content_hash) 查每个 item 是否已缓存分析结果。
  *  - **命中**（键存在且 insights_json 可解析，含空数组=当初分析无产出）= 复用其单源洞察、跳过 LLM；
  *  - **未命中 / 坏 JSON** = 仍需 analyze（坏 JSON 当未命中，宁可重析也不喂错洞察）。
