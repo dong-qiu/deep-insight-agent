@@ -181,6 +181,9 @@ defaultSources:
     topic_ids: [t_code_agents]
     fetch_interval: 12h
     enabled: true
+    # 必须用 publication /feed（~872KB·15 条·全文在 <content:encoded> 均 ~36k 字/含完整转写，robots 放行）。
+    # **勿换** podcast feed api.substack.com/feed/podcast/1084089.rss（全 211 集 12.6MB，撞 readTextCapped
+    # 8MB 上限抛错 → ingest failed）。2026-06-28 生产 probe 复核（robots+可达+深度，见 ops/aws/probe-sources.sh）。
   - id: src_pragmatic_eng
     name: The Pragmatic Engineer
     type: rss
@@ -203,10 +206,15 @@ defaultSources:
     endpoint: https://changelog.com/podcast/feed
     topic_ids: [t_code_agents]
     fetch_interval: 24h
-    enabled: true
-    # 软件工程本体播客，AI 编码工具覆盖密。feed 自带 <podcast:transcript type=text/html> 转写 URL
-    # （changelog.com/.../transcript）→ parseRss 自动取，无需金牌适配器；转写页为 <cite>/<p> 极简结构，
-    # 由 fetchTranscript 的 extractCiteTranscript 抽取（2026-06-26 生产实测）。
+    # 2026-06-28 下线：changelog.com/robots.txt 为 `User-agent: * / Disallow: /`（全站禁爬，连 feed
+    # 也不放行）；生产采集器遵守 robots（rss.ts fetchRobots/isAllowed）→ ingest 直接 failed
+    # （run_76f5c62a：「robots.txt 禁止抓取」，0 条入库）。与 freebuf(WAF)/bleeping(cf) 同属「不可合规
+    # 采集」，机制不同（此为站方 robots 主动声明）。位（软工实践+AI 编码）已由既有 src_latent_space
+    # （654 被引）+ src_pragmatic_eng（120 被引）覆盖且远强于它，下线零损失。
+    # extractCiteTranscript 代码/单测保留——拿到站方许可或换同款 <cite>/<p> 转写源即可复用。
+    # 原可达说明（留档）：feed 自带 <podcast:transcript type=text/html> 转写 URL → parseRss 自动取，
+    # 转写页 <cite>/<p> 极简结构由 extractCiteTranscript 抽取（2026-06-26 probe 实测，但 probe 未查 robots）。
+    enabled: false
   # Lex Fridman：转写不在 feed、官网有规律转写页（ADR-0007 6d 金牌源适配器）。选题极宽，
   # 由 podcast-golden.ts 的标题筛子只留 AI/CS/SWE 集（实测命中率约 1/4），转写 URL 由单集页推导。
   - id: src_lex_fridman

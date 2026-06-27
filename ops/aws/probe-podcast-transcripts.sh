@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# 播客转写源「生产 IP 可达性 + 转写抽取」实测（接入/改适配器前门禁）。
+# 播客转写源「生产 IP 可达性 + robots 合规 + 转写抽取」实测（接入/改适配器前门禁）。
+# robots 门为 2026-06-28 补：Changelog 接入漏查 robots（probe 绕过、生产遵守 → ingest failed）的修复。
 # 配套 2026-06-26 改动：① Changelog 接入（feed 带 text/html 转写 URL，新 extractCiteTranscript 抽 <cite>/<p>）；
 # ② Practical AI 放开 rel="captions" vtt/srt 兜底（修元数据退化）。本机 curl 200 ≠ 生产可达，故用 app 真实
 # UA（InsightAgentBot）+ Node fetch 在生产主机实测；抽取逻辑**忠实内联** normalize.ts，只回传字数 + 样本。
@@ -71,6 +72,41 @@ async function get(url) {
   } finally { clearTimeout(t); }
 }
 
+// ── 忠实内联 robots.ts: parseRobots/rulesForStatus/isAllowed（合规门）。
+//    缘起 2026-06-28：Changelog 接入漏查 robots（probe 直 fetch 绕过、生产采集器却遵守 → ingest failed）。
+//    生产在 3 处各按 origin 查 robots（feed=rss.ts:109 抛错 / 转写=rss.ts:125 / 文章=article.ts:95），
+//    故 probe 对每个会抓的 origin 都查。`*` 当字面量、网络不可达保守放行——与生产 robots.ts 完全一致。
+function parseRobots(txt, ua) {
+  const groups = []; let cur = null, lastWasAgent = false;
+  for (const rawLine of txt.split(/\r?\n/)) {
+    const line = rawLine.replace(/#.*$/, "").trim(); if (!line) continue;
+    const idx = line.indexOf(":"); if (idx < 0) continue;
+    const field = line.slice(0, idx).trim().toLowerCase(), value = line.slice(idx + 1).trim();
+    if (field === "user-agent") {
+      if (!lastWasAgent || !cur) { cur = { agents: [], disallow: [] }; groups.push(cur); }
+      cur.agents.push(value.toLowerCase()); lastWasAgent = true;
+    } else if (field === "disallow" && cur) { cur.disallow.push(value); lastWasAgent = false; }
+    else { lastWasAgent = false; }
+  }
+  const uaLower = ua.toLowerCase();
+  const mt = (g, star) => g.agents.some((a) => star ? a === "*" : a !== "*" && (uaLower.includes(a) || a.includes(uaLower)));
+  const exact = groups.filter((g) => mt(g, false)), star = groups.filter((g) => mt(g, true));
+  return { disallow: (exact.length ? exact : star).flatMap((g) => g.disallow).filter((d) => d !== "") };
+}
+function rulesForStatus(status, body, ua) {
+  if (status >= 200 && status < 300) return parseRobots(body, ua);
+  if (status >= 500) return { disallow: ["/"] };  // 5xx 保守视为全站禁（同生产）
+  return { disallow: [] };                          // 4xx/404=无 robots → 放行全站
+}
+async function robotsCheck(url) {
+  const u = new URL(url);
+  try {
+    const r = await get(new URL("/robots.txt", u.origin).toString());
+    const rules = rulesForStatus(r.status, r.ok ? r.body : "", UA);
+    return { status: r.status, allowed: !rules.disallow.some((d) => u.pathname.startsWith(d)), disallow: rules.disallow.slice(0, 8) };
+  } catch { return { status: 0, allowed: true, note: "robots 不可达→保守放行(同生产)" }; }
+}
+
 const TARGETS = [
   { id: "src_changelog", feed: "https://changelog.com/podcast/feed", extractor: "cite" },
   { id: "src_practical_ai", feed: "https://feeds.transistor.fm/practical-ai-machine-learning-data-science-llm", extractor: "vtt" },
@@ -80,6 +116,9 @@ const TARGETS = [
   for (const tgt of TARGETS) {
     const out = { id: tgt.id };
     try {
+      // ① 合规门：feed origin robots（生产 rss.ts:109 同款；不放行则生产 ingest 直接抛错）
+      out.robots_feed = await robotsCheck(tgt.feed);
+      if (!out.robots_feed.allowed) { out.pass = false; out.blocked = "robots(feed)"; console.log(JSON.stringify(out)); continue; }
       const f = await get(tgt.feed);
       out.feed = { status: f.status, bytes: f.bytes };
       if (f.ok) {
@@ -87,6 +126,9 @@ const TARGETS = [
         out.transcript_url = tr ? tr.url : null;
         out.transcript_kind = tr ? (tr.rel === "captions" ? "captions:" + tr.type : tr.type) : null;
         if (tr && tr.url) {
+          // ② 合规门：转写页 origin robots（常与 feed 不同源；生产 rss.ts:125 同款，不放行则该条返 null）
+          out.robots_transcript = await robotsCheck(tr.url);
+          if (!out.robots_transcript.allowed) { out.pass = false; out.blocked = "robots(transcript)"; console.log(JSON.stringify(out)); continue; }
           const p = await get(tr.url);
           const txt = tgt.extractor === "cite" ? extractCiteTranscript(p.body) : stripTranscript(p.body);
           out.page = { status: p.status, ctype: p.ctype, bytes: p.bytes, chars: txt.length, sample: txt.slice(0, 140).replace(/\s+/g, " ") };
