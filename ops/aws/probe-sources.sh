@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# 候选数据源「生产 IP 可达性 + full_text 正文容器」实测（接入前门禁）。
+# 候选数据源「生产 IP 可达性 + robots 合规 + full_text 正文容器」实测（接入前门禁）。
+# robots 门为 2026-06-28 补：Changelog 接入漏查 robots（probe 绕过、生产遵守 → ingest failed）的修复。
 # 动机：本机 curl 200 ≠ 生产可达——AWS 新加坡出口 IP 常被 WAF/Cloudflare 整段拦
 # （FreeBuf 伪 405 / Bleeping cf-challenge 的教训）。故在生产主机上、用 app 的真实 UA
 # （InsightAgentBot）+ Node fetch（运行镜像 slim 无 curl，与健康检查/cron 同路径）实测。
@@ -86,6 +87,41 @@ async function get(url) {
   } finally { clearTimeout(t); }
 }
 
+// ── 忠实内联 robots.ts: parseRobots/rulesForStatus/isAllowed（合规门）。
+//    缘起 2026-06-28：Changelog 接入漏查 robots（probe 直 fetch 绕过、生产采集器却遵守 → ingest failed）。
+//    生产按 origin 查 robots（feed=rss.ts:109 抛错 / 文章=article.ts:95 返 null），故对会抓的每个 origin 都查。
+//    `*` 当字面量、网络不可达保守放行——与生产 robots.ts 完全一致。
+function parseRobots(txt, ua) {
+  const groups = []; let cur = null, lastWasAgent = false;
+  for (const rawLine of txt.split(/\r?\n/)) {
+    const line = rawLine.replace(/#.*$/, "").trim(); if (!line) continue;
+    const idx = line.indexOf(":"); if (idx < 0) continue;
+    const field = line.slice(0, idx).trim().toLowerCase(), value = line.slice(idx + 1).trim();
+    if (field === "user-agent") {
+      if (!lastWasAgent || !cur) { cur = { agents: [], disallow: [] }; groups.push(cur); }
+      cur.agents.push(value.toLowerCase()); lastWasAgent = true;
+    } else if (field === "disallow" && cur) { cur.disallow.push(value); lastWasAgent = false; }
+    else { lastWasAgent = false; }
+  }
+  const uaLower = ua.toLowerCase();
+  const mt = (g, star) => g.agents.some((a) => star ? a === "*" : a !== "*" && (uaLower.includes(a) || a.includes(uaLower)));
+  const exact = groups.filter((g) => mt(g, false)), star = groups.filter((g) => mt(g, true));
+  return { disallow: (exact.length ? exact : star).flatMap((g) => g.disallow).filter((d) => d !== "") };
+}
+function rulesForStatus(status, body, ua) {
+  if (status >= 200 && status < 300) return parseRobots(body, ua);
+  if (status >= 500) return { disallow: ["/"] };  // 5xx 保守视为全站禁（同生产）
+  return { disallow: [] };                          // 4xx/404=无 robots → 放行全站
+}
+async function robotsCheck(url) {
+  const u = new URL(url);
+  try {
+    const r = await get(new URL("/robots.txt", u.origin).toString());
+    const rules = rulesForStatus(r.status, r.ok ? r.body : "", UA);
+    return { status: r.status, allowed: !rules.disallow.some((d) => u.pathname.startsWith(d)), disallow: rules.disallow.slice(0, 8) };
+  } catch { return { status: 0, allowed: true, note: "robots 不可达→保守放行(同生产)" }; }
+}
+
 // feed 首条 item 链接（RSS <link>…</link> 或 Atom <link href>）+ 全文承载判定。
 function firstLink(feed) {
   // RSS: <item>…<link>URL</link>；Atom: <entry>…<link href="URL" .../>
@@ -112,6 +148,9 @@ function feedCarriesFullText(feed) {
   for (const c of CANDIDATES) {
     const out = { id: c.id, name: c.name, mode: c.mode };
     try {
+      // ① 合规门：feed origin robots（生产 rss.ts:109 同款；不放行则生产 ingest 直接抛错——Changelog 即此）
+      out.robots_feed = await robotsCheck(c.url);
+      if (!out.robots_feed.allowed) { out.pass = false; out.blocked = "robots(feed)"; console.log(JSON.stringify(out)); continue; }
       const f = await get(c.url);
       out.feed = { status: f.status, bytes: f.bytes };
       if (f.ok) {
@@ -120,6 +159,9 @@ function feedCarriesFullText(feed) {
         const link = firstLink(f.body);
         out.feed.firstLink = link;
         if (c.mode === "full_text" && link) {
+          // ② 合规门：文章页 origin robots（常与 feed 不同源；生产 article.ts:95 同款，不放行则该条返 null）
+          out.robots_article = await robotsCheck(link);
+          if (!out.robots_article.allowed) { out.article = { blocked: "robots" }; out.pass = false; console.log(JSON.stringify(out)); continue; }
           const a = await get(link);
           out.article = { status: a.status, bytes: a.bytes, ctype: a.ctype.split(";")[0] };
           if (a.ok && /html/i.test(a.ctype)) {
