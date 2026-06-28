@@ -972,3 +972,8 @@ S1 上线后第一个优化。**问题**：边权=生频次 → hub 实体（Ant
 - **先量证价值（生产真数据）**：association 浮出 frequency 看不见的结构——code_agents 的基准簇(Codex 5.5 High~SWE-Bench Pro)/人物链(Karpathy~Latent Space)、**ai_industry 的「前沿模型对比」clique**(Google/xAI/Gemini/Claude/Grok/安全机构，频次模式被 OpenAI hub 完全淹没)、prompt_injection 的威胁行为者/住宅代理/模型家族簇。可视化验证（离线渲染+截图）：40 边预算清爽不糊。
 - 观察：dense 主题关联 top 多 s=1.0/w=2（紧密弱频对）——`maxEdges` 由 60 降 40 更聚焦；用户可调「最小共现」抬支持度。**这是把"共现图"升级成"洞察图"的一步，仍零 LLM、零迁移。**
 - **已知限制（独立 review 提）**：候选实体先按 mentions 取 top-40 再在候选内选边——若某紧密对两端 mentions 偏低、在 dense 主题挤不进 top-40，会在算 strength **前**被 mentions 门挡掉（防 hairball 门与"浮低频紧密对"的内在张力）。生产数据下价值已验，非阻断；未来可让 association 模式候选集纳入高 strength 边的端点。
+
+### S1.2：节点→报告导航（2026-06-28）
+让图从死胡同变成导航面。**点节点** → drill 改走 `queryReportIndex({topic, entity})` 返回「提及该实体的报告」（标题链进 `/reports/[id]` + 日期/类型）；**点边**保留 S1.1 的共现洞察（statement+引证，精确解释「为何相连」比报告链接更贴切）。移除不再用的 `insightsMentioningEntity`（避免死代码）。
+- **图实体(insight.entities) ↔ 报告(report_index.entity_names) 对齐验证（生产真数据）**：各主题 top 实体均命中多份报告（code_agents 7-13/26、prompt_injection 2-4/22、ai_industry 2-5/5，无一为 0）→ 导航有效。niche 实体可能 0 报告，drill 优雅兜底「无已发布报告提及」。
+- 注：报告导航天然只显**已发布报告**——与 ADR 风险⑤（图本身含未过校验洞察）形成互补：图给全貌、点进只到已发布。仍零 LLM、零迁移。

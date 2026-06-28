@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { AnalysisBatch, Entity, Insight, Topic } from "../types.js";
 import { saveAnalysisBatch } from "./analysis.js";
-import { buildTopicGraph, insightsCooccurring, insightsMentioningEntity, loadTopicInsights } from "./graph.js";
+import { buildTopicGraph, insightsCooccurring, loadTopicInsights } from "./graph.js";
 import { type DB, openDb } from "./index.js";
 import { insertTopic } from "./repos.js";
 
@@ -87,11 +87,6 @@ describe("溯源查询", () => {
     const ins = loadTopicInsights(db, "t1");
     expect(ins.length).toBe(2);
     expect(ins[0].citations[0].content_item_id).toBe("ci-i1");
-  });
-
-  it("insightsMentioningEntity：提及该实体的全部洞察", () => {
-    expect(insightsMentioningEntity(db, "t1", "OpenAI").map((i) => i.id).sort()).toEqual(["i1", "i2"]);
-    expect(insightsMentioningEntity(db, "t1", "Cursor").map((i) => i.id)).toEqual(["i1"]);
   });
 
   it("insightsCooccurring：只返两实体同条共现的洞察", () => {

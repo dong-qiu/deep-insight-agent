@@ -42,6 +42,20 @@ interface DrillItem {
   multi_source: boolean;
   quotes: string[];
 }
+interface ReportRow {
+  report_id: string;
+  title: string;
+  date: string;
+  type: string;
+}
+type DrillResult =
+  | { kind: "reports"; reports: ReportRow[] }
+  | { kind: "insights"; items: DrillItem[] };
+const REPORT_TYPE_LABEL: Record<string, string> = {
+  brief: "简报",
+  deep_dive: "深度",
+  initial_digest: "首版综述",
+};
 type Selection = { kind: "node"; a: string } | { kind: "edge"; a: string; b: string };
 
 const W = 820;
@@ -73,7 +87,7 @@ export function ForceGraph({
   metric?: "frequency" | "association";
 }) {
   const [sel, setSel] = useState<Selection | null>(null);
-  const [items, setItems] = useState<DrillItem[] | null>(null);
+  const [drill, setDrill] = useState<DrillResult | null>(null);
   const [loading, setLoading] = useState(false);
 
   const maxMentions = Math.max(1, ...nodes.map((n) => n.mentions));
@@ -121,7 +135,7 @@ export function ForceGraph({
 
   useEffect(() => {
     if (!sel) {
-      setItems(null);
+      setDrill(null);
       return;
     }
     let cancelled = false;
@@ -131,11 +145,11 @@ export function ForceGraph({
     if (since) qs.set("since", since);
     fetch(`/api/graph/drill?${qs.toString()}`)
       .then((r) => r.json())
-      .then((d) => {
-        if (!cancelled) setItems(d.items ?? []);
+      .then((d: DrillResult) => {
+        if (!cancelled) setDrill(d);
       })
       .catch(() => {
-        if (!cancelled) setItems([]);
+        if (!cancelled) setDrill(sel.kind === "edge" ? { kind: "insights", items: [] } : { kind: "reports", reports: [] });
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -214,12 +228,12 @@ export function ForceGraph({
       <aside style={{ flex: "1 1 280px", minWidth: 260 }}>
         <Legend metric={metric} />
         {!sel ? (
-          <p className="muted">点节点看「提及它的洞察」，点边看「两实体共现的那些洞察」——溯源到原始分析判断。</p>
+          <p className="muted">点节点看「提及它的报告」（点进阅读），点边看「两实体共现的洞察」——溯源到原始分析判断。</p>
         ) : (
           <div className="card">
             <h4 style={{ marginTop: 0 }}>{sel.kind === "node" ? sel.a : `${sel.a} ⇄ ${sel.b}`}</h4>
             <p className="muted" style={{ fontSize: 12, marginTop: -6 }}>
-              {sel.kind === "node" ? "提及该实体的洞察" : "两实体共现的洞察"}
+              {sel.kind === "node" ? "提及该实体的报告" : "两实体共现的洞察"}
               {" · "}
               <button
                 type="button"
@@ -231,11 +245,27 @@ export function ForceGraph({
             </p>
             {loading ? (
               <p className="muted">加载中…</p>
-            ) : !items || items.length === 0 ? (
-              <p className="muted">无</p>
-            ) : (
+            ) : drill?.kind === "reports" ? (
+              drill.reports.length === 0 ? (
+                <p className="muted">无已发布报告提及该实体。</p>
+              ) : (
+                <ul style={{ paddingLeft: "1rem", margin: 0 }}>
+                  {drill.reports.map((r) => (
+                    <li key={r.report_id} style={{ marginBottom: 8 }}>
+                      <a href={`/reports/${r.report_id}`}>{r.title}</a>
+                      <span className="muted" style={{ fontSize: 11 }}>
+                        {" · "}
+                        {r.date}
+                        {" · "}
+                        {REPORT_TYPE_LABEL[r.type] ?? r.type}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )
+            ) : drill && drill.items.length > 0 ? (
               <ul style={{ paddingLeft: "1rem", margin: 0 }}>
-                {items.map((it) => (
+                {drill.items.map((it) => (
                   <li key={it.id} style={{ marginBottom: 10 }}>
                     <span title={it.statement}>{it.headline}</span>
                     <span className="muted" style={{ fontSize: 11 }}>
@@ -251,6 +281,8 @@ export function ForceGraph({
                   </li>
                 ))}
               </ul>
+            ) : (
+              <p className="muted">无</p>
             )}
           </div>
         )}
