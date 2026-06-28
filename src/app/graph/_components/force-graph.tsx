@@ -14,7 +14,7 @@ import {
   type SimulationLinkDatum,
   type SimulationNodeDatum,
 } from "d3-force";
-import { useEffect, useMemo, useState } from "react";
+import { type MouseEvent as RMouseEvent, useEffect, useMemo, useRef, useState } from "react";
 import type { EntityType } from "../../../lib/types.js";
 
 export interface GNode {
@@ -78,6 +78,10 @@ export function ForceGraph({
   const [sel, setSel] = useState<Selection | null>(null);
   const [items, setItems] = useState<DrillItem[] | null>(null);
   const [loading, setLoading] = useState(false);
+  // 缩放平移视图：graph 内容 = translate(tx,ty) scale(k)
+  const [view, setView] = useState({ k: 1, tx: 0, ty: 0 });
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  const panRef = useRef<{ sx: number; sy: number; tx: number; ty: number; moved: boolean; rw: number; rh: number } | null>(null);
 
   const maxMentions = Math.max(1, ...nodes.map((n) => n.mentions));
   const radiusFor = (m: number): number => 6 + 13 * (Math.sqrt(m) / Math.sqrt(maxMentions));
@@ -148,6 +152,46 @@ export function ForceGraph({
     };
   }, [sel, topic, since]);
 
+  // ego 聚焦：选中节点 → 它 + 直接邻居高亮、其余淡化；选中边 → 两端点 + 该边。
+  const focus = useMemo(() => {
+    if (!sel) return null;
+    if (sel.kind === "node") {
+      const set = new Set<string>([sel.a]);
+      for (const e of edges) {
+        if (e.a === sel.a) set.add(e.b);
+        if (e.b === sel.a) set.add(e.a);
+      }
+      return {
+        node: (n: string) => set.has(n),
+        edge: (e: GEdge) => e.a === sel.a || e.b === sel.a,
+      };
+    }
+    return {
+      node: (n: string) => n === sel.a || n === sel.b,
+      edge: (e: GEdge) => e.a === sel.a && e.b === sel.b,
+    };
+  }, [sel, edges]);
+
+  // 滚轮缩放：用 ref 挂非被动监听（React onWheel 被动、preventDefault 无效），以光标为中心。
+  useEffect(() => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const rect = svg.getBoundingClientRect();
+      const px = ((e.clientX - rect.left) / rect.width) * W;
+      const py = ((e.clientY - rect.top) / rect.height) * H;
+      setView((v) => {
+        const k = Math.min(5, Math.max(0.4, v.k * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
+        const gx = (px - v.tx) / v.k;
+        const gy = (py - v.ty) / v.k;
+        return { k, tx: px - gx * k, ty: py - gy * k };
+      });
+    };
+    svg.addEventListener("wheel", onWheel, { passive: false });
+    return () => svg.removeEventListener("wheel", onWheel);
+  }, [nodes.length]);
+
   if (nodes.length === 0) {
     return (
       <p className="muted">
@@ -158,61 +202,119 @@ export function ForceGraph({
 
   const { placed, byName } = positioned;
 
+  const beginPan = (e: RMouseEvent) => {
+    const rect = svgRef.current?.getBoundingClientRect();
+    panRef.current = {
+      sx: e.clientX, sy: e.clientY, tx: view.tx, ty: view.ty, moved: false,
+      rw: rect?.width ?? W, rh: rect?.height ?? H, // 缓存盒尺寸，拖动期间不变、免每帧重排
+    };
+  };
+  const onMove = (e: RMouseEvent) => {
+    const p = panRef.current;
+    if (!p) return;
+    if (Math.abs(e.clientX - p.sx) + Math.abs(e.clientY - p.sy) > 3) p.moved = true;
+    const dx = ((e.clientX - p.sx) / p.rw) * W;
+    const dy = ((e.clientY - p.sy) / p.rh) * H;
+    setView((v) => ({ ...v, tx: p.tx + dx, ty: p.ty + dy }));
+  };
+  const endPan = () => {
+    const p = panRef.current;
+    if (p && !p.moved) setSel(null); // 空白单击（未拖动）→ 复位选择/聚焦
+    panRef.current = null;
+  };
+  // 拖出 svg：只取消平移，不判「空白单击」（避免移出即误清选择）
+  const cancelPan = () => {
+    panRef.current = null;
+  };
+  const reset = () => {
+    setView({ k: 1, tx: 0, ty: 0 });
+    setSel(null);
+  };
+  const zoomCenter = (factor: number) =>
+    setView((v) => {
+      const k = Math.min(5, Math.max(0.4, v.k * factor));
+      const gx = (W / 2 - v.tx) / v.k;
+      const gy = (H / 2 - v.ty) / v.k;
+      return { k, tx: W / 2 - gx * k, ty: H / 2 - gy * k };
+    });
+
   return (
     <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap", alignItems: "flex-start" }}>
-      <svg
-        width={W}
-        height={H}
-        viewBox={`0 0 ${W} ${H}`}
-        style={{ border: "1px solid #e5e7eb", borderRadius: 8, background: "#fafafa", maxWidth: "100%" }}
-        role="img"
-        aria-label="实体共现图"
-      >
-        {edges.map((e, i) => {
-          const a = byName.get(e.a);
-          const b = byName.get(e.b);
-          if (!a || !b) return null;
-          const on = sel?.kind === "edge" && sel.a === e.a && sel.b === e.b;
-          return (
-            <line
-              key={`${e.a}--${e.b}`}
-              x1={a.x}
-              y1={a.y}
-              x2={b.x}
-              y2={b.y}
-              stroke={on ? "#111827" : "#9ca3af"}
-              strokeWidth={strokeFor(e)}
-              strokeOpacity={on ? 0.95 : 0.45}
-              style={{ cursor: "pointer" }}
-              onClick={() => setSel({ kind: "edge", a: e.a, b: e.b })}
-            >
-              <title>{`${e.a} ⇄ ${e.b}：共现 ${e.weight} 条 · 关联强度 ${e.strength}`}</title>
-            </line>
-          );
-        })}
-        {placed.map((n) => {
-          const on = sel?.a === n.name || (sel?.kind === "edge" && sel.b === n.name);
-          const r = radiusFor(n.mentions);
-          return (
-            <g key={n.name} style={{ cursor: "pointer" }} onClick={() => setSel({ kind: "node", a: n.name })}>
-              <circle
-                cx={n.x}
-                cy={n.y}
-                r={r}
-                fill={COLOR[n.type]}
-                fillOpacity={on ? 1 : 0.82}
-                stroke={on ? "#111827" : "#fff"}
-                strokeWidth={on ? 2 : 1}
-              >
-                <title>{`${n.name}（${TYPE_LABEL[n.type]}）：${n.mentions} 条洞察提及`}</title>
-              </circle>
-              <text x={n.x} y={n.y - r - 3} textAnchor="middle" fontSize={11} fill="#374151">
-                {n.name}
-              </text>
-            </g>
-          );
-        })}
-      </svg>
+      <div>
+        <svg
+          ref={svgRef}
+          width={W}
+          height={H}
+          viewBox={`0 0 ${W} ${H}`}
+          style={{ border: "1px solid #e5e7eb", borderRadius: 8, background: "#fafafa", maxWidth: "100%", height: "auto", touchAction: "none" }}
+          role="img"
+          aria-label="实体共现图"
+          onMouseMove={onMove}
+          onMouseUp={endPan}
+          onMouseLeave={cancelPan}
+        >
+          {/* 背景：拖动平移 + 空白单击复位选择 */}
+          <rect x={0} y={0} width={W} height={H} fill="transparent" style={{ cursor: "grab" }} onMouseDown={beginPan} />
+          <g transform={`translate(${view.tx} ${view.ty}) scale(${view.k})`}>
+            {edges.map((e) => {
+              const a = byName.get(e.a);
+              const b = byName.get(e.b);
+              if (!a || !b) return null;
+              const on = sel?.kind === "edge" && sel.a === e.a && sel.b === e.b;
+              const dim = focus ? !focus.edge(e) : false;
+              return (
+                <line
+                  key={`${e.a}--${e.b}`}
+                  x1={a.x}
+                  y1={a.y}
+                  x2={b.x}
+                  y2={b.y}
+                  stroke={on ? "#111827" : "#9ca3af"}
+                  strokeWidth={strokeFor(e)}
+                  strokeOpacity={dim ? 0.06 : on ? 0.95 : 0.45}
+                  style={{ cursor: "pointer" }}
+                  onClick={() => setSel({ kind: "edge", a: e.a, b: e.b })}
+                >
+                  <title>{`${e.a} ⇄ ${e.b}：共现 ${e.weight} 条 · 关联强度 ${e.strength}`}</title>
+                </line>
+              );
+            })}
+            {placed.map((n) => {
+              const on = sel?.a === n.name || (sel?.kind === "edge" && sel.b === n.name);
+              const dim = focus ? !focus.node(n.name) : false;
+              const r = radiusFor(n.mentions);
+              return (
+                <g
+                  key={n.name}
+                  style={{ cursor: "pointer", opacity: dim ? 0.12 : 1 }}
+                  onClick={() => setSel({ kind: "node", a: n.name })}
+                >
+                  <circle
+                    cx={n.x}
+                    cy={n.y}
+                    r={r}
+                    fill={COLOR[n.type]}
+                    fillOpacity={on ? 1 : 0.82}
+                    stroke={on ? "#111827" : "#fff"}
+                    strokeWidth={on ? 2 : 1}
+                  >
+                    <title>{`${n.name}（${TYPE_LABEL[n.type]}）：${n.mentions} 条洞察提及`}</title>
+                  </circle>
+                  <text x={n.x} y={n.y - r - 3} textAnchor="middle" fontSize={11} fill="#374151">
+                    {n.name}
+                  </text>
+                </g>
+              );
+            })}
+          </g>
+        </svg>
+        <div className="muted" style={{ fontSize: 12, marginTop: 4, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <button type="button" onClick={() => zoomCenter(1.25)}>＋</button>
+          <button type="button" onClick={() => zoomCenter(1 / 1.25)}>－</button>
+          <button type="button" onClick={reset}>复位</button>
+          <span>滚轮缩放 · 拖动平移 · 点节点聚焦其邻居 · 点空白复位</span>
+        </div>
+      </div>
 
       <aside style={{ flex: "1 1 280px", minWidth: 260 }}>
         <Legend metric={metric} />
