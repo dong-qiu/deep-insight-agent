@@ -989,4 +989,11 @@ S1 上线后第一个优化。**问题**：边权=生频次 → hub 实体（Ant
 - **缩放平移**：graph 内容包进 `<g transform=translate scale>`；滚轮缩放（以光标为中心，用 ref 挂**非被动** wheel 监听——React onWheel 被动、preventDefault 无效）；背景 `<rect>` 拖动平移；＋/－/复位按钮；touchAction:none。
 - **ego 聚焦**：点节点 → 它 + 直接邻居全亮、其余淡化到 0.12（密图里抽出单实体关系网）；点边 → 两端点+该边；点空白（未拖动）→ 复位。聚焦与既有 drill（关于该实体的洞察）同一次点击触发。
 - 验证：离线渲染「聚焦 Cursor」确认邻域 11 节点弹出、其余淡化；typecheck/build 过。客户端组件无单测（项目惯例）。
-- review 修讫：窄屏锚点偏（svg 加 `height:auto` 消 letterbox）、拖出 svg 误清选择（onMouseLeave 走 cancelPan 不判空白单击）、缓存盒尺寸免每帧 getBoundingClientRect。**桌面优先；移动端 touch pan/zoom 待后续**（已禁 touchAction 但未实现触摸操作）。PR-B（实时滑块）待续。
+- review 修讫：窄屏锚点偏（svg 加 `height:auto` 消 letterbox）、拖出 svg 误清选择（onMouseLeave 走 cancelPan 不判空白单击）、缓存盒尺寸免每帧 getBoundingClientRect。**桌面优先；移动端 touch pan/zoom 待后续**（已禁 touchAction 但未实现触摸操作）。
+
+### S1.5：交互增强 PR-B——口径/最小共现实时滑块（2026-06-28）
+口径/最小共现从服务端表单（点「应用」刷新）改为**客户端实时**（拖动即变、免刷新、布局不跳）。架构改动：
+- **派生拆两步**（`cooccurrence.ts` 重构、行为中性·24 测）：`deriveCandidateGraph`（扫洞察一次→top-N 节点 + 全部候选边 weight≥1 带 strength）+ `selectGraph`（纯函数按口径/阈值选边+剔孤点·**客户端可用**）。`deriveCooccurrenceGraph` = 二者组合（服务端/eval 不变）。
+- **数据流**：`page.tsx` 用 `buildTopicGraphData` 只送「候选图」+ 初值（自适应 minW）/上界（maxW）；客户端 `ForceGraph` 持 metric/minWeight state、`useMemo(selectGraph)` 毫秒级重筛。**布局对全部候选节点+边只算一次**（`useMemo([data])`）→ 拖滑块节点位置不动、不跳。topic/时间窗仍走服务端表单（改洞察集→`key` 强制重挂载重置 state）。
+- **association 恒保支持度≥2**（`selectGraph` 内 `max(2,minWeight)`），滑块降到 1 也不放 Jaccard=1 噪声。
+- 验证：离线渲染初始态（布局在全 144 候选边、显示 minW=4 的 47 边）确认仍清晰不糊（比旧略紧、有缩放/滑块兜底）；809 全量绿。客户端组件无单测、selectGraph 逻辑单测覆盖。

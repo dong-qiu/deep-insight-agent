@@ -1,7 +1,6 @@
 /** 知识图谱（ADR-0012 S1·实体共现图）。按主题一张图：节点=实体、边=同条洞察共现。
- *  纯派生（零 LLM），初始边阈值按边密度自适应；可调时间窗 / 最小共现。
- *  服务端组件装配图数据，交客户端 ForceGraph 渲染 + 溯源。 */
-import { buildTopicGraph } from "../../lib/db/graph.js";
+ *  纯派生（零 LLM）。服务端只装配「候选图」+ 主题/时间窗筛选；口径/最小共现交客户端实时滑块。 */
+import { buildTopicGraphData } from "../../lib/db/graph.js";
 import { getDb } from "../../lib/db/index.js";
 import { listTopics } from "../../lib/db/repos.js";
 import { ForceGraph } from "./_components/force-graph.js";
@@ -32,13 +31,8 @@ export default async function GraphPage({ searchParams }: { searchParams: Promis
     days > 0
       ? new Date(Date.now() - days * 86400000).toISOString().replace("T", " ").slice(0, 19)
       : undefined;
-  const wRaw = val(sp, "w");
-  const wNum = Number(wRaw);
-  // 留空 / 非法 / <1 → 走自适应；≥1 整数才作显式阈值（防负数/0 让全量边显示）
-  const minEdgeWeight = wRaw && Number.isInteger(wNum) && wNum >= 1 ? wNum : undefined;
-  const metric = val(sp, "metric") === "association" ? "association" : "frequency";
 
-  const result = topicId ? buildTopicGraph(db, topicId, { since, minEdgeWeight, metric }) : null;
+  const data = topicId ? buildTopicGraphData(db, topicId, { since }) : null;
   const topicName = topics.find((t) => t.id === topicId)?.name ?? topicId;
 
   return (
@@ -47,14 +41,18 @@ export default async function GraphPage({ searchParams }: { searchParams: Promis
       <p className="muted">
         实体共现图：圈=实体、连线=两实体在同一条洞察里被一起提及。看清一个主题里「谁和谁总绑在一起」。
         <br />
-        <strong>口径</strong>：<em>频次</em>=按共现次数（hub 主导、看大势）；<em>关联强度</em>=按 Jaccard（压低 hub、浮出「异常紧密」的非显然对）。
+        <strong>口径</strong>：<em>频次</em>=按共现次数（hub 主导、看大势）；<em>关联强度</em>=按 Jaccard（压低 hub、浮出「异常紧密」的非显然对）。拖<em>最小共现</em>实时调密度。
       </p>
 
       {topics.length === 0 ? (
         <p className="muted">暂无主题。</p>
       ) : (
         <>
-          <form method="get" className="card" style={{ display: "flex", gap: "1rem", flexWrap: "wrap", alignItems: "flex-end" }}>
+          <form
+            method="get"
+            className="card"
+            style={{ display: "flex", gap: "1rem", flexWrap: "wrap", alignItems: "flex-end" }}
+          >
             <label>
               主题
               <br />
@@ -77,38 +75,11 @@ export default async function GraphPage({ searchParams }: { searchParams: Promis
                 ))}
               </select>
             </label>
-            <label>
-              口径
-              <br />
-              <select name="metric" defaultValue={metric}>
-                <option value="frequency">频次</option>
-                <option value="association">关联强度</option>
-              </select>
-            </label>
-            <label>
-              最小共现（留空=自适应）
-              <br />
-              <input name="w" type="number" min={1} max={20} defaultValue={wRaw} placeholder={result ? String(result.minEdgeWeight) : ""} style={{ width: 90 }} />
-            </label>
             <button type="submit">应用</button>
           </form>
 
-          {result ? (
-            <>
-              <p className="muted" style={{ fontSize: 13 }}>
-                <strong>{topicName}</strong> · {result.insightCount} 条洞察（{result.withEntities} 条带实体）·{" "}
-                {result.graph.nodes.length} 节点 / {result.graph.edges.length} 边 · 口径{" "}
-                {metric === "association" ? "关联强度" : "频次"} · 最小共现 = {result.minEdgeWeight}
-                {minEdgeWeight == null ? (metric === "association" ? "（支持度下限）" : "（自适应）") : ""}
-              </p>
-              <ForceGraph
-                nodes={result.graph.nodes}
-                edges={result.graph.edges}
-                topic={topicId}
-                since={since}
-                metric={metric}
-              />
-            </>
+          {data ? (
+            <ForceGraph key={`${topicId}-${days}`} data={data} topic={topicId} since={since} topicName={topicName} />
           ) : null}
         </>
       )}

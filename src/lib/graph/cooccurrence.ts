@@ -53,25 +53,27 @@ function pairKey(a: string, b: string): string {
   return JSON.stringify(a < b ? [a, b] : [b, a]);
 }
 
-/**
- * 从洞察集派生实体共现图。
- *
- * 步骤：①统计每实体 mentions + type ②统计每对共现 weight
- * ③候选节点 = 按 mentions 取 top-N ④边 = weight≥阈值且两端都在候选集
- * ⑤最终节点 = 候选集里至少有一条边的（孤点剔除）。
- */
-export function deriveCooccurrenceGraph(
-  insights: readonly EntityBearing[],
-  opts: GraphOptions = {},
-): CooccurrenceGraph {
-  const minEdgeWeight = opts.minEdgeWeight ?? 2;
-  const topN = opts.topN ?? 40;
-  const metric = opts.metric ?? "frequency";
+export interface CandidateGraph {
+  /** top-N 候选实体（全部，未剔孤点；mentions/type 已定） */
+  nodes: GraphNode[];
+  /** top-N 内全部共现对（weight≥1，带 strength）——供客户端按阈值/口径即时选边、布局只算一次 */
+  candidateEdges: GraphEdge[];
+}
 
-  // 每实体：mentions（提及洞察数）+ 各 type 计数（同名跨条 type 不一致时取众数）
+const cmpEnds = (x: GraphEdge, y: GraphEdge): number =>
+  x.a < y.a ? -1 : x.a > y.a ? 1 : x.b < y.b ? -1 : x.b > y.b ? 1 : 0;
+
+/**
+ * 派生「候选图」：扫洞察 → top-N 候选节点 + 全部候选边（weight≥1，带 Jaccard）。
+ * 重活（扫洞察）只算一次；选边/孤点剔除交 {@link selectGraph}（纯函数、客户端可即时重筛）。
+ */
+export function deriveCandidateGraph(
+  insights: readonly EntityBearing[],
+  opts: { topN?: number } = {},
+): CandidateGraph {
+  const topN = opts.topN ?? 40;
   const mentions = new Map<string, number>();
   const typeVotes = new Map<string, Map<EntityType, number>>();
-  // 每对：共现洞察数
   const pairWeight = new Map<string, number>();
 
   for (const ins of insights) {
@@ -83,7 +85,6 @@ export function deriveCooccurrenceGraph(
       if (!seen.has(name)) seen.set(name, e.type);
     }
     const names = [...seen.keys()];
-
     for (const [name, type] of seen) {
       mentions.set(name, (mentions.get(name) ?? 0) + 1);
       let votes = typeVotes.get(name);
@@ -93,8 +94,6 @@ export function deriveCooccurrenceGraph(
       }
       votes.set(type, (votes.get(type) ?? 0) + 1);
     }
-
-    // 该洞察内所有无序对 +1
     for (let i = 0; i < names.length; i++) {
       for (let j = i + 1; j < names.length; j++) {
         const k = pairKey(names[i], names[j]);
@@ -104,51 +103,68 @@ export function deriveCooccurrenceGraph(
   }
 
   // 候选节点 = 按 mentions 降序 top-N（同频保插入序稳定）
-  const candidates = new Set(
-    [...mentions.entries()]
-      .sort((x, y) => y[1] - x[1])
-      .slice(0, topN)
-      .map(([name]) => name),
-  );
+  const top = [...mentions.entries()].sort((x, y) => y[1] - x[1]).slice(0, topN).map(([name]) => name);
+  const inTop = new Set(top);
 
-  // 候选边：weight≥支持度下限 且 两端在候选集；每对算 Jaccard 关联强度
-  const cand: GraphEdge[] = [];
+  const candidateEdges: GraphEdge[] = [];
   for (const [key, weight] of pairWeight) {
-    if (weight < minEdgeWeight) continue;
     const [a, b] = JSON.parse(key) as [string, string];
-    if (!candidates.has(a) || !candidates.has(b)) continue;
+    if (!inTop.has(a) || !inTop.has(b)) continue;
     const union = mentions.get(a)! + mentions.get(b)! - weight; // |A∪B|
     const strength = union > 0 ? Math.round((weight / union) * 1000) / 1000 : 0;
-    cand.push({ a, b, weight, strength });
+    candidateEdges.push({ a, b, weight, strength });
   }
 
-  // 选边：frequency=按 weight 全留；association=按 strength 取 top-maxEdges
-  //（支持度下限 minEdgeWeight 已挡掉「各出现 1 次恰好同条 → Jaccard=1」的噪声）
-  const cmpEnds = (x: GraphEdge, y: GraphEdge) =>
-    x.a < y.a ? -1 : x.a > y.a ? 1 : x.b < y.b ? -1 : x.b > y.b ? 1 : 0;
+  const nodes: GraphNode[] = top.map((name) => ({
+    name,
+    type: dominantType(typeVotes.get(name)!),
+    mentions: mentions.get(name)!,
+  }));
+  return { nodes, candidateEdges };
+}
+
+/**
+ * 从候选图按口径/阈值产出最终展示图。**纯函数、客户端可用**（滑块/口径即时重筛、布局不动）。
+ * frequency=weight≥阈值全留按 weight 排；association=支持度下限 max(2,阈值) 后按 strength 取 top-maxEdges。
+ * 末了按最终边集剔孤点。
+ */
+export function selectGraph(
+  candidateNodes: readonly GraphNode[],
+  candidateEdges: readonly GraphEdge[],
+  opts: GraphOptions = {},
+): CooccurrenceGraph {
+  const minEdgeWeight = opts.minEdgeWeight ?? 2;
+  const metric = opts.metric ?? "frequency";
+  // association 恒保支持度下限 ≥2（挡「各 1 次恰好同条 → Jaccard=1」噪声），不受滑块降到 1 影响
+  const support = metric === "association" ? Math.max(2, minEdgeWeight) : minEdgeWeight;
+  const kept = candidateEdges.filter((e) => e.weight >= support);
+  // kept 已是 filter 产出的新数组，可原地排序（不动入参）
   const edges: GraphEdge[] =
     metric === "association"
-      ? cand
+      ? kept
           .sort((x, y) => y.strength - x.strength || y.weight - x.weight || cmpEnds(x, y))
-          .slice(0, opts.maxEdges ?? 40) // 关联模式聚焦最紧的对，40 够且更清爽
-      : cand.sort((x, y) => y.weight - x.weight || y.strength - x.strength || cmpEnds(x, y));
+          .slice(0, opts.maxEdges ?? 40)
+      : kept.sort((x, y) => y.weight - x.weight || y.strength - x.strength || cmpEnds(x, y));
 
-  // 孤点剔除基于最终边集（association 取 top 后可能更少节点）
   const connected = new Set<string>();
   for (const e of edges) {
     connected.add(e.a);
     connected.add(e.b);
   }
-
-  // 最终节点 = 候选集里有边的（孤点剔除）
-  const nodes: GraphNode[] = [];
-  for (const name of candidates) {
-    if (!connected.has(name)) continue;
-    nodes.push({ name, type: dominantType(typeVotes.get(name)!), mentions: mentions.get(name)! });
-  }
-  nodes.sort((x, y) => y.mentions - x.mentions || (x.name < y.name ? -1 : 1));
-
+  const nodes = candidateNodes
+    .filter((n) => connected.has(n.name))
+    .map((n) => ({ ...n }))
+    .sort((x, y) => y.mentions - x.mentions || (x.name < y.name ? -1 : 1));
   return { nodes, edges };
+}
+
+/** 从洞察集派生实体共现图（候选派生 + 选边一步到位；服务端/eval 用）。 */
+export function deriveCooccurrenceGraph(
+  insights: readonly EntityBearing[],
+  opts: GraphOptions = {},
+): CooccurrenceGraph {
+  const { nodes, candidateEdges } = deriveCandidateGraph(insights, { topN: opts.topN });
+  return selectGraph(nodes, candidateEdges, opts);
 }
 
 export interface BudgetOptions {

@@ -2,7 +2,10 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import {
   type CooccurrenceGraph,
+  deriveCandidateGraph,
   deriveCooccurrenceGraph,
+  type GraphEdge,
+  type GraphNode,
   pickEdgeWeightForBudget,
 } from "../graph/cooccurrence.js";
 import type { Entity, Insight } from "../types.js";
@@ -111,6 +114,43 @@ export function buildTopicGraph(db: DB, topicId: string, opts: TopicGraphOptions
     withEntities: withEntities.length,
     minEdgeWeight,
     metric,
+  };
+}
+
+export interface TopicGraphData {
+  /** 候选节点（top-N，未剔孤点）——客户端布局只算一次的节点集 */
+  nodes: GraphNode[];
+  /** 候选边（weight≥1，带 strength）——客户端按口径/阈值即时重筛 */
+  candidateEdges: GraphEdge[];
+  insightCount: number;
+  withEntities: number;
+  /** association 模式 top-K 边数 */
+  maxEdges: number;
+  /** frequency 模式自适应初始阈值（客户端滑块初值） */
+  suggestedMinWeight: number;
+  /** 候选边最大 weight（滑块上界） */
+  maxWeight: number;
+}
+
+/** 装配「候选图」供客户端实时滑块：扫洞察一次出 top-N 节点 + 全部候选边 + 初值/上界。
+ *  口径/阈值的最终选边在客户端做（selectGraph），布局只算一次、拖动不重排。 */
+export function buildTopicGraphData(
+  db: DB,
+  topicId: string,
+  opts: { since?: string; topN?: number; targetMaxEdges?: number; maxEdges?: number } = {},
+): TopicGraphData {
+  const all = loadTopicEntityRows(db, topicId, opts.since);
+  const withEntities = all.filter((i) => i.entities.length > 0);
+  const topN = opts.topN ?? 40;
+  const { nodes, candidateEdges } = deriveCandidateGraph(withEntities, { topN });
+  return {
+    nodes,
+    candidateEdges,
+    insightCount: all.length,
+    withEntities: withEntities.length,
+    maxEdges: opts.maxEdges ?? 40,
+    suggestedMinWeight: pickEdgeWeightForBudget(withEntities, { topN, targetMaxEdges: opts.targetMaxEdges }),
+    maxWeight: candidateEdges.reduce((m, e) => Math.max(m, e.weight), 1),
   };
 }
 
