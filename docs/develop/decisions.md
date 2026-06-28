@@ -977,3 +977,9 @@ S1 上线后第一个优化。**问题**：边权=生频次 → hub 实体（Ant
 让图从死胡同变成导航面。**点节点** → drill 改走 `queryReportIndex({topic, entity})` 返回「提及该实体的报告」（标题链进 `/reports/[id]` + 日期/类型）；**点边**保留 S1.1 的共现洞察（statement+引证，精确解释「为何相连」比报告链接更贴切）。移除不再用的 `insightsMentioningEntity`（避免死代码）。
 - **图实体(insight.entities) ↔ 报告(report_index.entity_names) 对齐验证（生产真数据）**：各主题 top 实体均命中多份报告（code_agents 7-13/26、prompt_injection 2-4/22、ai_industry 2-5/5，无一为 0）→ 导航有效。niche 实体可能 0 报告，drill 优雅兜底「无已发布报告提及」。
 - 注：报告导航天然只显**已发布报告**——与 ADR 风险⑤（图本身含未过校验洞察）形成互补：图给全貌、点进只到已发布。仍零 LLM、零迁移。
+
+### S1.3：节点 drill 显「关于该实体的洞察」+ 每条链报告（2026-06-28，supersede S1.2 node 行为）
+**dogfood 当场暴露 S1.2 缺陷**：点节点显示一摞报告，但报告标题是通用的（主题+日期，如「AI 时代的软件工程·今日 Brief·2026-06-26」），**看不出该实体到底干了啥**——为导航丢了实质。正解：node 显示**关于该实体的洞察**（headline=实质信息），**每条再链进它所在的报告**（实质+导航兼得）。
+- **关键映射**：`report.insight_ids`（report-gen 写入 included 洞察 id）反查 → `reportLinkMap(db, topic)` 给 insight_id → 最新报告（date 升序覆盖）。node 走（恢复的）`insightsMentioningEntity`、edge 走 `insightsCooccurring`，**两者都给每条洞察附报告链接**。
+- **生产验证**：「Claude Code」26 洞察、**23 条可链报告**（3 blocked 显 headline+「未入报告」）；离线渲染确认 headline 是干货（"Anthropic/OpenAI/Cursor 数据：AI 代理已主导代码产出与评审"…）。
+- **教训**：S1.2「为导航换掉实质」是错权衡——导航是锦上添花、实质（洞察内容）才是点击要看的核心。**dogfood 一轮就抓出来了**，印证「先用真实使用驱动优化」。

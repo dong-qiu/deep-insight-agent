@@ -114,8 +114,20 @@ export function buildTopicGraph(db: DB, topicId: string, opts: TopicGraphOptions
   };
 }
 
-/** 溯源·点边：两实体在同一条洞察里共现的那些洞察（带 citations 锚回原文）。
- *  （点节点改走 queryReportIndex → 报告导航，见 api/graph/drill。） */
+/** 溯源·点节点：该主题（窗口内）提及某实体的洞察（headline=关于该实体的实质信息）。 */
+export function insightsMentioningEntity(
+  db: DB,
+  topicId: string,
+  entityName: string,
+  since?: string,
+): Insight[] {
+  const name = entityName.trim();
+  return loadTopicInsights(db, topicId, since).filter((i) =>
+    (i.entities ?? []).some((e) => e.name.trim() === name),
+  );
+}
+
+/** 溯源·点边：两实体在同一条洞察里共现的那些洞察（带 citations 锚回原文）。 */
 export function insightsCooccurring(
   db: DB,
   topicId: string,
@@ -129,4 +141,29 @@ export function insightsCooccurring(
     const names = new Set((i.entities ?? []).map((e) => e.name.trim()));
     return names.has(na) && names.has(nb);
   });
+}
+
+export interface InsightReportLink {
+  report_id: string;
+  date: string;
+}
+
+/** insight_id → 其所在已发布报告（反查 report.insight_ids）。一洞察可能在多份报告（续报），取最新。
+ *  blocked/未入报告的洞察不在任何 insight_ids 里 → 无链接（drill 仍显 headline）。 */
+export function reportLinkMap(db: DB, topicId: string): Map<string, InsightReportLink> {
+  const rows = db
+    .prepare(
+      `SELECT r.id AS report_id, ri.date AS date, r.insight_ids AS insight_ids
+       FROM report r JOIN report_index ri ON r.id = ri.report_id
+       WHERE r.topic_id = ? AND r.status = 'done' ORDER BY ri.date ASC`,
+    )
+    .all(topicId) as { report_id: string; date: string; insight_ids: string }[];
+  const map = new Map<string, InsightReportLink>();
+  // date 升序遍历 + 覆盖写 → 每洞察落到最新一份包含它的报告
+  for (const r of rows) {
+    for (const iid of JSON.parse(r.insight_ids) as string[]) {
+      map.set(iid, { report_id: r.report_id, date: r.date });
+    }
+  }
+  return map;
 }
