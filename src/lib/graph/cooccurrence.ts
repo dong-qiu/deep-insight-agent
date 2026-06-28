@@ -24,8 +24,11 @@ export interface GraphEdge {
   /** 端点实体名；恒满足 a < b（字典序），使无序对有稳定 key */
   a: string;
   b: string;
-  /** 两端实体共现的洞察条数 */
+  /** 两端实体共现的洞察条数（生频次） */
   weight: number;
+  /** 关联强度 = Jaccard = cooc / |A∪B| ∈ (0,1]，圆到 3 位小数。
+   *  天然压低 hub（和谁都连的实体 Jaccard 低）→ 浮出「异常绑定」的非显然关联。 */
+  strength: number;
 }
 
 export interface CooccurrenceGraph {
@@ -34,10 +37,14 @@ export interface CooccurrenceGraph {
 }
 
 export interface GraphOptions {
-  /** 边的最小权重，低于此不画（默认 2，滤一次性偶然同现） */
+  /** 边的最小权重/支持度下限，低于此不画（默认 2，滤一次性偶然同现 + 挡 Jaccard=1 噪声） */
   minEdgeWeight?: number;
   /** 按 mentions 取前 N 个实体进图，防 hairball（默认 40） */
   topN?: number;
+  /** 选边口径：frequency=按共现次数（默认，hub 主导）；association=按 Jaccard 关联强度取 top（浮出非显然紧密对） */
+  metric?: "frequency" | "association";
+  /** association 模式保留的最大边数（按 strength 取 top；默认 40） */
+  maxEdges?: number;
 }
 
 /** 顺序无关的对 key：字典序小的在前。用 JSON 数组编码——实体名含空格（"Sam Altman"/"Claude Code"）
@@ -59,6 +66,7 @@ export function deriveCooccurrenceGraph(
 ): CooccurrenceGraph {
   const minEdgeWeight = opts.minEdgeWeight ?? 2;
   const topN = opts.topN ?? 40;
+  const metric = opts.metric ?? "frequency";
 
   // 每实体：mentions（提及洞察数）+ 各 type 计数（同名跨条 type 不一致时取众数）
   const mentions = new Map<string, number>();
@@ -103,19 +111,34 @@ export function deriveCooccurrenceGraph(
       .map(([name]) => name),
   );
 
-  // 边：weight≥阈值 且 两端都在候选集
-  const edges: GraphEdge[] = [];
-  const connected = new Set<string>();
+  // 候选边：weight≥支持度下限 且 两端在候选集；每对算 Jaccard 关联强度
+  const cand: GraphEdge[] = [];
   for (const [key, weight] of pairWeight) {
     if (weight < minEdgeWeight) continue;
     const [a, b] = JSON.parse(key) as [string, string];
     if (!candidates.has(a) || !candidates.has(b)) continue;
-    edges.push({ a, b, weight });
-    connected.add(a);
-    connected.add(b);
+    const union = mentions.get(a)! + mentions.get(b)! - weight; // |A∪B|
+    const strength = union > 0 ? Math.round((weight / union) * 1000) / 1000 : 0;
+    cand.push({ a, b, weight, strength });
   }
-  // weight 降序、再按端点名稳定
-  edges.sort((x, y) => y.weight - x.weight || (x.a < y.a ? -1 : x.a > y.a ? 1 : x.b < y.b ? -1 : 1));
+
+  // 选边：frequency=按 weight 全留；association=按 strength 取 top-maxEdges
+  //（支持度下限 minEdgeWeight 已挡掉「各出现 1 次恰好同条 → Jaccard=1」的噪声）
+  const cmpEnds = (x: GraphEdge, y: GraphEdge) =>
+    x.a < y.a ? -1 : x.a > y.a ? 1 : x.b < y.b ? -1 : x.b > y.b ? 1 : 0;
+  const edges: GraphEdge[] =
+    metric === "association"
+      ? cand
+          .sort((x, y) => y.strength - x.strength || y.weight - x.weight || cmpEnds(x, y))
+          .slice(0, opts.maxEdges ?? 40) // 关联模式聚焦最紧的对，40 够且更清爽
+      : cand.sort((x, y) => y.weight - x.weight || y.strength - x.strength || cmpEnds(x, y));
+
+  // 孤点剔除基于最终边集（association 取 top 后可能更少节点）
+  const connected = new Set<string>();
+  for (const e of edges) {
+    connected.add(e.a);
+    connected.add(e.b);
+  }
 
   // 最终节点 = 候选集里有边的（孤点剔除）
   const nodes: GraphNode[] = [];

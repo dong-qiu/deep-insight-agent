@@ -71,10 +71,14 @@ export function loadTopicInsights(db: DB, topicId: string, since?: string): Insi
 
 export interface TopicGraphOptions {
   since?: string;
-  /** 显式指定边阈值；不给则按边密度自适应（pickEdgeWeightForBudget） */
+  /** 显式指定边阈值/支持度下限；不给则：frequency 按边密度自适应、association 固定 2 */
   minEdgeWeight?: number;
   topN?: number;
   targetMaxEdges?: number;
+  /** 选边口径：frequency=共现次数（默认）；association=Jaccard 关联强度取 top */
+  metric?: "frequency" | "association";
+  /** association 模式保留的最大边数（默认 40） */
+  maxEdges?: number;
 }
 
 export interface TopicGraphResult {
@@ -83,23 +87,30 @@ export interface TopicGraphResult {
   insightCount: number;
   /** 其中带实体、真正参与图的洞察数 */
   withEntities: number;
-  /** 实际生效的边阈值（自适应或显式） */
+  /** 实际生效的边阈值/支持度下限（自适应或显式） */
   minEdgeWeight: number;
+  /** 实际生效的选边口径 */
+  metric: "frequency" | "association";
 }
 
-/** 装配某主题的共现图：加载洞察 → 自适应（或显式）定阈值 → 派生图。 */
+/** 装配某主题的共现图：加载洞察 → 按口径定阈值 → 派生图。
+ *  frequency：自适应抬计数阈值控密度；association：固定支持度下限 2、靠 maxEdges 按 strength 控规模。 */
 export function buildTopicGraph(db: DB, topicId: string, opts: TopicGraphOptions = {}): TopicGraphResult {
   const all = loadTopicEntityRows(db, topicId, opts.since);
   const withEntities = all.filter((i) => i.entities.length > 0);
   const topN = opts.topN ?? 40;
+  const metric = opts.metric ?? "frequency";
   const minEdgeWeight =
     opts.minEdgeWeight ??
-    pickEdgeWeightForBudget(withEntities, { topN, targetMaxEdges: opts.targetMaxEdges });
+    (metric === "association"
+      ? 2 // 关联模式固定支持度下限（挡 Jaccard=1 噪声），规模由 maxEdges 控
+      : pickEdgeWeightForBudget(withEntities, { topN, targetMaxEdges: opts.targetMaxEdges }));
   return {
-    graph: deriveCooccurrenceGraph(withEntities, { minEdgeWeight, topN }),
+    graph: deriveCooccurrenceGraph(withEntities, { minEdgeWeight, topN, metric, maxEdges: opts.maxEdges }),
     insightCount: all.length,
     withEntities: withEntities.length,
     minEdgeWeight,
+    metric,
   };
 }
 

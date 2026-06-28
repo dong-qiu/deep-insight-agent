@@ -965,3 +965,10 @@ S1 dogfood 证图有用 + 确需有向语义（谁收购谁 / 谁对立谁）→
 
 ### 价值（为何记这条）
 把「**知识图谱 = 节点已有、边分共现(确定)/语义(LLM)两档**」这个切片判断钉在案：S1 用确定性派生**零风险验证图的 dogfood 价值**，避免一上来就为没验证的语义边改分析管线、付 LLM 成本与 eval 风险。
+
+### S1.1：关联强度口径（Jaccard，2026-06-28）
+S1 上线后第一个优化。**问题**：边权=生频次 → hub 实体（Anthropic/OpenAI）和谁都连，图全是显然的大势、埋掉非显然的紧密对。**解**：加 `metric` 口径切换——`frequency`（默认，按共现次数）vs `association`（按 **Jaccard = cooc/|A∪B|**，∈(0,1]，天然压低 hub）。
+- **关键设计**：① **支持度下限 weight≥2** 挡「各出现 1 次恰好同条→Jaccard=1」噪声（关联规则 min-support 原则）；② 两模式**边集不同才有价值**——频次自适应抬计数阈值、关联固定支持度 2 再按 strength 取 top-40（浮出频次埋掉的弱频紧密对）；③ 边粗按当前口径值 + per-graph 归一化。
+- **先量证价值（生产真数据）**：association 浮出 frequency 看不见的结构——code_agents 的基准簇(Codex 5.5 High~SWE-Bench Pro)/人物链(Karpathy~Latent Space)、**ai_industry 的「前沿模型对比」clique**(Google/xAI/Gemini/Claude/Grok/安全机构，频次模式被 OpenAI hub 完全淹没)、prompt_injection 的威胁行为者/住宅代理/模型家族簇。可视化验证（离线渲染+截图）：40 边预算清爽不糊。
+- 观察：dense 主题关联 top 多 s=1.0/w=2（紧密弱频对）——`maxEdges` 由 60 降 40 更聚焦；用户可调「最小共现」抬支持度。**这是把"共现图"升级成"洞察图"的一步，仍零 LLM、零迁移。**
+- **已知限制（独立 review 提）**：候选实体先按 mentions 取 top-40 再在候选内选边——若某紧密对两端 mentions 偏低、在 dense 主题挤不进 top-40，会在算 strength **前**被 mentions 门挡掉（防 hairball 门与"浮低频紧密对"的内在张力）。生产数据下价值已验，非阻断；未来可让 association 模式候选集纳入高 strength 边的端点。

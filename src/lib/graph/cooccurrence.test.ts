@@ -35,7 +35,7 @@ describe("deriveCooccurrenceGraph", () => {
       ins("i1", [org("OpenAI"), org("Cursor")]),
       ins("i2", [org("OpenAI"), org("Cursor")]),
     ]);
-    expect(g.edges).toEqual([{ a: "Cursor", b: "OpenAI", weight: 2 }]);
+    expect(g.edges).toEqual([{ a: "Cursor", b: "OpenAI", weight: 2, strength: 1 }]);
     expect(g.nodes.map((n) => [n.name, n.mentions])).toEqual([
       ["Cursor", 2],
       ["OpenAI", 2],
@@ -47,7 +47,7 @@ describe("deriveCooccurrenceGraph", () => {
       ins("i1", [{ name: "Sam Altman", type: "person" }, { name: "Claude Code", type: "product" }]),
       ins("i2", [{ name: "Sam Altman", type: "person" }, { name: "Claude Code", type: "product" }]),
     ]);
-    expect(g.edges).toEqual([{ a: "Claude Code", b: "Sam Altman", weight: 2 }]);
+    expect(g.edges).toEqual([{ a: "Claude Code", b: "Sam Altman", weight: 2, strength: 1 }]);
     expect(g.nodes.map((n) => n.name).sort()).toEqual(["Claude Code", "Sam Altman"]);
   });
 
@@ -56,7 +56,7 @@ describe("deriveCooccurrenceGraph", () => {
       ins("i1", [org("OpenAI"), org("Cursor")]),
       ins("i2", [org("Cursor"), org("OpenAI")]), // 反序
     ]);
-    expect(g.edges).toEqual([{ a: "Cursor", b: "OpenAI", weight: 2 }]);
+    expect(g.edges).toEqual([{ a: "Cursor", b: "OpenAI", weight: 2, strength: 1 }]);
   });
 
   it("一条洞察内同名重复只计一次（防脏数据虚增）", () => {
@@ -67,7 +67,7 @@ describe("deriveCooccurrenceGraph", () => {
       ],
       { minEdgeWeight: 2 },
     );
-    expect(g.edges).toEqual([{ a: "Cursor", b: "OpenAI", weight: 2 }]);
+    expect(g.edges).toEqual([{ a: "Cursor", b: "OpenAI", weight: 2, strength: 1 }]);
     expect(g.nodes.find((n) => n.name === "OpenAI")!.mentions).toBe(2); // 不是 3
   });
 
@@ -76,7 +76,7 @@ describe("deriveCooccurrenceGraph", () => {
       ins("i1", [{ name: "  OpenAI ", type: "organization" }, org("Cursor"), { name: "  ", type: "organization" }]),
       ins("i2", [org("OpenAI"), org("Cursor")]),
     ]);
-    expect(g.edges).toEqual([{ a: "Cursor", b: "OpenAI", weight: 2 }]);
+    expect(g.edges).toEqual([{ a: "Cursor", b: "OpenAI", weight: 2, strength: 1 }]);
     expect(g.nodes.some((n) => n.name === "")).toBe(false);
   });
 
@@ -87,7 +87,7 @@ describe("deriveCooccurrenceGraph", () => {
 
   it("minEdgeWeight 阈值可调：=1 时单次共现也连", () => {
     const g = deriveCooccurrenceGraph([ins("i1", [org("OpenAI"), org("Cursor")])], { minEdgeWeight: 1 });
-    expect(g.edges).toEqual([{ a: "Cursor", b: "OpenAI", weight: 1 }]);
+    expect(g.edges).toEqual([{ a: "Cursor", b: "OpenAI", weight: 1, strength: 1 }]);
     expect(g.nodes.map((n) => n.name).sort()).toEqual(["Cursor", "OpenAI"]);
   });
 
@@ -100,7 +100,7 @@ describe("deriveCooccurrenceGraph", () => {
     const g = deriveCooccurrenceGraph(list, { minEdgeWeight: 2, topN: 2 });
     // top2 by mentions = A(7), B(5) → 只剩 A-B；C 落选、A-C 边随之消失
     expect(g.nodes.map((n) => n.name)).toEqual(["A", "B"]);
-    expect(g.edges).toEqual([{ a: "A", b: "B", weight: 5 }]);
+    expect(g.edges).toEqual([{ a: "A", b: "B", weight: 5, strength: 0.714 }]); // Jaccard 5/(7+5-5)
   });
 
   it("孤点剔除：候选集里没有任何边的实体不出现在 nodes", () => {
@@ -131,6 +131,44 @@ describe("deriveCooccurrenceGraph", () => {
 
   it("空输入 → 空图", () => {
     expect(deriveCooccurrenceGraph([])).toEqual({ nodes: [], edges: [] });
+  });
+
+  describe("metric=association（Jaccard 关联强度）", () => {
+    // 紧密对 X-Y（各只出现这 2 条 → Jaccard 1.0、但 weight 仅 2）；
+    // hub H 高频，和 A 共现 3 次、和 Z 共现 7 次（weight 高但 Jaccard 低）。
+    function scenario(): Insight[] {
+      const list: Insight[] = [ins("i1", [org("X"), org("Y")]), ins("i2", [org("X"), org("Y")])];
+      for (let k = 0; k < 3; k++) list.push(ins(`ha${k}`, [org("H"), org("A")]));
+      for (let k = 0; k < 7; k++) list.push(ins(`hz${k}`, [org("H"), org("Z")]));
+      return list;
+    }
+
+    it("strength = Jaccard：紧密对=1.0、hub 对按边际频次压低", () => {
+      const g = deriveCooccurrenceGraph(scenario(), { metric: "association" });
+      expect(g.edges.find((e) => e.a === "X" && e.b === "Y")!.strength).toBe(1);
+      expect(g.edges.find((e) => e.a === "A" && e.b === "H")!.strength).toBe(0.3); // 3/(10+3-3)
+      expect(g.edges.find((e) => e.a === "H" && e.b === "Z")!.strength).toBe(0.7); // 7/(10+7-7)
+    });
+
+    it("把紧密弱频对排到 hub 强频对之前（频次模式相反）", () => {
+      const freq = deriveCooccurrenceGraph(scenario(), { metric: "frequency" });
+      const assoc = deriveCooccurrenceGraph(scenario(), { metric: "association" });
+      expect([freq.edges[0].a, freq.edges[0].b]).toEqual(["H", "Z"]); // 频次：H-Z(7) 居首
+      expect([assoc.edges[0].a, assoc.edges[0].b]).toEqual(["X", "Y"]); // 关联：紧密对(1.0)居首
+    });
+
+    it("maxEdges 按 strength 截断 + 连带孤点剔除", () => {
+      const g = deriveCooccurrenceGraph(scenario(), { metric: "association", maxEdges: 2 });
+      expect(g.edges.length).toBe(2); // top2: X-Y(1.0)、H-Z(0.7)
+      expect(g.nodes.some((n) => n.name === "A")).toBe(false); // H-A 被截 → A 孤点剔除
+    });
+
+    it("支持度下限挡 Jaccard=1 噪声：单次共现对不入关联模式", () => {
+      const list = scenario();
+      list.push(ins("pq", [org("P"), org("Q")])); // 各 1 次同条 → Jaccard 1.0 但 weight 1
+      const g = deriveCooccurrenceGraph(list, { metric: "association" }); // 默认 minEdgeWeight 2
+      expect(g.edges.some((e) => e.a === "P" || e.b === "P")).toBe(false);
+    });
   });
 
   describe("pickEdgeWeightForBudget（按边密度自适应初始阈值）", () => {
