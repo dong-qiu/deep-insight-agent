@@ -983,3 +983,10 @@ S1 上线后第一个优化。**问题**：边权=生频次 → hub 实体（Ant
 - **关键映射**：`report.insight_ids`（report-gen 写入 included 洞察 id）反查 → `reportLinkMap(db, topic)` 给 insight_id → 最新报告（date 升序覆盖）。node 走（恢复的）`insightsMentioningEntity`、edge 走 `insightsCooccurring`，**两者都给每条洞察附报告链接**。
 - **生产验证**：「Claude Code」26 洞察、**23 条可链报告**（3 blocked 显 headline+「未入报告」）；离线渲染确认 headline 是干货（"Anthropic/OpenAI/Cursor 数据：AI 代理已主导代码产出与评审"…）。
 - **教训**：S1.2「为导航换掉实质」是错权衡——导航是锦上添花、实质（洞察内容）才是点击要看的核心。**dogfood 一轮就抓出来了**，印证「先用真实使用驱动优化」。
+
+### S1.4：交互增强 PR-A——缩放平移 + ego 聚焦（2026-06-28）
+治 dogfood 看到的「密集簇标签糊」。纯客户端 SVG 交互、不动数据层：
+- **缩放平移**：graph 内容包进 `<g transform=translate scale>`；滚轮缩放（以光标为中心，用 ref 挂**非被动** wheel 监听——React onWheel 被动、preventDefault 无效）；背景 `<rect>` 拖动平移；＋/－/复位按钮；touchAction:none。
+- **ego 聚焦**：点节点 → 它 + 直接邻居全亮、其余淡化到 0.12（密图里抽出单实体关系网）；点边 → 两端点+该边；点空白（未拖动）→ 复位。聚焦与既有 drill（关于该实体的洞察）同一次点击触发。
+- 验证：离线渲染「聚焦 Cursor」确认邻域 11 节点弹出、其余淡化；typecheck/build 过。客户端组件无单测（项目惯例）。
+- review 修讫：窄屏锚点偏（svg 加 `height:auto` 消 letterbox）、拖出 svg 误清选择（onMouseLeave 走 cancelPan 不判空白单击）、缓存盒尺寸免每帧 getBoundingClientRect。**桌面优先；移动端 touch pan/zoom 待后续**（已禁 touchAction 但未实现触摸操作）。PR-B（实时滑块）待续。
