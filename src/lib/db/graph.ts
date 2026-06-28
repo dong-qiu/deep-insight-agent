@@ -114,20 +114,8 @@ export function buildTopicGraph(db: DB, topicId: string, opts: TopicGraphOptions
   };
 }
 
-/** 溯源·点节点：该主题（窗口内）提及某实体的洞察。 */
-export function insightsMentioningEntity(
-  db: DB,
-  topicId: string,
-  entityName: string,
-  since?: string,
-): Insight[] {
-  const name = entityName.trim();
-  return loadTopicInsights(db, topicId, since).filter((i) =>
-    (i.entities ?? []).some((e) => e.name.trim() === name),
-  );
-}
-
-/** 溯源·点边：两实体在同一条洞察里共现的那些洞察（带 citations 锚回原文）。 */
+/** 溯源·点边：两实体在同一条洞察里共现的那些洞察（带 citations 锚回原文）。
+ *  （点节点改走 queryReportIndex → 报告导航，见 api/graph/drill。） */
 export function insightsCooccurring(
   db: DB,
   topicId: string,
