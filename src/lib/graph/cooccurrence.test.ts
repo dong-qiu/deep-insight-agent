@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Entity, Insight } from "../types.js";
-import { deriveCooccurrenceGraph, pickEdgeWeightForBudget } from "./cooccurrence.js";
+import { deriveCandidateGraph, deriveCooccurrenceGraph, pickEdgeWeightForBudget, selectGraph } from "./cooccurrence.js";
 
 /** 造一条只关心 entities 的洞察 */
 function ins(id: string, entities: Entity[]): Insight {
@@ -131,6 +131,44 @@ describe("deriveCooccurrenceGraph", () => {
 
   it("空输入 → 空图", () => {
     expect(deriveCooccurrenceGraph([])).toEqual({ nodes: [], edges: [] });
+  });
+
+  describe("deriveCandidateGraph + selectGraph（候选/选边分离·实时重筛地基）", () => {
+    // A-B 共现 3、A-C 共现 1（弱）；各实体 mentions：A=4,B=3,C=1
+    const data: Insight[] = [
+      ins("ab1", [org("A"), org("B")]),
+      ins("ab2", [org("A"), org("B")]),
+      ins("ab3", [org("A"), org("B")]),
+      ins("ac1", [org("A"), org("C")]),
+    ];
+
+    it("候选图含 weight≥1 全部边（不预滤）+ 全部 top-N 节点", () => {
+      const c = deriveCandidateGraph(data);
+      expect(c.candidateEdges.map((e) => `${e.a}-${e.b}:${e.weight}`).sort()).toEqual(["A-B:3", "A-C:1"]);
+      expect(c.nodes.map((n) => n.name).sort()).toEqual(["A", "B", "C"]); // C 也在（候选不剔孤点）
+    });
+
+    it("同一候选图 + 不同阈值 → 即时重筛出不同图（滑块契约）", () => {
+      const c = deriveCandidateGraph(data);
+      const w1 = selectGraph(c.nodes, c.candidateEdges, { minEdgeWeight: 1 });
+      const w2 = selectGraph(c.nodes, c.candidateEdges, { minEdgeWeight: 2 });
+      expect(w1.edges.map((e) => `${e.a}-${e.b}`).sort()).toEqual(["A-B", "A-C"]); // w≥1：两条
+      expect(w2.edges.map((e) => `${e.a}-${e.b}`)).toEqual(["A-B"]); // w≥2：只 A-B，C 孤点剔除
+      expect(w2.nodes.map((n) => n.name).sort()).toEqual(["A", "B"]);
+    });
+
+    it("association 恒保支持度≥2（滑块降到 1 也不放 weight-1 噪声）", () => {
+      const c = deriveCandidateGraph(data);
+      const g = selectGraph(c.nodes, c.candidateEdges, { metric: "association", minEdgeWeight: 1 });
+      expect(g.edges.map((e) => `${e.a}-${e.b}`)).toEqual(["A-B"]); // A-C(w1) 被支持度下限挡
+    });
+
+    it("selectGraph 输出 = deriveCooccurrenceGraph（组合一致）", () => {
+      const c = deriveCandidateGraph(data, { topN: 40 });
+      expect(selectGraph(c.nodes, c.candidateEdges, { minEdgeWeight: 2 })).toEqual(
+        deriveCooccurrenceGraph(data, { minEdgeWeight: 2, topN: 40 }),
+      );
+    });
   });
 
   describe("metric=association（Jaccard 关联强度）", () => {
