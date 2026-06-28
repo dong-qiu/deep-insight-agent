@@ -59,6 +59,20 @@ describe("deriveCooccurrenceGraph", () => {
     expect(g.edges).toEqual([{ a: "Cursor", b: "OpenAI", weight: 2, strength: 1 }]);
   });
 
+  it("实体归一化：变体 GPT-5.5/GPT 5.5 归并为一个节点（S1.6）", () => {
+    const g = deriveCooccurrenceGraph(
+      [
+        ins("i1", [org("GPT-5.5"), org("OpenAI")]),
+        ins("i2", [org("GPT-5.5"), org("OpenAI")]),
+        ins("i3", [{ name: "GPT 5.5", type: "product" }, org("OpenAI")]),
+      ],
+      { minEdgeWeight: 2 },
+    );
+    // 两变体合一 → 展示名取最高频 GPT-5.5、与 OpenAI 共现 3 次（不裂成两点）
+    expect(g.nodes.map((n) => n.name).sort()).toEqual(["GPT-5.5", "OpenAI"]);
+    expect(g.edges).toEqual([{ a: "GPT-5.5", b: "OpenAI", weight: 3, strength: 1 }]);
+  });
+
   it("一条洞察内同名重复只计一次（防脏数据虚增）", () => {
     const g = deriveCooccurrenceGraph(
       [

@@ -9,6 +9,7 @@
  * 有向语义边是 S2（LLM 抽取），见 ADR-0012。
  */
 import type { Entity, EntityType } from "../types.js";
+import { buildCanonicalizer } from "./entity-normalize.js";
 
 /** 共现派生只需要 entities——洞察或任何带 entities 的轻量行均可（避免热路径 N+1 查 citation） */
 export type EntityBearing = { entities?: Entity[] };
@@ -72,16 +73,19 @@ export function deriveCandidateGraph(
   opts: { topN?: number } = {},
 ): CandidateGraph {
   const topN = opts.topN ?? 40;
+  // 实体归一化：把系统性变体（GPT-5.5/GPT 5.5、NVIDIA/Nvidia…）归并到规范展示名（S1.6）
+  const canon = buildCanonicalizer(insights);
   const mentions = new Map<string, number>();
   const typeVotes = new Map<string, Map<EntityType, number>>();
   const pairWeight = new Map<string, number>();
 
   for (const ins of insights) {
-    // 一条洞察内：trim、去空、按名去重（防脏数据虚增）
+    // 一条洞察内：trim、规范化、按规范名去重（防脏数据虚增 + 变体重复计数）
     const seen = new Map<string, EntityType>();
     for (const e of ins.entities ?? []) {
-      const name = e.name?.trim();
-      if (!name) continue;
+      const raw = e.name?.trim();
+      if (!raw) continue;
+      const name = canon(raw);
       if (!seen.has(name)) seen.set(name, e.type);
     }
     const names = [...seen.keys()];
