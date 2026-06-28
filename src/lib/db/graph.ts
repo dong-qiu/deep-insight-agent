@@ -8,6 +8,7 @@ import {
   type GraphNode,
   pickEdgeWeightForBudget,
 } from "../graph/cooccurrence.js";
+import { canonKey } from "../graph/entity-normalize.js";
 import type { Entity, Insight } from "../types.js";
 import type { DB } from "./index.js";
 
@@ -161,9 +162,11 @@ export function insightsMentioningEntity(
   entityName: string,
   since?: string,
 ): Insight[] {
-  const name = entityName.trim();
+  // 按 canonKey 匹配——点击的是规范展示名（如 GPT-5.5），变体（GPT 5.5）的洞察也要纳入（S1.6）
+  const target = canonKey(entityName);
+  if (!target) return []; // 纯标点/空名 key 为空，无法稳定匹配——不归并（与图侧 canon 跳过一致）
   return loadTopicInsights(db, topicId, since).filter((i) =>
-    (i.entities ?? []).some((e) => e.name.trim() === name),
+    (i.entities ?? []).some((e) => canonKey(e.name) === target),
   );
 }
 
@@ -175,11 +178,12 @@ export function insightsCooccurring(
   b: string,
   since?: string,
 ): Insight[] {
-  const na = a.trim();
-  const nb = b.trim();
+  const ka = canonKey(a);
+  const kb = canonKey(b);
+  if (!ka || !kb) return []; // 空 key 不稳定匹配
   return loadTopicInsights(db, topicId, since).filter((i) => {
-    const names = new Set((i.entities ?? []).map((e) => e.name.trim()));
-    return names.has(na) && names.has(nb);
+    const keys = new Set((i.entities ?? []).map((e) => canonKey(e.name)));
+    return keys.has(ka) && keys.has(kb);
   });
 }
 

@@ -997,3 +997,10 @@ S1 上线后第一个优化。**问题**：边权=生频次 → hub 实体（Ant
 - **数据流**：`page.tsx` 用 `buildTopicGraphData` 只送「候选图」+ 初值（自适应 minW）/上界（maxW）；客户端 `ForceGraph` 持 metric/minWeight state、`useMemo(selectGraph)` 毫秒级重筛。**布局对全部候选节点+边只算一次**（`useMemo([data])`）→ 拖滑块节点位置不动、不跳。topic/时间窗仍走服务端表单（改洞察集→`key` 强制重挂载重置 state）。
 - **association 恒保支持度≥2**（`selectGraph` 内 `max(2,minWeight)`），滑块降到 1 也不放 Jaccard=1 噪声。
 - 验证：离线渲染初始态（布局在全 144 候选边、显示 minW=4 的 47 边）确认仍清晰不糊（比旧略紧、有缩放/滑块兜底）；809 全量绿。客户端组件无单测、selectGraph 逻辑单测覆盖。
+
+### S1.6：实体归一化（变体归并·2026-06-29）
+解 ADR-0012 已知限制（同实体裂成多点）。**先量定 ROI**：生产 544 实体名仅 **5 候选变体簇**（GPT-5.5/GPT 5.5、NVIDIA/Nvidia、SWE-Bench/SWE-bench、GPT 5.6/GPT-5.6、Sakana AI/Sakana）——分析器 rule 11 规范名约束基本管用，问题小、是 polish。
+- **确定性归一化，不模糊匹配**：`normKey`=小写+去标点/空格（**只做安全变换**），把 4 个系统性变体簇归并，但 `GPT-5.5`≠`GPT-5.6`（数字）、`Claude`≠`Claude Code`（词）→**零语义误并**（prod probe 实证我的 normKey 正好这 4 簇、无意外）。后缀类（Sakana AI）走**小人工别名表** `ENTITY_ALIASES`（显式可控、不自动剥后缀防 `X AI`≠`X` 误并）。
+- **读时归一化、零迁移、可回退**：`entity-normalize.ts`（`normKey`/`canonKey`/`buildCanonicalizer`）；图派生 `deriveCandidateGraph` 统计前 canonicalize（展示名取簇内最高频写法）；**drill 按 `canonKey` 匹配**（点 GPT-5.5 节点连变体 GPT 5.5 的洞察一并纳入）。不改 DB 里 insight.entities。
+- **范围**：只图域（报告筛选/主题页同名归并 + 写时回填留后续）。818 全量绿（+9 测）。别名表随新变体可手动增长。
+- **已知限制（独立 review 提）**：①**F1 标点敏感名误并**——normKey 去全部标点，`C++`/`C#`/`C`→`c`、`.NET`/`Net`→`net` 会被静默归并（真不同实体）。prod probe 实证当前 544 实体无此碰撞，但**接 code 类源 / 出现 C++/C#/.NET 类实体时须复查**（读时归一、可回退；届时考虑「禁并 denylist」或保留区分性标点）。②**F2 别名 key 精确串匹配**——`sakana ai`（小写）等别名 key 的变体不命中，需各列一条。③**F5 别名无条件改写**——非严格机制中性（数据巧合中性），扩别名表须重核 eval 基线。④ drill 空 key 已守卫早返回（与图侧一致）。
