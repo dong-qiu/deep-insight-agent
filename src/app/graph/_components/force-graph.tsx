@@ -26,6 +26,7 @@ export interface GEdge {
   a: string;
   b: string;
   weight: number;
+  strength: number;
 }
 
 interface SimNode extends GNode, SimulationNodeDatum {}
@@ -63,11 +64,13 @@ export function ForceGraph({
   edges,
   topic,
   since,
+  metric = "frequency",
 }: {
   nodes: GNode[];
   edges: GEdge[];
   topic: string;
   since?: string;
+  metric?: "frequency" | "association";
 }) {
   const [sel, setSel] = useState<Selection | null>(null);
   const [items, setItems] = useState<DrillItem[] | null>(null);
@@ -76,12 +79,13 @@ export function ForceGraph({
   const maxMentions = Math.max(1, ...nodes.map((n) => n.mentions));
   const radiusFor = (m: number): number => 6 + 13 * (Math.sqrt(m) / Math.sqrt(maxMentions));
 
-  // 边粗按本图自身 [minW,maxW] 归一化（先量：跨主题权值域差 ~4 倍，绝对值会让低权图全细线）
-  const ws = edges.map((e) => e.weight);
-  const wMin = ws.length ? Math.min(...ws) : 0;
-  const wMax = ws.length ? Math.max(...ws) : 0;
-  const strokeFor = (w: number): number =>
-    wMax === wMin ? 2 : 1.2 + 4.8 * ((w - wMin) / (wMax - wMin));
+  // 边粗按「当前口径」的值、且按本图自身值域归一化（先量：跨主题值域差大，绝对值会让低值图全细线）
+  const edgeVal = (e: GEdge): number => (metric === "association" ? e.strength : e.weight);
+  const vs = edges.map(edgeVal);
+  const vMin = vs.length ? Math.min(...vs) : 0;
+  const vMax = vs.length ? Math.max(...vs) : 0;
+  const strokeFor = (e: GEdge): number =>
+    vMax === vMin ? 2 : 1.2 + 4.8 * ((edgeVal(e) - vMin) / (vMax - vMin));
 
   // 静态布局：跑一次力模拟到收敛。d3-force 内部确定性 RNG → SSR/客户端同解、无水合错配
   const positioned = useMemo(() => {
@@ -174,12 +178,12 @@ export function ForceGraph({
               x2={b.x}
               y2={b.y}
               stroke={on ? "#111827" : "#9ca3af"}
-              strokeWidth={strokeFor(e.weight)}
+              strokeWidth={strokeFor(e)}
               strokeOpacity={on ? 0.95 : 0.45}
               style={{ cursor: "pointer" }}
               onClick={() => setSel({ kind: "edge", a: e.a, b: e.b })}
             >
-              <title>{`${e.a} ⇄ ${e.b}：共现 ${e.weight} 条洞察`}</title>
+              <title>{`${e.a} ⇄ ${e.b}：共现 ${e.weight} 条 · 关联强度 ${e.strength}`}</title>
             </line>
           );
         })}
@@ -208,7 +212,7 @@ export function ForceGraph({
       </svg>
 
       <aside style={{ flex: "1 1 280px", minWidth: 260 }}>
-        <Legend />
+        <Legend metric={metric} />
         {!sel ? (
           <p className="muted">点节点看「提及它的洞察」，点边看「两实体共现的那些洞察」——溯源到原始分析判断。</p>
         ) : (
@@ -255,10 +259,11 @@ export function ForceGraph({
   );
 }
 
-function Legend() {
+function Legend({ metric }: { metric: "frequency" | "association" }) {
   return (
     <p className="muted" style={{ fontSize: 12 }}>
-      点大小 = 被提及洞察数 · 边粗 = 共现次数（本图内归一化）· 颜色：
+      点大小 = 被提及洞察数 · 边粗 ={" "}
+      {metric === "association" ? "关联强度 Jaccard" : "共现次数"}（本图内归一化）· 颜色：
       {(Object.keys(COLOR) as GNode["type"][]).map((t) => (
         <span key={t} style={{ marginLeft: 8 }}>
           <span

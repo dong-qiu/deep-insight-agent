@@ -41,7 +41,7 @@ describe("buildTopicGraph", () => {
     expect(r.insightCount).toBe(2);
     expect(r.withEntities).toBe(2);
     expect(r.minEdgeWeight).toBe(2);
-    expect(r.graph.edges).toEqual([{ a: "Cursor", b: "OpenAI", weight: 2 }]);
+    expect(r.graph.edges).toEqual([{ a: "Cursor", b: "OpenAI", weight: 2, strength: 1 }]);
   });
 
   it("withEntities 排除无实体洞察", () => {
@@ -56,7 +56,16 @@ describe("buildTopicGraph", () => {
     saveBatch("b1", [mkInsight("i1", [org("OpenAI"), org("Cursor")])]);
     const r = buildTopicGraph(db, "t1", { minEdgeWeight: 1 });
     expect(r.minEdgeWeight).toBe(1);
-    expect(r.graph.edges).toEqual([{ a: "Cursor", b: "OpenAI", weight: 1 }]);
+    expect(r.graph.edges).toEqual([{ a: "Cursor", b: "OpenAI", weight: 1, strength: 1 }]);
+  });
+
+  it("metric=association：返回 metric、支持度下限固定 2、边带 strength", () => {
+    saveBatch("b1", [mkInsight("i1", [org("OpenAI"), org("Cursor")])]);
+    saveBatch("b2", [mkInsight("i2", [org("OpenAI"), org("Cursor")])]);
+    const r = buildTopicGraph(db, "t1", { metric: "association" });
+    expect(r.metric).toBe("association");
+    expect(r.minEdgeWeight).toBe(2);
+    expect(r.graph.edges[0].strength).toBe(1);
   });
 
   it("since 限定时间窗：旧 batch 的洞察被排除", () => {

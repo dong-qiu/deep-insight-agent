@@ -36,8 +36,9 @@ export default async function GraphPage({ searchParams }: { searchParams: Promis
   const wNum = Number(wRaw);
   // 留空 / 非法 / <1 → 走自适应；≥1 整数才作显式阈值（防负数/0 让全量边显示）
   const minEdgeWeight = wRaw && Number.isInteger(wNum) && wNum >= 1 ? wNum : undefined;
+  const metric = val(sp, "metric") === "association" ? "association" : "frequency";
 
-  const result = topicId ? buildTopicGraph(db, topicId, { since, minEdgeWeight }) : null;
+  const result = topicId ? buildTopicGraph(db, topicId, { since, minEdgeWeight, metric }) : null;
   const topicName = topics.find((t) => t.id === topicId)?.name ?? topicId;
 
   return (
@@ -45,6 +46,8 @@ export default async function GraphPage({ searchParams }: { searchParams: Promis
       <h2>关系图</h2>
       <p className="muted">
         实体共现图：圈=实体、连线=两实体在同一条洞察里被一起提及。看清一个主题里「谁和谁总绑在一起」。
+        <br />
+        <strong>口径</strong>：<em>频次</em>=按共现次数（hub 主导、看大势）；<em>关联强度</em>=按 Jaccard（压低 hub、浮出「异常紧密」的非显然对）。
       </p>
 
       {topics.length === 0 ? (
@@ -75,6 +78,14 @@ export default async function GraphPage({ searchParams }: { searchParams: Promis
               </select>
             </label>
             <label>
+              口径
+              <br />
+              <select name="metric" defaultValue={metric}>
+                <option value="frequency">频次</option>
+                <option value="association">关联强度</option>
+              </select>
+            </label>
+            <label>
               最小共现（留空=自适应）
               <br />
               <input name="w" type="number" min={1} max={20} defaultValue={wRaw} placeholder={result ? String(result.minEdgeWeight) : ""} style={{ width: 90 }} />
@@ -86,15 +97,16 @@ export default async function GraphPage({ searchParams }: { searchParams: Promis
             <>
               <p className="muted" style={{ fontSize: 13 }}>
                 <strong>{topicName}</strong> · {result.insightCount} 条洞察（{result.withEntities} 条带实体）·{" "}
-                {result.graph.nodes.length} 节点 / {result.graph.edges.length} 边 · 最小共现 ={" "}
-                {result.minEdgeWeight}
-                {minEdgeWeight == null ? "（自适应）" : ""}
+                {result.graph.nodes.length} 节点 / {result.graph.edges.length} 边 · 口径{" "}
+                {metric === "association" ? "关联强度" : "频次"} · 最小共现 = {result.minEdgeWeight}
+                {minEdgeWeight == null ? (metric === "association" ? "（支持度下限）" : "（自适应）") : ""}
               </p>
               <ForceGraph
                 nodes={result.graph.nodes}
                 edges={result.graph.edges}
                 topic={topicId}
                 since={since}
+                metric={metric}
               />
             </>
           ) : null}
