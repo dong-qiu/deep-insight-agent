@@ -1,0 +1,105 @@
+/** 知识图谱（ADR-0012 S1·实体共现图）。按主题一张图：节点=实体、边=同条洞察共现。
+ *  纯派生（零 LLM），初始边阈值按边密度自适应；可调时间窗 / 最小共现。
+ *  服务端组件装配图数据，交客户端 ForceGraph 渲染 + 溯源。 */
+import { buildTopicGraph } from "../../lib/db/graph.js";
+import { getDb } from "../../lib/db/index.js";
+import { listTopics } from "../../lib/db/repos.js";
+import { ForceGraph } from "./_components/force-graph.js";
+
+export const dynamic = "force-dynamic";
+
+type SP = { [k: string]: string | string[] | undefined };
+const val = (sp: SP, k: string): string => {
+  const v = sp[k];
+  return (Array.isArray(v) ? v[0] : v) ?? "";
+};
+
+const DAYS = [
+  { v: "0", label: "全部" },
+  { v: "30", label: "近 30 天" },
+  { v: "90", label: "近 90 天" },
+  { v: "180", label: "近 180 天" },
+];
+
+export default async function GraphPage({ searchParams }: { searchParams: Promise<SP> }) {
+  const sp = await searchParams;
+  const db = getDb();
+  const topics = listTopics(db);
+
+  const topicId = val(sp, "topic") || topics[0]?.id || "";
+  const days = Number(val(sp, "days") || "0");
+  const since =
+    days > 0
+      ? new Date(Date.now() - days * 86400000).toISOString().replace("T", " ").slice(0, 19)
+      : undefined;
+  const wRaw = val(sp, "w");
+  const wNum = Number(wRaw);
+  // 留空 / 非法 / <1 → 走自适应；≥1 整数才作显式阈值（防负数/0 让全量边显示）
+  const minEdgeWeight = wRaw && Number.isInteger(wNum) && wNum >= 1 ? wNum : undefined;
+
+  const result = topicId ? buildTopicGraph(db, topicId, { since, minEdgeWeight }) : null;
+  const topicName = topics.find((t) => t.id === topicId)?.name ?? topicId;
+
+  return (
+    <section>
+      <h2>关系图</h2>
+      <p className="muted">
+        实体共现图：圈=实体、连线=两实体在同一条洞察里被一起提及。看清一个主题里「谁和谁总绑在一起」。
+      </p>
+
+      {topics.length === 0 ? (
+        <p className="muted">暂无主题。</p>
+      ) : (
+        <>
+          <form method="get" className="card" style={{ display: "flex", gap: "1rem", flexWrap: "wrap", alignItems: "flex-end" }}>
+            <label>
+              主题
+              <br />
+              <select name="topic" defaultValue={topicId}>
+                {topics.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              时间窗
+              <br />
+              <select name="days" defaultValue={String(days)}>
+                {DAYS.map((d) => (
+                  <option key={d.v} value={d.v}>
+                    {d.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              最小共现（留空=自适应）
+              <br />
+              <input name="w" type="number" min={1} max={20} defaultValue={wRaw} placeholder={result ? String(result.minEdgeWeight) : ""} style={{ width: 90 }} />
+            </label>
+            <button type="submit">应用</button>
+          </form>
+
+          {result ? (
+            <>
+              <p className="muted" style={{ fontSize: 13 }}>
+                <strong>{topicName}</strong> · {result.insightCount} 条洞察（{result.withEntities} 条带实体）·{" "}
+                {result.graph.nodes.length} 节点 / {result.graph.edges.length} 边 · 最小共现 ={" "}
+                {result.minEdgeWeight}
+                {minEdgeWeight == null ? "（自适应）" : ""}
+              </p>
+              <ForceGraph
+                nodes={result.graph.nodes}
+                edges={result.graph.edges}
+                topic={topicId}
+                since={since}
+              />
+            </>
+          ) : null}
+        </>
+      )}
+    </section>
+  );
+}

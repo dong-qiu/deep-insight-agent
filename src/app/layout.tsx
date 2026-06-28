@@ -40,6 +40,7 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
             <a href="/">今日 Brief</a>
             <a href="/topics">主题</a>
             <a href="/reports">报告库</a>
+            <a href="/graph">关系图</a>
             {isAdmin ? <a href="/admin">管理看板</a> : null}
             {isAdmin ? <a href="/settings">设置</a> : null}
           </nav>
