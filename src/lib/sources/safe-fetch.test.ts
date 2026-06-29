@@ -1,5 +1,17 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fetchWithRetry, isPrivateOrReserved, safeFetch } from "./safe-fetch.js";
+import { fetchWithRetry, isPrivateOrReserved, readTextCapped, safeFetch } from "./safe-fetch.js";
+
+const enc = new TextEncoder();
+/** 用多块 ReadableStream 造 Response，逐块触发 readTextCapped 的 maxBytes 判定。 */
+function streamResponse(parts: string[]): Response {
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const p of parts) controller.enqueue(enc.encode(p));
+      controller.close();
+    },
+  });
+  return new Response(stream);
+}
 
 describe("isPrivateOrReserved", () => {
   it("私有 / 保留 IPv4 → true", () => {
@@ -22,6 +34,28 @@ describe("isPrivateOrReserved", () => {
   it("非法 IP → true（按不安全处理）", () => {
     expect(isPrivateOrReserved("not-an-ip")).toBe(true);
     expect(isPrivateOrReserved("999.1.1.1")).toBe(true);
+  });
+});
+
+describe("readTextCapped 大小封顶", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("未超限 → 返回全文", async () => {
+    const text = await readTextCapped(streamResponse(["abc", "def", "ghij"]), 100);
+    expect(text).toBe("abcdefghij");
+  });
+
+  it("超限默认抛错（不传 truncate）", async () => {
+    // 块累计：3→6→10，maxBytes=8 在第三块触顶
+    await expect(readTextCapped(streamResponse(["abc", "def", "ghij"]), 8)).rejects.toThrow(/超过上限 8 字节/);
+  });
+
+  it("超限 + truncate=true → 截断保留触顶块之前的部分、不抛错、打 warn", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const text = await readTextCapped(streamResponse(["abc", "def", "ghij"]), 8, { truncate: true, label: "feed-x" });
+    expect(text).toBe("abcdef"); // 第三块（使总数=10>8）被丢弃，干净边界
+    expect(warn).toHaveBeenCalledOnce();
+    expect(warn.mock.calls[0][0]).toMatch(/已截断保留前 6 字节.*feed-x/);
   });
 });
 

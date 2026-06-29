@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { parseArxiv } from "./arxiv.js";
-import { parseRss } from "./rss.js";
+import { parseRss, repairTruncatedFeed } from "./rss.js";
 
 const ARXIV = `<?xml version="1.0" encoding="UTF-8"?>
 <feed xmlns="http://www.w3.org/2005/Atom">
@@ -123,6 +123,63 @@ describe("parseRss", () => {
   });
   it("无法识别的 XML → 空数组", () => {
     expect(parseRss("<x/>")).toEqual([]);
+  });
+
+  describe("截断 feed 兜底（readTextCapped truncate 配套）", () => {
+    // 末条停在 CDATA 中间（无闭合）——fast-xml-parser 直接 parse 会抛 "CDATA is not closed"。
+    const ATOM_TRUNC =
+      `<feed xmlns="http://www.w3.org/2005/Atom"><title>T</title>` +
+      `<entry><title>E1</title><id>https://ex.com/1</id><content><![CDATA[body one]]></content></entry>` +
+      `<entry><title>E2</title><id>https://ex.com/2</id><content><![CDATA[body two]]></content></entry>` +
+      `<entry><title>E3</title><id>https://ex.com/3</id><content><![CDATA[body three trunc`;
+    const RSS_TRUNC =
+      `<rss><channel><title>C</title>` +
+      `<item><title>I1</title><link>https://ex.com/1</link><description><![CDATA[d1]]></description></item>` +
+      `<item><title>I2</title><link>https://ex.com/2</link><description><![CDATA[d2 trunc`;
+
+    it("Atom 末条 CDATA 截断 → 不抛、保留前面完整 entry", () => {
+      const items = parseRss(ATOM_TRUNC);
+      expect(items).toHaveLength(2);
+      expect(items.map((i) => i.url)).toEqual(["https://ex.com/1", "https://ex.com/2"]);
+      expect(items[0].body).toBe("body one");
+    });
+
+    it("RSS 末条 CDATA 截断 → 不抛、保留前面完整 item", () => {
+      const items = parseRss(RSS_TRUNC);
+      expect(items).toHaveLength(1);
+      expect(items[0].url).toBe("https://ex.com/1");
+    });
+
+    it("repairTruncatedFeed：按根类型裁到最后完整条目 + 补根闭合", () => {
+      expect(repairTruncatedFeed(ATOM_TRUNC)?.endsWith("</entry></feed>")).toBe(true);
+      expect(repairTruncatedFeed(RSS_TRUNC)?.endsWith("</item></channel></rss>")).toBe(true);
+    });
+
+    it("无任何完整条目（单条 >cap）→ repair 返 null、parseRss 照抛（真损坏保持可见，不静默吞成空）", () => {
+      const noComplete = `<feed xmlns="http://www.w3.org/2005/Atom"><entry><title>X</title><content><![CDATA[huge trunc`;
+      expect(repairTruncatedFeed(noComplete)).toBeNull();
+      expect(() => parseRss(noComplete)).toThrow();
+    });
+
+    it("截断尾条 CDATA 内含字面 </entry> → CDATA 平衡校验跳过它、切到真结构边界（不被假闭合骗）", () => {
+      const tricky =
+        `<feed xmlns="http://www.w3.org/2005/Atom">` +
+        `<entry><title>E1</title><id>https://ex.com/1</id><content><![CDATA[ok]]></content></entry>` +
+        `<entry><title>E2</title><id>https://ex.com/2</id><content><![CDATA[talking about </entry> in a code sample then trunc`;
+      const items = parseRss(tricky);
+      expect(items).toHaveLength(1); // 只保 E1；E2 的 CDATA 未闭合，里面的字面 </entry> 不被当真边界
+      expect(items[0].url).toBe("https://ex.com/1");
+    });
+
+    it("RSS 正文含字面 <feed → 根判定按最先根标签、不误判为 Atom", () => {
+      const rssWithFeedWord =
+        `<rss><channel><title>C</title>` +
+        `<item><title>I1</title><link>https://ex.com/1</link><description><![CDATA[we built a <feed reader]]></description></item>` +
+        `<item><title>I2</title><link>https://ex.com/2</link><description><![CDATA[trunc`;
+      const items = parseRss(rssWithFeedWord);
+      expect(items).toHaveLength(1);
+      expect(items[0].url).toBe("https://ex.com/1");
+    });
   });
 
   it("无 <podcast:transcript> → transcript_url undefined（普通 feed 不受影响）", () => {
