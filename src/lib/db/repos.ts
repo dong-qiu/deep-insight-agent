@@ -361,14 +361,21 @@ export function listRunsForTopicSince(db: DB, topicId: string, sinceIso: string)
 
 /** 启动期清扫"孤儿 Run"（review follow-up #1）：进程被 SIGTERM / 容器重启时，
  *  正在跑的 Run 留在 `status=running` 永不变 done/failed，/admin 看板显示永久"运行中"。
- *  openDb 触发时把所有 `running` Run 一刀切标 failed，error.type="OrphanedOnRestart"，
- *  duration_ms 用 ended-started 补；返扫到几条以便日志。
- *  幂等：清扫只对仍 running 的生效，新一轮 runJob 起的新 Run 不受影响。 */
-export function recoverOrphanedRuns(db: DB): number {
-  const now = new Date().toISOString();
+ *  openDb 触发时把 running Run 标 failed，error.type="OrphanedOnRestart"，duration_ms 补。
+ *
+ *  ⚠️ **不一刀切**（质量 Q2 修）：openDb 每进程启动都调；共享卷多进程下（worktree/容器共卷），
+ *  另一进程刚启动的并发 run（started_at 新）若被误杀，会污染 evaluateCircuit 的连续失败计数、
+ *  误触熔断。故仅回收 running **超过 staleMs（最长合理时长）** 的——staleMs 内的视为可能存活、
+ *  保留。真孤儿（崩溃残留）的回收：① openDb 启动清扫 + ② 每日 cron 入口周期清扫（见 api/cron），
+ *  故长驻进程不重启也能在一个 cron 周期内清掉。默认 30 分钟（超 P50 ~10min + LLM 超时余量），
+ *  `ORPHAN_RUN_STALE_MIN` 可调（上限 6h）。幂等。 */
+export function recoverOrphanedRuns(db: DB, staleMs: number = orphanRunStaleMs()): number {
+  const nowMs = Date.now();
+  const now = new Date(nowMs).toISOString();
+  const cutoff = new Date(nowMs - staleMs).toISOString(); // ISO 字典序=时序，可直接比较
   const errorJson = JSON.stringify({
     type: "OrphanedOnRestart",
-    message: "进程重启时该 Run 仍在 running 状态，无法继续；已标 failed。可手动重试。",
+    message: "进程重启时该 Run 已 running 超过最长合理时长，判孤儿标 failed。可手动重试。",
   });
   const r = db.prepare(
     `UPDATE run
@@ -376,9 +383,15 @@ export function recoverOrphanedRuns(db: DB): number {
          ended_at = ?,
          duration_ms = COALESCE(duration_ms, CAST((julianday(?) - julianday(started_at)) * 86400000 AS INTEGER)),
          error = ?
-     WHERE status = 'running'`,
-  ).run(now, now, errorJson);
+     WHERE status = 'running' AND started_at < ?`,
+  ).run(now, now, errorJson, cutoff);
   return r.changes;
+}
+
+function orphanRunStaleMs(): number {
+  const min = Number(process.env.ORPHAN_RUN_STALE_MIN);
+  // 上限 360min（6h）防误填超大值把回收推到数十天后近乎禁用；下限/非法回退 30min
+  return (Number.isFinite(min) && min > 0 ? Math.min(min, 360) : 30) * 60_000;
 }
 
 /** 同 kind + target 下是否有任一 Run 处于 running（review follow-up #2 防并发）。
