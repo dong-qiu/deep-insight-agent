@@ -30,7 +30,7 @@
     "fast-xml-parser": "^5.9.3",
     "next": "^15.5.18",
     "next-auth": "^5.0.0-beta.31",
-    "nodemailer": "^7.0.13",
+    "nodemailer": "^9.0.1",
     "pino": "^10.3.1",
     "pptxgenjs": "^4.0.1",
     "react": "^19.2.7",
@@ -47,5 +47,8 @@
     "tsx": "^4.22.4",
     "typescript": "^6.0.3",
     "vitest": "^2.1.0"
+  },
+  "overrides": {
+    "nodemailer": "^9.0.1"
   }
 }
