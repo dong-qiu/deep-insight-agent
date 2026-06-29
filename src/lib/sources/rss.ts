@@ -2,7 +2,7 @@
 import type { Source } from "../types.js";
 import { extractCiteTranscript, extractHtmlTranscript, stripTranscript } from "./normalize.js";
 import { UA, fetchRobots, isAllowed } from "./robots.js";
-import { fetchWithRetry, readTextCapped, safeFetch } from "./safe-fetch.js";
+import { MAX_RESPONSE_BYTES, fetchWithRetry, readTextCapped, safeFetch } from "./safe-fetch.js";
 import type { RawItem } from "./types.js";
 import { asArray, text, xml } from "./xml.js";
 
@@ -57,8 +57,49 @@ function itemUrl(it: any, base?: string): string {
 
 /** 解析 feed → RawItem[]。`baseUrl`=feed 自身 URL（source.endpoint），用于把相对条目链接归一为绝对（决定⑤）；
  *  缺省时仅绝对 URL 可用（单测/旧调用方零影响）。 */
+/** 截断的 feed 良构化：readTextCapped(truncate) 会切在条目/CDATA 中间，fast-xml-parser 直接 parse 会抛
+ *  （如 "CDATA is not closed"）。按根类型裁到**最后一个完整** </entry>|</item> 并补根闭合标签，使前面的
+ *  完整条目可解析（新条在前 → 留最新数条）。无任何完整条目（单条 >8MB）或认不出根 → 返 null（不可救）。 */
+export function repairTruncatedFeed(feedXml: string): string | null {
+  // 根类型按**最先出现**的根标签判定（真根在所有内容之前；用 [\s>] 收边避免 <feedburner 等误配，
+  // 防正文/CDATA 里的字面 <feed>/<rss> 把 RSS 误判成 Atom）。
+  const iFeed = feedXml.search(/<feed[\s>]/i);
+  const iRss = feedXml.search(/<rss[\s>]/i);
+  let closeTag: string;
+  let suffix: string;
+  if (iFeed >= 0 && (iRss < 0 || iFeed < iRss)) {
+    closeTag = "</entry>";
+    suffix = "</feed>";
+  } else if (iRss >= 0) {
+    closeTag = "</item>";
+    suffix = "</channel></rss>";
+  } else {
+    return null;
+  }
+  // 从尾向前找「落在 CDATA 之外」的最后一个完整闭合标签：截断尾条的 CDATA 里可能含字面 </entry>/</item>，
+  // 在未闭合 CDATA 内切会留下坏 XML（修后二次 parse 仍抛）。以 candidate 内 <![CDATA[ 与 ]]> 是否配平判定。
+  for (let from = feedXml.length, tries = 0; tries < 64; tries++) {
+    const i = feedXml.lastIndexOf(closeTag, from - 1);
+    if (i < 0) return null;
+    const candidate = feedXml.slice(0, i + closeTag.length);
+    const opens = (candidate.match(/<!\[CDATA\[/g) || []).length;
+    const closes = (candidate.match(/\]\]>/g) || []).length;
+    if (opens === closes) return candidate + suffix; // 该闭合标签在 CDATA 之外 = 结构性边界
+    from = i; // 落在未闭合 CDATA 内 → 继续往前找
+  }
+  return null;
+}
+
 export function parseRss(feedXml: string, baseUrl?: string): RawItem[] {
-  const doc = xml.parse(feedXml) as any;
+  let doc: any;
+  try {
+    doc = xml.parse(feedXml);
+  } catch (e) {
+    // 截断导致的 XML 不良构：裁到最后完整条目 + 补根闭合后再解析一次；无可挽救 → 照抛原错（真损坏保持可见）。
+    const repaired = repairTruncatedFeed(feedXml);
+    if (repaired === null) throw e;
+    doc = xml.parse(repaired);
+  }
 
   // RSS 2.0
   if (doc?.rss?.channel) {
@@ -113,7 +154,11 @@ export async function fetchRss(source: Source): Promise<RawItem[]> {
   // 6a：fetchRss 只解析（含 transcript_url）、**不抓转写**——抓取移到 collector 去重后、只对新 url 抓
   // （B族：避免每轮全抓 50 集，且根除 show_notes→transcript 原地改 body 的 Major6）。
   // 决定⑤：传 feed URL 作 base，把相对条目链接归一为绝对（防相对 link → 下游 new URL 抛错丢条目）。
-  return parseRss(await readTextCapped(res), source.endpoint).slice(0, RSS_MAX_ITEMS);
+  // truncate=true：超大 feed（Project Zero 13MB / Latent Space podcast 12.6MB 等）取前 8MB 而非整轮失败。
+  // 注意：fast-xml-parser 对截断串会抛（如 CDATA 未闭合）——由 parseRss 的 repairTruncatedFeed 兜底裁到
+  // 最后完整条目 + 补根闭合再解析（新条在前 → 留最新数条）。仅字节截断不足以良构，二者配套缺一不可。
+  const feedXml = await readTextCapped(res, MAX_RESPONSE_BYTES, { truncate: true, label: source.endpoint });
+  return parseRss(feedXml, source.endpoint).slice(0, RSS_MAX_ITEMS);
 }
 
 /** 抓取并清洗单集转写稿：对其 origin **单独**查 robots（与 feed 常不同源，评审 Major 5）+ SSRF 安全出网
