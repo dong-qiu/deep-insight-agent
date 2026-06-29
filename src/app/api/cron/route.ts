@@ -5,6 +5,7 @@ import { timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
 import { runScheduledPipeline } from "../../../lib/agents/scheduler.js";
 import { getDb } from "../../../lib/db/index.js";
+import { recoverOrphanedRuns } from "../../../lib/db/repos.js";
 import { runLogger } from "../../../lib/runtime/logger.js";
 
 export const dynamic = "force-dynamic";
@@ -29,7 +30,12 @@ export async function POST(req: Request): Promise<NextResponse> {
   const log = runLogger({ stage: "cron" });
   try {
     log.info("定时管线触发");
-    const summary = await runScheduledPipeline(getDb(), {});
+    const db = getDb();
+    // 周期清扫孤儿 Run（Q2）：长驻 app 进程很少重启，openDb 的启动清扫不够；每日 cron 入口
+    // 再扫一次 >staleMs 的孤儿。stale 阈值保证本轮即将创建的 run 不被误杀。
+    const swept = recoverOrphanedRuns(db);
+    if (swept > 0) log.info({ swept }, "周期清扫孤儿 Run");
+    const summary = await runScheduledPipeline(db, {});
     log.info({ topics: summary.topics.length, errors: summary.errors.length }, "定时管线完成");
     return NextResponse.json({ ok: true, summary });
   } catch (e) {

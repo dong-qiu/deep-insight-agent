@@ -312,22 +312,25 @@ describe("recoverOrphanedRuns（review follow-up #1）", () => {
     };
   }
 
-  it("running Run 一刀切 → failed + error.type=OrphanedOnRestart + duration 补", () => {
-    insertRun(db, freshRunningRun("orph1", "ingest", "source_id", "s1"));
-    insertRun(db, freshRunningRun("orph2", "analyze", "topic_id", "t1", 10_000));
+  it("超 stale 阈值的 running → failed + OrphanedOnRestart + duration 补；新鲜并发 run 不动（Q2）", () => {
+    insertRun(db, freshRunningRun("old_orphan", "ingest", "source_id", "s1", 60_000)); // 60s 前，超阈
+    insertRun(db, freshRunningRun("fresh_live", "analyze", "topic_id", "t1", 2_000)); // 2s 前，新鲜并发
     insertRun(db, { ...freshRunningRun("done_keep", "ingest", "source_id", "s2"), status: "done",
       ended_at: new Date().toISOString(), duration_ms: 100 });
-    const n = recoverOrphanedRuns(db);
-    expect(n).toBe(2);
-    const r1 = getRun(db, "orph1")!;
+    const n = recoverOrphanedRuns(db, 30_000); // stale=30s
+    expect(n).toBe(1); // 只回收孤儿，不误杀并发
+    const r1 = getRun(db, "old_orphan")!;
     expect(r1.status).toBe("failed");
     expect(r1.error?.type).toBe("OrphanedOnRestart");
     expect(r1.duration_ms).toBeGreaterThanOrEqual(0);
+    expect(getRun(db, "fresh_live")?.status).toBe("running"); // 关键：另一进程的并发 run 保留
     expect(getRun(db, "done_keep")?.status).toBe("done");
   });
 
-  it("无 running → 返 0、幂等", () => {
-    expect(recoverOrphanedRuns(db)).toBe(0);
+  it("无超阈 running → 返 0、幂等（新鲜的不动）", () => {
+    insertRun(db, freshRunningRun("fresh", "ingest", "source_id", "s1", 2_000));
+    expect(recoverOrphanedRuns(db, 30_000)).toBe(0);
+    expect(getRun(db, "fresh")?.status).toBe("running");
   });
 });
 
