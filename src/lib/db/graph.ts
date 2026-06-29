@@ -1,5 +1,4 @@
 /** 知识图谱 S1 数据层（ADR-0012 砖②）——按主题/时间窗查 insight、自适应装配共现图 + 溯源查询。 */
-/* eslint-disable @typescript-eslint/no-explicit-any */
 import {
   type CooccurrenceGraph,
   deriveCandidateGraph,
@@ -10,36 +9,8 @@ import {
 } from "../graph/cooccurrence.js";
 import { canonKey } from "../graph/entity-normalize.js";
 import type { Entity, Insight } from "../types.js";
+import { type InsightRow, rowToInsight } from "./analysis.js";
 import type { DB } from "./index.js";
-
-function rowToInsight(db: DB, r: any): Insight {
-  const cits = db
-    .prepare("SELECT * FROM citation WHERE insight_id = ? ORDER BY citation_index")
-    .all(r.id) as any[];
-  return {
-    id: r.id,
-    topic_id: r.topic_id,
-    type: r.type,
-    event_id: r.event_id ?? null,
-    statement: r.statement,
-    headline: r.headline ?? "",
-    importance: r.importance,
-    importance_basis: r.importance_basis,
-    citations: cits.map((c) => ({
-      content_item_id: c.content_item_id,
-      quote: c.quote,
-      locator: JSON.parse(c.locator),
-    })),
-    source_count: r.source_count,
-    multi_source: r.multi_source === 1,
-    time_window: JSON.parse(r.time_window),
-    confidence: r.confidence ?? null,
-    language: r.language,
-    is_followup: r.is_followup === 1,
-    entities: JSON.parse(r.entities ?? "[]"),
-    tags: JSON.parse(r.tags ?? "[]"),
-  };
-}
 
 /** 轻量加载：只取派生共现图所需的 entities，不查 citation（图装配热路径，避免 N+1）。
  *  注：读 `insight` 全表——刻意展示「原始分析判断」（含未过 validator 校验的洞察）。
@@ -69,7 +40,7 @@ export function loadTopicInsights(db: DB, topicId: string, since?: string): Insi
           )
           .all(topicId, since)
       : db.prepare("SELECT * FROM insight WHERE topic_id = ? ORDER BY rowid").all(topicId)
-  ) as any[];
+  ) as InsightRow[];
   return rows.map((r) => rowToInsight(db, r));
 }
 

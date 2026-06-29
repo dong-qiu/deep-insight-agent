@@ -6,6 +6,58 @@ import type { DB } from "./index.js";
 const j = (v: unknown): string => JSON.stringify(v);
 const b = (v: boolean): number => (v ? 1 : 0);
 
+/** insight 表行（SELECT * 形状）——给 rowToInsight 用，替代 `as any` 裸行。 */
+export interface InsightRow {
+  id: string;
+  topic_id: string;
+  type: Insight["type"];
+  event_id: string | null;
+  statement: string;
+  headline: string | null;
+  importance: number;
+  importance_basis: string;
+  source_count: number;
+  multi_source: number; // 0/1
+  time_window: string; // JSON
+  confidence: string | null;
+  language: Insight["language"];
+  is_followup: number | null; // 0/1
+  entities: string | null; // JSON
+  tags: string | null; // JSON
+}
+interface CitationRow {
+  content_item_id: string;
+  quote: string;
+  locator: string; // JSON
+}
+
+/** insight 行 + 其 citation → Insight 对象（单一来源；原 analysis/graph/ppt-export 四处拷贝收敛于此）。
+ *  17 字段装配 + JSON.parse + 0/1→bool 都在这一处，加字段只改这里、不会漏改某处静默丢字段。 */
+export function rowToInsight(db: DB, r: InsightRow): Insight {
+  const cits = db
+    .prepare("SELECT * FROM citation WHERE insight_id = ? ORDER BY citation_index")
+    .all(r.id) as CitationRow[];
+  return {
+    id: r.id,
+    topic_id: r.topic_id,
+    type: r.type,
+    event_id: r.event_id ?? null,
+    statement: r.statement,
+    headline: r.headline ?? "",
+    importance: r.importance,
+    importance_basis: r.importance_basis,
+    citations: cits.map((c) => ({ content_item_id: c.content_item_id, quote: c.quote, locator: JSON.parse(c.locator) })),
+    source_count: r.source_count,
+    multi_source: r.multi_source === 1,
+    time_window: JSON.parse(r.time_window),
+    confidence: (r.confidence ?? null) as Insight["confidence"],
+    language: r.language,
+    is_followup: r.is_followup === 1,
+    entities: JSON.parse(r.entities ?? "[]"),
+    tags: JSON.parse(r.tags ?? "[]"),
+  };
+}
+
 export function saveAnalysisBatch(db: DB, batch: AnalysisBatch): void {
   db.transaction(() => {
     db.prepare(
@@ -45,22 +97,8 @@ export function saveAnalysisBatch(db: DB, batch: AnalysisBatch): void {
 export function getAnalysisBatch(db: DB, id: string): AnalysisBatch | null {
   const br = db.prepare("SELECT * FROM analysis_batch WHERE id = ?").get(id) as any;
   if (!br) return null;
-  const insRows = db.prepare("SELECT * FROM insight WHERE batch_id = ? ORDER BY rowid").all(id) as any[];
-  const insights: Insight[] = insRows.map((r) => {
-    const cits = db
-      .prepare("SELECT * FROM citation WHERE insight_id = ? ORDER BY citation_index")
-      .all(r.id) as any[];
-    return {
-      id: r.id, topic_id: r.topic_id, type: r.type, event_id: r.event_id ?? null,
-      statement: r.statement, headline: r.headline ?? "", importance: r.importance, importance_basis: r.importance_basis,
-      citations: cits.map((c) => ({
-        content_item_id: c.content_item_id, quote: c.quote, locator: JSON.parse(c.locator),
-      })),
-      source_count: r.source_count, multi_source: r.multi_source === 1,
-      time_window: JSON.parse(r.time_window), confidence: r.confidence ?? null, language: r.language,
-      is_followup: r.is_followup === 1, entities: JSON.parse(r.entities ?? "[]"), tags: JSON.parse(r.tags ?? "[]"),
-    };
-  });
+  const insRows = db.prepare("SELECT * FROM insight WHERE batch_id = ? ORDER BY rowid").all(id) as InsightRow[];
+  const insights: Insight[] = insRows.map((r) => rowToInsight(db, r));
   return {
     id: br.id, topic_id: br.topic_id, time_window: JSON.parse(br.time_window), status: br.status,
     no_significant_event: br.no_significant_event === 1, insights,
@@ -72,22 +110,11 @@ export function getAnalysisBatch(db: DB, id: string): AnalysisBatch | null {
  *  返回顺序与传入 ids 一致（保留报告内洞察顺序）；缺失的 id 跳过。 */
 export function getInsightsByIds(db: DB, ids: string[]): Insight[] {
   const out: Insight[] = [];
-  const citStmt = db.prepare("SELECT * FROM citation WHERE insight_id = ? ORDER BY citation_index");
   const insStmt = db.prepare("SELECT * FROM insight WHERE id = ?");
   for (const id of ids) {
-    const r = insStmt.get(id) as any;
+    const r = insStmt.get(id) as InsightRow | undefined;
     if (!r) continue;
-    const cits = citStmt.all(id) as any[];
-    out.push({
-      id: r.id, topic_id: r.topic_id, type: r.type, event_id: r.event_id ?? null,
-      statement: r.statement, headline: r.headline ?? "", importance: r.importance, importance_basis: r.importance_basis,
-      citations: cits.map((c) => ({
-        content_item_id: c.content_item_id, quote: c.quote, locator: JSON.parse(c.locator),
-      })),
-      source_count: r.source_count, multi_source: r.multi_source === 1,
-      time_window: JSON.parse(r.time_window), confidence: r.confidence ?? null, language: r.language,
-      is_followup: r.is_followup === 1, entities: JSON.parse(r.entities ?? "[]"), tags: JSON.parse(r.tags ?? "[]"),
-    });
+    out.push(rowToInsight(db, r));
   }
   return out;
 }
