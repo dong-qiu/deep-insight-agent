@@ -10,6 +10,7 @@ import {
   getPolishCacheEntry,
   upsertPolishCacheEntry,
 } from "../db/ppt-cache.js";
+import { type InsightRow, rowToInsight } from "../db/analysis.js";
 import { getReport } from "../db/reports.js";
 import { getSource, getTopic } from "../db/repos.js";
 import type { CitationCheck, Insight, Report, Topic } from "../types.js";
@@ -60,30 +61,9 @@ function loadPptInput(
 
   const insights: IncludedInsightLite[] = [];
   for (const id of report.insight_ids) {
-    const row = db.prepare("SELECT * FROM insight WHERE id = ?").get(id) as any;
+    const row = db.prepare("SELECT * FROM insight WHERE id = ?").get(id) as InsightRow | undefined;
     if (!row) continue; // 防御：报告引用了已删除的 insight，跳过不抛
-    const cits = db
-      .prepare("SELECT * FROM citation WHERE insight_id = ? ORDER BY citation_index")
-      .all(id) as any[];
-    const insight: Insight = {
-      id: row.id,
-      topic_id: row.topic_id,
-      type: row.type,
-      event_id: row.event_id ?? null,
-      statement: row.statement,
-      importance: row.importance,
-      importance_basis: row.importance_basis,
-      citations: cits.map((c) => ({
-        content_item_id: c.content_item_id,
-        quote: c.quote,
-        locator: JSON.parse(c.locator),
-      })),
-      source_count: row.source_count,
-      multi_source: !!row.multi_source,
-      time_window: JSON.parse(row.time_window),
-      confidence: row.confidence,
-      language: row.language,
-    };
+    const insight: Insight = rowToInsight(db, row); // 单一来源（Q3）
     // 白名单（与 selectInsights 同口径）：pass/flagged 纳入；blocked/无 check 剔除
     const checks = db
       .prepare("SELECT citation_index, verdict, consistency FROM citation_check WHERE insight_id = ?")
