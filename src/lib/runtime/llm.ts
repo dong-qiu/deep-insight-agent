@@ -12,6 +12,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod/v4";
 import type { Cost } from "../types.js";
 import { FALLBACK_PRICING, costUSD, type TokenUsage } from "./cost.js";
+import { llmMaxRetries, llmTimeoutMs, promptCacheOn } from "./env.js";
 
 // 已警告过的未知模型集合（每模型仅警告一次，防日志刷屏）
 const warnedUnpriced = new Set<string>();
@@ -61,10 +62,10 @@ function getClient(): Anthropic {
   // 超时取舍：原 45s 是为快速失败中转站「卡死」；但 Opus 生成 8k token 输出的合法调用可能 >45s，
   // 且每次重试也只等 45s → 合法慢生成永远成功不了（F4 live 确认暴露）。改 120s（env LLM_TIMEOUT_MS 可配），
   // 让合法慢生成跑完；中转站现已支持长响应（带思考已验证），不再需要 45s 那么激进。
-  const timeout = Number(process.env.LLM_TIMEOUT_MS) || 120_000;
+  const timeout = llmTimeoutMs();
   // maxRetries 可调（LLM_MAX_RETRIES，默认 2）：中转站抖动期可临时调高兜网络层；
   // 与 validator.judgeWithRetry 的应用层重试叠加（前者管网络/5xx，后者覆盖 SDK 重试耗尽后的短窗）。
-  const maxRetries = Number(process.env.LLM_MAX_RETRIES) || 2;
+  const maxRetries = llmMaxRetries();
   return (_client ??= new Anthropic({ timeout, maxRetries })); // key from env
 }
 
@@ -195,7 +196,7 @@ export async function callStructured<T extends z.ZodType>(
   const model = MODELS[opts.role];
   // 默认对稳定 system 前缀打 prompt cache；PROMPT_CACHE=0 时关闭——某些第三方中转站只写不读，
   // 缓存从不命中却仍计写入开销（见 a1-runs），此时关闭更省。
-  const useCache = process.env.PROMPT_CACHE !== "0";
+  const useCache = promptCacheOn();
   // 中转站兼容性（2026-06-03）：yibuapi 不再接受 SDK 0.98 的 output_config.format 字段。
   // 改走通用 tool_use：把目标 schema 包装成单个强制工具调用（tool_choice 锁定），从工具
   // 调用块取 input 当结构化输出。tool_use 是 Anthropic 长稳定接口，被所有中转站支持。

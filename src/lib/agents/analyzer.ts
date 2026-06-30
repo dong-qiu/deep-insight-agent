@@ -8,6 +8,7 @@
  */
 import { createHash, randomUUID } from "node:crypto";
 import { isTransientApiError } from "../runtime/errors.js";
+import { coverageBackfillOff, validatorThinking } from "../runtime/env.js";
 import { MODELS, callStructured } from "../runtime/llm.js";
 import { collapseWithMap, compareKey } from "../runtime/text-normalize.js";
 import {
@@ -156,7 +157,7 @@ ${candidates.map((c, i) => `${i + 1}. 目标=「${c.token}」　引用「${c.quo
     system: COVERAGE_VERIFY_SYSTEM,
     user,
     schema: CoverageRepairSchema,
-    thinking: process.env.VALIDATOR_THINKING !== "0",
+    thinking: validatorThinking(),
     maxTokens: 2048,
     onCost,
   });
@@ -173,7 +174,7 @@ export async function repairCoverage(
   byId: Map<string, ContentItem>,
   onCost?: (cost: Cost) => void,
 ): Promise<void> {
-  if (process.env.COVERAGE_BACKFILL === "0") return;
+  if (coverageBackfillOff()) return;
   for (const ins of insights) {
     const ents = (ins.entities ?? []).map((e) => e.name);
     const gaps = coverageGaps(ins.statement, ents, ins.citations.map((c) => c.quote));
