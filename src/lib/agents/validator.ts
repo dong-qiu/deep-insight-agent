@@ -5,6 +5,10 @@
  *  - 处置矩阵 / verdict：见 architecture「数据模型 · 校验结果 · 校验判定流程」。
  */
 import { createHash } from "node:crypto";
+import {
+  validationDegradedRate, validatorBackoffMs, validatorBatchOn,
+  validatorRetries, validatorThinking,
+} from "../runtime/env.js";
 import { MODELS, callStructured } from "../runtime/llm.js";
 import { compareKey } from "../runtime/text-normalize.js";
 import { isIncludableCheck, isValidationError } from "../utils/citation-verdict.js";
@@ -82,7 +86,7 @@ ${sourceText}
     user,
     schema: ConsistencyJudgeSchema,
     // 默认开思考（精度敏感）；经会缓死长响应的中转站时可 VALIDATOR_THINKING=0 关掉
-    thinking: process.env.VALIDATOR_THINKING !== "0",
+    thinking: validatorThinking(),
     maxTokens: 4096,
     onCost,
   });
@@ -134,7 +138,7 @@ ${list}
     system: CONSISTENCY_BATCH_SYSTEM,
     user,
     schema: ConsistencyBatchJudgeSchema,
-    thinking: process.env.VALIDATOR_THINKING !== "0",
+    thinking: validatorThinking(),
     // 输出随条数增长（每条 enum+短理由 + thinking 预算）；按条数放量，封顶防失控。
     maxTokens: Math.min(16000, 4096 + (statements.length - 1) * 768),
     onCost,
@@ -159,8 +163,8 @@ export async function judgeBatchWithRetry(
   sourceText: string,
   onCost?: (cost: Cost) => void,
 ): Promise<ConsistencyJudge[]> {
-  const extra = Math.max(0, Number(process.env.VALIDATOR_RETRIES ?? 2));
-  const base = Math.max(0, Number(process.env.VALIDATOR_RETRY_BACKOFF_MS ?? 800));
+  const extra = validatorRetries();
+  const base = validatorBackoffMs();
   let lastErr: unknown;
   for (let attempt = 0; attempt <= extra; attempt++) {
     try {
@@ -182,8 +186,8 @@ export async function judgeWithRetry(
   sourceText: string,
   onCost?: (cost: Cost) => void,
 ): Promise<ConsistencyJudge> {
-  const extra = Math.max(0, Number(process.env.VALIDATOR_RETRIES ?? 2));
-  const base = Math.max(0, Number(process.env.VALIDATOR_RETRY_BACKOFF_MS ?? 800));
+  const extra = validatorRetries();
+  const base = validatorBackoffMs();
   let lastErr: unknown;
   for (let attempt = 0; attempt <= extra; attempt++) {
     try {
@@ -200,7 +204,7 @@ export async function judgeWithRetry(
  *  pipeline.runValidation 据此主动告警——别让一整轮失败默默缺刊/记成假数据。 */
 export function isValidationDegraded(
   checks: CitationCheck[],
-  rate: number = Number(process.env.VALIDATION_DEGRADED_ALERT_RATE ?? 0.5),
+  rate: number = validationDegradedRate(),
 ): boolean {
   const evaluated = checks.filter((c) => c.reachability === "pass").length;
   if (evaluated === 0) return false;
@@ -268,7 +272,7 @@ export function consistencyCacheVersion(): string {
     .update(`${CONSISTENCY_SYSTEM}\x00${CONSISTENCY_BATCH_SYSTEM}`)
     .digest("hex")
     .slice(0, 12);
-  const thinking = process.env.VALIDATOR_THINKING !== "0" ? "t1" : "t0"; // 与 judge 的 thinking 同源
+  const thinking = validatorThinking() ? "t1" : "t0"; // 与 judge 的 thinking 同源
   return `${MODELS.validator}|${promptHash}|${thinking}`;
 }
 
@@ -338,7 +342,7 @@ export async function validateBatch(
   cache?: ConsistencyCache,
 ): Promise<ValidationResult> {
   const byId = new Map(items.map((i) => [i.id, i]));
-  const batchOn = process.env.VALIDATOR_BATCH !== "0"; // kill-switch：回退逐条（精度回归/排障用）
+  const batchOn = validatorBatchOn(); // kill-switch：回退逐条（精度回归/排障用）
   const maxPer = consistencyBatchMax();
 
   // ── Pass 1：可达性（确定性）。pass 的登记「(结论,源) 对」待判；fail 的直接定终态。 ──
