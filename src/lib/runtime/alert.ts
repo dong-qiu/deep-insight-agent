@@ -19,7 +19,14 @@ export interface FailureAlert {
   message: string;
 }
 
-/** 中性通知消息——渠道 adapter 的统一输入。报告推送（B）将来产同结构复用渠道层。
+/** 报告推送要点（渲染用最小结构）：`text`=一句话要点、`key`=是否重点关注（importance≥阈值）。
+ *  由上层（report-gen.reportHighlights）按 importance 降序产出，渲染层只管分级不管排序。 */
+export interface PushHighlight {
+  text: string;
+  key: boolean;
+}
+
+/** 中性通知消息——渠道 adapter 的统一输入。报告推送（B）产同结构复用渠道层。
  *  注意 `tags` 当前是 ntfy 的 emoji shortcode 词表（如 rotating_light）；slack/discord 忽略它。
  *  将来 report-push 若要带业务标签，需在渠道层做词表映射，勿直接塞业务 tag。 */
 export interface Notification {
@@ -28,6 +35,12 @@ export interface Notification {
   priority: "high" | "default";
   tags?: string[];
   link?: string;
+  /** 报告推送专用（可选）：结构化要点，供**邮件**富渲染分级列表（⭐重点/动态）。
+   *  webhook 渠道忽略此字段、仍渲染 `text`（text 已含同款清单的纯文本版）。 */
+  highlights?: PushHighlight[];
+  /** 报告推送专用（可选）：要点清单下的元信息脚注（如「引用 12 条 · 还有 3 条见完整报告」）。
+   *  已并入 `text`；邮件 HTML 另用它渲染脚注行。 */
+  meta?: string;
 }
 
 export type ChannelId = "feishu" | "ntfy" | "slack" | "discord" | "generic";
@@ -59,8 +72,11 @@ export interface ReportPush {
   summary: string;
   topicName?: string;
   citationCount?: number;
-  /** 该报告纳入的洞察条数——用于「空 brief 不推」判定（见 shouldPushReport）。 */
+  /** 该报告纳入的洞察条数——用于「空 brief 不推」判定（见 shouldPushReport）+ 主题行/脚注计数。 */
   insightCount?: number;
+  /** 排序后的要点清单（report-gen.reportHighlights，importance 降序、含重点分级）。
+   *  有则正文渲染分级要点 + 主题行带走 #1 要点；缺省（旧调用/无要点）回退 summary 段。 */
+  highlights?: PushHighlight[];
 }
 
 const REPORT_TYPE_LABEL: Record<ReportPush["type"], string> = {
@@ -76,20 +92,59 @@ export function shouldPushReport(r: Pick<ReportPush, "type" | "insightCount">): 
   return true;
 }
 
-/** 纯函数：报告 → 中性通知（默认优先级；带 deep-link，baseUrl 缺失则无链接、推送仍发出）。 */
+/** 主题行 #1 要点截断上限（字）：留出前缀「📰 标签 · N 条 ｜」后仍适配多数客户端主题栏宽度。 */
+const SUBJECT_HEADLINE_MAX = 30;
+const cut = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+
+/** 纯函数：报告 → 中性通知（默认优先级；带 deep-link，baseUrl 缺失则无链接、推送仍发出）。
+ *  有 highlights → 正文分级要点清单（⭐重点/动态）+ 主题行带走 #1 要点 + 引用/余量脚注（① ② ③ 的数据源）；
+ *  无 highlights（旧调用/该报告无要点）→ 回退原「主题 / summary / 引用」段，保持行为兼容。 */
 export function reportToNotification(r: ReportPush, baseUrl?: string): Notification {
   const label = REPORT_TYPE_LABEL[r.type] ?? "报告";
   const base = (baseUrl ?? "").trim().replace(/\/+$/, "");
   const link = base ? `${base}/reports/${r.id}` : undefined;
-  const text = [
-    r.topicName ? `主题：${r.topicName}` : "",
-    r.summary,
-    r.citationCount != null ? `引用：${r.citationCount} 条` : "",
-  ]
+
+  const hl = r.highlights ?? [];
+  if (hl.length === 0) {
+    // 回退：无结构化要点时维持旧版式（deep_dive 无 headline 的旧批次 / 未传要点的调用方）。
+    const text = [
+      r.topicName ? `主题：${r.topicName}` : "",
+      r.summary,
+      r.citationCount != null ? `引用：${r.citationCount} 条` : "",
+    ]
+      .filter(Boolean)
+      .join("\n")
+      .slice(0, 1000);
+    return { title: `📰 ${label}：${r.title}`, text, priority: "default", tags: ["newspaper"], link };
+  }
+
+  // ② 主题行带走 #1 要点：收件箱层面即突出重点，不必打开。
+  const total = r.insightCount ?? hl.length;
+  const title = `📰 ${label} · ${total} 条｜${cut(hl[0].text, SUBJECT_HEADLINE_MAX)}`;
+
+  // ③ 脚注：引用数 + 未展示余量（纳入洞察多于要点上限时提示「还有 M 条」）。
+  const more = r.insightCount != null && r.insightCount > hl.length ? r.insightCount - hl.length : 0;
+  const meta = [r.citationCount != null ? `引用 ${r.citationCount} 条` : "", more ? `还有 ${more} 条见完整报告` : ""]
     .filter(Boolean)
-    .join("\n")
-    .slice(0, 1000);
-  return { title: `📰 ${label}：${r.title}`, text, priority: "default", tags: ["newspaper"], link };
+    .join(" · ");
+
+  // ① 正文分级要点清单（纯文本版，webhook 与邮件 text 共用）：⭐重点（importance≥阈值）在前、动态在后。
+  const keys = hl.filter((h) => h.key);
+  const others = hl.filter((h) => !h.key);
+  const lines: string[] = [];
+  if (r.topicName) lines.push(`主题：${r.topicName}`);
+  if (keys.length) {
+    lines.push("", "⭐ 重点");
+    for (const h of keys) lines.push(`• ${h.text}`);
+  }
+  if (others.length) {
+    lines.push("", keys.length ? "其他动态" : "动态");
+    for (const h of others) lines.push(`• ${h.text}`);
+  }
+  if (meta) lines.push("", meta);
+  const text = lines.join("\n").slice(0, 1000);
+
+  return { title, text, priority: "default", tags: ["newspaper"], link, highlights: hl, meta: meta || undefined };
 }
 
 /** 生成完报告后调用：`REPORT_PUSH=1` 且值得推（shouldPushReport）则按渠道 fire-and-forget 发送。

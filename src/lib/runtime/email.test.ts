@@ -34,6 +34,47 @@ describe("reportToEmail（纯函数）", () => {
   });
 });
 
+describe("reportToEmail（富版式 · ③ 有结构化要点）", () => {
+  const rich: Notification = {
+    title: "📰 今日 Brief · 5 条｜要点甲",
+    text: "主题：X\n\n⭐ 重点\n• 要点甲\n\n其他动态\n• 要点乙\n\n引用 7 条 · 还有 2 条见完整报告",
+    priority: "default",
+    link: "https://x.example/reports/rep_1",
+    highlights: [
+      { text: "要点甲", key: true },
+      { text: "要点乙", key: false },
+    ],
+    meta: "引用 7 条 · 还有 2 条见完整报告",
+  };
+  it("有 highlights → 富版式：⭐重点段 + 动态段 + CTA 按钮 + 脚注", () => {
+    const m = reportToEmail(rich, "f@x.com", "t@x.com");
+    expect(m.html).toContain("⭐ 重点");
+    expect(m.html).toContain("其他动态");
+    expect(m.html).toContain("查看完整报告 →");
+    expect(m.html).toContain("引用 7 条 · 还有 2 条见完整报告"); // meta 脚注
+    expect(m.html).toContain("<ul");
+  });
+  it("重点要点加粗（<strong>），动态不加粗", () => {
+    const m = reportToEmail(rich, "f", "t");
+    expect(m.html).toContain("<strong>要点甲</strong>");
+    expect(m.html).toContain("<li style=\"margin:6px 0\">要点乙</li>"); // 非重点无 strong
+  });
+  it("CTA 按钮指向 deep-link；无 link 则不渲染按钮", () => {
+    expect(reportToEmail(rich, "f", "t").html).toContain('href="https://x.example/reports/rep_1"');
+    expect(reportToEmail({ ...rich, link: undefined }, "f", "t").html).not.toContain("<a href");
+  });
+  it("富版式仍转义（要点含 < > &）", () => {
+    const m = reportToEmail({ ...rich, highlights: [{ text: "a<b>&c", key: true }] }, "f", "t");
+    expect(m.html).toContain("a&lt;b&gt;&amp;c");
+    expect(m.html).not.toContain("<b>&c");
+  });
+  it("text 版对富/纯一致（直接用 n.text + deep-link）", () => {
+    const m = reportToEmail(rich, "f", "t");
+    expect(m.text).toContain("⭐ 重点");
+    expect(m.text).toContain("查看完整报告：https://x.example/reports/rep_1");
+  });
+});
+
 describe("notifyEmail（门控 + 扇出）", () => {
   const ENV = { ...process.env };
   beforeEach(() => { sendMail.mockClear(); enabledRecipients.mockReturnValue([]); });

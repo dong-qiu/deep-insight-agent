@@ -35,6 +35,10 @@ export const MILESTONE_MIN_IMPORTANCE = 5;
  *  5 条够覆盖一期 brief 的重点又不至于把卡片撑回一面墙。 */
 export const HIGHLIGHTS_MAX = 5;
 
+/** 重点关注阈值（importance ≥ 此值）：详版/概览置顶（orderInsights）与推送 ⭐重点 分级**共用单一口径**，
+ *  改一处两处同步、不漂移。 */
+export const KEY_MIN_IMPORTANCE = 4;
+
 /** 里程碑洞察判定（ADR-0006）：最高重要性 + 新事件（非追加）+ 具体事件聚合（非趋势）。
  *  纯函数、确定性——里程碑 =「主题里发生的重大新事件节点」；趋势变化已由焦点演化（ADR-0005）承载，故排除 trend。
  *  is_followup 仅在 brief 路径精准（analyzer 喂历史 event 池），deep_dive/initial_digest 默认 false，符合「首报即新事件」语义。 */
@@ -98,6 +102,31 @@ export function selectInsights(batch: AnalysisBatch, validation: ValidationResul
   return out;
 }
 
+/** 要点选取（详版 headlines 与推送要点**共用**）：纳入洞察按 importance 降序取前 HIGHLIGHTS_MAX。
+ *  单点定义保证 report_index.highlights 与推送要点同源同序，不各写一套。 */
+function pickHighlightInsights(included: IncludedInsight[]): IncludedInsight[] {
+  return [...included].sort((a, b) => b.insight.importance - a.insight.importance).slice(0, HIGHLIGHTS_MAX);
+}
+
+/** 报告推送要点（供邮件/webhook 富渲染）：一条洞察 → 一句话要点。
+ *  - `text`：headline（≤40 字扫读版，analyzer 产）缺失回退 statement——与 index.highlights 同口径；
+ *  - `key`：是否重点关注（importance ≥ KEY_MIN_IMPORTANCE），供邮件 ⭐重点/动态 分级。 */
+export interface ReportHighlight {
+  text: string;
+  importance: number;
+  key: boolean;
+}
+
+/** 纯函数：批次 + 校验 → 排序后的推送要点清单（复用报告选取/排序，与 index.highlights 同源同序）。
+ *  确定性、无 LLM——推送渠道据此把「一坨 summary」换成可扫读的分级要点。 */
+export function reportHighlights(batch: AnalysisBatch, validation: ValidationResult): ReportHighlight[] {
+  return pickHighlightInsights(selectInsights(batch, validation)).map((x) => ({
+    text: x.insight.headline?.trim() || x.insight.statement,
+    importance: x.insight.importance,
+    key: x.insight.importance >= KEY_MIN_IMPORTANCE,
+  }));
+}
+
 const uniq = <T>(xs: T[]): T[] => [...new Set(xs)];
 const TYPE_LABEL: Record<Report["type"], string> = {
   brief: "今日 Brief",
@@ -158,10 +187,7 @@ export function buildReport(input: BuildReportInput): { report: Report; index: R
   const summary = included.slice(0, 3).map((x) => x.insight.statement).join(" ");
   // 卡片要点列表（headline 方案）：按重要性降序取前 N 条洞察的一句话 headline，供列表卡片分点扫读，
   // 取代把多条长 statement 拼成一坨的 summary。headline 缺失（旧批次/未产出）则回退该条 statement。
-  const highlights = [...included]
-    .sort((a, b) => b.insight.importance - a.insight.importance)
-    .slice(0, HIGHLIGHTS_MAX)
-    .map((x) => x.insight.headline?.trim() || x.insight.statement);
+  const highlights = pickHighlightInsights(included).map((x) => x.insight.headline?.trim() || x.insight.statement);
   // 实体追踪：跨纳入洞察聚合关键实体名（去重保序），供主题页「关键实体」按报告频次再聚合。
   const entityNames = uniq(included.flatMap((x) => (x.insight.entities ?? []).map((e) => e.name.trim()).filter(Boolean)));
 
@@ -315,7 +341,7 @@ function insightBlockMd(
   return { lines: L, next: citeStart + x.citationIndices.length };
 }
 
-const KEY = (x: IncludedInsight): boolean => x.insight.importance >= 4;
+const KEY = (x: IncludedInsight): boolean => x.insight.importance >= KEY_MIN_IMPORTANCE;
 
 // ── deep_dive 结构化版式（#19）共用工具：TL;DR / 概览对比 / 趋势 / 时间线 ──
 const TYPE_CN: Record<Insight["type"], string> = { aggregation: "聚合", trend: "趋势" };

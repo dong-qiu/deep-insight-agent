@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AnalysisBatch, ContentItem, Topic, ValidationResult } from "../types.js";
-import { buildReport, inlineCitedStatement, isMilestoneInsight, selectInsights } from "./report-gen.js";
+import { buildReport, HIGHLIGHTS_MAX, inlineCitedStatement, isMilestoneInsight, KEY_MIN_IMPORTANCE, reportHighlights, selectInsights } from "./report-gen.js";
 import { flagLabel } from "../utils/citation-verdict.js";
 
 const topic: Topic = {
@@ -149,6 +149,46 @@ describe("selectInsights（洞察级纳入判定）", () => {
       report: { total: 0, pass: 0, blocked: 0, flagged: 0, errored: 0, consistency_failure_rate: 0, flagged_rate: 0, insights_total: 0, insights_includable: 0, releasable: true },
     };
     expect(selectInsights(batch2, noChecks)).toEqual([]); // 无 check → 整条不纳入
+  });
+});
+
+describe("reportHighlights（推送要点 · 复用选取排序）", () => {
+  it("纳入洞察按 importance 降序、排除全 blocked、标记 key（≥阈值）", () => {
+    const hl = reportHighlights(batchOf(), validation);
+    expect(hl.map((h) => h.text)).toEqual(["S2", "S1"]); // i2(5) 前于 i1(4)，i3 全 blocked 不出现
+    expect(hl.map((h) => h.key)).toEqual([true, true]); // 5/4 均 ≥ KEY_MIN_IMPORTANCE(4)
+  });
+  it("headline 优先于 statement（缺失才回退 statement）", () => {
+    const b = batchOf();
+    b.insights[0].headline = "i1 一句话要点"; // i1 importance 4
+    b.insights[1].headline = "  "; // 空白 → 回退 statement
+    const hl = reportHighlights(b, validation);
+    expect(hl.find((h) => h.text === "i1 一句话要点")).toBeTruthy();
+    expect(hl.find((h) => h.text === "S2")).toBeTruthy(); // i2 headline 空白 → statement
+  });
+  it("key 分级严格按 KEY_MIN_IMPORTANCE：importance<4 的纳入洞察 key=false", () => {
+    const b = batchOf();
+    b.insights[0].importance = 3; // i1 降到 3（仍 includable：有 pass 引用）
+    const hl = reportHighlights(b, validation);
+    const i1h = hl.find((h) => h.text === "S1")!;
+    expect(i1h.key).toBe(false);
+    expect(KEY_MIN_IMPORTANCE).toBe(4); // 阈值单点，防漂移
+  });
+  it("上限 HIGHLIGHTS_MAX（超出截断）", () => {
+    const b = batchOf();
+    // 造 HIGHLIGHTS_MAX+2 条 includable 洞察（都配一条 pass check）
+    const n = HIGHLIGHTS_MAX + 2;
+    b.insights = Array.from({ length: n }, (_, k) => ({
+      id: `k${k}`, topic_id: "t1", type: "aggregation" as const, event_id: null, statement: `K${k}`, importance: 4,
+      importance_basis: "x",
+      citations: [{ content_item_id: "c", quote: "q", locator: { paragraph_index: 0, char_start: 0, char_end: 1 } }],
+      source_count: 1, multi_source: false, time_window: win, confidence: null, language: "zh" as const,
+    }));
+    const v: ValidationResult = {
+      checks: b.insights.map((ins) => ({ insight_id: ins.id, citation_index: 0, reachability: "pass" as const, reachability_reason: "ok" as const, consistency: "support" as const, consistency_reason: "ok" as const, verdict: "pass" as const })),
+      report: { total: n, pass: n, blocked: 0, flagged: 0, errored: 0, consistency_failure_rate: 0, flagged_rate: 0, insights_total: n, insights_includable: n, releasable: true },
+    };
+    expect(reportHighlights(b, v).length).toBe(HIGHLIGHTS_MAX);
   });
 });
 
