@@ -99,6 +99,60 @@ describe("reportToNotification", () => {
   });
 });
 
+describe("reportToNotification（结构化要点 · ①②③）", () => {
+  const HL: ReportPush = {
+    ...REPORT,
+    insightCount: 5,
+    highlights: [
+      { text: "Fable 5 编码基准反超 GPT-5.5", key: true },
+      { text: "Anthropic 同发受限版", key: true },
+      { text: "Aider 成本降半", key: false },
+    ],
+  };
+  it("② 主题行带走 #1 要点 + N 条计数（用 insightCount）", () => {
+    const n = reportToNotification(HL);
+    expect(n.title).toBe("📰 今日 Brief · 5 条｜Fable 5 编码基准反超 GPT-5.5");
+  });
+  it("② 主题行 #1 要点过长则截断加省略号", () => {
+    const n = reportToNotification({ ...HL, highlights: [{ text: "甲".repeat(50), key: true }] });
+    const head = n.title.split("｜")[1];
+    expect(head.length).toBe(30); // SUBJECT_HEADLINE_MAX
+    expect(head.endsWith("…")).toBe(true);
+  });
+  it("① 正文分 ⭐重点/其他动态，逐条 • 前缀，重点在前", () => {
+    const n = reportToNotification(HL);
+    expect(n.text).toContain("⭐ 重点");
+    expect(n.text).toContain("• Fable 5 编码基准反超 GPT-5.5");
+    expect(n.text).toContain("其他动态");
+    expect(n.text).toContain("• Aider 成本降半");
+    expect(n.text.indexOf("⭐ 重点")).toBeLessThan(n.text.indexOf("其他动态"));
+  });
+  it("全部非重点 → 无 ⭐重点段、标题用「动态」", () => {
+    const n = reportToNotification({ ...HL, highlights: [{ text: "仅动态一条", key: false }] });
+    expect(n.text).not.toContain("⭐ 重点");
+    expect(n.text).toContain("动态");
+    expect(n.text).toContain("• 仅动态一条");
+  });
+  it("③ 脚注：引用数 + 未展示余量（insightCount > 要点数）", () => {
+    const n = reportToNotification(HL);
+    expect(n.meta).toBe("引用 7 条 · 还有 2 条见完整报告");
+    expect(n.text).toContain("引用 7 条 · 还有 2 条见完整报告");
+  });
+  it("③ insightCount ≤ 要点数 → 无「还有」", () => {
+    const n = reportToNotification({ ...HL, insightCount: 3 });
+    expect(n.meta).toBe("引用 7 条");
+  });
+  it("highlights 透传给 Notification（供邮件富渲染）", () => {
+    expect(reportToNotification(HL).highlights).toEqual(HL.highlights);
+  });
+  it("空 highlights → 回退旧版式（主题/summary/引用），行为兼容", () => {
+    const n = reportToNotification({ ...REPORT, highlights: [] });
+    expect(n.title).toBe("📰 今日 Brief：AI 软件工程 · 今日 Brief");
+    expect(n.text).toContain("本期 3 条关键进展");
+    expect(n.highlights).toBeUndefined();
+  });
+});
+
 describe("notifyReport", () => {
   const fetchOk = () => vi.fn((..._a: unknown[]) => Promise.resolve(new Response(null, { status: 200 })));
   it("REPORT_PUSH 未置 1 → no-op，即便配了 webhook 也不发", () => {

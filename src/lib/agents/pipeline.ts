@@ -14,7 +14,7 @@ import { notifyFailure, notifyReport } from "../runtime/alert.js";
 import { runJob } from "../runtime/jobs.js";
 import type { AnalysisBatch, ContentItem, Report, Topic, ValidationResult } from "../types.js";
 import { analyze, analyzerCacheVersion, type HistoricalEvent } from "./analyzer.js";
-import { buildReport, type CitationDisplay } from "./report-gen.js";
+import { buildReport, reportHighlights, type CitationDisplay } from "./report-gen.js";
 import { consistencyCacheVersion, isValidationDegraded, validateBatch } from "./validator.js";
 
 /** 分析某主题某窗口的 ContentItem → AnalysisBatch 落库；包一条 analyze Run（含成本）。
@@ -129,6 +129,9 @@ export async function runReportGen(
       saveReport(db, report, index);
       // 报告推送（B）：落库后主动推给用户（REPORT_PUSH=1 opt-in；空 brief 自动跳过）。
       // 非阻塞、永不抛——放 saveReport 之后，推送失败绝不影响已落库报告 / Run done。
+      // 推送要点（复用报告选取/排序，与 index.highlights 同源同序）：让邮件/webhook 展示可扫读的
+      // 分级要点，取代扁平 summary。只取 text/key（渲染够用），importance 排序已在 reportHighlights 内完成。
+      const highlights = reportHighlights(opts.batch, opts.validation).map(({ text, key }) => ({ text, key }));
       notifyReport({
         id: report.id,
         type: report.type,
@@ -137,6 +140,7 @@ export async function runReportGen(
         topicName: opts.topic.name,
         citationCount: report.citation_count,
         insightCount: report.insight_ids.length,
+        highlights,
       });
       return report;
     },
