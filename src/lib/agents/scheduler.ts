@@ -1,19 +1,19 @@
 /** 定时管线编排（architecture「系统 cron + 容器内进程」的被触发端）。
- *  一次完整跑：采集所有启用 Source → 按启用 Topic 切窗口内 ContentItem → 分析→校验→生成 brief。
+ *  一次完整跑：采集所有启用 Source → 源健康自愈 → 按启用 Topic 切窗口内 ContentItem → 分析→校验→生成 brief。
  *  每个 Source / Topic 独立 try/catch，单点失败不连累其余（与 collector / validateBatch 的韧性一致）。
- *  由 /api/cron 触发（系统 cron / supercronic 定时 curl）；含真模型调用，需 ANTHROPIC_API_KEY。 */
-import type { DB } from "../db/index.js";
+ *  由 /api/cron 触发（系统 cron / supercronic 定时 curl）；含真模型调用，需 ANTHROPIC_API_KEY。
+ *  待分析项选择见 analysis-selection.ts；源健康自愈（熔断/半开/零产出）见 source-health.ts。 */
 import { getEffectiveSources, loadStaticConfig } from "../config/index.js";
-import { appendAudit } from "../db/audit.js";
-import { getSource, getTopic, listContentForTopic, listProbeCandidates, listRuns, listTopics, reviveSource, setCircuit, setLastProbe } from "../db/repos.js";
+import type { DB } from "../db/index.js";
+import { getTopic, listTopics } from "../db/repos.js";
 import { listRecentBriefEvents, previousReportForTopic, topicHasReport } from "../db/reports.js";
-import { notifyBudget, notifySourceCircuit, notifySourceRevived, notifySourceZeroYield } from "../runtime/alert.js";
+import { notifyBudget } from "../runtime/alert.js";
 import { getBudgetStatus } from "../runtime/cost-guard.js";
 import { runLogger } from "../runtime/logger.js";
-import { circuitConfig, evaluateCircuit, evaluateZeroYield } from "../runtime/run-stats.js";
-import type { ContentItem, Report, Run, Topic } from "../types.js";
-import { archetypeProfile } from "../topics/archetype.js";
+import type { Report } from "../types.js";
 import { collectSource } from "./collector.js";
+import { selectAnalysisItems } from "./analysis-selection.js";
+import { runCircuitCheck, runHalfOpenProbe, runZeroYieldWatch } from "./source-health.js";
 import { runAnalysis, runReportGen, runValidation } from "./pipeline.js";
 
 export interface ScheduleSummary {
@@ -46,97 +46,6 @@ export function reportPlan(
 }
 
 const errMsg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
-
-/** 把关键词拆成可匹配 token：英文按词、≥3 字符；CJK 片段 ≥2 字符。
- *  整短语子串匹配过脆（中文关键词永不命中英文摘要、英文长短语少见原样出现，曾把 arXiv 研究全过滤掉），
- *  按 token 命中可让英文研究摘要靠 software/agent/retrieval/inference 等词被识别为相关。 */
-export function keywordTokens(keywords: string[]): string[] {
-  const toks = new Set<string>();
-  for (const kw of keywords) {
-    for (const t of kw.toLowerCase().split(/[\s/]+/)) {
-      const minLen = /[a-z]/.test(t) ? 3 : 2;
-      if (t.length >= minLen) toks.add(t);
-    }
-  }
-  return [...toks];
-}
-
-/** 相关度 = 命中的不同关键词 token 数（title+body 小写子串匹配）。 */
-function relevanceScore(item: ContentItem, tokens: string[]): number {
-  const hay = `${item.title} ${item.body}`.toLowerCase();
-  return tokens.reduce((n, t) => (hay.includes(t) ? n + 1 : n), 0);
-}
-
-/** 纯函数：从候选池按「相关度优先 + 来源多样」选出 ≤ limit 条用于分析。
- *  - 全量按相关度（token 命中数）降序，同分保持 recency；默认**不硬过滤 0 命中**（软策略，deep_vertical）——
- *    研究源（如 arXiv）即便措辞不同也多能命中 token；万一全 0 也由来源多样化兜底纳入；
- *  - 每源最多 ceil(limit/3) 条，避免高产源（如 OpenAI 全历史 backlog）独占切片淹没相关内容；
- *  - 名额没填满则放开每源上限补齐。
- *
- *  ADR-0010：`opts.relevanceFloor`（horizontal_pulse 主题给）= **相关性硬下限**——命中 token 数 < floor 的
- *  候选先滤掉再排选（砍纯噪声）。两条保护：① **滤空回退**（全被滤则退回软策略，避免 0 条 → `skipped-no-content`/空 brief）；
- *  ② cap+兜底在**已滤池**上进行（兜底不会捞回被滤离题项，故无需「跳兜底」、也不损 brief 厚度）。
- *  软策略（无 floor）下「候选 ≤ limit 整池返回」短路保留（行为不变）。 */
-export function rankAndDiversify(
-  candidates: ContentItem[],
-  keywords: string[],
-  limit: number,
-  opts: { relevanceFloor?: number } = {},
-): ContentItem[] {
-  const { relevanceFloor } = opts;
-  if (relevanceFloor === undefined && candidates.length <= limit) return candidates; // 软策略短路（护研究源）
-  const tokens = keywordTokens(keywords);
-  let scored = candidates.map((it, i) => ({ it, s: relevanceScore(it, tokens), i }));
-  if (relevanceFloor !== undefined) {
-    const kept = scored.filter((x) => x.s >= relevanceFloor);
-    scored = kept.length > 0 ? kept : scored; // floor 保护：滤空则回退软策略（不产 0 条）
-  }
-  const ranked = scored.sort((a, b) => b.s - a.s || a.i - b.i);
-
-  const perSourceCap = Math.max(2, Math.ceil(limit / 3));
-  const bySource = new Map<string, number>();
-  const out: ContentItem[] = [];
-  // review #8c：用 Set<id> 取代 out.includes(it) 的 O(n) 线性扫描——批补齐阶段命中率高时收益明显
-  const takenIds = new Set<string>();
-  for (const { it } of ranked) {
-    if (out.length >= limit) break;
-    const c = bySource.get(it.source_id) ?? 0;
-    if (c >= perSourceCap) continue;
-    bySource.set(it.source_id, c + 1);
-    takenIds.add(it.id);
-    out.push(it);
-  }
-  if (out.length < limit) {
-    for (const { it } of ranked) {
-      if (out.length >= limit) break;
-      if (!takenIds.has(it.id)) {
-        takenIds.add(it.id);
-        out.push(it);
-      }
-    }
-  }
-  return out;
-}
-
-/** 取某主题窗口内候选（recency 前 candidatePool 条）→ 相关+多样选 ≤ limit 条喂给 analyzer。
- *  ADR-0010：按 topic.archetype 取 profile.relevanceFloor 驱动 rankAndDiversify（horizontal_pulse 砍纯噪声）；
- *  **冷启动（initial_digest 首报）豁免硬下限**（用软策略给足份量，避免新横向主题首报被掐空）。 */
-export function selectAnalysisItems(
-  db: DB,
-  topic: Topic,
-  opts: { since: string; limit?: number; candidatePool?: number; coldStart?: boolean },
-): ContentItem[] {
-  const limit = opts.limit ?? 15;
-  // 候选池放大到覆盖 F1 后全行业量（每源 ≤50 × 源数），避免高产源按 recency 把研究源（arXiv）
-  // 挤出候选窗口、scoring 根本看不到它。打分是内存子串匹配，候选多也廉价。
-  const candidates = listContentForTopic(db, topic.id, {
-    since: opts.since,
-    limit: opts.candidatePool ?? 800,
-  });
-  // ADR-0010：冷启动豁免硬下限（首报用软策略）；否则按 archetype profile 取 relevanceFloor。
-  const relevanceFloor = opts.coldStart ? undefined : archetypeProfile(topic.archetype).relevanceFloor;
-  return rankAndDiversify(candidates, topic.keywords, limit, { relevanceFloor });
-}
 
 /** 触发一次完整管线。库为空时 getEffectiveSources 会先播种默认 Topic/Source（首跑自举）。 */
 export async function runScheduledPipeline(
@@ -174,82 +83,19 @@ export async function runScheduledPipeline(
     }
   }
 
-  // 1b. 源健康自愈——本轮采集后判熔断（ADR-0008 决定② / 切片3b）：连续失败到阈值且多日无成功的源
-  // 自动停采 + 按源告警，停止无谓重试。整段 try/catch 兜底，绝不连累已采数据 / 后续分析。
-  try {
-    const cfg = circuitConfig();
-    const recentIngest = listRuns(db, { kind: "ingest", limit: 1000 });
-    const bySrc = new Map<string, Run[]>();
-    for (const r of recentIngest) {
-      const sid = r.target.source_id;
-      if (sid) (bySrc.get(sid) ?? bySrc.set(sid, []).get(sid)!).push(r);
-    }
-    const now = Date.now();
-    for (const s of sources) {
-      const fresh = getSource(db, s.id); // 取最新熔断态（本轮采集 run 已落库）
-      if (!fresh) continue;
-      const ev = evaluateCircuit(bySrc.get(s.id) ?? [], fresh, now, cfg);
-      if (ev.open) {
-        setCircuit(db, s.id);
-        notifySourceCircuit({ sourceId: s.id, name: s.name, consecutiveFails: ev.consecutiveFails, lastError: ev.lastErrorMsg });
-        (summary.circuitOpened ??= []).push(s.id); // 正常处置、独立字段，不污染 errors 语义
-      }
-    }
-  } catch (e) {
-    summary.errors.push(`circuit-check: ${errMsg(e)}`);
-  }
+  // 1b/1c/1d. 源健康自愈（ADR-0008 决定② / 切片3b，见 source-health.ts）：熔断 → 半开探测复活 → 零产出看门狗。
+  // 次序有依赖：零产出须在半开之后（listRuns 要含复活后的新 run）。各段自兜底，结果并入 summary。
+  const circuit = runCircuitCheck(db, sources);
+  if (circuit.opened.length) summary.circuitOpened = circuit.opened; // 正常处置、独立字段，不污染 errors 语义
+  summary.errors.push(...circuit.errors);
 
-  // 1c. 半开自愈（ADR-0008 决定② / 切片3b-2）：对系统熔断源每天探一次，成功则自动复活。
-  // 落点=日跑管线旁路（不引新 cron，与决定①一致）；探测 silent（失败不刷告警）+ 单源超时 + 每轮上限。
-  try {
-    const max = Number(process.env.SOURCE_PROBE_MAX_PER_RUN) || 5;
-    const probeTimeoutMs = Number(process.env.SOURCE_PROBE_TIMEOUT_MS) || 15_000;
-    const candidates = listProbeCandidates(db, new Date().toISOString(), 86_400_000, max); // 节流 1 天
-    for (const s of candidates) {
-      setLastProbe(db, s.id); // 探测前先记（即便探测崩溃也已节流，防探测风暴）
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      try {
-        // 单源超时：探测挂住不拖垮当天 brief（后台 fetch 自行结束，无害）。
-        await Promise.race([
-          collectSource(db, s, { probe: true }),
-          new Promise((_, rej) => {
-            timer = setTimeout(() => rej(new Error("probe timeout")), probeTimeoutMs);
-          }),
-        ]);
-        reviveSource(db, s.id); // 探测成功（collectSource 未抛）→ 复活
-        notifySourceRevived({ sourceId: s.id, name: s.name });
-        appendAudit(db, { actor: "system", action: "source_circuit_revive", target: s.id, detail: null });
-        (summary.circuitRevived ??= []).push(s.id);
-      } catch {
-        // 探测失败 → 维持熔断（last_probe_at 已记，下次按节流再探），不告警
-      } finally {
-        if (timer) clearTimeout(timer); // 快速胜出时清掉超时定时器，不留挂起 timer
-      }
-    }
-  } catch (e) {
-    summary.errors.push(`half-open: ${errMsg(e)}`);
-  }
+  const halfOpen = await runHalfOpenProbe(db, collectSource);
+  if (halfOpen.revived.length) summary.circuitRevived = halfOpen.revived;
+  summary.errors.push(...halfOpen.errors);
 
-  // 1d. 零产出看门狗（ADR-0008 决定② / 切片3b-3）：曾稳定产出的源突然连续 N 轮采集成功但 0 入库
-  // （静默失败：feed 改版/解析失配/软封）→ 按源告警（边沿触发、只报不停用，交人核查）。整段 try/catch 兜底。
-  try {
-    const zeroRounds = Number(process.env.SOURCE_ZERO_YIELD_ROUNDS) || 5;
-    const recent = listRuns(db, { kind: "ingest", limit: 1000 }); // 含本轮采集 + 半开复活后的新 run
-    const bySrc = new Map<string, Run[]>();
-    for (const r of recent) {
-      const sid = r.target.source_id;
-      if (sid) (bySrc.get(sid) ?? bySrc.set(sid, []).get(sid)!).push(r);
-    }
-    for (const s of sources) {
-      const ze = evaluateZeroYield(bySrc.get(s.id) ?? [], zeroRounds);
-      if (ze.alert) {
-        notifySourceZeroYield({ sourceId: s.id, name: s.name, consecutiveZero: ze.consecutiveZero });
-        (summary.zeroYield ??= []).push(s.id);
-      }
-    }
-  } catch (e) {
-    summary.errors.push(`zero-yield: ${errMsg(e)}`);
-  }
+  const zeroYield = runZeroYieldWatch(db, sources);
+  if (zeroYield.zeroYield.length) summary.zeroYield = zeroYield.zeroYield;
+  summary.errors.push(...zeroYield.errors);
 
   // 2-4. 每个启用 Topic：冷启动决策 → 分析→校验→生成报告（首版综述 / brief / deep_dive）
   // A5 自动熔断：每个 topic 前查预算，触顶则跳过本 topic 及之后全部（过冲上界 = 单 topic 一轮）。

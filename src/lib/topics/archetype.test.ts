@@ -2,7 +2,7 @@
  *  集成测专门堵第二轮评审 B-1：验证 topic.archetype 从 DB 经 rowToTopic 贯通到 rankAndDiversify 的 floor，
  *  避免「单测绿、线上 undefined 死代码」。 */
 import { beforeEach, describe, expect, it } from "vitest";
-import { selectAnalysisItems } from "../agents/scheduler.js";
+import { selectAnalysisItems } from "../agents/analysis-selection.js";
 import { type DB, openDb } from "../db/index.js";
 import { getTopic, insertContentItem, insertSource, insertTopic } from "../db/repos.js";
 import type { ContentItem, Source, Topic } from "../types.js";
