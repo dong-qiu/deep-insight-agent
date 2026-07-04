@@ -34,6 +34,15 @@
 - 验证结果要连同"为何看起来成功 / 失败"一起写进结论：CI 红/绿、HTTP 200 都可能是表象（子集伪失败、没真落库），别只标"已闭合"。
 - 经验来源：`docs/practice-log.md` 2026-06-15（4 项 MVP 待验证条件收尾）。
 
+## 部署 / 运维核验（生产在 AWS EC2，工具在 `ops/aws/`）
+
+- **合入 ≠ 上线：验证任何"修好了"之前，先核生产真在跑哪版**——查运行镜像 `created` 时间 / bundle 内容 / **字面量特征**（grep 一个该改动引入的独特字符串，如某新功能的中文/emoji 串），别信"合了 main 就上线了"。并行开发下还要防"上线的那版不是我部署的"（可能已被别的会话部署，别重复部署）。
+- **code-only 重部走 SSM 隧道 + rsync + 容器内 `docker compose up -d --build`，别跑 `deploy.sh`**——后者全量覆盖生产 `.env.local`，会抹掉只在生产配的运行时键（`COST_LIMIT_*` / `REPORT_PUSH` / `PUBLIC_BASE_URL` / SMTP）致静默降级（熔断失效 = 意外高成本、推送失效 = 用户收不到）。
+- **破坏性 sync（`rsync --delete`）先 `--dry-run` 看会删哪些**——`/opt/app` 常有手动沉积、不在仓库里的密钥文件（`.env.local`、`deep-insight-cli_accessKeys.csv`），无脑 `--delete` 会连它们一起删；排除 `.env* / .data / *.csv / *.pem / .claude` 再跑。
+- **部署避开每日管线窗**（brief 钉 17:00 UTC，避 **16:50–17:30 UTC**）——撞窗会孤儿化在途 run、当天 brief 整个不出；撞了用 `ops/trigger.mjs` 补跑。
+- **查生产真值走 `aws ssm send-command`**（read-only：`docker exec deep-insight-app-1` + `node` 读 `/data/insight.db`）——GFW 直连受阻、SSH 走 SSM 隧道；cloud 定时 agent 无 aws 凭证不能查，须本会话 / 手动。
+- 经验来源：memory `verify-check-deployed-version-first` / `deploy-collides-with-cron-window` / `aws-deploy` / `prod-db-is-docker-volume`；`docs/practice-log.md`（#47/#57/#142 及 07-04 #154 部署）。
+
 ## 跨阶段通用
 
 - 任何"临时方案"必须留 TODO + 截止条件
