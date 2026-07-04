@@ -242,9 +242,12 @@ describe("consistencyCacheVersion", () => {
 describe("validateBatch（A 去重 + C 校验失败分账）", () => {
   // 默认关掉应用层重试 + 退避，让这些测试的"每源判一次"调用计数确定（重试单独测）。
   beforeEach(() => { process.env.VALIDATOR_RETRIES = "0"; process.env.VALIDATOR_RETRY_BACKOFF_MS = "0"; });
-  // 用 afterEach + restoreAllMocks 而非 beforeEach+mockReset：后者在「先 resolve 的测试 →
+  // 用 afterEach 清 mock 而非 beforeEach+mockReset：后者在「先 resolve 的测试 →
   // 再 reject 的测试」序列下会让 vitest 的未处理拒绝追踪误把已 catch 的拒绝算到测试头上。
+  // clearAllMocks 清调用历史（vitest 4 起 restoreAllMocks 不再清 vi.fn() 的 calls，
+  // 否则跨测试累加致调用计数断言失败）；restoreAllMocks 还原 spyOn。二者都只在测后跑。
   afterEach(() => {
+    vi.clearAllMocks();
     vi.restoreAllMocks();
     delete process.env.VALIDATOR_RETRIES;
     delete process.env.VALIDATOR_RETRY_BACKOFF_MS;
@@ -381,6 +384,7 @@ describe("validateBatch（A 去重 + C 校验失败分账）", () => {
 describe("validateBatch（B 按源归并批量判定 · 成本最大杠杆）", () => {
   beforeEach(() => { process.env.VALIDATOR_RETRIES = "0"; process.env.VALIDATOR_RETRY_BACKOFF_MS = "0"; });
   afterEach(() => {
+    vi.clearAllMocks();
     vi.restoreAllMocks();
     delete process.env.VALIDATOR_RETRIES;
     delete process.env.VALIDATOR_RETRY_BACKOFF_MS;
