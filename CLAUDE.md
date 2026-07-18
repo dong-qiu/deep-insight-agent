@@ -1,26 +1,7 @@
-# Insight Agent — Claude Code 协作指南
+@AGENTS.md
 
-> 本文件是 Claude Code 进入项目的总入口。具体行为约束在 `skills/` 各层。
+# Claude Code 专属说明
 
-## 项目简介
-
-<!-- TODO: 一句话说明项目目标 -->
-
-## 文档地图（IPD 阶段）
-
-- 概念阶段 → `docs/concept/`
-- 计划阶段 → `docs/plan/`（含 `specs/`、`architecture.md`、`roadmap.md`）
-- 开发阶段 → `docs/develop/decisions.md`
-- 验证阶段 → `docs/verify/`
-- 实践记录（元目标）→ `docs/practice-log.md`
-
-## Skill 分层
-
-- `skills/L0-foundation.md` — 基础层：代码规范、git、安全
-- `skills/L1-domain.md` — 领域层：洞察分析提示与评分
-- `skills/L2-workflow.md` — 流程层：IPD 阶段行为约束
-- `skills/L3-quality.md` — 质量层：测试与验证标准
-
-## 协作约定
-
-<!-- TODO: 写入提交风格、PR 习惯、分支模型 -->
+- 共享项目规则以 `AGENTS.md` 为唯一事实源；不要在本文件复制公共规则。
+- 项目技能位于 `.claude/skills/`；显式运行 AI 质量门时使用 `/eval-gate`。
+- Claude Code 的个人权限和 hooks 放在 `.claude/settings.local.json`，不得提交密钥或个人配置。

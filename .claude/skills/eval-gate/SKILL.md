@@ -10,8 +10,10 @@ description: >-
 
 # eval-gate — AI 输出质量回归门
 
-`/code-review` 看代码正确性，**不**跑 eval、不懂 baseline 语义。本 skill 是领域专属的 AI 质量门，
+常规 code review 只看代码正确性，**不**跑 eval、不懂 baseline 语义。本 skill 是领域专属的 AI 质量门，
 与 `.githooks/pre-push` 闭环：**hook 强制"必须跑"，本 skill 负责"怎么跑、怎么比、盖章放行"**。
+
+显式调用：Claude Code 使用 `/eval-gate`；Codex 使用 `$eval-gate`。
 
 ## 1. 先判断改了什么 → 选 eval
 
