@@ -1032,7 +1032,7 @@ XML parser 与原生 SQLite 驱动；类型包移入 `devDependencies`。升级�
 2. 运行时统一为 Node `20.18.1` / npm 10：`.nvmrc`、Dockerfile 和 CI 均以该 Node patch 为基准，
 `engines` 限制在 Node 20、npm 10。
 3. Next 当前发布线仍声明 vulnerable `sharp` / `postcss` 传递版本，不能接受 `npm audit fix --force`
-建议的 Next 15→9 降级；使用 npm `overrides` 临时固定 `sharp@0.35.0` 与 `postcss@8.5.10`。
+建议的 Next 15→9 降级；使用 npm `overrides` 临时固定 `sharp@0.35.0` 与 `postcss@8.5.22`。
 
 ### 验证与退出条件
 
