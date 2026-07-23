@@ -19,6 +19,10 @@ nav a { margin-right: 1rem; }
 .card { border: 1px solid #e5e7eb; border-radius: 8px; padding: .75rem 1rem; margin: .75rem 0; }
 .card h3 { margin: 0 0 .25rem; font-size: 1.05rem; }
 .card h4 { margin: 0 0 .25rem; font-size: 1rem; }
+.lead-card details { margin-top: .6rem; }
+.lead-card summary { cursor: pointer; font-size: .9rem; }
+.lead-card details ul { padding-left: 1.15rem; font-size: .85rem; }
+.lead-actions { margin-left: .75rem; display: inline-flex; gap: .65rem; }
 /* 卡片要点列表（headline 方案）：把原本拼成一坨的摘要拆成可扫读的一句话要点 */
 .brief-highlights { margin: .35rem 0 0; padding-left: 1.15rem; }
 .brief-highlights li { margin: .25rem 0; line-height: 1.5; }

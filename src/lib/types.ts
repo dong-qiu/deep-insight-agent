@@ -261,6 +261,41 @@ export interface ReportIndexEntry {
   snippet?: string;
 }
 
+/** 可溯源技术线索：仅由成功校验洞察确定性派生，绝不作为绕过引用白名单的发布旁路。 */
+export type TechLeadKind = "model" | "framework" | "paper" | "benchmark" | "tool" | "method" | "security" | "other";
+export type TechLeadStatus = "recommended" | "watching" | "dismissed";
+export interface TechLeadScoreDetail {
+  freshness: number;
+  evidence: number;
+  importance: number;
+  relevance: number;
+  total: number;
+  reason: string;
+}
+export interface TechLead {
+  id: string;
+  topic_id: string;
+  canonical_key: string;
+  kind: TechLeadKind;
+  title: string;
+  summary: string;
+  status: TechLeadStatus;
+  score: number;
+  score_detail: TechLeadScoreDetail;
+  first_seen_at: string;
+  last_seen_at: string;
+  latest_evidence_at: string;
+}
+export interface TechLeadEvidence {
+  lead_id: string;
+  insight_id: string;
+  citation_index: number;
+  source_name: string;
+  url: string;
+  quote: string;
+  observed_at: string;
+}
+
 /** 运行实体（architecture 数据模型 · Run）—— Job Runner 状态追踪 */
 export interface Run {
   id: string;

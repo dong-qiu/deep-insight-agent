@@ -14,7 +14,7 @@ import type { Report } from "../types.js";
 import { collectSource } from "./collector.js";
 import { briefFreshHours, briefFreshQuota, contentObservedAt, selectAnalysisItems } from "./analysis-selection.js";
 import { runCircuitCheck, runHalfOpenProbe, runZeroYieldWatch } from "./source-health.js";
-import { runAnalysis, runReportGen, runValidation } from "./pipeline.js";
+import { runAnalysis, runReportGen, runTechLeadExtraction, runValidation } from "./pipeline.js";
 
 export interface ScheduleSummary {
   startedAt: string;
@@ -168,6 +168,14 @@ export async function runScheduledPipeline(
       const history = plan.type === "brief" ? listRecentBriefEvents(db, topic.id) : [];
       const batch = await runAnalysis(db, topic, items, { start: since, end: endIso }, { history });
       const validation = await runValidation(db, batch, items);
+      // 技术线索是报告之外的派生能力；其故障必须可观测、但不能阻断已校验日报的发布。
+      try {
+        runTechLeadExtraction(db, batch, validation, endIso);
+      } catch (e) {
+        const message = errMsg(e);
+        summary.errors.push(`tech-leads ${topic.id}: ${message}`);
+        runLogger({ stage: "tech-leads" }).warn({ topicId: topic.id, batchId: batch.id, err: message }, "技术线索派生失败，继续生成报告");
+      }
       // 前情链接：把同主题同链上一篇 done 报告记为 prev_report_id，串成可回溯的演化链
       // （本报告尚未落库，此刻"最新 done"即上一篇，不自指）。
       const prevReportId = previousReportForTopic(db, topic.id, plan.type);
