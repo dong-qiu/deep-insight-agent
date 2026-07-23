@@ -4,8 +4,10 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=20.9 <21",
+    "npm": ">=10 <11"
   },
+  "packageManager": "npm@10.8.2",
   "scripts": {
     "prepare": "git config core.hooksPath .githooks || true",
     "dev": "NODE_USE_ENV_PROXY=1 next dev",
@@ -24,23 +26,23 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "latest",
-    "@types/d3-force": "^3.0.10",
-    "better-sqlite3": "^12.11.1",
-    "d3-force": "^3.0.0",
-    "fast-xml-parser": "^5.9.3",
-    "next": "^15.5.18",
-    "next-auth": "^5.0.0-beta.31",
-    "nodemailer": "^9.0.1",
-    "pino": "^10.3.1",
-    "pptxgenjs": "^4.0.1",
-    "react": "^19.2.7",
-    "react-dom": "^19.2.7",
-    "yaml": "^2.9.0",
-    "zod": "^4.4.3"
+    "@anthropic-ai/sdk": "0.110.0",
+    "better-sqlite3": "12.11.1",
+    "d3-force": "3.0.0",
+    "fast-xml-parser": "5.10.1",
+    "next": "15.5.21",
+    "next-auth": "5.0.0-beta.31",
+    "nodemailer": "9.0.3",
+    "pino": "10.3.1",
+    "pptxgenjs": "4.0.1",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "yaml": "2.9.0",
+    "zod": "4.4.3"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
+    "@types/d3-force": "3.0.10",
     "@types/node": "^26.0.1",
     "@types/nodemailer": "^8.0.1",
     "@types/react": "^19.2.17",
@@ -52,6 +54,8 @@
     "vitest": "^4.1.9"
   },
   "overrides": {
-    "nodemailer": "^9.0.1"
+    "nodemailer": "9.0.3",
+    "sharp": "0.35.0",
+    "postcss": "8.5.10"
   }
 }
