@@ -3,8 +3,9 @@ name: eval-gate
 description: >-
   本项目的 AI 输出质量门：在改动 prompt / 模型 / 校验逻辑 / 数据源 / 评测集后，跑对应 eval
   并与 evals/baseline.json 逐指标对比，生成 PR 用对比表，通过后给提交盖 Eval-Gate 章。
-  触发：改动命中 src/lib/agents/(analyzer/validator/followup/report-gen)、src/lib/runtime/llm.ts
-  (MODELS)、src/lib/sources/、evals/dataset/；或用户说"跑 eval""对比基线""这改动会不会掉指标"；
+  对 report-gen 的确定性选择、历史去重、渲染、索引和通知映射，改跑生产路径回归测试；
+  不把不执行该代码的 A1 当作质量证明。触发：改动命中 analyzer/validator/followup、llm MODELS、
+  sources、evals/dataset；或上述 report-gen AI 语义变更；或用户说"跑 eval""对比基线"；
   或被 pre-push 门禁拦下要求盖章时。这是 L3「修改 prompt/模型/数据源的 PR 必须附 eval 对比」的执行器。
 ---
 
@@ -20,7 +21,8 @@ description: >-
 | 改动 | 跑什么 | 要 API key？ |
 |---|---|---|
 | 仅 validator 纯函数（可达性等） | `npm test`（validator 单测） | 否，CI 可跑 |
-| analyzer / validator prompt、`MODELS`、followup、report-gen | `npm run eval:a1` | 是 |
+| analyzer / validator prompt、`MODELS`、followup，或 report-gen 改动 LLM 调用 / 校验语义 | `npm run eval:a1` | 是 |
+| report-gen 的确定性选择、历史去重、渲染、索引、通知映射 | 受影响单测 + 生产路径集成测试 + `npm run typecheck` | 否 |
 | 批量一致性判定（`judgeConsistencyBatch`） | `tsx evals/validate-batch-judge.ts` | 是 |
 | 新增/改数据源（`src/lib/sources/`） | 多源重测（见下）+ `npm run eval:a1` | 是 |
 
@@ -31,6 +33,15 @@ npm run seed && npm run eval:build-local
 A1_QUALITY_FILE=evals/dataset/insight-quality-multisource.local.jsonl npm run eval:a1
 ```
 
+### 1.1 先验证评测是否覆盖改动（防“假绿”）
+
+`evals/run-a1.ts` 评估 analyzer 与 validator/judge；它不调用 `buildReport`、历史报告查询或通知渲染。
+因此对 report-gen 的确定性改动，A1 指标的波动不能归因于该改动，也不能证明其正确性。
+
+- 改动触及 prompt、模型、`analyze`、`validateBatch`、judge 或数据源：A1 是有效门，照常运行。
+- 改动只在 `buildReport` / `runReportGen` 的确定性路径：测试必须走真实的 `runReportGen → DB 历史报告/校验结果 → buildReport` 接线；
+  涉及跨批事件时，另加 event_id 对齐/去重回归用例。
+
 ## 2. 跑前必查（本项目特有的坑）
 
 - **模型独立性**：`ANALYZER_MODEL` ≠ `VALIDATOR_MODEL`，否则 `assertModelSeparation` 启动即报错。改模型先核这条。
@@ -38,7 +49,7 @@ A1_QUALITY_FILE=evals/dataset/insight-quality-multisource.local.jsonl npm run ev
   结论**只能作管线验证，不能作 DCP / 上线判定依据**——别拿种子样本去签门，明确标注。
 - **中转站约束**：经第三方中转站需 `VALIDATOR_THINKING=0`（见 operations.md / practice-log）。
 
-## 3. 对比 baseline.json（门禁判据）
+## 3. 对比 baseline.json（A1 适用时的门禁判据）
 
 读 `evals/baseline.json`，逐项 diff，套规则 **「任一指标较基线降 >3pp → 告警/阻断」**。
 **务必分段对比**，两段配置不同，混比会误判：
@@ -51,7 +62,7 @@ A1_QUALITY_FILE=evals/dataset/insight-quality-multisource.local.jsonl npm run ev
 同时核 `run-a1.ts` 硬阈值（可达性=100%、一致性≥95%、失败≤5%、flagged≤10%、judge 准≥90%、负召≥95%）。
 退出码非 0 = 有 FAIL，直接阻断。
 
-## 4. 产出对比表（贴进 PR）
+## 4. 产出证据（贴进 PR）
 
 | 指标 | 基线 | 本次 | Δpp | 判定 |
 |---|---|---|---|---|
@@ -62,6 +73,13 @@ A1_QUALITY_FILE=evals/dataset/insight-quality-multisource.local.jsonl npm run ev
 附：跑的命令、模型配置、数据集规模、成本（`getCostReport`）、以及"为何 PASS/FAIL"一句话。
 **若更新了基线**，同步改 `baseline.json` 的 `provenance`（日期/run/config/caveats），别静默覆盖。
 
+对于确定性 report-gen 改动，改贴以下证据，不强行附无关 A1 对比：
+
+- 风险场景 → 对应的单元/集成测试名称与结果；
+- 证明历史数据确实通过 `runReportGen → DB → buildReport` 进入选择逻辑的测试；
+- `npm run typecheck` 与受影响测试结果；
+- 明确写出“未运行 A1：该评测不执行本次改动路径”。
+
 ## 5. 盖章放行（与 pre-push 闭环）
 
 eval 通过后，给本批某个提交盖 trailer（pre-push 见到即放行整批）：
@@ -70,6 +88,8 @@ git commit --amend --trailer "Eval-Gate: pass (a1 <date>, baseline ok)"
 # 或新建一个带该 trailer 的提交
 ```
 - 确认纯重构/注释误命中、无需重测：`Eval-Gate: skip (<原因>)`。
+- 确认是确定性 report-gen 行为改动并已完成上述 scoped 回归：
+  `Eval-Gate: scoped (deterministic report selection; <tests>)`。
 - eval 设施暂不可用、留痕绕过：让用户 `EVAL_GATE_ACK=1 git push`，并提醒 CI 是最终兜底。
 
 > 盖章是「信任承诺」：hook 与 CI 都只校验 trailer 存在、**不验证 eval 真跑过**。它防的是"忘记跑"，

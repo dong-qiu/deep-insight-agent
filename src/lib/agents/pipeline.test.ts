@@ -2,7 +2,7 @@
  *  此前零测试。mock LLM agents（analyze/validateBatch）+ buildReport + FS/alert 副作用，
  *  保留**真 runJob + 真落库（内存 DB）**，验：Run 生命周期、跨阶段数据流、成本透传、失败传播。 */
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { getAnalysisBatch, getValidationResult, saveAnalysisBatch } from "../db/analysis.js";
+import { getAnalysisBatch, getValidationResult, saveAnalysisBatch, saveValidationResult } from "../db/analysis.js";
 import { type DB, openDb } from "../db/index.js";
 import { insertTopic, listRuns } from "../db/repos.js";
 import type { AnalysisBatch, Insight, Report, ReportIndexEntry, Topic, ValidationResult } from "../types.js";
@@ -57,10 +57,10 @@ function mkInsight(id: string): Insight {
 function mkBatch(): AnalysisBatch {
   return { id: "b1", topic_id: "t1", time_window: win, status: "done", no_significant_event: false, insights: [mkInsight("i1")] };
 }
-function mkValidation(): ValidationResult {
+function mkValidation(insightId = "i1"): ValidationResult {
   return {
     checks: [{
-      insight_id: "i1", citation_index: 0, reachability: "pass", reachability_reason: "ok",
+      insight_id: insightId, citation_index: 0, reachability: "pass", reachability_reason: "ok",
       consistency: "support", consistency_reason: "ok", verdict: "pass",
     }],
     report: {
@@ -69,6 +69,34 @@ function mkValidation(): ValidationResult {
       insights_total: 1, insights_includable: 1, releasable: true,
     },
   };
+}
+
+/** 落一份真实的 initial_digest + validation，确保 runReportGen 从 DB 读取历史成功证据，
+ * 而不是仅依赖 buildReport 纯函数调用方手工传参。正文不在本测试路径读取，故 body_path 可为占位。 */
+function seedPublishedInitialDigest(eventId: string, contentItemId: string): void {
+  const date = new Date().toISOString().slice(0, 10);
+  const insight = {
+    ...mkInsight("i_history"), event_id: eventId,
+    citations: [{ content_item_id: contentItemId, quote: "published evidence", locator: { paragraph_index: 0, char_start: 0, char_end: 1 } }],
+  };
+  const batch: AnalysisBatch = {
+    id: "b_history", topic_id: topic.id, time_window: { start: date, end: date },
+    status: "done", no_significant_event: false, insights: [insight],
+  };
+  saveAnalysisBatch(db, batch);
+  saveValidationResult(db, batch.id, mkValidation(insight.id));
+  db.prepare(`INSERT INTO report
+    (id,type,topic_id,status,generated_at,title,body_path,insight_ids,event_ids,prev_report_id,citation_count,cost)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    "rep_history", "initial_digest", topic.id, "done", `${date}T08:00:00Z`, "历史首版", "/tmp/history-report",
+    JSON.stringify([insight.id]), JSON.stringify([eventId]), null, 1, JSON.stringify({ tokens: 0, amount: 0 }),
+  );
+  db.prepare(`INSERT INTO report_index
+    (report_id,type,topic_id,facets,date,source_ids,title,summary,highlights,tags,entity_names,importance,event_ids,milestone_count)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    "rep_history", "initial_digest", topic.id, JSON.stringify(topic.facets), date, "[]", "历史首版", "", "[]", "[]", "[]", 3,
+    JSON.stringify([eventId]), 0,
+  );
 }
 function mkReportIndex(): ReportIndexEntry {
   return {
@@ -140,6 +168,21 @@ describe("runReportGen", () => {
     expect(saveReportMock).toHaveBeenCalledTimes(1);
     const run = listRuns(db, { kind: "report-gen" }).find((r) => r.target.batch_id === "b1")!;
     expect(run.status).toBe("done");
+  });
+
+  it("Daily Brief 从 initial_digest 读取已发布成功证据，并传给 buildReport 去重", async () => {
+    seedPublishedInitialDigest("evt_cached", "ci1");
+    buildReportMock.mockReturnValue({ report: mkReport(), index: mkReportIndex() });
+    const batch = mkBatch();
+    batch.insights[0].event_id = "evt_cached";
+
+    await runReportGen(db, { topic, batch, validation: mkValidation(), type: "brief" });
+
+    expect(buildReportMock).toHaveBeenCalledWith(expect.objectContaining({
+      publishedEventEvidence: [expect.objectContaining({
+        event_id: "evt_cached", content_item_ids: ["ci1"],
+      })],
+    }));
   });
 });
 

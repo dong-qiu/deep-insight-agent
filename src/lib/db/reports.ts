@@ -236,12 +236,67 @@ export function listBlockedChecksForReport(db: DB, reportId: string): BlockedChe
   }));
 }
 
-/** P1 不复报（2026-06-06）：查某主题近 sinceDays 天 brief 报告里的 event_id + statement，喂 analyzer
- *  作为"已报告事件"清单做事件对齐 / followup 判定。
- *  - 只取 brief（每日节奏，followup 主要发生在同节奏跨日；deep_dive 是用户触发的回顾，加进去会污染）；
- *  - 走 report_index 取 date（避免 report.generated_at 时区差），用 insight_ids 反查 insight 表拿 event_id；
- *  - 去重：同 event_id 只留最新 statement（取最新的 brief 那条，避免清单膨胀）；
- *  - 上限保护：硬上限 50 条，防超长清单挤压 analyzer 上下文。 */
+/** 每日节奏中已发布 event 的成功校验证据；brief 与 initial_digest 共用基线，deep_dive 不参与。 */
+export interface PublishedEventEvidence {
+  event_id: string;
+  statement: string;
+  date: string;
+  content_item_ids: string[];
+}
+
+export function listRecentPublishedEventEvidence(
+  db: DB,
+  topicId: string,
+  opts: { sinceDays?: number; limit?: number } = {},
+): PublishedEventEvidence[] {
+  const sinceDays = opts.sinceDays ?? 14;
+  const limit = Math.min(opts.limit ?? 200, 200);
+  const since = new Date(Date.now() - sinceDays * 86_400_000).toISOString().slice(0, 10);
+  const reports = db.prepare(`
+    SELECT ri.date AS date, r.insight_ids AS insight_ids
+    FROM report_index ri JOIN report r ON r.id = ri.report_id
+    WHERE ri.topic_id = ? AND ri.type IN ('brief','initial_digest') AND r.status = 'done' AND ri.date >= ?
+    ORDER BY ri.date DESC, r.generated_at DESC, r.id DESC
+  `).all(topicId, since) as Array<{ date: string; insight_ids: string }>;
+  const byEvent = new Map<string, PublishedEventEvidence>();
+  for (const report of reports) {
+    const ids: string[] = JSON.parse(report.insight_ids);
+    if (!ids.length) continue;
+    const placeholders = ids.map(() => "?").join(",");
+    const insightRows = db.prepare(`
+      SELECT id, event_id, statement, batch_id
+      FROM insight WHERE id IN (${placeholders}) AND event_id IS NOT NULL
+    `).all(...ids) as Array<{ id: string; event_id: string; statement: string; batch_id: string }>;
+    for (const insight of insightRows) {
+      if (byEvent.has(insight.event_id) || byEvent.size >= limit) continue;
+      byEvent.set(insight.event_id, {
+        event_id: insight.event_id, statement: insight.statement, date: report.date, content_item_ids: [],
+      });
+    }
+    const rows = db.prepare(`
+      SELECT i.event_id, c.content_item_id, cc.verdict, cc.consistency
+      FROM insight i
+      JOIN citation c ON c.insight_id = i.id
+      JOIN citation_check cc ON cc.batch_id = i.batch_id AND cc.insight_id = c.insight_id AND cc.citation_index = c.citation_index
+      WHERE i.id IN (${placeholders}) AND i.event_id IS NOT NULL
+    `).all(...ids) as Array<{
+      event_id: string; statement: string; content_item_id: string;
+      verdict: "pass" | "blocked" | "flagged";
+      consistency: "support" | "not_support" | "uncertain" | "not_evaluated";
+    }>;
+    for (const row of rows) {
+      const event = byEvent.get(row.event_id);
+      if (!event) continue;
+      // 与 isIncludableCheck 对齐：pass 或 genuine uncertain 才是可作为新增判断的成功证据。
+      if (row.verdict === "pass" || (row.verdict === "flagged" && row.consistency !== "not_evaluated")) {
+        if (!event.content_item_ids.includes(row.content_item_id)) event.content_item_ids.push(row.content_item_id);
+      }
+    }
+  }
+  return [...byEvent.values()];
+}
+
+/** P1 不复报：查已发布事件清单，喂 analyzer 做 event 对齐 / followup 判定。 */
 export interface RecentBriefEvent {
   event_id: string;
   statement: string;
@@ -252,37 +307,8 @@ export function listRecentBriefEvents(
   topicId: string,
   opts: { sinceDays?: number; limit?: number } = {},
 ): RecentBriefEvent[] {
-  const sinceDays = opts.sinceDays ?? 14;
-  const limit = Math.min(opts.limit ?? 50, 200);
-  const since = new Date(Date.now() - sinceDays * 86_400_000).toISOString().slice(0, 10);
-  // 报告日期降序 → 同 event_id 保留最新；只取 brief。
-  const rows = db
-    .prepare(`
-      SELECT ri.date AS date, r.insight_ids AS insight_ids
-      FROM report_index ri
-      JOIN report r ON r.id = ri.report_id
-      WHERE ri.topic_id = ? AND ri.type = 'brief' AND ri.date >= ?
-      ORDER BY ri.date DESC
-    `)
-    .all(topicId, since) as Array<{ date: string; insight_ids: string }>;
-  const seen = new Set<string>();
-  const out: RecentBriefEvent[] = [];
-  for (const r of rows) {
-    const ids: string[] = JSON.parse(r.insight_ids);
-    if (!ids.length) continue;
-    // 联表 insight 拿 event_id + statement（按 ids 的顺序，IN 子句的参数注入需逐条 prepare 或拼接 ?）
-    const placeholders = ids.map(() => "?").join(",");
-    const insRows = db
-      .prepare(`SELECT event_id, statement FROM insight WHERE id IN (${placeholders}) AND event_id IS NOT NULL`)
-      .all(...ids) as Array<{ event_id: string; statement: string }>;
-    for (const ir of insRows) {
-      if (seen.has(ir.event_id)) continue;
-      seen.add(ir.event_id);
-      out.push({ event_id: ir.event_id, statement: ir.statement, date: r.date });
-      if (out.length >= limit) return out;
-    }
-  }
-  return out;
+  return listRecentPublishedEventEvidence(db, topicId, { ...opts, limit: opts.limit ?? 50 })
+    .map(({ event_id, statement, date }) => ({ event_id, statement, date }));
 }
 
 /** FTS5 全文检索，按相关度返回 report_id。 */

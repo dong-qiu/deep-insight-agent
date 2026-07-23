@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AnalysisBatch, ContentItem, Topic, ValidationResult } from "../types.js";
-import { buildReport, HIGHLIGHTS_MAX, inlineCitedStatement, isMilestoneInsight, KEY_MIN_IMPORTANCE, reportHighlights, selectInsights } from "./report-gen.js";
+import { buildReport, HIGHLIGHTS_MAX, inlineCitedStatement, isMilestoneInsight, KEY_MIN_IMPORTANCE, reportHighlights, selectBriefInsights, selectInsights } from "./report-gen.js";
 import { flagLabel } from "../utils/citation-verdict.js";
 
 const topic: Topic = {
@@ -149,6 +149,41 @@ describe("selectInsights（洞察级纳入判定）", () => {
       report: { total: 0, pass: 0, blocked: 0, flagged: 0, errored: 0, consistency_failure_rate: 0, flagged_rate: 0, insights_total: 0, insights_includable: 0, releasable: true },
     };
     expect(selectInsights(batch2, noChecks)).toEqual([]); // 无 check → 整条不纳入
+  });
+});
+
+describe("selectBriefInsights（Daily Brief 已发布证据去重）", () => {
+  const published = [{ event_id: "e1", content_item_ids: ["ci1"] }];
+
+  it("同 event 且没有新增成功校验证据时，缓存洞察不得再次发布", () => {
+    const selected = selectBriefInsights(batchOf(), validation, "brief", published);
+    expect(selected.map((x) => x.insight.id)).toEqual(["i2"]);
+
+    const { report } = buildReport({
+      topic, batch: batchOf(), validation, type: "brief", contentLookup: new Map(),
+      publishedEventEvidence: published, now: "2026-05-07T08:00:00Z",
+    });
+    expect(report.insight_ids).toEqual(["i2"]);
+    expect(reportHighlights(batchOf(), validation, { publishedEventEvidence: published }).map((x) => x.text)).toEqual(["S2"]);
+  });
+
+  it("同 event 有新的成功校验证据时保留，blocked 引用不算新增", () => {
+    const batch = batchOf();
+    batch.insights[0].citations.push({
+      content_item_id: "ci_new", quote: "q new", locator: { paragraph_index: 0, char_start: 2, char_end: 3 },
+    });
+    const withNewEvidence: ValidationResult = {
+      ...validation,
+      checks: [...validation.checks, {
+        insight_id: "i1", citation_index: 2, reachability: "pass", reachability_reason: "ok",
+        consistency: "support", consistency_reason: "ok", verdict: "pass",
+      }],
+    };
+    expect(selectBriefInsights(batch, withNewEvidence, "brief", published).map((x) => x.insight.id)).toEqual(["i1", "i2"]);
+  });
+
+  it("deep_dive 不套用 Daily Brief 去重基线", () => {
+    expect(selectBriefInsights(batchOf(), validation, "deep_dive", published).map((x) => x.insight.id)).toEqual(["i1", "i2"]);
   });
 });
 
