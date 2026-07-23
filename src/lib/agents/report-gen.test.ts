@@ -185,6 +185,13 @@ describe("selectBriefInsights（Daily Brief 已发布证据去重）", () => {
   it("deep_dive 不套用 Daily Brief 去重基线", () => {
     expect(selectBriefInsights(batchOf(), validation, "deep_dive", published).map((x) => x.insight.id)).toEqual(["i1", "i2"]);
   });
+
+  it("近期候选存在时，仅发布带近期成功校验证据的洞察；deep_dive 不受影响", () => {
+    const freshness = { since: "2026-05-06T00:00:00Z", content_item_ids: ["ci1"], freshest_candidate_at: "2026-05-07T00:00:00Z" };
+    expect(selectBriefInsights(batchOf(), validation, "brief", [], freshness).map((x) => x.insight.id)).toEqual(["i1"]);
+    expect(selectBriefInsights(batchOf(), validation, "deep_dive", [], freshness).map((x) => x.insight.id)).toEqual(["i1", "i2"]);
+    expect(reportHighlights(batchOf(), validation, { freshness }).map((x) => x.text)).toEqual(["S1"]);
+  });
 });
 
 describe("reportHighlights（推送要点 · 复用选取排序）", () => {
@@ -229,8 +236,8 @@ describe("reportHighlights（推送要点 · 复用选取排序）", () => {
 
 describe("buildReport 派生", () => {
   const lookup = new Map([
-    ["ci1", { source_id: "s_a", source_name: "Source A", tags: ["t-x"], url: "https://a.example/q1", published_at: "2026-05-07T08:00:00.000Z" }],
-    ["ci3", { source_id: "s_b", source_name: "Source B", tags: ["t-y", "t-x"], url: "https://b.example/q3", published_at: null }],
+    ["ci1", { source_id: "s_a", source_name: "Source A", tags: ["t-x"], url: "https://a.example/q1", published_at: "2026-05-07T08:00:00.000Z", observed_at: "2026-05-07T08:00:00.000Z" }],
+    ["ci3", { source_id: "s_b", source_name: "Source B", tags: ["t-y", "t-x"], url: "https://b.example/q3", published_at: null, observed_at: "2026-05-06T08:00:00.000Z" }],
   ]);
   const { report, index } = buildReport({
     topic, batch: batchOf(), validation, type: "brief", contentLookup: lookup, now: "2026-05-07T08:00:00Z",
@@ -257,6 +264,16 @@ describe("buildReport 派生", () => {
     expect(index.title).toContain("Code Agent");
     // 里程碑（ADR-0006）：i1=aggregation 但 importance 4 未达门槛、i2=trend 排除、i3 全 blocked 排除 → 0
     expect(index.milestone_count).toBe(0);
+  });
+
+  it("Brief 新鲜度审计只使用成功校验引用，并持久化候选/引用时间与滞后", () => {
+    const { index: idx } = buildReport({
+      topic, batch: batchOf(), validation, type: "brief", contentLookup: lookup, now: "2026-05-08T08:00:00Z",
+      briefFreshness: { since: "2026-05-06T08:00:00Z", content_item_ids: ["ci1"], freshest_candidate_at: "2026-05-07T08:00:00.000Z" },
+    });
+    expect(idx.freshest_candidate_at).toBe("2026-05-07T08:00:00.000Z");
+    expect(idx.freshest_citation_at).toBe("2026-05-07T08:00:00.000Z");
+    expect(idx.freshness_lag_hours).toBe(24);
   });
 
   it("highlights（headline 方案）：按重要性降序取 headline；缺 headline 回退 statement", () => {
@@ -352,7 +369,7 @@ describe("buildReport 派生", () => {
 
   it("HTML 引用 URL scheme 守卫：仅 http(s) 可点，javascript: 退化为纯 quote", () => {
     const evilLookup = new Map([
-      ["ci1", { source_id: "s_a", source_name: "Src A", tags: [], url: "javascript:alert(1)", published_at: null }],
+      ["ci1", { source_id: "s_a", source_name: "Src A", tags: [], url: "javascript:alert(1)", published_at: null, observed_at: "2026-05-07T00:00:00Z" }],
     ]);
     const { report: r } = buildReport({
       topic, batch: batchOf(), validation, type: "brief", contentLookup: evilLookup, now: "2026-05-07T08:00:00Z",
@@ -364,7 +381,7 @@ describe("buildReport 派生", () => {
 
   it("HTML href 属性转义：含双引号的 url 不破坏 href 属性", () => {
     const evilLookup = new Map([
-      ["ci1", { source_id: "s_a", source_name: "Src A", tags: [], url: 'https://a.example/"onmouseover=x', published_at: null }],
+      ["ci1", { source_id: "s_a", source_name: "Src A", tags: [], url: 'https://a.example/"onmouseover=x', published_at: null, observed_at: "2026-05-07T00:00:00Z" }],
     ]);
     const { report: r } = buildReport({
       topic, batch: batchOf(), validation, type: "brief", contentLookup: evilLookup, now: "2026-05-07T08:00:00Z",

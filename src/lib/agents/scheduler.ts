@@ -12,7 +12,7 @@ import { getBudgetStatus } from "../runtime/cost-guard.js";
 import { runLogger } from "../runtime/logger.js";
 import type { Report } from "../types.js";
 import { collectSource } from "./collector.js";
-import { selectAnalysisItems } from "./analysis-selection.js";
+import { briefFreshHours, briefFreshQuota, contentObservedAt, selectAnalysisItems } from "./analysis-selection.js";
 import { runCircuitCheck, runHalfOpenProbe, runZeroYieldWatch } from "./source-health.js";
 import { runAnalysis, runReportGen, runValidation } from "./pipeline.js";
 
@@ -33,6 +33,17 @@ export interface ScheduleSummary {
   zeroYield?: string[];
 }
 
+/** 可独立触发的采集周期。日报在出刊前仍会采一次，额外周期只执行这一段，绝不重复 LLM 分析/出刊。 */
+export interface CollectionSummary {
+  startedAt: string;
+  finishedAt: string;
+  collected: ScheduleSummary["collected"];
+  errors: string[];
+  circuitOpened?: string[];
+  circuitRevived?: string[];
+  zeroYield?: string[];
+}
+
 /** 冷启动决策（纯函数，可测）：topic 无历史报告 → 首版综述 initial_digest（更宽窗口 / 更多条，
  *  给新主题一份有份量的首报）；否则按常规 reportType（brief / deep_dive）。 */
 export function reportPlan(
@@ -46,6 +57,35 @@ export function reportPlan(
 }
 
 const errMsg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+
+/** 采集 + 源健康自愈（熔断 / 半开 / 零产出）。“collect” cron 调此函数，保证每 6h 数据更新
+ * 不会把同一天的 Brief 反复重新生成。 */
+export async function runCollectionCycle(db: DB): Promise<CollectionSummary> {
+  const startedAt = new Date().toISOString();
+  const summary: CollectionSummary = { startedAt, finishedAt: startedAt, collected: [], errors: [] };
+  const sources = getEffectiveSources(db, loadStaticConfig()).filter((s) => s.enabled);
+  for (const s of sources) {
+    try {
+      const r = await collectSource(db, s);
+      summary.collected.push({ source: s.id, fetched: r.fetched, inserted: r.inserted, updated: r.updated });
+    } catch (e) {
+      summary.collected.push({ source: s.id, error: errMsg(e) });
+      summary.errors.push(`collect ${s.id}: ${errMsg(e)}`);
+    }
+  }
+
+  const circuit = runCircuitCheck(db, sources);
+  if (circuit.opened.length) summary.circuitOpened = circuit.opened;
+  summary.errors.push(...circuit.errors);
+  const halfOpen = await runHalfOpenProbe(db, collectSource);
+  if (halfOpen.revived.length) summary.circuitRevived = halfOpen.revived;
+  summary.errors.push(...halfOpen.errors);
+  const zeroYield = runZeroYieldWatch(db, sources);
+  if (zeroYield.zeroYield.length) summary.zeroYield = zeroYield.zeroYield;
+  summary.errors.push(...zeroYield.errors);
+  summary.finishedAt = new Date().toISOString();
+  return summary;
+}
 
 /** 触发一次完整管线。库为空时 getEffectiveSources 会先播种默认 Topic/Source（首跑自举）。 */
 export async function runScheduledPipeline(
@@ -71,31 +111,13 @@ export async function runScheduledPipeline(
     errors: [],
   };
 
-  // 1. 采集：所有启用 Source（库空则同时播种默认配置）
-  const sources = getEffectiveSources(db, loadStaticConfig()).filter((s) => s.enabled);
-  for (const s of sources) {
-    try {
-      const r = await collectSource(db, s);
-      summary.collected.push({ source: s.id, fetched: r.fetched, inserted: r.inserted, updated: r.updated });
-    } catch (e) {
-      summary.collected.push({ source: s.id, error: errMsg(e) });
-      summary.errors.push(`collect ${s.id}: ${errMsg(e)}`);
-    }
-  }
-
-  // 1b/1c/1d. 源健康自愈（ADR-0008 决定② / 切片3b，见 source-health.ts）：熔断 → 半开探测复活 → 零产出看门狗。
-  // 次序有依赖：零产出须在半开之后（listRuns 要含复活后的新 run）。各段自兜底，结果并入 summary。
-  const circuit = runCircuitCheck(db, sources);
-  if (circuit.opened.length) summary.circuitOpened = circuit.opened; // 正常处置、独立字段，不污染 errors 语义
-  summary.errors.push(...circuit.errors);
-
-  const halfOpen = await runHalfOpenProbe(db, collectSource);
-  if (halfOpen.revived.length) summary.circuitRevived = halfOpen.revived;
-  summary.errors.push(...halfOpen.errors);
-
-  const zeroYield = runZeroYieldWatch(db, sources);
-  if (zeroYield.zeroYield.length) summary.zeroYield = zeroYield.zeroYield;
-  summary.errors.push(...zeroYield.errors);
+  // 1. 出刊前先采一轮；额外 collect cron 复用同一函数但不会走后续 LLM/report 路径。
+  const collection = await runCollectionCycle(db);
+  summary.collected = collection.collected;
+  summary.errors.push(...collection.errors);
+  summary.circuitOpened = collection.circuitOpened;
+  summary.circuitRevived = collection.circuitRevived;
+  summary.zeroYield = collection.zeroYield;
 
   // 2-4. 每个启用 Topic：冷启动决策 → 分析→校验→生成报告（首版综述 / brief / deep_dive）
   // A5 自动熔断：每个 topic 前查预算，触顶则跳过本 topic 及之后全部（过冲上界 = 单 topic 一轮）。
@@ -130,9 +152,11 @@ export async function runScheduledPipeline(
       { windowHours: coldWindowHours, items: coldItems },
     );
     const since = new Date(end - plan.windowHours * 3_600_000).toISOString();
+    const freshnessSince = new Date(end - briefFreshHours() * 3_600_000).toISOString();
     // ADR-0010：initial_digest（冷启动首报）豁免 archetype 硬下限——给新横向主题足量首报。
     const items = selectAnalysisItems(db, topic, {
       since, limit: plan.items, coldStart: plan.type === "initial_digest",
+      freshness: plan.type === "brief" ? { since: freshnessSince, quota: briefFreshQuota() } : undefined,
     });
     if (items.length === 0) {
       summary.topics.push({ topic: topic.id, items: 0, status: "skipped-no-content", type: plan.type });
@@ -147,7 +171,17 @@ export async function runScheduledPipeline(
       // 前情链接：把同主题同链上一篇 done 报告记为 prev_report_id，串成可回溯的演化链
       // （本报告尚未落库，此刻"最新 done"即上一篇，不自指）。
       const prevReportId = previousReportForTopic(db, topic.id, plan.type);
-      const report = await runReportGen(db, { topic, batch, validation, type: plan.type, prevReportId });
+      const freshItems = plan.type === "brief"
+        ? items.filter((item) => contentObservedAt(item) >= freshnessSince)
+        : [];
+      const freshestCandidateAt = freshItems.map(contentObservedAt).sort().at(-1) ?? null;
+      const report = await runReportGen(db, {
+        topic, batch, validation, type: plan.type, prevReportId,
+        // 只有选择阶段真的选到近期输入才打开报告闸门；没有新候选时保留历史上下文而不制造空窗。
+        briefFreshness: freshItems.length
+          ? { since: freshnessSince, content_item_ids: freshItems.map((item) => item.id), freshest_candidate_at: freshestCandidateAt }
+          : undefined,
+      });
       summary.topics.push({
         topic: topic.id,
         items: items.length,

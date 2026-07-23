@@ -22,14 +22,14 @@ MVP 端到端管线的输出段。把校验后的洞察组织成用户可读、�
 
 ## 行为规约
 
-1. brief：按 `Topic` 输出周期概览；通过 `Insight.event_id` 判重 —— 不复报已在**历史 `brief` 或 `initial_digest`**（合并构成「不复报基线」）出现过的事件；同 `event_id` 的后续进展作为「更新」再现，`Report.prev_report_id` 指向最近一篇含该事件的报告。
+1. brief：按 `Topic` 输出周期概览；通过 `Insight.event_id` 判重 —— 不复报已在**历史 `brief` 或 `initial_digest`**（合并构成「不复报基线」）出现过的事件；同 `event_id` 的后续进展作为「更新」再现，`Report.prev_report_id` 指向最近一篇含该事件的报告。若选择阶段存在 48 小时内的候选，则每条发布洞察必须至少含一条来自该候选集、且已成功校验的引用；不满足时诚实输出「无重要事件」，不得把旧证据包装为今日动态。
 2. 首份 brief 为 `type=initial_digest`：对回填的历史内容做信号去噪后输出重点（**受第 7 项规模上限约束，非全量摊开**），并把覆盖的 `event_ids` 写入「不复报」基线；之后的 brief 为 `type=brief`。
 3. 深挖：用户提交深挖请求时**同步触发一次** `insight-analysis`（时间窗 = 该 `Topic` 最近 90 天，可配置）+ `citation-validation`；以产出的 `AnalysisBatch` + `ValidationResult` 为输入，围绕单一 `Topic` 输出 `type=deep_dive` 的完整结构化报告。
 4. 无重要事件（输入 `AnalysisBatch.no_significant_event=true`、`releasable=true`）时，brief 诚实输出「无重要事件」，**`Report.status=done`，不置 failed**；批次失败（`status=failed`）或不可放行（`releasable=false`）时报告置 `failed`。
 5. 洞察纳入按 `architecture.md`「校验结果 · 洞察级纳入判定」：剔除 `blocked` 引用后仍有支撑的洞察纳入，含 `flagged` 引用的洞察标「待核实」；每条结论标引用编号、行内可点回原文。
 6. 报告状态按 `architecture.md` `Report.status` 流转：`generating` →（`done` | `failed`）；`failed` 可重跑回 `generating`；`done` → `archived`。`deleted` 转换由报告管理 / 看板触发，**不在本段职责内**（属阅读 UI / 看板 spec）。
 7. 报告规模：`brief` 关键事件 ≤ 12 条、每条摘要 ≤ 120 字（**暂定值；M1 末以 `eval-criteria.md`「简洁性」维度的人评 + 实际阅读计时校准**），作为「5 分钟可读」的代理指标；`initial_digest` 同此上限。`deep_dive` 为完整六段（TL;DR + 关键发现 + 趋势分析 + 对比表 + 时间线 + 引用清单）。brief 正文精简，不套用对比表 / 时间线全套。
-8. 报告按主题 + 日期归档，产出 `ReportIndexEntry` 入全局索引（**派生字段（`source_ids` / `importance` / `entity_names` / `tags`）规则见 `architecture.md`「数据模型 · ReportIndexEntry · 派生规则」**）；索引支撑全文搜索（标题 + 正文 + 摘要）与多维筛选 / 排序。
+8. 报告按主题 + 日期归档，产出 `ReportIndexEntry` 入全局索引（**派生字段（`source_ids` / `importance` / `entity_names` / `tags`）规则见 `architecture.md`「数据模型 · ReportIndexEntry · 派生规则」**）；索引支撑全文搜索（标题 + 正文 + 摘要）与多维筛选 / 排序。新生成报告记录 `freshest_candidate_at`、`freshest_citation_at`、`freshness_lag_hours`，供运营识别数据陈旧。
 9. 输出 Markdown 与自包含 HTML 两种格式；存储 MVP 用文件系统（Markdown 正文 + JSON 索引）。
 
 ## 验收标准 (AC)
@@ -44,6 +44,7 @@ MVP 端到端管线的输出段。把校验后的洞察组织成用户可读、�
 - [ ] AC8: 无重要事件且校验放行（`no_significant_event=true` + `releasable=true`）时，brief 输出明确的「无重要事件」、`Report.status=done`，**不置 failed**；批次失败或不可放行时 `Report.status=failed`。
 - [ ] AC9: 单份报告平均生成成本按 `Report.type` 分别 ≤ `eval-criteria.md` 阈值（**2026-05-27 按 Opus-on-relay 含校验口径重标**：`deep_dive` ≤ ¥15；`brief` ≤ ¥5；`initial_digest` ≤ ¥30。原 ¥3.0/¥0.5/¥8.0 假设 analyzer=Sonnet 且 analyze-only，已废）。阈值以 `eval-criteria.md` 为单一事实源。
 - [ ] AC10: 报告状态正确流转 —— 生成成功置 `done`、失败置 `failed`（可重跑回 `generating`）、归档置 `archived`，与管理看板一致。
+- [ ] AC11: 当本期选中近期候选时，Brief 中每条可见洞察均含该候选集的一条成功校验引用；若没有符合项，产出 done 状态的空 Brief，并记录新鲜度审计字段。
 
 ## 非功能要求
 
