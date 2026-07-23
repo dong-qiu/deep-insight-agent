@@ -12,10 +12,12 @@ import { getContentItem, getSource } from "../db/repos.js";
 import { listRecentPublishedEventEvidence, saveReport } from "../db/reports.js";
 import { notifyFailure, notifyReport } from "../runtime/alert.js";
 import { runJob } from "../runtime/jobs.js";
-import type { AnalysisBatch, ContentItem, Report, Topic, ValidationResult } from "../types.js";
+import type { AnalysisBatch, ContentItem, Report, TechLead, Topic, ValidationResult } from "../types.js";
+import { upsertTechLeads } from "../db/tech-leads.js";
 import { analyze, analyzerCacheVersion, type HistoricalEvent } from "./analyzer.js";
 import { buildReport, reportHighlights, type BriefFreshness, type CitationDisplay } from "./report-gen.js";
 import { consistencyCacheVersion, isValidationDegraded, validateBatch } from "./validator.js";
+import { extractLeadCandidates } from "./tech-leads.js";
 
 /** 分析某主题某窗口的 ContentItem → AnalysisBatch 落库；包一条 analyze Run（含成本）。
  *  成本经 analyze 的 onCost 回调按返回值透传给本 Run 的 ctx.recordCost —— 并发隔离，不读全局 meter 做差。 */
@@ -83,6 +85,24 @@ export async function runValidation(
     return vr;
   });
   return result;
+}
+
+/** 技术线索 V1：从本批已成功校验的引用确定性派生。没有 LLM 调用、没有新事实文本；
+ * 与 report-gen 同样只消费校验白名单，但独立持久化，日报空刊也不会丢失合格线索。 */
+export function runTechLeadExtraction(
+  db: DB,
+  batch: AnalysisBatch,
+  validation: ValidationResult,
+  now = new Date().toISOString(),
+): TechLead[] {
+  const items = new Map<string, ContentItem>();
+  for (const insight of batch.insights) for (const citation of insight.citations) {
+    if (!items.has(citation.content_item_id)) {
+      const item = getContentItem(db, citation.content_item_id);
+      if (item) items.set(item.id, item);
+    }
+  }
+  return upsertTechLeads(db, extractLeadCandidates(batch, validation, items, now), now);
 }
 
 /** 生成报告 → 落库（FS 正文 + 索引 + FTS）；包一条 report-gen Run。确定性，无 LLM 成本。 */

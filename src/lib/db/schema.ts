@@ -201,6 +201,34 @@ CREATE TABLE IF NOT EXISTS report_index (
 CREATE INDEX IF NOT EXISTS idx_report_index_topic ON report_index(topic_id);
 CREATE INDEX IF NOT EXISTS idx_report_index_date  ON report_index(date);
 
+-- 技术线索：由成功校验洞察确定性派生。canonical_key 在一个主题内唯一，保证“新证据更新而非重复推荐”。
+CREATE TABLE IF NOT EXISTS tech_lead (
+  id                 TEXT PRIMARY KEY,
+  topic_id           TEXT NOT NULL REFERENCES topic(id),
+  canonical_key      TEXT NOT NULL,
+  kind               TEXT NOT NULL CHECK (kind IN ('model','framework','paper','benchmark','tool','method','security','other')),
+  title              TEXT NOT NULL,
+  summary            TEXT NOT NULL,
+  status             TEXT NOT NULL CHECK (status IN ('recommended','watching','dismissed')) DEFAULT 'recommended',
+  score              REAL NOT NULL,
+  score_detail       TEXT NOT NULL,
+  first_seen_at      TEXT NOT NULL,
+  last_seen_at       TEXT NOT NULL,
+  latest_evidence_at TEXT NOT NULL,
+  UNIQUE(topic_id, canonical_key)
+);
+CREATE INDEX IF NOT EXISTS idx_tech_lead_topic_score ON tech_lead(topic_id, score DESC);
+CREATE INDEX IF NOT EXISTS idx_tech_lead_latest ON tech_lead(latest_evidence_at DESC);
+
+CREATE TABLE IF NOT EXISTS tech_lead_evidence (
+  lead_id        TEXT NOT NULL REFERENCES tech_lead(id) ON DELETE CASCADE,
+  insight_id     TEXT NOT NULL,
+  citation_index INTEGER NOT NULL,
+  added_at       TEXT NOT NULL,
+  PRIMARY KEY (lead_id, insight_id, citation_index),
+  FOREIGN KEY (insight_id, citation_index) REFERENCES citation(insight_id, citation_index)
+);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS report_fts USING fts5(report_id UNINDEXED, title, summary, body);
 
 -- ── 增量6c：审计日志（append-only，architecture 安全设计「审计与日志」，保留 90 天）──

@@ -4,8 +4,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { getAnalysisBatch, getValidationResult, saveAnalysisBatch, saveValidationResult } from "../db/analysis.js";
 import { type DB, openDb } from "../db/index.js";
-import { insertTopic, listRuns } from "../db/repos.js";
-import type { AnalysisBatch, Insight, Report, ReportIndexEntry, Topic, ValidationResult } from "../types.js";
+import { insertContentItem, insertSource, insertTopic, listRuns } from "../db/repos.js";
+import { listTechLeads } from "../db/tech-leads.js";
+import type { AnalysisBatch, ContentItem, Insight, Report, ReportIndexEntry, Source, Topic, ValidationResult } from "../types.js";
 
 // vi.hoisted：vi.mock 工厂被提升到文件顶部，须用 hoisted 让 mock fns 在工厂运行时已初始化
 const { analyzeMock, validateBatchMock, buildReportMock, saveReportMock } = vi.hoisted(() => ({
@@ -36,7 +37,7 @@ vi.mock("../runtime/alert.js", async (orig) => ({
   notifyReport: vi.fn(),
 }));
 
-import { runAnalysis, runReportGen, runValidation } from "./pipeline.js";
+import { runAnalysis, runReportGen, runTechLeadExtraction, runValidation } from "./pipeline.js";
 
 let db: DB;
 const topic: Topic = {
@@ -183,6 +184,21 @@ describe("runReportGen", () => {
         event_id: "evt_cached", content_item_ids: ["ci1"],
       })],
     }));
+  });
+});
+
+describe("runTechLeadExtraction", () => {
+  it("真实 batch + validation + DB content 接线后，只把 pass 证据持久化为线索", () => {
+    insertSource(db, { id: "s1", name: "Source", type: "rss", endpoint: "https://x", topic_ids: [topic.id], fetch_interval: "6h", backfill: null, enabled: true } as Source);
+    const content: ContentItem = { id: "ci1", source_id: "s1", url: "https://x/ci1", title: "Agent tool", author: null, published_at: "2026-06-07T00:00:00Z", fetched_at: "2026-06-07T00:00:00Z", language: "en", topic_ids: [topic.id], tags: [], body: "q", body_kind: "article", raw_ref: "", content_hash: "h", fetch_status: "ok" };
+    insertContentItem(db, content);
+    const batch = mkBatch();
+    batch.insights[0].headline = "Agent tool";
+    batch.insights[0].tags = ["tool"];
+    saveAnalysisBatch(db, batch); saveValidationResult(db, batch.id, mkValidation());
+    const leads = runTechLeadExtraction(db, batch, mkValidation(), "2026-06-07T01:00:00Z");
+    expect(leads).toHaveLength(1);
+    expect(listTechLeads(db)[0]).toMatchObject({ topic_id: topic.id, title: "Agent tool" });
   });
 });
 

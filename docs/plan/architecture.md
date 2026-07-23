@@ -323,6 +323,24 @@ Source ─采集▶ ContentItem ─分析▶ AnalysisBatch(Insight+Citation) ─
 - `entity_names` = MVP 阶段恒为空数组（实体追踪后续迭代）
 - `tags` = 报告纳入洞察对应 `ContentItem.tags` 去重后的集合
 
+### 技术线索 (TechLead / TechLeadEvidence)
+
+成功校验洞察的确定性投影，用于“下一步值得关注什么”；不是独立的报告发布链。
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `id` / `topic_id` | string | Y | 线索主键 / → `Topic.id` |
+| `canonical_key` | string | Y | 同主题内唯一；优先 `event_id`，否则为首实体或标题的规范化键 |
+| `kind` | enum | Y | `model` / `framework` / `paper` / `benchmark` / `tool` / `method` / `security` / `other` |
+| `title` / `summary` | string | Y | 由已校验洞察确定性投影，不新增 LLM 事实 |
+| `status` | enum | Y | `recommended` / `watching` / `dismissed`；用户状态不会被每日派生覆盖 |
+| `score` / `score_detail` | float / object | Y | 近期性、独立来源证据、重要性、标签相关性的可解释分数 |
+| `first_seen_at` / `last_seen_at` / `latest_evidence_at` | datetime | Y | 追踪生命周期；默认推荐只取近 48 小时有证据的记录 |
+| `TechLeadEvidence` | `(lead_id, insight_id, citation_index)` | Y | 复合键精确关联 `Citation`；查询时再联 `CitationCheck.verdict=pass`，因此失效引用不会显示 |
+
+派生顺序为 `ValidationResult(pass)` → `TechLeadEvidence` → `TechLead`；在每个主题 validate 后、报告生成前执行。
+线索派生失败记录运行错误但不阻断已校验报告发布。
+
 ### 运行实体 (Run)
 
 agent 执行单元的状态追踪；由 Job Runner 写入 SQLite，支撑管理看板「流水线追踪 / 失败下钻 / 重试」。
