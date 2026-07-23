@@ -1011,3 +1011,32 @@ S1 上线后第一个优化。**问题**：边权=生频次 → hub 实体（Ant
 - **读时归一化、零迁移、可回退**：`entity-normalize.ts`（`normKey`/`canonKey`/`buildCanonicalizer`）；图派生 `deriveCandidateGraph` 统计前 canonicalize（展示名取簇内最高频写法）；**drill 按 `canonKey` 匹配**（点 GPT-5.5 节点连变体 GPT 5.5 的洞察一并纳入）。不改 DB 里 insight.entities。
 - **范围**：只图域（报告筛选/主题页同名归并 + 写时回填留后续）。818 全量绿（+9 测）。别名表随新变体可手动增长。
 - **已知限制（独立 review 提）**：①**F1 标点敏感名误并**——normKey 去全部标点，`C++`/`C#`/`C`→`c`、`.NET`/`Net`→`net` 会被静默归并（真不同实体）。prod probe 实证当前 544 实体无此碰撞，但**接 code 类源 / 出现 C++/C#/.NET 类实体时须复查**（读时归一、可回退；届时考虑「禁并 denylist」或保留区分性标点）。②**F2 别名 key 精确串匹配**——`sakana ai`（小写）等别名 key 的变体不命中，需各列一条。③**F5 别名无条件改写**——非严格机制中性（数据巧合中性），扩别名表须重核 eval 基线。④ drill 空 key 已守卫早返回（与图侧一致）。
+
+---
+
+## ADR-0013: 应用依赖锁定与传递漏洞临时覆盖
+
+- **日期**: 2026-07-23
+- **状态**: Accepted
+
+### 背景
+
+生产 CI 的 `npm audit --omit=dev --audit-level=high` 新检出 Next 运行时依赖的 high 漏洞。应用此前对
+直接依赖普遍使用 `^`，Anthropic SDK 使用 `latest`；本地 Node 24/npm 11 与 CI/Docker Node 20 也不一致，
+导致锁文件更新和原生模块验证缺乏可复现性。
+
+### 决定
+
+1. 应用直接生产依赖锁为经验证的精确版本，尤其是 Next/React 兼容组、`next-auth` beta、LLM SDK、
+XML parser 与原生 SQLite 驱动；类型包移入 `devDependencies`。升级由独立 PR 提交，CI 验证后再更新 lockfile。
+2. 运行时统一为 Node `20.18.1` / npm 10：`.nvmrc`、Dockerfile 和 CI 均以该 Node patch 为基准，
+`engines` 限制在 Node 20、npm 10。
+3. Next 当前发布线仍声明 vulnerable `sharp` / `postcss` 传递版本，不能接受 `npm audit fix --force`
+建议的 Next 15→9 降级；使用 npm `overrides` 临时固定 `sharp@0.35.0` 与 `postcss@8.5.10`。
+
+### 验证与退出条件
+
+- 必跑 `npm ci`、typecheck、全量测试、Next build、Linux Docker build 与生产依赖 audit；图片优化路径由
+  Docker/Linux build 覆盖，发布前再做一次真实图片请求烟测。
+- `overrides` 是临时例外：一旦 Next 上游将安全版本写入自身依赖范围，删除 override 并重新锁定；不得以
+  降低 audit 门槛或忽略 high 漏洞替代修复。

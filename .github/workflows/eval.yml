@@ -63,7 +63,7 @@ jobs:
       - if: steps.guard.outputs.skip != 'true'
         uses: actions/setup-node@v6
         with:
-          node-version: "20"
+          node-version: "20.18.1"
           cache: npm
       - if: steps.guard.outputs.skip != 'true'
         run: npm ci
