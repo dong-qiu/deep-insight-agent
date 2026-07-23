@@ -9,6 +9,12 @@ import { facetLabel } from "../topics/facets.js";
 import { flagLabel, isIncludableCheck, isValidationError } from "../utils/citation-verdict.js";
 import { coverageGaps, specificClaims } from "./analyzer.js";
 
+/** 每日节奏中已发布 event 的成功校验证据；由 DB 层读取、作为纯函数输入传入。 */
+export interface PublishedEventEvidence {
+  event_id: string;
+  content_item_ids: string[];
+}
+
 /** 覆盖度外露（诚实兜底）：结论里未被**已渲染引用**（剔除 blocked 后）直接覆盖的具体数字/实体。
  *  只按真正进报告的 quote 算——被屏蔽的引用不在报告里，其覆盖不作数。返回缺口 token（空=全覆盖）。
  *  不自动补引（错补同形不同义会被 validator 放行、制造"点开看错"，见 analyzer.coverageGaps）。 */
@@ -22,6 +28,7 @@ function coverageGapTokens(x: IncludedInsight): string[] {
 export interface IncludedInsight {
   insight: Insight;
   citationIndices: number[]; // 剔除 blocked 后保留的引用下标（含校验失败引用，带标签展示）
+  includableCitationIndices: number[]; // pass / genuine uncertain：可作为发布"新增证据"的引用
   flaggedUncertain: boolean; // 含 genuine uncertain 引用（判官判原文信息不足）→「待核实」
   flaggedError: boolean; // 含一致性「校验失败」引用（调用出错，可重跑）→「校验失败·待重试」
   blockedCount: number; // 被 validator 屏蔽的引用数（不在 citationIndices 内）
@@ -72,6 +79,7 @@ export function selectInsights(batch: AnalysisBatch, validation: ValidationResul
   for (const ins of batch.insights) {
     const cs = checksByInsight.get(ins.id);
     const kept: number[] = [];
+    const includableIndices: number[] = [];
     let flaggedUncertain = false;
     let flaggedError = false;
     let includable = false; // ≥1 条「已成功校验」引用（pass / genuine uncertain）才纳入
@@ -88,7 +96,10 @@ export function selectInsights(batch: AnalysisBatch, validation: ValidationResul
           if (isValidationError(c!)) flaggedError = true;
           else flaggedUncertain = true;
         }
-        if (isIncludableCheck(c!)) includable = true; // 校验失败不计入纳入闸门
+        if (isIncludableCheck(c!)) {
+          includable = true; // 校验失败不计入纳入闸门
+          includableIndices.push(i);
+        }
       } else if (v === "blocked") {
         blockedCount += 1;
         const r = c ? blockedReason(c) : null;
@@ -97,9 +108,35 @@ export function selectInsights(batch: AnalysisBatch, validation: ValidationResul
     });
     // 纳入需 ≥1 成功校验引用：唯一引用校验失败的洞察整条剔除（不发零成功校验内容，等重校验恢复）
     if (includable)
-      out.push({ insight: ins, citationIndices: kept, flaggedUncertain, flaggedError, blockedCount, blockedReasonCounts });
+      out.push({
+        insight: ins, citationIndices: kept, includableCitationIndices: includableIndices,
+        flaggedUncertain, flaggedError, blockedCount, blockedReasonCounts,
+      });
   }
   return out;
+}
+
+/** Daily Brief 硬去重：同 event 已发布且没有新增成功校验证据时，不得再次发布。
+ * 缓存命中可继续节省 LLM 调用，但不能把旧 statement/citation 重新发给用户。 */
+export function selectBriefInsights(
+  batch: AnalysisBatch,
+  validation: ValidationResult,
+  type: Report["type"],
+  publishedEventEvidence: PublishedEventEvidence[] = [],
+): IncludedInsight[] {
+  const included = selectInsights(batch, validation);
+  if (type !== "brief" || !publishedEventEvidence.length) return included;
+  const evidenceByEvent = new Map(
+    publishedEventEvidence.map((event) => [event.event_id, new Set(event.content_item_ids)]),
+  );
+  return included.filter((x) => {
+    const eventId = x.insight.event_id;
+    const previousEvidence = eventId ? evidenceByEvent.get(eventId) : undefined;
+    if (!previousEvidence) return true;
+    return x.includableCitationIndices.some(
+      (i) => !previousEvidence.has(x.insight.citations[i].content_item_id),
+    );
+  });
 }
 
 /** 要点选取（详版 headlines 与推送要点**共用**）：纳入洞察按 importance 降序取前 HIGHLIGHTS_MAX。
@@ -119,8 +156,14 @@ export interface ReportHighlight {
 
 /** 纯函数：批次 + 校验 → 排序后的推送要点清单（复用报告选取/排序，与 index.highlights 同源同序）。
  *  确定性、无 LLM——推送渠道据此把「一坨 summary」换成可扫读的分级要点。 */
-export function reportHighlights(batch: AnalysisBatch, validation: ValidationResult): ReportHighlight[] {
-  return pickHighlightInsights(selectInsights(batch, validation)).map((x) => ({
+export function reportHighlights(
+  batch: AnalysisBatch,
+  validation: ValidationResult,
+  opts: { type?: Report["type"]; publishedEventEvidence?: PublishedEventEvidence[] } = {},
+): ReportHighlight[] {
+  return pickHighlightInsights(
+    selectBriefInsights(batch, validation, opts.type ?? "brief", opts.publishedEventEvidence),
+  ).map((x) => ({
     text: x.insight.headline?.trim() || x.insight.statement,
     importance: x.insight.importance,
     key: x.insight.importance >= KEY_MIN_IMPORTANCE,
@@ -153,12 +196,15 @@ export interface BuildReportInput {
   type: Report["type"];
   /** content_item_id → 展示元数据，用于派生 source_ids / tags + 渲染引用链接 */
   contentLookup: Map<string, CitationDisplay>;
+  publishedEventEvidence?: PublishedEventEvidence[];
   prevReportId?: string | null;
   now?: string; // 注入时间便于测试
 }
 
 export function buildReport(input: BuildReportInput): { report: Report; index: ReportIndexEntry } {
-  const included = selectInsights(input.batch, input.validation);
+  const included = selectBriefInsights(
+    input.batch, input.validation, input.type, input.publishedEventEvidence,
+  );
   const id = `rep_${randomUUID().slice(0, 8)}`;
   const now = input.now ?? new Date().toISOString();
   const date = now.slice(0, 10);

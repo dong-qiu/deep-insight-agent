@@ -9,7 +9,7 @@ import {
 } from "../db/analysis-cache.js";
 import { makeConsistencyCache } from "../db/consistency-cache.js";
 import { getContentItem, getSource } from "../db/repos.js";
-import { saveReport } from "../db/reports.js";
+import { listRecentPublishedEventEvidence, saveReport } from "../db/reports.js";
 import { notifyFailure, notifyReport } from "../runtime/alert.js";
 import { runJob } from "../runtime/jobs.js";
 import type { AnalysisBatch, ContentItem, Report, Topic, ValidationResult } from "../types.js";
@@ -118,12 +118,18 @@ export async function runReportGen(
     db,
     { kind: "report-gen", target: { topic_id: opts.topic.id, batch_id: opts.batch.id } },
     async () => {
+      // 只对 Daily Brief 读取已发布基线：缓存命中洞察仍会重校验，
+      // 但同 event 无新增成功证据时不得再次进入用户可见报告。
+      const publishedEventEvidence = opts.type === "brief"
+        ? listRecentPublishedEventEvidence(db, opts.topic.id)
+        : [];
       const { report, index } = buildReport({
         topic: opts.topic,
         batch: opts.batch,
         validation: opts.validation,
         type: opts.type,
         contentLookup,
+        publishedEventEvidence,
         prevReportId: opts.prevReportId,
       });
       saveReport(db, report, index);
@@ -131,7 +137,9 @@ export async function runReportGen(
       // 非阻塞、永不抛——放 saveReport 之后，推送失败绝不影响已落库报告 / Run done。
       // 推送要点（复用报告选取/排序，与 index.highlights 同源同序）：让邮件/webhook 展示可扫读的
       // 分级要点，取代扁平 summary。只取 text/key（渲染够用），importance 排序已在 reportHighlights 内完成。
-      const highlights = reportHighlights(opts.batch, opts.validation).map(({ text, key }) => ({ text, key }));
+      const highlights = reportHighlights(opts.batch, opts.validation, {
+        type: opts.type, publishedEventEvidence,
+      }).map(({ text, key }) => ({ text, key }));
       notifyReport({
         id: report.id,
         type: report.type,

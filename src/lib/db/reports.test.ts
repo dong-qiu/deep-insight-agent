@@ -5,7 +5,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { AnalysisBatch, Report, ReportIndexEntry, Topic, ValidationResult } from "../types.js";
 import { saveAnalysisBatch, saveValidationResult } from "./analysis.js";
 import { type DB, openDb } from "./index.js";
-import { chainTypesFor, distinctIndexValues, entityTrends, getReport, latestReportForTopicSince, listBlockedChecksForReport, listRecentBriefEvents, listRecentReports, previousReportForTopic, queryReportIndex, reportNeighbors, reportStatusCounts, sanitizeFtsQuery, saveReport, searchReports, SNIPPET_CLOSE, SNIPPET_OPEN, topicEvolution, topicReportStats } from "./reports.js";
+import { chainTypesFor, distinctIndexValues, entityTrends, getReport, latestReportForTopicSince, listBlockedChecksForReport, listRecentBriefEvents, listRecentPublishedEventEvidence, listRecentReports, previousReportForTopic, queryReportIndex, reportNeighbors, reportStatusCounts, sanitizeFtsQuery, saveReport, searchReports, SNIPPET_CLOSE, SNIPPET_OPEN, topicEvolution, topicReportStats } from "./reports.js";
 import { getTopic, insertSource, insertTopic } from "./repos.js";
 
 const dir = mkdtempSync(join(tmpdir(), "ia-reports-"));
@@ -405,7 +405,7 @@ describe("listRecentBriefEvents（P1 不复报 · 喂 analyzer 的历史事件�
   beforeEach(() => {
     const seed = (
       reportId: string,
-      type: "brief" | "deep_dive",
+      type: "brief" | "deep_dive" | "initial_digest",
       date: string,
       insights: Array<{ id: string; event_id: string | null; statement: string }>,
     ) => {
@@ -443,12 +443,15 @@ describe("listRecentBriefEvents（P1 不复报 · 喂 analyzer 的历史事件�
     seed("rep_deep", "deep_dive", today, [
       { id: "ins_d1", event_id: "evt_deep_only", statement: "深度报告独有事件" }, // 必须不入清单
     ]);
+    seed("rep_initial", "initial_digest", yesterday, [
+      { id: "ins_initial", event_id: "evt_initial", statement: "首版基线事件" },
+    ]);
   });
 
-  it("只取 brief；同 event_id 取最新；NULL event_id 过滤；deep_dive 不入", () => {
+  it("取 brief + initial_digest；同 event_id 取最新；NULL event_id 过滤；deep_dive 不入", () => {
     const events = listRecentBriefEvents(db, "t1");
     const ids = events.map((e) => e.event_id).sort();
-    expect(ids).toEqual(["evt_alpha", "evt_beta"]); // 不含 evt_deep_only
+    expect(ids).toEqual(["evt_alpha", "evt_beta", "evt_initial"]); // 不含 evt_deep_only
     // evt_alpha 取 today 的 statement，不是 yesterday 那条
     expect(events.find((e) => e.event_id === "evt_alpha")?.statement).toBe("今日 alpha 进展");
     expect(events.find((e) => e.event_id === "evt_alpha")?.date).toBe(today);
@@ -466,6 +469,36 @@ describe("listRecentBriefEvents（P1 不复报 · 喂 analyzer 的历史事件�
 
   it("无报告 / 别的 topic_id → 空数组（冷启动）", () => {
     expect(listRecentBriefEvents(db, "t_other")).toEqual([]);
+  });
+
+  it("已发布证据仅计 pass / genuine uncertain，校验失败引用不成为新增依据", () => {
+    const date = today;
+    const batch: AnalysisBatch = {
+      id: "b_evidence", topic_id: "t1", time_window: { start: date, end: date }, status: "done", no_significant_event: false,
+      insights: [{
+        id: "ins_evidence", topic_id: "t1", type: "aggregation", event_id: "evt_evidence", statement: "有校验证据的事件",
+        importance: 4, importance_basis: "x", source_count: 3, multi_source: true, time_window: { start: date, end: date }, confidence: null, language: "zh",
+        citations: [
+          { content_item_id: "ci_pass", quote: "pass", locator: { paragraph_index: 0, char_start: 0, char_end: 1 } },
+          { content_item_id: "ci_uncertain", quote: "uncertain", locator: { paragraph_index: 0, char_start: 1, char_end: 2 } },
+          { content_item_id: "ci_error", quote: "error", locator: { paragraph_index: 0, char_start: 2, char_end: 3 } },
+        ],
+      }],
+    };
+    saveAnalysisBatch(db, batch);
+    saveValidationResult(db, batch.id, {
+      checks: [
+        { insight_id: "ins_evidence", citation_index: 0, reachability: "pass", reachability_reason: "ok", consistency: "support", consistency_reason: "ok", verdict: "pass" },
+        { insight_id: "ins_evidence", citation_index: 1, reachability: "pass", reachability_reason: "ok", consistency: "uncertain", consistency_reason: "uncertain", verdict: "flagged" },
+        { insight_id: "ins_evidence", citation_index: 2, reachability: "pass", reachability_reason: "ok", consistency: "not_evaluated", consistency_reason: "not_evaluated", verdict: "flagged" },
+      ],
+      report: { total: 3, pass: 1, blocked: 0, flagged: 2, errored: 1, consistency_failure_rate: 0, flagged_rate: 0.67, insights_total: 1, insights_includable: 1, releasable: true },
+    });
+    const rep: Report = { ...report, id: "rep_evidence", type: "brief", generated_at: `${date}T09:00:00Z`, insight_ids: ["ins_evidence"] };
+    saveReport(db, rep, { ...index, report_id: rep.id, date, type: "brief" }, { dir });
+
+    expect(listRecentPublishedEventEvidence(db, "t1").find((e) => e.event_id === "evt_evidence"))
+      .toMatchObject({ content_item_ids: ["ci_pass", "ci_uncertain"] });
   });
 });
 

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # eval 门禁（本地确定性触发器）。判定逻辑见同目录 eval-gate-check.sh（与 CI 共用）。
 #
-# 本批推送的提交若改了「AI 质量面」(分析/校验 agent、模型配置、数据源、评测集) 却没盖
-# `Eval-Gate:` 章，则阻断 push。盖章由 eval-gate skill 跑完 eval、对比 baseline 后写入
+# 本批推送的提交若改了「AI 质量面」(分析/校验 agent、模型配置、数据源、评测集，或报告 agent) 却没盖
+# `Eval-Gate:` 章，则阻断 push。盖章由 eval-gate skill 跑完适用评测、对比 baseline 或确定性回归后写入
 # （Claude Code: `/eval-gate`；Codex: `$eval-gate`）。
 # hook 本身不跑 eval（要 key/花钱/慢）——只做「跑没跑过」的策略门：把"记得跑"变成"绕不过"。
 #
@@ -44,6 +44,8 @@ cat >&2 <<'EOF'
   → eval 通过后给相关提交盖章（任一提交带 trailer 即可放行整批）：
        git commit --amend --trailer "Eval-Gate: pass (a1 <date>, baseline ok)"
   → 确无需重测（纯重构/注释误命中）：盖 "Eval-Gate: skip (<原因>)"。
+  → 确定性 report-gen 选择/渲染改动：跑生产路径回归后盖
+       "Eval-Gate: scoped (deterministic report selection; <tests>)"。
   → 应急留痕绕过：EVAL_GATE_ACK=1 git push
 EOF
 exit 1
