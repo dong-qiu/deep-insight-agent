@@ -26,7 +26,7 @@ MVP 范围：主题聚合 + 趋势识别 + 信号去噪 + 多源交叉；**不�
 
 ## 行为规约
 
-1. 主题聚合：跨源、跨语言整合同主题信息，归并近义说法。MVP 仅整合不翻译，输出语言跟随 `Topic.language`。
+1. 主题聚合：跨源、跨语言整合同主题信息，归并近义说法。MVP 仅整合不翻译，输出语言跟随 `Topic.language`。Daily Brief 的输入选择在存在近期（默认 48 小时）候选时，保留至少 40% 的近期项；其余名额仍按相关性与来源多样性填充，避免只追逐新而丢失必要上下文。
 2. 趋势识别：基于时间维度的热度变化、新兴主题、关联事件聚合；**仅描述已发生的变化，不输出方向性预测**。数据量不足时产出 `type=trend` + `confidence=low` 且 `statement` 标注「积累中」，不编造趋势。
 3. 关联事件聚合：把指向同一现实事件的洞察赋同一 `event_id`。赋值时与「历史 `event_id` 池」比对 —— **判定准则**：① 该洞察 citations 与某历史 event 的 citations 有共享 `content_item_id`，或 ② `statement` 语义高度相似（LLM 评判）→ 复用既有 `event_id`；否则分配新 ID。这是下游「不复报 / 同事件更新」的前提。
 4. `Insight` 必填字段赋值规则：`time_window` 继承 `AnalysisBatch.time_window`；`language` 取 `Topic.language`（`Topic.language=mixed` 时取该洞察 `citations` 引用内容的主语言）；`source_count` = 该洞察 `citations` 经 `Citation.content_item_id` → `ContentItem.source_id` **去重后的源数**；`multi_source` = `source_count ≥ 2`。
@@ -50,6 +50,7 @@ MVP 范围：主题聚合 + 趋势识别 + 信号去噪 + 多源交叉；**不�
 - [ ] **AC8（event_id 跨批次对齐）**: 在 `eval-criteria.md` 规定的「事件对齐集」上，event_id 对齐准确率 ≥ 阈值（同一现实事件在相邻时间窗批次中被赋相同 `event_id`，新事件分配新 ID）。
 - [ ] AC9: 注入持续失败的 LLM 调用，重试耗尽后 `AnalysisBatch.status=failed`、`no_significant_event=false`、`insights=[]`，并通过管理看板告警通道告警。
 - [ ] **AC10（A1 验证 · DCP-1 硬门槛）**: 在 `eval-criteria.md` 规定的真实数据评测集上，引用一致性合格率、非显然洞察占比、幻觉率达到 `eval-criteria.md` 上线门槛。
+- [ ] AC11: 给定近期候选与更高相关度的历史候选，Daily Brief 输入选择仍保留配置配额的近期项；无近期候选时选择行为与常规相关性/多样性策略一致。
 
 ## 非功能要求
 

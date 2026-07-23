@@ -14,7 +14,7 @@ import { notifyFailure, notifyReport } from "../runtime/alert.js";
 import { runJob } from "../runtime/jobs.js";
 import type { AnalysisBatch, ContentItem, Report, Topic, ValidationResult } from "../types.js";
 import { analyze, analyzerCacheVersion, type HistoricalEvent } from "./analyzer.js";
-import { buildReport, reportHighlights, type CitationDisplay } from "./report-gen.js";
+import { buildReport, reportHighlights, type BriefFreshness, type CitationDisplay } from "./report-gen.js";
 import { consistencyCacheVersion, isValidationDegraded, validateBatch } from "./validator.js";
 
 /** 分析某主题某窗口的 ContentItem → AnalysisBatch 落库；包一条 analyze Run（含成本）。
@@ -94,6 +94,7 @@ export async function runReportGen(
     validation: ValidationResult;
     type: Report["type"];
     prevReportId?: string | null;
+    briefFreshness?: BriefFreshness;
   },
 ): Promise<Report> {
   // 为被引内容建展示元数据查找表：source_id / tags（派生 source_ids / tags）
@@ -111,6 +112,7 @@ export async function runReportGen(
         tags: ci.tags,
         url: ci.url,
         published_at: ci.published_at,
+        observed_at: ci.published_at ?? ci.fetched_at,
       });
     }
   }
@@ -130,6 +132,7 @@ export async function runReportGen(
         type: opts.type,
         contentLookup,
         publishedEventEvidence,
+        briefFreshness: opts.briefFreshness,
         prevReportId: opts.prevReportId,
       });
       saveReport(db, report, index);
@@ -138,7 +141,7 @@ export async function runReportGen(
       // 推送要点（复用报告选取/排序，与 index.highlights 同源同序）：让邮件/webhook 展示可扫读的
       // 分级要点，取代扁平 summary。只取 text/key（渲染够用），importance 排序已在 reportHighlights 内完成。
       const highlights = reportHighlights(opts.batch, opts.validation, {
-        type: opts.type, publishedEventEvidence,
+        type: opts.type, publishedEventEvidence, freshness: opts.briefFreshness,
       }).map(({ text, key }) => ({ text, key }));
       notifyReport({
         id: report.id,

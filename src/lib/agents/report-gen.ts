@@ -15,6 +15,13 @@ export interface PublishedEventEvidence {
   content_item_ids: string[];
 }
 
+/** Brief 的近期证据发布闸门。只有选择阶段实际选到近期候选才启用，避免无新源时硬造空窗。 */
+export interface BriefFreshness {
+  since: string;
+  content_item_ids: string[];
+  freshest_candidate_at: string | null;
+}
+
 /** 覆盖度外露（诚实兜底）：结论里未被**已渲染引用**（剔除 blocked 后）直接覆盖的具体数字/实体。
  *  只按真正进报告的 quote 算——被屏蔽的引用不在报告里，其覆盖不作数。返回缺口 token（空=全覆盖）。
  *  不自动补引（错补同形不同义会被 validator 放行、制造"点开看错"，见 analyzer.coverageGaps）。 */
@@ -123,13 +130,21 @@ export function selectBriefInsights(
   validation: ValidationResult,
   type: Report["type"],
   publishedEventEvidence: PublishedEventEvidence[] = [],
+  freshness?: BriefFreshness,
 ): IncludedInsight[] {
   const included = selectInsights(batch, validation);
-  if (type !== "brief" || !publishedEventEvidence.length) return included;
+  if (type !== "brief") return included;
+  // 有近期候选时，每条可发布 Brief 洞察都必须引用至少一条通过校验的近期候选。
+  // 这是一道确定性发布门：模型即使偏好旧材料，也不能把旧事件包装成"今日"内容。
+  const freshItemIds = new Set(freshness?.content_item_ids ?? []);
+  const freshIncluded = freshItemIds.size
+    ? included.filter((x) => x.includableCitationIndices.some((i) => freshItemIds.has(x.insight.citations[i].content_item_id)))
+    : included;
+  if (!publishedEventEvidence.length) return freshIncluded;
   const evidenceByEvent = new Map(
     publishedEventEvidence.map((event) => [event.event_id, new Set(event.content_item_ids)]),
   );
-  return included.filter((x) => {
+  return freshIncluded.filter((x) => {
     const eventId = x.insight.event_id;
     const previousEvidence = eventId ? evidenceByEvent.get(eventId) : undefined;
     if (!previousEvidence) return true;
@@ -159,10 +174,10 @@ export interface ReportHighlight {
 export function reportHighlights(
   batch: AnalysisBatch,
   validation: ValidationResult,
-  opts: { type?: Report["type"]; publishedEventEvidence?: PublishedEventEvidence[] } = {},
+  opts: { type?: Report["type"]; publishedEventEvidence?: PublishedEventEvidence[]; freshness?: BriefFreshness } = {},
 ): ReportHighlight[] {
   return pickHighlightInsights(
-    selectBriefInsights(batch, validation, opts.type ?? "brief", opts.publishedEventEvidence),
+    selectBriefInsights(batch, validation, opts.type ?? "brief", opts.publishedEventEvidence, opts.freshness),
   ).map((x) => ({
     text: x.insight.headline?.trim() || x.insight.statement,
     importance: x.insight.importance,
@@ -187,6 +202,8 @@ export interface CitationDisplay {
   tags: string[];
   url: string;
   published_at: string | null;
+  /** published_at 缺失时的抓取时间；供 Brief 新鲜度审计计算。 */
+  observed_at: string;
 }
 
 export interface BuildReportInput {
@@ -197,13 +214,14 @@ export interface BuildReportInput {
   /** content_item_id → 展示元数据，用于派生 source_ids / tags + 渲染引用链接 */
   contentLookup: Map<string, CitationDisplay>;
   publishedEventEvidence?: PublishedEventEvidence[];
+  briefFreshness?: BriefFreshness;
   prevReportId?: string | null;
   now?: string; // 注入时间便于测试
 }
 
 export function buildReport(input: BuildReportInput): { report: Report; index: ReportIndexEntry } {
   const included = selectBriefInsights(
-    input.batch, input.validation, input.type, input.publishedEventEvidence,
+    input.batch, input.validation, input.type, input.publishedEventEvidence, input.briefFreshness,
   );
   const id = `rep_${randomUUID().slice(0, 8)}`;
   const now = input.now ?? new Date().toISOString();
@@ -230,6 +248,14 @@ export function buildReport(input: BuildReportInput): { report: Report; index: R
   const importance = included.length ? Math.max(...included.map((x) => x.insight.importance)) : 0;
   // 里程碑计数（ADR-0006）：纳入洞察中符合里程碑判定的条数，派生进 report_index 供主题页徽标/时间线。
   const milestoneCount = included.filter((x) => isMilestoneInsight(x.insight)).length;
+  // 仅按真正可发布（成功校验）的引用计算，避免被展示但校验出错的引用污染质量指标。
+  const citationTimes = included.flatMap((x) => x.includableCitationIndices
+    .map((i) => input.contentLookup.get(x.insight.citations[i].content_item_id)?.observed_at)
+    .filter((time): time is string => !!time));
+  const freshestCitationAt = citationTimes.sort().at(-1) ?? null;
+  const freshnessLagHours = freshestCitationAt
+    ? Math.max(0, (new Date(now).getTime() - new Date(freshestCitationAt).getTime()) / 3_600_000)
+    : null;
   const summary = included.slice(0, 3).map((x) => x.insight.statement).join(" ");
   // 卡片要点列表（headline 方案）：按重要性降序取前 N 条洞察的一句话 headline，供列表卡片分点扫读，
   // 取代把多条长 statement 拼成一坨的 summary。headline 缺失（旧批次/未产出）则回退该条 statement。
@@ -253,6 +279,9 @@ export function buildReport(input: BuildReportInput): { report: Report; index: R
     facets: input.topic.facets ?? [],
     date, source_ids: sourceIds, title, summary, highlights, tags, entity_names: entityNames, importance, event_ids: eventIds,
     milestone_count: milestoneCount,
+    freshest_candidate_at: input.briefFreshness?.freshest_candidate_at ?? null,
+    freshest_citation_at: freshestCitationAt,
+    freshness_lag_hours: freshnessLagHours,
   };
   return { report, index };
 }

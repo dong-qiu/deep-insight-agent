@@ -312,6 +312,9 @@ Source ─采集▶ ContentItem ─分析▶ AnalysisBatch(Insight+Citation) ─
 | `tags` / `entity_names` | string[] | N | 筛选维度，可为空数组 |
 | `importance` | int | Y | 排序维度 |
 | `event_ids` | string[] | Y | |
+| `freshest_candidate_at` | datetime \| null | N | Daily Brief 选择阶段实际选中的候选中最新的发布时间（无近期候选或历史报告为 null） |
+| `freshest_citation_at` | datetime \| null | N | 报告纳入洞察的成功校验引用中最新的内容时间；`published_at` 缺失时取 `fetched_at` |
+| `freshness_lag_hours` | float \| null | N | `generated_at - freshest_citation_at` 的小时数，供陈旧报告监控；没有有效引用为 null |
 
 **派生规则**（由 `report-generation` 归档时计算）：
 

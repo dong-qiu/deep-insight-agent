@@ -6,6 +6,26 @@ import type { DB } from "../db/index.js";
 import type { ContentItem, Topic } from "../types.js";
 import { archetypeProfile } from "../topics/archetype.js";
 
+/** Daily Brief 的近期证据窗口与选样配额。环境变量只允许收紧/放宽运行参数，默认值保证
+ * "有近两天信号时，至少四成分析输入来自近两天"；不影响用户手动 deep_dive。 */
+export const DEFAULT_BRIEF_FRESH_HOURS = 48;
+export const DEFAULT_BRIEF_FRESH_QUOTA = 0.4;
+
+export function briefFreshHours(): number {
+  const value = Number(process.env.BRIEF_FRESH_HOURS);
+  return Number.isFinite(value) && value > 0 ? value : DEFAULT_BRIEF_FRESH_HOURS;
+}
+
+export function briefFreshQuota(): number {
+  const value = Number(process.env.BRIEF_FRESH_QUOTA);
+  return Number.isFinite(value) && value >= 0 && value <= 1 ? value : DEFAULT_BRIEF_FRESH_QUOTA;
+}
+
+/** 内容新鲜度统一按原文发布时间优先、抓取时间兜底，避免无 published_at 的 RSS 项被误判为陈旧。 */
+export function contentObservedAt(item: Pick<ContentItem, "published_at" | "fetched_at">): string {
+  return item.published_at ?? item.fetched_at;
+}
+
 /** 把关键词拆成可匹配 token：英文按词、≥3 字符；CJK 片段 ≥2 字符。
  *  整短语子串匹配过脆（中文关键词永不命中英文摘要、英文长短语少见原样出现，曾把 arXiv 研究全过滤掉），
  *  按 token 命中可让英文研究摘要靠 software/agent/retrieval/inference 等词被识别为相关。 */
@@ -83,7 +103,14 @@ export function rankAndDiversify(
 export function selectAnalysisItems(
   db: DB,
   topic: Topic,
-  opts: { since: string; limit?: number; candidatePool?: number; coldStart?: boolean },
+  opts: {
+    since: string;
+    limit?: number;
+    candidatePool?: number;
+    coldStart?: boolean;
+    /** Daily Brief 专用：近期候选存在时，以确定性配额保留近期输入给 analyzer。 */
+    freshness?: { since: string; quota?: number };
+  },
 ): ContentItem[] {
   const limit = opts.limit ?? 15;
   // 候选池放大到覆盖 F1 后全行业量（每源 ≤50 × 源数），避免高产源按 recency 把研究源（arXiv）
@@ -94,5 +121,36 @@ export function selectAnalysisItems(
   });
   // ADR-0010：冷启动豁免硬下限（首报用软策略）；否则按 archetype profile 取 relevanceFloor。
   const relevanceFloor = opts.coldStart ? undefined : archetypeProfile(topic.archetype).relevanceFloor;
-  return rankAndDiversify(candidates, topic.keywords, limit, { relevanceFloor });
+  const rankingOpts = { relevanceFloor };
+  if (!opts.freshness || candidates.length <= limit) {
+    return rankAndDiversify(candidates, topic.keywords, limit, rankingOpts);
+  }
+
+  const fresh = candidates.filter((item) => contentObservedAt(item) >= opts.freshness!.since);
+  if (!fresh.length) return rankAndDiversify(candidates, topic.keywords, limit, rankingOpts);
+
+  // 先从近期池按同一相关度/多样性规则取保底名额，再由全池补齐。近期池只在存在时生效，
+  // 因而低频主题或源暂时无更新时仍维持原有的历史上下文覆盖。
+  const quota = opts.freshness.quota ?? DEFAULT_BRIEF_FRESH_QUOTA;
+  const freshLimit = Math.min(limit, Math.max(1, Math.ceil(limit * quota)));
+  const freshFirst = rankAndDiversify(fresh, topic.keywords, freshLimit, rankingOpts);
+  const overall = rankAndDiversify(candidates, topic.keywords, limit, rankingOpts);
+  const out = [...freshFirst];
+  const taken = new Set(out.map((item) => item.id));
+  for (const item of overall) {
+    if (out.length >= limit) break;
+    if (!taken.has(item.id)) {
+      taken.add(item.id);
+      out.push(item);
+    }
+  }
+  // overall 因来源 cap 可能未覆盖所有候选；最终兜底只补齐，不改变已保留的近期配额。
+  for (const item of candidates) {
+    if (out.length >= limit) break;
+    if (!taken.has(item.id)) {
+      taken.add(item.id);
+      out.push(item);
+    }
+  }
+  return out;
 }

@@ -40,8 +40,8 @@ export function saveReport(
         prev_report_id: report.prev_report_id, citation_count: report.citation_count, cost: j(report.cost),
       });
       db.prepare(
-        `INSERT INTO report_index (report_id,type,topic_id,facets,date,source_ids,title,summary,highlights,tags,entity_names,importance,event_ids,milestone_count)
-         VALUES (@report_id,@type,@topic_id,@facets,@date,@source_ids,@title,@summary,@highlights,@tags,@entity_names,@importance,@event_ids,@milestone_count)`,
+        `INSERT INTO report_index (report_id,type,topic_id,facets,date,source_ids,title,summary,highlights,tags,entity_names,importance,event_ids,milestone_count,freshest_candidate_at,freshest_citation_at,freshness_lag_hours)
+         VALUES (@report_id,@type,@topic_id,@facets,@date,@source_ids,@title,@summary,@highlights,@tags,@entity_names,@importance,@event_ids,@milestone_count,@freshest_candidate_at,@freshest_citation_at,@freshness_lag_hours)`,
       ).run({
         report_id: index.report_id, type: index.type, topic_id: index.topic_id,
         // facets 是领域分类维度（Step2c：industry 已退役）；写入端取 topic.facets，缺省落 '[]'。
@@ -49,6 +49,9 @@ export function saveReport(
         date: index.date, source_ids: j(index.source_ids), title: index.title, summary: index.summary,
         highlights: j(index.highlights), tags: j(index.tags), entity_names: j(index.entity_names), importance: index.importance,
         event_ids: j(index.event_ids), milestone_count: index.milestone_count,
+        freshest_candidate_at: index.freshest_candidate_at ?? null,
+        freshest_citation_at: index.freshest_citation_at ?? null,
+        freshness_lag_hours: index.freshness_lag_hours ?? null,
       });
       db.prepare(`INSERT INTO report_fts (report_id,title,summary,body) VALUES (?,?,?,?)`).run(
         report.id, index.title, index.summary, report.body_md,
@@ -382,6 +385,9 @@ function rowToIndex(r: any): ReportIndexEntry {
     highlights: JSON.parse(r.highlights ?? "[]"),
     tags: JSON.parse(r.tags), entity_names: JSON.parse(r.entity_names), importance: r.importance,
     event_ids: JSON.parse(r.event_ids), milestone_count: r.milestone_count ?? 0,
+    freshest_candidate_at: r.freshest_candidate_at ?? null,
+    freshest_citation_at: r.freshest_citation_at ?? null,
+    freshness_lag_hours: r.freshness_lag_hours ?? null,
     snippet: r._snippet ?? undefined,
   };
 }

@@ -47,6 +47,21 @@ it("report_index 往返保留 milestone_count（ADR-0006）", () => {
   expect(row.milestone_count).toBe(2);
 });
 
+it("report_index 往返保留 Brief 新鲜度审计字段", () => {
+  saveReport(db, report, {
+    ...index,
+    freshest_candidate_at: "2026-05-07T07:00:00Z",
+    freshest_citation_at: "2026-05-07T06:30:00Z",
+    freshness_lag_hours: 1.5,
+  }, { dir });
+  const [row] = queryReportIndex(db, { topic: "t1" });
+  expect(row).toMatchObject({
+    freshest_candidate_at: "2026-05-07T07:00:00Z",
+    freshest_citation_at: "2026-05-07T06:30:00Z",
+    freshness_lag_hours: 1.5,
+  });
+});
+
 it("latestReportForTopicSince：只认 since 之后本主题最新的【已完成深挖】报告（深挖进度 3.3 终态链接）", () => {
   const since = "2026-06-14T10:00:00Z";
   insertTopic(db, { ...topic, id: "t2" });

@@ -193,7 +193,10 @@ CREATE TABLE IF NOT EXISTS report_index (
   entity_names TEXT NOT NULL DEFAULT '[]',
   importance   INTEGER NOT NULL,
   event_ids    TEXT NOT NULL DEFAULT '[]',
-  milestone_count INTEGER NOT NULL DEFAULT 0
+  milestone_count INTEGER NOT NULL DEFAULT 0,
+  freshest_candidate_at TEXT,
+  freshest_citation_at TEXT,
+  freshness_lag_hours REAL
 );
 CREATE INDEX IF NOT EXISTS idx_report_index_topic ON report_index(topic_id);
 CREATE INDEX IF NOT EXISTS idx_report_index_date  ON report_index(date);

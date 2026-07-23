@@ -63,6 +63,10 @@ function migrate(db: DB): void {
   // 里程碑自动标注（ADR-0006）：report_index 派生的里程碑洞察计数（importance≥5 + 非追加 + aggregation），
   // 供主题页徽标/里程碑时间线；旧报告补列默认 0（重生报告写正确值）。
   ensureColumn(db, "report_index", "milestone_count", "milestone_count INTEGER NOT NULL DEFAULT 0");
+  // Daily Brief 新鲜度审计：历史报告不臆造，迁移后保持 NULL；新报告由 report-gen 计算写入。
+  ensureColumn(db, "report_index", "freshest_candidate_at", "freshest_candidate_at TEXT");
+  ensureColumn(db, "report_index", "freshest_citation_at", "freshest_citation_at TEXT");
+  ensureColumn(db, "report_index", "freshness_lag_hours", "freshness_lag_hours REAL");
   // 料源形态（ADR-0007 播客接入）：旧库补列默认 'article'（存量全是网页/论文/show_notes 文摘，
   // 重采才写真值）；CHECK 已实测可随 ADD COLUMN 加（默认值满足约束）。
   ensureColumn(

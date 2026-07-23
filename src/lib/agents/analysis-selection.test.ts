@@ -1,8 +1,10 @@
 /** rankAndDiversify 纯函数单测（F2 选片：相关优先 + 来源多样）。无 key、无 db。
  *  （从 scheduler.test.ts 随 rankAndDiversify 迁入 analysis-selection.ts。） */
 import { describe, expect, it } from "vitest";
+import { openDb } from "../db/index.js";
+import { getTopic, insertContentItem, insertSource, insertTopic } from "../db/repos.js";
 import type { ContentItem } from "../types.js";
-import { rankAndDiversify } from "./analysis-selection.js";
+import { contentObservedAt, rankAndDiversify, selectAnalysisItems } from "./analysis-selection.js";
 
 function ci(id: string, source_id: string, text: string): ContentItem {
   return {
@@ -88,5 +90,38 @@ describe("rankAndDiversify", () => {
       const out = rankAndDiversify(items, KW, 5, { relevanceFloor: 1 });
       expect(out.length).toBe(2); // 滤空 → 回退、保留全部
     });
+  });
+});
+
+describe("selectAnalysisItems · Daily Brief 新鲜度配额", () => {
+  it("有近期候选时保留配额，即使历史项相关度更高；无近期时不强造名额", () => {
+    const db = openDb(":memory:");
+    const topic = { id: "t_fresh", name: "Fresh", keywords: KW, language: "en" as const, brief_schedule: "daily" as const, enabled: true };
+    insertTopic(db, topic);
+    for (let n = 0; n < 6; n++) {
+      const sourceId = `s${n}`;
+      insertSource(db, { id: sourceId, name: sourceId, type: "rss", endpoint: `https://x/${n}`, topic_ids: [], fetch_interval: "6h", backfill: null, enabled: true });
+      const item = ci(`old${n}`, sourceId, "coding agent swe-bench software agent");
+      item.published_at = "2026-07-15T00:00:00Z";
+      insertContentItem(db, { ...item, topic_ids: [topic.id] });
+    }
+    insertSource(db, { id: "s_fresh", name: "Fresh", type: "rss", endpoint: "https://x/f", topic_ids: [], fetch_interval: "6h", backfill: null, enabled: true });
+    const fresh = ci("fresh", "s_fresh", "coding agent update");
+    fresh.published_at = "2026-07-22T12:00:00Z";
+    insertContentItem(db, { ...fresh, topic_ids: [topic.id] });
+
+    const out = selectAnalysisItems(db, getTopic(db, topic.id)!, {
+      since: "2026-07-01T00:00:00Z", limit: 5,
+      freshness: { since: "2026-07-21T00:00:00Z", quota: 0.4 },
+    });
+    expect(out.map((item) => item.id)).toContain("fresh"); // ceil(5×0.4)=2 的近期池先保留（池仅 1 条）
+    expect(contentObservedAt(out.find((item) => item.id === "fresh")!)).toBe("2026-07-22T12:00:00Z");
+
+    const noFresh = selectAnalysisItems(db, getTopic(db, topic.id)!, {
+      since: "2026-07-01T00:00:00Z", limit: 5,
+      freshness: { since: "2026-07-23T00:00:00Z", quota: 0.4 },
+    });
+    const ordinary = selectAnalysisItems(db, getTopic(db, topic.id)!, { since: "2026-07-01T00:00:00Z", limit: 5 });
+    expect(noFresh.map((item) => item.id)).toEqual(ordinary.map((item) => item.id)); // 无近期项 → 完全回退常规策略
   });
 });
