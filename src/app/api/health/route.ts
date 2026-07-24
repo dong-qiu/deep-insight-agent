@@ -5,6 +5,7 @@
  *  并借这条每 30s 的 healthcheck 心跳（独立于 supercronic）做陈旧主动告警（maybeAlertStale 自带去重）。 */
 import { NextResponse } from "next/server";
 import { getDb } from "../../../lib/db/index.js";
+import { runLogger } from "../../../lib/runtime/logger.js";
 import { checkStaleness, maybeAlertStale } from "../../../lib/runtime/staleness.js";
 
 export const dynamic = "force-dynamic";
@@ -30,7 +31,8 @@ export async function GET(): Promise<NextResponse> {
       },
     });
   } catch (e) {
-    const message = e instanceof Error ? e.message : String(e);
-    return NextResponse.json({ status: "error", error: message }, { status: 500 });
+    // /api/health 是公开探针：内部异常仅写入脱敏结构化日志，不回显给调用方。
+    runLogger({ stage: "health" }).error({ err: e }, "health check failed");
+    return NextResponse.json({ status: "error", error: "health check failed" }, { status: 500 });
   }
 }

@@ -1,4 +1,5 @@
 import { notFound } from "next/navigation";
+import Link from "next/link";
 import { auth } from "../../../auth.js";
 import { getDb } from "../../../lib/db/index.js";
 import { listFollowups } from "../../../lib/db/followup.js";
@@ -43,7 +44,7 @@ export default async function ReportPage({ params }: { params: Promise<{ id: str
     <section>
       <CitePreview />
       <p className="report-header muted">
-        <a href="/reports">← 报告库</a>
+        <Link href="/reports">← 报告库</Link>
         {isAdmin ? <ExportPptButton reportId={id} /> : null}
       </p>
       <Markdown md={report.body_md} />

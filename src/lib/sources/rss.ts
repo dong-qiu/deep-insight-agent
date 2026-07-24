@@ -6,7 +6,6 @@ import { MAX_RESPONSE_BYTES, fetchWithRetry, readTextCapped, safeFetch } from ".
 import type { RawItem } from "./types.js";
 import { asArray, text, xml } from "./xml.js";
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
 
 /** <podcast:transcript> 格式优先级：纯文本 > HTML > 字幕（vtt/srt）；未知 MIME 排最后。 */
 const TRANSCRIPT_MIME_RANK: Record<string, number> = {

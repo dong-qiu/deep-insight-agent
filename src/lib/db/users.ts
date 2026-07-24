@@ -47,7 +47,6 @@ export interface UserRow {
   created_at: string;
 }
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
 export function listUsers(db: DB): UserRow[] {
   return db
     .prepare("SELECT email, role, name, created_at FROM app_user ORDER BY created_at")

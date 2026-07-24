@@ -1,5 +1,4 @@
 /** AnalysisBatch / ValidationResult 持久化（事务写）。增量4。 */
-/* eslint-disable @typescript-eslint/no-explicit-any */
 import type { AnalysisBatch, Insight, ValidationResult } from "../types.js";
 import type { DB } from "./index.js";
 
