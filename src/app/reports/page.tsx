@@ -3,6 +3,7 @@
  *  搜索：FTS5（标题/摘要/正文）；筛选：主题/类型/领域(domain)/来源/标签/实体/日期区间；
  *  排序：date|importance × asc|desc。来源/标签/实体下拉只列实际出现过的值（distinctIndexValues）。 */
 import { getDb } from "../../lib/db/index.js";
+import Link from "next/link";
 import { distinctIndexValues, queryReportIndex } from "../../lib/db/reports.js";
 import { listSources, listTopics } from "../../lib/db/repos.js";
 import { domainValueOf, facetLabel, lensValueOf } from "../../lib/topics/facets.js";
@@ -141,7 +142,7 @@ export default async function ReportsPage({
             <option value="asc">升序</option>
           </select>
           <button type="submit" className="ppt-btn">搜索</button>
-          {hasFilter ? <a href="/reports" className="ppt-btn-link">清空</a> : null}
+          {hasFilter ? <Link href="/reports" className="ppt-btn-link">清空</Link> : null}
         </div>
 
         <details className="report-filter-more" open={secondaryActive}>

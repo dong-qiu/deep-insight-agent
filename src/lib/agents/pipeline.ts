@@ -111,7 +111,6 @@ export function runTechLeadExtraction(
     const candidates = deriveOpportunityCandidates(leads, listTopicDirections(db, { topic: batch.topic_id }), now);
     upsertTechnologyOpportunities(db, candidates, new Map(leads.map((lead) => [lead.id, lead])), now);
   } catch (error) {
-    // eslint-disable-next-line no-console
     console.warn("⚠️ 技术机会投影失败（不影响技术线索与报告）", error);
   }
   return leads;

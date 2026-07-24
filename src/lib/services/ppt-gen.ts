@@ -18,7 +18,6 @@ import type { ExecutivePolish, InsightPolish } from "./ppt-polish.js";
 
 // pptxgenjs CJS/ESM 互操作不稳定：tsx 直接跑 ESM 路径返 { default } 而 vitest 走 CJS
 // 路径直接返 class。此处兼容两种形态——确保任意 runtime 下 `new PptxGen()` 都成立。
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const PptxGen: typeof PptxGenJsImport =
   (PptxGenJsImport as unknown as { default?: typeof PptxGenJsImport }).default ?? PptxGenJsImport;
 

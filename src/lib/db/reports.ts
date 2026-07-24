@@ -1,5 +1,4 @@
 /** 报告持久化：正文（.md/.html）落 FS，元数据 + 索引 + FTS5 落 SQLite。增量5。 */
-/* eslint-disable @typescript-eslint/no-explicit-any */
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { domainFacet, isDomainValue, isLensValue, lensFacet, parseFacets } from "../topics/facets.js";

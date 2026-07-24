@@ -5,6 +5,7 @@
  *  - 报告时间线：该主题全部报告按日期倒序，重要性 ≥4 标「重大」徽标；
  *  - 入口：对该主题触发深挖（analyze→validate→report-gen，type=deep_dive）。 */
 import { notFound } from "next/navigation";
+import Link from "next/link";
 import { auth } from "../../../auth.js";
 import { getDb } from "../../../lib/db/index.js";
 import { type EntityTrend, entityTrends, queryReportIndex, topicEvolution } from "../../../lib/db/reports.js";
@@ -48,7 +49,7 @@ export default async function TopicPage({ params }: { params: Promise<{ id: stri
   return (
     <section>
       <p className="report-header muted">
-        <a href="/topics">← 主题</a>
+        <Link href="/topics">← 主题</Link>
       </p>
 
       <h2>

@@ -1,6 +1,5 @@
 /** 追问问答（followup_qa）持久化。followup-qa spec。
  *  citations_used / validation / cost 以 JSON TEXT 存（与本库其他 JSON 字段一致）。 */
-/* eslint-disable @typescript-eslint/no-explicit-any */
 import type { FollowupQA } from "../types.js";
 import type { DB } from "./index.js";
 
