@@ -23,6 +23,7 @@ export interface OpportunityCandidate {
   score_detail: OpportunityScoreDetail;
   fit_score: number;
   rationale: string;
+  mapping_direction_version: number | null;
 }
 
 const normalize = (value: string): string => value.toLowerCase().normalize("NFKC").replace(/\s+/g, " ");
@@ -80,6 +81,7 @@ function candidateFor(lead: TechLead, lane: OpportunityLane, direction: TopicDir
     score_detail,
     fit_score: Math.min(100, 35 + matches.length * 20 + (lane === "core" || lane === "challenge" ? 20 : 0)),
     rationale: `${matchDescription} 自动归入 ${lane} 通道；${score_detail.reason}`,
+    mapping_direction_version: direction?.version ?? null,
   };
 }
 

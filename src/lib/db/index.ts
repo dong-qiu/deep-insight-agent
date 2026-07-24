@@ -85,6 +85,10 @@ function migrate(db: DB): void {
     "fetch_mode TEXT NOT NULL DEFAULT 'feed' CHECK (fetch_mode IN ('feed','full_text'))",
   );
   ensureColumn(db, "source", "content_container", "content_container TEXT");
+  // 技术规划工作台：旧方向从 version=1 起；映射词表变更只标 stale，不会改写人工决策。
+  ensureColumn(db, "topic_direction", "version", "version INTEGER NOT NULL DEFAULT 1");
+  ensureColumn(db, "technology_opportunity", "mapping_state", "mapping_state TEXT NOT NULL DEFAULT 'current' CHECK (mapping_state IN ('current','stale'))");
+  ensureColumn(db, "technology_opportunity", "mapping_direction_version", "mapping_direction_version INTEGER");
   // 源健康自愈（ADR-0008 决定② / 切片3b）：系统熔断态。旧库补列默认 NULL（未熔断）。
   // disabled_reason='circuit_open' 标系统熔断（区分人工停用=NULL）；circuit_reset_at 锚定 consecutiveFails 计数起点。
   ensureColumn(db, "source", "disabled_reason", "disabled_reason TEXT");

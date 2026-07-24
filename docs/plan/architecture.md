@@ -348,15 +348,16 @@ Source ─采集▶ ContentItem ─分析▶ AnalysisBatch(Insight+Citation) ─
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `TopicDirection` | `topic_id` + 目标 / 问题 / 范围 / 关键问题 / 约束 / 成功信号 | Y | 主题下的可演化方向；初始档案来自代码默认，管理员可维护 |
+| `TopicDirection` | `topic_id` + 目标 / 问题 / 范围 / 关键问题 / 约束 / 成功信号 + `version` | Y | 主题下的可演化方向；管理员以乐观版本控制维护，防止并发静默覆盖 |
 | `TechLeadDirectionMap` | `lead_id` + `direction_id` + `lane` + `planning_effect` | Y | 同一线索可映射多个方向；`core` / `adjacent` / `horizon` / `challenge` 明确关系 |
-| `TechnologyOpportunity` | `topic_id` / `direction_id?` / `canonical_key` / `lane` / `status` | Y | 立项输入候选；无 `direction_id` 的 `horizon` 只表示待人工评审的新方向信号 |
+| `TechnologyOpportunity` | `topic_id` / `direction_id?` / `canonical_key` / `lane` / `status` / `mapping_state` | Y | 立项输入候选；词表更新后旧映射记为 `stale` 待复核，人工状态不被自动覆盖 |
 | `OpportunityLead` | `(opportunity_id, lead_id)` | Y | 机会到事实层的多对多连接，保证可追溯 |
 | `priority_score/detail` | float / object | Y | 方向匹配、证据成熟度、技术杠杆、可验证性、时机的可解释评分 |
 | 决策审计 | `audit_log` | Y | 方向和机会状态变更 append-only 记录；不自动立项或触发外部项目 |
 
 派生顺序为 `Validation(pass)` → `TechLead` → `DirectionMap` → `TechnologyOpportunity`。机会读取事实时始终
 经由 Lead 的 pass 证据查询；“假设 / 建议验证动作”与事实字段分开展示。
+方向词表更新先供工作台预览近期线索影响；只有管理员显式重投影才刷新已有候选，未再命中的候选保留为 `stale`。
 
 ### 运行实体 (Run)
 

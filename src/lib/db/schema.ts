@@ -246,6 +246,7 @@ CREATE TABLE IF NOT EXISTS topic_direction (
   challenge_terms   TEXT NOT NULL DEFAULT '[]',
   horizon           TEXT NOT NULL CHECK (horizon IN ('now','next','explore')),
   status            TEXT NOT NULL CHECK (status IN ('active','watching','retired')),
+  version           INTEGER NOT NULL DEFAULT 1,
   created_at        TEXT NOT NULL,
   updated_at        TEXT NOT NULL
 );
@@ -275,6 +276,8 @@ CREATE TABLE IF NOT EXISTS technology_opportunity (
   proposed_validation TEXT NOT NULL,
   uncertainties       TEXT NOT NULL DEFAULT '[]',
   status              TEXT NOT NULL CHECK (status IN ('observed','watching','research_candidate','poc_ready','project_candidate','adopted','rejected','archived')) DEFAULT 'observed',
+  mapping_state       TEXT NOT NULL DEFAULT 'current' CHECK (mapping_state IN ('current','stale')),
+  mapping_direction_version INTEGER,
   priority_score      REAL NOT NULL,
   score_detail        TEXT NOT NULL,
   first_seen_at       TEXT NOT NULL,
