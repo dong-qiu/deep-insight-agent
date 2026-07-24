@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import type { ReactNode } from "react";
 import { auth, signOut } from "../auth.js";
 import "./globals.css";
@@ -37,14 +38,14 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
             ) : null}
           </div>
           <nav className="muted">
-            <a href="/">今日 Brief</a>
-            <a href="/topics">主题</a>
-            <a href="/reports">报告库</a>
-            <a href="/leads">技术线索</a>
-            <a href="/opportunities">技术规划</a>
-            <a href="/graph">关系图</a>
-            {isAdmin ? <a href="/admin">管理看板</a> : null}
-            {isAdmin ? <a href="/settings">设置</a> : null}
+            <Link href="/">今日 Brief</Link>
+            <Link href="/topics">主题</Link>
+            <Link href="/reports">报告库</Link>
+            <Link href="/leads">技术线索</Link>
+            <Link href="/opportunities">技术规划</Link>
+            <Link href="/graph">关系图</Link>
+            {isAdmin ? <Link href="/admin">管理看板</Link> : null}
+            {isAdmin ? <Link href="/settings">设置</Link> : null}
           </nav>
         </header>
         <main>{children}</main>
