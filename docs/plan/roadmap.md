@@ -49,6 +49,15 @@
   - ~~**F2 locator 命中**~~ ✅ **已闭合**（F1 副效，2026-06-01）：F1 返 body 字面子串后 `computeLocator` 的 `body.indexOf` 不再 -1。R3 verdict `yes`、新增专项测试 `body.indexOf(r!) >= 0`。
   - ~~**F3 compareKey 单点**~~ ✅ **已闭合**（2026-06-01）：抽 `text-normalize.ts` `compareKey`，`validator.normalize` 别名指向、`analyzer.repairQuote` 用 `collapseWithMap`。grep 确认 `normalizeTypography` 仅本文件 + 测试用。R3 verdict `yes`、无残留重复。
 
+## M5 — Post-MVP：技术规划验证与研究入口
+
+- [x] 技术线索 V1：从成功校验引用确定性派生可追溯的模型、框架、论文、基准、工具、方法与安全信号（2026-07-23）。
+- [x] 技术机会与方向工作台 V1：方向档案、核心 / 相邻 / 校准 / 反证通道、人工状态、词项预览与显式重投影已上线（2026-07-24）。
+- [~] P0-1 两周 dogfood：累计 50–100 条人工方向 / 通道标签，评估映射准确率与错分原因；窗口 2026-07-24 ～ 2026-08-07，见 `docs/verify/technology-planning-dogfood-2026-07-24.md`。
+- [x] P0-2 产品文档同步：PRD、路线图和技术机会规格已更新，明确“候选 ≠ 自动立项”的事实与决策边界（2026-07-24）。
+- [ ] P1 头脑风暴 V1：基于既有报告、线索和证据生成待确认的主题 / 关键问题 / 假设 / 方向草案；需独立 spec 与 Eval-Gate。
+- [ ] P1 蓝军分析 V1：对报告与机会候选作可溯源反证审视；需独立 spec 与 Eval-Gate。
+
 ## DCP 决策日志
 
 > 每次 DCP 评审结论追加于此：日期 / 门 / 决策 / 理由 / 双签人（负责人 + 架构师）。
