@@ -6,7 +6,7 @@ const direction = (overrides: Partial<TopicDirection> = {}): TopicDirection => (
   id: "d", topic_id: "t", name: "可靠性评测", objective: "可靠", problem_statement: "难评估",
   in_scope: [], out_of_scope: [], key_questions: [], constraints: [], success_signals: [],
   match_terms: ["swe-bench", "benchmark"], adjacent_terms: ["agent"], challenge_terms: ["regression"],
-  horizon: "now", status: "active", created_at: "2026-07-24T00:00:00Z", updated_at: "2026-07-24T00:00:00Z", ...overrides,
+  horizon: "now", status: "active", version: 1, created_at: "2026-07-24T00:00:00Z", updated_at: "2026-07-24T00:00:00Z", ...overrides,
 });
 const lead = (overrides: Partial<TechLead> = {}): TechLead => ({
   id: "l", topic_id: "t", canonical_key: "event:x", kind: "benchmark", title: "SWE-bench benchmark", summary: "Agent evaluation result",

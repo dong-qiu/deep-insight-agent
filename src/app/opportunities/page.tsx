@@ -5,6 +5,7 @@ import { listOpportunityLeads, listTechnologyOpportunities, listTopicDirections 
 import { listTechLeadEvidence } from "../../lib/db/tech-leads.js";
 import { listTopics } from "../../lib/db/repos.js";
 import { OpportunityActions } from "./_components/opportunity-actions.js";
+import { DirectionWorkbench } from "./_components/direction-workbench.js";
 
 export const dynamic = "force-dynamic";
 const LANE: Record<string, string> = { core: "核心方向", adjacent: "相邻机会", horizon: "方向校准", challenge: "反证 / 风险" };
@@ -14,9 +15,11 @@ const LANE_ORDER = ["core", "adjacent", "horizon", "challenge"] as const;
 export default async function OpportunitiesPage(): Promise<React.ReactElement> {
   const db = getDb();
   const opportunities = listTechnologyOpportunities(db);
-  const directions = new Map(listTopicDirections(db).map((direction) => [direction.id, direction]));
-  const topicNames = new Map(listTopics(db).map((topic) => [topic.id, topic.name]));
   const isAdmin = (await auth())?.user?.role === "admin";
+  const topics = listTopics(db);
+  const directionList = listTopicDirections(db, { includeRetired: isAdmin });
+  const directions = new Map(directionList.map((direction) => [direction.id, direction]));
+  const topicNames = new Map(topics.map((topic) => [topic.id, topic.name]));
   return <section>
     <h2>技术规划机会</h2>
     <p className="muted">候选由已校验技术线索确定性映射而来。它们是研究 / PoC / 立项输入，不是项目批准；“待验证假设”与原始事实严格分开。</p>
@@ -31,7 +34,7 @@ export default async function OpportunitiesPage(): Promise<React.ReactElement> {
       const leads = listOpportunityLeads(db, opportunity.id);
       const evidence = leads.flatMap((lead) => listTechLeadEvidence(db, lead.id));
       return <article className="card lead-card opportunity-card" key={opportunity.id}>
-        <div className="card-meta"><span className="tag-chip">{LANE[opportunity.lane]}</span><span className="imp-badge imp-4">{Math.round(opportunity.priority_score)} 分</span><span className="muted">{topicNames.get(opportunity.topic_id) ?? opportunity.topic_id} · {direction?.name ?? "待校准方向"} · {EFFECT[opportunity.planning_effect]}</span></div>
+        <div className="card-meta"><span className="tag-chip">{LANE[opportunity.lane]}</span>{opportunity.mapping_state === "stale" ? <span className="tag-chip">规则已更新 · 待复核</span> : null}<span className="imp-badge imp-4">{Math.round(opportunity.priority_score)} 分</span><span className="muted">{topicNames.get(opportunity.topic_id) ?? opportunity.topic_id} · {direction?.name ?? "待校准方向"} · {EFFECT[opportunity.planning_effect]}</span></div>
         <h3>{opportunity.title}</h3>
         <p><strong>待验证假设：</strong>{opportunity.hypothesis.replace(/^待验证假设：/, "")}</p>
         <p><strong>建议验证：</strong>{opportunity.proposed_validation}</p>
@@ -43,6 +46,7 @@ export default async function OpportunitiesPage(): Promise<React.ReactElement> {
         })}
       </section>;
     })}
-    <details className="card"><summary>当前方向档案（{directions.size}）</summary>{[...directions.values()].map((direction) => <section key={direction.id}><h4>{direction.name}</h4><p className="muted">{direction.objective} · {direction.status} · {direction.horizon}</p><p>关键问题：{direction.key_questions.join("；")}</p></section>)}</details>
+    <details className="card"><summary>当前方向档案（{directions.size}）</summary>{[...directions.values()].map((direction) => <section key={direction.id}><h4>{direction.name}</h4><p className="muted">{direction.objective} · {direction.status} · {direction.horizon} · v{direction.version}</p><p>关键问题：{direction.key_questions.join("；")}</p></section>)}</details>
+    {isAdmin ? <DirectionWorkbench directions={directionList} topics={topics} /> : null}
   </section>;
 }

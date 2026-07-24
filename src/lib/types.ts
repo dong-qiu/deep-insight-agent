@@ -318,6 +318,8 @@ export interface TopicDirectionInput {
   status: TopicDirectionStatus;
 }
 export interface TopicDirection extends TopicDirectionInput {
+  /** 乐观并发控制；每次完整编辑递增，避免管理员互相覆盖。 */
+  version: number;
   created_at: string;
   updated_at: string;
 }
@@ -325,6 +327,8 @@ export interface TopicDirection extends TopicDirectionInput {
 export type OpportunityLane = "core" | "adjacent" | "horizon" | "challenge";
 export type PlanningEffect = "reinforce" | "expand" | "challenge" | "new_direction";
 export type TechnologyOpportunityStatus = "observed" | "watching" | "research_candidate" | "poc_ready" | "project_candidate" | "adopted" | "rejected" | "archived";
+/** 方向词表更新后，旧候选保留但要求人工复核；绝不自动撤销人工状态。 */
+export type OpportunityMappingState = "current" | "stale";
 export interface OpportunityScoreDetail {
   alignment: number;
   evidence: number;
@@ -347,6 +351,8 @@ export interface TechnologyOpportunity {
   proposed_validation: string;
   uncertainties: string[];
   status: TechnologyOpportunityStatus;
+  mapping_state: OpportunityMappingState;
+  mapping_direction_version: number | null;
   priority_score: number;
   score_detail: OpportunityScoreDetail;
   first_seen_at: string;
