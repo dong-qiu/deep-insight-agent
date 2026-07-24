@@ -1,0 +1,11 @@
+# 默认负责人。当前规则仅自动请求 review；是否强制 Code Owner 审批由分支保护策略控制。
+* @dong-qiu
+
+# 高风险或基础设施区域：明确保留所有权，便于未来扩展为多人 review。
+/src/lib/agents/ @dong-qiu
+/src/lib/sources/ @dong-qiu
+/src/lib/runtime/ @dong-qiu
+/src/lib/db/ @dong-qiu
+/evals/ @dong-qiu
+/.github/ @dong-qiu
+/.githooks/ @dong-qiu
