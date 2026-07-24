@@ -1,6 +1,6 @@
 # Spec: 技术机会与方向校准 (Technology Opportunities)
 
-> V1.1 · 状态：🟠 实施中 · 2026-07-24
+> V1.1 · 状态：🟡 已上线，P0 dogfood 验证中 · 2026-07-24
 
 ## 目标
 
