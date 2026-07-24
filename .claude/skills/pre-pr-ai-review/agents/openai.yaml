@@ -1,0 +1,4 @@
+interface:
+  display_name: "Pre-PR AI Review"
+  short_description: "创建 PR 前分级审查代码、验证与评测证据并形成可追溯摘要"
+  default_prompt: "Use $pre-pr-ai-review to review the current branch before I create a PR."
