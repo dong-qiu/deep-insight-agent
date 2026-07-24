@@ -19,7 +19,6 @@ const warnedUnpriced = new Set<string>();
 function fallbackCostUSD(model: string, u: TokenUsage): number {
   if (!warnedUnpriced.has(model)) {
     warnedUnpriced.add(model);
-    // eslint-disable-next-line no-console
     console.warn(
       `⚠️ 未知模型「${model}」不在价目表（PRICING）；按已知最贵价（input $${FALLBACK_PRICING.input}/M, output $${FALLBACK_PRICING.output}/M）保守估算成本。补全 src/lib/runtime/cost.ts 的 PRICING。`,
     );
@@ -173,7 +172,6 @@ export function coerceStringifiedFields(
   for (const issue of issues) {
     if (issue.code !== "invalid_type" || (issue.expected !== "array" && issue.expected !== "object")) continue;
     if (!issue.path.length) continue;
-    /* eslint-disable @typescript-eslint/no-explicit-any */
     let node: any = clone;
     for (let i = 0; i < issue.path.length - 1; i++) node = node?.[issue.path[i]];
     const key = issue.path[issue.path.length - 1];
@@ -185,7 +183,6 @@ export function coerceStringifiedFields(
         /* 不可解析则放弃该字段 */
       }
     }
-    /* eslint-enable @typescript-eslint/no-explicit-any */
   }
   return changed ? clone : null;
 }

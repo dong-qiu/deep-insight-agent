@@ -5,7 +5,6 @@ import { readTextCapped, safeFetch } from "./safe-fetch.js";
 import type { RawItem } from "./types.js";
 import { asArray, text, xml } from "./xml.js";
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
 export function parseArxiv(atom: string): RawItem[] {
   const feed = (xml.parse(atom) as any)?.feed;
   return asArray<any>(feed?.entry).map((e): RawItem => {

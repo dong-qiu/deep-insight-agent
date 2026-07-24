@@ -3,7 +3,6 @@
  *
  *  纳入口径与 selectInsights 一致——只取 verdict=pass / flagged 的引用；blocked/未校验一律剔除——
  *  保证导出页面与报告正文同口径，避免"PPT 显示了报告里看不到的引用"这种倒挂。 */
-/* eslint-disable @typescript-eslint/no-explicit-any */
 import type { DB } from "../db/index.js";
 import {
   computePolishInputsHash,
