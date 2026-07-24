@@ -14,10 +14,12 @@ import { notifyFailure, notifyReport } from "../runtime/alert.js";
 import { runJob } from "../runtime/jobs.js";
 import type { AnalysisBatch, ContentItem, Report, TechLead, Topic, ValidationResult } from "../types.js";
 import { upsertTechLeads } from "../db/tech-leads.js";
+import { listTopicDirections, seedDefaultDirections, upsertTechnologyOpportunities } from "../db/planning.js";
 import { analyze, analyzerCacheVersion, type HistoricalEvent } from "./analyzer.js";
 import { buildReport, reportHighlights, type BriefFreshness, type CitationDisplay } from "./report-gen.js";
 import { consistencyCacheVersion, isValidationDegraded, validateBatch } from "./validator.js";
 import { extractLeadCandidates } from "./tech-leads.js";
+import { deriveOpportunityCandidates } from "./opportunity-planning.js";
 
 /** 分析某主题某窗口的 ContentItem → AnalysisBatch 落库；包一条 analyze Run（含成本）。
  *  成本经 analyze 的 onCost 回调按返回值透传给本 Run 的 ctx.recordCost —— 并发隔离，不读全局 meter 做差。 */
@@ -102,7 +104,17 @@ export function runTechLeadExtraction(
       if (item) items.set(item.id, item);
     }
   }
-  return upsertTechLeads(db, extractLeadCandidates(batch, validation, items, now), now);
+  const leads = upsertTechLeads(db, extractLeadCandidates(batch, validation, items, now), now);
+  // 机会层失败不能影响引用白名单、日报或线索事实层；此处仅作确定性投影。
+  try {
+    seedDefaultDirections(db);
+    const candidates = deriveOpportunityCandidates(leads, listTopicDirections(db, { topic: batch.topic_id }), now);
+    upsertTechnologyOpportunities(db, candidates, new Map(leads.map((lead) => [lead.id, lead])), now);
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.warn("⚠️ 技术机会投影失败（不影响技术线索与报告）", error);
+  }
+  return leads;
 }
 
 /** 生成报告 → 落库（FS 正文 + 索引 + FTS）；包一条 report-gen Run。确定性，无 LLM 成本。 */

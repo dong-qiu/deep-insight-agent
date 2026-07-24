@@ -296,6 +296,64 @@ export interface TechLeadEvidence {
   observed_at: string;
 }
 
+/** 主题下可演化的技术方向：方向本身是人工规划对象，不由自动投影创建或修改。 */
+export type TopicDirectionHorizon = "now" | "next" | "explore";
+export type TopicDirectionStatus = "active" | "watching" | "retired";
+export interface TopicDirectionInput {
+  id: string;
+  topic_id: string;
+  name: string;
+  objective: string;
+  problem_statement: string;
+  in_scope: string[];
+  out_of_scope: string[];
+  key_questions: string[];
+  constraints: string[];
+  success_signals: string[];
+  /** 仅供确定性映射使用的显式短语；不是用户事实或隐藏提示词。 */
+  match_terms: string[];
+  adjacent_terms: string[];
+  challenge_terms: string[];
+  horizon: TopicDirectionHorizon;
+  status: TopicDirectionStatus;
+}
+export interface TopicDirection extends TopicDirectionInput {
+  created_at: string;
+  updated_at: string;
+}
+
+export type OpportunityLane = "core" | "adjacent" | "horizon" | "challenge";
+export type PlanningEffect = "reinforce" | "expand" | "challenge" | "new_direction";
+export type TechnologyOpportunityStatus = "observed" | "watching" | "research_candidate" | "poc_ready" | "project_candidate" | "adopted" | "rejected" | "archived";
+export interface OpportunityScoreDetail {
+  alignment: number;
+  evidence: number;
+  leverage: number;
+  verifiability: number;
+  timing: number;
+  total: number;
+  reason: string;
+}
+/** 技术机会是立项输入，不是事实本身；hypothesis / proposed_validation 明确为待人工验证内容。 */
+export interface TechnologyOpportunity {
+  id: string;
+  topic_id: string;
+  direction_id: string | null;
+  canonical_key: string;
+  lane: OpportunityLane;
+  planning_effect: PlanningEffect;
+  title: string;
+  hypothesis: string;
+  proposed_validation: string;
+  uncertainties: string[];
+  status: TechnologyOpportunityStatus;
+  priority_score: number;
+  score_detail: OpportunityScoreDetail;
+  first_seen_at: string;
+  last_seen_at: string;
+  latest_evidence_at: string;
+}
+
 /** 运行实体（architecture 数据模型 · Run）—— Job Runner 状态追踪 */
 export interface Run {
   id: string;

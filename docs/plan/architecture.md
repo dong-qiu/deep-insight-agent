@@ -341,6 +341,23 @@ Source ─采集▶ ContentItem ─分析▶ AnalysisBatch(Insight+Citation) ─
 派生顺序为 `ValidationResult(pass)` → `TechLeadEvidence` → `TechLead`；在每个主题 validate 后、报告生成前执行。
 线索派生失败记录运行错误但不阻断已校验报告发布。
 
+### 技术机会与方向校准 (TopicDirection / TechnologyOpportunity)
+
+规划层建立在技术线索之上，不产生新的事实发布链。`TopicDirection` 是主题下可维护的技术方向；
+`TechnologyOpportunity` 是研究、PoC 或项目评审的候选，必须关联既有线索。
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `TopicDirection` | `topic_id` + 目标 / 问题 / 范围 / 关键问题 / 约束 / 成功信号 | Y | 主题下的可演化方向；初始档案来自代码默认，管理员可维护 |
+| `TechLeadDirectionMap` | `lead_id` + `direction_id` + `lane` + `planning_effect` | Y | 同一线索可映射多个方向；`core` / `adjacent` / `horizon` / `challenge` 明确关系 |
+| `TechnologyOpportunity` | `topic_id` / `direction_id?` / `canonical_key` / `lane` / `status` | Y | 立项输入候选；无 `direction_id` 的 `horizon` 只表示待人工评审的新方向信号 |
+| `OpportunityLead` | `(opportunity_id, lead_id)` | Y | 机会到事实层的多对多连接，保证可追溯 |
+| `priority_score/detail` | float / object | Y | 方向匹配、证据成熟度、技术杠杆、可验证性、时机的可解释评分 |
+| 决策审计 | `audit_log` | Y | 方向和机会状态变更 append-only 记录；不自动立项或触发外部项目 |
+
+派生顺序为 `Validation(pass)` → `TechLead` → `DirectionMap` → `TechnologyOpportunity`。机会读取事实时始终
+经由 Lead 的 pass 证据查询；“假设 / 建议验证动作”与事实字段分开展示。
+
 ### 运行实体 (Run)
 
 agent 执行单元的状态追踪；由 Job Runner 写入 SQLite，支撑管理看板「流水线追踪 / 失败下钻 / 重试」。
