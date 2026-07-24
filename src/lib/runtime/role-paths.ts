@@ -2,7 +2,7 @@
  *  viewer（受邀只读账号）可读 Brief / 报告 / 主题 / 报告库搜索；下列一律 admin：
  *   - 管理/配置面：/admin、/settings、/api/admin/*（源/主题 CRUD、Run 重跑、采集）
  *   - 烧钱端点：深挖触发、报告追问、PPT 导出（B 路径 LLM polish）——viewer 触发=别人替你烧 relay
- *  Edge 安全：纯字符串/正则，无 import。改这里 = 改分权，务必配套 role-paths.test.ts。 */
+ *  前置路径安全：纯字符串/正则，无 import。改这里 = 改分权，务必配套 role-paths.test.ts。 */
 
 const ADMIN_PREFIXES = ["/admin", "/settings", "/api/admin"] as const;
 

@@ -1,8 +1,8 @@
-/** Auth.js v5 共享配置 —— **Edge 安全**（middleware 与完整 auth.ts 都基于它）。
- *  这里不含 DB、不含 Credentials 的 authorize 实现：middleware 跑在 Edge，只读 JWT 里的 role
+/** Auth.js v5 共享配置 —— **runtime-safe**（middleware 与完整 auth.ts 都基于它）。
+ *  这里不含 DB、不含 Credentials 的 authorize 实现：middleware 只读 JWT 里的 role
  *  （由 jwt/session callback 搬运），无需 DB。真正查库验密码的 Credentials provider（Node-only、
  *  scrypt + better-sqlite3）在 auth.ts 里注入。这是 Auth.js「split your config」的标准拆法，
- *  让数据库后端的鉴权与 Edge middleware 共存。 */
+ *  让数据库后端鉴权与前置 middleware 保持解耦，也保留将来迁回 Edge 的兼容性。 */
 import type { DefaultSession, NextAuthConfig } from "next-auth";
 
 export type Role = "admin" | "viewer";
