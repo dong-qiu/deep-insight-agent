@@ -1,0 +1,13 @@
+[
+  {
+    "id": "replace-with-tech-lead-id-or-fixture-id",
+    "topic_id": "t_code_agents",
+    "lead_summary": "人工阅读的、已有 pass 引用支撑的技术线索摘要",
+    "expected_direction_id": "dir_code_agent_reliability",
+    "expected_lane": "core",
+    "actual_direction_id": "dir_code_agent_reliability",
+    "actual_lane": "core",
+    "reviewer": "independent-reviewer",
+    "notes": "若方向不适用，expected_direction_id 为 null 且 expected_lane 为 horizon。"
+  }
+]

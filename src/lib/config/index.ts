@@ -7,6 +7,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
 import type { DB } from "../db/index.js";
+import { seedDefaultDirections } from "../db/planning.js";
 import { getSource, getTopic, insertSource, insertTopic, listSources } from "../db/repos.js";
 import type { Source } from "../types.js";
 import { type AppConfig, AppConfigSchema } from "./types.js";
@@ -72,6 +73,7 @@ export function getEffectiveSources(db: DB, config: AppConfig): Source[] {
   let sources = listSources(db);
   if (sources.length === 0) {
     seedDefaults(db, config);
+    seedDefaultDirections(db);
     sources = listSources(db);
   }
   return sources;

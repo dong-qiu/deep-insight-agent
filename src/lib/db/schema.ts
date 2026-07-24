@@ -229,6 +229,69 @@ CREATE TABLE IF NOT EXISTS tech_lead_evidence (
   FOREIGN KEY (insight_id, citation_index) REFERENCES citation(insight_id, citation_index)
 );
 
+-- 技术规划层：只链接技术线索事实层，不创建绕过 CitationCheck(pass) 的发布旁路。
+CREATE TABLE IF NOT EXISTS topic_direction (
+  id                TEXT PRIMARY KEY,
+  topic_id          TEXT NOT NULL REFERENCES topic(id) ON DELETE CASCADE,
+  name              TEXT NOT NULL,
+  objective         TEXT NOT NULL,
+  problem_statement TEXT NOT NULL,
+  in_scope          TEXT NOT NULL DEFAULT '[]',
+  out_of_scope      TEXT NOT NULL DEFAULT '[]',
+  key_questions     TEXT NOT NULL DEFAULT '[]',
+  constraints_json  TEXT NOT NULL DEFAULT '[]',
+  success_signals   TEXT NOT NULL DEFAULT '[]',
+  match_terms       TEXT NOT NULL DEFAULT '[]',
+  adjacent_terms    TEXT NOT NULL DEFAULT '[]',
+  challenge_terms   TEXT NOT NULL DEFAULT '[]',
+  horizon           TEXT NOT NULL CHECK (horizon IN ('now','next','explore')),
+  status            TEXT NOT NULL CHECK (status IN ('active','watching','retired')),
+  created_at        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_topic_direction_topic ON topic_direction(topic_id, status, horizon);
+
+CREATE TABLE IF NOT EXISTS tech_lead_direction_map (
+  lead_id         TEXT NOT NULL REFERENCES tech_lead(id) ON DELETE CASCADE,
+  direction_id    TEXT NOT NULL REFERENCES topic_direction(id) ON DELETE CASCADE,
+  lane            TEXT NOT NULL CHECK (lane IN ('core','adjacent','horizon','challenge')),
+  planning_effect TEXT NOT NULL CHECK (planning_effect IN ('reinforce','expand','challenge','new_direction')),
+  fit_score       REAL NOT NULL,
+  rationale       TEXT NOT NULL,
+  created_at      TEXT NOT NULL,
+  updated_at      TEXT NOT NULL,
+  PRIMARY KEY (lead_id, direction_id)
+);
+
+CREATE TABLE IF NOT EXISTS technology_opportunity (
+  id                  TEXT PRIMARY KEY,
+  topic_id            TEXT NOT NULL REFERENCES topic(id),
+  direction_id        TEXT REFERENCES topic_direction(id) ON DELETE SET NULL,
+  canonical_key       TEXT NOT NULL,
+  lane                TEXT NOT NULL CHECK (lane IN ('core','adjacent','horizon','challenge')),
+  planning_effect     TEXT NOT NULL CHECK (planning_effect IN ('reinforce','expand','challenge','new_direction')),
+  title               TEXT NOT NULL,
+  hypothesis          TEXT NOT NULL,
+  proposed_validation TEXT NOT NULL,
+  uncertainties       TEXT NOT NULL DEFAULT '[]',
+  status              TEXT NOT NULL CHECK (status IN ('observed','watching','research_candidate','poc_ready','project_candidate','adopted','rejected','archived')) DEFAULT 'observed',
+  priority_score      REAL NOT NULL,
+  score_detail        TEXT NOT NULL,
+  first_seen_at       TEXT NOT NULL,
+  last_seen_at        TEXT NOT NULL,
+  latest_evidence_at  TEXT NOT NULL,
+  UNIQUE(topic_id, canonical_key)
+);
+CREATE INDEX IF NOT EXISTS idx_opportunity_topic_priority ON technology_opportunity(topic_id, priority_score DESC);
+CREATE INDEX IF NOT EXISTS idx_opportunity_direction ON technology_opportunity(direction_id, status);
+
+CREATE TABLE IF NOT EXISTS opportunity_lead (
+  opportunity_id TEXT NOT NULL REFERENCES technology_opportunity(id) ON DELETE CASCADE,
+  lead_id        TEXT NOT NULL REFERENCES tech_lead(id) ON DELETE CASCADE,
+  added_at       TEXT NOT NULL,
+  PRIMARY KEY (opportunity_id, lead_id)
+);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS report_fts USING fts5(report_id UNINDEXED, title, summary, body);
 
 -- ── 增量6c：审计日志（append-only，architecture 安全设计「审计与日志」，保留 90 天）──

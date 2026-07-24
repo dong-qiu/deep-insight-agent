@@ -5,7 +5,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { getAnalysisBatch, getValidationResult, saveAnalysisBatch, saveValidationResult } from "../db/analysis.js";
 import { type DB, openDb } from "../db/index.js";
 import { insertContentItem, insertSource, insertTopic, listRuns } from "../db/repos.js";
-import { listTechLeads } from "../db/tech-leads.js";
+import { listTechLeadEvidence, listTechLeads } from "../db/tech-leads.js";
+import { listOpportunityLeads, listTechnologyOpportunities } from "../db/planning.js";
 import type { AnalysisBatch, ContentItem, Insight, Report, ReportIndexEntry, Source, Topic, ValidationResult } from "../types.js";
 
 // vi.hoisted：vi.mock 工厂被提升到文件顶部，须用 hoisted 让 mock fns 在工厂运行时已初始化
@@ -199,6 +200,12 @@ describe("runTechLeadExtraction", () => {
     const leads = runTechLeadExtraction(db, batch, mkValidation(), "2026-06-07T01:00:00Z");
     expect(leads).toHaveLength(1);
     expect(listTechLeads(db)[0]).toMatchObject({ topic_id: topic.id, title: "Agent tool" });
+    const [opportunity] = listTechnologyOpportunities(db);
+    // t1 没有默认方向档案：高价值技术线索只能作为 horizon 供人工校准，不伪装成方向内项目。
+    expect(opportunity).toMatchObject({ lane: "horizon", direction_id: null });
+    const [linkedLead] = listOpportunityLeads(db, opportunity.id);
+    expect(linkedLead.id).toBe(leads[0].id);
+    expect(listTechLeadEvidence(db, linkedLead.id)).toMatchObject([{ url: "https://x/ci1", quote: "q" }]);
   });
 });
 

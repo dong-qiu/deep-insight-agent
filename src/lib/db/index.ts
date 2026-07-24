@@ -6,6 +6,7 @@ import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { recoverOrphanedRuns } from "./repos.js";
+import { seedDefaultDirections } from "./planning.js";
 import { SCHEMA_SQL } from "./schema.js";
 
 export type DB = Database.Database;
@@ -139,7 +140,12 @@ function migrate(db: DB): void {
 let _db: DB | null = null;
 
 export function getDb(): DB {
-  return (_db ??= openDb(process.env.DB_PATH ?? ".data/insight.db"));
+  if (!_db) {
+    _db = openDb(process.env.DB_PATH ?? ".data/insight.db");
+    // 已有生产库会立即补齐方向档案；空库会安全跳过，待配置层播种 topic 后再补。
+    seedDefaultDirections(_db);
+  }
+  return _db;
 }
 
 /** 测试/重置用：关闭并清空单例 */
