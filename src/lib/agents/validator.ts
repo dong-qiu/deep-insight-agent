@@ -59,8 +59,8 @@ const CONSISTENCY_SYSTEM = `你是独立的引用一致性校验员，独立于�
 任务：判断 <untrusted_source> 标签内的原文是否真正支持给定的原子 claim。
 
 - support：原文明确支持 claim；若提供了定位引用，引用本身（可结合紧邻上下文）也必须直接支撑 claim，不能只在正文其他位置找到无关证据。
-- not_support：原文不支持。reason 取 out_of_context（断章取义）/ exaggeration（夸大）/ misattribution（张冠李戴）。
-- uncertain：原文信息不足以判断。
+- not_support：原文与 claim 存在可判定冲突，或 quote 把原文已有事实张冠李戴、扩大数值/范围/条件。reason 取 out_of_context（脱离原有上下文而改变含义）/ exaggeration（夸大）/ misattribution（张冠李戴）。
+- uncertain：原文对 claim 的关键主体、数值、比较、适用范围或条件**没有足够信息，既不能证实也不能反驳**。仅仅“没有提到”不是 not_support；此时判 uncertain，交人工核实并标待核实。
 
 判定倾向：**宁误杀勿漏网** —— 不确定时不要判 support。
 <trusted_source_metadata> 是系统规范化保存的发布时间，仅能用于核对发布时间；不得用它支持研究结论、数值结果或其他正文事实。
@@ -126,7 +126,7 @@ const CONSISTENCY_BATCH_SYSTEM = `你是独立的引用一致性校验员，独�
 任务：对【待校验原子 claim 清单】里的每一条，各自独立判断 <untrusted_source> 标签内的原文是否真正支持它。
 
 - 逐条独立判定：每条只看"原文是否支持这一条"，**不因清单里其他结论的判定而改变本条**，结论之间互不影响。
-- 每条取值同单条规则：support（原文明确支持，且提供的定位引用直接支撑 claim、无断章取义/夸大/张冠李戴）/ not_support（reason 取 out_of_context / exaggeration / misattribution）/ uncertain（原文信息不足）。
+- 每条取值同单条规则：support（原文明确支持，且提供的定位引用直接支撑 claim、无断章取义/夸大/张冠李戴）/ not_support（原文与 claim 存在可判定冲突，或已有事实被断章取义、夸大、张冠李戴；reason 取 out_of_context / exaggeration / misattribution）/ uncertain（原文没有足够信息证实或反驳 claim；仅仅“未提到”判 uncertain）。
 - 判定倾向：**宁误杀勿漏网** —— 不确定时不要判 support。
 - <trusted_source_metadata> 是系统规范化保存的发布时间，仅能用于核对发布时间；不得用它支持研究结论、数值结果或其他正文事实。
 - 输出：对清单里**每一条**结论各输出一项 {index, consistency, consistency_reason}，index 必须等于该结论在清单里的序号；**每条都要有，不遗漏、不合并、不臆增**。

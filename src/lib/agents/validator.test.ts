@@ -307,6 +307,15 @@ describe("validateBatch（A 去重 + C 校验失败分账）", () => {
     expect(user).toContain("<untrusted_source>\n正文不包含日期。\n</untrusted_source>");
   });
 
+  it("三分类口径将原文沉默与可判定冲突分开", async () => {
+    vi.mocked(callStructured).mockResolvedValue(judgeData("uncertain", "uncertain"));
+    await judgeConsistency("BGE-M3 的推理速度更快。", "原文仅称 BGE-M3 检索效果最好。");
+
+    const system = vi.mocked(callStructured).mock.calls[0][0].system;
+    expect(system).toContain("仅仅“没有提到”不是 not_support；此时判 uncertain");
+    expect(system).toContain("原文与 claim 存在可判定冲突");
+  });
+
   it("来源发布时间无法解析时不插入原始值", async () => {
     vi.mocked(callStructured).mockResolvedValue(judgeData("support", "ok"));
     await judgeConsistency("C", "body", undefined, {

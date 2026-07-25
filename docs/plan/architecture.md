@@ -264,8 +264,8 @@ Source ─采集▶ ContentItem ─分析▶ AnalysisBatch(Insight+Citation) ─
 **`consistency_reason` 取值约束**（与 `consistency` 绑定，与 `verdict` 表共同形成全函数）：
 
 - `consistency = support` → `consistency_reason = ok`
-- `consistency = not_support` → `consistency_reason ∈ {out_of_context, exaggeration, misattribution}`
-- `consistency = uncertain` → `consistency_reason = uncertain`
+- `consistency = not_support` → 原文与 claim 有可判定冲突，或原文已有事实被断章取义、夸大、张冠李戴；`consistency_reason ∈ {out_of_context, exaggeration, misattribution}`
+- `consistency = uncertain` → 原文对 claim 的关键主体、数值、比较、范围或条件没有足够信息，既不能证实也不能反驳（仅仅“未提到”属于此类）；`consistency_reason = uncertain`
 - `consistency = not_evaluated`（短路） → `consistency_reason = not_evaluated`
 
 **洞察级纳入判定**（一条 `Insight` 含多条 `Citation` 时）

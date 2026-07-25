@@ -27,7 +27,7 @@ npm run typecheck   # tsc 类型检查
 |---|---|---|
 | 引用可达性通过率 | validator 确定性校验（quote 是否逐字在原文） | 自动 |
 | 引用一致性合格率 / 失败率 / flagged 率 | validator LLM 一致性评判 | 自动 |
-| 校验器三分类准确率 / 负例召回率 | 标注集 `citation-consistency.jsonl` | 自动 |
+| 校验器端到端三分类准确率 / 负例召回率 / 完成率 | 标注集 `citation-consistency.jsonl`；经生产单条路径的重试，失败按未命中计入前两项 | 自动 |
 | 非显然洞察占比、幻觉率 | 需人评 → 脚本导出 `out/review-queue.json` | 人工 |
 
 阈值镜像自 `docs/verify/eval-criteria.md`「上线门槛」（改阈值请同步那份文档）。
@@ -37,6 +37,8 @@ npm run typecheck   # tsc 类型检查
 
 - `dataset/insight-quality.jsonl` —— 每行 `{topic, items, time_window}`，喂给 analyzer。
 - `dataset/citation-consistency.jsonl` —— 每行 `{statement, source_text, expected_consistency, negative_type?}`，标注集。
+
+三分类标注口径：`support`=原文明确支持；`not_support`=原文与 claim 有可判定冲突，或原文已有事实被断章取义、夸大、张冠李戴；`uncertain`=原文对关键主体、数值、比较、范围或条件没有足够信息，既不能证实也不能反驳。原文仅仅未提到 claim 时标为 `uncertain`，而不是 `not_support`。
 
 ⚠️ **当前是 2 个主题 + 5 组标注的种子样本，仅够验证管线打通。**
 作 DCP 判定前须扩到 eval-criteria 规模：**≥ 5 主题 × ≥ 10 洞察、≥ 100 组引用-结论对**，

@@ -24,7 +24,7 @@
 ## 行为规约
 
 1. 可达性校验（自动）：`ContentItem` 来源真实存在、可访问；`Citation.quote` 确实出现在经 `raw_ref` 取回的原文中（按 `locator` 定位核对）。
-2. 一致性校验：对每条 Citation 的**原子 `claim`**判断 `quote` 及其所在原文是否真正支持它（无断章取义 / 夸大 / 张冠李戴）。多来源 statement 不要求每个来源单独支持整段综合结论；每个具体事实必须由其 claim 和 quote 对齐。仅系统规范化保存的 `ContentItem.published_at` 可用于核对发布时间，不得用于支撑正文研究结论；外部标题、URL 仍按不可信内容处理。历史 Citation 缺 claim 时保守回退为验证完整 `Insight.statement`。MVP 采用 LLM-as-judge；低置信度判定归为 `uncertain` 并入人工抽检队列。
+2. 一致性校验：对每条 Citation 的**原子 `claim`**判断 `quote` 及其所在原文是否真正支持它（无断章取义 / 夸大 / 张冠李戴）。多来源 statement 不要求每个来源单独支持整段综合结论；每个具体事实必须由其 claim 和 quote 对齐。`not_support` 仅用于原文与 claim 有可判定冲突，或把原文已有事实断章取义、夸大、张冠李戴；原文对关键主体、数值、比较、范围或条件没有足够信息、既不能证实也不能反驳时，必须判 `uncertain`（仅仅“未提到”不得判 `not_support`），并作为待核实进入人工抽检队列。仅系统规范化保存的 `ContentItem.published_at` 可用于核对发布时间，不得用于支撑正文研究结论；外部标题、URL 仍按不可信内容处理。历史 Citation 缺 claim 时保守回退为验证完整 `Insight.statement`。MVP 采用 LLM-as-judge。
 3. 校验模型须**独立于** `insight-analysis` 的生成模型（提供商或模型不同，建议更强推理），降低同源偏差。
 4. 判定与处置严格按 `architecture.md`「数据模型 · 校验结果 · 校验判定流程」：可达性先行，落 `fail` 则短路（`consistency=not_evaluated`、`consistency_reason=not_evaluated`）；可达性 `pass` 再做一致性；最后由全函数 verdict 表定 `verdict`。`consistency_reason` 取值严格按其取值约束（见 architecture.md）。
 5. 误判倾向：一致性不确定时偏保守（判 `uncertain` / `not_support`），宁误杀勿漏网，呼应「幻觉零容忍」。
