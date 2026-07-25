@@ -184,6 +184,7 @@ Source ─采集▶ ContentItem ─分析▶ AnalysisBatch(Insight+Citation) ─
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
 | `content_item_id` | string | Y | → `ContentItem.id` |
+| `claim` | text | N | 该 citation 单独支撑的原子事实。新 analyzer 输出必填；旧数据可缺，validator 保守回退为完整 `Insight.statement` 校验 |
 | `quote` | text | Y | 被引原文片段（逐字摘录） |
 | `locator` | object | Y | 原文定位 `{paragraph_index, char_start, char_end}` |
 

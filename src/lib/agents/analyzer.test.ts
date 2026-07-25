@@ -8,6 +8,25 @@ import type { Citation, ContentItem, Insight } from "../types.js";
 vi.mock("../runtime/llm.js", () => ({ callStructured: vi.fn() }));
 import { callStructured } from "../runtime/llm.js";
 import { ANALYZE_BODY_CHARS, SELECT_SEPARATOR, carveQuote, chunkByChars, chunkWindows, coverageGaps, isCompleteStatement, repairCoverage, repairQuote, selectForAnalyze, specificClaims, truncateForAnalyze } from "./analyzer.js";
+import { AnalyzerOutputSchema } from "../types.js";
+
+describe("AnalyzerOutputSchema 的原子 citation claim", () => {
+  const base = {
+    no_significant_event: false,
+    insights: [{
+      statement: "事实 A。", headline: "事实 A", type: "aggregation", importance: 3, importance_basis: "x", confidence: null,
+      event_id: null, is_followup: false, entities: [], tags: [],
+      citations: [{ content_item_id: "ci1", quote: "fact A", claim: "事实 A" }],
+    }],
+  };
+
+  it("新 analyzer 输出要求每条 citation 给出原子 claim", () => {
+    expect(AnalyzerOutputSchema.safeParse(base).success).toBe(true);
+    const withoutClaim = structuredClone(base);
+    delete (withoutClaim.insights[0].citations[0] as { claim?: string }).claim;
+    expect(AnalyzerOutputSchema.safeParse(withoutClaim).success).toBe(false);
+  });
+});
 
 describe("selectForAnalyze（ADR-0007 决定② 话题制导选段）", () => {
   it("body ≤ budget：原样返回", () => {

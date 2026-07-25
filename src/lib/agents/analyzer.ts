@@ -2,7 +2,7 @@
  * analyzer —— 把多源 ContentItem 提炼成围绕主题的结构化洞察。
  * 对应 spec `docs/plan/specs/insight-analysis.md`（A1 切片：不做趋势预测 / 实体追踪 / 跨批次 event_id 对齐）。
  *
- * 模型只产出 statement/type/importance/importance_basis/confidence/citations(quote)；
+ * 模型只产出 statement/type/importance/importance_basis/confidence/citations(claim/quote)；
  * id / locator / source_count / multi_source / time_window / language / event_id 在代码侧派生，
  * 不让模型编造。
  */
@@ -31,6 +31,7 @@ const SYSTEM = `你是行业洞察分析引擎。给定一个主题与一批已�
 2. 信号去噪：只保留重要性 ≥ 3 的洞察；若无重要事件，置 no_significant_event=true 且 insights 为空，绝不凑数。
 3. 可溯源（逐字、宁短勿拼）：每条洞察挂 ≥ 1 条引用；quote 必须能**原样在 body 里搜到**——逐字逐标点复制 body 中**一段连续**的原文，**优先短而精确的片段（一句话以内、尽量 ≤ 30 字）**；绝不改写/转述/补全/把分散句子拼接（需要多处证据就拆成多条 citation）。**与其引一段长而可能漂移的，不如引一小段绝对逐字的。** content_item_id 必须来自输入清单。
 4. 引用覆盖结论（**每个具体声明都要有覆盖它的 quote**）：结论里出现的每一个具体数字、金额、百分比、专有名称、关键限定，都必须有**一条所挂 quote 直接包含它**。若已挂的 quote 没覆盖到某个数字/实体，就**为它单独再加一条短 quote**（逐字复制 body 中含该数字/实体的那句）——结论综合了原文多句时，**每个被引用的事实各挂一条短 quote**；宁可多挂几条逐字短引用，也不得让任何具体声明无 quote 覆盖（例：结论说"900 份调查"，就必须有一条 quote 含 "900"；说"得分 1507"，就必须有一条含 "1507"）。没有 quote 直接支撑的具体数字/论断，不要写进结论。
+4.5. 原子 claim 对齐：每条 citation 都要填 claim——它是该条 quote **单独、直接**支撑的一个完整事实，使用 statement 的语言；不得把其他来源的事实、跨来源共识、因果解释或泛化结论塞进同一个 claim。跨来源洞察要拆成多个 citation claim，而非让任一来源支撑整段综合结论。标题、URL、发布时间等来源元数据可写进 claim，但仅当输入条目显示的对应元数据与表述完全一致。
 5. 不得放大：结论的适用范围/程度/条件必须与来源严格一致。不得把"仅在 X 上"写成"在多类/所有上"，不得把"最高 N / up to N"写成"总是 N"，不得把"提示 / 有限证据"写成"证明"。
 6. 完整自足：statement 必须是完整句子，不得截断或留半句。
 6.5. 一句话要点（headline）：为每条洞察额外产出 headline——≤40 字、把最关键的结论/数字/主体置于句首、去掉铺垫与从句，供列表卡片扫读；须忠实浓缩同条 statement，不得新增 statement 没有的事实、不得放大范围/程度。
@@ -54,7 +55,7 @@ const SYSTEM = `你是行业洞察分析引擎。给定一个主题与一批已�
  *  纳入 analyzerCacheVersion 哈希——保证「schema/派生变但 SYSTEM 没变」也使旧缓存失效（review m3：
  *  否则切片2 会据旧逻辑产的缓存洞察错命中、喂进新版报告）。SYSTEM 文案变由 promptHash 自动覆盖，此常量只管
  *  「非 SYSTEM 的输出形态/派生」变更。 */
-export const ANALYZER_OUTPUT_VERSION = 1;
+export const ANALYZER_OUTPUT_VERSION = 2;
 
 /** 分析缓存版本（ADR-0009）：analyzer 模型 + SYSTEM prompt 哈希 + 输出契约版本——任一变 → 版本变 → 旧分析缓存
  *  自动失效（不复用陈旧 prompt/schema/派生的洞察）。镜像 validator.consistencyCacheVersion 的版本隔离口径。 */
@@ -413,6 +414,7 @@ ${renderItems(items, topic.keywords)}`;
       const quote = item ? (repairQuote(item.body, c.quote) ?? c.quote) : c.quote;
       return {
         content_item_id: c.content_item_id,
+        claim: c.claim,
         quote,
         locator: item
           ? computeLocator(item.body, quote)
