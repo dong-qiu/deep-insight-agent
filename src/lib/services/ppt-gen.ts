@@ -1,5 +1,5 @@
 /** PPT 生成（A 阶段：确定性骨架，无 LLM）。
- *  输入 = 已经过 `report-gen.selectInsights` 白名单的 IncludedInsight[]（pass/flagged）+
+ *  输入 = 已经过 `report-gen.selectInsights` 白名单的 IncludedInsight[]（仅 pass/support）+
  *  topic + source 名查找；输出 = .pptx Buffer + 页数。
  *
  *  极简模板：白底 / 单色暗灰文 / Microsoft YaHei（CJK 兼容）/ 13.33×7.5 宽屏。
@@ -23,9 +23,10 @@ const PptxGen: typeof PptxGenJsImport =
 
 export interface IncludedInsightLite {
   insight: Insight;
-  citationIndices: number[]; // 已剔除 blocked、含 flagged
-  flaggedUncertain: boolean; // genuine uncertain →「待核实」
-  flaggedError: boolean; // 一致性校验失败 →「校验失败·待重试」（见 report-gen.flagLabel）
+  citationIndices: number[]; // 仅明确 support 的 pass 引用
+  // 保留渲染契约；生产发布路径恒为 false，flagged 只进入人工核实/重试队列。
+  flaggedUncertain: boolean;
+  flaggedError: boolean;
 }
 
 export interface PptGenInput {

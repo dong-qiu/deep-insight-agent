@@ -6,7 +6,7 @@ import type {
   AnalysisBatch, ContentItem, Insight, Report, ReportIndexEntry, Topic, ValidationResult,
 } from "../types.js";
 import { facetLabel } from "../topics/facets.js";
-import { flagLabel, isIncludableCheck, isValidationError } from "../utils/citation-verdict.js";
+import { flagLabel, isIncludableCheck } from "../utils/citation-verdict.js";
 import { coverageGaps, specificClaims } from "./analyzer.js";
 
 /** 每日节奏中已发布 event 的成功校验证据；由 DB 层读取、作为纯函数输入传入。 */
@@ -34,10 +34,10 @@ function coverageGapTokens(x: IncludedInsight): string[] {
 
 export interface IncludedInsight {
   insight: Insight;
-  citationIndices: number[]; // 剔除 blocked 后保留的引用下标（含校验失败引用，带标签展示）
-  includableCitationIndices: number[]; // pass / genuine uncertain：可作为发布"新增证据"的引用
-  flaggedUncertain: boolean; // 含 genuine uncertain 引用（判官判原文信息不足）→「待核实」
-  flaggedError: boolean; // 含一致性「校验失败」引用（调用出错，可重跑）→「校验失败·待重试」
+  citationIndices: number[]; // 发布白名单：仅 consistency=support 的 pass 引用
+  includableCitationIndices: number[]; // 与 citationIndices 同源，供新鲜度/去重审计
+  flaggedUncertain: boolean; // 保留渲染契约；发布白名单不含 flagged，恒为 false
+  flaggedError: boolean; // 保留渲染契约；发布白名单不含 flagged，恒为 false
   blockedCount: number; // 被 validator 屏蔽的引用数（不在 citationIndices 内）
   blockedReasonCounts: Record<string, number>; // 屏蔽理由直方图（如 exaggeration→2、out_of_context→1）
 }
@@ -74,7 +74,8 @@ function blockedReason(c: import("../types.js").CitationCheck): string | null {
 }
 
 /** 洞察级纳入判定（architecture「校验结果·洞察级纳入判定」）：
- *  剔除 verdict=blocked 的引用；剩余 ≥1 则纳入（含 flagged 标待核实），全 blocked 则排除。
+ *  发布白名单仅保留明确 support 的 pass 引用；blocked、flagged 与无 check 一律不出报告。
+ *  uncertain/校验失败仍保存在 ValidationResult，供人工核实或重试，不可作为发布证据。
  *  同时汇总被屏蔽数与理由直方图——供渲染端外露 validator 把关力度（透明信任信号）。 */
 export function selectInsights(batch: AnalysisBatch, validation: ValidationResult): IncludedInsight[] {
   const checksByInsight = new Map<string, Map<number, import("../types.js").CitationCheck>>();
@@ -87,37 +88,28 @@ export function selectInsights(batch: AnalysisBatch, validation: ValidationResul
     const cs = checksByInsight.get(ins.id);
     const kept: number[] = [];
     const includableIndices: number[] = [];
-    let flaggedUncertain = false;
-    let flaggedError = false;
-    let includable = false; // ≥1 条「已成功校验」引用（pass / genuine uncertain）才纳入
+    let includable = false; // ≥1 条明确 support 的 pass 引用才纳入
     let blockedCount = 0;
     const blockedReasonCounts: Record<string, number> = {};
     ins.citations.forEach((_, i) => {
       const c = cs?.get(i);
       const v = c?.verdict;
-      // 白名单:pass/flagged 进展示;blocked 与「无 check(未校验)」一律剔除
-      if (v === "pass" || v === "flagged") {
+      // 白名单：仅明确 support 的 pass 引用进展示；flagged 留在人工队列。
+      if (c && isIncludableCheck(c)) {
         kept.push(i);
-        // flagged 两类（验证器约定）：校验失败（isValidationError）vs genuine uncertain
-        if (v === "flagged") {
-          if (isValidationError(c!)) flaggedError = true;
-          else flaggedUncertain = true;
-        }
-        if (isIncludableCheck(c!)) {
-          includable = true; // 校验失败不计入纳入闸门
-          includableIndices.push(i);
-        }
+        includable = true;
+        includableIndices.push(i);
       } else if (v === "blocked") {
         blockedCount += 1;
         const r = c ? blockedReason(c) : null;
         if (r) blockedReasonCounts[r] = (blockedReasonCounts[r] ?? 0) + 1;
       }
     });
-    // 纳入需 ≥1 成功校验引用：唯一引用校验失败的洞察整条剔除（不发零成功校验内容，等重校验恢复）
+    // 纳入需 ≥1 明确支持的引用：仅存疑/校验失败的洞察整条剔除，等人工核实或重试后恢复。
     if (includable)
       out.push({
         insight: ins, citationIndices: kept, includableCitationIndices: includableIndices,
-        flaggedUncertain, flaggedError, blockedCount, blockedReasonCounts,
+        flaggedUncertain: false, flaggedError: false, blockedCount, blockedReasonCounts,
       });
   }
   return out;
@@ -380,12 +372,12 @@ function insightBlockMd(
       )
     : ins.statement;
   // P1 不复报：is_followup=true 标 〔更新〕——读者一眼看出"本条是已报告事件的新进展"。
-  // analyzer 已在 prompt 层约束"无新进展则不出"，此标记仅作展示提示；与 flagLabel（待核实
-  // / 校验失败·待重试）相互正交、可同时出现："〔更新〕 〔待核实〕"。
+  // analyzer 已在 prompt 层约束"无新进展则不出"，此标记仅作展示提示。flagged 洞察
+  // 不进入发布渲染，待核实/重试状态仅保留在 ValidationResult 的人工处理队列。
   const followupTag = ins.is_followup ? " 〔更新〕" : "";
   const label = flagLabel(x);
   const flaggedTag = label ? ` 〔${label}〕` : "";
-  // 覆盖度外露：结论里有具体数字/实体未被已渲染引用覆盖 → 标 〔待补引：…〕（与 〔更新〕/〔待核实〕正交可叠加）
+  // 覆盖度外露：结论里有具体数字/实体未被已渲染引用覆盖 → 标 〔待补引：…〕。
   const gaps = coverageGapTokens(x);
   const coverageTag = gaps.length ? ` 〔待补引：${gaps.join("、")}〕` : "";
   const L = [`${heading} ${statementWithRefs}${followupTag}${flaggedTag}${coverageTag}`, ""];

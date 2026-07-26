@@ -1,6 +1,7 @@
 /** 技术线索 V1：把“已成功校验”的洞察确定性投影成可追踪对象。
  * 不调用 LLM、不新增事实文本；推荐理由只由已审计字段拼装。 */
 import type { AnalysisBatch, ContentItem, TechLeadKind, TechLeadScoreDetail, ValidationResult } from "../types.js";
+import { isIncludableCheck } from "../utils/citation-verdict.js";
 
 export interface LeadCandidate {
   topic_id: string;
@@ -58,14 +59,14 @@ export function scoreLead(input: {
   return { freshness, evidence, importance, relevance, total, reason: `${action}：${input.sourceCount} 个独立来源 · 重要性 ${input.importance}/5 · 最近证据 ${Math.round(ageHours)}h 前` };
 }
 
-/** 仅保留 pass 引用。event_id 是最可靠的跨日报归并键；无 event 时用首实体/标题的规范化键。 */
+/** 仅保留明确 support 的 pass 引用。event_id 是最可靠的跨日报归并键；无 event 时用首实体/标题的规范化键。 */
 export function extractLeadCandidates(
   batch: AnalysisBatch,
   validation: ValidationResult,
   items: Map<string, ContentItem>,
   now = new Date().toISOString(),
 ): LeadCandidate[] {
-  const pass = new Map(validation.checks.filter((c) => c.verdict === "pass").map((c) => [`${c.insight_id}:${c.citation_index}`, c]));
+  const pass = new Map(validation.checks.filter(isIncludableCheck).map((c) => [`${c.insight_id}:${c.citation_index}`, c]));
   const grouped = new Map<string, LeadCandidate>();
   for (const insight of batch.insights) {
     const citationIndices = insight.citations.flatMap((citation, index) => pass.has(`${insight.id}:${index}`) ? [index] : []);

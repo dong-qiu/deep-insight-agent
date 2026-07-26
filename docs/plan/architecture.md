@@ -245,7 +245,7 @@ Source ─采集▶ ContentItem ─分析▶ AnalysisBatch(Insight+Citation) ─
 | `total` / `pass` / `blocked` / `flagged` | int | Y | 各 `verdict` 计数 |
 | `consistency_failure_rate` | float | Y | 护栏指标 = `not_support` 数 ÷ `total` |
 | `flagged_rate` | float | Y | 第二护栏 = `flagged`（一致性 `uncertain`）数 ÷ `total`；防「负例藏进 uncertain」 |
-| `releasable` | bool | Y | 「有效洞察」= 经「洞察级纳入判定」剩余引用 ≥ 1 的洞察。剔除全部 `blocked` 后仍有 ≥ 1 条有效洞察 → true；`total = 0`（空批次 / 上游 `no_significant_event = true`）→ true（让 brief 走「无重要事件」路径，**不置 failed**）；其余 → false 且报告置 `failed` |
+| `releasable` | bool | Y | 「有效洞察」= 经「洞察级纳入判定」仍有 ≥ 1 条明确 `support` 的 `pass` 引用的洞察。至少一条有效洞察 → true；`total = 0`（空批次 / 上游 `no_significant_event = true`）→ true（让 brief 走「无重要事件」路径，**不置 failed**）；其余 → false 且报告置 `failed` |
 
 **校验判定流程**（消解「拦截 vs 存疑」二态；判定有序、结果唯一）
 
@@ -259,7 +259,7 @@ Source ─采集▶ ContentItem ─分析▶ AnalysisBatch(Insight+Citation) ─
 | `fail` | `not_evaluated` | `blocked` | 不进报告 |
 | `pass` | `support` | `pass` | 正常纳入 |
 | `pass` | `not_support` | `blocked` | 不进报告 |
-| `pass` | `uncertain` | `flagged` | 进报告,标「待核实」 |
+| `pass` | `uncertain` | `flagged` | 进人工核实队列，不进发布报告 |
 
 **`consistency_reason` 取值约束**（与 `consistency` 绑定，与 `verdict` 表共同形成全函数）：
 
@@ -270,9 +270,9 @@ Source ─采集▶ ContentItem ─分析▶ AnalysisBatch(Insight+Citation) ─
 
 **洞察级纳入判定**（一条 `Insight` 含多条 `Citation` 时）
 
-- 剔除该洞察中 `verdict=blocked` 的引用。
-- 剩余引用 ≥ 1 → 洞察纳入报告；洞察级标记取剩余引用中最差等级：含 `flagged` 则洞察标「待核实」，全 `pass` 则正常。
-- 剩余引用 = 0（引用全 `blocked`）→ 整条洞察不纳入报告。
+- 仅保留 `verdict=pass` 且 `consistency=support` 的引用。
+- 剩余引用 ≥ 1 → 洞察纳入发布报告。
+- 剩余引用 = 0（包括全部 `blocked`、`flagged` 或未校验）→ 整条洞察不纳入发布报告；`flagged` 进入人工核实/重试队列。
 
 ### 报告对象 (Report)
 

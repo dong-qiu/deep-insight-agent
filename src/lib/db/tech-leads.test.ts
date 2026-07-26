@@ -17,6 +17,8 @@ it("upsert 追加 pass 证据、保留用户忽略状态且读取证据可回溯
   const candidates = extractLeadCandidates(batch, validation, new Map([["c", ci("c")]]), "2026-07-23T01:00:00Z");
   const [lead] = upsertTechLeads(db, candidates, "2026-07-23T01:00:00Z");
   expect(listTechLeadEvidence(db, lead.id)).toMatchObject([{ source_name: "Source", url: "https://x/c", quote: "agent" }]);
+  db.prepare("UPDATE citation_check SET consistency='uncertain' WHERE insight_id='i' AND citation_index=0").run();
+  expect(listTechLeadEvidence(db, lead.id)).toEqual([]); // 防御异常 pass + non-support 不能从已落库证据复活
   expect(setTechLeadStatus(db, lead.id, "dismissed")).toBe(true);
   upsertTechLeads(db, candidates, "2026-07-23T02:00:00Z");
   expect(listTechLeads(db)).toEqual([]);

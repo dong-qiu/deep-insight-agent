@@ -49,10 +49,10 @@ const batch: AnalysisBatch = {
       citations: [{ content_item_id: "ci1", quote: "示例引用 quote", locator: { paragraph_index: 0, char_start: 0, char_end: 2 } }],
       source_count: 1, multi_source: false, time_window: win, confidence: null, language: "zh",
     },
-    // i2：blocked 全部 → selectInsights 应排除（即使在 report.insight_ids 里）
+    // i2：原文沉默（uncertain/flagged）→ 即使历史 report.insight_ids 含它，也不得被 PPT 重建重新发布。
     {
       id: "i2", topic_id: "t1", type: "aggregation", event_id: null,
-      statement: "被全 blocked 的洞察。",
+      statement: "仅待人工核实的洞察。",
       importance: 4, importance_basis: "x",
       citations: [{ content_item_id: "ci1", quote: "q2", locator: { paragraph_index: 0, char_start: 3, char_end: 5 } }],
       source_count: 1, multi_source: false, time_window: win, confidence: null, language: "zh",
@@ -62,9 +62,9 @@ const batch: AnalysisBatch = {
 const vr: ValidationResult = {
   checks: [
     { insight_id: "i1", citation_index: 0, reachability: "pass", reachability_reason: "ok", consistency: "support", consistency_reason: "ok", verdict: "pass" },
-    { insight_id: "i2", citation_index: 0, reachability: "fail", reachability_reason: "quote_not_in_source", consistency: "not_evaluated", consistency_reason: "not_evaluated", verdict: "blocked" },
+    { insight_id: "i2", citation_index: 0, reachability: "pass", reachability_reason: "ok", consistency: "uncertain", consistency_reason: "uncertain", verdict: "flagged" },
   ],
-  report: { total: 2, pass: 1, blocked: 1, flagged: 0, errored: 0, consistency_failure_rate: 0, flagged_rate: 0, insights_total: 2, insights_includable: 1, releasable: true },
+  report: { total: 2, pass: 1, blocked: 0, flagged: 1, errored: 0, consistency_failure_rate: 0, flagged_rate: 0.5, insights_total: 2, insights_includable: 1, releasable: true },
 };
 const report: Report = {
   id: "rep_t1", type: "brief", topic_id: "t1", status: "done", generated_at: "2026-06-07T08:00:00Z",
@@ -105,8 +105,15 @@ describe("exportReportPptx", () => {
     expect(r!.polishCost.amount).toBe(0);
     expect(r!.report.id).toBe("rep_t1");
     expect(polishForPpt).not.toHaveBeenCalled();
-    // i1 pass → 入选；i2 blocked → 排除：1 标题 + 1 重点 + 1 源 = 3 页
+    // i1 pass/support → 入选；i2 flagged → 排除：1 标题 + 1 重点 + 1 源 = 3 页
     expect(r!.pageCount).toBe(3);
+  });
+
+  it("防御异常数据：pass 但 consistency 非 support 的历史引用不得被 PPT 重建发布", async () => {
+    db.prepare("UPDATE citation_check SET verdict='pass', consistency='uncertain' WHERE insight_id='i2'").run();
+    const r = await exportReportPptx(db, "rep_t1");
+    expect(r).not.toBeNull();
+    expect(r!.pageCount).toBe(3); // 仍只有 i1；i2 不可复活
   });
 
   it("usePolish=true → 调 polishForPpt(只传重点条) + polishCost 透传 + cache miss", async () => {
@@ -119,7 +126,7 @@ describe("exportReportPptx", () => {
     expect(r).not.toBeNull();
     expect(polishForPpt).toHaveBeenCalledTimes(1);
     const [keyInsights] = vi.mocked(polishForPpt).mock.calls[0];
-    // 只重点条入 polish（i2 已被 blocked 剔除；i1 importance=5≥4 入选）
+    // 只重点条入 polish（i2 flagged 已被剔除；i1 importance=5≥4 入选）
     expect(keyInsights).toHaveLength(1);
     expect(keyInsights[0].insight.id).toBe("i1");
     expect(r!.polishCost).toEqual({ tokens: 1234, amount: 0.0789 });

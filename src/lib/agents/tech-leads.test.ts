@@ -21,6 +21,16 @@ describe("技术线索确定性提取", () => {
     expect(leads[0].score_detail.reason).toContain("建议关注"); // 只有一条 pass 证据，不把 flagged 算进多源深挖
   });
 
+  it("异常 pass 但非 support 的引用不得成为技术线索证据", () => {
+    const validation: ValidationResult = { checks: [
+      { insight_id: "i", citation_index: 0, reachability: "pass", reachability_reason: "ok", consistency: "uncertain", consistency_reason: "uncertain", verdict: "pass" },
+      { insight_id: "i", citation_index: 1, reachability: "pass", reachability_reason: "ok", consistency: "not_support", consistency_reason: "exaggeration", verdict: "pass" },
+    ], report: { total: 2, pass: 2, blocked: 0, flagged: 0, errored: 0, consistency_failure_rate: 0.5, flagged_rate: 0.5, insights_total: 1, insights_includable: 0, releasable: false } };
+    expect(extractLeadCandidates(batch, validation, new Map([
+      ["a", item("a", "s1", "2026-07-23T00:00:00Z")], ["b", item("b", "s2", "2026-07-23T01:00:00Z")],
+    ]), "2026-07-23T02:00:00Z")).toEqual([]);
+  });
+
   it("分类与评分边界稳定", () => {
     expect(classifyTechLead("new SWE-bench evaluation", [])).toBe("benchmark");
     expect(classifyTechLead("新模型发现高危漏洞", [])).toBe("security");
