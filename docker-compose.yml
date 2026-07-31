@@ -15,7 +15,8 @@ services:
       args:
         # 本机构建用 host 架构；amd64/arm64 均有 supercronic 校验和（见 Dockerfile）
         TARGETARCH: ${TARGETARCH:-amd64}
-    image: deep-insight:0.1.0
+    # 本地开发默认用同名本地镜像；生产发布由 INSIGHT_IMAGE 注入不可变 GHCR sha 标签。
+    image: ${INSIGHT_IMAGE:-deep-insight:0.1.0}
     restart: unless-stopped
     env_file: [.env.local]
     ports:
@@ -32,7 +33,7 @@ services:
       start_period: 20s
 
   cron:
-    image: deep-insight:0.1.0
+    image: ${INSIGHT_IMAGE:-deep-insight:0.1.0}
     restart: unless-stopped
     depends_on:
       app:

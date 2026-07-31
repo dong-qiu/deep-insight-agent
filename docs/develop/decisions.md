@@ -1107,3 +1107,25 @@ XML parser 与原生 SQLite 驱动；类型包移入 `devDependencies`。升级�
 ### 补充（2026-07-24）：方向编辑与重投影
 
 方向编辑采用乐观版本控制。词表变化不删除候选、也不改写人工状态，而是将相关映射标记为 `stale`；管理员可在保存前预览近期线索变化，并显式重投影。这样“规划规则更新”和“项目/研究决策”保持可审计的不同生命周期。
+
+---
+
+## ADR-0017: 生产发布采用 CI 预构建 GHCR 镜像与 SSM 健康切换
+
+- **日期**: 2026-07-31
+- **状态**: Accepted
+
+### 背景
+
+原发布流程在单台生产机执行 `git pull` 和 `docker compose --build`。生产目录实际是 rsync 投递目录而非 Git checkout，且小规格实例在 Next/Docker 构建期间内存耗尽、健康服务受影响。这样也无法确保运行的是已通过 CI 的同一份制品。
+
+### 决定
+
+1. `main` 的 CI 成功后，GitHub Actions 在托管 runner 构建 `linux/amd64` 镜像并推送 GHCR。镜像以 `sha-<commit>` 不可变标签发布，附 OCI source/revision、SBOM 与 provenance；不使用 `latest`。
+2. 生产发布改为人工触发，输入只能是该 SHA 标签。workflow 用 GitHub OIDC 假设仅限 `production` environment 的最小 AWS IAM 角色，通过 SSM 而非 SSH 在唯一生产实例执行命令。
+3. 生产端仅下载与镜像同 SHA 的 compose 文件、拉取镜像、核验 OCI revision，并以 `docker compose up --wait --no-build` 健康切换。失败时恢复切换前 compose 与镜像，保留失败证据并使发布失败。
+4. `.env.local`、SQLite 卷和业务运行时配置继续仅在生产机保留；发布流程不读取或覆盖它们。GHCR 镜像包设为 public，以避免在生产机长期保存 package token。
+
+### 后果
+
+构建负载和供应链验证集中到 CI，生产机只承担拉取与短暂容器切换，发布可按提交精确复现并回退。代价是首次需配置 GHCR 包可见性、GitHub OIDC provider / IAM role、三个 Actions variables 和 production 审批门；旧 SSH secrets 在首次成功发布后再移除。
