@@ -43,7 +43,7 @@ trust_policy="$(jq -n --arg provider "$provider_arn" --arg repository "$reposito
   }]
 }')"
 
-permissions_policy="$(jq -n --arg instance "$instance_arn" --arg document "$document_arn" --arg region "$AWS_REGION" --arg account "$account_id" '{
+permissions_policy="$(jq -n --arg instance "$instance_arn" --arg document "$document_arn" '{
   Version: "2012-10-17",
   Statement: [
     {
@@ -53,10 +53,10 @@ permissions_policy="$(jq -n --arg instance "$instance_arn" --arg document "$docu
       Resource: [$document, $instance]
     },
     {
-      Sid: "ReadOwnCommandResult",
+      Sid: "ReadAndCancelDeploymentCommand",
       Effect: "Allow",
-      Action: "ssm:GetCommandInvocation",
-      Resource: ("arn:aws:ssm:" + $region + ":" + $account + ":*")
+      Action: ["ssm:GetCommandInvocation", "ssm:CancelCommand"],
+      Resource: "*"
     }
   ]
 }')"

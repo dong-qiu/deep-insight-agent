@@ -71,13 +71,23 @@ jobs:
 
           rollback_compose=\$(mktemp "\$app_dir/docker-compose.yml.rollback.XXXXXX")
           cp docker-compose.yml "\$rollback_compose"
-          restore_compose=1
-          restore_previous_compose() {
-            if [[ "\$restore_compose" == 1 && -f "\$rollback_compose" ]]; then
-              mv "\$rollback_compose" docker-compose.yml
+          old_image=\$(docker inspect --format '{{.Image}}' deep-insight-app-1 2>/dev/null || true)
+          rollback_image="deep-insight:rollback-\$(date -u +%Y%m%dT%H%M%SZ)"
+          if [[ -n "\$old_image" ]]; then docker tag "\$old_image" "\$rollback_image"; fi
+          deployment_complete=0
+          rollback() {
+            status=\$?
+            trap - EXIT
+            if [[ "\$deployment_complete" != 1 ]]; then
+              echo "部署未完整通过，恢复上一版本" >&2
+              if [[ -f "\$rollback_compose" ]]; then mv "\$rollback_compose" docker-compose.yml; fi
+              if [[ -n "\$old_image" ]]; then
+                INSIGHT_IMAGE="\$rollback_image" docker compose up -d --wait --wait-timeout 180 --no-build || true
+              fi
             fi
+            exit "\$status"
           }
-          trap restore_previous_compose EXIT
+          trap rollback EXIT
           curl --fail --silent --show-error --location "\$compose_url" --output docker-compose.yml.next
           docker compose -f docker-compose.yml.next config --quiet
           mv docker-compose.yml.next docker-compose.yml
@@ -86,25 +96,13 @@ jobs:
           actual_sha=\$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "\$image")
           [[ "\$actual_sha" == "\$expected_sha" ]] || { echo "镜像 revision 标签与请求提交不一致" >&2; exit 1; }
 
-          old_image=\$(docker inspect --format '{{.Image}}' deep-insight-app-1 2>/dev/null || true)
-          rollback_image="deep-insight:rollback-\$(date -u +%Y%m%dT%H%M%SZ)"
-          if [[ -n "\$old_image" ]]; then docker tag "\$old_image" "\$rollback_image"; fi
-
-          if ! INSIGHT_IMAGE="\$image" docker compose up -d --wait --wait-timeout 180 --no-build; then
-            echo "新镜像未通过健康检查，恢复上一版本" >&2
-            mv "\$rollback_compose" docker-compose.yml
-            restore_compose=0
-            if [[ -n "\$old_image" ]]; then
-              INSIGHT_IMAGE="\$rollback_image" docker compose up -d --wait --wait-timeout 180 --no-build || true
-            fi
-            exit 1
-          fi
-          rm -f "\$rollback_compose"
-          restore_compose=0
-          trap - EXIT
-          docker image prune -f
-          docker compose ps
+          INSIGHT_IMAGE="\$image" docker compose up -d --wait --wait-timeout 180 --no-build
           curl --fail --silent --show-error http://127.0.0.1:\${APP_PORT:-3000}/api/health
+          rm -f "\$rollback_compose"
+          deployment_complete=1
+          trap - EXIT
+          docker image prune -f || echo "镜像清理失败（不影响已完成的部署）" >&2
+          docker compose ps || echo "无法读取 compose 状态（不影响已完成的部署）" >&2
           EOF
           )
           encoded_script="$(printf '%s' "$remote_script" | base64 | tr -d '\n')"
@@ -112,7 +110,8 @@ jobs:
             --instance-ids "$PROD_INSTANCE_ID" \
             --document-name AWS-RunShellScript \
             --comment "Deploy ${image}" \
-            --parameters "commands=echo ${encoded_script} | base64 -d | bash" \
+            --timeout-seconds 600 \
+            --parameters "$(jq -nc --arg command "echo ${encoded_script} | base64 -d | bash" '{commands: [$command], executionTimeout: ["540"]}')" \
             --query 'Command.CommandId' --output text)"
           echo "SSM command: $command_id"
 
@@ -133,5 +132,19 @@ jobs:
             esac
             sleep 5
           done
-          echo "等待生产切换超时；请用 SSM 查询 command $command_id" >&2
+          echo "等待生产切换超时，正在取消 SSM command $command_id" >&2
+          aws ssm cancel-command --command-id "$command_id"
+          cancel_deadline=$((SECONDS + 70))
+          while (( SECONDS < cancel_deadline )); do
+            status="$(aws ssm get-command-invocation --command-id "$command_id" --instance-id "$PROD_INSTANCE_ID" --query Status --output text 2>/dev/null || true)"
+            case "$status" in
+              Success|Failed|Cancelled|TimedOut)
+                aws ssm get-command-invocation --command-id "$command_id" --instance-id "$PROD_INSTANCE_ID" \
+                  --query '{Status:Status,Stdout:StandardOutputContent,Stderr:StandardErrorContent}' --output json
+                exit 1
+                ;;
+            esac
+            sleep 5
+          done
+          echo "SSM command 未在取消窗口内终止；540 秒 executionTimeout 会限制其执行，禁止立即发起下一次发布" >&2
           exit 1
