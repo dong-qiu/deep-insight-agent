@@ -106,6 +106,15 @@
 
 **回归告警：** 任一上线门槛指标较基线下降 > 3 个百分点即告警，阻断合并。
 
+### 基线可比性与诊断证据
+
+基线只对**同一评测配置**有效。`evals/baseline.json` 必须在 `eval_configs.<stratum>` 记录每个形态的
+配置（分析/校验模型、`validator_thinking`、批量判定开关及两个数据集的 SHA-256）；任一项变化后，脚本只展示该形态的旧指标，不得把它当作回归结论，必须先在新配置下全量重跑并更新 provenance。
+
+`consistency_ok` / `consistency_failure` 衡量的是 analyzer 原始输出中「完整 statement × 单个来源」的判定结果；它既反映过度声称，也会受多源复合结论的逐来源严格判定影响，不能单独等同于已发布报告的幻觉率。发布安全仍以白名单后的引用可达性和人工幻觉抽检为准；校验器能力应同时查看三分类混淆矩阵、各类 precision/recall 与负例召回。
+
+每次真模型运行都应保留 `evals/out/a1-run.json`：包含配置、逐主题 CitationCheck、逐标注对预测/rationale 与混淆矩阵。定时工作流会将它作为 artifact 保存；改 analyzer 或 validator 前先读真实错例，再决定是改 prompt、原子事实/引用映射，还是校验策略。
+
 ## 评测流程
 
 1. **自动评测** —— 每次改 prompt / 模型 / 数据源的 PR，CI 跑回归集，输出各指标 + 与基线对比，附在 PR（见 `skills/L3-quality.md`）。
