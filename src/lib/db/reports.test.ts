@@ -486,7 +486,7 @@ describe("listRecentBriefEvents（P1 不复报 · 喂 analyzer 的历史事件�
     expect(listRecentBriefEvents(db, "t_other")).toEqual([]);
   });
 
-  it("已发布证据仅计 pass / genuine uncertain，校验失败引用不成为新增依据", () => {
+  it("已发布证据仅计明确 support 的 pass，flagged 与异常 pass 均不成为新增依据", () => {
     const date = today;
     const batch: AnalysisBatch = {
       id: "b_evidence", topic_id: "t1", time_window: { start: date, end: date }, status: "done", no_significant_event: false,
@@ -504,7 +504,7 @@ describe("listRecentBriefEvents（P1 不复报 · 喂 analyzer 的历史事件�
     saveValidationResult(db, batch.id, {
       checks: [
         { insight_id: "ins_evidence", citation_index: 0, reachability: "pass", reachability_reason: "ok", consistency: "support", consistency_reason: "ok", verdict: "pass" },
-        { insight_id: "ins_evidence", citation_index: 1, reachability: "pass", reachability_reason: "ok", consistency: "uncertain", consistency_reason: "uncertain", verdict: "flagged" },
+        { insight_id: "ins_evidence", citation_index: 1, reachability: "pass", reachability_reason: "ok", consistency: "uncertain", consistency_reason: "uncertain", verdict: "pass" },
         { insight_id: "ins_evidence", citation_index: 2, reachability: "pass", reachability_reason: "ok", consistency: "not_evaluated", consistency_reason: "not_evaluated", verdict: "flagged" },
       ],
       report: { total: 3, pass: 1, blocked: 0, flagged: 2, errored: 1, consistency_failure_rate: 0, flagged_rate: 0.67, insights_total: 1, insights_includable: 1, releasable: true },
@@ -513,7 +513,7 @@ describe("listRecentBriefEvents（P1 不复报 · 喂 analyzer 的历史事件�
     saveReport(db, rep, { ...index, report_id: rep.id, date, type: "brief" }, { dir });
 
     expect(listRecentPublishedEventEvidence(db, "t1").find((e) => e.event_id === "evt_evidence"))
-      .toMatchObject({ content_item_ids: ["ci_pass", "ci_uncertain"] });
+      .toMatchObject({ content_item_ids: ["ci_pass"] });
   });
 });
 

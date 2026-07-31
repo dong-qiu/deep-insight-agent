@@ -17,7 +17,8 @@ import { notifyBudget } from "../runtime/alert.js";
 import { getBudgetStatus } from "../runtime/cost-guard.js";
 import { callStructured } from "../runtime/llm.js";
 import { runLogger } from "../runtime/logger.js";
-import type { ContentItem, Cost, FollowupCitation, Report } from "../types.js";
+import type { CitationCheck, ContentItem, Cost, FollowupCitation, Report } from "../types.js";
+import { isIncludableCheck } from "../utils/citation-verdict.js";
 import { checkReachability, consistencyCacheVersion, judgeWithRetry } from "./validator.js";
 
 /** 单次追问最多保留的引用条数——界定单次最坏校验成本（env 可调）。 */
@@ -57,7 +58,8 @@ const FollowupAnswerSchema = z.object({
     .describe("回答中每条带引用的陈述及其支撑的引用池编号"),
 });
 
-/** 报告 → 去重编号引用池 + content_item 查找表（可达性校验用）。 */
+/** 报告 → 去重编号引用池 + content_item 查找表（可达性校验用）。
+ *  即使同一洞察因另一条 pass/support 引用进入报告，也绝不把其 flagged/blocked 引用放进追问池。 */
 function buildPool(db: DB, report: Report): { pool: PoolEntry[]; itemsById: Map<string, ContentItem> } {
   const insights = getInsightsByIds(db, report.insight_ids);
   const itemsById = new Map<string, ContentItem>();
@@ -65,8 +67,16 @@ function buildPool(db: DB, report: Report): { pool: PoolEntry[]; itemsById: Map<
   const seen = new Set<string>(); // (content_item_id \x00 quote) 去重
   const pool: PoolEntry[] = [];
   let ref = 0;
+  const checksForInsight = db.prepare(
+    "SELECT citation_index, verdict, consistency FROM citation_check WHERE insight_id = ?",
+  );
   for (const ins of insights) {
-    for (const c of ins.citations) {
+    const checks = new Map(
+      (checksForInsight.all(ins.id) as Pick<CitationCheck, "citation_index" | "verdict" | "consistency">[])
+        .map((c) => [c.citation_index, c]),
+    );
+    for (const [citationIndex, c] of ins.citations.entries()) {
+      if (!isIncludableCheck(checks.get(citationIndex) ?? { verdict: "blocked", consistency: "not_evaluated" })) continue;
       const key = `${c.content_item_id}\x00${c.quote}`;
       if (seen.has(key)) continue;
       seen.add(key);

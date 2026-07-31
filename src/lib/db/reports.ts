@@ -289,8 +289,8 @@ export function listRecentPublishedEventEvidence(
     for (const row of rows) {
       const event = byEvent.get(row.event_id);
       if (!event) continue;
-      // 与 isIncludableCheck 对齐：pass 或 genuine uncertain 才是可作为新增判断的成功证据。
-      if (row.verdict === "pass" || (row.verdict === "flagged" && row.consistency !== "not_evaluated")) {
+      // 与发布白名单对齐：只有明确 support 的 pass 才是可作为新增判断的成功证据。
+      if (row.verdict === "pass" && row.consistency === "support") {
         if (!event.content_item_ids.includes(row.content_item_id)) event.content_item_ids.push(row.content_item_id);
       }
     }

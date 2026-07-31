@@ -1,4 +1,4 @@
-/** 技术线索持久化与查询。证据始终关联 citation 的复合主键，读取时只联 pass verdict。 */
+/** 技术线索持久化与查询。证据始终关联 citation 的复合主键，读取时只联明确 support 的 pass。 */
 import { randomUUID } from "node:crypto";
 import type { TechLead, TechLeadEvidence, TechLeadStatus } from "../types.js";
 import type { LeadCandidate } from "../agents/tech-leads.js";
@@ -66,5 +66,5 @@ export function listTechLeadEvidence(db: DB, leadId: string): TechLeadEvidence[]
     JOIN analysis_batch b ON b.id=i.batch_id
     JOIN citation_check cc ON cc.batch_id=b.id AND cc.insight_id=ci.insight_id AND cc.citation_index=ci.citation_index
     JOIN content_item c ON c.id=ci.content_item_id JOIN source s ON s.id=c.source_id
-    WHERE e.lead_id=? AND cc.verdict='pass' ORDER BY observed_at DESC`).all(leadId) as TechLeadEvidence[];
+    WHERE e.lead_id=? AND cc.verdict='pass' AND cc.consistency='support' ORDER BY observed_at DESC`).all(leadId) as TechLeadEvidence[];
 }

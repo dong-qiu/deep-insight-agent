@@ -9,12 +9,10 @@ export function isValidationError(c: Pick<CitationCheck, "verdict" | "consistenc
   return c.verdict === "flagged" && c.consistency === "not_evaluated";
 }
 
-/** 一条引用是否"已成功校验且可纳入"：pass，或 genuine uncertain 的 flagged。
- *  「校验失败」(isValidationError) 不算——不让零条成功校验的洞察出街（闸门完整性）。 */
+/** 发布白名单：仅明确 support 的 pass 可纳入对外报告。
+ *  uncertain 与校验失败均留在人工核实/重试队列，不能作为发布依据。 */
 export function isIncludableCheck(c: Pick<CitationCheck, "verdict" | "consistency">): boolean {
-  if (c.verdict === "pass") return true;
-  if (c.verdict === "flagged") return !isValidationError(c);
-  return false;
+  return c.verdict === "pass" && c.consistency === "support";
 }
 
 /** flagged 标签文案：genuine uncertain 优先（更实质的告警），其次校验失败；都无返空串。 */

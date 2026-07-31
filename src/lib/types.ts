@@ -141,7 +141,7 @@ export interface CitationCheck {
     | "quote_not_in_source";
   // consistency=not_evaluated 有两义，按 reachability 区分：
   //  - reachability=fail → 可达性短路未判（verdict=blocked）；
-  //  - reachability=pass → 一致性「调用失败」（verdict=flagged，报告标「校验失败·待重试」，
+  //  - reachability=pass → 一致性「调用失败」（verdict=flagged，进入重试队列，不得发布），
   //    与判官真说 uncertain 区分；见 validator.validateBatch 的 catch 分支）。
   consistency: "support" | "not_support" | "uncertain" | "not_evaluated";
   consistency_reason:
@@ -169,7 +169,7 @@ export interface ValidationReport {
   consistency_failure_rate: number; // not_support / total
   flagged_rate: number; // genuine uncertain（consistency='uncertain'）/ total——不含校验失败
   insights_total: number; // 有引用被校验的洞察数
-  insights_includable: number; // ≥1 条「已成功校验」引用（pass/genuine uncertain）的洞察数（= report-gen 实际纳入数；校验失败不算）
+  insights_includable: number; // ≥1 条明确 support 的 pass 引用的洞察数（= report-gen 实际纳入数；flagged 不发布）
   releasable: boolean; // 洞察级：insights_includable ≥ 1（空批次诚实放行）
 }
 

@@ -1,7 +1,7 @@
 /** PPT 导出 orchestrator（C 阶段）：从 reportId 一次性读齐 PPT 所需输入，可选 LLM 润色，
  *  跑 buildPptx 拿 Buffer 给 API route。
  *
- *  纳入口径与 selectInsights 一致——只取 verdict=pass / flagged 的引用；blocked/未校验一律剔除——
+ *  纳入口径与 selectInsights 一致——只取明确 support 的 verdict=pass 引用——
  *  保证导出页面与报告正文同口径，避免"PPT 显示了报告里看不到的引用"这种倒挂。 */
 import type { DB } from "../db/index.js";
 import {
@@ -13,7 +13,7 @@ import { type InsightRow, rowToInsight } from "../db/analysis.js";
 import { getReport } from "../db/reports.js";
 import { getSource, getTopic } from "../db/repos.js";
 import type { CitationCheck, Insight, Report, Topic } from "../types.js";
-import { isIncludableCheck, isValidationError } from "../utils/citation-verdict.js";
+import { isIncludableCheck } from "../utils/citation-verdict.js";
 import { buildPptx, type IncludedInsightLite, type PptGenOutput } from "./ppt-gen.js";
 import { polishForPpt, type PolishResult } from "./ppt-polish.js";
 
@@ -48,7 +48,7 @@ export interface PptExportOptions {
 }
 
 /** 一次性读齐 report + insights + citations + checks + sources + topic，
- *  按报告 `insight_ids` 过滤并应用 pass/flagged 白名单，返 PPT 输入所需结构。 */
+ *  按报告 `insight_ids` 过滤并应用 pass/support 白名单，返 PPT 输入所需结构。 */
 function loadPptInput(
   db: DB,
   reportId: string,
@@ -63,28 +63,21 @@ function loadPptInput(
     const row = db.prepare("SELECT * FROM insight WHERE id = ?").get(id) as InsightRow | undefined;
     if (!row) continue; // 防御：报告引用了已删除的 insight，跳过不抛
     const insight: Insight = rowToInsight(db, row); // 单一来源（Q3）
-    // 白名单（与 selectInsights 同口径）：pass/flagged 纳入；blocked/无 check 剔除
+    // 白名单（与 selectInsights 同口径）：仅明确 support 的 pass 引用可导出。
     const checks = db
       .prepare("SELECT citation_index, verdict, consistency FROM citation_check WHERE insight_id = ?")
       .all(id) as Pick<CitationCheck, "citation_index" | "verdict" | "consistency">[];
     const cMap = new Map(checks.map((c) => [c.citation_index, c]));
     const kept: number[] = [];
-    let flaggedUncertain = false;
-    let flaggedError = false;
     let includable = false;
     insight.citations.forEach((_, i) => {
       const c = cMap.get(i);
-      if (c?.verdict === "pass" || c?.verdict === "flagged") {
+      if (c && isIncludableCheck(c)) {
         kept.push(i);
-        // flagged 两类（验证器约定）：校验失败（isValidationError）vs genuine uncertain
-        if (c.verdict === "flagged") {
-          if (isValidationError(c)) flaggedError = true;
-          else flaggedUncertain = true;
-        }
-        if (isIncludableCheck(c)) includable = true; // 校验失败不计入纳入闸门（与 selectInsights 同口径）
+        includable = true;
       }
     });
-    if (includable) insights.push({ insight, citationIndices: kept, flaggedUncertain, flaggedError });
+    if (includable) insights.push({ insight, citationIndices: kept, flaggedUncertain: false, flaggedError: false });
   }
 
   // 源名映射：ci → source_id → source.name；同时建 source_id → name（供"源与方法"页）

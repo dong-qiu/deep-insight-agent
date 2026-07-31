@@ -244,8 +244,7 @@ export function isValidationDegraded(
 }
 
 /** 洞察级纳入计数（与 report-gen.selectInsights 对齐）：一条洞察当且仅当至少有 1 条
- *  「已成功校验」引用（pass 或 genuine uncertain）时才可纳入——校验失败（isValidationError）
- *  不算，避免零条成功校验的洞察出街（闸门完整性）。summarize 在写时一次性算定
+ *  明确 support 的 pass 引用时才可纳入；uncertain 与校验失败均不能出街。summarize 在写时一次性算定
  *  insights_total/includable + releasable 并随 validation_result 落库（读回直接取列，不再重算），
  *  保证三者同源、内部自洽。 */
 export function insightInclusion(checks: CitationCheck[]): {
@@ -475,7 +474,7 @@ export async function validateBatch(
             out = await judgeWithRetry(e.claim, body, onCost, metadata, e.quote);
           } catch (e) {
             // 调用失败（超时/限流/解析错）与「判官真说不确定」分开记账：记 consistency=not_evaluated
-            // （此组合专指「校验失败」），verdict 仍 flagged（不让未校验引用伪装已核实），报告标「校验失败·待重试」。
+            // （此组合专指「校验失败」），verdict 仍 flagged（不让未校验引用伪装已核实），进入重试队列且不得发布。
             console.warn(`  ⚠️ 一致性校验失败，记为校验失败（${(e as Error).message}）`);
             out = { error: true };
           }

@@ -181,16 +181,16 @@ describe("summarize（护栏与 releasable 对齐洞察级纳入判定）", () =
     expect(r.releasable).toBe(true);
   });
 
-  it("flagged（待核实）也算可纳入", () => {
+  it("flagged（待核实）只进入人工队列，不算可纳入发布", () => {
     const r = summarize([check("i1", "flagged")]);
-    expect(r.insights_includable).toBe(1);
-    expect(r.releasable).toBe(true);
+    expect(r.insights_includable).toBe(0);
+    expect(r.releasable).toBe(false);
   });
 
   it("insightInclusion 按 insight_id 分组、与 verdict 白名单一致", () => {
     expect(insightInclusion([check("a", "pass"), check("b", "blocked"), check("b", "flagged")])).toEqual({
       insights_total: 2,
-      insights_includable: 2, // a 有 pass；b 有 genuine uncertain flagged
+      insights_includable: 1, // 只有 a 有明确 support 的 pass
     });
   });
 

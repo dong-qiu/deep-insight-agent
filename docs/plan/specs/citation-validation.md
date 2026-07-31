@@ -31,7 +31,7 @@
 6. 安全：喂给校验模型的原文片段按不可信内容处理（来源隔离 / 指令剥离），防 prompt injection 污染校验结论。
 7. 人工抽检：按 `eval-criteria.md` 规定比例抽检校验结果，作为护栏指标真值来源；抽检发现的错误回流校准 LLM-judge 判定阈值（自动 `consistency_failure_rate` 是代理指标，人工抽检的「幻觉率」是真值）。
 8. 容错：网络类失败（超时 / 限流）置 `retryable` 重试（默认上限 3 次），区别于内容类 `fail`。
-9. `releasable` 计算：「有效洞察」= 经「洞察级纳入判定」剩余引用 ≥ 1 的洞察。剔除全部 `blocked` 后仍有 ≥ 1 条有效洞察 → `releasable=true`；`total=0`（空批次 / 上游 `no_significant_event=true`）→ `releasable=true`（让 brief 走「无重要事件」路径，**不置 failed**）；其余 → `releasable=false`，下游报告置 `failed`。
+9. `releasable` 计算：「有效洞察」= 经「洞察级纳入判定」仍有 ≥ 1 条明确 `support` 的 `pass` 引用的洞察。至少一条有效洞察 → `releasable=true`；`total=0`（空批次 / 上游 `no_significant_event=true`）→ `releasable=true`（让 brief 走「无重要事件」路径，**不置 failed**）；其余 → `releasable=false`，下游报告置 `failed`。
 10. 上报两个护栏指标：`consistency_failure_rate`（= `not_support` 占比，引用级）与 `flagged_rate`（= `uncertain` 占比，引用级），见 `charter.md` 成功指标与 `eval-criteria.md` 阈值。
 
 ## 验收标准 (AC)
@@ -40,7 +40,7 @@
 - [ ] AC2: `quote` 不在原文时，`reachability=fail`、`reachability_reason=quote_not_in_source`。
 - [ ] AC3: 在 `eval-criteria.md`「引用一致性集」上，三分类（support / not_support / uncertain）判定准确率 ≥ 90%、对负例（not_support）召回率 ≥ 95%。
 - [ ] AC4: 网络类失败判 `retryable` 并重试，与内容类 `fail` 区分；重试耗尽才归为 `fail`。
-- [ ] AC5: `verdict` 严格按校验判定流程取值；`consistency_reason` 严格按取值约束；`blocked` 内容不出现在最终报告，`flagged` 内容带「待核实」标记。
+- [ ] AC5: `verdict` 严格按校验判定流程取值；`consistency_reason` 严格按取值约束；仅 `pass`（明确 `support`）内容可出现在最终报告；`blocked` 与 `flagged` 内容分别进入屏蔽/人工核实队列，不得发布。
 - [ ] AC6: `ValidationReport.consistency_failure_rate` 与 `flagged_rate` 计算正确，且在评测集上均达 `eval-criteria.md` 上线门槛（≤ 5% / ≤ 10%）；管理看板可查看趋势。
 - [ ] AC7: 校验模型配置与分析模型配置不同（提供商或模型 ID 不同），配置层强制可校验。
 - [ ] AC8: 空批次（`total=0` 或上游 `no_significant_event=true`）时 `releasable=true`，下游报告**不置 failed**，brief 走「无重要事件」路径。

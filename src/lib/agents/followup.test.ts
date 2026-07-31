@@ -10,13 +10,14 @@ vi.mock("../runtime/llm.js", () => ({
 }));
 
 import { callStructured } from "../runtime/llm.js";
-import { saveAnalysisBatch } from "../db/analysis.js";
+import { saveAnalysisBatch, saveValidationResult } from "../db/analysis.js";
 import { closeDb, openDb, type DB } from "../db/index.js";
 import { insertContentItem, insertSource, insertTopic } from "../db/repos.js";
 import type { AnalysisBatch, ContentItem, Report, Source, Topic } from "../types.js";
 import { answerFollowup } from "./followup.js";
 
 const QUOTE = "test-first 把回归缺陷降了 38%";
+const UNCERTAIN_QUOTE = "团队反馈良好";
 const BODY = `一篇关于工程实践的文章。${QUOTE}，团队反馈良好。`;
 
 function source(): Source {
@@ -31,12 +32,12 @@ function topic(): Topic {
     brief_schedule: "daily", enabled: true,
   };
 }
-function contentItem(): ContentItem {
+function contentItem(id = "ci_1", body = BODY): ContentItem {
   return {
-    id: "ci_1", source_id: "src1", url: "https://x.com/a", title: "t", author: null,
+    id, source_id: "src1", url: `https://x.com/${id}`, title: "t", author: null,
     published_at: "2026-06-01T00:00:00Z", fetched_at: "2026-06-01T00:00:00Z", language: "zh",
-    topic_ids: ["t1"], tags: ["test"], body: BODY, body_kind: "article", raw_ref: "raw://ci_1",
-    content_hash: "h1", fetch_status: "ok",
+    topic_ids: ["t1"], tags: ["test"], body, body_kind: "article", raw_ref: `raw://${id}`,
+    content_hash: `h_${id}`, fetch_status: "ok",
   };
 }
 function batch(): AnalysisBatch {
@@ -47,7 +48,10 @@ function batch(): AnalysisBatch {
       {
         id: "ins_1", topic_id: "t1", type: "aggregation", event_id: null,
         statement: "test-first 降低回归缺陷", importance: 4, importance_basis: "多源",
-        citations: [{ content_item_id: "ci_1", quote: QUOTE, locator: { paragraph_index: 0, char_start: 0, char_end: 10 } }],
+        citations: [
+          { content_item_id: "ci_1", quote: QUOTE, locator: { paragraph_index: 0, char_start: 0, char_end: 10 } },
+          { content_item_id: "ci_2", quote: UNCERTAIN_QUOTE, locator: { paragraph_index: 0, char_start: 0, char_end: 8 } },
+        ],
         source_count: 1, multi_source: false,
         time_window: { start: "2026-06-01T00:00:00Z", end: "2026-06-02T00:00:00Z" },
         confidence: null, language: "zh",
@@ -78,7 +82,15 @@ beforeEach(() => {
   insertSource(db, source());
   insertTopic(db, topic());
   insertContentItem(db, contentItem());
+  insertContentItem(db, contentItem("ci_2"));
   saveAnalysisBatch(db, batch());
+  saveValidationResult(db, "ab_1", {
+    checks: [
+      { insight_id: "ins_1", citation_index: 0, reachability: "pass", reachability_reason: "ok", consistency: "support", consistency_reason: "ok", verdict: "pass" },
+      { insight_id: "ins_1", citation_index: 1, reachability: "pass", reachability_reason: "ok", consistency: "uncertain", consistency_reason: "uncertain", verdict: "flagged" },
+    ],
+    report: { total: 2, pass: 1, blocked: 0, flagged: 1, errored: 0, consistency_failure_rate: 0, flagged_rate: 0.5, insights_total: 1, insights_includable: 1, releasable: true },
+  });
   vi.mocked(callStructured).mockReset();
 });
 afterEach(() => closeDb());
@@ -103,7 +115,7 @@ describe("answerFollowup", () => {
     expect(r.citations_used[0]).toMatchObject({ ref: 1, content_item_id: "ci_1", source_name: "机器之心" });
     expect(r.validation).toMatchObject({ total: 1, reachable: 1, consistent: 1, blocked: 0, errored: 0 });
     expect(r.answer_md).toContain("引用（1）：");
-    expect(r.answer_md).toContain(`[1] [「${QUOTE}」](https://x.com/a)`);
+    expect(r.answer_md).toContain(`[1] [「${QUOTE}」](https://x.com/ci_1)`);
     expect(r.cost.amount).toBeCloseTo(0.0015); // 生成 0.001 + 一致性 0.0005
   });
 
@@ -130,6 +142,17 @@ describe("answerFollowup", () => {
     expect(r.validation).toMatchObject({ total: 1, reachable: 0, blocked: 1 });
     // 只调了生成一次，未调一致性（ref 不在池短路）
     expect(callStructured).toHaveBeenCalledTimes(1);
+  });
+
+  it("同一已发布洞察的 flagged 引用不进入追问引用池", async () => {
+    wire(
+      { answerable: true, answer_md: "不应可引用 [2]。", claims: [{ ref: 2, claim: "团队反馈良好" }] },
+      "support",
+    );
+    const r = await answerFollowup(db, report(), "另一个引用说了什么？");
+    expect(r.citations_used).toEqual([]);
+    expect(r.validation).toMatchObject({ total: 1, reachable: 0, blocked: 1 });
+    expect(callStructured).toHaveBeenCalledTimes(1); // flagged ref 在池外，不触发 judge
   });
 
   it("answerable=false → 原样返回，不校验、无引用", async () => {

@@ -6,7 +6,7 @@
 ## 背景与目标
 
 报告详情页此前只能"读"，无法就内容继续提问。本功能让用户在某份报告页用自然语言提问，
-系统**只基于该报告已收录、已校验的引用池**给出可溯源回答——把"可点回原文"延伸到"可追问原文"。
+系统**只基于该报告已发布的 `pass` + `support` 引用池**给出可溯源回答——把"可点回原文"延伸到"可追问原文"。
 
 第一原则：守住"100% 可溯源、幻觉 ≤2%"红线。手段是**结构性约束**（回答只能引用报告引用池）
 + **轻校验**（ref-in-pool + 可达性 + 缓存兜底一致性），而非每次重跑全量 Opus 校验。
@@ -34,7 +34,8 @@
 
 ## 行为规约
 
-1. **上下文组装**：`getReport` → `insight_ids` → `getInsightsByIds` 取洞察及引用 → 每条引用
+1. **上下文组装**：`getReport` → `insight_ids` → `getInsightsByIds` 取洞察及引用；仅保留其
+   `CitationCheck.verdict=pass` 且 `consistency=support` 的引用 → 每条引用
    `getContentItem` 取源文 body、`getSource` 取源名，组成**编号引用池** `[1..N]`
    `{ ref, content_item_id, quote, source_name, url, published_at, sourceBody(截断 MAX) }`，
    按 `(content_item_id, quote)` 去重。
