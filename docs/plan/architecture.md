@@ -184,6 +184,7 @@ Source ─采集▶ ContentItem ─分析▶ AnalysisBatch(Insight+Citation) ─
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
 | `content_item_id` | string | Y | → `ContentItem.id` |
+| `claim` | text | N | 该 citation 单独支撑的原子事实。新 analyzer 输出必填；旧数据可缺，validator 保守回退为完整 `Insight.statement` 校验 |
 | `quote` | text | Y | 被引原文片段（逐字摘录） |
 | `locator` | object | Y | 原文定位 `{paragraph_index, char_start, char_end}` |
 
@@ -263,8 +264,8 @@ Source ─采集▶ ContentItem ─分析▶ AnalysisBatch(Insight+Citation) ─
 **`consistency_reason` 取值约束**（与 `consistency` 绑定，与 `verdict` 表共同形成全函数）：
 
 - `consistency = support` → `consistency_reason = ok`
-- `consistency = not_support` → `consistency_reason ∈ {out_of_context, exaggeration, misattribution}`
-- `consistency = uncertain` → `consistency_reason = uncertain`
+- `consistency = not_support` → 原文与 claim 有可判定冲突，或原文已有事实被断章取义、夸大、张冠李戴；`consistency_reason ∈ {out_of_context, exaggeration, misattribution}`
+- `consistency = uncertain` → 原文对 claim 的关键主体、数值、比较、范围或条件没有足够信息，既不能证实也不能反驳（仅仅“未提到”属于此类）；`consistency_reason = uncertain`
 - `consistency = not_evaluated`（短路） → `consistency_reason = not_evaluated`
 
 **洞察级纳入判定**（一条 `Insight` 含多条 `Citation` 时）

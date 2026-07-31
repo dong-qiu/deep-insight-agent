@@ -21,10 +21,19 @@ import "./load-env.js"; // 必须最先 import：载 .env.local，早于 MODELS�
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { analyze, coverageGaps, specificClaims } from "../src/lib/agents/analyzer.js";
-import { judgeConsistency, validateBatch } from "../src/lib/agents/validator.js";
+import { judgeWithRetry, validateBatch } from "../src/lib/agents/validator.js";
 import { MODELS, assertModelSeparation, getCostReport } from "../src/lib/runtime/llm.js";
 import { validatorBatchOn, validatorThinking } from "../src/lib/runtime/env.js";
 import type { CitationCheck, ContentItem, Insight, Topic } from "../src/lib/types.js";
+import {
+  emptyJudgeStats,
+  judgeAccuracy,
+  judgeCompletion,
+  judgeNegativeRecall,
+  recordJudgeAttempt,
+  type ConsistencyLabel,
+  type JudgeStats,
+} from "./a1-judge-metrics.js";
 
 type Stratum = "arxiv" | "transcript";
 const STRATA: Stratum[] = ["arxiv", "transcript"];
@@ -77,20 +86,10 @@ interface QualityCase {
 interface ConsistencyCase {
   statement: string;
   source_text: string;
-  expected_consistency: "support" | "not_support" | "uncertain";
+  expected_consistency: ConsistencyLabel;
   negative_type?: string;
   stratum?: Stratum; // 缺省 arxiv
 }
-
-interface JudgeStats {
-  judged: number;
-  correct: number;
-  errors: number;
-  negTotal: number;
-  negRecalled: number;
-}
-
-type ConsistencyLabel = ConsistencyCase["expected_consistency"];
 type ConfusionMatrix = Record<ConsistencyLabel, Record<ConsistencyLabel, number>>;
 
 interface EvalConfig {
@@ -163,10 +162,6 @@ function sameEvalConfig(baseline: Record<string, unknown>, current: EvalConfig):
   return EVAL_CONFIG_KEYS.every((key) => baseline[key] === current[key]);
 }
 
-function emptyJudgeStats(): JudgeStats {
-  return { judged: 0, correct: 0, errors: 0, negTotal: 0, negRecalled: 0 };
-}
-
 function readJsonl<T>(path: string): T[] {
   return readFileSync(path, "utf8")
     .split("\n")
@@ -214,8 +209,9 @@ function stratumRows(stratum: Stratum, checks: CitationCheck[], judge: JudgeStat
     metric("consistency_ok", "引用一致性合格率", total ? support / total : 0, t.consistencyOk, ">=", "raw_pipeline"),
     metric("consistency_failure", "一致性失败率(护栏)", total ? notSupport / total : 0, t.consistencyFailure, "<=", "raw_pipeline"),
     metric("flagged_rate", "flagged率(第二护栏)", total ? uncertain / total : 0, t.flagged, "<=", "raw_pipeline"),
-    metric("judge_accuracy", "校验器三分类准确率", judge.judged ? judge.correct / judge.judged : 0, t.judgeAccuracy, ">=", "validator_classifier"),
-    metric("judge_neg_recall", "校验器负例召回率", judge.negTotal ? judge.negRecalled / judge.negTotal : 0, t.judgeNegRecall, ">=", "validator_classifier"),
+    metric("judge_accuracy", "校验器端到端三分类准确率", judgeAccuracy(judge), t.judgeAccuracy, ">=", "validator_classifier"),
+    metric("judge_neg_recall", "校验器端到端负例召回率", judgeNegativeRecall(judge), t.judgeNegRecall, ">=", "validator_classifier"),
+    metric("judge_completion", "校验器完成率", judgeCompletion(judge), 1, "info", "validator_classifier"),
   ];
   // transcript：yield = 上报引用 / 原始引用 = 1 - blocked 占比（量"漂移挡掉多少产出"，防挡到没产出）。
   if (t.yieldMin != null) {
@@ -318,30 +314,28 @@ async function main(): Promise<void> {
   for (const [caseIndex, c] of consistencyCases.entries()) {
     const st = judgeByStratum[c.stratum ?? "arxiv"];
     const stratum = c.stratum ?? "arxiv";
-    let j: Awaited<ReturnType<typeof judgeConsistency>>;
+    let j: Awaited<ReturnType<typeof judgeWithRetry>>;
     try {
-      j = await judgeConsistency(c.statement, c.source_text);
+      // 标注集是一条 claim 对一段 source_text，走生产单条路径的重试包装；直接调
+      // judgeConsistency 会把瞬态/结构化输出抖动伪装成“跳过样本”。批量路径另由
+      // validate-batch-judge.ts 覆盖，不能用本循环替代其验证。
+      j = await judgeWithRetry(c.statement, c.source_text);
     } catch (e) {
-      st.errors++;
+      recordJudgeAttempt(st, c.expected_consistency, null);
       judgeEvidence.push({ case_index: caseIndex, stratum, expected: c.expected_consistency, predicted: null, rationale: null, error: (e as Error).message });
       continue;
     }
-    st.judged++;
+    recordJudgeAttempt(st, c.expected_consistency, j.consistency);
     judgeSucceeded++;
     matrixByStratum[stratum][c.expected_consistency][j.consistency]++;
     judgeEvidence.push({ case_index: caseIndex, stratum, expected: c.expected_consistency, predicted: j.consistency, rationale: j.rationale, error: null });
-    if (j.consistency === c.expected_consistency) st.correct++;
-    if (c.expected_consistency === "not_support") {
-      st.negTotal++;
-      if (j.consistency === "not_support") st.negRecalled++;
-    }
   }
   const judgedTotal = STRATA.reduce((n, s) => n + judgeByStratum[s].judged, 0);
   const errorsTotal = STRATA.reduce((n, s) => n + judgeByStratum[s].errors, 0);
-  console.log(`done（成功 ${judgedTotal}/${consistencyCases.length}${errorsTotal ? `，跳过 ${errorsTotal}` : ""}）`);
+  console.log(`done（完成 ${judgedTotal}/${consistencyCases.length}${errorsTotal ? `，重试耗尽 ${errorsTotal}（计未命中）` : ""}）`);
 
   // ── 指标（按 stratum 分组打印 + 收集所有硬门行用于退出码） ──
-  const activeStrata = STRATA.filter((s) => checksByStratum[s].length > 0 || judgeByStratum[s].judged > 0);
+  const activeStrata = STRATA.filter((s) => checksByStratum[s].length > 0 || judgeByStratum[s].attempted > 0);
   const rowsByStratum: Record<string, MetricRow[]> = {};
   const allRows: MetricRow[] = [];
   for (const s of activeStrata) {

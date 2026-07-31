@@ -75,6 +75,11 @@ export interface Citation {
   content_item_id: string;
   quote: string;
   locator: { paragraph_index: number; char_start: number; char_end: number };
+  /**
+   * 此引用单独支撑的原子事实。新 analyzer 输出必填；历史批次缺失时 validator
+   * 保守回退为验证完整 statement，避免旧数据被静默放宽。
+   */
+  claim?: string;
 }
 
 /** 实体（product-definition 洞察「实体追踪」：组织/人物/项目/产品维度的动态聚合）。
@@ -380,12 +385,16 @@ export interface Run {
 // multi_source / time_window / language 等在代码侧派生，不让模型编造）
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** analyzer 产出的单条引用（仅 content_item_id + 逐字 quote；locator 代码侧算） */
+/** analyzer 产出的单条引用（claim + content_item_id + 逐字 quote；locator 代码侧算） */
 export const LlmCitationSchema = z.object({
   content_item_id: z.string().describe("被引 ContentItem 的 id（必须来自输入清单）"),
   quote: z
     .string()
     .describe("被引原文片段，必须逐字摘录自该 ContentItem 的 body，不得改写"),
+  claim: z
+    .string()
+    .min(1)
+    .describe("该 quote 单独直接支持的一个原子事实；不得包含其他来源的事实、跨来源总结或未在本条来源中出现的推断"),
 });
 
 /** analyzer 产出的单条洞察 */
