@@ -83,5 +83,8 @@ fi
 if [[ "${SET_GITHUB_PACKAGE_PUBLIC:-0}" == "1" ]]; then
   command -v gh >/dev/null || { echo 'SET_GITHUB_PACKAGE_PUBLIC=1 requires GitHub CLI' >&2; exit 1; }
   package_name="${repository#*/}"
-  gh api --method PATCH "/user/packages/container/${package_name}" -f visibility=public
+  visibility="$(gh api "/user/packages/container/${package_name}" --jq .visibility)"
+  if [[ "$visibility" != "public" ]]; then
+    gh api --method PATCH "/user/packages/container/${package_name}" -f visibility=public
+  fi
 fi
