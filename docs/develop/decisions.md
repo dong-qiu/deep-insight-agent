@@ -1124,7 +1124,7 @@ XML parser 与原生 SQLite 驱动；类型包移入 `devDependencies`。升级�
 1. `main` 的 CI 成功后，GitHub Actions 在托管 runner 构建 `linux/amd64` 镜像并推送 GHCR。镜像以 `sha-<commit>` 不可变标签发布，附 OCI source/revision、SBOM 与 provenance；不使用 `latest`。
 2. 生产发布改为人工触发，输入只能是该 SHA 标签。workflow 用 GitHub OIDC 假设仅限 `production` environment 的最小 AWS IAM 角色，通过 SSM 而非 SSH 在唯一生产实例执行命令。
 3. 生产端仅下载与镜像同 SHA 的 compose 文件、拉取镜像、核验 OCI revision，并以 `docker compose up --wait --no-build` 健康切换。失败时恢复切换前 compose 与镜像，保留失败证据并使发布失败。
-4. `.env.local`、SQLite 卷和业务运行时配置继续仅在生产机保留；发布流程不读取或覆盖它们。GHCR 镜像包设为 public，以避免在生产机长期保存 package token。
+4. `.env.local`、SQLite 卷和业务运行时配置继续仅在生产机保留；发布流程不读取或覆盖它们。GHCR 镜像包由 owner 一次性设为 public，以避免在生产机长期保存 package token；CI token 只推送制品。
 
 ### 后果
 

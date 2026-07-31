@@ -183,7 +183,7 @@ docker run --rm -v deep-insight_insight-data:/data -v "$PWD":/backup alpine \
 2. operator 在 Actions 手动运行 `Deploy Production Image`，可留空（当前 main）或指定已发布的 `sha-<commit>` 进行精确发布/回退；没有 `v*` tag 自动上线。
 3. workflow 经 GitHub OIDC 取得最小 AWS SSM 角色，在生产机 `/opt/app` 下载与镜像同一 SHA 的 compose 文件、`docker pull`、核对 OCI revision，随后 `docker compose up --wait --no-build`。新 app 不健康时自动恢复先前 compose 和镜像，并使 workflow 失败。
 
-首次配置在有 AWS 管理权限的终端执行 `ops/aws/setup-github-oidc.sh`。它创建/更新仅限 `production` Environment 的 OIDC 信任和仅能对该实例执行 SSM / 查询结果的 IAM 权限；输出并可通过 `SET_GITHUB_VARIABLES=1` 写入三个 GitHub Actions repository variables：`AWS_REGION`、`AWS_DEPLOY_ROLE_ARN`、`PROD_INSTANCE_ID`。部署机前置条件仅是 Docker、Compose、SSM Agent 和既有 `/opt/app/.env.local` / 数据卷；不需要 checkout、Git remote、SSH 私钥或 GHCR 读取令牌。
+首次配置在有 AWS 管理权限的终端执行 `ops/aws/setup-github-oidc.sh`。它创建/更新仅限 `production` Environment 的 OIDC 信任和仅能对该实例执行 SSM / 查询结果的 IAM 权限；输出并可通过 `SET_GITHUB_VARIABLES=1` 写入三个 GitHub Actions repository variables：`AWS_REGION`、`AWS_DEPLOY_ROLE_ARN`、`PROD_INSTANCE_ID`。公共仓库还需由 owner 一次性使用带 `write:packages` scope 的 GitHub CLI 执行 `SET_GITHUB_PACKAGE_PUBLIC=1 ops/aws/setup-github-oidc.sh`，让生产机可匿名拉取；CI 的 `GITHUB_TOKEN` 只负责推送，不能变更 owner-level 包可见性。部署机前置条件仅是 Docker、Compose、SSM Agent 和既有 `/opt/app/.env.local` / 数据卷；不需要 checkout、Git remote、SSH 私钥或 GHCR 读取令牌。
 
 生产 Environment 应保留 required reviewers / protection rules。部署完成后检查 workflow 的 SSM 输出（compose 状态和 `/api/health`）；如需业务级告警验证，再运行 `probe-alert.mjs`。旧的 `DEPLOY_*` SSH secrets 可在至少一次成功 GHCR 发布和部署后移除。
 
