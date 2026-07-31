@@ -21,6 +21,7 @@ concurrency:
 jobs:
   deploy:
     name: pull and health-switch production
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
     environment: production
     env:
@@ -32,9 +33,14 @@ jobs:
       - name: Validate deployment target
         id: target
         env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           REQUESTED_IMAGE_TAG: ${{ inputs.image_tag }}
         run: |
           set -euo pipefail
+          [[ "$GITHUB_REF" == "refs/heads/${DEFAULT_BRANCH}" ]] || {
+            echo "生产部署只能从 ${DEFAULT_BRANCH} 分支触发" >&2
+            exit 1
+          }
           : "${AWS_REGION:?缺少 Actions variable AWS_REGION}"
           : "${AWS_DEPLOY_ROLE_ARN:?缺少 Actions variable AWS_DEPLOY_ROLE_ARN}"
           : "${PROD_INSTANCE_ID:?缺少 Actions variable PROD_INSTANCE_ID}"
