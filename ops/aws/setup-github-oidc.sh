@@ -2,6 +2,7 @@
 # 为 GitHub Actions → AWS SSM 生产部署创建最小 OIDC 权限。
 # 用法：ops/aws/setup-github-oidc.sh
 #      SET_GITHUB_VARIABLES=1 ops/aws/setup-github-oidc.sh  # 同时写入仓库 Actions variables
+#      SET_GITHUB_PACKAGE_PUBLIC=1 ops/aws/setup-github-oidc.sh  # 需 gh 的 write:packages scope
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -77,4 +78,10 @@ if [[ "${SET_GITHUB_VARIABLES:-0}" == "1" ]]; then
   gh variable set AWS_REGION --repo "$repository" --body "$AWS_REGION"
   gh variable set AWS_DEPLOY_ROLE_ARN --repo "$repository" --body "$role_arn"
   gh variable set PROD_INSTANCE_ID --repo "$repository" --body "$instance_id"
+fi
+
+if [[ "${SET_GITHUB_PACKAGE_PUBLIC:-0}" == "1" ]]; then
+  command -v gh >/dev/null || { echo 'SET_GITHUB_PACKAGE_PUBLIC=1 requires GitHub CLI' >&2; exit 1; }
+  package_name="${repository#*/}"
+  gh api --method PATCH "/user/packages/container/${package_name}" -f visibility=public
 fi

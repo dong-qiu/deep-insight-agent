@@ -54,9 +54,5 @@ jobs:
           provenance: mode=max
           sbom: true
 
-      # 公共仓库的生产机匿名拉取镜像，不把可读取 packages 的长期凭据放进生产环境。
-      - name: Make the linked container package public
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PACKAGE: ${{ github.event.repository.name }}
-        run: gh api --method PATCH "/user/packages/container/${PACKAGE}" -f visibility=public
+      # 包可见性是一次性 owner-level 配置：GITHUB_TOKEN 可推镜像，但不是个人包管理 API 的 owner。
+      # setup-github-oidc.sh 的 SET_GITHUB_PACKAGE_PUBLIC=1 会在 operator 授权后完成这一步。
