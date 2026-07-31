@@ -168,25 +168,24 @@ docker run --rm -v deep-insight_insight-data:/data -v "$PWD":/backup alpine \
 
 ## 8. 升级
 
-**手动**：改 `package.json` version → 同步 compose `image: deep-insight:<ver>` → `docker compose up -d --build`。CI（`.github/workflows/ci.yml`）：typecheck → vitest → next build → docker build；Dependabot 管依赖/Actions/镜像。
+本地开发可用 `docker compose up -d --build` 从当前 checkout 构建；**生产不再从源码构建**。CI（`.github/workflows/ci.yml`）通过后，`.github/workflows/publish-image.yml` 构建 `linux/amd64` 镜像并推送至 GHCR，标签固定为 `sha-<40 位提交 SHA>`。生产仅拉取这个不可变制品，因此一次发布能精确追溯到通过 CI 的提交。
 
-> ⚠️ **改了应用代码必带 `--build`，且 `--build` 前先 `git pull`**（配置 vs 制品是两个生命周期）：
-> - `docker compose up -d`（不带 `--build`）只重建容器、**复用缓存镜像** → 仅 `.env.local`/compose 配置变更够用；**代码变更不会生效**（容器跑的还是旧镜像里的旧代码）。
-> - 镜像从源码 checkout 构建——本地 `main` **不随 `git push origin main` 自动前进**，`--build` 前不 `git pull` 会重建出旧源码。
-> - 验证别只看 `HTTP 200`（跨服务调用里 200 ≠ 成功，如飞书回 200+错误码）；用 `docker exec deep-insight-app-1 node /app/ops/probe-alert.mjs` 看渠道 + `code=0` + 真到达。
-> - 实战教训见 `docs/practice-log.md` 2026-06-08 条（接飞书告警时 `up -d` 跑旧 probe 报假成功）。
+> 验证别只看 `HTTP 200`（跨服务调用里 200 ≠ 成功，如飞书回 200+错误码）；用 `docker exec deep-insight-app-1 node /app/ops/probe-alert.mjs` 看渠道 + `code=0` + 真到达。
 
 > ⚠️ **运行时配置持久化（成本熔断 / 报告推送 / 转写采集）**：`COST_LIMIT_DAILY`/`COST_LIMIT_MONTHLY`/`COST_ALERT_PCT`/`REPORT_PUSH`/`PUBLIC_BASE_URL`/`TRANSCRIPT_FETCH` 这几个常在生产手动配。
 > - **`ops/aws/deploy.sh` 路径**：scp **全量覆盖**远程 `.env.local`（源 = 本地 `.env.local`，仅剔除 `DB_PATH`/`DATA_DIR`）。故生产值必须落进**本地** `.env.local`，否则下次 deploy 静默抹掉熔断/推送。已加两道护栏：`gen-env.sh` 重生成时**继承**旧 `.env.local` 的这些值；`deploy.sh` 投递前**体检缺失即告警**。
-> - **`deploy.yml`（CD）路径**：`git pull` 不碰 `.env.local`（operator 手动放服务器），故 CD 不会抹；但首次需在服务器 `.env.local` 配好。
+> - **`deploy.yml`（CD）路径**：只下载版本化 `docker-compose.yml` 并拉取 GHCR 镜像，绝不覆盖 `.env.local`；首次仍需由 operator 在服务器配置好该文件。
 > - 仅调这几个值时：直接编辑服务器 `.env.local` 后 `docker compose up -d --force-recreate`（§7），**别重跑 `deploy.sh`/`gen-env.sh` 以免连带覆盖**；同时把值同步回本地 `.env.local` 留底。教训见 `docs/verify/mvp-gap-2026-06-07.md` §2.1。
 
-**CD（自动部署 · `.github/workflows/deploy.yml`）**：**手动触发**（Actions → Deploy → Run）或**推送 `v*` tag**（刻意发布）；**不**在 push main 自动部署（避免每次合并即上线）。流程 = SSH 到服务器 → `git pull --ff-only`（跟踪 main）→ 按服务器架构 `docker compose up -d --wait --build` → `image prune`。`up --wait` 不健康即非零退出 → 部署标红（健康门）。
+### CI 预构建镜像 → GHCR → 生产健康切换
 
-- **必需 secrets**（仓库 Settings → Secrets）：`DEPLOY_HOST` · `DEPLOY_USER` · `DEPLOY_SSH_KEY`（部署用户私钥）· `DEPLOY_KNOWN_HOSTS`（`ssh-keyscan -H 主机` 生成，固定主机公钥防中间人）· `DEPLOY_PATH`（服务器上仓库 clone 路径）·（可选 `DEPLOY_SSH_PORT`，默认 22）。
-- **服务器前置**：装 docker + compose；仓库已 clone 在 `DEPLOY_PATH` 且 remote 跟踪 main；**`.env.local` 已置于服务器**（gitignored、operator 手动放，CD 不碰密钥）；部署用户在 docker 组。
-- **语义**：tag/手动只是"现在部署当前 main HEAD"。需精确按 tag 部署可改远端为 `git fetch --tags && git checkout <tag>`。
-- **加固**：在 Settings → Environments → `production` 配"必需审批/保护规则"，给生产部署再上一道人闸。
+1. `main` 的 CI 成功后，`Publish Production Image` 在 GitHub 托管 runner 构建并发布 `linux/amd64` GHCR 镜像，附 OCI `source` / `revision` 标签、SBOM 和 provenance。镜像只使用 `sha-<commit>` 不可变标签，**不**发布 `latest`。
+2. operator 在 Actions 手动运行 `Deploy Production Image`，可留空（当前 main）或指定已发布的 `sha-<commit>` 进行精确发布/回退；没有 `v*` tag 自动上线。
+3. workflow 经 GitHub OIDC 取得最小 AWS SSM 角色，在生产机 `/opt/app` 下载与镜像同一 SHA 的 compose 文件、`docker pull`、核对 OCI revision，随后 `docker compose up --wait --no-build`。新 app 不健康时自动恢复先前 compose 和镜像，并使 workflow 失败。
+
+首次配置在有 AWS 管理权限的终端执行 `ops/aws/setup-github-oidc.sh`。它创建/更新仅限 `production` Environment 的 OIDC 信任和仅能对该实例执行 SSM / 查询结果的 IAM 权限；输出并可通过 `SET_GITHUB_VARIABLES=1` 写入三个 GitHub Actions repository variables：`AWS_REGION`、`AWS_DEPLOY_ROLE_ARN`、`PROD_INSTANCE_ID`。部署机前置条件仅是 Docker、Compose、SSM Agent 和既有 `/opt/app/.env.local` / 数据卷；不需要 checkout、Git remote、SSH 私钥或 GHCR 读取令牌。
+
+生产 Environment 应保留 required reviewers / protection rules。部署完成后检查 workflow 的 SSM 输出（compose 状态和 `/api/health`）；如需业务级告警验证，再运行 `probe-alert.mjs`。旧的 `DEPLOY_*` SSH secrets 可在至少一次成功 GHCR 发布和部署后移除。
 
 ## 9. 冒烟验证记录
 

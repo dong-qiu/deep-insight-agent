@@ -1,43 +1,137 @@
-name: Deploy
+name: Deploy Production Image
 
-# 生产部署（自托管单实例）：**手动触发** 或 **推送 v* tag**（刻意发布）。
-# 不在 push main 自动部署——避免每次合并即上线的生产风险；tag/手动 = 刻意决定"现在部署"。
-# 语义：服务器 clone 跟踪 main，部署 = git pull main + 在服务器上 build + up --wait（健康门）。
+# 生产发布只消费 CI 已构建并推送到 GHCR 的不可变镜像；绝不在生产机拉源码或构建。
 on:
   workflow_dispatch:
-  push:
-    tags: ["v*"]
+    inputs:
+      image_tag:
+        description: "要部署的 GHCR 不可变标签（sha-<40 位提交 SHA>；留空部署当前 main）"
+        required: false
+        type: string
 
-# 同一时刻只一个生产部署；**不取消**进行中的部署（让它跑完，避免半截状态）
+permissions:
+  contents: read
+  id-token: write
+
+# 单实例切换必须串行，且不取消已进入健康检查的发布。
 concurrency:
   group: deploy-prod
   cancel-in-progress: false
 
 jobs:
   deploy:
-    name: ssh deploy (build on server)
+    name: pull and health-switch production
     runs-on: ubuntu-latest
-    # 可在仓库 Settings → Environments → production 加"必需审批/保护规则"，给生产部署再上一道人闸
     environment: production
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+      PROD_INSTANCE_ID: ${{ vars.PROD_INSTANCE_ID }}
+      IMAGE_REPOSITORY: ghcr.io/${{ github.repository }}
     steps:
-      - name: SSH 部署（git pull → build → up --wait → prune）
+      - name: Validate deployment target
+        id: target
         env:
-          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
-          SSH_HOST: ${{ secrets.DEPLOY_HOST }}
-          SSH_USER: ${{ secrets.DEPLOY_USER }}
-          SSH_PORT: ${{ secrets.DEPLOY_SSH_PORT || '22' }}
-          SSH_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
-          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          REQUESTED_IMAGE_TAG: ${{ inputs.image_tag }}
         run: |
           set -euo pipefail
-          : "${SSH_HOST:?缺少 secret DEPLOY_HOST}"
-          : "${SSH_USER:?缺少 secret DEPLOY_USER}"
-          : "${DEPLOY_PATH:?缺少 secret DEPLOY_PATH}"
-          : "${SSH_KEY:?缺少 secret DEPLOY_SSH_KEY}"
-          : "${SSH_KNOWN_HOSTS:?缺少 secret DEPLOY_KNOWN_HOSTS（ssh-keyscan -H 主机 生成，固定主机公钥防中间人）}"
-          mkdir -p ~/.ssh && chmod 700 ~/.ssh
-          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_deploy && chmod 600 ~/.ssh/id_deploy
-          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts && chmod 644 ~/.ssh/known_hosts
-          # 远端：拉取最新 main → 按服务器架构构建并起（up --wait 不健康即非零退出 → 本步失败、部署标红）→ 清旧镜像
-          ssh -i ~/.ssh/id_deploy -p "$SSH_PORT" "$SSH_USER@$SSH_HOST" \
-            "set -eu; cd '$DEPLOY_PATH'; git pull --ff-only; export TARGETARCH=\$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/'); docker compose up -d --wait --wait-timeout 180 --build; docker image prune -f"
+          : "${AWS_REGION:?缺少 Actions variable AWS_REGION}"
+          : "${AWS_DEPLOY_ROLE_ARN:?缺少 Actions variable AWS_DEPLOY_ROLE_ARN}"
+          : "${PROD_INSTANCE_ID:?缺少 Actions variable PROD_INSTANCE_ID}"
+          tag="${REQUESTED_IMAGE_TAG:-sha-${GITHUB_SHA}}"
+          if [[ ! "$tag" =~ ^sha-[0-9a-f]{40}$ ]]; then
+            echo "image_tag 必须是 sha-<40 位小写提交 SHA>" >&2
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "sha=${tag#sha-}" >> "$GITHUB_OUTPUT"
+
+      - name: Assume production deploy role via GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ env.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: github-production-deploy
+
+      - name: Pull immutable image and health-switch through SSM
+        env:
+          IMAGE_TAG: ${{ steps.target.outputs.tag }}
+          IMAGE_SHA: ${{ steps.target.outputs.sha }}
+        run: |
+          set -euo pipefail
+          image="${IMAGE_REPOSITORY}:${IMAGE_TAG}"
+          compose_url="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${IMAGE_SHA}/docker-compose.yml"
+          remote_script=$(cat <<EOF
+          set -euo pipefail
+          app_dir=/opt/app
+          image='${image}'
+          expected_sha='${IMAGE_SHA}'
+          compose_url='${compose_url}'
+          cd "\$app_dir"
+
+          rollback_compose=\$(mktemp "\$app_dir/docker-compose.yml.rollback.XXXXXX")
+          cp docker-compose.yml "\$rollback_compose"
+          restore_compose=1
+          restore_previous_compose() {
+            if [[ "\$restore_compose" == 1 && -f "\$rollback_compose" ]]; then
+              mv "\$rollback_compose" docker-compose.yml
+            fi
+          }
+          trap restore_previous_compose EXIT
+          curl --fail --silent --show-error --location "\$compose_url" --output docker-compose.yml.next
+          docker compose -f docker-compose.yml.next config --quiet
+          mv docker-compose.yml.next docker-compose.yml
+
+          docker pull "\$image"
+          actual_sha=\$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "\$image")
+          [[ "\$actual_sha" == "\$expected_sha" ]] || { echo "镜像 revision 标签与请求提交不一致" >&2; exit 1; }
+
+          old_image=\$(docker inspect --format '{{.Image}}' deep-insight-app-1 2>/dev/null || true)
+          rollback_image="deep-insight:rollback-\$(date -u +%Y%m%dT%H%M%SZ)"
+          if [[ -n "\$old_image" ]]; then docker tag "\$old_image" "\$rollback_image"; fi
+
+          if ! INSIGHT_IMAGE="\$image" docker compose up -d --wait --wait-timeout 180 --no-build; then
+            echo "新镜像未通过健康检查，恢复上一版本" >&2
+            mv "\$rollback_compose" docker-compose.yml
+            restore_compose=0
+            if [[ -n "\$old_image" ]]; then
+              INSIGHT_IMAGE="\$rollback_image" docker compose up -d --wait --wait-timeout 180 --no-build || true
+            fi
+            exit 1
+          fi
+          rm -f "\$rollback_compose"
+          restore_compose=0
+          trap - EXIT
+          docker image prune -f
+          docker compose ps
+          curl --fail --silent --show-error http://127.0.0.1:\${APP_PORT:-3000}/api/health
+          EOF
+          )
+          encoded_script="$(printf '%s' "$remote_script" | base64 | tr -d '\n')"
+          command_id="$(aws ssm send-command \
+            --instance-ids "$PROD_INSTANCE_ID" \
+            --document-name AWS-RunShellScript \
+            --comment "Deploy ${image}" \
+            --parameters "commands=echo ${encoded_script} | base64 -d | bash" \
+            --query 'Command.CommandId' --output text)"
+          echo "SSM command: $command_id"
+
+          deadline=$((SECONDS + 600))
+          while (( SECONDS < deadline )); do
+            status="$(aws ssm get-command-invocation --command-id "$command_id" --instance-id "$PROD_INSTANCE_ID" --query Status --output text 2>/dev/null || true)"
+            case "$status" in
+              Success)
+                aws ssm get-command-invocation --command-id "$command_id" --instance-id "$PROD_INSTANCE_ID" \
+                  --query '{Status:Status,Stdout:StandardOutputContent,Stderr:StandardErrorContent}' --output json
+                exit 0
+                ;;
+              Failed|Cancelled|TimedOut)
+                aws ssm get-command-invocation --command-id "$command_id" --instance-id "$PROD_INSTANCE_ID" \
+                  --query '{Status:Status,Stdout:StandardOutputContent,Stderr:StandardErrorContent}' --output json
+                exit 1
+                ;;
+            esac
+            sleep 5
+          done
+          echo "等待生产切换超时；请用 SSM 查询 command $command_id" >&2
+          exit 1
