@@ -286,18 +286,21 @@ Source ─采集▶ ContentItem ─分析▶ AnalysisBatch(Insight+Citation) ─
 | `status` | enum | Y | 见下「状态流转」 |
 | `generated_at` | datetime | Y | |
 | `title` | string | Y | |
-| `body_md` | text | Y | Markdown 正文 |
-| `body_html` | text | Y | 自包含 HTML |
+| `body_md` / `body_html` | text \| null | 条件 | `done` 必填；`failed` 无正文 artifact |
 | `insight_ids` | string[] | Y | 纳入的洞察 |
 | `event_ids` | string[] | Y | 涉及事件 —— 「不复报」基线 |
 | `prev_report_id` | string \| null | N | 「前情」指向的历史报告（同事件更新时填） |
 | `citation_count` | int | Y | |
 | `cost` | object | Y | `{tokens, amount}` 生成成本 |
+| `failure_reason` | object \| null | 条件 | `failed` 必填；稳定 reason code 与安全摘要 |
 
 **`status` 状态流转**（对齐管理看板）：
-`generating` →（`done` | `failed`）；`failed` 可重跑回 `generating`（看板「失败任务重试」）；
+`generating` →（`done` | `failed`）；`failed` 是不可变生成尝试，重试必须新建 `Report` / `Run` 并保留 `retry_of` 溯源边；
 `done` → `archived`；任意态 → `deleted`（撤回 / 删除）。
 `draft` 为预留态 —— MVP 报告由系统自动生成，不经 `draft`。
+
+仅 `status=done` 的 Report 可以拥有 `ReportIndexEntry` / FTS 条目或被任何公开读取路径返回；`failed` Report 仅可由
+admin 生命周期界面读取，且没有正文 artifact。
 
 ### 报告索引项 (ReportIndexEntry)
 

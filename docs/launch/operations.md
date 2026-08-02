@@ -100,7 +100,9 @@ docker compose exec -T cron node --no-warnings /app/ops/backup-db.mjs
 docker compose exec -T cron ls -1 /data/backups
 ```
 
-**恢复某份备份**（停写 → 覆盖 → 起）：
+**恢复某份备份（当前生产；P0a 前）**（停写 → 覆盖 → 起）：
+
+> P0a generation provenance 上线后，不能再直接执行本段“覆盖 → 起”流程；必须改用 6.1.2 的脱敏重放恢复流程。
 
 ```bash
 docker compose stop app cron
@@ -137,6 +139,41 @@ sudo AWS_DEFAULT_REGION=ap-southeast-1 /usr/local/bin/aws s3 sync \
 # 整卷丢失后，从 S3 取回某份到本地，再按 6.1 恢复进新卷
 aws s3 sync "s3://$BUCKET/ec2/20260613-105627/" ./restore-20260613-105627/
 ```
+
+#### 6.1.2 脱敏登记册（P0a 上线前置）
+
+业务 SQLite 备份不是删除/擦除事实的唯一来源：恢复到删除前的备份会重新带回旧实体。因此，P0a 启用删除入口或 provenance
+viewer 前，必须完成一个独立于 `*-backups-*` 的登记册部署：S3 bucket
+`<AWS_NAME>-redaction-registry-<账号ID>`（`ap-southeast-1`，public access block、versioning、Object Lock Compliance、
+**创建 bucket 时设定的 default Compliance retention=100 days**、默认 SSE-KMS），记录只能用 `If-None-Match: *` 条件写入
+`records/YYYY/MM/<record_id>.json` 的新对象；稳定 record ID 的 412 表示重试引用既有对象，绝不覆盖为新版本。`effective_at`
+为写入成功时刻，应用不传对象级 retention header；
+现有 off-box 备份为 90 天，余量用于恢复与时钟偏差。不得把登记册同步回 `/data/backups`、报告目录、Git 或日志。
+
+部署脚本必须创建 bucket 专用 KMS CMK（alias `alias/<AWS_NAME>-redaction-registry`）以及下列互斥角色，并用 IAM policy
+simulator / 集成测试验证 deny：
+
+- 应用实例角色：仅 `records/` 的新对象 `PutObject` 与 `kms:GenerateDataKey` / `kms:Encrypt`；没有 `GetObject`、
+  `DeleteObject`、`s3:PutObjectRetention`、registry-CMK 的 `kms:Decrypt` 或 Object-Lock bypass。
+- 恢复 runner 角色：仅在受控恢复命令中使用，可对本 bucket `ListBucket` / `GetObject`、对 registry-CMK `kms:Decrypt`；不具有
+  业务删除权限。
+- 到期清理角色：与上述角色分离，只能清理由生命周期/retain-until 判定为到期的对象；不得绕过 Object Lock。
+
+`REDACTION_HMAC_KEY` 与版本固定来自 AWS Secrets Manager `<AWS_NAME>/redaction-hmac/<version>`，不进入 `.env`、镜像、
+SQLite、备份或事件。应用与恢复 runner 对指定版本 secret 只有 `secretsmanager:GetSecretValue`，并只能以
+`kms:ViaService=secretsmanager.ap-southeast-1.amazonaws.com` 解密该 secret 的 KMS key；清理角色没有这两项权限。CMK 和 HMAC
+旧版本须保留到最后一条引用记录的 retain-until 后。删除操作的顺序是“在内存生成 HMAC 并校验 canonical schema → 以稳定 record ID 条件写 registry → SQLite 原子写
+redaction 及业务 tombstone”；任一步失败均 fail-closed。若 registry 写入成功但 SQLite 写失败，保留不可变孤儿记录，重试复用相同
+record ID。
+
+从本机或 S3 DR 取回备份时，先停止 `app`、`cron` 和 `generation-dispatch-worker`，复制数据库/报告，再运行同镜像的
+`ops/replay-redaction-registry.mjs --restore-time <UTC RFC3339>`。runner 读取恢复时刻仍有效的所有记录，解密、校验 HMAC，并以
+幂等事务写入 `provenance_redaction`；仅在成功输出计数和 key versions 后才可 `docker compose up -d`。任何 S3、KMS、HMAC、缺失
+记录或重放错误都应非零退出并保持服务停止。恢复日志只能含 record 计数、key version 与 reason code，禁止输出 entity key。
+
+P0a 发布包必须把上述 runner 与 `generation-dispatch-worker` 纳入 compose，并在部署 smoke test 中演练“恢复点早于删除”的
+场景：停止三个服务 → 复制旧 SQLite snapshot → replay → 确认 resolver 仍返回 tombstone → 才允许启动服务。runner 不存在、
+角色不可假设或任一校验失败即阻断 P0a 发布，不能回退为 6.1 的旧流程。
 
 ### 6.2 全卷冷备（含 raw，需停机）
 

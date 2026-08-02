@@ -958,7 +958,7 @@ top 实体都对得上各主题真玩家（图有意义非噪声）。**量出�
 ### 影响 / 风险
 - **零 LLM、零迁移、eval 不受影响**（不碰 prompt/模型/数据源 → eval-gate skip）。
 - 风险：① 引入图库（d3-force 选型即为压低）；② 实体变体未合并 → 同实体可能裂成两点（已知限制、留别名表）；③ 节点规模 legibility（top-N 兜底 + 先量证自适应阈值必要）；④ **共现≠因果**——S1 边只表「共同出现」非语义关系，UI 文案须讲清、别误导成「A 影响 B」。
-- **⑤ 图读 `insight` 全表，含未过 validator 校验的洞察**（独立 review 提）：刻意展示「原始分析判断」——共现/溯源是实体关系层、非引用精度层，且 blocked 多为引用粒度问题（statement 本身准确，见 ADR-0011）。**S1 单用户 dogfood（实际仅 owner）可接受**；引入真 viewer / 公开前须按 `citation_check` verdict 过滤到 includable（drill 路由当前仅登录门、非 admin-only）。
+- **⑤ 图读 `insight` 全表，含未过 validator 校验的洞察**（独立 review 提）：刻意展示「原始分析判断」——共现/溯源是实体关系层、非引用精度层，且 blocked 多为引用粒度问题（statement 本身准确，见 ADR-0011）。**S1 单用户 dogfood（实际仅 owner）可接受**；generation-provenance P0a 已将 Graph / drill 明确定为 admin-only。若未来开放 viewer，必须先按 `citation_check` verdict 过滤到 includable，并经 publish/pass DTO 提供。
 
 ### S2 评估·搁置（先量证伪，2026-06-29）
 原计划：S1 dogfood 后投 LLM 抽有向语义边（谁收购/对立/依赖谁）。**先量（读生产真实共现洞察 statement，不花 LLM、人工判）证 ROI 低 → 搁置。**
@@ -1129,3 +1129,58 @@ XML parser 与原生 SQLite 驱动；类型包移入 `devDependencies`。升级�
 ### 后果
 
 构建负载和供应链验证集中到 CI，生产机只承担拉取与短暂容器切换，发布可按提交精确复现并回退。代价是首次需配置 GHCR 包可见性、GitHub OIDC provider / IAM role、三个 Actions variables 和 production 审批门；旧 SSH secrets 在首次成功发布后再移除。
+
+---
+
+## ADR-0018: 报告失败尝试不可变，重试创建新的 Report
+
+- **日期**: 2026-08-02
+- **状态**: Accepted
+
+### 背景
+
+报告生成的失败原因、输入校验结果和运行版本本身是审计事实。将同一 `Report` 从 `failed` 改回 `generating`
+会覆盖一次失败尝试，也无法将失败 Report 与其无正文、无索引的发布边界可靠区分。
+
+### 决定
+
+1. `Report.status=failed` 为不可变生成尝试；重试一律新建 `Report`、`Run` 与 trace，并通过 provenance
+   `retry_of` 边连接前次失败。
+2. 不可放行（`ValidationResult.releasable=false` 且非空批次）写 failed Report，保存安全失败原因与输入/校验引用；
+   不产生 Markdown/HTML、`report_index` 或 FTS，也不经公开 resolver 返回。
+3. 仅 `status=done` 的 Report 可公开、建立索引和拥有文件 artifact；admin 生命周期界面可查询失败尝试及其 retry 链。
+
+### 后果
+
+看板与重试操作从“原地状态翻转”转为“生成尝试链”。这增加了失败记录数量和查询复杂度，但换来完整审计、可重放定位和
+明确的公开边界；`prev_report_id` 继续只表达已发布报告的前情，不复用作失败重试关系。
+
+---
+
+## ADR-0019: 接受请求以持久 dispatch 执行，脱敏登记册独立可恢复
+
+- **日期**: 2026-08-02
+- **状态**: Accepted
+
+### 背景
+
+Deep Dive 等 API 若在返回 202 后只依靠 Web 进程内 Promise 启动管线，进程重启、部署切换或 signal 丢失会产生“已接受但永不执行”的
+trace。与此同时，SQLite 与报告备份可能恢复到删除请求之前；仅把 redaction 保存在同一数据库或普通备份中，无法防止已删除实体在
+恢复后重新可见。
+
+### 决定
+
+1. `trace_factory` 在同一个 SQLite 事务创建 trace request、`root_run_id=NULL` trace、active reservation 与
+   `generation_dispatch(state=queued)`；提交成功才可返回 202。独立 `generation-dispatch-worker` 在一个短事务中同时 claim
+   dispatch 并将 reservation 变为带 fencing 的 owned lease，随后创建 root Run。崩溃/部署后由过期 claim 接管；进程内 wake-up
+   仅降低延迟，不承担可靠性。
+2. 脱敏登记册采用 AWS `ap-southeast-1` 专用 S3 bucket + bucket 专用 KMS CMK，不复用备份桶。bucket 启用 public block、versioning、
+   Object Lock Compliance、创建时设定的默认 100 天 retention 与 SSE-KMS；记录 append-only，覆盖现有 90 天 S3 DR 窗口。应用、
+   恢复和到期清理使用互斥的最小 IAM 角色；应用不能读取、解密、删除、修改 retention 或 bypass retention。
+3. 删除先落 registry 并完成 HMAC 校验，后写 SQLite redaction/tombstone；恢复在 app 启动前解密、校验并幂等重放全部有效记录。registry、
+   KMS 或校验异常一律 fail-closed，保持服务停止。
+
+### 后果
+
+P0a 增加了独立 worker、队列健康告警、KMS/S3/IAM 配置和恢复演练成本，但“accepted”变为可恢复的持久承诺，且灾难恢复不再可能
+重新暴露已删除实体。生产删除入口和 viewer provenance 在这两项前置未完成前保持关闭。
