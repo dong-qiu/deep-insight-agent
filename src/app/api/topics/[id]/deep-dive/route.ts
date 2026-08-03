@@ -9,16 +9,15 @@
  *  - 单步失败由 runJob 落 failed Run + notifyFailure；不阻塞响应。 */
 import { NextResponse } from "next/server";
 import { forbidNonAdmin } from "../../../../../lib/auth-guard.js";
-import { runPipelineForTopic } from "../../../../../lib/agents/scheduler.js";
 import { getDb } from "../../../../../lib/db/index.js";
-import { getTopic, hasRunningRun } from "../../../../../lib/db/repos.js";
-import { runLogger } from "../../../../../lib/runtime/logger.js";
+import { createDeepDiveTraceRequest, hashIdempotencyKey } from "../../../../../lib/db/provenance.js";
+import { getTopic } from "../../../../../lib/db/repos.js";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export async function POST(
-  _req: Request,
+  req: Request,
   { params }: { params: Promise<{ id: string }> },
 ): Promise<Response> {
   const denied = await forbidNonAdmin(); // 二道闸：烧钱端点，非 admin 直接 403
@@ -33,38 +32,25 @@ export async function POST(
       { status: 409 },
     );
   }
-  // review follow-up #2 防并发：同 topic 已有 analyze running → 409 拒收，
-  // 避免用户连点产生 2 条 deep-dive 双倍 ~$1-4 成本。
-  if (hasRunningRun(db, "analyze", "topic_id", id)) {
-    return NextResponse.json(
-      {
-        error: "already_running",
-        message: `主题 ${id} 已有 analyze Run 在跑——等当前轮结束再触发，或去 /admin 看进度。`,
-      },
-      { status: 409 },
-    );
+  const key = req.headers.get("Idempotency-Key");
+  if (!key || !/^[\x21-\x7e]{8,128}$/.test(key)) {
+    return NextResponse.json({ error: "invalid_idempotency_key" }, { status: 400 });
   }
-
-  const startedAt = new Date().toISOString();
-  const log = runLogger({ stage: "deep-dive" });
-  log.info("用户触发主题深挖（fire-and-forget）");
-
-  // fire-and-forget：不 await。失败由 runJob 内部 finishRun(failed) + notifyFailure 兜底，
-  // void Promise 在 Node runtime 下事件循环挂着直到完成。
-  void runPipelineForTopic(db, id).then(
-    (report) => log.info({ reportId: report.id }, "主题深挖完成"),
-    (e) => log.error({ err: (e as Error).message }, "主题深挖失败"),
-  );
-
+  const secret = process.env.PROVENANCE_IDEMPOTENCY_SECRET ?? process.env.AUTH_SECRET;
+  if (!secret || !process.env.DISPATCH_WORKER_SECRET) {
+    return NextResponse.json({ error: "provenance_not_configured" }, { status: 503 });
+  }
+  let result;
+  try {
+    result = createDeepDiveTraceRequest(db, { topicId: id, idempotencyKeyHash: hashIdempotencyKey(key, secret), planning: true });
+  } catch {
+    return NextResponse.json({ error: "dispatch_unavailable" }, { status: 503 });
+  }
+  if (result.kind === "conflict") {
+    return NextResponse.json({ code: "active_generation", active_trace_id: result.activeTraceId }, { status: 409 });
+  }
   return NextResponse.json(
-    {
-      status: "started",
-      topic_id: id,
-      topic_name: topic.name,
-      started_at: startedAt,
-      message:
-        "深挖管线已启动（预计 5-15 分钟）。完成后新报告出现在 /reports；进度在 /admin 看 analyze / validate / report-gen 三个 Run。",
-    },
-    { status: 202 },
+    { trace_id: result.traceId, request_id: result.requestId, status: "accepted", replayed: result.kind === "replayed" },
+    { status: result.kind === "accepted" ? 202 : 200 },
   );
 }

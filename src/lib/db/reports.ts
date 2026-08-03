@@ -1,6 +1,7 @@
 /** 报告持久化：正文（.md/.html）落 FS，元数据 + 索引 + FTS5 落 SQLite。增量5。 */
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { join, relative, resolve } from "node:path";
 import { domainFacet, isDomainValue, isLensValue, lensFacet, parseFacets } from "../topics/facets.js";
 import type { Report, ReportIndexEntry } from "../types.js";
 import type { DB } from "./index.js";
@@ -11,6 +12,143 @@ function defaultBodyDir(): string {
   return join(process.env.DATA_DIR ?? ".data", "reports");
 }
 
+function hasFailureColumn(db: DB): boolean {
+  return (db.prepare("PRAGMA table_info(report)").all() as { name: string }[]).some((column) => column.name === "failure");
+}
+
+function hasReportEffectTable(db: DB): boolean {
+  return !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='generation_effect'").get();
+}
+
+interface ReportArtifact { target: string; sha256: string; size: number; report_id: string }
+const digest = (body: string): string => createHash("sha256").update(body, "utf8").digest("hex");
+function safeTarget(root: string, target: string): string {
+  if (!/^[A-Za-z0-9_-]+\.(md|html)$/.test(target)) throw new Error("invalid report artifact target");
+  const resolved = resolve(root, target);
+  if (relative(root, resolved).startsWith("..")) throw new Error("report artifact escaped its root");
+  return resolved;
+}
+
+function insertReportIndex(db: DB, report: Report, index: ReportIndexEntry): void {
+  db.prepare(
+    `INSERT INTO report_index (report_id,type,topic_id,facets,date,source_ids,title,summary,highlights,tags,entity_names,importance,event_ids,milestone_count,freshest_candidate_at,freshest_citation_at,freshness_lag_hours)
+     VALUES (@report_id,@type,@topic_id,@facets,@date,@source_ids,@title,@summary,@highlights,@tags,@entity_names,@importance,@event_ids,@milestone_count,@freshest_candidate_at,@freshest_citation_at,@freshness_lag_hours)`,
+  ).run({
+    report_id: index.report_id, type: index.type, topic_id: index.topic_id, facets: j(index.facets ?? []),
+    date: index.date, source_ids: j(index.source_ids), title: index.title, summary: index.summary,
+    highlights: j(index.highlights), tags: j(index.tags), entity_names: j(index.entity_names), importance: index.importance,
+    event_ids: j(index.event_ids), milestone_count: index.milestone_count,
+    freshest_candidate_at: index.freshest_candidate_at ?? null, freshest_citation_at: index.freshest_citation_at ?? null,
+    freshness_lag_hours: index.freshness_lag_hours ?? null,
+  });
+  db.prepare(`INSERT INTO report_fts (report_id,title,summary,body) VALUES (?,?,?,?)`).run(
+    report.id, index.title, index.summary, report.body_md,
+  );
+}
+
+function insertReportMetadata(
+  db: DB,
+  report: Report,
+  bodyPath: string | null,
+  failure: { reason_code: string; message?: string } | null = null,
+): void {
+  const fields = {
+    id: report.id, type: report.type, topic_id: report.topic_id, status: report.status,
+    generated_at: report.generated_at, title: report.title, body_path: bodyPath,
+    insight_ids: j(report.insight_ids), event_ids: j(report.event_ids), prev_report_id: report.prev_report_id,
+    citation_count: report.citation_count, cost: j(report.cost), failure: failure ? j(failure) : null,
+  };
+  if (hasFailureColumn(db)) {
+    db.prepare(
+      `INSERT INTO report (id,type,topic_id,status,generated_at,title,body_path,insight_ids,event_ids,prev_report_id,citation_count,cost,failure)
+       VALUES (@id,@type,@topic_id,@status,@generated_at,@title,@body_path,@insight_ids,@event_ids,@prev_report_id,@citation_count,@cost,@failure)`,
+    ).run(fields);
+    return;
+  }
+  // 本地历史库仍可读取/测试，但生产 writer 由 PROVENANCE_SCHEMA_REQUIRED 阻止绕开显式 migration。
+  db.prepare(
+    `INSERT INTO report (id,type,topic_id,status,generated_at,title,body_path,insight_ids,event_ids,prev_report_id,citation_count,cost)
+     VALUES (@id,@type,@topic_id,@status,@generated_at,@title,@body_path,@insight_ids,@event_ids,@prev_report_id,@citation_count,@cost)`,
+  ).run({ ...fields, body_path: bodyPath ?? "" });
+}
+
+/** 记录一次不可公开的生成尝试。它没有 artifact/index/FTS，因此普通 reader 永远不可见。 */
+export function saveFailedReport(
+  db: DB,
+  input: Omit<Report, "id" | "status" | "body_md" | "body_html"> & { id?: string; reasonCode: string; message?: string; afterSave?: (id: string) => void },
+): string {
+  const id = input.id ?? `rep_${randomUUID().slice(0, 8)}`;
+  db.transaction(() => {
+    insertReportMetadata(db, { ...input, id, status: "failed", body_md: "", body_html: "" }, null,
+      { reason_code: input.reasonCode, ...(input.message ? { message: input.message.slice(0, 256) } : {}) });
+    input.afterSave?.(id);
+  })();
+  return id;
+}
+
+/** P0a 已迁移库的发布协议：意图 + manifest 先入库，双 artifact 通过 staging 原子换名后才公开索引。 */
+function saveReportWithEffect(db: DB, report: Report, index: ReportIndexEntry, dir: string, afterPublish?: () => void): void {
+  const root = resolve(dir);
+  const effectId = `effect_${randomUUID().replaceAll("-", "")}`;
+  const now = new Date().toISOString();
+  const artifacts: Array<{ target: string; body: string }> = [
+    { target: `${report.id}.md`, body: report.body_md },
+    { target: `${report.id}.html`, body: report.body_html },
+  ];
+  const manifest: ReportArtifact[] = artifacts.map(({ target, body }) => ({
+    target, sha256: digest(body), size: Buffer.byteLength(body, "utf8"), report_id: report.id,
+  }));
+  // 先写 intent。publication_payload 仅存 index 元数据，正文只存在 staging/final artifact。
+  db.transaction(() => {
+    insertReportMetadata(db, { ...report, status: "generating" }, null);
+    db.prepare(`INSERT INTO generation_effect
+      (id,trace_id,report_id,kind,idempotency_key,artifact_manifest,publication_payload,status,error,created_at,updated_at)
+      VALUES (@id,NULL,@report_id,'report_file',@idempotency_key,@artifact_manifest,@publication_payload,'planned',NULL,@now,@now)`)
+      .run({ id: effectId, report_id: report.id, idempotency_key: `report_file:${report.id}`,
+        artifact_manifest: j(manifest), publication_payload: j(index), now });
+  })();
+
+  const stagingRoot = resolve(root, ".staging", effectId);
+  try {
+    mkdirSync(stagingRoot, { recursive: true });
+    for (const artifact of artifacts) {
+      const staged = safeTarget(stagingRoot, artifact.target);
+      writeFileSync(staged, artifact.body);
+      if (digest(readFileSync(staged, "utf8")) !== manifest.find((entry) => entry.target === artifact.target)!.sha256) {
+        throw new Error(`report artifact hash mismatch: ${artifact.target}`);
+      }
+    }
+    mkdirSync(root, { recursive: true });
+    db.prepare("UPDATE generation_effect SET status='attempted',updated_at=? WHERE id=? AND status='planned'").run(new Date().toISOString(), effectId);
+    for (const artifact of manifest) renameSync(safeTarget(stagingRoot, artifact.target), safeTarget(root, artifact.target));
+    db.transaction(() => {
+      for (const artifact of manifest) {
+        const finalPath = safeTarget(root, artifact.target);
+        if (!existsSync(finalPath) || digest(readFileSync(finalPath, "utf8")) !== artifact.sha256) {
+          throw new Error(`report artifact is incomplete: ${artifact.target}`);
+        }
+      }
+      const published = db.prepare("UPDATE report SET status='done',body_path=?,failure=NULL WHERE id=? AND status='generating'")
+        .run(resolve(join(root, report.id)), report.id);
+      if (published.changes !== 1) throw new Error(`report ${report.id} is no longer generating`);
+      insertReportIndex(db, report, index);
+      db.prepare("UPDATE generation_effect SET status='committed',updated_at=? WHERE id=? AND status='attempted'")
+        .run(new Date().toISOString(), effectId);
+      afterPublish?.();
+    })();
+  } catch (error) {
+    // 已出现的半成品不进入 reader；保留 effect/failed Report 供后续 reconciliation 或人工诊断。
+    const message = error instanceof Error ? error.message.slice(0, 256) : String(error).slice(0, 256);
+    db.transaction(() => {
+      db.prepare("UPDATE generation_effect SET status='unknown',error=?,updated_at=? WHERE id=? AND status <> 'committed'")
+        .run(j({ reason_code: "report_persistence_failed", message }), new Date().toISOString(), effectId);
+      db.prepare("UPDATE report SET status='failed',body_path=NULL,failure=? WHERE id=? AND status='generating'")
+        .run(j({ reason_code: "report_persistence_failed", message }), report.id);
+    })();
+    throw error;
+  }
+}
+
 /** 写正文到 FS + 落 report / report_index / report_fts。dir 可注入（测试用临时目录）。
  *  body_path **始终写绝对路径**——dogfood 2026-06-06 发现"相对路径在跨环境（本地 dev →
  *  容器，cwd 不同）时失效"是 5/31 practice-log "worktree 相对 DB 路径陷阱"的同根复发。
@@ -19,25 +157,40 @@ export function saveReport(
   db: DB,
   report: Report,
   index: ReportIndexEntry,
-  opts: { dir?: string } = {},
+  opts: { dir?: string; afterPublish?: () => void } = {},
 ): void {
+  if (report.status !== "done") {
+    // lifecycle 的非发布态只记录元数据；禁止给 failed/generating 写正文、索引或 FTS。
+    insertReportMetadata(
+      db,
+      report,
+      null,
+      report.status === "failed" ? { reason_code: "report_not_published" } : null,
+    );
+    return;
+  }
   const dir = opts.dir ?? defaultBodyDir();
-  mkdirSync(dir, { recursive: true });
+  if (hasReportEffectTable(db)) {
+    saveReportWithEffect(db, report, index, dir, opts.afterPublish);
+    return;
+  }
   const prefix = resolve(join(dir, report.id));
-  writeFileSync(`${prefix}.md`, report.body_md);
-  writeFileSync(`${prefix}.html`, report.body_html);
-
+  const lifecycleSchema = hasFailureColumn(db);
+  // 先持久化生成意图，任何文件/索引异常都会留下不可公开但可由 admin 生命周期页诊断的尝试。
+  db.transaction(() => {
+    insertReportMetadata(db, { ...report, status: "generating" }, null);
+  })();
   try {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(`${prefix}.md`, report.body_md);
+    writeFileSync(`${prefix}.html`, report.body_html);
     db.transaction(() => {
-      db.prepare(
-        `INSERT INTO report (id,type,topic_id,status,generated_at,title,body_path,insight_ids,event_ids,prev_report_id,citation_count,cost)
-         VALUES (@id,@type,@topic_id,@status,@generated_at,@title,@body_path,@insight_ids,@event_ids,@prev_report_id,@citation_count,@cost)`,
-      ).run({
-        id: report.id, type: report.type, topic_id: report.topic_id, status: report.status,
-        generated_at: report.generated_at, title: report.title, body_path: prefix,
-        insight_ids: j(report.insight_ids), event_ids: j(report.event_ids),
-        prev_report_id: report.prev_report_id, citation_count: report.citation_count, cost: j(report.cost),
-      });
+      const published = db.prepare(
+        lifecycleSchema
+          ? "UPDATE report SET status='done', body_path=?, failure=NULL WHERE id=? AND status='generating'"
+          : "UPDATE report SET status='done', body_path=? WHERE id=? AND status='generating'",
+      ).run(prefix, report.id);
+      if (published.changes !== 1) throw new Error(`report ${report.id} is no longer generating`);
       db.prepare(
         `INSERT INTO report_index (report_id,type,topic_id,facets,date,source_ids,title,summary,highlights,tags,entity_names,importance,event_ids,milestone_count,freshest_candidate_at,freshest_citation_at,freshness_lag_hours)
          VALUES (@report_id,@type,@topic_id,@facets,@date,@source_ids,@title,@summary,@highlights,@tags,@entity_names,@importance,@event_ids,@milestone_count,@freshest_candidate_at,@freshest_citation_at,@freshness_lag_hours)`,
@@ -55,16 +208,78 @@ export function saveReport(
       db.prepare(`INSERT INTO report_fts (report_id,title,summary,body) VALUES (?,?,?,?)`).run(
         report.id, index.title, index.summary, report.body_md,
       );
+      opts.afterPublish?.();
     })();
   } catch (e) {
-    // 落库失败：清理已写出的 FS 正文，避免 DB 无行但磁盘有孤儿文件
+    // 失败报告永不拥有 artifact/index/FTS；正文清理失败也不能把半成品暴露给 published reader。
     for (const ext of [".md", ".html"]) rmSync(`${prefix}${ext}`, { force: true });
+    if (lifecycleSchema) {
+      db.prepare(
+        "UPDATE report SET status='failed', body_path=NULL, failure=? WHERE id=? AND status='generating'",
+      ).run(j({ reason_code: "report_persistence_failed", message: (e as Error).message.slice(0, 256) }), report.id);
+    } else {
+      db.prepare("UPDATE report SET status='failed', body_path='' WHERE id=? AND status='generating'").run(report.id);
+    }
     throw e;
   }
 }
 
+/** 启动恢复：只处理留下 generating Report 的 report_file effect；无法验证双文件时 fail-closed。 */
+export function reconcileReportEffects(db: DB, opts: { dir?: string } = {}): { committed: number; failed: number } {
+  if (!hasReportEffectTable(db)) return { committed: 0, failed: 0 };
+  const root = resolve(opts.dir ?? defaultBodyDir());
+  const rows = db.prepare(`SELECT e.*, r.* FROM generation_effect e JOIN report r ON r.id=e.report_id
+    WHERE e.kind='report_file' AND r.status='generating' AND e.status IN ('planned','attempted','unknown')`).all() as any[];
+  let committed = 0;
+  let failed = 0;
+  for (const row of rows) {
+    try {
+      const manifest = JSON.parse(row.artifact_manifest) as ReportArtifact[];
+      const index = JSON.parse(row.publication_payload) as ReportIndexEntry;
+      const staging = resolve(root, ".staging", row.id);
+      for (const artifact of manifest) {
+        const finalPath = safeTarget(root, artifact.target);
+        const stagedPath = safeTarget(staging, artifact.target);
+        if (!existsSync(finalPath) && existsSync(stagedPath)
+          && digest(readFileSync(stagedPath, "utf8")) === artifact.sha256) {
+          mkdirSync(root, { recursive: true });
+          renameSync(stagedPath, finalPath);
+        }
+        if (!existsSync(finalPath) || digest(readFileSync(finalPath, "utf8")) !== artifact.sha256) {
+          throw new Error(`report artifact is incomplete: ${artifact.target}`);
+        }
+      }
+      const report: Report = {
+        id: row.report_id, type: row.type, topic_id: row.topic_id, status: "done", generated_at: row.generated_at,
+        title: row.title, body_md: readFileSync(safeTarget(root, `${row.report_id}.md`), "utf8"),
+        body_html: readFileSync(safeTarget(root, `${row.report_id}.html`), "utf8"),
+        insight_ids: JSON.parse(row.insight_ids), event_ids: JSON.parse(row.event_ids), prev_report_id: row.prev_report_id,
+        citation_count: row.citation_count, cost: JSON.parse(row.cost),
+      };
+      db.transaction(() => {
+        db.prepare("UPDATE report SET status='done',body_path=?,failure=NULL WHERE id=? AND status='generating'")
+          .run(resolve(join(root, row.report_id)), row.report_id);
+        insertReportIndex(db, report, index);
+        db.prepare("UPDATE generation_effect SET status='committed',error=NULL,updated_at=? WHERE id=?")
+          .run(new Date().toISOString(), row.id);
+      })();
+      committed += 1;
+    } catch (error) {
+      const message = error instanceof Error ? error.message.slice(0, 256) : String(error).slice(0, 256);
+      db.transaction(() => {
+        db.prepare("UPDATE generation_effect SET status='unknown',error=?,updated_at=? WHERE id=?")
+          .run(j({ reason_code: "report_reconcile_failed", message }), new Date().toISOString(), row.id);
+        db.prepare("UPDATE report SET status='failed',body_path=NULL,failure=? WHERE id=? AND status='generating'")
+          .run(j({ reason_code: "report_reconcile_failed", message }), row.report_id);
+      })();
+      failed += 1;
+    }
+  }
+  return { committed, failed };
+}
+
 export function getReport(db: DB, id: string): Report | null {
-  const r = db.prepare("SELECT * FROM report WHERE id = ?").get(id) as any;
+  const r = db.prepare("SELECT * FROM report WHERE id = ? AND status = 'done'").get(id) as any;
   if (!r) return null;
   // FS 正文兜底：DB 有行但磁盘正文缺失（写盘中断 / 卷未挂 / 手动删除）时不抛、不让阅读页崩，
   // 返回占位正文并告警，由看板/重生流程兜底。
@@ -90,7 +305,7 @@ export function getReport(db: DB, id: string): Report | null {
 
 /** 该主题是否已有任意报告——冷启动检测（无 → 首版综述 initial_digest）。 */
 export function topicHasReport(db: DB, topicId: string): boolean {
-  return !!db.prepare("SELECT 1 FROM report WHERE topic_id = ? LIMIT 1").get(topicId);
+  return !!db.prepare("SELECT 1 FROM report WHERE topic_id = ? AND status = 'done' LIMIT 1").get(topicId);
 }
 
 /** 报告生命周期（admin 看板 · spec line 301）：全状态计数（含 draft/generating/failed/archived），
@@ -229,13 +444,26 @@ export function listBlockedChecksForReport(db: DB, reportId: string): BlockedChe
     JOIN insight i ON instr(r.insight_ids, '"' || i.id || '"') > 0
     JOIN citation_check cc ON cc.insight_id = i.id
     JOIN citation c ON c.insight_id = cc.insight_id AND c.citation_index = cc.citation_index
-    WHERE r.id = ? AND cc.verdict = 'blocked'
+    WHERE r.id = ? AND r.status = 'done' AND cc.verdict = 'blocked'
     ORDER BY i.id, cc.citation_index
   `).all(reportId) as Omit<BlockedCheck, "reason">[];
   return rows.map((r) => ({
     ...r,
     reason: r.reachability === "fail" ? r.reachability_reason : r.consistency_reason,
   }));
+}
+
+/** 已发布报告实际采用的 pass/support 引用；仅管理端下钻使用，避免把未入选或 flagged 项混入证据链。 */
+export interface PassCheck { insight_id: string; statement: string; citation_index: number; quote: string; content_item_id: string; url: string }
+export function listPassChecksForReport(db: DB, reportId: string): PassCheck[] {
+  return db.prepare(`
+    SELECT cc.insight_id,i.statement,cc.citation_index,c.quote,c.content_item_id,ci.url
+    FROM report r JOIN insight i ON instr(r.insight_ids, '"' || i.id || '"') > 0
+    JOIN citation_check cc ON cc.insight_id=i.id
+    JOIN citation c ON c.insight_id=cc.insight_id AND c.citation_index=cc.citation_index
+    JOIN content_item ci ON ci.id=c.content_item_id
+    WHERE r.id=? AND r.status='done' AND cc.verdict='pass' AND cc.consistency='support'
+    ORDER BY i.id,cc.citation_index`).all(reportId) as PassCheck[];
 }
 
 /** 每日节奏中已发布 event 的成功校验证据；brief 与 initial_digest 共用基线，deep_dive 不参与。 */
@@ -316,7 +544,9 @@ export function listRecentBriefEvents(
 /** FTS5 全文检索，按相关度返回 report_id。 */
 export function searchReports(db: DB, query: string): string[] {
   const rows = db
-    .prepare("SELECT report_id FROM report_fts WHERE report_fts MATCH ? ORDER BY rank")
+    .prepare(`SELECT f.report_id FROM report_fts f
+      JOIN report r ON r.id=f.report_id AND r.status='done'
+      WHERE report_fts MATCH ? ORDER BY rank`)
     .all(query) as any[];
   return rows.map((x) => x.report_id as string);
 }
@@ -350,7 +580,7 @@ export function distinctIndexValues(
   const rows = db
     .prepare(
       `SELECT DISTINCT je.value AS v
-       FROM report_index ri, json_each(ri.${column}) je
+       FROM report_index ri JOIN report r ON r.id=ri.report_id AND r.status='done', json_each(ri.${column}) je
        WHERE je.value IS NOT NULL AND je.value <> ''
        ORDER BY je.value`,
     )
@@ -361,7 +591,7 @@ export function distinctIndexValues(
 /** 报告索引列表（报告库列表/筛选用），按日期倒序。 */
 export function listReportIndex(db: DB, opts: { limit?: number } = {}): ReportIndexEntry[] {
   const rows = db
-    .prepare("SELECT * FROM report_index ORDER BY date DESC LIMIT ?")
+    .prepare("SELECT ri.* FROM report_index ri JOIN report r ON r.id=ri.report_id AND r.status='done' ORDER BY ri.date DESC LIMIT ?")
     .all(opts.limit ?? 100) as any[];
   return rows.map(rowToIndex);
 }
@@ -369,7 +599,8 @@ export function listReportIndex(db: DB, opts: { limit?: number } = {}): ReportIn
 /** 各主题的报告统计（条数 + 最新日期），一次 GROUP BY 拿全——主题列表页用，避免逐主题 N+1 查询。 */
 export function topicReportStats(db: DB): Map<string, { count: number; latestDate: string }> {
   const rows = db
-    .prepare("SELECT topic_id, COUNT(*) AS count, MAX(date) AS latest FROM report_index GROUP BY topic_id")
+    .prepare(`SELECT ri.topic_id, COUNT(*) AS count, MAX(ri.date) AS latest
+      FROM report_index ri JOIN report r ON r.id=ri.report_id AND r.status='done' GROUP BY ri.topic_id`)
     .all() as Array<{ topic_id: string; count: number; latest: string }>;
   const m = new Map<string, { count: number; latestDate: string }>();
   for (const r of rows) m.set(r.topic_id, { count: r.count, latestDate: r.latest });
@@ -423,7 +654,8 @@ const SORT_DIRS = { asc: "ASC", desc: "DESC" } as const;
 const SNIPPET_EXPR = `snippet(report_fts, 3, '${SNIPPET_OPEN}', '${SNIPPET_CLOSE}', '…', 12)`;
 
 export function queryReportIndex(db: DB, opts: ReportQuery = {}): ReportIndexEntry[] {
-  const where: string[] = [];
+  // report_index 是发布时才写入的派生层；这一道 JOIN 仍是强制边界，兼容旧库中可能遗留的失败索引行。
+  const where: string[] = ["EXISTS (SELECT 1 FROM report r WHERE r.id=report_index.report_id AND r.status='done')"];
   const args: unknown[] = [];
 
   if (opts.type && REPORT_TYPES.has(opts.type)) {

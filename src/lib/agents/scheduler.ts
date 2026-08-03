@@ -227,7 +227,7 @@ export async function runScheduledPipeline(
 export async function runPipelineForTopic(
   db: DB,
   topicId: string,
-  opts: { windowHours?: number; items?: number } = {},
+  opts: { windowHours?: number; items?: number; traceId?: string; rootRunId?: string; assertWrite?: () => void } = {},
 ): Promise<Report> {
   const topic = getTopic(db, topicId);
   if (!topic) throw new Error(`topic ${topicId} 不存在`);
@@ -263,8 +263,12 @@ export async function runPipelineForTopic(
     throw new Error(`窗口 ${windowHours}h 内无可分析内容（请先触发 /api/cron 采集或扩大窗口）`);
   }
 
-  const batch = await runAnalysis(db, topic, items, { start: since, end: endIso });
-  const validation = await runValidation(db, batch, items);
+  const batch = await runAnalysis(db, topic, items, { start: since, end: endIso }, { traceId: opts.traceId, rootRunId: opts.rootRunId, assertWrite: opts.assertWrite });
+  const validation = await runValidation(db, batch, items, { traceId: opts.traceId, assertWrite: opts.assertWrite });
+  // 规划派生是 non-blocking：保留报告主链路，即使线索阶段失败也由 trace 记录为可解释的 partial。
+  try { runTechLeadExtraction(db, batch, validation, endIso, { traceId: opts.traceId, assertWrite: opts.assertWrite }); } catch (error) {
+    runLogger({ stage: "tech-leads" }).warn({ topicId: topic.id, batchId: batch.id, err: errMsg(error) }, "深挖技术线索派生失败，继续生成报告");
+  }
   const prevReportId = previousReportForTopic(db, topic.id, "deep_dive");
-  return runReportGen(db, { topic, batch, validation, type: "deep_dive", prevReportId });
+  return runReportGen(db, { topic, batch, validation, type: "deep_dive", prevReportId, traceId: opts.traceId, assertWrite: opts.assertWrite });
 }

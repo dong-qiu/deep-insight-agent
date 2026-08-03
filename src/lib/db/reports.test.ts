@@ -5,7 +5,8 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { AnalysisBatch, Report, ReportIndexEntry, Topic, ValidationResult } from "../types.js";
 import { saveAnalysisBatch, saveValidationResult } from "./analysis.js";
 import { type DB, openDb } from "./index.js";
-import { chainTypesFor, distinctIndexValues, entityTrends, getReport, latestReportForTopicSince, listBlockedChecksForReport, listRecentBriefEvents, listRecentPublishedEventEvidence, listRecentReports, previousReportForTopic, queryReportIndex, reportNeighbors, reportStatusCounts, sanitizeFtsQuery, saveReport, searchReports, SNIPPET_CLOSE, SNIPPET_OPEN, topicEvolution, topicReportStats } from "./reports.js";
+import { chainTypesFor, distinctIndexValues, entityTrends, getReport, latestReportForTopicSince, listBlockedChecksForReport, listRecentBriefEvents, listRecentPublishedEventEvidence, listRecentReports, previousReportForTopic, queryReportIndex, reportNeighbors, reportStatusCounts, sanitizeFtsQuery, saveFailedReport, saveReport, searchReports, SNIPPET_CLOSE, SNIPPET_OPEN, topicEvolution, topicReportStats } from "./reports.js";
+import { applyProvenanceMigrations } from "./provenance-migrations.js";
 import { getTopic, insertSource, insertTopic } from "./repos.js";
 
 const dir = mkdtempSync(join(tmpdir(), "ia-reports-"));
@@ -18,6 +19,7 @@ const topic: Topic = {
 };
 beforeEach(() => {
   db = openDb(":memory:");
+  applyProvenanceMigrations(db);
   insertTopic(db, topic);
 });
 
@@ -39,6 +41,20 @@ const index: ReportIndexEntry = {
 it("saveReport → getReport 往返（正文走 FS）", () => {
   saveReport(db, report, index, { dir });
   expect(getReport(db, "rep_test1")).toEqual(report);
+});
+
+it("failed Report 没有正文、索引或 FTS，普通 reader 不可见", () => {
+  const id = saveFailedReport(db, {
+    type: "brief", topic_id: topic.id, generated_at: "2026-05-07T08:00:00Z", title: "失败尝试",
+    insight_ids: ["i1"], event_ids: ["e1"], prev_report_id: null, citation_count: 0,
+    cost: { tokens: 0, amount: 0 }, reasonCode: "no_releasable_insight",
+  });
+  expect(db.prepare("SELECT status, body_path, failure FROM report WHERE id=?").get(id)).toMatchObject({
+    status: "failed", body_path: null,
+  });
+  expect(getReport(db, id)).toBeNull();
+  expect(queryReportIndex(db, { topic: topic.id })).toEqual([]);
+  expect(searchReports(db, "失败")).toEqual([]);
 });
 
 it("report_index 往返保留 milestone_count（ADR-0006）", () => {

@@ -57,7 +57,8 @@ export function rowToInsight(db: DB, r: InsightRow): Insight {
   };
 }
 
-export function saveAnalysisBatch(db: DB, batch: AnalysisBatch): void {
+/** afterSave 在同一事务内运行，供 provenance 将业务结果与 event/revision 原子提交。 */
+export function saveAnalysisBatch(db: DB, batch: AnalysisBatch, afterSave?: () => void): void {
   db.transaction(() => {
     db.prepare(
       `INSERT INTO analysis_batch (id,topic_id,time_window,status,no_significant_event)
@@ -90,6 +91,7 @@ export function saveAnalysisBatch(db: DB, batch: AnalysisBatch): void {
         }),
       );
     }
+    afterSave?.();
   })();
 }
 
@@ -118,7 +120,7 @@ export function getInsightsByIds(db: DB, ids: string[]): Insight[] {
   return out;
 }
 
-export function saveValidationResult(db: DB, batchId: string, vr: ValidationResult): void {
+export function saveValidationResult(db: DB, batchId: string, vr: ValidationResult, afterSave?: () => void): void {
   db.transaction(() => {
     const r = vr.report;
     db.prepare(
@@ -136,6 +138,7 @@ export function saveValidationResult(db: DB, batchId: string, vr: ValidationResu
        VALUES (@batch_id,@insight_id,@citation_index,@reachability,@reachability_reason,@consistency,@consistency_reason,@verdict)`,
     );
     for (const c of vr.checks) ck.run({ batch_id: batchId, ...c });
+    afterSave?.();
   })();
 }
 

@@ -16,9 +16,18 @@ RUN npm ci
 # ---- 构建层 ----
 FROM ${NODE_BUILD_IMAGE} AS builder
 WORKDIR /app
+ARG GIT_SHA=unknown
 ENV NEXT_TELEMETRY_DISABLED=1
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
+# 构建时固定 Git SHA；镜像 digest 由 push 后部署器以 INSIGHT_IMAGE_DIGEST 注入，二者不得由 tag 推测。
+RUN printf '{"git_sha":"%s"}\n' "$GIT_SHA" > /app/build-info.json
+# P0a 的 migration runner 必须进入同一发布镜像；运行层刻意不携带 tsx/源码，故在构建层
+# bundle 为纯 Node ESM。better-sqlite3 保持 external，并在运行层显式复制其原生模块。
+RUN ./node_modules/.bin/esbuild ops/run-provenance-migrations.ts --bundle --platform=node --format=esm --packages=external --outfile=/tmp/run-provenance-migrations.mjs
+RUN ./node_modules/.bin/esbuild ops/record-deployment.ts --bundle --platform=node --format=esm --packages=external --outfile=/tmp/record-deployment.mjs
+# 恢复 runner 的 AWS SDK 必须打进独立 bundle；其 Node transport 含 CommonJS 动态 require，故产物保持 CJS。
+RUN ./node_modules/.bin/esbuild ops/replay-redaction-registry.ts --bundle --platform=node --format=cjs --external:better-sqlite3 --outfile=/tmp/replay-redaction-registry.cjs
 RUN npm run build
 
 # ---- supercronic（容器内系统 cron）：完整版镜像有 curl，下好 + 校验后给 runner ----
@@ -55,6 +64,7 @@ COPY --from=supercronic /usr/local/bin/supercronic /usr/local/bin/supercronic
 COPY --from=builder --chown=app:app /app/.next/standalone ./
 COPY --from=builder --chown=app:app /app/.next/static ./.next/static
 COPY --from=builder --chown=app:app /app/public ./public
+COPY --from=builder --chown=app:app /app/build-info.json ./build-info.json
 # 显式带上原生模块，规避 standalone trace 偶发漏拷 better-sqlite3 的 .node
 COPY --from=builder --chown=app:app /app/node_modules/better-sqlite3 ./node_modules/better-sqlite3
 # 同理显式带 nodemailer（邮件推送渠道）：含动态 require、被外部化后 standalone trace 漏拷 → 运行时
@@ -68,6 +78,10 @@ COPY --chown=app:app ops/trigger.mjs ./ops/trigger.mjs
 COPY --chown=app:app ops/backup-db.mjs ./ops/backup-db.mjs
 COPY --chown=app:app ops/cost-backfill.mjs ./ops/cost-backfill.mjs
 COPY --chown=app:app ops/probe-alert.mjs ./ops/probe-alert.mjs
+COPY --chown=app:app ops/generation-dispatch-worker.mjs ./ops/generation-dispatch-worker.mjs
+COPY --from=builder --chown=app:app /tmp/run-provenance-migrations.mjs ./ops/run-provenance-migrations.mjs
+COPY --from=builder --chown=app:app /tmp/record-deployment.mjs ./ops/record-deployment.mjs
+COPY --from=builder --chown=app:app /tmp/replay-redaction-registry.cjs ./ops/replay-redaction-registry.cjs
 COPY --chown=app:app ops/regenerate-reports-cites.mjs ./ops/regenerate-reports-cites.mjs
 # 一次性回填脚本（headline 方案）：容器内 docker compose exec app node /app/ops/backfill-highlights.mjs 跑
 COPY --chown=app:app ops/backfill-highlights.mjs ./ops/backfill-highlights.mjs

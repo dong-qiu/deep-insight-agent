@@ -7,6 +7,14 @@
 export AWS_REGION="ap-southeast-1"        # 新加坡(Southeast Asia)，默认开通、稳定、对华延迟低
                                           #   香港 ap-east-1 延迟更低但需手动开通(opt-in)
 export AWS_NAME="deep-insight"            # EC2 实例名 / 密钥对名 / 安全组名前缀
+
+# P0a redaction registry：setup-redaction-registry.sh 使用。HMAC secret 必须由安全管理员预先在
+# Secrets Manager 创建为版本固定的 secret；不得写入 .env、镜像或 SQLite。
+# export REDACTION_HMAC_SECRET_ARN="arn:aws:secretsmanager:ap-southeast-1:123456789012:secret:deep-insight/redaction-hmac/v1-xxxx"
+# export REDACTION_HMAC_KEY_VERSION="v1"
+# export REDACTION_RECOVERY_ROLE="deep-insight-redaction-recovery"
+# recovery runner 所需的 ARN；应用实例角色必须仅允许 sts:AssumeRole 到该角色。
+# export REDACTION_RECOVERY_ROLE_ARN="arn:aws:iam::123456789012:role/deep-insight-redaction-recovery"
 export AWS_INSTANCE_TYPE="t3.micro"       # 免费档 1GB；build 若 OOM 可临时改 t3.small 再缩回
 export AWS_DISK_GB="30"                   # gp3 根卷，免费档含 30GB
 # Ubuntu 24.04 AMI 由 provision.sh 通过 SSM 动态解析，无需写死。

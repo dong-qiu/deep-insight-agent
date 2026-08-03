@@ -18,6 +18,14 @@ const APPLY = process.argv.includes("--apply");
 const dbPath = process.env.DB_PATH || "/data/insight.db";
 const db = new Database(dbPath);
 
+// P0a 起报告删除必须先写不可变 redaction registry/effect；这个旧脚本没有外部 registry
+// 事务，继续执行会让恢复旧备份时重新暴露实体，故对已迁移库一律 fail-closed。
+const hasRedaction = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='provenance_redaction'").get();
+if (hasRedaction) {
+  console.error("拒绝执行：provenance 已启用，cleanup-reports.mjs 不具备 redaction registry 协议。");
+  process.exit(1);
+}
+
 // 1. 先收齐"应该删的 id 集合"
 const allReports = db.prepare(`
   SELECT id, topic_id, date(generated_at) d, generated_at, citation_count,

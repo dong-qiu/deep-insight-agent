@@ -9,6 +9,37 @@
 # 同时起多套时各 worktree 还需设 APP_PORT（端口不随目录自动分配，缺省 3000 会相互占用）。
 
 services:
+  migrate:
+    image: ${INSIGHT_IMAGE:-deep-insight:0.1.0}
+    restart: "no"
+    env_file: [.env.local]
+    volumes:
+      - insight-data:/data
+    command: ["node", "/app/ops/run-provenance-migrations.mjs"]
+    healthcheck:
+      disable: true
+
+  # Strict production boot appends the already-resolved OCI digest before the Web
+  # process is allowed to become a writer.  Development explicitly leaves the gate
+  # at 0, so no made-up local image identity enters the audit trail.
+  deployment-record:
+    image: ${INSIGHT_IMAGE:-deep-insight:0.1.0}
+    restart: "no"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    env_file: [.env.local]
+    volumes:
+      - insight-data:/data
+    environment:
+      PROVENANCE_DEPLOYMENT_REQUIRED: ${PROVENANCE_DEPLOYMENT_REQUIRED:-0}
+      INSIGHT_IMAGE_DIGEST: ${INSIGHT_IMAGE_DIGEST:-}
+      GIT_SHA: ${GIT_SHA:-}
+      DEPLOY_ACTOR: ${DEPLOY_ACTOR:-compose}
+    command: ["node", "/app/ops/record-deployment.mjs"]
+    healthcheck:
+      disable: true
+
   app:
     build:
       context: .
@@ -18,11 +49,23 @@ services:
     # 本地开发默认用同名本地镜像；生产发布由 INSIGHT_IMAGE 注入不可变 GHCR sha 标签。
     image: ${INSIGHT_IMAGE:-deep-insight:0.1.0}
     restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      deployment-record:
+        condition: service_completed_successfully
     env_file: [.env.local]
     ports:
       - "${APP_PORT:-3000}:3000"
     volumes:
       - insight-data:/data
+    environment:
+      # 只有 migration ledger 已确认最新 provenance schema 后，Web 才可成为写者。
+      PROVENANCE_SCHEMA_REQUIRED: "1"
+      # Release workflow sets this to 1 only after resolving repo@sha256 and
+      # passing it through the deployment-record writer.
+      PROVENANCE_DEPLOYMENT_REQUIRED: ${PROVENANCE_DEPLOYMENT_REQUIRED:-0}
+      INSIGHT_IMAGE_DIGEST: ${INSIGHT_IMAGE_DIGEST:-}
     # 运行镜像是 slim、无 curl（见 Dockerfile）——healthcheck 必须用 Node fetch，否则探针永远失败、
     # app 永不 healthy、cron(depends_on service_healthy) 起不来。与 Dockerfile 的 HEALTHCHECK 一致。
     healthcheck:
@@ -48,6 +91,19 @@ services:
       APP_URL: http://app:3000
     command: ["supercronic", "/app/ops/crontab"]
     # cron 跑 supercronic、非 Web 服务——禁用从镜像继承的 Web 健康探针（否则 fetch :3000 永远失败、误报 unhealthy）。
+    healthcheck:
+      disable: true
+
+  generation-dispatch-worker:
+    image: ${INSIGHT_IMAGE:-deep-insight:0.1.0}
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+    env_file: [.env.local]
+    environment:
+      APP_URL: http://app:3000
+    command: ["node", "/app/ops/generation-dispatch-worker.mjs"]
     healthcheck:
       disable: true
 

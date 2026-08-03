@@ -13,6 +13,7 @@ describe("isAdminOnlyPath（多账号分权闸门）", () => {
     expect(isAdminOnlyPath("/api/topics/t_abc/deep-dive/status")).toBe(true); // 进度轮询同限
     expect(isAdminOnlyPath("/api/reports/rep_1/followup")).toBe(true);
     expect(isAdminOnlyPath("/api/reports/rep_1/pptx")).toBe(true);
+    expect(isAdminOnlyPath("/api/admin/reports/rep_1/redaction")).toBe(true);
   });
 
   it("viewer 可读路径 → 非 admin-only", () => {

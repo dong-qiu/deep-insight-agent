@@ -169,12 +169,14 @@ CREATE TABLE IF NOT EXISTS report (
   status         TEXT NOT NULL CHECK (status IN ('draft','generating','done','failed','archived','deleted')),
   generated_at   TEXT NOT NULL,
   title          TEXT NOT NULL,
-  body_path      TEXT NOT NULL,
+  -- failed/generating 尝试没有公开 artifact；只有 published(done) 行拥有正文路径。
+  body_path      TEXT,
   insight_ids    TEXT NOT NULL DEFAULT '[]',
   event_ids      TEXT NOT NULL DEFAULT '[]',
   prev_report_id TEXT,
   citation_count INTEGER NOT NULL,
-  cost           TEXT NOT NULL
+  cost           TEXT NOT NULL,
+  failure        TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_report_topic  ON report(topic_id);
 CREATE INDEX IF NOT EXISTS idx_report_status ON report(status);

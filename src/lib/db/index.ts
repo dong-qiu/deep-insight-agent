@@ -7,11 +7,14 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { recoverOrphanedRuns } from "./repos.js";
 import { seedDefaultDirections } from "./planning.js";
+import { assertProvenanceSchema } from "./provenance-migrations.js";
+import { assertDeploymentIdentity } from "./deployment.js";
+import { reconcileReportEffects } from "./reports.js";
 import { SCHEMA_SQL } from "./schema.js";
 
 export type DB = Database.Database;
 
-export function openDb(path: string): DB {
+export function openDb(path: string, opts: { bootstrap?: boolean } = {}): DB {
   if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
   const db = new Database(path);
   db.pragma("journal_mode = WAL");
@@ -19,13 +22,17 @@ export function openDb(path: string): DB {
   // 多写者（并行 worktree/容器共享同一卷、或 cron+web 同进程外）抢锁时，
   // 默认会立刻抛 SQLITE_BUSY；改为最多等 5s 让写串行化，而非直接失败。
   db.pragma("busy_timeout = 5000");
-  db.exec(SCHEMA_SQL);
-  migrate(db);
+  if (opts.bootstrap !== false) {
+    db.exec(SCHEMA_SQL);
+    migrate(db);
+  }
   // review follow-up #1：进程重启后清扫上一次跑到一半被 SIGTERM 杀掉的孤儿 Run。
   // 单例 DB 第一次创建时触发；测试用 :memory: 时此操作 no-op（无 running Run 可清）。
-  const orphaned = recoverOrphanedRuns(db);
-  if (orphaned > 0) {
-    console.warn(`⚠️ 启动清扫：${orphaned} 条孤儿 Run 已标 failed（OrphanedOnRestart）`);
+  if (opts.bootstrap !== false) {
+    const orphaned = recoverOrphanedRuns(db);
+    if (orphaned > 0) {
+      console.warn(`⚠️ 启动清扫：${orphaned} 条孤儿 Run 已标 failed（OrphanedOnRestart）`);
+    }
   }
   return db;
 }
@@ -144,7 +151,16 @@ let _db: DB | null = null;
 
 export function getDb(): DB {
   if (!_db) {
-    _db = openDb(process.env.DB_PATH ?? ".data/insight.db");
+    const strictProvenance = process.env.PROVENANCE_SCHEMA_REQUIRED === "1";
+    // 严格 writer 在触碰旧 schema、启动期补列或 orphan recovery 前，必须先验证 migration ledger。
+    _db = openDb(process.env.DB_PATH ?? ".data/insight.db", { bootstrap: !strictProvenance });
+    // P0a 发布编排在 migration runner 成功后设为 1；未迁移库不得悄悄成为生产 writer。
+    if (strictProvenance) assertProvenanceSchema(_db);
+    // deployment-record writer is a one-shot bootstrap process: it must be able to
+    // atomically append the new identity before the new Web writer validates it.
+    if (process.env.PROVENANCE_DEPLOYMENT_REQUIRED === "1" && process.env.PROVENANCE_DEPLOYMENT_WRITER !== "1") assertDeploymentIdentity(_db);
+    // 文件 rename 与 SQLite 不能组成一个事务；启动时只发布 hash 完整的双 artifact，其余 fail-closed。
+    reconcileReportEffects(_db);
     // 已有生产库会立即补齐方向档案；空库会安全跳过，待配置层播种 topic 后再补。
     seedDefaultDirections(_db);
   }

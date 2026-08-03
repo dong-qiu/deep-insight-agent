@@ -1,0 +1,257 @@
+/** P0a 的显式 migration runner。应用启动不调用它；部署必须先运行本模块。 */
+import { createHash } from "node:crypto";
+import type { DB } from "./index.js";
+
+const CORE_SQL = `
+ALTER TABLE run ADD COLUMN trace_id TEXT;
+CREATE INDEX IF NOT EXISTS idx_run_trace ON run(trace_id);
+CREATE TABLE generation_trace (id TEXT PRIMARY KEY,request_id TEXT UNIQUE,scope_kind TEXT NOT NULL,trigger_kind TEXT NOT NULL,topic_id TEXT REFERENCES topic(id),root_run_id TEXT REFERENCES run(id) DEFERRABLE INITIALLY DEFERRED,status TEXT NOT NULL,completion_policy TEXT NOT NULL,coverage TEXT NOT NULL DEFAULT 'complete',runtime_version TEXT NOT NULL DEFAULT '{}',summary TEXT NOT NULL DEFAULT '{}',next_sequence INTEGER NOT NULL DEFAULT 0,started_at TEXT NOT NULL,ended_at TEXT,retry_of_trace_id TEXT REFERENCES generation_trace(id));
+CREATE INDEX idx_generation_trace_topic_started ON generation_trace(topic_id, started_at DESC);
+CREATE TABLE generation_trace_request (id TEXT PRIMARY KEY,scope_key TEXT NOT NULL UNIQUE,active_key TEXT NOT NULL,idempotency_key_hash TEXT,request_sequence INTEGER NOT NULL DEFAULT 1,trace_id TEXT NOT NULL UNIQUE REFERENCES generation_trace(id),state TEXT NOT NULL,retained_until TEXT NOT NULL,created_at TEXT NOT NULL);
+CREATE INDEX idx_trace_request_idempotency ON generation_trace_request(idempotency_key_hash, retained_until);
+CREATE TABLE generation_dispatch (id TEXT PRIMARY KEY,request_id TEXT NOT NULL UNIQUE REFERENCES generation_trace_request(id),trace_id TEXT NOT NULL UNIQUE REFERENCES generation_trace(id),kind TEXT NOT NULL,payload TEXT NOT NULL,state TEXT NOT NULL,attempt INTEGER NOT NULL DEFAULT 0,claim_epoch INTEGER NOT NULL DEFAULT 0,owner_token TEXT,claimed_at TEXT,heartbeat_at TEXT,lease_expires_at TEXT,last_error TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
+CREATE INDEX idx_dispatch_claim ON generation_dispatch(state, lease_expires_at, created_at);
+CREATE TABLE generation_lease (id TEXT PRIMARY KEY,active_key TEXT NOT NULL,scope_key TEXT NOT NULL,trace_id TEXT NOT NULL REFERENCES generation_trace(id),state TEXT NOT NULL,owner_token TEXT,fencing_epoch INTEGER NOT NULL DEFAULT 0,heartbeat_at TEXT,expires_at TEXT,created_at TEXT NOT NULL,released_at TEXT);
+CREATE UNIQUE INDEX idx_generation_lease_active ON generation_lease(active_key) WHERE state IN ('reserved','owned');
+`;
+
+// 第二个版本只负责 Report 表契约；完整 generation_effect/reconciliation 会跟随 event/revision
+// 阶段加入，不能在还没有投影真值时伪造一个无法恢复的 effect 表。
+const REPORT_LIFECYCLE_SQL = "report.body_path nullable; report.failure structured JSON";
+const REPORT_EFFECT_SQL = `
+CREATE TABLE generation_effect (
+  id TEXT PRIMARY KEY,
+  trace_id TEXT REFERENCES generation_trace(id),
+  report_id TEXT NOT NULL UNIQUE REFERENCES report(id),
+  kind TEXT NOT NULL CHECK (kind IN ('report_file')),
+  idempotency_key TEXT NOT NULL UNIQUE,
+  artifact_manifest TEXT NOT NULL,
+  publication_payload TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('planned','attempted','committed','unknown','abandoned')),
+  error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX idx_generation_effect_pending ON generation_effect(status, created_at);
+`;
+const REDACTION_SQL = `
+CREATE TABLE provenance_redaction (
+  record_id TEXT PRIMARY KEY,
+  entity_key TEXT NOT NULL,
+  scope TEXT NOT NULL,
+  reason_code TEXT NOT NULL,
+  effective_at TEXT NOT NULL,
+  expiry_at TEXT NOT NULL,
+  registry_ref TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE(entity_key, scope)
+);
+CREATE INDEX idx_provenance_redaction_active ON provenance_redaction(entity_key, effective_at, expiry_at);
+CREATE TRIGGER provenance_redaction_no_update BEFORE UPDATE ON provenance_redaction BEGIN SELECT RAISE(ABORT, 'provenance_redaction is append-only'); END;
+CREATE TRIGGER provenance_redaction_no_delete BEFORE DELETE ON provenance_redaction BEGIN SELECT RAISE(ABORT, 'provenance_redaction is append-only'); END;
+`;
+
+// 条件写 S3 前持久化完全相同的密文 payload：进程在 PutObject 成功、SQLite tombstone 未提交时中断，
+// 下次可复用相同 key/body 重试；不得重新加密而产生同 record_id 的不同 immutable object。
+const REDACTION_REQUEST_SQL = `
+CREATE TABLE provenance_redaction_request (
+  deletion_request_id TEXT PRIMARY KEY,
+  record_id TEXT NOT NULL UNIQUE,
+  entity_key TEXT NOT NULL,
+  scope TEXT NOT NULL,
+  reason_code TEXT NOT NULL,
+  effective_at TEXT NOT NULL,
+  expiry_at TEXT NOT NULL,
+  registry_key TEXT NOT NULL UNIQUE,
+  registry_payload TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('pending','registered')),
+  created_at TEXT NOT NULL,
+  registered_at TEXT,
+  UNIQUE(entity_key, scope)
+);
+CREATE INDEX idx_provenance_redaction_request_status ON provenance_redaction_request(status, created_at);
+`;
+
+const PROVENANCE_FACTS_SQL = `
+CREATE TABLE generation_event (
+  id TEXT PRIMARY KEY,
+  trace_id TEXT NOT NULL REFERENCES generation_trace(id),
+  sequence INTEGER NOT NULL,
+  attempt INTEGER NOT NULL CHECK(attempt > 0),
+  parent_event_id TEXT REFERENCES generation_event(id),
+  run_id TEXT REFERENCES run(id),
+  stage TEXT NOT NULL CHECK(stage IN ('collect','normalize','select','analyze','validate','derive_lead','map_direction','derive_opportunity','generate_report','deliver','human_review','direction_change')),
+  event_type TEXT NOT NULL CHECK(event_type IN ('started','planned','attempted','completed','failed','skipped','retried','manual_decided','config_changed','published')),
+  occurred_at TEXT NOT NULL,
+  duration_ms INTEGER,
+  actor_type TEXT NOT NULL CHECK(actor_type IN ('system','user','scheduler')),
+  actor_id TEXT,
+  audit_log_id INTEGER REFERENCES audit_log(id),
+  reason_code TEXT,
+  input_refs TEXT NOT NULL,
+  output_refs TEXT NOT NULL,
+  metrics TEXT NOT NULL,
+  version_context TEXT NOT NULL,
+  context_completeness TEXT NOT NULL CHECK(context_completeness IN ('complete','partial')),
+  error TEXT,
+  payload_schema_version INTEGER NOT NULL DEFAULT 1,
+  semantic_payload_hash TEXT NOT NULL,
+  payload_hash TEXT NOT NULL,
+  UNIQUE(trace_id, sequence),
+  UNIQUE(trace_id, stage, attempt, event_type)
+);
+CREATE INDEX idx_generation_event_trace_sequence ON generation_event(trace_id, sequence);
+CREATE INDEX idx_generation_event_id ON generation_event(id);
+CREATE TRIGGER generation_event_no_update BEFORE UPDATE ON generation_event BEGIN SELECT RAISE(ABORT, 'generation_event is append-only'); END;
+CREATE TRIGGER generation_event_no_delete BEFORE DELETE ON generation_event BEGIN SELECT RAISE(ABORT, 'generation_event is append-only'); END;
+
+CREATE TABLE provenance_revision (
+  entity_type TEXT NOT NULL,
+  entity_key TEXT NOT NULL,
+  revision TEXT NOT NULL,
+  captured_at TEXT NOT NULL,
+  snapshot TEXT NOT NULL,
+  snapshot_hash TEXT NOT NULL,
+  PRIMARY KEY(entity_type, entity_key, revision)
+);
+CREATE INDEX idx_provenance_revision_entity ON provenance_revision(entity_type, entity_key, captured_at DESC);
+CREATE TRIGGER provenance_revision_no_update BEFORE UPDATE ON provenance_revision BEGIN SELECT RAISE(ABORT, 'provenance_revision is append-only'); END;
+CREATE TRIGGER provenance_revision_no_delete BEFORE DELETE ON provenance_revision BEGIN SELECT RAISE(ABORT, 'provenance_revision is append-only'); END;
+
+CREATE TABLE generation_entity_ref (
+  trace_id TEXT NOT NULL REFERENCES generation_trace(id),
+  event_id TEXT NOT NULL REFERENCES generation_event(id),
+  entity_type TEXT NOT NULL,
+  entity_key TEXT NOT NULL,
+  revision TEXT NOT NULL,
+  role TEXT NOT NULL CHECK(role IN ('input','output','evidence','filtered','superseded')),
+  visibility_class TEXT NOT NULL CHECK(visibility_class IN ('public_evidence','admin_only','redacted_at_write')),
+  PRIMARY KEY(event_id, entity_type, entity_key, revision, role)
+);
+CREATE INDEX idx_generation_entity_ref_entity ON generation_entity_ref(entity_type, entity_key, trace_id);
+
+CREATE TABLE generation_edge (
+  trace_id TEXT NOT NULL REFERENCES generation_trace(id),
+  event_id TEXT NOT NULL REFERENCES generation_event(id),
+  from_type TEXT NOT NULL, from_key TEXT NOT NULL, from_revision TEXT NOT NULL,
+  to_type TEXT NOT NULL, to_key TEXT NOT NULL, to_revision TEXT NOT NULL,
+  relation TEXT NOT NULL CHECK(relation IN ('consumed','produced','validated','supports','filtered_by','derived_from','decided_on','delivered_as','supersedes','retry_of')),
+  visibility_class TEXT NOT NULL CHECK(visibility_class IN ('public_evidence','admin_only','redacted_at_write')),
+  PRIMARY KEY(event_id, from_type, from_key, from_revision, to_type, to_key, to_revision, relation)
+);
+CREATE INDEX idx_generation_edge_from ON generation_edge(from_type, from_key, trace_id);
+CREATE INDEX idx_generation_edge_to ON generation_edge(to_type, to_key, trace_id);
+
+CREATE TABLE provenance_meta (meta_key TEXT PRIMARY KEY, meta_value TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TRIGGER provenance_meta_no_update BEFORE UPDATE ON provenance_meta BEGIN SELECT RAISE(ABORT, 'provenance_meta is immutable'); END;
+CREATE TRIGGER provenance_meta_no_delete BEFORE DELETE ON provenance_meta BEGIN SELECT RAISE(ABORT, 'provenance_meta is immutable'); END;
+`;
+const DEPLOYMENT_SQL = `
+CREATE TABLE deployment_record (id TEXT PRIMARY KEY,image_digest TEXT NOT NULL,git_sha TEXT NOT NULL,deployed_at TEXT NOT NULL,actor TEXT NOT NULL);
+CREATE INDEX idx_deployment_record_at ON deployment_record(deployed_at DESC);
+CREATE TRIGGER deployment_record_no_update BEFORE UPDATE ON deployment_record BEGIN SELECT RAISE(ABORT, 'deployment_record is immutable'); END;
+CREATE TRIGGER deployment_record_no_delete BEFORE DELETE ON deployment_record BEGIN SELECT RAISE(ABORT, 'deployment_record is immutable'); END;
+`;
+const MIGRATIONS = [
+  { version: "20260803_01_provenance_core", sql: CORE_SQL },
+  { version: "20260803_02_report_lifecycle", sql: REPORT_LIFECYCLE_SQL },
+  { version: "20260803_03_report_effect", sql: REPORT_EFFECT_SQL },
+  { version: "20260803_04_redaction_tombstone", sql: REDACTION_SQL },
+  { version: "20260803_05_redaction_request", sql: REDACTION_REQUEST_SQL },
+  { version: "20260803_06_provenance_facts", sql: PROVENANCE_FACTS_SQL },
+  { version: "20260803_07_deployment_record", sql: DEPLOYMENT_SQL },
+];
+
+function hasColumn(db: DB, table: string, column: string): boolean {
+  return (db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).some((row) => row.name === column);
+}
+
+function reportBodyPathIsNullable(db: DB): boolean {
+  const row = (db.prepare("PRAGMA table_info(report)").all() as { name: string; notnull: number }[])
+    .find((column) => column.name === "body_path");
+  return row?.notnull === 0;
+}
+
+/** SQLite 不能移除 NOT NULL；旧 report 表需重建，保留所有既有发布记录和 child FK。 */
+function migrateReportLifecycle(db: DB): void {
+  if (!reportBodyPathIsNullable(db)) {
+    db.exec(`
+      CREATE TABLE report_provenance_next (
+        id             TEXT PRIMARY KEY,
+        type           TEXT NOT NULL CHECK (type IN ('brief','deep_dive','initial_digest')),
+        topic_id       TEXT NOT NULL REFERENCES topic(id),
+        status         TEXT NOT NULL CHECK (status IN ('draft','generating','done','failed','archived','deleted')),
+        generated_at   TEXT NOT NULL,
+        title          TEXT NOT NULL,
+        body_path      TEXT,
+        insight_ids    TEXT NOT NULL DEFAULT '[]',
+        event_ids      TEXT NOT NULL DEFAULT '[]',
+        prev_report_id TEXT,
+        citation_count INTEGER NOT NULL,
+        cost           TEXT NOT NULL,
+        failure        TEXT
+      );
+      INSERT INTO report_provenance_next
+        (id,type,topic_id,status,generated_at,title,body_path,insight_ids,event_ids,prev_report_id,citation_count,cost,failure)
+      SELECT id,type,topic_id,status,generated_at,title,body_path,insight_ids,event_ids,prev_report_id,citation_count,cost,NULL FROM report;
+      DROP TABLE report;
+      ALTER TABLE report_provenance_next RENAME TO report;
+      CREATE INDEX IF NOT EXISTS idx_report_topic ON report(topic_id);
+      CREATE INDEX IF NOT EXISTS idx_report_status ON report(status);
+    `);
+  }
+  if (!hasColumn(db, "report", "failure")) db.exec("ALTER TABLE report ADD COLUMN failure TEXT");
+}
+
+/** 只允许 migration runner 调用；重复运行验证 checksum，不会重复执行 DDL。 */
+export function applyProvenanceMigrations(db: DB): void {
+  db.exec("CREATE TABLE IF NOT EXISTS schema_migration (version TEXT PRIMARY KEY, checksum TEXT NOT NULL, applied_at TEXT NOT NULL)");
+  for (const migration of MIGRATIONS) {
+    const checksum = createHash("sha256").update(migration.sql).digest("hex");
+    const applied = db.prepare("SELECT checksum FROM schema_migration WHERE version=?").get(migration.version) as { checksum: string } | undefined;
+    if (applied) {
+      if (applied.checksum !== checksum) throw new Error(`migration checksum mismatch: ${migration.version}`);
+      continue;
+    }
+    // DDL 与 ledger 必须在同一把 SQLite 排他锁中提交：其它 writer 只能看到迁移前或迁移后，
+    // 不会观察到半个 provenance schema。
+    const rebuildReport = migration.version === "20260803_02_report_lifecycle" && !reportBodyPathIsNullable(db);
+    if (rebuildReport) db.pragma("foreign_keys = OFF");
+    db.exec("BEGIN EXCLUSIVE");
+    try {
+      if (migration.version === "20260803_01_provenance_core") {
+        // SQLite ALTER ADD COLUMN 不支持 IF NOT EXISTS；fresh schema 已含 trace_id，旧库才需要补列。
+        if (!hasColumn(db, "run", "trace_id")) db.exec("ALTER TABLE run ADD COLUMN trace_id TEXT");
+        const rest = migration.sql.replace("ALTER TABLE run ADD COLUMN trace_id TEXT;", "");
+        db.exec(rest);
+      } else if (migration.version === "20260803_02_report_lifecycle") {
+        migrateReportLifecycle(db);
+      } else if (migration.version === "20260803_03_report_effect") {
+        db.exec(migration.sql);
+      } else if (migration.version === "20260803_04_redaction_tombstone" || migration.version === "20260803_05_redaction_request" || migration.version === "20260803_06_provenance_facts" || migration.version === "20260803_07_deployment_record") {
+        db.exec(migration.sql);
+      }
+      db.prepare("INSERT INTO schema_migration(version,checksum,applied_at) VALUES (?,?,?)")
+        .run(migration.version, checksum, new Date().toISOString());
+      db.exec("COMMIT");
+    } catch (error) {
+      try { db.exec("ROLLBACK"); } catch { /* transaction may already have been rolled back */ }
+      throw error;
+    } finally {
+      if (rebuildReport) db.pragma("foreign_keys = ON");
+    }
+  }
+}
+
+export function assertProvenanceSchema(db: DB): void {
+  const latest = MIGRATIONS.at(-1)!;
+  const expected = latest.version;
+  const ledgerExists = db.prepare(
+    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migration'",
+  ).get();
+  if (!ledgerExists) throw new Error(`provenance migration ${expected} has not been applied`);
+  const row = db.prepare("SELECT checksum FROM schema_migration WHERE version=?").get(expected) as { checksum: string } | undefined;
+  if (!row) throw new Error(`provenance migration ${expected} has not been applied`);
+  const checksum = createHash("sha256").update(latest.sql).digest("hex");
+  if (row.checksum !== checksum) throw new Error(`provenance migration checksum mismatch: ${expected}`);
+}
