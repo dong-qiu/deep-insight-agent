@@ -128,6 +128,16 @@ jobs:
             }
           done
 
+          # Do not stop the live writers when a required runtime secret is
+          # absent.  Check only presence, never echo a value into SSM or CI.
+          required_runtime_env=(DISPATCH_WORKER_SECRET)
+          for required_key in "\${required_runtime_env[@]}"; do
+            grep -Eq "^\${required_key}=[^[:space:]].*" "\$app_dir/.env.local" || {
+              echo "生产 .env.local 缺少非空配置：\$required_key" >&2
+              exit 1
+            }
+          done
+
           docker pull "\$image"
           actual_sha=\$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "\$image")
           [[ "\$actual_sha" == "\$expected_sha" ]] || { echo "镜像 revision 标签与请求提交不一致" >&2; exit 1; }
@@ -169,6 +179,20 @@ jobs:
           curl --fail --silent --show-error http://127.0.0.1:\${APP_PORT:-3000}/api/health
           PROVENANCE_DEPLOYMENT_REQUIRED=1 INSIGHT_IMAGE="\$immutable_image" INSIGHT_IMAGE_DIGEST="\$image_digest" GIT_SHA="\$expected_sha" \\
             docker compose -f "\$compose_file" up -d --no-build --no-deps cron generation-dispatch-worker
+          worker_id=\$(docker compose -f "\$compose_file" ps -q generation-dispatch-worker)
+          [[ -n "\$worker_id" ]] || { echo "generation-dispatch-worker 未创建" >&2; exit 1; }
+          # The worker has no HTTP healthcheck.  A short stable-running window
+          # detects missing dispatch configuration and makes the release roll
+          # back instead of reporting a healthy app with a crash-looping worker.
+          for _ in 1 2 3; do
+            worker_running=\$(docker inspect --format '{{.State.Running}}' "\$worker_id")
+            worker_restarts=\$(docker inspect --format '{{.RestartCount}}' "\$worker_id")
+            [[ "\$worker_running" == true && "\$worker_restarts" == 0 ]] || {
+              echo "generation-dispatch-worker 未稳定运行（running=\$worker_running, restarts=\$worker_restarts）" >&2
+              exit 1
+            }
+            sleep 10
+          done
           rm -f "\$rollback_compose"
           deployment_complete=1
           trap - EXIT
