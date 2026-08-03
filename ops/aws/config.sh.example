@@ -13,7 +13,8 @@ export AWS_NAME="deep-insight"            # EC2 实例名 / 密钥对名 / 安�
 # export REDACTION_HMAC_SECRET_ARN="arn:aws:secretsmanager:ap-southeast-1:123456789012:secret:deep-insight/redaction-hmac/v1-xxxx"
 # export REDACTION_HMAC_KEY_VERSION="v1"
 # export REDACTION_RECOVERY_ROLE="deep-insight-redaction-recovery"
-# recovery runner 所需的 ARN；应用实例角色必须仅允许 sts:AssumeRole 到该角色。
+# recovery runner 所需的 ARN；它必须以独立 recovery identity 运行，应用实例角色不得拥有
+# sts:AssumeRole 到该角色的权限。
 # export REDACTION_RECOVERY_ROLE_ARN="arn:aws:iam::123456789012:role/deep-insight-redaction-recovery"
 export AWS_INSTANCE_TYPE="t3.micro"       # 免费档 1GB；build 若 OOM 可临时改 t3.small 再缩回
 export AWS_DISK_GB="30"                   # gp3 根卷，免费档含 30GB
