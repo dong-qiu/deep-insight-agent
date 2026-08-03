@@ -3,11 +3,13 @@ import Link from "next/link";
 import { auth } from "../../../auth.js";
 import { getDb } from "../../../lib/db/index.js";
 import { listFollowups } from "../../../lib/db/followup.js";
-import { getReport, listBlockedChecksForReport, reportNeighbors } from "../../../lib/db/reports.js";
+import { getReport, listBlockedChecksForReport, listPassChecksForReport, reportNeighbors } from "../../../lib/db/reports.js";
+import { findGenerationTraceForReport } from "../../../lib/db/provenance.js";
 import { Markdown } from "../../_components/markdown.js";
 import { CitePreview } from "./_components/cite-preview.js";
 import { ExportPptButton } from "./_components/export-ppt-button.js";
 import { FollowupPanel } from "./_components/followup-panel.js";
+import { ProvenanceTimeline } from "./_components/provenance-timeline.js";
 
 export const dynamic = "force-dynamic";
 
@@ -29,9 +31,11 @@ export default async function ReportPage({ params }: { params: Promise<{ id: str
   const db = getDb();
   const report = getReport(db, id);
   if (!report) notFound();
-  const blocked = listBlockedChecksForReport(db, id);
+  const blocked = isAdmin ? listBlockedChecksForReport(db, id) : [];
+  const passChecks = isAdmin ? listPassChecksForReport(db, id) : [];
   const followups = listFollowups(db, id);
   const { prev, next } = reportNeighbors(db, report); // 演化链前后导航（主题持续聚合）
+  const traceId = isAdmin ? findGenerationTraceForReport(db, report.id) : null;
 
   // 按 insight 分组（保持 SQL 顺序）
   const byInsight = new Map<string, { statement: string; rows: typeof blocked }>();
@@ -52,7 +56,7 @@ export default async function ReportPage({ params }: { params: Promise<{ id: str
       <p className="muted">
         {report.type} · 纳入 {report.insight_ids.length} 洞察 / {report.citation_count} 引用 · 生成于{" "}
         {report.generated_at}
-        {report.cost ? ` · 成本 $${report.cost.amount.toFixed(4)}` : ""}
+        {isAdmin && report.cost ? ` · 成本 $${report.cost.amount.toFixed(4)}` : ""}
       </p>
 
       {prev || next ? (
@@ -73,6 +77,16 @@ export default async function ReportPage({ params }: { params: Promise<{ id: str
           )}
         </nav>
       ) : null}
+
+      {traceId ? <ProvenanceTimeline traceId={traceId} /> : null}
+
+      {isAdmin && passChecks.length ? <details className="audit"><summary>发布引用下钻 · {passChecks.length} 条 pass/support 证据（点击展开）</summary>
+        {passChecks.map((check) => <article className="audit-row" key={`${check.insight_id}-${check.citation_index}`}>
+          <p><strong>洞察</strong> <code>{check.insight_id}</code>：{check.statement.slice(0, 120)}</p>
+          <blockquote>「{check.quote}」</blockquote>
+          <p className="muted">Content <code>{check.content_item_id}</code> · <a href={check.url} target="_blank" rel="noreferrer">查看原文</a></p>
+        </article>)}
+      </details> : null}
 
       {blocked.length === 0 ? null : (
         <details className="audit">

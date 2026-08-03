@@ -22,6 +22,13 @@ const DB_PATH =
 const SNAPSHOT_PATH = process.env.SNAPSHOT_PATH ?? ".data/snapshots/golden.db";
 const force = process.argv.slice(2).includes("--force");
 
+// 此命令只服务 worktree 的黄金快照；生产恢复必须按 operations 文档先回放不可变 redaction registry。
+// 不提供生产 bypass，避免一个看似无害的 `npm run db:restore -- --force` 重现已删除实体。
+if (process.env.NODE_ENV === "production" || process.env.PROVENANCE_SCHEMA_REQUIRED === "1") {
+  console.error("拒绝执行：生产/Provenance 环境恢复必须先运行 replay-redaction-registry，再启动服务（见 docs/launch/operations.md §6.1.2）。");
+  process.exit(1);
+}
+
 if (!existsSync(SNAPSHOT_PATH)) {
   console.error(`快照不存在：${SNAPSHOT_PATH}（先在有数据的环境跑 npm run db:snapshot）`);
   process.exit(1);

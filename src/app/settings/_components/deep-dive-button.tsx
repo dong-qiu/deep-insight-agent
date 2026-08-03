@@ -1,26 +1,16 @@
 "use client";
-/** 主题"深挖"触发按钮（C-1）：POST /api/topics/[id]/deep-dive，202 fire-and-forget。
- *  体验缺口 3.3：触发后原地轮询 /deep-dive/status 渲染步进器（分析→校验→生成报告），
- *  完成给报告直链，不必跳 /admin 数 Run 表。轮询每 5s，报告出现 / 失败 / 超时（20min）即停。 */
+/** 主题“深挖”触发按钮：受理后按 trace 查询持久化调度状态。 */
 import { useEffect, useRef, useState } from "react";
 
-type StepState = "pending" | "running" | "done" | "failed";
-interface Step {
-  kind: string;
-  label: string;
-  state: StepState;
-}
 interface Status {
-  steps: Step[];
-  report: { id: string; title: string; type: string } | null;
-  done: boolean;
-  failed: boolean;
+  status: "running" | "done" | "failed" | "partial" | "cancelled";
+  dispatch: { state: string; attempt: number; last_error_reason?: string | null };
 }
 
 const POLL_MS = 5000;
 const MAX_POLL_MS = 20 * 60 * 1000; // 20 min 兜底，超时停轮询（深挖名义上限 15min）
 
-const DOT: Record<StepState, string> = { pending: "○", running: "◐", done: "●", failed: "✕" };
+const terminal = (status: Status["status"]): boolean => ["done", "failed", "partial", "cancelled"].includes(status);
 
 export function DeepDiveButton({
   topicId,
@@ -33,24 +23,25 @@ export function DeepDiveButton({
 }): React.ReactElement {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const [since, setSince] = useState<string | null>(null);
+  const [traceId, setTraceId] = useState<string | null>(null);
   const [status, setStatus] = useState<Status | null>(null);
   const startedAtMs = useRef(0);
 
   // 轮询：since 一旦设定（触发成功）即起；报告出现 / 失败 / 超时清掉。
   useEffect(() => {
-    if (!since) return;
+    if (traceId === null) return;
+    const activeTraceId: string = traceId;
     let alive = true;
     let timer: ReturnType<typeof setTimeout>;
 
     async function poll(): Promise<void> {
       try {
-        const res = await fetch(`/api/topics/${topicId}/deep-dive/status?since=${encodeURIComponent(since!)}`);
+        const res = await fetch(`/api/generation-traces/${encodeURIComponent(activeTraceId)}`);
         if (!alive) return;
         if (res.ok) {
           const s = (await res.json()) as Status;
           setStatus(s);
-          if (s.done || s.failed) return; // 终态，停止
+          if (terminal(s.status)) return;
         }
       } catch {
         /* 瞬时网络错误：忽略，下一拍重试 */
@@ -64,7 +55,7 @@ export function DeepDiveButton({
       alive = false;
       clearTimeout(timer);
     };
-  }, [since, topicId]);
+  }, [traceId]);
 
   if (!enabled) return <span className="muted" style={{ fontSize: ".85rem" }}>· 停用中（不可深挖）</span>;
 
@@ -73,13 +64,15 @@ export function DeepDiveButton({
     setBusy(true);
     setErr(null);
     setStatus(null);
-    setSince(null);
+    setTraceId(null);
     try {
-      const res = await fetch(`/api/topics/${topicId}/deep-dive`, { method: "POST" });
+      const res = await fetch(`/api/topics/${topicId}/deep-dive`, {
+        method: "POST", headers: { "Idempotency-Key": crypto.randomUUID() },
+      });
       const body = (await res.json()) as Record<string, unknown>;
-      if (res.status === 202) {
+      if (res.status === 202 || res.status === 200) {
         startedAtMs.current = Date.now();
-        setSince(body.started_at as string); // 触发轮询
+        setTraceId(body.trace_id as string);
       } else {
         setErr(`HTTP ${res.status} · ${body.message ?? body.error ?? "未知"}`);
       }
@@ -90,7 +83,10 @@ export function DeepDiveButton({
     }
   }
 
-  const polling = since != null && !status?.done && !status?.failed;
+  const polling = traceId != null && (
+    (status == null && err == null) ||
+    (status != null && !terminal(status.status))
+  );
 
   return (
     <span style={{ marginLeft: ".5rem" }}>
@@ -108,23 +104,17 @@ export function DeepDiveButton({
         <span className="muted deepdive-msg deepdive-err">❌ {err}</span>
       ) : status ? (
         <span className="deepdive-progress">
-          {status.steps.map((s) => (
-            <span key={s.kind} className={`deepdive-step deepdive-step-${s.state}`} title={s.kind}>
-              {DOT[s.state]} {s.label}
-            </span>
-          ))}
-          {status.done && status.report ? (
-            <a className="deepdive-link" href={`/reports/${status.report.id}`}>查看报告 →</a>
-          ) : status.failed ? (
+          {terminal(status.status) ? (
+            status.status === "done" ? <span>● 深挖完成</span> :
             <span className="deepdive-err">
-              某段失败 ·{" "}
+              {status.dispatch.last_error_reason ?? "深挖失败"} ·{" "}
               <a href="/admin">去 /admin 看详情 / 重试</a>
             </span>
           ) : (
-            <span className="muted deepdive-hint">运行中（约 5–15 分钟，可离开本页）</span>
+            <span className="muted deepdive-hint">{status.dispatch.state}（尝试 {status.dispatch.attempt}，约 5–15 分钟）</span>
           )}
         </span>
-      ) : since ? (
+      ) : traceId ? (
         <span className="muted deepdive-msg">✅ 已启动 · 正在获取进度…</span>
       ) : null}
     </span>

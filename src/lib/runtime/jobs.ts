@@ -10,8 +10,14 @@ import type { Cost, Run } from "../types.js";
 export interface JobSpec {
   kind: Run["kind"];
   target: Run["target"];
+  /** P0a：调用方必须显式传入已创建的 trace；历史调用可暂时省略。 */
+  traceId?: string | null;
+  /** durable dispatch 已在 claim 事务创建的唯一 root Run；仅首个 analyze 使用。 */
+  existingRunId?: string;
   retryOf?: string | null;
   silent?: boolean; // 失败不发 notifyFailure（半开探测用，3b-2：探测失败不刷告警）
+  /** durable dispatch 传入的 fencing guard；每个 Run 写入前都必须仍持有 claim。 */
+  assertWrite?: () => void;
 }
 export interface JobCtx {
   runId: string;
@@ -28,14 +34,17 @@ export async function runJob<T>(
   spec: JobSpec,
   fn: (ctx: JobCtx) => Promise<T>,
 ): Promise<JobOutcome<T>> {
-  const runId = `run_${randomUUID().slice(0, 8)}`;
+  const runId = spec.existingRunId ?? `run_${randomUUID().slice(0, 8)}`;
   // 单调时钟测耗时，避免墙钟 NTP 跳变让 duration 出现负值/突跳
   const startedMono = performance.now();
-  insertRun(db, {
-    id: runId, kind: spec.kind, target: spec.target, status: "running",
-    started_at: new Date().toISOString(), ended_at: null, duration_ms: null,
-    cost: null, error: null, retry_of: spec.retryOf ?? null,
-  });
+  if (!spec.existingRunId) {
+    spec.assertWrite?.();
+    insertRun(db, {
+      id: runId, kind: spec.kind, target: spec.target, status: "running",
+      started_at: new Date().toISOString(), ended_at: null, duration_ms: null,
+      cost: null, error: null, retry_of: spec.retryOf ?? null, trace_id: spec.traceId ?? null,
+    });
+  }
 
   let cost: Cost | null = null;
   const ctx: JobCtx = {
@@ -48,10 +57,12 @@ export async function runJob<T>(
 
   try {
     const result = await fn(ctx);
+    spec.assertWrite?.();
     finishRun(db, runId, { status: "done", cost, duration_ms: elapsed() });
     return { run: getRun(db, runId)!, result };
   } catch (e) {
     const err = e as Error;
+    spec.assertWrite?.();
     finishRun(db, runId, {
       status: "failed", cost, duration_ms: elapsed(),
       error: { type: err.name, message: err.message, stack: err.stack },

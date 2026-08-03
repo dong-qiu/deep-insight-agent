@@ -46,6 +46,8 @@ curl -fsS -X POST http://127.0.0.1:3000/api/cron -H "authorization: Bearer $CRON
 | `AUTH_SECRET` | ✅ | NextAuth 密钥，`openssl rand -base64 32` |
 | `ADMIN_EMAIL` / `ADMIN_PASSWORD` | ✅ | **内置管理员**（bootstrap，role=admin、全权、不入库、不可删/锁死）。受邀的其他账号在**设置页 → 用户/访问**里增删（存 `app_user` 表、密码 scrypt 哈希，缺省 role=viewer——只读 Brief/报告/主题，不可进配置/管理、不可触发烧钱端点）。对外分享只需建 viewer 账号、把邮箱+密码发对方。鉴权拆 runtime-safe `auth.config.ts`（middleware 读 JWT 角色）/ Node `auth.ts`（查库验密码）；自托管 middleware 显式运行在 Node.js runtime。 |
 | `CRON_SECRET` | ✅（定时） | `openssl rand -base64 32`；**未设则 `/api/cron` 返回 503、定时管线不工作** |
+| `DISPATCH_WORKER_SECRET` | ✅（P0a） | `openssl rand -base64 32`，且不得复用 `AUTH_SECRET`；只供 compose 内 `generation-dispatch-worker` 调用内部接口。缺失时 Deep Dive dispatch fail-closed。 |
+| `PROVENANCE_IDEMPOTENCY_SECRET` | 建议 | Deep Dive `Idempotency-Key` 的 HMAC 专用密钥；未设时暂回退 `AUTH_SECRET`，上线后应独立配置以缩小轮换影响面。 |
 | `PIPELINE_WINDOW_HOURS` | 否 | 单轮回看窗口，默认 168（7 天） |
 | `INITIAL_DIGEST_WINDOW_HOURS` / `INITIAL_DIGEST_ITEMS` | 否 | 冷启动首版综述的窗口/条数，默认 720（30 天）/ 25 |
 | `DEEP_DIVE_WINDOW_HOURS` / `DEEP_DIVE_ITEMS` | 否 | 用户触发主题深挖（C-1，`POST /api/topics/[id]/deep-dive`）的窗口/条数，默认 **2160（90 天，对齐 spec / ADR-0004）** / 25。成本由条数封顶、不随窗口涨；想缩小回看范围才需调低 |
@@ -164,12 +166,26 @@ SQLite、备份或事件。应用与恢复 runner 对指定版本 secret 只有 
 `kms:ViaService=secretsmanager.ap-southeast-1.amazonaws.com` 解密该 secret 的 KMS key；清理角色没有这两项权限。CMK 和 HMAC
 旧版本须保留到最后一条引用记录的 retain-until 后。删除操作的顺序是“在内存生成 HMAC 并校验 canonical schema → 以稳定 record ID 条件写 registry → SQLite 原子写
 redaction 及业务 tombstone”；任一步失败均 fail-closed。若 registry 写入成功但 SQLite 写失败，保留不可变孤儿记录，重试复用相同
-record ID。
+record ID。实现会在外部条件写前先在 `provenance_redaction_request` 保存同一份 envelope 密文和对象 key；因此中断后的重试不会
+重新加密、改写对象或改变 `effective_at`。业务删除/audit 必须作为 registry 成功后本地事务的一部分执行。
+
+当前首个受控入口为 `POST /api/admin/reports/{report_id}/redaction`，仅 admin 可用；body 必须提供长度 8–128 的 ASCII
+`deletion_request_id`、小写下划线 `reason_code` 与未来 UTC `expiry_at`。成功后报告状态改为 `deleted`，并同步撤下
+`report_index`、FTS 与 PPT 派生缓存；正文文件不在请求路径中物理删除。缺少 registry 配置、AWS/KMS 失败或签名/条件写异常均返回
+`503 redaction_registry_unavailable`，原报告保持发布状态。
+
+仓库提供 `ops/aws/setup-redaction-registry.sh`：默认 `--check`，只读核验 bucket/KMS/Object-Lock；只有安全管理员预先配置
+`REDACTION_HMAC_SECRET_ARN`、`REDACTION_HMAC_KEY_VERSION` 和独立 `REDACTION_RECOVERY_ROLE` 后，才可显式运行 `--apply`。
+脚本不会创建 HMAC secret 或 recovery role 的信任策略，避免把密钥或跨账号主体猜进基础设施代码。
 
 从本机或 S3 DR 取回备份时，先停止 `app`、`cron` 和 `generation-dispatch-worker`，复制数据库/报告，再运行同镜像的
-`ops/replay-redaction-registry.mjs --restore-time <UTC RFC3339>`。runner 读取恢复时刻仍有效的所有记录，解密、校验 HMAC，并以
-幂等事务写入 `provenance_redaction`；仅在成功输出计数和 key versions 后才可 `docker compose up -d`。任何 S3、KMS、HMAC、缺失
-记录或重放错误都应非零退出并保持服务停止。恢复日志只能含 record 计数、key version 与 reason code，禁止输出 entity key。
+`node /app/ops/replay-redaction-registry.cjs --restore-time <UTC RFC3339>`。runner 要求
+`REDACTION_REGISTRY_BUCKET`、`REDACTION_RECOVERY_ROLE_ARN` 与 HMAC secret ARN/version；它必须在**独立 recovery
+identity**（临时凭据、专用 profile 或受控 runner）中运行，应用实例角色没有也不得拥有 `sts:AssumeRole` 到 recovery role 的权限，
+再读取恢复时刻仍有效的所有记录，解密、校验 HMAC，并以幂等**单一事务**写入
+`provenance_redaction`；仅在成功输出计数和 key versions 后才可 `docker compose up -d`。多个 HMAC 版本时使用
+`REDACTION_HMAC_SECRET_ARNS_JSON`（`{"v1":"arn:...","v2":"arn:..."}`），旧 key 须保留到最后一条记录到期。
+任何 STS、S3、KMS、HMAC、缺失记录或重放错误都应非零退出并保持服务停止。恢复日志只能含 record 计数、key version 与 reason code，禁止输出 entity key。
 
 P0a 发布包必须把上述 runner 与 `generation-dispatch-worker` 纳入 compose，并在部署 smoke test 中演练“恢复点早于删除”的
 场景：停止三个服务 → 复制旧 SQLite snapshot → replay → 确认 resolver 仍返回 tombstone → 才允许启动服务。runner 不存在、
@@ -177,15 +193,24 @@ P0a 发布包必须把上述 runner 与 `generation-dispatch-worker` 纳入 comp
 
 ### 6.2 全卷冷备（含 raw，需停机）
 
+> ⚠️ **P0a 后的恢复禁止直接解包后 `docker compose up -d`。** 旧快照可能早于删除登记；必须先回放
+> §6.1.2 的 registry，且只可通过受控生产发布流程重新成为 writer。任何 replay、版本身份或 health gate 失败都保持
+> `app`、`cron`、`generation-dispatch-worker` 停止。
+
 ```bash
-docker compose stop app cron   # 静默 SQLite WAL 写入
+docker compose stop app cron generation-dispatch-worker   # 静默 SQLite WAL 写入
 docker run --rm -v deep-insight_insight-data:/data -v "$PWD":/backup alpine \
   tar czf /backup/insight-data-$(date +%F).tgz -C /data .
-# 恢复：tar xzf 到同名卷后 docker compose up -d
+# 恢复：解包到同名卷后，三个服务仍保持停止；先执行同镜像的 replay（替换 TS 为目标恢复点 UTC）。
+docker compose run --rm --no-deps migrate \
+  node /app/ops/replay-redaction-registry.cjs --restore-time 2026-08-03T00:00:00Z
+# replay 成功后，不要手动 compose up；执行 §8 的受控 GHCR 发布，完成 migration / deployment-record / identity / health gate。
 ```
 
 > 卷名默认 `<compose项目名>_insight-data`（项目名 `deep-insight`）。`docker volume ls` 确认。
 > 第三方原文全文存在 `/data/raw`，按「不复制全文存储」原则**不入仓**，仅随卷备份。
+> `npm run db:restore` 仅用于本地 worktree 的黄金快照，检测到 `NODE_ENV=production` 或
+> `PROVENANCE_SCHEMA_REQUIRED=1` 会拒绝执行；它不是生产恢复入口。
 
 ## 7. 故障排查
 

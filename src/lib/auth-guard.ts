@@ -5,8 +5,17 @@
 import { NextResponse } from "next/server";
 import { auth } from "../auth.js";
 
+export interface AdminActor { id: string; role: "admin" }
+
+/** 管理动作的可信 actor；无会话 id 的 bootstrap 兼容路径明确标为 shared-admin，绝不伪造个人身份。 */
+export async function requireAdminActor(): Promise<AdminActor | null> {
+  const session = await auth();
+  if (session?.user?.role !== "admin") return null;
+  const user = session.user as typeof session.user & { id?: string | null };
+  return { id: user.id ?? user.email ?? "shared-admin-unattributed", role: "admin" };
+}
+
 /** 非 admin → 返回 403 响应（调用方应直接 return 它）；admin → null（放行）。 */
 export async function forbidNonAdmin(): Promise<NextResponse | null> {
-  const role = (await auth())?.user?.role;
-  return role === "admin" ? null : NextResponse.json({ error: "forbidden" }, { status: 403 });
+  return await requireAdminActor() ? null : NextResponse.json({ error: "forbidden" }, { status: 403 });
 }

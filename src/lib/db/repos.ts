@@ -285,15 +285,20 @@ function rowToContentItem(r: Record<string, unknown>): ContentItem {
 
 // ── Run（Job Runner 状态机的持久化原语） ──
 export function insertRun(db: DB, run: Run): void {
-  db.prepare(
-    `INSERT INTO run (id,kind,target,status,started_at,ended_at,duration_ms,cost,error,retry_of)
-     VALUES (@id,@kind,@target,@status,@started_at,@ended_at,@duration_ms,@cost,@error,@retry_of)`,
-  ).run({
+  const fields = {
     id: run.id, kind: run.kind, target: j(run.target), status: run.status,
     started_at: run.started_at, ended_at: run.ended_at, duration_ms: run.duration_ms,
     cost: run.cost ? j(run.cost) : null, error: run.error ? j(run.error) : null,
-    retry_of: run.retry_of,
-  });
+    retry_of: run.retry_of, trace_id: run.trace_id ?? null,
+  };
+  const hasTrace = (db.prepare("PRAGMA table_info(run)").all() as { name: string }[]).some((column) => column.name === "trace_id");
+  db.prepare(
+    hasTrace
+      ? `INSERT INTO run (id,kind,target,status,started_at,ended_at,duration_ms,cost,error,retry_of,trace_id)
+         VALUES (@id,@kind,@target,@status,@started_at,@ended_at,@duration_ms,@cost,@error,@retry_of,@trace_id)`
+      : `INSERT INTO run (id,kind,target,status,started_at,ended_at,duration_ms,cost,error,retry_of)
+         VALUES (@id,@kind,@target,@status,@started_at,@ended_at,@duration_ms,@cost,@error,@retry_of)`,
+  ).run(fields);
 }
 export function finishRun(
   db: DB,
@@ -430,6 +435,7 @@ function rowToRun(r: Record<string, unknown>): Run {
     ended_at: (r.ended_at as string) ?? null, duration_ms: (r.duration_ms as number) ?? null,
     cost: r.cost ? JSON.parse(r.cost as string) : null,
     error: r.error ? JSON.parse(r.error as string) : null, retry_of: (r.retry_of as string) ?? null,
+    trace_id: (r.trace_id as string) ?? null,
     inserted: r.inserted == null ? null : (r.inserted as number),
   };
 }

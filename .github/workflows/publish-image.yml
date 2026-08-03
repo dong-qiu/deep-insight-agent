@@ -48,7 +48,9 @@ jobs:
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.event.workflow_run.head_sha }}
-          build-args: TARGETARCH=amd64
+          build-args: |
+            TARGETARCH=amd64
+            GIT_SHA=${{ github.event.workflow_run.head_sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           provenance: mode=max

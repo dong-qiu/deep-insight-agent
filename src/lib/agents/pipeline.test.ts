@@ -7,14 +7,17 @@ import { type DB, openDb } from "../db/index.js";
 import { insertContentItem, insertSource, insertTopic, listRuns } from "../db/repos.js";
 import { listTechLeadEvidence, listTechLeads } from "../db/tech-leads.js";
 import { listOpportunityLeads, listTechnologyOpportunities } from "../db/planning.js";
+import { applyProvenanceMigrations } from "../db/provenance-migrations.js";
 import type { AnalysisBatch, ContentItem, Insight, Report, ReportIndexEntry, Source, Topic, ValidationResult } from "../types.js";
 
 // vi.hoisted：vi.mock 工厂被提升到文件顶部，须用 hoisted 让 mock fns 在工厂运行时已初始化
-const { analyzeMock, validateBatchMock, buildReportMock, saveReportMock } = vi.hoisted(() => ({
+const { analyzeMock, validateBatchMock, buildReportMock, saveReportMock, seedDefaultDirectionsMock, upsertTechnologyOpportunitiesMock } = vi.hoisted(() => ({
   analyzeMock: vi.fn(),
   validateBatchMock: vi.fn(),
   buildReportMock: vi.fn(),
   saveReportMock: vi.fn(),
+  seedDefaultDirectionsMock: vi.fn(),
+  upsertTechnologyOpportunitiesMock: vi.fn(),
 }));
 vi.mock("./analyzer.js", async (orig) => ({
   ...(await orig<typeof import("./analyzer.js")>()),
@@ -32,6 +35,20 @@ vi.mock("../db/reports.js", async (orig) => ({
   ...(await orig<typeof import("../db/reports.js")>()),
   saveReport: saveReportMock,
 }));
+vi.mock("../db/planning.js", async (orig) => {
+  const actual = await orig<typeof import("../db/planning.js")>();
+  return {
+    ...actual,
+    seedDefaultDirections: (...args: Parameters<typeof actual.seedDefaultDirections>) => {
+      seedDefaultDirectionsMock(...args);
+      return actual.seedDefaultDirections(...args);
+    },
+    upsertTechnologyOpportunities: (...args: Parameters<typeof actual.upsertTechnologyOpportunities>) => {
+      upsertTechnologyOpportunitiesMock(...args);
+      return actual.upsertTechnologyOpportunities(...args);
+    },
+  };
+});
 vi.mock("../runtime/alert.js", async (orig) => ({
   ...(await orig<typeof import("../runtime/alert.js")>()),
   notifyFailure: vi.fn(),
@@ -122,9 +139,27 @@ beforeEach(() => {
   validateBatchMock.mockReset();
   buildReportMock.mockReset();
   saveReportMock.mockReset();
+  seedDefaultDirectionsMock.mockReset();
+  upsertTechnologyOpportunitiesMock.mockReset();
 });
 
 describe("runAnalysis", () => {
+  it("trace 模式为真实输入与 batch 输出追加最小溯源事实", async () => {
+    applyProvenanceMigrations(db);
+    db.prepare(`INSERT INTO generation_trace(id,scope_kind,trigger_kind,status,completion_policy,coverage,runtime_version,summary,started_at)
+      VALUES ('trace_1','topic_pipeline','api','running','{}','complete','{}','{}','2026-06-07T00:00:00Z')`).run();
+    const source: Source = { id: "s1", name: "S", type: "rss", endpoint: "https://x", topic_ids: ["t1"], fetch_interval: "1h", backfill: null, enabled: true };
+    insertSource(db, source);
+    const item: ContentItem = { id: "ci1", source_id: "s1", url: "https://x/a", title: "A", author: null, published_at: null, fetched_at: "2026-06-07T00:00:00Z", language: "zh", topic_ids: ["t1"], tags: [], body: "body", body_kind: "article", raw_ref: "raw", content_hash: "hash_ci1", fetch_status: "ok" };
+    insertContentItem(db, item);
+    analyzeMock.mockResolvedValue(mkBatch());
+    await runAnalysis(db, topic, [item], win, { traceId: "trace_1" });
+    expect(db.prepare("SELECT stage,event_type FROM generation_event ORDER BY sequence").all()).toEqual([
+      { stage: "analyze", event_type: "started" }, { stage: "analyze", event_type: "completed" },
+    ]);
+    expect(db.prepare("SELECT COUNT(*) AS count FROM provenance_revision").get()).toEqual({ count: 2 });
+  });
+
   it("落 batch + analyze Run(done) + 透传 analyze 的成本", async () => {
     analyzeMock.mockImplementation(async (_t, _i, _w, recordCost) => {
       recordCost({ tokens: 100, amount: 0.05 });
@@ -144,6 +179,24 @@ describe("runAnalysis", () => {
     const run = listRuns(db, { kind: "analyze" })[0];
     expect(run.status).toBe("failed");
     expect(run.error?.message).toContain("boom");
+  });
+
+  it("外部分析返回前若 worker 已失去 fencing，结果不得落库", async () => {
+    applyProvenanceMigrations(db);
+    db.prepare(`INSERT INTO generation_trace(id,scope_kind,trigger_kind,status,completion_policy,coverage,runtime_version,summary,started_at)
+      VALUES ('trace_1','topic_pipeline','api','running','{}','complete','{}','{}','2026-06-07T00:00:00Z')`).run();
+    let writable = true;
+    analyzeMock.mockImplementation(async () => {
+      writable = false; // 模拟外部 LLM 返回前 lease 已被新 worker 接管
+      return mkBatch();
+    });
+    await expect(runAnalysis(db, topic, [], win, { traceId: "trace_1", assertWrite: () => {
+      if (!writable) throw new Error("generation_fence_lost");
+    } })).rejects.toThrow("generation_fence_lost");
+    expect(getAnalysisBatch(db, "b1")).toBeNull();
+    expect(db.prepare("SELECT stage,event_type FROM generation_event ORDER BY sequence").all()).toEqual([
+      { stage: "analyze", event_type: "started" },
+    ]);
   });
 });
 
@@ -186,9 +239,34 @@ describe("runReportGen", () => {
       })],
     }));
   });
+
+  it("非空但无可放行洞察：report-gen Run 失败，并保留不可公开的 failed Report", async () => {
+    const validation = mkValidation();
+    validation.report.releasable = false;
+    validation.report.insights_includable = 0;
+
+    await expect(runReportGen(db, { topic, batch: mkBatch(), validation, type: "brief" }))
+      .rejects.toThrow("no_releasable_insight");
+    expect(buildReportMock).not.toHaveBeenCalled();
+    expect(listRuns(db, { kind: "report-gen" })[0]?.status).toBe("failed");
+    expect(db.prepare("SELECT status FROM report").all()).toEqual([{ status: "failed" }]);
+    expect(db.prepare("SELECT COUNT(*) AS count FROM report_index").get()).toEqual({ count: 0 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM report_fts").get()).toEqual({ count: 0 });
+  });
 });
 
 describe("runTechLeadExtraction", () => {
+  function seedLeadInput(): { batch: AnalysisBatch; validation: ValidationResult } {
+    insertSource(db, { id: "s1", name: "Source", type: "rss", endpoint: "https://x", topic_ids: [topic.id], fetch_interval: "6h", backfill: null, enabled: true } as Source);
+    insertContentItem(db, { id: "ci1", source_id: "s1", url: "https://x/ci1", title: "Agent tool", author: null, published_at: "2026-06-07T00:00:00Z", fetched_at: "2026-06-07T00:00:00Z", language: "en", topic_ids: [topic.id], tags: [], body: "q", body_kind: "article", raw_ref: "", content_hash: "h", fetch_status: "ok" });
+    const batch = mkBatch();
+    batch.insights[0].headline = "Agent tool";
+    batch.insights[0].tags = ["tool"];
+    const validation = mkValidation();
+    saveAnalysisBatch(db, batch); saveValidationResult(db, batch.id, validation);
+    return { batch, validation };
+  }
+
   it("真实 batch + validation + DB content 接线后，只把 pass 证据持久化为线索", () => {
     insertSource(db, { id: "s1", name: "Source", type: "rss", endpoint: "https://x", topic_ids: [topic.id], fetch_interval: "6h", backfill: null, enabled: true } as Source);
     const content: ContentItem = { id: "ci1", source_id: "s1", url: "https://x/ci1", title: "Agent tool", author: null, published_at: "2026-06-07T00:00:00Z", fetched_at: "2026-06-07T00:00:00Z", language: "en", topic_ids: [topic.id], tags: [], body: "q", body_kind: "article", raw_ref: "", content_hash: "h", fetch_status: "ok" };
@@ -206,6 +284,37 @@ describe("runTechLeadExtraction", () => {
     const [linkedLead] = listOpportunityLeads(db, opportunity.id);
     expect(linkedLead.id).toBe(leads[0].id);
     expect(listTechLeadEvidence(db, linkedLead.id)).toMatchObject([{ url: "https://x/ci1", quote: "q" }]);
+  });
+
+  it("机会写入失败只标记 derive_opportunity.failed，不反写已完成的方向映射", () => {
+    applyProvenanceMigrations(db);
+    db.prepare(`INSERT INTO generation_trace(id,scope_kind,trigger_kind,status,completion_policy,coverage,runtime_version,summary,started_at)
+      VALUES ('trace_1','topic_pipeline','api','running','{}','complete','{}','{}','2026-06-07T00:00:00Z')`).run();
+    const { batch, validation } = seedLeadInput();
+    upsertTechnologyOpportunitiesMock.mockImplementationOnce(() => { throw new Error("opportunity write failed"); });
+
+    expect(runTechLeadExtraction(db, batch, validation, "2026-06-07T01:00:00Z", { traceId: "trace_1" })).toHaveLength(1);
+    expect(db.prepare("SELECT stage,event_type FROM generation_event WHERE stage IN ('map_direction','derive_opportunity') ORDER BY sequence").all()).toEqual([
+      { stage: "map_direction", event_type: "started" },
+      { stage: "map_direction", event_type: "completed" },
+      { stage: "derive_opportunity", event_type: "started" },
+      { stage: "derive_opportunity", event_type: "failed" },
+    ]);
+  });
+
+  it("方向映射失败不会开始机会写入", () => {
+    applyProvenanceMigrations(db);
+    db.prepare(`INSERT INTO generation_trace(id,scope_kind,trigger_kind,status,completion_policy,coverage,runtime_version,summary,started_at)
+      VALUES ('trace_1','topic_pipeline','api','running','{}','complete','{}','{}','2026-06-07T00:00:00Z')`).run();
+    const { batch, validation } = seedLeadInput();
+    seedDefaultDirectionsMock.mockImplementationOnce(() => { throw new Error("direction seed failed"); });
+
+    expect(runTechLeadExtraction(db, batch, validation, "2026-06-07T01:00:00Z", { traceId: "trace_1" })).toHaveLength(1);
+    expect(upsertTechnologyOpportunitiesMock).not.toHaveBeenCalled();
+    expect(db.prepare("SELECT stage,event_type FROM generation_event WHERE stage IN ('map_direction','derive_opportunity') ORDER BY sequence").all()).toEqual([
+      { stage: "map_direction", event_type: "started" },
+      { stage: "map_direction", event_type: "failed" },
+    ]);
   });
 });
 

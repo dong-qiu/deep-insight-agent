@@ -11,7 +11,8 @@
 2. **`aws configure`**——填 Access Key / Secret / 默认区域（一次性；之后 provision 全自动）
 3. **DNS A 记录**——要 HTTPS 才需，把域名指向 EC2 公网 IP（在你的域名商后台）
 
-> 代码用 rsync 投递本地仓库，**不需要 GitHub PAT**。
+> 首次初始化可用 rsync 投递本地仓库，**不需要 GitHub PAT**。初始化完成后的生产发布必须通过
+> GitHub Actions `Deploy Production Image`：它只拉取 CI 已推送的 GHCR 不可变镜像，不在生产机拉源码或构建。
 
 ## 运行顺序
 
@@ -34,7 +35,7 @@ ANTHROPIC_API_KEY=sk-xxx ADMIN_PASSWORD=xxx ./gen-env.sh
 # 4) 可选：迁移本机现有生产数据到云端卷（保留采集历史；务必在 deploy 之前）
 ./migrate-db.sh
 
-# 5) 投递代码 + 起服务 + 配 Caddy + 验证
+# 5) 首次投递代码 + 起服务 + 配 Caddy + 验证（仅 bootstrap）
 ./deploy.sh
 
 # 6) 可选：off-box DR —— 建 S3 桶 + 实例角色加最小 S3 权限 + host cron 每日异地同步
@@ -54,8 +55,9 @@ ANTHROPIC_API_KEY=sk-xxx ADMIN_PASSWORD=xxx ./gen-env.sh
 | `provision.sh` | `aws ec2` 建密钥对 + 安全组 + 实例 + 公网 IP | 需 `aws configure` |
 | `gen-env.sh` | 生成 `.env` / `.env.local`（密钥用 openssl） | API key / 管理员密码 |
 | `migrate-db.sh` | 本机生产容器 `VACUUM INTO` 快照 → 写入云端卷 | SSH 私钥 |
-| `deploy.sh` | rsync 代码 + `docker compose up` + Caddy + 健康检查 | SSH 私钥 |
+| `deploy.sh` | 首次 bootstrap：rsync 代码 + `docker compose up` + Caddy + 健康检查；日常发布改用 GitHub Actions | SSH 私钥 |
 | `setup-dr.sh` | off-box DR：建 S3 桶（加固）+ 实例角色挂最小 S3 策略 + 经 SSM 装 awscli/写 host cron 每日异地同步 | 需 `aws`（建桶/IAM/SSM） |
+| `setup-redaction-registry.sh` | P0a 独立 Object-Lock redaction registry + KMS + app/recovery 最小策略；默认只读检查，`--apply` 才变更 | 需 `aws`、预建 HMAC secret 与独立 recovery role |
 | `destroy.sh` | 终止实例 + 删安全组/密钥，止费 | 需 `aws` |
 
 ## 设计要点 / 安全
@@ -78,7 +80,7 @@ ANTHROPIC_API_KEY=sk-xxx ADMIN_PASSWORD=xxx ./gen-env.sh
 ```bash
 IP=$(cat ops/aws/.vm-ip); KEY=~/.ssh/deep-insight.pem
 ssh -i $KEY ubuntu@$IP 'cd /opt/app && docker compose logs --since 24h app | grep -i brief'   # 今天采集了吗
-ssh -i $KEY ubuntu@$IP 'cd /opt/app && docker compose up -d --build'                          # 更新后重部署
+# 日常更新：在 main 分支运行 GitHub Actions「Deploy Production Image」（选择 sha-<commit> 标签）
 ./destroy.sh                                                                                   # 下线止费
 ```
 
