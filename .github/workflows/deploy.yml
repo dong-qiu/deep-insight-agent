@@ -74,9 +74,10 @@ jobs:
           expected_sha='${IMAGE_SHA}'
           compose_url='${compose_url}'
           cd "\$app_dir"
+          compose_file="\$app_dir/docker-compose.yml"
 
           rollback_compose=\$(mktemp "\$app_dir/docker-compose.yml.rollback.XXXXXX")
-          cp docker-compose.yml "\$rollback_compose"
+          cp "\$compose_file" "\$rollback_compose"
           old_image=\$(docker inspect --format '{{.Image}}' deep-insight-app-1 2>/dev/null || true)
           old_digest=""
           old_sha=""
@@ -93,14 +94,19 @@ jobs:
             trap - EXIT
             if [[ "\$deployment_complete" != 1 ]]; then
               echo "部署未完整通过，恢复上一版本" >&2
-              if [[ -f "\$rollback_compose" ]]; then mv "\$rollback_compose" docker-compose.yml; fi
+              if [[ -f "\$rollback_compose" ]]; then mv "\$rollback_compose" "\$compose_file"; fi
               if [[ -n "\$old_image" && "\$old_digest" =~ ^sha256:[a-f0-9]{64}$ && "\$old_sha" =~ ^[0-9a-f]{40}$ ]]; then
-                # deployment_record is append-only: make the restored image the
-                # newest verified identity before it can become a Web writer.
-                PROVENANCE_DEPLOYMENT_REQUIRED=1 INSIGHT_IMAGE="\$rollback_image" INSIGHT_IMAGE_DIGEST="\$old_digest" GIT_SHA="\$old_sha" DEPLOY_ACTOR=github-actions-rollback \\
-                  docker compose run --rm --no-deps deployment-record || true
+                rollback_services=\$(docker compose -f "\$compose_file" config --services)
+                if grep -qx deployment-record <<<"\$rollback_services"; then
+                  PROVENANCE_DEPLOYMENT_REQUIRED=1 INSIGHT_IMAGE="\$rollback_image" INSIGHT_IMAGE_DIGEST="\$old_digest" GIT_SHA="\$old_sha" DEPLOY_ACTOR=github-actions-rollback \\
+                    docker compose -f "\$compose_file" run --rm --no-deps deployment-record || true
+                fi
+                restore_targets=(app cron)
+                if grep -qx generation-dispatch-worker <<<"\$rollback_services"; then
+                  restore_targets+=(generation-dispatch-worker)
+                fi
                 PROVENANCE_DEPLOYMENT_REQUIRED=1 INSIGHT_IMAGE="\$rollback_image" INSIGHT_IMAGE_DIGEST="\$old_digest" GIT_SHA="\$old_sha" \\
-                  docker compose up -d --no-build --no-deps --wait --wait-timeout 180 app cron generation-dispatch-worker || true
+                  docker compose -f "\$compose_file" up -d --no-build --no-deps --wait --wait-timeout 180 "\${restore_targets[@]}" || true
               else
                 echo "旧镜像缺少可验证 digest 或 revision，拒绝启动未验证 rollback writer" >&2
               fi
@@ -108,9 +114,19 @@ jobs:
             exit "\$status"
           }
           trap rollback EXIT
-          curl --fail --silent --show-error --location "\$compose_url" --output docker-compose.yml.next
-          docker compose -f docker-compose.yml.next config --quiet
-          mv docker-compose.yml.next docker-compose.yml
+          next_compose="\${compose_file}.next"
+          curl --fail --silent --show-error --location "\$compose_url" --output "\$next_compose"
+          docker compose -f "\$next_compose" config --quiet
+          mv "\$next_compose" "\$compose_file"
+
+          required_services=(migrate deployment-record app cron generation-dispatch-worker)
+          available_services=\$(docker compose -f "\$compose_file" config --services)
+          for required_service in "\${required_services[@]}"; do
+            grep -qx "\$required_service" <<<"\$available_services" || {
+              echo "发布 compose 缺少必需服务：\$required_service" >&2
+              exit 1
+            }
+          done
 
           docker pull "\$image"
           actual_sha=\$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "\$image")
@@ -123,23 +139,23 @@ jobs:
 
           # 固定发布序列：先停止旧 writer/调度，先备份再迁移；deployment-record
           # 成功后才允许带 digest 的新 app 成为 writer，health 通过后最后恢复调度服务。
-          docker compose stop cron generation-dispatch-worker app || true
+          docker compose -f "\$compose_file" stop cron generation-dispatch-worker app || true
           PROVENANCE_DEPLOYMENT_REQUIRED=1 INSIGHT_IMAGE="\$immutable_image" INSIGHT_IMAGE_DIGEST="\$image_digest" GIT_SHA="\$expected_sha" \\
-            docker compose run --rm --no-deps migrate node /app/ops/backup-db.mjs
+            docker compose -f "\$compose_file" run --rm --no-deps migrate node /app/ops/backup-db.mjs
           PROVENANCE_DEPLOYMENT_REQUIRED=1 INSIGHT_IMAGE="\$immutable_image" INSIGHT_IMAGE_DIGEST="\$image_digest" GIT_SHA="\$expected_sha" \\
-            docker compose run --rm --no-deps migrate
+            docker compose -f "\$compose_file" run --rm --no-deps migrate
           PROVENANCE_DEPLOYMENT_REQUIRED=1 INSIGHT_IMAGE="\$immutable_image" INSIGHT_IMAGE_DIGEST="\$image_digest" GIT_SHA="\$expected_sha" DEPLOY_ACTOR=github-actions \\
-            docker compose run --rm --no-deps deployment-record
+            docker compose -f "\$compose_file" run --rm --no-deps deployment-record
           PROVENANCE_DEPLOYMENT_REQUIRED=1 INSIGHT_IMAGE="\$immutable_image" INSIGHT_IMAGE_DIGEST="\$image_digest" GIT_SHA="\$expected_sha" \\
-            docker compose up -d --no-build --no-deps --wait --wait-timeout 180 app
+            docker compose -f "\$compose_file" up -d --no-build --no-deps --wait --wait-timeout 180 app
           curl --fail --silent --show-error http://127.0.0.1:\${APP_PORT:-3000}/api/health
           PROVENANCE_DEPLOYMENT_REQUIRED=1 INSIGHT_IMAGE="\$immutable_image" INSIGHT_IMAGE_DIGEST="\$image_digest" GIT_SHA="\$expected_sha" \\
-            docker compose up -d --no-build --no-deps cron generation-dispatch-worker
+            docker compose -f "\$compose_file" up -d --no-build --no-deps cron generation-dispatch-worker
           rm -f "\$rollback_compose"
           deployment_complete=1
           trap - EXIT
           docker image prune -f || echo "镜像清理失败（不影响已完成的部署）" >&2
-          docker compose ps || echo "无法读取 compose 状态（不影响已完成的部署）" >&2
+          docker compose -f "\$compose_file" ps || echo "无法读取 compose 状态（不影响已完成的部署）" >&2
           EOF
           )
           encoded_script="$(printf '%s' "$remote_script" | base64 | tr -d '\n')"
