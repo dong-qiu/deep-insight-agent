@@ -137,9 +137,27 @@ jobs:
           [[ "\$image_digest" =~ ^sha256:[a-f0-9]{64}$ ]] || { echo "RepoDigest 格式非法" >&2; exit 1; }
           immutable_image="\$repo_digest"
 
+          # Rehearse migrations against a copy of the newest production backup
+          # before stopping writers.  Legacy volumes can be root-owned while
+          # the release image runs as uid 1001.
+          data_volume=\$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Name}}{{end}}{{end}}' deep-insight-app-1)
+          [[ -n "\$data_volume" ]] || { echo "无法解析生产数据卷" >&2; exit 1; }
+          probe_volume="deep-insight-migration-probe-\$(date -u +%s)"
+          docker volume create "\$probe_volume" >/dev/null
+          cleanup_probe() { docker volume rm -f "\$probe_volume" >/dev/null 2>&1 || true; }
+          latest_backup=\$(docker run --rm -v "\$data_volume":/source:ro alpine:3.20 sh -c 'ls -1dt /source/backups/* | head -n 1')
+          docker run --rm --user 0 -v "\$data_volume":/source:ro -v "\$probe_volume":/data alpine:3.20 sh -c "cp \"\$latest_backup/insight.db\" /data/insight.db && chown -R 1001:1001 /data"
+          if ! docker run --rm -e DB_PATH=/data/insight.db -v "\$probe_volume":/data "\$immutable_image" node /app/ops/run-provenance-migrations.mjs; then
+            cleanup_probe
+            echo "隔离 migration 演练失败；生产服务未停止" >&2
+            exit 1
+          fi
+          cleanup_probe
+
           # 固定发布序列：先停止旧 writer/调度，先备份再迁移；deployment-record
           # 成功后才允许带 digest 的新 app 成为 writer，health 通过后最后恢复调度服务。
           docker compose -f "\$compose_file" stop cron generation-dispatch-worker app || true
+          INSIGHT_IMAGE="\$immutable_image" docker compose -f "\$compose_file" run --rm --no-deps --user 0 migrate sh -c 'chown -R 1001:1001 /data'
           PROVENANCE_DEPLOYMENT_REQUIRED=1 INSIGHT_IMAGE="\$immutable_image" INSIGHT_IMAGE_DIGEST="\$image_digest" GIT_SHA="\$expected_sha" \\
             docker compose -f "\$compose_file" run --rm --no-deps migrate node /app/ops/backup-db.mjs
           PROVENANCE_DEPLOYMENT_REQUIRED=1 INSIGHT_IMAGE="\$immutable_image" INSIGHT_IMAGE_DIGEST="\$image_digest" GIT_SHA="\$expected_sha" \\
@@ -164,7 +182,7 @@ jobs:
             --document-name AWS-RunShellScript \
             --comment "Deploy ${image}" \
             --timeout-seconds 600 \
-            --parameters "$(jq -nc --arg command "echo ${encoded_script} | base64 -d | bash" '{commands: [$command], executionTimeout: ["540"]}')" \
+            --parameters "$(jq -nc --arg command "script=\$(mktemp); printf '%s' '${encoded_script}' | base64 -d > \$script; set +e; bash \$script; status=\$?; rm -f \$script; exit \$status" '{commands: [$command], executionTimeout: ["540"]}')" \
             --query 'Command.CommandId' --output text)"
           echo "SSM command: $command_id"
 
