@@ -5,6 +5,7 @@ import { insertTopic } from "./repos.js";
 import {
   claimNextGenerationDispatch,
   createDeepDiveTraceRequest,
+  createScheduledTraceRequest,
   getGenerationTraceStatus,
   hashIdempotencyKey,
 } from "./provenance.js";
@@ -64,5 +65,19 @@ describe("generation provenance dispatch", () => {
     expect(takeover?.ownerToken).not.toBe(first?.ownerToken);
     expect(takeover?.rootRunId).toBe(first?.rootRunId);
     expect(getGenerationTraceStatus(db, accepted.traceId)?.dispatch_state).toBe("claimed");
+  });
+
+  it("deduplicates a cron Brief by topic and UTC period, with a reconstructable worker payload", () => {
+    const first = createScheduledTraceRequest(db, {
+      topicId: "topic_a", reportType: "brief", period: "2026-08-03", windowHours: 168, items: 15, now,
+    });
+    const replay = createScheduledTraceRequest(db, {
+      topicId: "topic_a", reportType: "brief", period: "2026-08-03", windowHours: 168, items: 15, now,
+    });
+    if (first.kind !== "accepted") throw new Error("expected accepted request");
+    expect(replay).toEqual({ kind: "replayed", traceId: first.traceId, requestId: first.requestId });
+    expect(db.prepare("SELECT payload FROM generation_dispatch WHERE trace_id=?").get(first.traceId)).toEqual({
+      payload: JSON.stringify({ topic_id: "topic_a", planning: true, report_type: "brief", window_hours: 168, items: 15, schema_version: 1 }),
+    });
   });
 });

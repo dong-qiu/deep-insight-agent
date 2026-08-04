@@ -6,13 +6,13 @@ import {
   finishGenerationDispatch,
   heartbeatGenerationDispatch,
 } from "../db/provenance.js";
-import { runPipelineForTopic } from "./scheduler.js";
+import { runPipelineForTopic, runScheduledTopicPipeline, type GenerationExecutionOptions } from "./scheduler.js";
 
 const HEARTBEAT_MS = 30_000;
 
 export async function runGenerationDispatchOnce(
   db: DB,
-  execute: typeof runPipelineForTopic = runPipelineForTopic,
+  execute: (db: DB, topicId: string, opts: GenerationExecutionOptions & { reportType: "brief" | "deep_dive" | "initial_digest"; windowHours?: number; items?: number }) => Promise<unknown> = executeDispatch,
 ): Promise<{ claimed: boolean; traceId?: string; status?: "done" | "failed" }> {
   const claim = claimNextGenerationDispatch(db);
   if (!claim) return { claimed: false };
@@ -24,6 +24,9 @@ export async function runGenerationDispatchOnce(
     await execute(db, claim.payload.topic_id, {
       traceId: claim.traceId,
       rootRunId: claim.rootRunId,
+      reportType: claim.payload.report_type,
+      windowHours: claim.payload.window_hours,
+      items: claim.payload.items,
       assertWrite: () => {
         if (lostLease) throw new Error("generation_fence_lost");
         assertGenerationDispatchClaim(db, claim);
@@ -44,4 +47,19 @@ export async function runGenerationDispatchOnce(
   } finally {
     clearInterval(timer);
   }
+}
+
+async function executeDispatch(
+  db: DB,
+  topicId: string,
+  opts: GenerationExecutionOptions & { reportType: "brief" | "deep_dive" | "initial_digest"; windowHours?: number; items?: number },
+): Promise<unknown> {
+  if (opts.reportType === "deep_dive" && opts.windowHours == null) {
+    return runPipelineForTopic(db, topicId, opts);
+  }
+  if (opts.windowHours == null || opts.items == null) throw new Error("invalid_scheduled_dispatch_payload");
+  return runScheduledTopicPipeline(db, topicId, {
+    reportType: opts.reportType, windowHours: opts.windowHours, items: opts.items,
+    traceId: opts.traceId, rootRunId: opts.rootRunId, assertWrite: opts.assertWrite,
+  });
 }

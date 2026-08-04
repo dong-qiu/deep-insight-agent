@@ -22,7 +22,14 @@ export interface DispatchClaim {
   claimEpoch: number;
   fencingEpoch: number;
   rootRunId: string;
-  payload: { topic_id: string; planning: boolean; schema_version: 1 };
+  payload: {
+    topic_id: string;
+    planning: boolean;
+    report_type: "brief" | "deep_dive" | "initial_digest";
+    window_hours?: number;
+    items?: number;
+    schema_version: 1;
+  };
 }
 
 /** 在每次异步外部调用返回后的业务写入前复验。旧 owner 即使仍持有内存中的 claim，
@@ -108,9 +115,71 @@ export function createDeepDiveTraceRequest(
        VALUES (@id,@request_id,@trace_id,'topic_pipeline',@payload,'queued',0,0,@created_at,@updated_at)`,
     ).run({
       id: dispatchId, request_id: requestId, trace_id: traceId,
-      payload: JSON.stringify({ topic_id: input.topicId, planning: input.planning, schema_version: 1 }),
+      payload: JSON.stringify({ topic_id: input.topicId, planning: input.planning, report_type: "deep_dive", schema_version: 1 }),
       created_at: nowIso, updated_at: nowIso,
     });
+    return { kind: "accepted", traceId, requestId };
+  })();
+}
+
+/** Cron 的主题日报也必须先持久登记再由 worker 领取。scope_key 按 UTC 周期去重，
+ * 避免同一日的重试或重复 cron 触发产生多份 Brief。 */
+export function createScheduledTraceRequest(
+  db: DB,
+  input: {
+    topicId: string;
+    reportType: "brief" | "deep_dive" | "initial_digest";
+    period: string;
+    windowHours: number;
+    items: number;
+    now?: Date;
+  },
+): TraceRequestResult {
+  const now = input.now ?? new Date();
+  const nowIso = now.toISOString();
+  const scopeKey = `topic_pipeline:${input.topicId}:${input.reportType}:${input.period}`;
+  const activeKey = `topic_pipeline:${input.topicId}:${input.reportType}`;
+
+  return db.transaction((): TraceRequestResult => {
+    const existing = db.prepare("SELECT id,trace_id FROM generation_trace_request WHERE scope_key=?").get(scopeKey) as { id: string; trace_id: string } | undefined;
+    if (existing) return { kind: "replayed", traceId: existing.trace_id, requestId: existing.id };
+    const active = db.prepare(
+      "SELECT trace_id FROM generation_lease WHERE active_key=? AND state IN ('reserved','owned') LIMIT 1",
+    ).get(activeKey) as { trace_id: string } | undefined;
+    if (active) return { kind: "conflict", activeTraceId: active.trace_id };
+
+    const traceId = id("trace");
+    const requestId = id("trace_req");
+    const dispatchId = id("dispatch");
+    const leaseId = id("lease");
+    const payload = {
+      topic_id: input.topicId, planning: true, report_type: input.reportType,
+      window_hours: input.windowHours, items: input.items, schema_version: 1 as const,
+    };
+    db.prepare(
+      `INSERT INTO generation_trace
+       (id,scope_kind,trigger_kind,topic_id,status,completion_policy,coverage,runtime_version,summary,started_at)
+       VALUES (@id,'topic_pipeline','cron',@topic_id,'running',@completion_policy,'complete','{}','{}',@started_at)`,
+    ).run({
+      id: traceId, topic_id: input.topicId,
+      completion_policy: JSON.stringify({ schema_version: 1, planning: true, report_type: input.reportType }),
+      started_at: nowIso,
+    });
+    db.prepare(
+      `INSERT INTO generation_trace_request
+       (id,scope_key,active_key,request_sequence,trace_id,state,retained_until,created_at)
+       VALUES (@id,@scope_key,@active_key,1,@trace_id,'accepted',@retained_until,@created_at)`,
+    ).run({ id: requestId, scope_key: scopeKey, active_key: activeKey, trace_id: traceId, retained_until: isoAfter(now, REQUEST_RETENTION_MS), created_at: nowIso });
+    db.prepare("UPDATE generation_trace SET request_id=? WHERE id=?").run(requestId, traceId);
+    db.prepare(
+      `INSERT INTO generation_lease (id,active_key,scope_key,trace_id,state,fencing_epoch,created_at)
+       VALUES (@id,@active_key,@scope_key,@trace_id,'reserved',0,@created_at)`,
+    ).run({ id: leaseId, active_key: activeKey, scope_key: scopeKey, trace_id: traceId, created_at: nowIso });
+    db.prepare(
+      `INSERT INTO generation_dispatch
+       (id,request_id,trace_id,kind,payload,state,attempt,claim_epoch,created_at,updated_at)
+       VALUES (@id,@request_id,@trace_id,'topic_pipeline',@payload,'queued',0,0,@created_at,@updated_at)`,
+    ).run({ id: dispatchId, request_id: requestId, trace_id: traceId, payload: JSON.stringify(payload), created_at: nowIso, updated_at: nowIso });
     return { kind: "accepted", traceId, requestId };
   })();
 }

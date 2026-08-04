@@ -7,12 +7,13 @@
 
 | 组件 | 角色 |
 |---|---|
-| `app` 容器 | Next.js standalone（`server.js`，:3000）+ Job Runner（采集/分析/校验/报告在进程内跑，非 serverless、无超时） |
-| `cron` 容器 | 复用同镜像跑 supercronic，按 `ops/crontab` 每 6h `POST /api/cron`（经 `ops/trigger.mjs`，Node fetch 免 curl） |
+| `app` 容器 | Next.js standalone（`server.js`，:3000）+ Job Runner（worker 经内部端点在此执行分析/校验/报告，非 serverless、无超时） |
+| `cron` 容器 | 复用同镜像跑 supercronic，按 `ops/crontab` 每 6h `POST /api/cron`（经 `ops/trigger.mjs`，Node HTTP 免 curl） |
+| `generation-dispatch-worker` 容器 | 持续领取日报与 Deep Dive 的 durable dispatch；持有 lease/fencing 后才启动主题流水线，崩溃后可接管重试 |
 | 持久卷 `insight-data` | 挂 `/data`：SQLite 库（`insight.db`，WAL+FTS5）+ 报告正文 FS（`/data/reports`）+ 原文归档（`/data/raw`） |
 | 镜像 | slim 运行层、**非 root**（uid 1001）、tag 锁定 `deep-insight:0.1.0`（不用 latest）；supercronic 校验和锁版本 + 架构 |
 
-数据流：`cron → POST /api/cron →` Job Runner `→` 采集 → 分析 → 校验 → report-gen → 落库（Run/成本/审计）。
+数据流：`cron → POST /api/cron →` 采集 + 每主题 durable dispatch `→ generation-dispatch-worker →` Job Runner → 分析 → 校验 → report-gen → 落库（Run/成本/溯源审计）。
 
 ## 2. 首次上线
 
@@ -20,7 +21,7 @@
 cp .env.example .env.local        # 按 §3 填全（尤其 CRON_SECRET、中转站 Opus 模型）
 # Apple Silicon / arm64 主机构建需指定（默认 amd64；supercronic 校验和按架构锁定）
 TARGETARCH=arm64 docker compose up -d --build      # x86_64 主机省略 TARGETARCH
-docker compose ps                 # 期望 app/cron 均 healthy / running
+docker compose ps                 # 期望 app、cron、generation-dispatch-worker 均 healthy / running
 curl -fsS http://127.0.0.1:3000/api/health         # {"status":"ok","reports":N}
 ```
 
