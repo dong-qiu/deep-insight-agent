@@ -7,6 +7,7 @@ import NextAuth from "next-auth";
 import { NextResponse } from "next/server";
 import { authConfig } from "./auth.config.js";
 import { isPublicPath } from "./lib/runtime/auth-paths.js";
+import { hasDispatchWorkerSecret } from "./lib/runtime/dispatch-auth.js";
 import { isAdminOnlyPath } from "./lib/runtime/role-paths.js";
 import { RateLimiter } from "./lib/runtime/rate-limit.js";
 
@@ -19,15 +20,17 @@ const limiter = new RateLimiter({ limit: 120, windowMs: 60_000 });
 
 export default auth((req) => {
   const { pathname } = req.nextUrl;
+  const trustedDispatchWorker = pathname === "/api/internal/generation-dispatch"
+    && hasDispatchWorkerSecret(req.headers.get("x-dispatch-worker-secret"), process.env.DISPATCH_WORKER_SECRET);
 
   if (pathname.startsWith("/api")) {
     const ip = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "local";
-    if (!limiter.allow(`ip:${ip}`)) {
+    if (!trustedDispatchWorker && !limiter.allow(`ip:${ip}`)) {
       return new NextResponse("Too Many Requests", { status: 429 });
     }
   }
 
-  if (!isPublicPath(pathname) && !req.auth?.user) {
+  if (!isPublicPath(pathname) && !trustedDispatchWorker && !req.auth?.user) {
     if (pathname.startsWith("/api")) {
       return NextResponse.json({ error: "unauthorized" }, { status: 401 });
     }

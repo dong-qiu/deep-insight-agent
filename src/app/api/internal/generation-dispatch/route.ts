@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { runGenerationDispatchOnce } from "../../../../lib/agents/generation-dispatch.js";
 import { getDb } from "../../../../lib/db/index.js";
+import { hasDispatchWorkerSecret } from "../../../../lib/runtime/dispatch-auth.js";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -9,7 +10,7 @@ export const runtime = "nodejs";
 export async function POST(req: Request): Promise<Response> {
   const secret = process.env.DISPATCH_WORKER_SECRET;
   if (!secret) return NextResponse.json({ error: "dispatch_worker_not_configured" }, { status: 503 });
-  if (req.headers.get("x-dispatch-worker-secret") !== secret) {
+  if (!hasDispatchWorkerSecret(req.headers.get("x-dispatch-worker-secret"), secret)) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
   const result = await runGenerationDispatchOnce(getDb());
