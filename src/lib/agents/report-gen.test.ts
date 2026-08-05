@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AnalysisBatch, ContentItem, Topic, ValidationResult } from "../types.js";
-import { buildReport, HIGHLIGHTS_MAX, inlineCitedStatement, isMilestoneInsight, KEY_MIN_IMPORTANCE, reportHighlights, selectBriefInsights, selectInsights } from "./report-gen.js";
+import { buildReport, HIGHLIGHTS_MAX, inlineCitedStatement, isMilestoneInsight, KEY_MIN_IMPORTANCE, reportHighlights, selectBriefInsights, selectInsights, summarizeBriefSelection } from "./report-gen.js";
 import { flagLabel } from "../utils/citation-verdict.js";
 
 const topic: Topic = {
@@ -159,6 +159,24 @@ describe("selectBriefInsights（Daily Brief 已发布证据去重）", () => {
     });
     expect(report.insight_ids).toEqual([]);
     expect(reportHighlights(batchOf(), validation, { publishedEventEvidence: published }).map((x) => x.text)).toEqual([]);
+  });
+
+  it("把新鲜度过滤与已发布去重分开计数，供空刊审计而不改变选择语义", () => {
+    const batch = batchOf();
+    const freshness = { since: "2026-05-06T00:00:00Z", content_item_ids: ["ci_new"], freshest_candidate_at: "2026-05-07T00:00:00Z" };
+    const onlyOldEvidence = summarizeBriefSelection(batch, validation, "brief", [], freshness);
+    expect(onlyOldEvidence.included).toEqual([]);
+    expect(onlyOldEvidence.summary).toMatchObject({
+      includable_insight_count: 1, freshness_filtered_insight_count: 1,
+      already_published_filtered_insight_count: 0, published_insight_count: 0, published_citation_count: 0,
+    });
+
+    const noFreshnessGate = summarizeBriefSelection(batch, validation, "brief", published);
+    expect(noFreshnessGate.included).toEqual([]);
+    expect(noFreshnessGate.summary).toMatchObject({
+      includable_insight_count: 1, freshness_filtered_insight_count: 0,
+      already_published_filtered_insight_count: 1, published_insight_count: 0,
+    });
   });
 
   it("同 event 有新的成功校验证据时保留，blocked 引用不算新增", () => {

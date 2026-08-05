@@ -79,6 +79,9 @@ export default async function ReportPage({ params }: { params: Promise<{ id: str
       ) : null}
 
       {traceId ? <ProvenanceTimeline traceId={traceId} /> : null}
+      {isAdmin && report.type === "brief" && report.insight_ids.length === 0 && traceId ? (
+        <p className="muted">本期为空并不等于未采集；展开“生成溯源”可查看分析输入、校验通过数以及新鲜度/已发布去重的过滤计数。</p>
+      ) : null}
 
       {isAdmin && passChecks.length ? <details className="audit"><summary>发布引用下钻 · {passChecks.length} 条 pass/support 证据（点击展开）</summary>
         {passChecks.map((check) => <article className="audit-row" key={`${check.insight_id}-${check.citation_index}`}>

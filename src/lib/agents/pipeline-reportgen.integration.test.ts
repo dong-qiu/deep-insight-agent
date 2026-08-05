@@ -56,10 +56,16 @@ describe("runReportGen production persistence path", () => {
     const index: ReportIndexEntry = { report_id: report.id, type: report.type, topic_id: topic.id, facets: [], date: "2026-08-02", source_ids: [], title: report.title, summary: "validated", highlights: [], tags: [], entity_names: [], importance: 3, event_ids: [], milestone_count: 0 };
     buildReportMock.mockReturnValue({ report, index });
 
-    await expect(runReportGen(db, { topic, batch, validation, type: "brief" })).resolves.toMatchObject({ id: report.id });
+    db.prepare(`INSERT INTO generation_trace(id,scope_kind,trigger_kind,status,completion_policy,coverage,runtime_version,summary,started_at)
+      VALUES ('trace_1','topic_pipeline','api','running','{}','complete','{}','{}','2026-08-02T00:00:00Z')`).run();
+    await expect(runReportGen(db, { topic, batch, validation, type: "brief", traceId: "trace_1" })).resolves.toMatchObject({ id: report.id });
     expect(getReport(db, report.id)).toEqual(report);
     expect(queryReportIndex(db, { topic: topic.id }).map((row) => row.report_id)).toEqual([report.id]);
     expect(listRuns(db, { kind: "report-gen" })[0]?.status).toBe("done");
+    // 这个测试的 mock batch 没有 pass citation；即使 mock report 恰有 insight，trace 仍如实记录确定性白名单选择为 0。
+    expect(JSON.parse((db.prepare("SELECT metrics FROM generation_event WHERE trace_id='trace_1' AND stage='generate_report' AND event_type='completed'").get() as { metrics: string }).metrics)).toMatchObject({
+      includable_insight_count: 0, published_insight_count: 0, published_citation_count: 0,
+    });
   });
 
   it("does not publish an unreleasable batch to the normal reader or index", async () => {
