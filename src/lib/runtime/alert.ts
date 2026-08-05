@@ -79,6 +79,52 @@ export interface ReportPush {
   highlights?: PushHighlight[];
 }
 
+/** P0a Brief 验收监控的最小输入。仅在显式开启观察期开关时通知，避免把正常的无新闻日当作生产故障。 */
+export interface BriefAcceptanceInput {
+  report: { id: string; type: "brief" | "deep_dive" | "initial_digest"; insight_ids: string[]; citation_count: number };
+  traceId?: string;
+  traceOutputCaptured: boolean;
+  /** 与 report-gen 同次确定性白名单选择出的洞察 ID（有序）。 */
+  expectedInsightIds: string[];
+  expectedCitationCount: number;
+  reasonCode?: string;
+}
+
+export type BriefAcceptanceVerdict = "pass" | "waiting" | "failed" | "not_applicable";
+
+/** 验收口径：非空 Brief、全部发布引用来自 pass/support 白名单、且已有 report output ref。
+ * 空刊是 waiting（需要下一期非空样本），不是管线失败；计数不一致或 trace output 缺失才是 failed。 */
+export function assessBriefAcceptance(input: BriefAcceptanceInput): { verdict: BriefAcceptanceVerdict; reason: string } {
+  if (input.report.type !== "brief") return { verdict: "not_applicable", reason: "not_brief" };
+  if (!input.traceId || !input.traceOutputCaptured) return { verdict: "failed", reason: "missing_report_output_ref" };
+  if (input.report.insight_ids.length === 0 || input.report.citation_count === 0) {
+    return { verdict: "waiting", reason: input.reasonCode ?? "awaiting_nonempty_brief" };
+  }
+  if (input.report.insight_ids.length !== input.expectedInsightIds.length || input.report.insight_ids.some((id, i) => id !== input.expectedInsightIds[i])) {
+    return { verdict: "failed", reason: "published_insights_not_from_whitelist" };
+  }
+  if (input.report.citation_count !== input.expectedCitationCount) return { verdict: "failed", reason: "published_citation_count_mismatch" };
+  return { verdict: "pass", reason: "verified" };
+}
+
+/** 下一次正常日报的临时验收观察器。仅未达标时发送，成功静默，直到运维确认 P0a Brief AC 后关闭。 */
+export function notifyBriefAcceptance(input: BriefAcceptanceInput): void {
+  if (process.env.BRIEF_ACCEPTANCE_WATCH !== "1") return;
+  try {
+    const result = assessBriefAcceptance(input);
+    if (result.verdict === "pass" || result.verdict === "not_applicable") return;
+    const waiting = result.verdict === "waiting";
+    notify({
+      title: `${waiting ? "🟡" : "🔴"} Brief 验收${waiting ? "待样本" : "失败"}`,
+      text: `报告：${input.report.id}\nTrace：${input.traceId ?? "缺失"}\n原因：${result.reason}\n发布洞察：${input.report.insight_ids.length} · 发布引用：${input.report.citation_count} · 白名单洞察：${input.expectedInsightIds.length} · 白名单引用：${input.expectedCitationCount}`,
+      priority: waiting ? "default" : "high",
+      tags: [waiting ? "warning" : "rotating_light"],
+    });
+  } catch (e) {
+    runLogger({ stage: "alert" }).warn({ err: e instanceof Error ? e.message : String(e) }, "Brief 验收告警构造失败（已忽略）");
+  }
+}
+
 const REPORT_TYPE_LABEL: Record<ReportPush["type"], string> = {
   brief: "今日 Brief",
   deep_dive: "主题深挖",

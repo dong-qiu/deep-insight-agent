@@ -61,6 +61,7 @@ curl -fsS -X POST http://127.0.0.1:3000/api/cron -H "authorization: Bearer $CRON
 | `ALERT_CHANNEL` | 否 | 显式指定渠道，覆盖 URL 自动识别（自建 ntfy 用自定义域名时设 `ntfy`）。取值 feishu/ntfy/slack/discord/generic |
 | `ALERT_FEISHU_SECRET` | 否 | 飞书群机器人开了「签名校验」时设；自动加 `timestamp + sign`。不开签名则不设 |
 | `ALERT_TIMEOUT_MS` | 否 | 告警发送超时，默认 5000 |
+| `BRIEF_ACCEPTANCE_WATCH` | 否 | `1`=P0a Brief 验收观察期：每次 Brief 落库后自动核对 report output ref、非空洞察及发布引用白名单；未达标才复用 `ALERT_WEBHOOK` 告警。空刊记为待下一个非空样本，不等同于管线故障；完成验收后关闭。 |
 | `COST_LIMIT_DAILY` | 否 | 日成本上限（**USD**）；触顶自动熔断定时管线（跳过剩余 topic）+ 告警。未设 = 不限（见 §14）|
 | `COST_LIMIT_MONTHLY` | 否 | 月成本上限（**USD**，自然月 UTC）；同上熔断 + 告警。未设 = 不限 |
 | `COST_ALERT_PCT` | 否 | 触顶前的告警阈值百分比，默认 80；任一维度达此比例发一次「接近上限」告警 |

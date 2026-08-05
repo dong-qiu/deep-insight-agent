@@ -2,11 +2,13 @@ import { createHmac } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   appLevelError,
+  assessBriefAcceptance,
   budgetToNotification,
   buildAlertRequest,
   detectChannel,
   failureToNotification,
   notifyBudget,
+  notifyBriefAcceptance,
   notifyFailure,
   notifyReport,
   reportToNotification,
@@ -23,6 +25,29 @@ afterEach(() => {
   delete process.env.ALERT_FEISHU_SECRET;
   delete process.env.REPORT_PUSH;
   delete process.env.PUBLIC_BASE_URL;
+  delete process.env.BRIEF_ACCEPTANCE_WATCH;
+});
+
+describe("BriefAcceptance", () => {
+  const valid = { report: { id: "rep_1", type: "brief" as const, insight_ids: ["i1"], citation_count: 1 }, traceId: "trace_1", traceOutputCaptured: true, expectedInsightIds: ["i1"], expectedCitationCount: 1 };
+  it("非空、pass 白名单计数相符且有 output ref 才通过", () => {
+    expect(assessBriefAcceptance(valid)).toEqual({ verdict: "pass", reason: "verified" });
+    expect(assessBriefAcceptance({ ...valid, traceOutputCaptured: false })).toEqual({ verdict: "failed", reason: "missing_report_output_ref" });
+    expect(assessBriefAcceptance({ ...valid, expectedInsightIds: ["other"] })).toEqual({ verdict: "failed", reason: "published_insights_not_from_whitelist" });
+    expect(assessBriefAcceptance({ ...valid, expectedCitationCount: 2 })).toEqual({ verdict: "failed", reason: "published_citation_count_mismatch" });
+  });
+  it("空刊等待下一份非空样本；仅在观察期开关开启时发告警", async () => {
+    const empty = { ...valid, report: { ...valid.report, insight_ids: [], citation_count: 0 }, expectedCitationCount: 0, reasonCode: "no_new_publishable_insight" };
+    expect(assessBriefAcceptance(empty)).toEqual({ verdict: "waiting", reason: "no_new_publishable_insight" });
+    process.env.ALERT_WEBHOOK = "https://ntfy.sh/my-topic";
+    const fetchMock = vi.fn(() => Promise.resolve(new Response(null, { status: 200 })));
+    vi.stubGlobal("fetch", fetchMock);
+    notifyBriefAcceptance(empty);
+    expect(fetchMock).not.toHaveBeenCalled();
+    process.env.BRIEF_ACCEPTANCE_WATCH = "1";
+    notifyBriefAcceptance(empty);
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+  });
 });
 
 const FAIL = { runId: "run_1", kind: "analyze", target: { topic_id: "t1" }, errorType: "Error", message: "boom" };

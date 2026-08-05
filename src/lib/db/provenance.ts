@@ -291,7 +291,7 @@ export function getGenerationTraceStatus(db: DB, traceId: string): Record<string
 
 /** 管理员时间线的最小安全读模型：只给阶段、稳定原因码及实体定位键，绝不展开正文、URL、错误消息或 snapshot。 */
 export function listGenerationTraceTimeline(db: DB, traceId: string): Array<Record<string, unknown>> {
-  const events = db.prepare(`SELECT id,sequence,stage,event_type,attempt,occurred_at,reason_code,error,context_completeness
+  const events = db.prepare(`SELECT id,sequence,stage,event_type,attempt,occurred_at,reason_code,error,metrics,context_completeness
     FROM generation_event WHERE trace_id=? ORDER BY sequence`).all(traceId) as Array<Record<string, unknown>>;
   return events.map((event) => {
     const refs = db.prepare(`SELECT entity_type,entity_key,revision,role,visibility_class FROM generation_entity_ref
@@ -301,9 +301,21 @@ export function listGenerationTraceTimeline(db: DB, traceId: string): Array<Reco
       try { const parsed = JSON.parse(event.error) as { reason_code?: unknown }; errorReason = typeof parsed.reason_code === "string" ? parsed.reason_code : "stage_failed"; }
       catch { errorReason = "stage_failed"; }
     }
+    let metrics: Record<string, number> = {};
+    if (typeof event.metrics === "string") {
+      try {
+        const parsed = JSON.parse(event.metrics) as Record<string, unknown>;
+        // Timeline 是 admin read model，但仍只投影已登记的整数计数，避免把任意未来 metrics 外泄。
+        const allowed = new Set(["input_content_count", "analysis_insight_count", "no_significant_event", "citation_total", "citation_pass", "citation_blocked", "citation_flagged", "citation_errored", "includable_insight_count", "releasable", "freshness_filtered_insight_count", "already_published_filtered_insight_count", "published_insight_count", "published_citation_count", "candidate_count", "opportunity_count"]);
+        for (const [key, value] of Object.entries(parsed)) {
+          if (allowed.has(key) && typeof value === "number" && Number.isSafeInteger(value) && value >= 0) metrics[key] = value;
+        }
+      } catch { /* malformed legacy metric payload is intentionally hidden */ }
+    }
     return {
       sequence: event.sequence, stage: event.stage, event_type: event.event_type, attempt: event.attempt,
       occurred_at: event.occurred_at, reason_code: event.reason_code ?? errorReason, context_completeness: event.context_completeness,
+      metrics,
       refs: refs.map((ref) => ({ type: ref.entity_type, entity_key: ref.entity_key, revision: ref.revision, role: ref.role, visibility_class: ref.visibility_class })),
     };
   });
