@@ -68,6 +68,8 @@ describe("generation provenance dispatch", () => {
   });
 
   it("deduplicates a cron Brief by topic and UTC period, with a reconstructable worker payload", () => {
+    db.prepare("INSERT INTO deployment_record(id,image_digest,git_sha,deployed_at,actor) VALUES (?,?,?,?,?)")
+      .run("deploy_1", `sha256:${"a".repeat(64)}`, "b".repeat(40), "2026-08-02T00:00:00.000Z", "test");
     const first = createScheduledTraceRequest(db, {
       topicId: "topic_a", reportType: "brief", period: "2026-08-03", windowHours: 168, items: 15, now,
     });
@@ -78,6 +80,10 @@ describe("generation provenance dispatch", () => {
     expect(replay).toEqual({ kind: "replayed", traceId: first.traceId, requestId: first.requestId });
     expect(db.prepare("SELECT payload FROM generation_dispatch WHERE trace_id=?").get(first.traceId)).toEqual({
       payload: JSON.stringify({ topic_id: "topic_a", planning: true, report_type: "brief", window_hours: 168, items: 15, schema_version: 1 }),
+    });
+    expect(getGenerationTraceStatus(db, first.traceId)).toMatchObject({
+      deployment_image_digest: `sha256:${"a".repeat(64)}`, deployment_git_sha: "b".repeat(40),
+      runtime_version: JSON.stringify({ schema_version: 1, image_digest: `sha256:${"a".repeat(64)}`, git_sha: "b".repeat(40) }),
     });
   });
 });

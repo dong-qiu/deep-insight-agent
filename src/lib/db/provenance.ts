@@ -10,6 +10,23 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const REQUEST_RETENTION_MS = 100 * DAY_MS;
 const LEASE_TTL_MS = 120_000;
 
+/** 生成请求受理时冻结的、可公开给管理员的运行事实。来自不可变 deployment record 与 schema 元数据，
+ * 不读取环境变量、密钥或任意模型配置；这样 trace 不会随之后的发布而漂移。 */
+function runtimeVersionAt(db: DB, startedAt: string): string {
+  const deployment = db.prepare(`SELECT image_digest,git_sha FROM deployment_record
+    WHERE deployed_at <= ? ORDER BY deployed_at DESC,id DESC LIMIT 1`).get(startedAt) as
+    | { image_digest: string; git_sha: string }
+    | undefined;
+  const schema = db.prepare("SELECT meta_value FROM provenance_meta WHERE meta_key='provenance_schema_version'").get() as
+    | { meta_value: string }
+    | undefined;
+  return JSON.stringify({
+    schema_version: 1,
+    ...(deployment ? { image_digest: deployment.image_digest, git_sha: deployment.git_sha } : {}),
+    ...(schema ? { provenance_schema_version: schema.meta_value } : {}),
+  });
+}
+
 export type TraceRequestResult =
   | { kind: "accepted"; traceId: string; requestId: string }
   | { kind: "replayed"; traceId: string; requestId: string }
@@ -84,15 +101,17 @@ export function createDeepDiveTraceRequest(
     const dispatchId = id("dispatch");
     const leaseId = id("lease");
     const scopeKey = `report:${input.topicId}:deep_dive:manual:${input.idempotencyKeyHash}:${sequence}`;
+    const runtimeVersion = runtimeVersionAt(db, nowIso);
 
     db.prepare(
       `INSERT INTO generation_trace
        (id,scope_kind,trigger_kind,topic_id,status,completion_policy,coverage,runtime_version,summary,started_at)
-       VALUES (@id,'topic_pipeline','api',@topic_id,'running',@completion_policy,'complete','{}','{}',@started_at)`,
+      VALUES (@id,'topic_pipeline','api',@topic_id,'running',@completion_policy,'complete',@runtime_version,'{}',@started_at)`,
     ).run({
       id: traceId,
       topic_id: input.topicId,
       completion_policy: JSON.stringify({ schema_version: 1, planning: input.planning }),
+      runtime_version: runtimeVersion,
       started_at: nowIso,
     });
     db.prepare(
@@ -156,13 +175,15 @@ export function createScheduledTraceRequest(
       topic_id: input.topicId, planning: true, report_type: input.reportType,
       window_hours: input.windowHours, items: input.items, schema_version: 1 as const,
     };
+    const runtimeVersion = runtimeVersionAt(db, nowIso);
     db.prepare(
       `INSERT INTO generation_trace
        (id,scope_kind,trigger_kind,topic_id,status,completion_policy,coverage,runtime_version,summary,started_at)
-       VALUES (@id,'topic_pipeline','cron',@topic_id,'running',@completion_policy,'complete','{}','{}',@started_at)`,
+       VALUES (@id,'topic_pipeline','cron',@topic_id,'running',@completion_policy,'complete',@runtime_version,'{}',@started_at)`,
     ).run({
       id: traceId, topic_id: input.topicId,
       completion_policy: JSON.stringify({ schema_version: 1, planning: true, report_type: input.reportType }),
+      runtime_version: runtimeVersion,
       started_at: nowIso,
     });
     db.prepare(
@@ -283,8 +304,10 @@ export function finishGenerationDispatch(
 
 export function getGenerationTraceStatus(db: DB, traceId: string): Record<string, unknown> | null {
   return db.prepare(
-    `SELECT t.id AS trace_id,t.request_id,t.status,t.root_run_id,t.started_at,t.ended_at,t.coverage,
-      d.state AS dispatch_state,d.attempt,d.claimed_at,d.lease_expires_at,d.last_error
+    `SELECT t.id AS trace_id,t.request_id,t.status,t.root_run_id,t.started_at,t.ended_at,t.coverage,t.runtime_version,
+      d.state AS dispatch_state,d.attempt,d.claimed_at,d.lease_expires_at,d.last_error,
+      (SELECT image_digest FROM deployment_record dr WHERE dr.deployed_at <= t.started_at ORDER BY dr.deployed_at DESC,dr.id DESC LIMIT 1) AS deployment_image_digest,
+      (SELECT git_sha FROM deployment_record dr WHERE dr.deployed_at <= t.started_at ORDER BY dr.deployed_at DESC,dr.id DESC LIMIT 1) AS deployment_git_sha
      FROM generation_trace t LEFT JOIN generation_dispatch d ON d.trace_id=t.id WHERE t.id=?`,
   ).get(traceId) as Record<string, unknown> | undefined ?? null;
 }
