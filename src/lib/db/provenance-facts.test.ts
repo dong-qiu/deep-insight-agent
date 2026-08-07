@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { openDb } from "./index.js";
 import { appendGenerationEvent, canonicalHash, canonicalJson, captureRevision, entityKey, initializeProvenanceMeta, projectTrace } from "./provenance-facts.js";
 import { applyProvenanceMigrations } from "./provenance-migrations.js";
+import { listGenerationTraceTimeline } from "./provenance.js";
 
 function dbWithTrace() {
   const db = openDb(":memory:");
@@ -53,5 +54,17 @@ describe("provenance facts", () => {
     appendGenerationEvent(db, { trace_id: "trace_1", stage: "derive_opportunity", event_type: "failed", error: { reason_code: "failed" } });
     expect(projectTrace(db, "trace_1")).toBe("partial");
     expect(db.prepare("SELECT status FROM generation_trace WHERE id='trace_1'").get()).toEqual({ status: "partial" });
+  });
+
+  it("管理员时间线只投影登记的非负整数指标，不泄露任意 metrics 字段", () => {
+    const db = dbWithTrace();
+    appendGenerationEvent(db, {
+      trace_id: "trace_1", stage: "generate_report", event_type: "completed",
+      metrics: { published_insight_count: 2, citation_pass: 3, prompt: "secret", negative: -1, enabled: true },
+    });
+    expect(listGenerationTraceTimeline(db, "trace_1")[0]).toMatchObject({
+      stage: "generate_report", metrics: { published_insight_count: 2, citation_pass: 3 },
+    });
+    expect(listGenerationTraceTimeline(db, "trace_1")[0].metrics).not.toHaveProperty("prompt");
   });
 });

@@ -7,12 +7,13 @@
 
 | 组件 | 角色 |
 |---|---|
-| `app` 容器 | Next.js standalone（`server.js`，:3000）+ Job Runner（采集/分析/校验/报告在进程内跑，非 serverless、无超时） |
-| `cron` 容器 | 复用同镜像跑 supercronic，按 `ops/crontab` 每 6h `POST /api/cron`（经 `ops/trigger.mjs`，Node fetch 免 curl） |
+| `app` 容器 | Next.js standalone（`server.js`，:3000）+ Job Runner（worker 经内部端点在此执行分析/校验/报告，非 serverless、无超时） |
+| `cron` 容器 | 复用同镜像跑 supercronic，按 `ops/crontab` 每 6h `POST /api/cron`（经 `ops/trigger.mjs`，Node HTTP 免 curl） |
+| `generation-dispatch-worker` 容器 | 持续领取日报与 Deep Dive 的 durable dispatch；持有 lease/fencing 后才启动主题流水线，崩溃后可接管重试 |
 | 持久卷 `insight-data` | 挂 `/data`：SQLite 库（`insight.db`，WAL+FTS5）+ 报告正文 FS（`/data/reports`）+ 原文归档（`/data/raw`） |
 | 镜像 | slim 运行层、**非 root**（uid 1001）、tag 锁定 `deep-insight:0.1.0`（不用 latest）；supercronic 校验和锁版本 + 架构 |
 
-数据流：`cron → POST /api/cron →` Job Runner `→` 采集 → 分析 → 校验 → report-gen → 落库（Run/成本/审计）。
+数据流：`cron → POST /api/cron →` 采集 + 每主题 durable dispatch `→ generation-dispatch-worker →` Job Runner → 分析 → 校验 → report-gen → 落库（Run/成本/溯源审计）。
 
 ## 2. 首次上线
 
@@ -20,7 +21,7 @@
 cp .env.example .env.local        # 按 §3 填全（尤其 CRON_SECRET、中转站 Opus 模型）
 # Apple Silicon / arm64 主机构建需指定（默认 amd64；supercronic 校验和按架构锁定）
 TARGETARCH=arm64 docker compose up -d --build      # x86_64 主机省略 TARGETARCH
-docker compose ps                 # 期望 app/cron 均 healthy / running
+docker compose ps                 # 期望 app、cron、generation-dispatch-worker 均 healthy / running
 curl -fsS http://127.0.0.1:3000/api/health         # {"status":"ok","reports":N}
 ```
 
@@ -60,6 +61,7 @@ curl -fsS -X POST http://127.0.0.1:3000/api/cron -H "authorization: Bearer $CRON
 | `ALERT_CHANNEL` | 否 | 显式指定渠道，覆盖 URL 自动识别（自建 ntfy 用自定义域名时设 `ntfy`）。取值 feishu/ntfy/slack/discord/generic |
 | `ALERT_FEISHU_SECRET` | 否 | 飞书群机器人开了「签名校验」时设；自动加 `timestamp + sign`。不开签名则不设 |
 | `ALERT_TIMEOUT_MS` | 否 | 告警发送超时，默认 5000 |
+| `BRIEF_ACCEPTANCE_WATCH` | 否 | `1`=P0a Brief 验收观察期：每次 Brief 落库后自动核对 report output ref、非空洞察及发布引用白名单；未达标才复用 `ALERT_WEBHOOK` 告警。空刊记为待下一个非空样本，不等同于管线故障；完成验收后关闭。 |
 | `COST_LIMIT_DAILY` | 否 | 日成本上限（**USD**）；触顶自动熔断定时管线（跳过剩余 topic）+ 告警。未设 = 不限（见 §14）|
 | `COST_LIMIT_MONTHLY` | 否 | 月成本上限（**USD**，自然月 UTC）；同上熔断 + 告警。未设 = 不限 |
 | `COST_ALERT_PCT` | 否 | 触顶前的告警阈值百分比，默认 80；任一维度达此比例发一次「接近上限」告警 |

@@ -1,7 +1,7 @@
 # 容器内系统 cron 调度表（supercronic 解析；它继承容器环境变量并传给任务）。
-# 字段：分 时 日 月 周  命令。触发脚本用 Node fetch 打 /api/cron（免 curl）。
-# 真正的采集→分析→校验→brief 在 app 容器进程内跑（非 serverless，无超时），
-# 由 /api/cron 走 Job Runner 落 Run / 成本 / 审计。
+# 字段：分 时 日 月 周  命令。触发脚本用 Node HTTP 打 /api/cron（免 curl）。
+# /api/cron 先采集、为每个主题持久入队；generation-dispatch-worker 领取后在 app
+# 容器执行分析→校验→brief，并落 Run / 成本 / 溯源审计（非 serverless，无超时）。
 
 # 采集与出刊解耦：每日 4 次采集（UTC 05/11/17/23），其中 17:00 的完整管线会先采后出刊；
 # 其余三次只抓取，不分析/不生成 Brief。这样早晚新增材料会入库，仍保持每日只有一份 Brief。

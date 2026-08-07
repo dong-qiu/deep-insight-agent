@@ -10,6 +10,23 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const REQUEST_RETENTION_MS = 100 * DAY_MS;
 const LEASE_TTL_MS = 120_000;
 
+/** 生成请求受理时冻结的、可公开给管理员的运行事实。来自不可变 deployment record 与 schema 元数据，
+ * 不读取环境变量、密钥或任意模型配置；这样 trace 不会随之后的发布而漂移。 */
+function runtimeVersionAt(db: DB, startedAt: string): string {
+  const deployment = db.prepare(`SELECT image_digest,git_sha FROM deployment_record
+    WHERE deployed_at <= ? ORDER BY deployed_at DESC,id DESC LIMIT 1`).get(startedAt) as
+    | { image_digest: string; git_sha: string }
+    | undefined;
+  const schema = db.prepare("SELECT meta_value FROM provenance_meta WHERE meta_key='provenance_schema_version'").get() as
+    | { meta_value: string }
+    | undefined;
+  return JSON.stringify({
+    schema_version: 1,
+    ...(deployment ? { image_digest: deployment.image_digest, git_sha: deployment.git_sha } : {}),
+    ...(schema ? { provenance_schema_version: schema.meta_value } : {}),
+  });
+}
+
 export type TraceRequestResult =
   | { kind: "accepted"; traceId: string; requestId: string }
   | { kind: "replayed"; traceId: string; requestId: string }
@@ -22,7 +39,14 @@ export interface DispatchClaim {
   claimEpoch: number;
   fencingEpoch: number;
   rootRunId: string;
-  payload: { topic_id: string; planning: boolean; schema_version: 1 };
+  payload: {
+    topic_id: string;
+    planning: boolean;
+    report_type: "brief" | "deep_dive" | "initial_digest";
+    window_hours?: number;
+    items?: number;
+    schema_version: 1;
+  };
 }
 
 /** 在每次异步外部调用返回后的业务写入前复验。旧 owner 即使仍持有内存中的 claim，
@@ -77,15 +101,17 @@ export function createDeepDiveTraceRequest(
     const dispatchId = id("dispatch");
     const leaseId = id("lease");
     const scopeKey = `report:${input.topicId}:deep_dive:manual:${input.idempotencyKeyHash}:${sequence}`;
+    const runtimeVersion = runtimeVersionAt(db, nowIso);
 
     db.prepare(
       `INSERT INTO generation_trace
        (id,scope_kind,trigger_kind,topic_id,status,completion_policy,coverage,runtime_version,summary,started_at)
-       VALUES (@id,'topic_pipeline','api',@topic_id,'running',@completion_policy,'complete','{}','{}',@started_at)`,
+      VALUES (@id,'topic_pipeline','api',@topic_id,'running',@completion_policy,'complete',@runtime_version,'{}',@started_at)`,
     ).run({
       id: traceId,
       topic_id: input.topicId,
       completion_policy: JSON.stringify({ schema_version: 1, planning: input.planning }),
+      runtime_version: runtimeVersion,
       started_at: nowIso,
     });
     db.prepare(
@@ -108,9 +134,73 @@ export function createDeepDiveTraceRequest(
        VALUES (@id,@request_id,@trace_id,'topic_pipeline',@payload,'queued',0,0,@created_at,@updated_at)`,
     ).run({
       id: dispatchId, request_id: requestId, trace_id: traceId,
-      payload: JSON.stringify({ topic_id: input.topicId, planning: input.planning, schema_version: 1 }),
+      payload: JSON.stringify({ topic_id: input.topicId, planning: input.planning, report_type: "deep_dive", schema_version: 1 }),
       created_at: nowIso, updated_at: nowIso,
     });
+    return { kind: "accepted", traceId, requestId };
+  })();
+}
+
+/** Cron 的主题日报也必须先持久登记再由 worker 领取。scope_key 按 UTC 周期去重，
+ * 避免同一日的重试或重复 cron 触发产生多份 Brief。 */
+export function createScheduledTraceRequest(
+  db: DB,
+  input: {
+    topicId: string;
+    reportType: "brief" | "deep_dive" | "initial_digest";
+    period: string;
+    windowHours: number;
+    items: number;
+    now?: Date;
+  },
+): TraceRequestResult {
+  const now = input.now ?? new Date();
+  const nowIso = now.toISOString();
+  const scopeKey = `topic_pipeline:${input.topicId}:${input.reportType}:${input.period}`;
+  const activeKey = `topic_pipeline:${input.topicId}:${input.reportType}`;
+
+  return db.transaction((): TraceRequestResult => {
+    const existing = db.prepare("SELECT id,trace_id FROM generation_trace_request WHERE scope_key=?").get(scopeKey) as { id: string; trace_id: string } | undefined;
+    if (existing) return { kind: "replayed", traceId: existing.trace_id, requestId: existing.id };
+    const active = db.prepare(
+      "SELECT trace_id FROM generation_lease WHERE active_key=? AND state IN ('reserved','owned') LIMIT 1",
+    ).get(activeKey) as { trace_id: string } | undefined;
+    if (active) return { kind: "conflict", activeTraceId: active.trace_id };
+
+    const traceId = id("trace");
+    const requestId = id("trace_req");
+    const dispatchId = id("dispatch");
+    const leaseId = id("lease");
+    const payload = {
+      topic_id: input.topicId, planning: true, report_type: input.reportType,
+      window_hours: input.windowHours, items: input.items, schema_version: 1 as const,
+    };
+    const runtimeVersion = runtimeVersionAt(db, nowIso);
+    db.prepare(
+      `INSERT INTO generation_trace
+       (id,scope_kind,trigger_kind,topic_id,status,completion_policy,coverage,runtime_version,summary,started_at)
+       VALUES (@id,'topic_pipeline','cron',@topic_id,'running',@completion_policy,'complete',@runtime_version,'{}',@started_at)`,
+    ).run({
+      id: traceId, topic_id: input.topicId,
+      completion_policy: JSON.stringify({ schema_version: 1, planning: true, report_type: input.reportType }),
+      runtime_version: runtimeVersion,
+      started_at: nowIso,
+    });
+    db.prepare(
+      `INSERT INTO generation_trace_request
+       (id,scope_key,active_key,request_sequence,trace_id,state,retained_until,created_at)
+       VALUES (@id,@scope_key,@active_key,1,@trace_id,'accepted',@retained_until,@created_at)`,
+    ).run({ id: requestId, scope_key: scopeKey, active_key: activeKey, trace_id: traceId, retained_until: isoAfter(now, REQUEST_RETENTION_MS), created_at: nowIso });
+    db.prepare("UPDATE generation_trace SET request_id=? WHERE id=?").run(requestId, traceId);
+    db.prepare(
+      `INSERT INTO generation_lease (id,active_key,scope_key,trace_id,state,fencing_epoch,created_at)
+       VALUES (@id,@active_key,@scope_key,@trace_id,'reserved',0,@created_at)`,
+    ).run({ id: leaseId, active_key: activeKey, scope_key: scopeKey, trace_id: traceId, created_at: nowIso });
+    db.prepare(
+      `INSERT INTO generation_dispatch
+       (id,request_id,trace_id,kind,payload,state,attempt,claim_epoch,created_at,updated_at)
+       VALUES (@id,@request_id,@trace_id,'topic_pipeline',@payload,'queued',0,0,@created_at,@updated_at)`,
+    ).run({ id: dispatchId, request_id: requestId, trace_id: traceId, payload: JSON.stringify(payload), created_at: nowIso, updated_at: nowIso });
     return { kind: "accepted", traceId, requestId };
   })();
 }
@@ -214,15 +304,17 @@ export function finishGenerationDispatch(
 
 export function getGenerationTraceStatus(db: DB, traceId: string): Record<string, unknown> | null {
   return db.prepare(
-    `SELECT t.id AS trace_id,t.request_id,t.status,t.root_run_id,t.started_at,t.ended_at,t.coverage,
-      d.state AS dispatch_state,d.attempt,d.claimed_at,d.lease_expires_at,d.last_error
+    `SELECT t.id AS trace_id,t.request_id,t.status,t.root_run_id,t.started_at,t.ended_at,t.coverage,t.runtime_version,
+      d.state AS dispatch_state,d.attempt,d.claimed_at,d.lease_expires_at,d.last_error,
+      (SELECT image_digest FROM deployment_record dr WHERE dr.deployed_at <= t.started_at ORDER BY dr.deployed_at DESC,dr.id DESC LIMIT 1) AS deployment_image_digest,
+      (SELECT git_sha FROM deployment_record dr WHERE dr.deployed_at <= t.started_at ORDER BY dr.deployed_at DESC,dr.id DESC LIMIT 1) AS deployment_git_sha
      FROM generation_trace t LEFT JOIN generation_dispatch d ON d.trace_id=t.id WHERE t.id=?`,
   ).get(traceId) as Record<string, unknown> | undefined ?? null;
 }
 
 /** 管理员时间线的最小安全读模型：只给阶段、稳定原因码及实体定位键，绝不展开正文、URL、错误消息或 snapshot。 */
 export function listGenerationTraceTimeline(db: DB, traceId: string): Array<Record<string, unknown>> {
-  const events = db.prepare(`SELECT id,sequence,stage,event_type,attempt,occurred_at,reason_code,error,context_completeness
+  const events = db.prepare(`SELECT id,sequence,stage,event_type,attempt,occurred_at,reason_code,error,metrics,context_completeness
     FROM generation_event WHERE trace_id=? ORDER BY sequence`).all(traceId) as Array<Record<string, unknown>>;
   return events.map((event) => {
     const refs = db.prepare(`SELECT entity_type,entity_key,revision,role,visibility_class FROM generation_entity_ref
@@ -232,9 +324,21 @@ export function listGenerationTraceTimeline(db: DB, traceId: string): Array<Reco
       try { const parsed = JSON.parse(event.error) as { reason_code?: unknown }; errorReason = typeof parsed.reason_code === "string" ? parsed.reason_code : "stage_failed"; }
       catch { errorReason = "stage_failed"; }
     }
+    let metrics: Record<string, number> = {};
+    if (typeof event.metrics === "string") {
+      try {
+        const parsed = JSON.parse(event.metrics) as Record<string, unknown>;
+        // Timeline 是 admin read model，但仍只投影已登记的整数计数，避免把任意未来 metrics 外泄。
+        const allowed = new Set(["input_content_count", "analysis_insight_count", "no_significant_event", "citation_total", "citation_pass", "citation_blocked", "citation_flagged", "citation_errored", "includable_insight_count", "releasable", "freshness_filtered_insight_count", "already_published_filtered_insight_count", "published_insight_count", "published_citation_count", "candidate_count", "opportunity_count"]);
+        for (const [key, value] of Object.entries(parsed)) {
+          if (allowed.has(key) && typeof value === "number" && Number.isSafeInteger(value) && value >= 0) metrics[key] = value;
+        }
+      } catch { /* malformed legacy metric payload is intentionally hidden */ }
+    }
     return {
       sequence: event.sequence, stage: event.stage, event_type: event.event_type, attempt: event.attempt,
       occurred_at: event.occurred_at, reason_code: event.reason_code ?? errorReason, context_completeness: event.context_completeness,
+      metrics,
       refs: refs.map((ref) => ({ type: ref.entity_type, entity_key: ref.entity_key, revision: ref.revision, role: ref.role, visibility_class: ref.visibility_class })),
     };
   });

@@ -1,10 +1,9 @@
 // 触发定时管线（容器内 supercronic 按 ops/crontab 调用）。用 Node 内置 http/https，免在镜像里装 curl。
 // 环境变量由 supercronic 从容器继承：APP_URL（默认 http://app:3000）、CRON_SECRET（必需）。
 //
-// 不用全局 fetch：undici 的 fetch 默认 headersTimeout=5min，而 /api/cron 同步把整条管线
-// （采集→分析→校验→brief，约 10+ 分钟）跑完才返回响应头——5min 一到 fetch 即 reject
-// "fetch failed"，任务实际已成功却被记成失败（2026-06-06 17:14 实锤）。node:http 客户端
-// 默认无 headersTimeout，会一直等到响应到达，故改用它。
+// 不用全局 fetch：历史上 /api/cron 会同步等待整条管线，undici 的默认 headersTimeout=5min
+// 会把已成功的长任务误记为 fetch failed。现在日报会持久入队后由 dispatch worker 执行，
+// 仍保留 node:http，避免采集阶段变慢时重新引入客户端超时耦合。
 import http from "node:http";
 import https from "node:https";
 
