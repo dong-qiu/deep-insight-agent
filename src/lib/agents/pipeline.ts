@@ -10,13 +10,13 @@ import {
 import { makeConsistencyCache } from "../db/consistency-cache.js";
 import { getContentItem, getSource } from "../db/repos.js";
 import { listRecentPublishedEventEvidence, saveFailedReport, saveReport } from "../db/reports.js";
-import { notifyFailure, notifyReport } from "../runtime/alert.js";
+import { notifyBriefAcceptance, notifyFailure, notifyReport } from "../runtime/alert.js";
 import { runJob } from "../runtime/jobs.js";
 import type { AnalysisBatch, ContentItem, Report, TechLead, Topic, ValidationResult } from "../types.js";
 import { upsertTechLeads } from "../db/tech-leads.js";
 import { listTopicDirections, seedDefaultDirections, upsertTechnologyOpportunities } from "../db/planning.js";
 import { analyze, analyzerCacheVersion, type HistoricalEvent } from "./analyzer.js";
-import { buildReport, reportHighlights, type BriefFreshness, type CitationDisplay } from "./report-gen.js";
+import { buildReport, reportHighlights, summarizeBriefSelection, type BriefFreshness, type CitationDisplay } from "./report-gen.js";
 import { consistencyCacheVersion, isValidationDegraded, validateBatch } from "./validator.js";
 import { extractLeadCandidates } from "./tech-leads.js";
 import { deriveOpportunityCandidates } from "./opportunity-planning.js";
@@ -77,7 +77,10 @@ export async function runAnalysis(
       saveAnalysisBatch(db, batch, () => {
         opts.assertWrite?.();
         captureRevision(db, { entity_type: ref.type, entity_key: entityKey(ref), revision: ref.revision, snapshot: { topic_id: batch.topic_id, time_window: batch.time_window, no_significant_event: batch.no_significant_event, insight_count: batch.insights.length } });
-        emitTrace(db, opts.traceId, { stage: "analyze", event_type: "completed", input_refs: inputs, output_refs: [ref] }, opts.assertWrite);
+        emitTrace(db, opts.traceId, { stage: "analyze", event_type: "completed", input_refs: inputs, output_refs: [ref], metrics: {
+          input_content_count: items.length, analysis_insight_count: batch.insights.length,
+          no_significant_event: batch.no_significant_event ? 1 : 0,
+        } }, opts.assertWrite);
       });
     } else { opts.assertWrite?.(); saveAnalysisBatch(db, batch); }
     // 写缓存（切片1，写路径默认开）：对全部 item 按键 upsert（命中++ 计度量 + 刷 last_seen），
@@ -117,7 +120,11 @@ export async function runValidation(
       saveValidationResult(db, batch.id, vr, () => {
         opts.assertWrite?.();
         captureRevision(db, { entity_type: ref.type, entity_key: entityKey(ref), revision: ref.revision, snapshot: { batch_id: batch.id, releasable: vr.report.releasable, total: vr.report.total, pass: vr.report.pass, blocked: vr.report.blocked, flagged: vr.report.flagged, checks: vr.checks.map(({ insight_id, citation_index, verdict }) => ({ insight_id, citation_index, verdict })) } });
-        emitTrace(db, opts.traceId, { stage: "validate", event_type: "completed", input_refs: [batchRef], output_refs: [ref] }, opts.assertWrite);
+        emitTrace(db, opts.traceId, { stage: "validate", event_type: "completed", input_refs: [batchRef], output_refs: [ref], metrics: {
+          citation_total: vr.report.total, citation_pass: vr.report.pass, citation_blocked: vr.report.blocked,
+          citation_flagged: vr.report.flagged, citation_errored: vr.report.errored,
+          includable_insight_count: vr.report.insights_includable, releasable: vr.report.releasable ? 1 : 0,
+        } }, opts.assertWrite);
       });
     } else { opts.assertWrite?.(); saveValidationResult(db, batch.id, vr); }
     // 抗抖告警：一致性调用大面积失败（疑似 LLM/中转站抖动）→ 主动告警，别让一整轮失败默默缺刊/记假数据。
@@ -262,6 +269,9 @@ export async function runReportGen(
       const publishedEventEvidence = opts.type === "brief"
         ? listRecentPublishedEventEvidence(db, opts.topic.id)
         : [];
+      const selection = summarizeBriefSelection(
+        opts.batch, opts.validation, opts.type, publishedEventEvidence, opts.briefFreshness,
+      );
       const { report, index } = buildReport({
         topic: opts.topic,
         batch: opts.batch,
@@ -272,14 +282,29 @@ export async function runReportGen(
         briefFreshness: opts.briefFreshness,
         prevReportId: opts.prevReportId,
       });
+      let traceOutputCaptured = false;
+      const emptyReason = report.insight_ids.length === 0
+        ? opts.batch.no_significant_event
+          ? "no_significant_event"
+          : selection.summary.freshness_filtered_insight_count > 0 || selection.summary.already_published_filtered_insight_count > 0
+            ? "no_new_publishable_insight"
+            : "no_publishable_insight"
+        : undefined;
       opts.assertWrite?.();
       saveReport(db, report, index, {
         afterPublish: opts.traceId ? () => {
           opts.assertWrite?.();
           const ref: EntityRef = { type: "report", locator: { kind: "id", id: report.id }, revision: report.id, role: "output", visibility_class: "public_evidence" };
           captureRevision(db, { entity_type: ref.type, entity_key: entityKey(ref), revision: ref.revision, snapshot: { id: report.id, type: report.type, topic_id: report.topic_id, status: "done", insight_ids: report.insight_ids, citation_count: report.citation_count, event_ids: report.event_ids } });
-          emitTrace(db, opts.traceId, { stage: "generate_report", event_type: "completed", input_refs: [batchRef, validationRef], output_refs: [ref] }, opts.assertWrite);
+          emitTrace(db, opts.traceId, { stage: "generate_report", event_type: "completed", reason_code: emptyReason, input_refs: [batchRef, validationRef], output_refs: [ref], metrics: { ...selection.summary } }, opts.assertWrite);
+          traceOutputCaptured = true;
         } : undefined,
+      });
+      notifyBriefAcceptance({
+        report, traceId: opts.traceId, traceOutputCaptured,
+        expectedInsightIds: selection.included.map((x) => x.insight.id),
+        expectedCitationCount: selection.summary.published_citation_count,
+        reasonCode: emptyReason,
       });
       // 报告推送（B）：落库后主动推给用户（REPORT_PUSH=1 opt-in；空 brief 自动跳过）。
       // 非阻塞、永不抛——放 saveReport 之后，推送失败绝不影响已落库报告 / Run done。

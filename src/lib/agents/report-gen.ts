@@ -22,6 +22,16 @@ export interface BriefFreshness {
   freshest_candidate_at: string | null;
 }
 
+/** Brief 选择的可审计计数。它只描述确定性发布闸门，绝不改变选择结果。
+ * 用于解释「已有分析结果但本期没有可发布内容」：新鲜度闸门与已发布证据去重必须分开计数。 */
+export interface BriefSelectionSummary {
+  includable_insight_count: number;
+  freshness_filtered_insight_count: number;
+  already_published_filtered_insight_count: number;
+  published_insight_count: number;
+  published_citation_count: number;
+}
+
 /** 覆盖度外露（诚实兜底）：结论里未被**已渲染引用**（剔除 blocked 后）直接覆盖的具体数字/实体。
  *  只按真正进报告的 quote 算——被屏蔽的引用不在报告里，其覆盖不作数。返回缺口 token（空=全覆盖）。
  *  不自动补引（错补同形不同义会被 validator 放行、制造"点开看错"，见 analyzer.coverageGaps）。 */
@@ -117,26 +127,41 @@ export function selectInsights(batch: AnalysisBatch, validation: ValidationResul
 
 /** Daily Brief 硬去重：同 event 已发布且没有新增成功校验证据时，不得再次发布。
  * 缓存命中可继续节省 LLM 调用，但不能把旧 statement/citation 重新发给用户。 */
-export function selectBriefInsights(
+export function summarizeBriefSelection(
   batch: AnalysisBatch,
   validation: ValidationResult,
   type: Report["type"],
   publishedEventEvidence: PublishedEventEvidence[] = [],
   freshness?: BriefFreshness,
-): IncludedInsight[] {
+): { included: IncludedInsight[]; summary: BriefSelectionSummary } {
   const included = selectInsights(batch, validation);
-  if (type !== "brief") return included;
+  if (type !== "brief") return {
+    included,
+    summary: {
+      includable_insight_count: included.length, freshness_filtered_insight_count: 0,
+      already_published_filtered_insight_count: 0, published_insight_count: included.length,
+      published_citation_count: included.reduce((total, x) => total + x.citationIndices.length, 0),
+    },
+  };
   // 有近期候选时，每条可发布 Brief 洞察都必须引用至少一条通过校验的近期候选。
   // 这是一道确定性发布门：模型即使偏好旧材料，也不能把旧事件包装成"今日"内容。
   const freshItemIds = new Set(freshness?.content_item_ids ?? []);
   const freshIncluded = freshItemIds.size
     ? included.filter((x) => x.includableCitationIndices.some((i) => freshItemIds.has(x.insight.citations[i].content_item_id)))
     : included;
-  if (!publishedEventEvidence.length) return freshIncluded;
+  const freshnessFiltered = included.length - freshIncluded.length;
+  if (!publishedEventEvidence.length) return {
+    included: freshIncluded,
+    summary: {
+      includable_insight_count: included.length, freshness_filtered_insight_count: freshnessFiltered,
+      already_published_filtered_insight_count: 0, published_insight_count: freshIncluded.length,
+      published_citation_count: freshIncluded.reduce((total, x) => total + x.citationIndices.length, 0),
+    },
+  };
   const evidenceByEvent = new Map(
     publishedEventEvidence.map((event) => [event.event_id, new Set(event.content_item_ids)]),
   );
-  return freshIncluded.filter((x) => {
+  const selected = freshIncluded.filter((x) => {
     const eventId = x.insight.event_id;
     const previousEvidence = eventId ? evidenceByEvent.get(eventId) : undefined;
     if (!previousEvidence) return true;
@@ -144,6 +169,25 @@ export function selectBriefInsights(
       (i) => !previousEvidence.has(x.insight.citations[i].content_item_id),
     );
   });
+  return {
+    included: selected,
+    summary: {
+      includable_insight_count: included.length, freshness_filtered_insight_count: freshnessFiltered,
+      already_published_filtered_insight_count: freshIncluded.length - selected.length,
+      published_insight_count: selected.length,
+      published_citation_count: selected.reduce((total, x) => total + x.citationIndices.length, 0),
+    },
+  };
+}
+
+export function selectBriefInsights(
+  batch: AnalysisBatch,
+  validation: ValidationResult,
+  type: Report["type"],
+  publishedEventEvidence: PublishedEventEvidence[] = [],
+  freshness?: BriefFreshness,
+): IncludedInsight[] {
+  return summarizeBriefSelection(batch, validation, type, publishedEventEvidence, freshness).included;
 }
 
 /** 要点选取（详版 headlines 与推送要点**共用**）：纳入洞察按 importance 降序取前 HIGHLIGHTS_MAX。

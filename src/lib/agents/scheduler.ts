@@ -5,7 +5,9 @@
  *  待分析项选择见 analysis-selection.ts；源健康自愈（熔断/半开/零产出）见 source-health.ts。 */
 import { getEffectiveSources, loadStaticConfig } from "../config/index.js";
 import type { DB } from "../db/index.js";
-import { getTopic, listTopics } from "../db/repos.js";
+import { finishRun, getTopic, listTopics } from "../db/repos.js";
+import { createScheduledTraceRequest } from "../db/provenance.js";
+import { appendGenerationEvent } from "../db/provenance-facts.js";
 import { listRecentBriefEvents, previousReportForTopic, topicHasReport } from "../db/reports.js";
 import { notifyBudget } from "../runtime/alert.js";
 import { getBudgetStatus } from "../runtime/cost-guard.js";
@@ -21,7 +23,7 @@ export interface ScheduleSummary {
   finishedAt: string;
   windowHours: number;
   collected: Array<{ source: string; fetched?: number; inserted?: number; updated?: number; error?: string }>;
-  topics: Array<{ topic: string; items: number; reportId?: string; included?: number; status: string; type?: Report["type"] }>;
+  topics: Array<{ topic: string; items: number; traceId?: string; reportId?: string; included?: number; status: string; type?: Report["type"] }>;
   errors: string[];
   /** 成本预算触顶 → 本轮剩余 topic 被自动熔断跳过（A5）；未配预算或未触顶时省略。 */
   budgetStopped?: boolean;
@@ -44,6 +46,12 @@ export interface CollectionSummary {
   zeroYield?: string[];
 }
 
+export interface GenerationExecutionOptions {
+  traceId?: string;
+  rootRunId?: string;
+  assertWrite?: () => void;
+}
+
 /** 冷启动决策（纯函数，可测）：topic 无历史报告 → 首版综述 initial_digest（更宽窗口 / 更多条，
  *  给新主题一份有份量的首报）；否则按常规 reportType（brief / deep_dive）。 */
 export function reportPlan(
@@ -57,6 +65,15 @@ export function reportPlan(
 }
 
 const errMsg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+
+function utcIsoWeek(now: Date): string {
+  const date = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  date.setUTCDate(date.getUTCDate() + 4 - (date.getUTCDay() || 7));
+  const year = date.getUTCFullYear();
+  const firstThursday = new Date(Date.UTC(year, 0, 4));
+  const week = Math.ceil((((date.getTime() - firstThursday.getTime()) / 86_400_000) + 1) / 7);
+  return `${year}-W${String(week).padStart(2, "0")}`;
+}
 
 /** 采集 + 源健康自愈（熔断 / 半开 / 零产出）。“collect” cron 调此函数，保证每 6h 数据更新
  * 不会把同一天的 Brief 反复重新生成。 */
@@ -151,61 +168,75 @@ export async function runScheduledPipeline(
       { type: reportType, windowHours, items: itemsPerTopic },
       { windowHours: coldWindowHours, items: coldItems },
     );
-    const since = new Date(end - plan.windowHours * 3_600_000).toISOString();
-    const freshnessSince = new Date(end - briefFreshHours() * 3_600_000).toISOString();
-    // ADR-0010：initial_digest（冷启动首报）豁免 archetype 硬下限——给新横向主题足量首报。
-    const items = selectAnalysisItems(db, topic, {
-      since, limit: plan.items, coldStart: plan.type === "initial_digest",
-      freshness: plan.type === "brief" ? { since: freshnessSince, quota: briefFreshQuota() } : undefined,
-    });
-    if (items.length === 0) {
-      summary.topics.push({ topic: topic.id, items: 0, status: "skipped-no-content", type: plan.type });
-      continue;
-    }
     try {
-      // P1 不复报：brief 喂"近 14 天已报告 event"清单做事件对齐；deep_dive/initial_digest 不喂
-      // （前者是用户触发的回顾、与日度复报概念不同；后者是冷启动首报，清单必空，无需查）。
-      const history = plan.type === "brief" ? listRecentBriefEvents(db, topic.id) : [];
-      const batch = await runAnalysis(db, topic, items, { start: since, end: endIso }, { history });
-      const validation = await runValidation(db, batch, items);
-      // 技术线索是报告之外的派生能力；其故障必须可观测、但不能阻断已校验日报的发布。
-      try {
-        runTechLeadExtraction(db, batch, validation, endIso);
-      } catch (e) {
-        const message = errMsg(e);
-        summary.errors.push(`tech-leads ${topic.id}: ${message}`);
-        runLogger({ stage: "tech-leads" }).warn({ topicId: topic.id, batchId: batch.id, err: message }, "技术线索派生失败，继续生成报告");
-      }
-      // 前情链接：把同主题同链上一篇 done 报告记为 prev_report_id，串成可回溯的演化链
-      // （本报告尚未落库，此刻"最新 done"即上一篇，不自指）。
-      const prevReportId = previousReportForTopic(db, topic.id, plan.type);
-      const freshItems = plan.type === "brief"
-        ? items.filter((item) => contentObservedAt(item) >= freshnessSince)
-        : [];
-      const freshestCandidateAt = freshItems.map(contentObservedAt).sort().at(-1) ?? null;
-      const report = await runReportGen(db, {
-        topic, batch, validation, type: plan.type, prevReportId,
-        // 只有选择阶段真的选到近期输入才打开报告闸门；没有新候选时保留历史上下文而不制造空窗。
-        briefFreshness: freshItems.length
-          ? { since: freshnessSince, content_item_ids: freshItems.map((item) => item.id), freshest_candidate_at: freshestCandidateAt }
-          : undefined,
+      const period = plan.type === "brief" ? endIso.slice(0, 10) : plan.type === "deep_dive" ? utcIsoWeek(new Date(end)) : "initial";
+      const accepted = createScheduledTraceRequest(db, {
+        topicId: topic.id, reportType: plan.type, period,
+        windowHours: plan.windowHours, items: plan.items,
       });
       summary.topics.push({
-        topic: topic.id,
-        items: items.length,
-        reportId: report.id,
-        included: report.insight_ids.length,
-        status: "done",
-        type: plan.type,
+        topic: topic.id, items: 0, traceId: accepted.kind === "conflict" ? accepted.activeTraceId : accepted.traceId,
+        status: accepted.kind === "accepted" ? "queued" : accepted.kind, type: plan.type,
       });
     } catch (e) {
-      summary.topics.push({ topic: topic.id, items: items.length, status: `failed: ${errMsg(e)}`, type: plan.type });
+      summary.topics.push({ topic: topic.id, items: 0, status: `failed: ${errMsg(e)}`, type: plan.type });
       summary.errors.push(`pipeline ${topic.id}: ${errMsg(e)}`);
     }
   }
 
   summary.finishedAt = new Date().toISOString();
   return summary;
+}
+
+/** Worker 执行一个已登记的 cron topic pipeline；collection 仍由 cron 先完成，
+ * 此处只消费被持久化的计划，从而避免 cron Web 请求与报告生成脱离 trace。 */
+export async function runScheduledTopicPipeline(
+  db: DB,
+  topicId: string,
+  input: { reportType: "brief" | "deep_dive" | "initial_digest"; windowHours: number; items: number } & GenerationExecutionOptions,
+): Promise<Report | null> {
+  const topic = getTopic(db, topicId);
+  if (!topic) throw new Error(`topic ${topicId} 不存在`);
+  if (!topic.enabled) throw new Error(`topic ${topicId} 已停用`);
+  const end = Date.now();
+  const endIso = new Date(end).toISOString();
+  const since = new Date(end - input.windowHours * 3_600_000).toISOString();
+  const freshnessSince = new Date(end - briefFreshHours() * 3_600_000).toISOString();
+  const items = selectAnalysisItems(db, topic, {
+    since, limit: input.items, coldStart: input.reportType === "initial_digest",
+    freshness: input.reportType === "brief" ? { since: freshnessSince, quota: briefFreshQuota() } : undefined,
+  });
+  if (!items.length) {
+    if (!input.rootRunId) throw new Error("scheduled dispatch missing root Run");
+    db.transaction(() => {
+      input.assertWrite?.();
+      finishRun(db, input.rootRunId!, { status: "done", cost: null, duration_ms: 0 });
+      if (input.traceId) {
+        appendGenerationEvent(db, {
+          trace_id: input.traceId, stage: "select", event_type: "skipped", reason_code: "no_content",
+          metrics: { selected_count: 0 },
+        });
+      }
+    })();
+    return null;
+  }
+  const history = input.reportType === "brief" ? listRecentBriefEvents(db, topic.id) : [];
+  const batch = await runAnalysis(db, topic, items, { start: since, end: endIso }, {
+    history, traceId: input.traceId, rootRunId: input.rootRunId, assertWrite: input.assertWrite,
+  });
+  const validation = await runValidation(db, batch, items, { traceId: input.traceId, assertWrite: input.assertWrite });
+  try {
+    runTechLeadExtraction(db, batch, validation, endIso, { traceId: input.traceId, assertWrite: input.assertWrite });
+  } catch (e) {
+    runLogger({ stage: "tech-leads" }).warn({ topicId: topic.id, batchId: batch.id, err: errMsg(e) }, "技术线索派生失败，继续生成报告");
+  }
+  const prevReportId = previousReportForTopic(db, topic.id, input.reportType);
+  const freshItems = input.reportType === "brief" ? items.filter((item) => contentObservedAt(item) >= freshnessSince) : [];
+  const freshestCandidateAt = freshItems.map(contentObservedAt).sort().at(-1) ?? null;
+  return runReportGen(db, {
+    topic, batch, validation, type: input.reportType, prevReportId, traceId: input.traceId, assertWrite: input.assertWrite,
+    briefFreshness: freshItems.length ? { since: freshnessSince, content_item_ids: freshItems.map((item) => item.id), freshest_candidate_at: freshestCandidateAt } : undefined,
+  });
 }
 
 /** 单主题端到端跑（C-1 用户触发深挖）：
@@ -227,7 +258,7 @@ export async function runScheduledPipeline(
 export async function runPipelineForTopic(
   db: DB,
   topicId: string,
-  opts: { windowHours?: number; items?: number; traceId?: string; rootRunId?: string; assertWrite?: () => void } = {},
+  opts: { windowHours?: number; items?: number } & GenerationExecutionOptions = {},
 ): Promise<Report> {
   const topic = getTopic(db, topicId);
   if (!topic) throw new Error(`topic ${topicId} 不存在`);

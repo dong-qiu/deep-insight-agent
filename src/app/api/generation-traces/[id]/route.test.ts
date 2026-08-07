@@ -28,6 +28,7 @@ describe("GET /api/generation-traces/[id]", () => {
       trace_id: "trace_1", request_id: "req_1", status: "failed", root_run_id: "run_1",
       started_at: "2026-08-03T00:00:00.000Z", ended_at: "2026-08-03T00:01:00.000Z", coverage: "complete",
       dispatch_state: "failed", attempt: 1, claimed_at: "2026-08-03T00:00:01.000Z", lease_expires_at: null,
+      runtime_version: JSON.stringify({ schema_version: 1, git_sha: "a".repeat(40), image_digest: `sha256:${"b".repeat(64)}`, provenance_schema_version: "20260803_06_provenance_facts", secret: "do-not-leak" }),
       last_error: JSON.stringify({ reason_code: "dispatch_failed", message: "private upstream exception" }),
     });
 
@@ -35,7 +36,22 @@ describe("GET /api/generation-traces/[id]", () => {
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body.dispatch.last_error_reason).toBe("dispatch_failed");
+    expect(body.runtime).toEqual({ schema_version: 1, git_sha: "a".repeat(40), image_digest: `sha256:${"b".repeat(64)}`, provenance_schema_version: "20260803_06_provenance_facts" });
     expect(JSON.stringify(body)).not.toContain("private upstream exception");
+    expect(JSON.stringify(body)).not.toContain("do-not-leak");
     expect(listGenerationTraceTimeline).toHaveBeenCalledWith({}, "trace_1");
+  });
+
+  it("uses the deployment record at trace time for legacy traces without a runtime snapshot", async () => {
+    vi.mocked(forbidNonAdmin).mockResolvedValueOnce(null);
+    vi.mocked(getGenerationTraceStatus).mockReturnValue({
+      trace_id: "trace_1", request_id: null, status: "done", root_run_id: "run_1",
+      started_at: "2026-08-03T00:00:00.000Z", ended_at: "2026-08-03T00:01:00.000Z", coverage: "complete",
+      dispatch_state: "done", attempt: 1, claimed_at: "2026-08-03T00:00:01.000Z", lease_expires_at: null,
+      runtime_version: "{}", deployment_git_sha: "c".repeat(40), deployment_image_digest: `sha256:${"d".repeat(64)}`,
+    });
+
+    const body = await (await call()).json();
+    expect(body.runtime).toEqual({ git_sha: "c".repeat(40), image_digest: `sha256:${"d".repeat(64)}` });
   });
 });
