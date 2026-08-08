@@ -1184,3 +1184,31 @@ trace。与此同时，SQLite 与报告备份可能恢复到删除请求之前�
 
 P0a 增加了独立 worker、队列健康告警、KMS/S3/IAM 配置和恢复演练成本，但“accepted”变为可恢复的持久承诺，且灾难恢复不再可能
 重新暴露已删除实体。生产删除入口和 viewer provenance 在这两项前置未完成前保持关闭。
+
+---
+
+## ADR-0020: 生产依赖零日修复采用受控镜像源码与可审计 vendor 交付
+
+- **日期**: 2026-08-08
+- **状态**: Accepted
+
+### 背景
+
+`pptxgenjs@4.0.1` 传递依赖 `image-size@1.2.1`。其 ICNS / ISO 容器的零长度条目可造成解析循环，且
+上游安全公告尚未给出可升级的已修复 npm 版本。将 `pptxgenjs` 降到旧主版本虽然能移除该依赖，却已使
+PPT 生成测试失败；降低 `npm audit` 阈值或加入忽略名单也会掩盖真正的生产漏洞。
+
+### 决定
+
+1. 在私有仓库 `dong-qiu/image-size-security` 维护最小补丁源码；基线为 upstream `image-size@2.0.2`，保留其
+   ISO-box 前进保护，并增加 ICNS 零长度条目拒绝与回归测试，版本为 `2.0.3`。
+2. 应用通过 npm root `overrides` 将所有 `image-size` 解析到 `vendor/image-size` 的构建产物。这样 CI 和 Docker
+   的 `npm ci` 不需要 private Git URL、长期 package token 或嵌入凭据；vendor 元数据记录私有镜像 tag/commit。
+3. 保留应用侧恶意输入回归测试，并继续以 `npm audit --omit=dev --audit-level=high` 作为阻断门；不使用 audit
+   exception。`nanoid` 同步锁到 `3.3.18`，消除同次发现的 high 漏洞。
+
+### 退出条件
+
+上游发布覆盖这两个漏洞的可审计版本后，在独立 PR 中移除 override 与整个 vendor 目录，改回上游精确版本，
+重新运行 production audit、PPT 路径测试、typecheck、build 与 Linux Docker build。至少每 30 天检查一次上游
+发布和公告状态；若镜像补丁需要超出这两个输入边界，重新评估迁移到替代 PPT 库而不是扩张 fork。

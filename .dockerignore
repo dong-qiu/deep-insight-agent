@@ -1,5 +1,6 @@
 # 构建上下文裁剪 —— 关键：排除密钥与本地数据，避免烘进镜像层
 node_modules
+vendor/**/node_modules
 .next
 .git
 .github

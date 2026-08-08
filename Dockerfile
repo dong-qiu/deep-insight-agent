@@ -11,7 +11,11 @@ ARG NODE_RUNTIME_IMAGE=node:20.18.1-bookworm-slim
 FROM ${NODE_BUILD_IMAGE} AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci
+# npm override 的本地安全补丁也是依赖图的一部分；必须在 npm ci 前进入构建上下文，
+# 否则容器内无法解析 file:vendor/image-size。
+COPY vendor/image-size ./vendor/image-size
+# 生产依赖 audit 由 CI 的独立阻断步骤执行；镜像构建不重复访问审计服务，保持可复现。
+RUN npm ci --no-audit
 
 # ---- 构建层 ----
 FROM ${NODE_BUILD_IMAGE} AS builder
