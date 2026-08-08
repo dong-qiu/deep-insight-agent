@@ -20,13 +20,14 @@
 - 观察期设置 `BRIEF_ACCEPTANCE_WATCH=1`。它仅在未满足验收条件时向 `ALERT_WEBHOOK` 发送告警；通过时静默。
 - 记录验收前的 UTC 时间、目标镜像 revision 与 deployment workflow 链接。不得在文档记录 `.env.local`、cookie、账号、token、原始正文或 URL。
 
-### 当前 UI 前置 Blocker
+### 运行事实状态与 UI 核验
 
-截至 `103a141`，报告详情的“生成溯源”只渲染事件、聚合计数和实体引用；`GET /api/generation-traces/{id}` 也未投影
-`runtime_version` 或运行镜像 digest。因此，即使下一份 Brief 的其余事实均通过，当前 UI 仍不能满足 spec 中“一个页面内回溯到模型/规则版本与运行镜像”的完整要求。
+历史 Blocker 已于 `86f3162` 对应生产镜像解除：`GET /api/generation-traces/{id}` 现在仅投影经白名单校验的
+`runtime_version`，报告页在管理员时间线中展示 Git revision、镜像 digest 和 provenance schema。
 
-在正式勾选 P0a Brief AC 前，必须补齐这一安全的管理员 read model 与报告页展示。部署 workflow、SSM `docker inspect` 或 deployment record 可以作为交叉证据，
-但不能替代该 UI 验收条件。本运行手册仍可用于验证其余链路，并会把此项记录为 Blocker。
+2026-08-07 的正常 UTC 17:00 cron 已在生产 Trace 中冻结 Git `86f31621…`、镜像
+`sha256:e054a22f…` 和 schema `20260803_06_provenance_facts`，详见同日期验收记录。这是运行时的交叉证据，
+但不能替代管理员页面和 Viewer 边界的人工可视化抽样；在抽样完成前，不得将 P0a Brief AC 标为通过。
 
 ## 正常日报后的验收步骤
 
@@ -37,7 +38,7 @@
 3. 在同一报告页展开“生成溯源”，记录 trace ID，并确认 output `report` ref 的 ID 与当前报告一致。
 4. 在时间线确认 `analyze`、`validate`、`generate_report` 有成对终态，且 `generate_report.completed` 的 `published_insight_count`、`published_citation_count` 均大于 0。
 5. 在报告页“发布引用下钻”确认每一条显示为 pass/support；记录显示数量，并与报告 `citation_count` 一致。
-6. 记录 trace 的 dispatch 状态、attempt、coverage、root Run 和运行镜像 revision/digest。若页面没有显示版本事实，记录“UI 版本事实缺失” Blocker；部署记录只能作为交叉证据。出现 `partial`、`failed`、缺失 output ref 或数量不一致时，同样判定为未通过并保留稳定 reason code。
+6. 记录 trace 的 dispatch 状态、attempt、coverage、root Run 和运行镜像 revision/digest。若页面没有显示版本事实，记录“UI 版本事实缺失” Blocker；生产 Trace 和 deployment record 只能作为交叉证据。出现 `partial`、`failed`、缺失 output ref 或数量不一致时，同样判定为未通过并保留稳定 reason code。
 7. 用 Viewer 账号（或既有受限会话）抽样确认：可读取报告正文，但不显示生成溯源、引用下钻、屏蔽校验或成本；trace API 仍拒绝访问。不要在验收文档记录身份凭据。
 
 ## 空刊或异常处理
