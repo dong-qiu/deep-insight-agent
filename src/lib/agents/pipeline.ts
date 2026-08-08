@@ -22,15 +22,31 @@ import { extractLeadCandidates } from "./tech-leads.js";
 import { deriveOpportunityCandidates } from "./opportunity-planning.js";
 import { appendGenerationEvent, captureRevision, entityKey, type EntityRef } from "../db/provenance-facts.js";
 
-function contentRefs(db: DB, items: ContentItem[], assertWrite?: () => void): EntityRef[] {
-  return items.map((item) => {
-    assertWrite?.();
-    const ref: EntityRef = { type: "content_item", locator: { kind: "id", id: item.id }, revision: item.content_hash, role: "input" };
-    captureRevision(db, { entity_type: ref.type, entity_key: entityKey(ref), revision: ref.revision, snapshot: {
-      url: item.url, source_id: item.source_id, fetched_at: item.fetched_at, published_at: item.published_at, body_length: item.body.length, content_hash: item.content_hash,
-    } });
-    return ref;
-  });
+function contentRefs(items: ContentItem[]): EntityRef[] {
+  return items.map((item) =>
+    ({ type: "content_item", locator: { kind: "id", id: item.id }, revision: item.content_hash, role: "input" })
+  );
+}
+
+/** 只在阶段已开始且可被失败事件包住后，才固化输入快照。
+ * revision 冲突必须让 trace 留下 started + failed，而不是在阶段开始前静默中断。 */
+function captureContentRevisions(db: DB, items: ContentItem[], refs: EntityRef[], assertWrite?: () => void): void {
+  db.transaction(() => {
+    for (let index = 0; index < items.length; index += 1) {
+      const item = items[index];
+      const ref = refs[index];
+      assertWrite?.();
+      captureRevision(db, { entity_type: ref.type, entity_key: entityKey(ref), revision: ref.revision, snapshot: {
+        url: item.url, source_id: item.source_id, fetched_at: item.fetched_at, published_at: item.published_at, body_length: item.body.length, content_hash: item.content_hash,
+      } });
+    }
+  })();
+}
+
+function traceFailureReason(error: unknown, fallback: string): string {
+  return error instanceof Error && error.message === "provenance_revision_conflict"
+    ? "provenance_revision_conflict"
+    : fallback;
 }
 
 function emitTrace(db: DB, traceId: string | undefined, input: Omit<Parameters<typeof appendGenerationEvent>[1], "trace_id">, assertWrite?: () => void): void {
@@ -49,9 +65,10 @@ export async function runAnalysis(
   window: { start: string; end: string },
   opts: { history?: HistoricalEvent[]; traceId?: string; rootRunId?: string; assertWrite?: () => void } = {},
 ): Promise<AnalysisBatch> {
-  const inputs = opts.traceId ? contentRefs(db, items, opts.assertWrite) : [];
+  const inputs = opts.traceId ? contentRefs(items) : [];
   emitTrace(db, opts.traceId, { stage: "analyze", event_type: "started", input_refs: inputs }, opts.assertWrite);
   try {
+  if (opts.traceId) captureContentRevisions(db, items, inputs, opts.assertWrite);
   const { result } = await runJob(db, { kind: "analyze", target: { topic_id: topic.id }, traceId: opts.traceId, existingRunId: opts.rootRunId, assertWrite: opts.assertWrite }, async (ctx) => {
     const version = analyzerCacheVersion();
     const history = opts.history ?? [];
@@ -94,7 +111,7 @@ export async function runAnalysis(
   });
   return result;
   } catch (error) {
-    emitTrace(db, opts.traceId, { stage: "analyze", event_type: "failed", input_refs: inputs, error: { reason_code: "analysis_failed" } }, opts.assertWrite);
+    emitTrace(db, opts.traceId, { stage: "analyze", event_type: "failed", input_refs: inputs, error: { reason_code: traceFailureReason(error, "analysis_failed") } }, opts.assertWrite);
     throw error;
   }
 }
@@ -107,8 +124,10 @@ export async function runValidation(
   opts: { traceId?: string; assertWrite?: () => void } = {},
 ): Promise<ValidationResult> {
   const batchRef: EntityRef = { type: "analysis_batch", locator: { kind: "id", id: batch.id }, revision: batch.id, role: "input" };
-  emitTrace(db, opts.traceId, { stage: "validate", event_type: "started", input_refs: [batchRef, ...(opts.traceId ? contentRefs(db, items, opts.assertWrite) : [])] }, opts.assertWrite);
+  const inputs = [batchRef, ...(opts.traceId ? contentRefs(items) : [])];
+  emitTrace(db, opts.traceId, { stage: "validate", event_type: "started", input_refs: inputs }, opts.assertWrite);
   try {
+  if (opts.traceId) captureContentRevisions(db, items, inputs.slice(1), opts.assertWrite);
   const { result } = await runJob(db, { kind: "validate", target: { batch_id: batch.id }, traceId: opts.traceId, assertWrite: opts.assertWrite }, async (ctx) => {
     // 跨批一致性缓存：relay 抖动重跑 / 报告重生成时复用已判定，省重复 Opus 校验（只缓存成功判定）。
     // 按 (模型+prompt) 版本隔离 + TTL（见 db/consistency-cache.ts）；CONSISTENCY_CACHE=0 可整体关闭（出事时的运维开关）。
@@ -120,7 +139,7 @@ export async function runValidation(
       saveValidationResult(db, batch.id, vr, () => {
         opts.assertWrite?.();
         captureRevision(db, { entity_type: ref.type, entity_key: entityKey(ref), revision: ref.revision, snapshot: { batch_id: batch.id, releasable: vr.report.releasable, total: vr.report.total, pass: vr.report.pass, blocked: vr.report.blocked, flagged: vr.report.flagged, checks: vr.checks.map(({ insight_id, citation_index, verdict }) => ({ insight_id, citation_index, verdict })) } });
-        emitTrace(db, opts.traceId, { stage: "validate", event_type: "completed", input_refs: [batchRef], output_refs: [ref], metrics: {
+        emitTrace(db, opts.traceId, { stage: "validate", event_type: "completed", input_refs: inputs, output_refs: [ref], metrics: {
           citation_total: vr.report.total, citation_pass: vr.report.pass, citation_blocked: vr.report.blocked,
           citation_flagged: vr.report.flagged, citation_errored: vr.report.errored,
           includable_insight_count: vr.report.insights_includable, releasable: vr.report.releasable ? 1 : 0,
@@ -140,7 +159,7 @@ export async function runValidation(
   });
   return result;
   } catch (error) {
-    emitTrace(db, opts.traceId, { stage: "validate", event_type: "failed", input_refs: [batchRef], error: { reason_code: "validation_failed" } }, opts.assertWrite);
+    emitTrace(db, opts.traceId, { stage: "validate", event_type: "failed", input_refs: inputs, error: { reason_code: traceFailureReason(error, "validation_failed") } }, opts.assertWrite);
     throw error;
   }
 }
