@@ -43,4 +43,5 @@ PR #198 修复为“正确机器密钥才豁免这两道浏览器门禁、路由
 ## 后续
 
 1. 在 `provenance_started_at` 后取得一条生产 Brief，按同一口径验证 trace、pass 引用、版本/镜像与角色边界后，才勾选 P0a Brief AC。
+   验收步骤与记录模板见 `docs/verify/p0a-brief-production-acceptance-runbook.md`。
 2. 观察空队列 worker，确认无新增 `HTTP 429` 忙等。
