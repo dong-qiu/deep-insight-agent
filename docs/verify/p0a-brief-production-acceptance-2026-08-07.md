@@ -33,10 +33,11 @@ UTC 17:00 正常 cron 成功完成，三个主题的 Trace 均完整记录了运
 ## 已验证与待验证
 
 - 已验证：正常 cron、Trace 终态、coverage、运行 Git/digest/schema、分析/校验/报告阶段和稳定空刊原因。
-- 待验证：出现非空 Brief 后的报告 output ref、发布引用白名单计数，以及管理员报告页和 Viewer 权限边界的可视化抽样。
+- 已验证：管理员报告页可见运行事实与阶段时间线；Viewer 报告页不可见生成溯源，权限边界符合预期。
+- 待验证：出现非空 Brief 后的报告 output ref、发布引用白名单计数和发布数量一致性。
 
 ## 后续
 
 - [ ] 不更新 `generation-provenance.md` 或 roadmap 的 P0a Brief 通过状态。
 - [ ] 等待下一次正常 UTC 17:00 cron 的非空 Brief。
-- [ ] 以管理员会话完成报告页“生成溯源”可视化抽样；以 Viewer 会话完成权限边界抽样。
+- [x] 以管理员会话完成报告页“生成溯源”可视化抽样；以 Viewer 会话完成权限边界抽样。
