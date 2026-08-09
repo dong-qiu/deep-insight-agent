@@ -45,14 +45,18 @@ function canonicalPath(value) {
 }
 
 export function planCleanup({ mergedPulls, localBranches, worktrees, cwd, statusForWorktree, defaultBranch, repositoryId }) {
-  const mergedByBranch = new Map(
-    mergedPulls
-      // `nameWithOwner` can be empty for deleted PR heads, while the immutable
-      // GraphQL node ID remains available. Matching by ID also excludes forks
-      // that reuse an identical branch name and commit SHA.
-      .filter((pr) => pr.headRepository?.id === repositoryId)
-      .map((pr) => [pr.headRefName, pr]),
-  );
+  const mergedByBranch = new Map();
+  const sameRepositoryPulls = mergedPulls
+    // `nameWithOwner` can be empty for deleted PR heads, while the immutable
+    // GraphQL node ID remains available. Matching by ID also excludes forks
+    // that reuse an identical branch name and commit SHA.
+    .filter((pr) => pr.headRepository?.id === repositoryId)
+    .sort((left, right) => Date.parse(right.mergedAt) - Date.parse(left.mergedAt));
+  for (const pr of sameRepositoryPulls) {
+    // A branch name can be reused after GitHub deletes the old PR head. Its
+    // current local ref must be compared to the newest merge for that name.
+    if (!mergedByBranch.has(pr.headRefName)) mergedByBranch.set(pr.headRefName, pr);
+  }
   const occupied = new Map(worktrees.filter((worktree) => worktree.branch).map((worktree) => [worktree.branch, worktree]));
   const candidates = [];
   const skipped = [];
