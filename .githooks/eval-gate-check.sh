@@ -20,7 +20,11 @@ files=$(for c in $commits; do git show --name-only --format= "$c"; done 2>/dev/n
 sensitive=$(printf '%s\n' "$files" | grep -E "$SENSITIVE_RE" | grep -vE "$TEST_RE" || true)
 [ -z "$sensitive" ] && exit 0
 
-if git log --format='%B' $rev 2>/dev/null | grep -qiE '^[[:space:]]*Eval-Gate:'; then
+# Do not pipe directly into `grep -q` under `pipefail`: once grep finds a
+# trailer it exits early and `git log` can receive SIGPIPE, which turns a
+# successful match into a false rejection.
+messages=$(git log --format='%B' $rev 2>/dev/null)
+if grep -qiE '^[[:space:]]*Eval-Gate:' <<<"$messages"; then
   exit 0
 fi
 
