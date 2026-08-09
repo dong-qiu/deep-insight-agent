@@ -49,6 +49,8 @@ export interface CollectionSummary {
 export interface GenerationExecutionOptions {
   traceId?: string;
   rootRunId?: string;
+  /** durable scheduled dispatch 固化的选择窗口右边界；完整重跑不得改用当前时间。 */
+  windowEnd?: string;
   assertWrite?: () => void;
 }
 
@@ -198,12 +200,13 @@ export async function runScheduledTopicPipeline(
   const topic = getTopic(db, topicId);
   if (!topic) throw new Error(`topic ${topicId} 不存在`);
   if (!topic.enabled) throw new Error(`topic ${topicId} 已停用`);
-  const end = Date.now();
+  const end = input.windowEnd == null ? Date.now() : Date.parse(input.windowEnd);
+  if (!Number.isFinite(end)) throw new Error("invalid_scheduled_dispatch_window_end");
   const endIso = new Date(end).toISOString();
   const since = new Date(end - input.windowHours * 3_600_000).toISOString();
   const freshnessSince = new Date(end - briefFreshHours() * 3_600_000).toISOString();
   const items = selectAnalysisItems(db, topic, {
-    since, limit: input.items, coldStart: input.reportType === "initial_digest",
+    since, until: endIso, limit: input.items, coldStart: input.reportType === "initial_digest",
     freshness: input.reportType === "brief" ? { since: freshnessSince, quota: briefFreshQuota() } : undefined,
   });
   if (!items.length) {

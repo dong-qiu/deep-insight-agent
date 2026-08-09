@@ -12,7 +12,7 @@ const HEARTBEAT_MS = 30_000;
 
 export async function runGenerationDispatchOnce(
   db: DB,
-  execute: (db: DB, topicId: string, opts: GenerationExecutionOptions & { reportType: "brief" | "deep_dive" | "initial_digest"; windowHours?: number; items?: number }) => Promise<unknown> = executeDispatch,
+  execute: (db: DB, topicId: string, opts: GenerationExecutionOptions & { reportType: "brief" | "deep_dive" | "initial_digest"; windowHours?: number; windowEnd?: string; items?: number }) => Promise<unknown> = executeDispatch,
 ): Promise<{ claimed: boolean; traceId?: string; status?: "done" | "failed" }> {
   const claim = claimNextGenerationDispatch(db);
   if (!claim) return { claimed: false };
@@ -26,6 +26,7 @@ export async function runGenerationDispatchOnce(
       rootRunId: claim.rootRunId,
       reportType: claim.payload.report_type,
       windowHours: claim.payload.window_hours,
+      windowEnd: claim.payload.window_end,
       items: claim.payload.items,
       assertWrite: () => {
         if (lostLease) throw new Error("generation_fence_lost");
@@ -52,7 +53,7 @@ export async function runGenerationDispatchOnce(
 async function executeDispatch(
   db: DB,
   topicId: string,
-  opts: GenerationExecutionOptions & { reportType: "brief" | "deep_dive" | "initial_digest"; windowHours?: number; items?: number },
+  opts: GenerationExecutionOptions & { reportType: "brief" | "deep_dive" | "initial_digest"; windowHours?: number; windowEnd?: string; items?: number },
 ): Promise<unknown> {
   if (opts.reportType === "deep_dive" && opts.windowHours == null) {
     return runPipelineForTopic(db, topicId, opts);
@@ -60,6 +61,6 @@ async function executeDispatch(
   if (opts.windowHours == null || opts.items == null) throw new Error("invalid_scheduled_dispatch_payload");
   return runScheduledTopicPipeline(db, topicId, {
     reportType: opts.reportType, windowHours: opts.windowHours, items: opts.items,
-    traceId: opts.traceId, rootRunId: opts.rootRunId, assertWrite: opts.assertWrite,
+    traceId: opts.traceId, rootRunId: opts.rootRunId, windowEnd: opts.windowEnd, assertWrite: opts.assertWrite,
   });
 }

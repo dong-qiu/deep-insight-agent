@@ -105,6 +105,8 @@ export function selectAnalysisItems(
   topic: Topic,
   opts: {
     since: string;
+    /** 可选的冻结窗口上界；历史重跑不得消费窗口之后才出现的内容。 */
+    until?: string;
     limit?: number;
     candidatePool?: number;
     coldStart?: boolean;
@@ -117,6 +119,7 @@ export function selectAnalysisItems(
   // 挤出候选窗口、scoring 根本看不到它。打分是内存子串匹配，候选多也廉价。
   const candidates = listContentForTopic(db, topic.id, {
     since: opts.since,
+    until: opts.until,
     limit: opts.candidatePool ?? 800,
   });
   // ADR-0010：冷启动豁免硬下限（首报用软策略）；否则按 archetype profile 取 relevanceFloor。

@@ -32,6 +32,11 @@ export type TraceRequestResult =
   | { kind: "replayed"; traceId: string; requestId: string }
   | { kind: "conflict"; activeTraceId: string };
 
+/** 完整重跑只接受失败且已终态的 trace；不修改原 request / trace / dispatch。 */
+export type RetryTraceRequestResult = TraceRequestResult
+  | { kind: "not_found" }
+  | { kind: "not_retryable"; status: string; requestState: string };
+
 export interface DispatchClaim {
   dispatchId: string;
   traceId: string;
@@ -44,6 +49,8 @@ export interface DispatchClaim {
     planning: boolean;
     report_type: "brief" | "deep_dive" | "initial_digest";
     window_hours?: number;
+    /** 定时任务受理时冻结的窗口右边界；重试不能漂移到当前时间。 */
+    window_end?: string;
     items?: number;
     schema_version: 1;
   };
@@ -173,7 +180,7 @@ export function createScheduledTraceRequest(
     const leaseId = id("lease");
     const payload = {
       topic_id: input.topicId, planning: true, report_type: input.reportType,
-      window_hours: input.windowHours, items: input.items, schema_version: 1 as const,
+      window_hours: input.windowHours, window_end: nowIso, items: input.items, schema_version: 1 as const,
     };
     const runtimeVersion = runtimeVersionAt(db, nowIso);
     db.prepare(
@@ -201,6 +208,89 @@ export function createScheduledTraceRequest(
        (id,request_id,trace_id,kind,payload,state,attempt,claim_epoch,created_at,updated_at)
        VALUES (@id,@request_id,@trace_id,'topic_pipeline',@payload,'queued',0,0,@created_at,@updated_at)`,
     ).run({ id: dispatchId, request_id: requestId, trace_id: traceId, payload: JSON.stringify(payload), created_at: nowIso, updated_at: nowIso });
+    return { kind: "accepted", traceId, requestId };
+  })();
+}
+
+/**
+ * 对失败的 durable topic pipeline 新建一条完整重跑 trace。
+ *
+ * 原 trace 保持 terminal，新的 request/lease/dispatch 通过 retry_of_trace_id 建立审计链；
+ * 绝不把失败的 dispatch 改回 queued，以免覆盖既有失败事实或绕过当日 cron 去重。
+ */
+export function retryFailedTraceRequest(
+  db: DB,
+  input: { traceId: string; idempotencyKeyHash: string; now?: Date },
+): RetryTraceRequestResult {
+  const now = input.now ?? new Date();
+  const nowIso = now.toISOString();
+  const replaySince = isoAfter(now, -DAY_MS);
+
+  return db.transaction((): RetryTraceRequestResult => {
+    const original = db.prepare(`SELECT t.id,t.scope_kind,t.topic_id,t.status,t.completion_policy,t.coverage,t.started_at,
+        r.state AS request_state,r.active_key,d.payload
+      FROM generation_trace t
+      JOIN generation_trace_request r ON r.trace_id=t.id
+      JOIN generation_dispatch d ON d.trace_id=t.id
+      WHERE t.id=?`).get(input.traceId) as
+      | { id: string; scope_kind: string; topic_id: string | null; status: string; completion_policy: string; coverage: string; started_at: string; request_state: string; active_key: string; payload: string }
+      | undefined;
+    if (!original) return { kind: "not_found" };
+    if (original.status !== "failed" || original.request_state !== "terminal" || !original.topic_id || original.scope_kind !== "topic_pipeline") {
+      return { kind: "not_retryable", status: original.status, requestState: original.request_state };
+    }
+
+    const replay = db.prepare(`SELECT r.id,r.trace_id FROM generation_trace_request r
+      JOIN generation_trace t ON t.id=r.trace_id
+      WHERE t.retry_of_trace_id=@retry_of AND r.idempotency_key_hash=@hash AND r.created_at >= @replay_since
+      ORDER BY r.created_at DESC LIMIT 1`).get({ retry_of: original.id, hash: input.idempotencyKeyHash, replay_since: replaySince }) as { id: string; trace_id: string } | undefined;
+    if (replay) return { kind: "replayed", requestId: replay.id, traceId: replay.trace_id };
+
+    const active = db.prepare(
+      "SELECT trace_id FROM generation_lease WHERE active_key=? AND state IN ('reserved','owned') LIMIT 1",
+    ).get(original.active_key) as { trace_id: string } | undefined;
+    if (active) return { kind: "conflict", activeTraceId: active.trace_id };
+
+    const sequence = (db.prepare(`SELECT COUNT(*) AS count FROM generation_trace_request r
+      JOIN generation_trace t ON t.id=r.trace_id
+      WHERE t.retry_of_trace_id=? AND r.idempotency_key_hash=?`).get(original.id, input.idempotencyKeyHash) as { count: number }).count + 1;
+    const traceId = id("trace");
+    const requestId = id("trace_req");
+    const dispatchId = id("dispatch");
+    const leaseId = id("lease");
+    const scopeKey = `retry:${original.id}:${input.idempotencyKeyHash}:${sequence}`;
+    const runtimeVersion = runtimeVersionAt(db, nowIso);
+    const retryPayload = JSON.parse(original.payload) as Record<string, unknown>;
+    // 为上线前的 payload 补回冻结窗口：其 trace.started_at 正是原调度受理的时间点。
+    if (typeof retryPayload.window_hours === "number" && typeof retryPayload.window_end !== "string") {
+      retryPayload.window_end = original.started_at;
+    }
+
+    db.prepare(`INSERT INTO generation_trace
+      (id,scope_kind,trigger_kind,topic_id,status,completion_policy,coverage,runtime_version,summary,started_at,retry_of_trace_id)
+      VALUES (@id,@scope_kind,'retry',@topic_id,'running',@completion_policy,@coverage,@runtime_version,'{}',@started_at,@retry_of_trace_id)`).run({
+      id: traceId, scope_kind: original.scope_kind, topic_id: original.topic_id,
+      completion_policy: original.completion_policy, coverage: original.coverage,
+      runtime_version: runtimeVersion, started_at: nowIso, retry_of_trace_id: original.id,
+    });
+    db.prepare(`INSERT INTO generation_trace_request
+      (id,scope_key,active_key,idempotency_key_hash,request_sequence,trace_id,state,retained_until,created_at)
+      VALUES (@id,@scope_key,@active_key,@hash,@sequence,@trace_id,'accepted',@retained_until,@created_at)`).run({
+      id: requestId, scope_key: scopeKey, active_key: original.active_key, hash: input.idempotencyKeyHash,
+      sequence, trace_id: traceId, retained_until: isoAfter(now, REQUEST_RETENTION_MS), created_at: nowIso,
+    });
+    db.prepare("UPDATE generation_trace SET request_id=? WHERE id=?").run(requestId, traceId);
+    db.prepare(`INSERT INTO generation_lease
+      (id,active_key,scope_key,trace_id,state,fencing_epoch,created_at)
+      VALUES (@id,@active_key,@scope_key,@trace_id,'reserved',0,@created_at)`).run({
+      id: leaseId, active_key: original.active_key, scope_key: scopeKey, trace_id: traceId, created_at: nowIso,
+    });
+    db.prepare(`INSERT INTO generation_dispatch
+      (id,request_id,trace_id,kind,payload,state,attempt,claim_epoch,created_at,updated_at)
+      VALUES (@id,@request_id,@trace_id,'topic_pipeline',@payload,'queued',0,0,@created_at,@updated_at)`).run({
+      id: dispatchId, request_id: requestId, trace_id: traceId, payload: JSON.stringify(retryPayload),
+      created_at: nowIso, updated_at: nowIso,
+    });
     return { kind: "accepted", traceId, requestId };
   })();
 }

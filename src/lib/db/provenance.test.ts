@@ -8,6 +8,7 @@ import {
   createScheduledTraceRequest,
   getGenerationTraceStatus,
   hashIdempotencyKey,
+  retryFailedTraceRequest,
 } from "./provenance.js";
 
 describe("generation provenance dispatch", () => {
@@ -79,11 +80,46 @@ describe("generation provenance dispatch", () => {
     if (first.kind !== "accepted") throw new Error("expected accepted request");
     expect(replay).toEqual({ kind: "replayed", traceId: first.traceId, requestId: first.requestId });
     expect(db.prepare("SELECT payload FROM generation_dispatch WHERE trace_id=?").get(first.traceId)).toEqual({
-      payload: JSON.stringify({ topic_id: "topic_a", planning: true, report_type: "brief", window_hours: 168, items: 15, schema_version: 1 }),
+      payload: JSON.stringify({ topic_id: "topic_a", planning: true, report_type: "brief", window_hours: 168, window_end: now.toISOString(), items: 15, schema_version: 1 }),
     });
     expect(getGenerationTraceStatus(db, first.traceId)).toMatchObject({
       deployment_image_digest: `sha256:${"a".repeat(64)}`, deployment_git_sha: "b".repeat(40),
       runtime_version: JSON.stringify({ schema_version: 1, image_digest: `sha256:${"a".repeat(64)}`, git_sha: "b".repeat(40) }),
     });
+  });
+
+  it("creates an auditable full retry for a terminal failed scheduled trace", () => {
+    const original = createScheduledTraceRequest(db, {
+      topicId: "topic_a", reportType: "brief", period: "2026-08-03", windowHours: 168, items: 15, now,
+    });
+    if (original.kind !== "accepted") throw new Error("expected accepted request");
+    db.prepare("UPDATE generation_trace SET status='failed',ended_at=? WHERE id=?").run(now.toISOString(), original.traceId);
+    db.prepare("UPDATE generation_trace_request SET state='terminal' WHERE trace_id=?").run(original.traceId);
+    db.prepare("UPDATE generation_dispatch SET state='failed' WHERE trace_id=?").run(original.traceId);
+    db.prepare("UPDATE generation_lease SET state='released',released_at=? WHERE trace_id=?").run(now.toISOString(), original.traceId);
+    // 兼容上线前未冻结 window_end 的生产 dispatch：从原 trace 受理时间重建窗口右边界。
+    db.prepare("UPDATE generation_dispatch SET payload=? WHERE trace_id=?").run(
+      JSON.stringify({ topic_id: "topic_a", planning: true, report_type: "brief", window_hours: 168, items: 15, schema_version: 1 }),
+      original.traceId,
+    );
+
+    const hash = hashIdempotencyKey("retry-key", "secret-a");
+    const retried = retryFailedTraceRequest(db, { traceId: original.traceId, idempotencyKeyHash: hash, now });
+    if (retried.kind !== "accepted") throw new Error(`expected accepted retry, got ${retried.kind}`);
+    const replay = retryFailedTraceRequest(db, { traceId: original.traceId, idempotencyKeyHash: hash, now });
+
+    expect(replay).toEqual({ kind: "replayed", traceId: retried.traceId, requestId: retried.requestId });
+    expect(db.prepare("SELECT status,retry_of_trace_id,trigger_kind FROM generation_trace WHERE id=?").get(retried.traceId)).toEqual({
+      status: "running", retry_of_trace_id: original.traceId, trigger_kind: "retry",
+    });
+    expect(db.prepare("SELECT scope_key,state FROM generation_trace_request WHERE trace_id=?").get(retried.traceId)).toEqual({
+      scope_key: `retry:${original.traceId}:${hash}:1`, state: "accepted",
+    });
+    const dispatch = db.prepare("SELECT payload,state FROM generation_dispatch WHERE trace_id=?").get(retried.traceId) as { payload: string; state: string };
+    expect({ ...dispatch, payload: JSON.parse(dispatch.payload) }).toEqual({
+      payload: { topic_id: "topic_a", planning: true, report_type: "brief", window_hours: 168, window_end: now.toISOString(), items: 15, schema_version: 1 },
+      state: "queued",
+    });
+    expect(db.prepare("SELECT status FROM generation_trace WHERE id=?").get(original.traceId)).toEqual({ status: "failed" });
   });
 });
