@@ -74,6 +74,8 @@ npm run dev
 | `npm run eval:a1` | 运行 A1 AI 质量评测（需要模型配置） |
 | `npm run eval:opportunity-map` | 评估技术机会映射 |
 | `npm run db:snapshot` / `npm run db:restore` | 导出或恢复本地 SQLite 快照 |
+| `npm run branches:cleanup` | 只读列出可清理的已合并 PR 本地分支与 worktree |
+| `npm run branches:cleanup -- --apply` | 清理经审核的本地候选；远程分支由 GitHub 合并后自动删除 |
 
 修改 prompt、模型、校验逻辑、数据源或评测集前，必须运行 [`eval-gate`](.claude/skills/eval-gate/SKILL.md)，并在 PR 中附上相对基线的指标和可复查产物。
 

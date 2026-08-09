@@ -54,6 +54,7 @@ Insight Agent 是面向行业情报的多源洞察分析系统。核心链路是
 - `main` 走 feature branch -> review -> PR -> CI -> merge；不直接推送 `main`，不跳过 Git hooks。
 - 不执行破坏性 Git、数据库、部署或文件删除操作，除非用户明确授权且目标已核实。
 - 多 worktree/环境不得共享 live SQLite 数据库；使用快照或 seed 建立隔离环境。
+- 短生命周期 PR 合并后由 GitHub 自动删除远程 head branch；本地应在 `main` CI 与需要的部署核验完成后运行 `npm run branches:cleanup` 审核候选。仅对已合并、未在合并后推进的分支才可清理；linked worktree 还必须干净、未锁定且非当前/主 worktree，执行时先移除它再删本地分支，绝不把 `--force` 当日常流程。GitHub 的远程自动删除是仓库级设置；长期 release/maintenance 分支须通过保护规则或避免作为短生命周期 PR head 保留。
 
 ## 部署核验
 
