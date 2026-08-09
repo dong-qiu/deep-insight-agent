@@ -44,10 +44,13 @@ function canonicalPath(value) {
   try { return realpathSync.native(value); } catch { return path.resolve(value); }
 }
 
-export function planCleanup({ mergedPulls, localBranches, worktrees, cwd, statusForWorktree, defaultBranch, repository }) {
+export function planCleanup({ mergedPulls, localBranches, worktrees, cwd, statusForWorktree, defaultBranch, repositoryId }) {
   const mergedByBranch = new Map(
     mergedPulls
-      .filter((pr) => pr.headRepository?.nameWithOwner === repository)
+      // `nameWithOwner` can be empty for deleted PR heads, while the immutable
+      // GraphQL node ID remains available. Matching by ID also excludes forks
+      // that reuse an identical branch name and commit SHA.
+      .filter((pr) => pr.headRepository?.id === repositoryId)
       .map((pr) => [pr.headRefName, pr]),
   );
   const occupied = new Map(worktrees.filter((worktree) => worktree.branch).map((worktree) => [worktree.branch, worktree]));
@@ -106,10 +109,10 @@ function mergedPullRequests() {
 }
 
 function repositoryInfo() {
-  const output = command("gh", ["repo", "view", "--json", "defaultBranchRef,nameWithOwner"]).stdout;
+  const output = command("gh", ["repo", "view", "--json", "defaultBranchRef,id,nameWithOwner"]).stdout;
   const repo = JSON.parse(output);
-  if (!repo.defaultBranchRef?.name || !repo.nameWithOwner) throw new Error("GitHub repository metadata is incomplete");
-  return { defaultBranch: repo.defaultBranchRef.name, repository: repo.nameWithOwner };
+  if (!repo.defaultBranchRef?.name || !repo.id || !repo.nameWithOwner) throw new Error("GitHub repository metadata is incomplete");
+  return { defaultBranch: repo.defaultBranchRef.name, repositoryId: repo.id };
 }
 
 function printPlan(plan, apply) {
@@ -137,7 +140,7 @@ export function main(args = process.argv.slice(2)) {
     cwd: canonicalPath(command("git", ["rev-parse", "--show-toplevel"]).stdout.trim()),
     statusForWorktree: (worktree) => command("git", ["-C", worktree, "status", "--porcelain", "--untracked-files=all"]).stdout,
     defaultBranch: repo.defaultBranch,
-    repository: repo.repository,
+    repositoryId: repo.repositoryId,
   });
   printPlan(plan, apply);
   if (!apply) return;
