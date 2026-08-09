@@ -78,3 +78,19 @@ test("does not associate a merged fork PR with an identically named local branch
   assert.deepEqual(plan.candidates, []);
   assert.deepEqual(plan.skipped, [{ branch: "feat/shared-name", reason: "no_merged_pull_request" }]);
 });
+
+test("uses the newest merged PR when an auto-deleted branch name is reused", () => {
+  const plan = planCleanup({
+    mergedPulls: [
+      { headRefName: "feat/reused", headRefOid: "old", mergedAt: "2026-08-09T12:00:00Z", headRepository: { id: "repo-id" } },
+      { headRefName: "feat/reused", headRefOid: "new", mergedAt: "2026-08-09T13:00:00Z", headRepository: { id: "repo-id" } },
+    ],
+    localBranches: new Map([["feat/reused", "new"]]),
+    worktrees: [],
+    cwd: "/repo",
+    statusForWorktree: () => "",
+    defaultBranch: "main",
+    repositoryId: "repo-id",
+  });
+  assert.deepEqual(plan.candidates, [{ branch: "feat/reused", action: "delete_branch" }]);
+});
