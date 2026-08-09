@@ -11,13 +11,13 @@ test("parses linked worktree metadata", () => {
 
 test("only plans a clean, unchanged merged PR worktree", () => {
   const plan = planCleanup({
-    mergedPulls: [{ headRefName: "feat/merged", headRefOid: "abc", headRepository: { nameWithOwner: "owner/repo" } }],
+    mergedPulls: [{ headRefName: "feat/merged", headRefOid: "abc", headRepository: { id: "repo-id", nameWithOwner: "" } }],
     localBranches: new Map([["main", "base"], ["feat/merged", "abc"], ["feat/advanced", "new"]]),
     worktrees: [{ path: "/repo", branch: "main", locked: false, isMain: true }, { path: "/feature", branch: "feat/merged", locked: false, isMain: false }],
     cwd: "/repo",
     statusForWorktree: () => "",
     defaultBranch: "main",
-    repository: "owner/repo",
+    repositoryId: "repo-id",
   });
   assert.deepEqual(plan.candidates, [{ branch: "feat/merged", action: "remove_worktree_then_delete_branch", worktree: "/feature" }]);
   assert.deepEqual(plan.skipped, [{ branch: "feat/advanced", reason: "no_merged_pull_request" }]);
@@ -26,10 +26,10 @@ test("only plans a clean, unchanged merged PR worktree", () => {
 test("skips dirty, locked, current and advanced branches", () => {
   const plan = planCleanup({
     mergedPulls: [
-      { headRefName: "feat/dirty", headRefOid: "a", headRepository: { nameWithOwner: "owner/repo" } },
-      { headRefName: "feat/locked", headRefOid: "b", headRepository: { nameWithOwner: "owner/repo" } },
-      { headRefName: "feat/current", headRefOid: "c", headRepository: { nameWithOwner: "owner/repo" } },
-      { headRefName: "feat/advanced", headRefOid: "old", headRepository: { nameWithOwner: "owner/repo" } },
+      { headRefName: "feat/dirty", headRefOid: "a", headRepository: { id: "repo-id" } },
+      { headRefName: "feat/locked", headRefOid: "b", headRepository: { id: "repo-id" } },
+      { headRefName: "feat/current", headRefOid: "c", headRepository: { id: "repo-id" } },
+      { headRefName: "feat/advanced", headRefOid: "old", headRepository: { id: "repo-id" } },
     ],
     localBranches: new Map([["feat/dirty", "a"], ["feat/locked", "b"], ["feat/current", "c"], ["feat/advanced", "new"]]),
     worktrees: [
@@ -40,7 +40,7 @@ test("skips dirty, locked, current and advanced branches", () => {
     cwd: "/current/nested/directory",
     statusForWorktree: (worktree) => worktree === "/dirty" ? " M file" : "",
     defaultBranch: "main",
-    repository: "owner/repo",
+    repositoryId: "repo-id",
   });
   assert.deepEqual(plan.candidates, []);
   assert.deepEqual(plan.skipped, [
@@ -53,13 +53,13 @@ test("skips dirty, locked, current and advanced branches", () => {
 
 test("skips a merged branch checked out by the main worktree", () => {
   const plan = planCleanup({
-    mergedPulls: [{ headRefName: "feat/main-tree", headRefOid: "abc", headRepository: { nameWithOwner: "owner/repo" } }],
+    mergedPulls: [{ headRefName: "feat/main-tree", headRefOid: "abc", headRepository: { id: "repo-id" } }],
     localBranches: new Map([["feat/main-tree", "abc"]]),
     worktrees: [{ path: "/repo", branch: "feat/main-tree", locked: false, isMain: true }],
     cwd: "/another-worktree",
     statusForWorktree: () => "",
     defaultBranch: "main",
-    repository: "owner/repo",
+    repositoryId: "repo-id",
   });
   assert.deepEqual(plan.candidates, []);
   assert.deepEqual(plan.skipped, [{ branch: "feat/main-tree", reason: "main_worktree", worktree: "/repo" }]);
@@ -67,13 +67,13 @@ test("skips a merged branch checked out by the main worktree", () => {
 
 test("does not associate a merged fork PR with an identically named local branch", () => {
   const plan = planCleanup({
-    mergedPulls: [{ headRefName: "feat/shared-name", headRefOid: "abc", headRepository: { nameWithOwner: "fork/repo" } }],
+    mergedPulls: [{ headRefName: "feat/shared-name", headRefOid: "abc", headRepository: { id: "fork-repo-id" } }],
     localBranches: new Map([["feat/shared-name", "abc"]]),
     worktrees: [],
     cwd: "/repo",
     statusForWorktree: () => "",
     defaultBranch: "main",
-    repository: "owner/repo",
+    repositoryId: "repo-id",
   });
   assert.deepEqual(plan.candidates, []);
   assert.deepEqual(plan.skipped, [{ branch: "feat/shared-name", reason: "no_merged_pull_request" }]);
