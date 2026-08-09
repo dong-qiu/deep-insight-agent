@@ -1,20 +1,23 @@
-import { FlatCompat } from "@eslint/eslintrc";
-import { fileURLToPath } from "node:url";
-import path from "node:path";
-
-const baseDirectory = path.dirname(fileURLToPath(import.meta.url));
-const compat = new FlatCompat({ baseDirectory });
+import { globalIgnores } from "eslint/config";
+import nextVitals from "eslint-config-next/core-web-vitals";
 
 /**
- * Next 15 的官方规则仍以 eslintrc shareable config 发布；通过 FlatCompat 接入 ESLint 9
- * 的 flat config。lint 只检查可维护的源码目录，生成物及依赖一律排除。
+ * Next 16 的官方规则直接发布为 ESLint flat config；不经 FlatCompat 转换，避免把
+ * 已含插件对象的 flat config 当作旧式 eslintrc 校验。lint 只检查可维护的源码目录。
  */
 const config = [
-  { ignores: [".next/**", "coverage/**", "node_modules/**"] },
-  ...compat.extends("next/core-web-vitals"),
+  ...nextVitals,
+  globalIgnores([".next/**", "coverage/**", "node_modules/**"]),
   {
     linterOptions: {
       reportUnusedDisableDirectives: "error",
+    },
+    // React Compiler rules newly included by Next 16 flag existing server-page
+    // clock reads and effect-driven graph/form initialization. Keep the prior
+    // lint contract; migrate these components in a dedicated refactor.
+    rules: {
+      "react-hooks/purity": "off",
+      "react-hooks/set-state-in-effect": "off",
     },
   },
 ];
