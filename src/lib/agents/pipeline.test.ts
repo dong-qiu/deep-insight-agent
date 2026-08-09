@@ -8,6 +8,7 @@ import { insertContentItem, insertSource, insertTopic, listRuns } from "../db/re
 import { listTechLeadEvidence, listTechLeads } from "../db/tech-leads.js";
 import { listOpportunityLeads, listTechnologyOpportunities } from "../db/planning.js";
 import { applyProvenanceMigrations } from "../db/provenance-migrations.js";
+import { captureRevision, entityKey, type EntityRef } from "../db/provenance-facts.js";
 import type { AnalysisBatch, ContentItem, Insight, Report, ReportIndexEntry, Source, Topic, ValidationResult } from "../types.js";
 
 // vi.hoisted：vi.mock 工厂被提升到文件顶部，须用 hoisted 让 mock fns 在工厂运行时已初始化
@@ -132,6 +133,14 @@ function mkReport(): Report {
   };
 }
 
+function seedConflictingContentRevision(item: ContentItem): void {
+  const ref: EntityRef = { type: "content_item", locator: { kind: "id", id: item.id }, revision: item.content_hash, role: "input" };
+  captureRevision(db, {
+    entity_type: ref.type, entity_key: entityKey(ref), revision: ref.revision,
+    snapshot: { url: item.url, source_id: item.source_id, fetched_at: item.fetched_at, published_at: item.published_at, body_length: item.body.length + 1, content_hash: item.content_hash },
+  });
+}
+
 beforeEach(() => {
   db = openDb(":memory:");
   insertTopic(db, topic);
@@ -198,6 +207,31 @@ describe("runAnalysis", () => {
       { stage: "analyze", event_type: "started" },
     ]);
   });
+
+  it("输入 revision 冲突时追加失败事件；快照原子回滚且重试幂等", async () => {
+    applyProvenanceMigrations(db);
+    db.prepare(`INSERT INTO generation_trace(id,scope_kind,trigger_kind,status,completion_policy,coverage,runtime_version,summary,started_at)
+      VALUES ('trace_1','topic_pipeline','api','running','{}','complete','{}','{}','2026-06-07T00:00:00Z')`).run();
+    const source: Source = { id: "s1", name: "S", type: "rss", endpoint: "https://x", topic_ids: ["t1"], fetch_interval: "1h", backfill: null, enabled: true };
+    insertSource(db, source);
+    const item: ContentItem = { id: "ci1", source_id: "s1", url: "https://x/a", title: "A", author: null, published_at: null, fetched_at: "2026-06-07T00:00:00Z", language: "zh", topic_ids: ["t1"], tags: [], body: "body", body_kind: "article", raw_ref: "raw", content_hash: "hash_ci1", fetch_status: "ok" };
+    const newItem: ContentItem = { ...item, id: "ci2", url: "https://x/b", content_hash: "hash_ci2" };
+    insertContentItem(db, item);
+    insertContentItem(db, newItem);
+    seedConflictingContentRevision(item);
+
+    await expect(runAnalysis(db, topic, [newItem, item], win, { traceId: "trace_1" })).rejects.toThrow("provenance_revision_conflict");
+    await expect(runAnalysis(db, topic, [newItem, item], win, { traceId: "trace_1" })).rejects.toThrow("provenance_revision_conflict");
+
+    expect(analyzeMock).not.toHaveBeenCalled();
+    expect(getAnalysisBatch(db, "b1")).toBeNull();
+    expect(db.prepare("SELECT COUNT(*) AS count FROM provenance_revision").get()).toEqual({ count: 1 });
+    expect(db.prepare("SELECT stage,event_type,error FROM generation_event ORDER BY sequence").all()).toEqual([
+      { stage: "analyze", event_type: "started", error: null },
+      { stage: "analyze", event_type: "failed", error: '{"reason_code":"provenance_revision_conflict"}' },
+    ]);
+    expect(db.prepare("SELECT status FROM generation_trace WHERE id='trace_1'").get()).toEqual({ status: "failed" });
+  });
 });
 
 describe("runValidation", () => {
@@ -209,6 +243,26 @@ describe("runValidation", () => {
     expect(getValidationResult(db, "b1")?.report.pass).toBe(1); // 真落库
     const run = listRuns(db, { kind: "validate" }).find((r) => r.target.batch_id === "b1")!;
     expect(run.status).toBe("done");
+  });
+
+  it("输入 revision 冲突时追加可审计失败事件，不调用校验器", async () => {
+    applyProvenanceMigrations(db);
+    db.prepare(`INSERT INTO generation_trace(id,scope_kind,trigger_kind,status,completion_policy,coverage,runtime_version,summary,started_at)
+      VALUES ('trace_1','topic_pipeline','api','running','{}','complete','{}','{}','2026-06-07T00:00:00Z')`).run();
+    const source: Source = { id: "s1", name: "S", type: "rss", endpoint: "https://x", topic_ids: ["t1"], fetch_interval: "1h", backfill: null, enabled: true };
+    insertSource(db, source);
+    const item: ContentItem = { id: "ci1", source_id: "s1", url: "https://x/a", title: "A", author: null, published_at: null, fetched_at: "2026-06-07T00:00:00Z", language: "zh", topic_ids: ["t1"], tags: [], body: "body", body_kind: "article", raw_ref: "raw", content_hash: "hash_ci1", fetch_status: "ok" };
+    insertContentItem(db, item);
+    seedConflictingContentRevision(item);
+
+    await expect(runValidation(db, mkBatch(), [item], { traceId: "trace_1" })).rejects.toThrow("provenance_revision_conflict");
+
+    expect(validateBatchMock).not.toHaveBeenCalled();
+    expect(db.prepare("SELECT stage,event_type,error FROM generation_event ORDER BY sequence").all()).toEqual([
+      { stage: "validate", event_type: "started", error: null },
+      { stage: "validate", event_type: "failed", error: '{"reason_code":"provenance_revision_conflict"}' },
+    ]);
+    expect(db.prepare("SELECT status FROM generation_trace WHERE id='trace_1'").get()).toEqual({ status: "failed" });
   });
 });
 
