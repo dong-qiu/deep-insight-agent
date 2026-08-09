@@ -21,7 +21,7 @@
     "db:restore": "node ops/db-restore.mjs",
     "db:backup": "node --no-warnings ops/backup-db.mjs",
     "branches:cleanup": "node ops/cleanup-merged-branches.mjs",
-    "branches:cleanup:test": "node --test ops/cleanup-merged-branches.test.mjs",
+    "branches:cleanup:test": "node --test ops/cleanup-merged-branches.node-test.mjs",
     "eval:a1": "tsx evals/run-a1.ts",
     "eval:opportunity-map": "tsx evals/score-opportunity-map.ts",
     "eval:build-local": "tsx evals/build-local-eval.ts",
