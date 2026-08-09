@@ -22,9 +22,31 @@ import { extractLeadCandidates } from "./tech-leads.js";
 import { deriveOpportunityCandidates } from "./opportunity-planning.js";
 import { appendGenerationEvent, captureRevision, entityKey, type EntityRef } from "../db/provenance-facts.js";
 
+/**
+ * content_hash 是正文的版本标识；采集时间是一次观测，不是正文修订的一部分。
+ *
+ * v2 与上线初期直接使用 content_hash 的 v1 revision 隔离，避免为修正快照语义而
+ * 覆盖已有不可变事实。旧 v1 ref 仍可按原样审计，新运行统一写 content-v2 ref。
+ */
+const CONTENT_REVISION_V2 = "content-v2";
+
+function contentRevision(item: ContentItem): string {
+  return `${CONTENT_REVISION_V2}:${item.content_hash}`;
+}
+
+function contentRevisionSnapshot(item: ContentItem): Record<string, unknown> {
+  return {
+    url: item.url,
+    source_id: item.source_id,
+    published_at: item.published_at,
+    body_length: item.body.length,
+    content_hash: item.content_hash,
+  };
+}
+
 function contentRefs(items: ContentItem[]): EntityRef[] {
   return items.map((item) =>
-    ({ type: "content_item", locator: { kind: "id", id: item.id }, revision: item.content_hash, role: "input" })
+    ({ type: "content_item", locator: { kind: "id", id: item.id }, revision: contentRevision(item), role: "input" })
   );
 }
 
@@ -37,7 +59,7 @@ function captureContentRevisions(db: DB, items: ContentItem[], refs: EntityRef[]
       const ref = refs[index];
       assertWrite?.();
       captureRevision(db, { entity_type: ref.type, entity_key: entityKey(ref), revision: ref.revision, snapshot: {
-        url: item.url, source_id: item.source_id, fetched_at: item.fetched_at, published_at: item.published_at, body_length: item.body.length, content_hash: item.content_hash,
+        ...contentRevisionSnapshot(item),
       } });
     }
   })();

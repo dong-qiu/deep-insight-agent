@@ -72,11 +72,11 @@ describe("generation dispatch worker", () => {
     };
     insertSource(db, source);
     insertContentItem(db, item);
-    const ref: EntityRef = { type: "content_item", locator: { kind: "id", id: item.id }, revision: item.content_hash, role: "input" };
+    const ref: EntityRef = { type: "content_item", locator: { kind: "id", id: item.id }, revision: `content-v2:${item.content_hash}`, role: "input" };
     captureRevision(db, {
       entity_type: ref.type, entity_key: entityKey(ref), revision: ref.revision,
       snapshot: {
-        url: item.url, source_id: item.source_id, fetched_at: item.fetched_at, published_at: item.published_at,
+        url: item.url, source_id: item.source_id, published_at: item.published_at,
         body_length: item.body.length + 1, content_hash: item.content_hash,
       },
     });
@@ -103,13 +103,13 @@ describe("generation dispatch worker", () => {
       topicId: "topic_a", reportType: "brief", period: "2026-08-03", windowHours: 168, items: 15,
     });
     if (accepted.kind !== "accepted") throw new Error("expected accepted request");
-    let received: { reportType: string; windowHours?: number; items?: number; traceId?: string } | null = null;
+    let received: { reportType: string; windowHours?: number; windowEnd?: string; items?: number; traceId?: string } | null = null;
     const result = await runGenerationDispatchOnce(db, async (runDb, _topicId, opts) => {
       received = opts;
       runDb.prepare("UPDATE run SET status='done', ended_at=? WHERE id=?").run(new Date().toISOString(), opts.rootRunId);
     });
     expect(result).toMatchObject({ claimed: true, traceId: accepted.traceId, status: "done" });
-    expect(received).toMatchObject({ reportType: "brief", windowHours: 168, items: 15, traceId: accepted.traceId });
+    expect(received).toMatchObject({ reportType: "brief", windowHours: 168, windowEnd: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/), items: 15, traceId: accepted.traceId });
   });
 
   it("records no-content as an explicit skipped cron trace instead of an untraced failure", async () => {

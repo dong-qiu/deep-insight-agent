@@ -134,10 +134,10 @@ function mkReport(): Report {
 }
 
 function seedConflictingContentRevision(item: ContentItem): void {
-  const ref: EntityRef = { type: "content_item", locator: { kind: "id", id: item.id }, revision: item.content_hash, role: "input" };
+  const ref: EntityRef = { type: "content_item", locator: { kind: "id", id: item.id }, revision: `content-v2:${item.content_hash}`, role: "input" };
   captureRevision(db, {
     entity_type: ref.type, entity_key: entityKey(ref), revision: ref.revision,
-    snapshot: { url: item.url, source_id: item.source_id, fetched_at: item.fetched_at, published_at: item.published_at, body_length: item.body.length + 1, content_hash: item.content_hash },
+    snapshot: { url: item.url, source_id: item.source_id, published_at: item.published_at, body_length: item.body.length + 1, content_hash: item.content_hash },
   });
 }
 
@@ -167,6 +167,43 @@ describe("runAnalysis", () => {
       { stage: "analyze", event_type: "started" }, { stage: "analyze", event_type: "completed" },
     ]);
     expect(db.prepare("SELECT COUNT(*) AS count FROM provenance_revision").get()).toEqual({ count: 2 });
+  });
+
+  it("同一正文被重复抓取时，fetched_at 变化不改变 content-v2 revision", async () => {
+    applyProvenanceMigrations(db);
+    db.prepare(`INSERT INTO generation_trace(id,scope_kind,trigger_kind,status,completion_policy,coverage,runtime_version,summary,started_at)
+      VALUES ('trace_1','topic_pipeline','api','running','{}','complete','{}','{}','2026-06-07T00:00:00Z')`).run();
+    db.prepare(`INSERT INTO generation_trace(id,scope_kind,trigger_kind,status,completion_policy,coverage,runtime_version,summary,started_at)
+      VALUES ('trace_2','topic_pipeline','api','running','{}','complete','{}','{}','2026-06-08T00:00:00Z')`).run();
+    const source: Source = { id: "s1", name: "S", type: "rss", endpoint: "https://x", topic_ids: ["t1"], fetch_interval: "1h", backfill: null, enabled: true };
+    insertSource(db, source);
+    const item: ContentItem = { id: "ci1", source_id: "s1", url: "https://x/a", title: "A", author: null, published_at: null, fetched_at: "2026-06-07T00:00:00Z", language: "zh", topic_ids: ["t1"], tags: [], body: "body", body_kind: "article", raw_ref: "raw", content_hash: "hash_ci1", fetch_status: "ok" };
+    insertContentItem(db, item);
+    // 生产已有的 v1 快照带 fetched_at；v2 必须新建稳定 revision，而非覆盖旧事实。
+    const legacyRef: EntityRef = { type: "content_item", locator: { kind: "id", id: item.id }, revision: item.content_hash, role: "input" };
+    captureRevision(db, {
+      entity_type: legacyRef.type, entity_key: entityKey(legacyRef), revision: legacyRef.revision,
+      snapshot: { url: item.url, source_id: item.source_id, fetched_at: item.fetched_at, published_at: item.published_at, body_length: item.body.length, content_hash: item.content_hash },
+    });
+    analyzeMock
+      .mockResolvedValueOnce(mkBatch())
+      .mockResolvedValueOnce({ ...mkBatch(), id: "b2", insights: [mkInsight("i2")] });
+
+    await runAnalysis(db, topic, [item], win, { traceId: "trace_1" });
+    const refetched = { ...item, fetched_at: "2026-06-08T00:00:00Z" };
+    await runAnalysis(db, topic, [refetched], win, { traceId: "trace_2" });
+
+    expect(analyzeMock).toHaveBeenCalledTimes(2);
+    expect(db.prepare("SELECT revision,snapshot FROM provenance_revision WHERE entity_type='content_item' ORDER BY revision").all()).toEqual([
+      {
+        revision: "content-v2:hash_ci1",
+        snapshot: JSON.stringify({ body_length: 4, content_hash: "hash_ci1", published_at: null, source_id: "s1", url: "https://x/a" }),
+      },
+      {
+        revision: "hash_ci1",
+        snapshot: JSON.stringify({ body_length: 4, content_hash: "hash_ci1", fetched_at: "2026-06-07T00:00:00Z", published_at: null, source_id: "s1", url: "https://x/a" }),
+      },
+    ]);
   });
 
   it("落 batch + analyze Run(done) + 透传 analyze 的成本", async () => {

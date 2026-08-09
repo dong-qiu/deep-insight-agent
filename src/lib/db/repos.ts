@@ -251,7 +251,7 @@ export function updateContentItem(db: DB, c: ContentItem): void {
 export function listContentForTopic(
   db: DB,
   topicId: string,
-  opts: { since?: string; limit?: number } = {},
+  opts: { since?: string; until?: string; limit?: number } = {},
 ): ContentItem[] {
   const clauses = ["topic_ids LIKE @like"];
   const params: Record<string, unknown> = { like: `%"${topicId}"%`, limit: opts.limit ?? 200 };
@@ -261,6 +261,11 @@ export function listContentForTopic(
     // COALESCE 在 published_at 为 null 时回退到 fetched_at，保证不解析的源仍能被收录。
     clauses.push("COALESCE(published_at, fetched_at) >= @since");
     params.since = opts.since;
+  }
+  if (opts.until) {
+    // durable retry 必须复用原窗口上界；否则晚到的内容会混入历史 Brief。
+    clauses.push("COALESCE(published_at, fetched_at) <= @until");
+    params.until = opts.until;
   }
   const rows = db
     .prepare(
