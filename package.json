@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=20.9 <21",
+    "node": ">=20.19 <21",
     "npm": ">=10 <11"
   },
   "packageManager": "npm@10.8.2",
