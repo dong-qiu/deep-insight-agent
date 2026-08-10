@@ -1,14 +1,15 @@
 import { defineConfig } from "vitest/config";
 
 /** Vitest 配置：① TSX 测试用 automatic JSX runtime（C-2 起；Next 自己 build 期转换，vitest 旁路）。
- *     vite 钉在 6（见 package.json）：vitest 4 的 vite peer 范围很宽，npm 10（CI）会解到 vite 6/esbuild、
- *     npm 11 解到 vite 8/oxc，两者转换器与 JSX 配置不同且 vite 8 的 rolldown 原生 binding 撞 npm ci bug#4828；
- *     故显式钉 vite 6，全环境统一走 esbuild、此处沿用 `esbuild.jsx`。
+ *     Vite 8 改用 Rolldown/Oxc，`esbuild` 配置会被兼容层转换且与 Vitest 的 Oxc 默认配置冲突；
+ *     因此直接使用 Oxc 的 JSX 配置，确保 .tsx 与含 `import type` 的源码和测试均按 TypeScript/JSX 解析。
  *  ② 覆盖率（质量 Q4）：v8 provider，度量 src 源码（排除测试/类型/桶文件）。
  *     `npm run test:coverage` 出报告；CI 以当前基线作下限，阻断覆盖率回退。 */
 export default defineConfig({
-  esbuild: {
-    jsx: "automatic",
+  oxc: {
+    jsx: {
+      runtime: "automatic",
+    },
   },
   test: {
     coverage: {
