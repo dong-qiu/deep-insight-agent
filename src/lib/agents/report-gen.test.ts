@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AnalysisBatch, ContentItem, Topic, ValidationResult } from "../types.js";
-import { buildReport, HIGHLIGHTS_MAX, inlineCitedStatement, isMilestoneInsight, KEY_MIN_IMPORTANCE, reportHighlights, selectBriefInsights, selectInsights, summarizeBriefSelection } from "./report-gen.js";
+import { BRIEF_SUPPLEMENTAL_MAX, buildReport, HIGHLIGHTS_MAX, inlineCitedStatement, isMilestoneInsight, KEY_MIN_IMPORTANCE, reportHighlights, selectBriefInsights, selectInsights, summarizeBriefSelection } from "./report-gen.js";
 import { flagLabel } from "../utils/citation-verdict.js";
 
 const topic: Topic = {
@@ -161,21 +161,81 @@ describe("selectBriefInsights（Daily Brief 已发布证据去重）", () => {
     expect(reportHighlights(batchOf(), validation, { publishedEventEvidence: published }).map((x) => x.text)).toEqual([]);
   });
 
-  it("把新鲜度过滤与已发布去重分开计数，供空刊审计而不改变选择语义", () => {
+  it("较早但未发布的稳定 event 以明确标注的补充发现发布，并保留主通道过滤计数", () => {
     const batch = batchOf();
     const freshness = { since: "2026-05-06T00:00:00Z", content_item_ids: ["ci_new"], freshest_candidate_at: "2026-05-07T00:00:00Z" };
     const onlyOldEvidence = summarizeBriefSelection(batch, validation, "brief", [], freshness);
-    expect(onlyOldEvidence.included).toEqual([]);
+    expect(onlyOldEvidence.included.map((x) => x.insight.id)).toEqual(["i1"]);
+    expect(onlyOldEvidence.included[0].brief_inclusion).toBe("supplemental");
     expect(onlyOldEvidence.summary).toMatchObject({
-      includable_insight_count: 1, freshness_filtered_insight_count: 1,
-      already_published_filtered_insight_count: 0, published_insight_count: 0, published_citation_count: 0,
+      includable_insight_count: 1, freshness_filtered_insight_count: 1, already_published_filtered_insight_count: 0,
+      supplemental_candidate_count: 1, supplemental_published_insight_count: 1, published_insight_count: 1, published_citation_count: 1,
     });
+    const { report, index } = buildReport({ topic, batch, validation, type: "brief", contentLookup: new Map(), briefFreshness: freshness, now: "2026-05-07T08:00:00Z" });
+    expect(report.body_md).toContain("〔补充发现〕");
+    expect(report.body_html).toContain('<span class="supplemental">补充发现</span>');
+    expect(index.highlights).toEqual(["S1〔补充发现〕"]);
+    expect(reportHighlights(batch, validation, { freshness }).map((x) => x.text)).toEqual(["S1〔补充发现〕"]);
 
     const noFreshnessGate = summarizeBriefSelection(batch, validation, "brief", published);
     expect(noFreshnessGate.included).toEqual([]);
     expect(noFreshnessGate.summary).toMatchObject({
       includable_insight_count: 1, freshness_filtered_insight_count: 0,
       already_published_filtered_insight_count: 1, published_insight_count: 0,
+    });
+  });
+
+  it("补充发现不重发已发布 event，也不让缺 event_id 的较早趋势绕过去重", () => {
+    const freshness = { since: "2026-05-06T00:00:00Z", content_item_ids: ["ci_new"], freshest_candidate_at: "2026-05-07T00:00:00Z" };
+    const alreadyPublished = summarizeBriefSelection(batchOf(), validation, "brief", published, freshness);
+    expect(alreadyPublished.included).toEqual([]);
+    expect(alreadyPublished.summary).toMatchObject({
+      freshness_filtered_insight_count: 1, already_published_filtered_insight_count: 1,
+      supplemental_candidate_count: 0, supplemental_published_insight_count: 0,
+    });
+
+    const noEvent = batchOf();
+    noEvent.insights[0].event_id = null;
+    const withoutStableEvent = summarizeBriefSelection(noEvent, validation, "brief", [], freshness);
+    expect(withoutStableEvent.included).toEqual([]);
+    expect(withoutStableEvent.summary).toMatchObject({
+      freshness_filtered_insight_count: 1, supplemental_candidate_count: 0, supplemental_published_insight_count: 0,
+    });
+
+    const duplicateEvent = batchOf();
+    duplicateEvent.insights.push({ ...duplicateEvent.insights[0], id: "i_duplicate", statement: "same event, second framing" });
+    const duplicateChecks: ValidationResult = {
+      ...validation,
+      checks: [...validation.checks, {
+        insight_id: "i_duplicate", citation_index: 0, reachability: "pass", reachability_reason: "ok",
+        consistency: "support", consistency_reason: "ok", verdict: "pass",
+      }],
+    };
+    expect(summarizeBriefSelection(duplicateEvent, duplicateChecks, "brief", [], freshness).included).toHaveLength(1);
+  });
+
+  it("补充发现有固定上限，近期主通道不受该上限影响", () => {
+    const base = batchOf().insights[0];
+    const batch: AnalysisBatch = {
+      ...batchOf(),
+      insights: Array.from({ length: BRIEF_SUPPLEMENTAL_MAX + 1 }, (_, i) => ({
+        ...base, id: `old_${i}`, event_id: `event_${i}`,
+        citations: [{ ...base.citations[0], content_item_id: `old_ci_${i}` }],
+      })),
+    };
+    const checks: ValidationResult = {
+      ...validation,
+      checks: batch.insights.map((insight) => ({
+        insight_id: insight.id, citation_index: 0, reachability: "pass" as const, reachability_reason: "ok" as const,
+        consistency: "support" as const, consistency_reason: "ok" as const, verdict: "pass" as const,
+      })),
+    };
+    const freshness = { since: "2026-05-06T00:00:00Z", content_item_ids: ["ci_new"], freshest_candidate_at: "2026-05-07T00:00:00Z" };
+    const selection = summarizeBriefSelection(batch, checks, "brief", [], freshness);
+    expect(selection.included).toHaveLength(BRIEF_SUPPLEMENTAL_MAX);
+    expect(selection.summary).toMatchObject({
+      supplemental_candidate_count: BRIEF_SUPPLEMENTAL_MAX + 1,
+      supplemental_published_insight_count: BRIEF_SUPPLEMENTAL_MAX,
     });
   });
 
