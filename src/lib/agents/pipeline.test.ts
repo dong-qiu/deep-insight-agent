@@ -6,7 +6,7 @@ import { getAnalysisBatch, getValidationResult, saveAnalysisBatch, saveValidatio
 import { type DB, openDb } from "../db/index.js";
 import { insertContentItem, insertSource, insertTopic, listRuns } from "../db/repos.js";
 import { listTechLeadEvidence, listTechLeads } from "../db/tech-leads.js";
-import { listOpportunityLeads, listTechnologyOpportunities } from "../db/planning.js";
+import { createTopicDirection, listOpportunityLeads, listTechnologyOpportunities } from "../db/planning.js";
 import { applyProvenanceMigrations } from "../db/provenance-migrations.js";
 import { captureRevision, entityKey, type EntityRef } from "../db/provenance-facts.js";
 import type { AnalysisBatch, ContentItem, Insight, Report, ReportIndexEntry, Source, Topic, ValidationResult } from "../types.js";
@@ -427,6 +427,31 @@ describe("runTechLeadExtraction", () => {
     expect(db.prepare("SELECT stage,event_type FROM generation_event WHERE stage IN ('map_direction','derive_opportunity') ORDER BY sequence").all()).toEqual([
       { stage: "map_direction", event_type: "started" },
       { stage: "map_direction", event_type: "failed" },
+    ]);
+  });
+
+  it("将新机会作为 Trace 输出，并冻结其 Lead 与方向 revision", () => {
+    applyProvenanceMigrations(db);
+    db.prepare(`INSERT INTO generation_trace(id,scope_kind,trigger_kind,status,completion_policy,coverage,runtime_version,summary,started_at)
+      VALUES ('trace_1','topic_pipeline','api','running','{}','complete','{}','{}','2026-06-07T00:00:00Z')`).run();
+    createTopicDirection(db, {
+      id: "direction_1", topic_id: topic.id, name: "Agent", objective: "O", problem_statement: "P",
+      in_scope: [], out_of_scope: [], key_questions: [], constraints: [], success_signals: [],
+      match_terms: ["agent"], adjacent_terms: [], challenge_terms: [], horizon: "now", status: "active",
+    }, "2026-06-07T00:00:00Z");
+    const { batch, validation } = seedLeadInput();
+    runTechLeadExtraction(db, batch, validation, "2026-06-07T01:00:00Z", { traceId: "trace_1" });
+    expect(db.prepare(`SELECT DISTINCT entity_type FROM generation_entity_ref
+      WHERE trace_id='trace_1' AND role='output' ORDER BY entity_type`).all()).toEqual([
+      { entity_type: "tech_lead" }, { entity_type: "technology_opportunity" },
+    ]);
+    expect(db.prepare(`SELECT DISTINCT entity_type FROM generation_entity_ref
+      WHERE trace_id='trace_1' AND role='input' ORDER BY entity_type`).all()).toEqual([
+      { entity_type: "analysis_batch" }, { entity_type: "tech_lead" }, { entity_type: "topic_direction" },
+    ]);
+    expect(db.prepare(`SELECT entity_type,COUNT(*) AS count FROM provenance_revision
+      WHERE entity_type IN ('tech_lead','topic_direction','technology_opportunity') GROUP BY entity_type ORDER BY entity_type`).all()).toEqual([
+      { entity_type: "tech_lead", count: 1 }, { entity_type: "technology_opportunity", count: 1 }, { entity_type: "topic_direction", count: 1 },
     ]);
   });
 });

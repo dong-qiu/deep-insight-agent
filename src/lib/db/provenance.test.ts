@@ -10,6 +10,7 @@ import {
   createScheduledTraceRequest,
   getGenerationTraceStatus,
   hashIdempotencyKey,
+  recordManualDecision,
   retryFailedTraceRequest,
 } from "./provenance.js";
 
@@ -104,6 +105,33 @@ describe("generation provenance dispatch", () => {
     });
     expect(claimSourceCollectTrace(db, first.traceId, now)).toMatchObject({ traceId: first.traceId, fencingEpoch: 1 });
     expect(claimSourceCollectTrace(db, first.traceId, now)).toBeNull();
+  });
+
+  it("atomically records an idempotent manual decision with its audit, revision, and terminal trace", () => {
+    const before = { type: "topic_direction", locator: { kind: "id" as const, id: "direction_a" }, revision: "direction-v1:before", role: "input" as const };
+    const output = { ...before, revision: "direction-v1:after", role: "output" as const };
+    let writes = 0;
+    const input = {
+      entity: { type: before.type, locator: before.locator }, previous: before, topicId: "topic_a",
+      stage: "direction_change" as const, terminalEvent: "config_changed" as const, action: "topic_direction_update",
+      actorId: "user_1", detail: { from_version: 1, to_version: 2 }, idempotencyKeyHash: hashIdempotencyKey("manual-key", "secret"), now,
+      mutate: () => { writes += 1; return true; },
+      snapshot: () => ({ id: "direction_a", version: 2 }), output: () => output,
+    };
+    const first = recordManualDecision(db, input);
+    if (first.kind !== "accepted") throw new Error("expected accepted manual decision");
+    const replay = recordManualDecision(db, input);
+    expect(replay).toEqual({ kind: "replayed", traceId: first.traceId, requestId: first.requestId });
+    expect(writes).toBe(1);
+    expect(getGenerationTraceStatus(db, first.traceId)).toMatchObject({ status: "done", topic_id: "topic_a", scope_kind: "manual_decision" });
+    expect(db.prepare("SELECT state FROM generation_trace_request WHERE trace_id=?").get(first.traceId)).toEqual({ state: "terminal" });
+    expect(db.prepare("SELECT state FROM generation_lease WHERE trace_id=?").get(first.traceId)).toEqual({ state: "released" });
+    expect(db.prepare("SELECT stage,event_type,actor_id,audit_log_id FROM generation_event WHERE trace_id=? ORDER BY sequence").all(first.traceId)).toEqual([
+      { stage: "direction_change", event_type: "started", actor_id: "user_1", audit_log_id: null },
+      { stage: "direction_change", event_type: "config_changed", actor_id: "user_1", audit_log_id: 1 },
+    ]);
+    expect(db.prepare("SELECT actor,action FROM audit_log").all()).toEqual([{ actor: "user_1", action: "topic_direction_update" }]);
+    expect(db.prepare("SELECT entity_type,revision FROM provenance_revision WHERE entity_type='topic_direction'").all()).toEqual([{ entity_type: "topic_direction", revision: "direction-v1:after" }]);
   });
 
   it("expires an unclaimed synchronous source lease instead of permanently blocking the next hour", () => {

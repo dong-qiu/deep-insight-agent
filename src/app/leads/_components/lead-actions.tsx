@@ -9,7 +9,7 @@ export function LeadActions({ id, status }: { id: string; status: TechLeadStatus
   async function setStatus(next: TechLeadStatus): Promise<void> {
     setBusy(true);
     try {
-      const res = await fetch(`/api/leads/${id}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ status: next }) });
+      const res = await fetch(`/api/leads/${id}`, { method: "POST", headers: { "content-type": "application/json", "Idempotency-Key": crypto.randomUUID() }, body: JSON.stringify({ status: next }) });
       if (!res.ok) throw new Error();
       router.refresh();
     } finally { setBusy(false); }

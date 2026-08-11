@@ -4,7 +4,8 @@
  * 这里故意不调用 agent 或网络，确保 202 的可靠性边界仅依赖一个 SQLite 事务。 */
 import { createHmac, randomUUID } from "node:crypto";
 import type { DB } from "./index.js";
-import { entityKey } from "./provenance-facts.js";
+import { appendGenerationEvent, captureRevision, entityKey, type EntityRef } from "./provenance-facts.js";
+import { appendAudit } from "./audit.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const REQUEST_RETENTION_MS = 100 * DAY_MS;
@@ -87,6 +88,105 @@ const id = (prefix: string): string => `${prefix}_${randomUUID().replaceAll("-",
 /** 手动 Idempotency-Key 只以 HMAC 形式持久化；调用方必须从受控 secret 提供 key。 */
 export function hashIdempotencyKey(key: string, secret: string): string {
   return createHmac("sha256", secret).update(key, "utf8").digest("hex");
+}
+
+export type ManualDecisionResult =
+  | { kind: "accepted"; traceId: string; requestId: string }
+  | { kind: "replayed"; traceId: string; requestId: string }
+  | { kind: "conflict"; activeTraceId: string }
+  | { kind: "not_found" };
+
+/**
+ * 将一次人工规划决定与业务改动、audit_log、不可变 revision 及 trace event 一起提交。
+ *
+ * 人工操作是同步且短暂的，不进入 dispatch worker；但仍保留 request / lease，从而使同一
+ * Idempotency-Key 的网络重放返回原 trace，而不是覆盖一次已经审计过的决定。
+ */
+export function recordManualDecision(
+  db: DB,
+  input: {
+    entity: Pick<EntityRef, "type" | "locator">;
+    output: () => EntityRef | null;
+    previous?: EntityRef;
+    topicId?: string | null;
+    stage: "human_review" | "direction_change";
+    terminalEvent: "manual_decided" | "config_changed";
+    action: string;
+    actorId: string;
+    detail: Record<string, unknown>;
+    snapshot: () => Record<string, unknown> | null;
+    mutate: () => boolean;
+    idempotencyKeyHash: string;
+    now?: Date;
+  },
+): ManualDecisionResult {
+  const now = input.now ?? new Date();
+  const nowIso = now.toISOString();
+  const replaySince = isoAfter(now, -DAY_MS);
+  const entity = entityKey(input.entity);
+  const activeKey = `manual_decision:${entity}`;
+  const notFound = Symbol("manual_decision_not_found");
+
+  try {
+  return db.transaction((): ManualDecisionResult => {
+    const replay = db.prepare(`SELECT id,trace_id FROM generation_trace_request
+      WHERE idempotency_key_hash=? AND created_at >= ? ORDER BY created_at DESC LIMIT 1`)
+      .get(input.idempotencyKeyHash, replaySince) as { id: string; trace_id: string } | undefined;
+    if (replay) return { kind: "replayed", traceId: replay.trace_id, requestId: replay.id };
+
+    const active = db.prepare("SELECT trace_id FROM generation_lease WHERE active_key=? AND state IN ('reserved','owned') LIMIT 1")
+      .get(activeKey) as { trace_id: string } | undefined;
+    if (active) return { kind: "conflict", activeTraceId: active.trace_id };
+
+    const sequence = (db.prepare("SELECT COUNT(*) AS count FROM generation_trace_request WHERE idempotency_key_hash=?")
+      .get(input.idempotencyKeyHash) as { count: number }).count + 1;
+    const traceId = id("trace");
+    const requestId = id("trace_req");
+    const leaseId = id("lease");
+    const scopeKey = `manual_decision:${entity}:${input.idempotencyKeyHash}:${sequence}`;
+    db.prepare(`INSERT INTO generation_trace
+      (id,scope_kind,trigger_kind,topic_id,status,completion_policy,coverage,runtime_version,summary,started_at)
+      VALUES (@id,'manual_decision','api',@topic_id,'running',@completion_policy,'complete',@runtime_version,'{}',@started_at)`).run({
+      id: traceId, topic_id: input.topicId ?? null,
+      completion_policy: JSON.stringify({ schema_version: 1, execution_kind: "event_only", required_stages: [input.stage] }),
+      runtime_version: runtimeVersionAt(db, nowIso), started_at: nowIso,
+    });
+    db.prepare(`INSERT INTO generation_trace_request
+      (id,scope_key,active_key,idempotency_key_hash,request_sequence,trace_id,state,retained_until,created_at)
+      VALUES (@id,@scope_key,@active_key,@hash,@sequence,@trace_id,'accepted',@retained_until,@created_at)`).run({
+      id: requestId, scope_key: scopeKey, active_key: activeKey, hash: input.idempotencyKeyHash,
+      sequence, trace_id: traceId, retained_until: isoAfter(now, REQUEST_RETENTION_MS), created_at: nowIso,
+    });
+    db.prepare("UPDATE generation_trace SET request_id=? WHERE id=?").run(requestId, traceId);
+    db.prepare(`INSERT INTO generation_lease (id,active_key,scope_key,trace_id,state,fencing_epoch,created_at)
+      VALUES (@id,@active_key,@scope_key,@trace_id,'reserved',0,@created_at)`).run({
+      id: leaseId, active_key: activeKey, scope_key: scopeKey, trace_id: traceId, created_at: nowIso,
+    });
+
+    appendGenerationEvent(db, {
+      trace_id: traceId, stage: input.stage, event_type: "started", actor_type: "user", actor_id: input.actorId,
+      input_refs: input.previous ? [input.previous] : [], context_completeness: "complete", occurred_at: nowIso,
+    });
+    if (!input.mutate()) throw notFound;
+    const snapshot = input.snapshot();
+    const output = input.output();
+    if (!snapshot || !output) throw notFound;
+    const auditLogId = appendAudit(db, { actor: input.actorId, action: input.action, target: entity, detail: input.detail });
+    captureRevision(db, { entity_type: output.type, entity_key: entity, revision: output.revision, snapshot, captured_at: nowIso });
+    appendGenerationEvent(db, {
+      trace_id: traceId, stage: input.stage, event_type: input.terminalEvent, actor_type: "user", actor_id: input.actorId,
+      audit_log_id: auditLogId, input_refs: input.previous ? [input.previous] : [], output_refs: [output],
+      context_completeness: "complete", occurred_at: nowIso,
+    });
+    db.prepare("UPDATE generation_trace SET status='done',ended_at=?,summary=? WHERE id=?").run(nowIso, JSON.stringify({ action: input.action }), traceId);
+    db.prepare("UPDATE generation_trace_request SET state='terminal' WHERE id=?").run(requestId);
+    db.prepare("UPDATE generation_lease SET state='released',released_at=? WHERE id=?").run(nowIso, leaseId);
+    return { kind: "accepted", traceId, requestId };
+  })();
+  } catch (error) {
+    if (error === notFound) return { kind: "not_found" };
+    throw error;
+  }
 }
 
 /** Deep Dive 的 202 原子受理。 */
@@ -596,9 +696,14 @@ export function listGenerationTraceTimeline(db: DB, traceId: string): Array<Reco
 
 /** 已发布报告只通过 output ref 反查 trace；历史/未接入溯源的报告返回 null。 */
 export function findGenerationTraceForReport(db: DB, reportId: string): string | null {
+  return findGenerationTraceForEntity(db, { type: "report", locator: { kind: "id", id: reportId } });
+}
+
+/** 仅从 append-only output ref 定位某个实体最近一次产出或人工变更 trace。 */
+export function findGenerationTraceForEntity(db: DB, ref: Pick<EntityRef, "type" | "locator">): string | null {
   if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='generation_entity_ref'").get()) return null;
-  const key = entityKey({ type: "report", locator: { kind: "id", id: reportId } });
+  const key = entityKey(ref);
   const row = db.prepare(`SELECT trace_id FROM generation_entity_ref
-    WHERE entity_type='report' AND entity_key=? AND role='output' ORDER BY rowid DESC LIMIT 1`).get(key) as { trace_id: string } | undefined;
+    WHERE entity_type=? AND entity_key=? AND role='output' ORDER BY rowid DESC LIMIT 1`).get(ref.type, key) as { trace_id: string } | undefined;
   return row?.trace_id ?? null;
 }

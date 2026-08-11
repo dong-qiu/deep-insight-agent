@@ -4,9 +4,11 @@ import { getDb } from "../../lib/db/index.js";
 import { listOpportunityLeads, listTechnologyOpportunities, listTopicDirections } from "../../lib/db/planning.js";
 import { listTechLeadEvidence } from "../../lib/db/tech-leads.js";
 import { listTopics } from "../../lib/db/repos.js";
+import { findGenerationTraceForEntity } from "../../lib/db/provenance.js";
 import { OpportunityActions } from "./_components/opportunity-actions.js";
 import { DirectionWorkbench, type DirectionMetric } from "./_components/direction-workbench.js";
 import { PlanningTabs } from "./_components/planning-tabs.js";
+import { ProvenanceTimeline } from "../reports/[id]/_components/provenance-timeline.js";
 
 export const dynamic = "force-dynamic";
 const LANE: Record<string, string> = { core: "核心方向", adjacent: "相邻机会", horizon: "方向校准", challenge: "反证 / 风险" };
@@ -22,6 +24,11 @@ export default async function OpportunitiesPage(): Promise<React.ReactElement> {
   const directions = new Map(directionList.map((direction) => [direction.id, direction]));
   const topicNames = new Map(topics.map((topic) => [topic.id, topic.name]));
   const metrics: Record<string, DirectionMetric> = {};
+  const directionTraceIds: Record<string, string> = {};
+  if (isAdmin) for (const direction of directionList) {
+    const traceId = findGenerationTraceForEntity(db, { type: "topic_direction", locator: { kind: "id", id: direction.id } });
+    if (traceId) directionTraceIds[direction.id] = traceId;
+  }
   for (const opportunity of listTechnologyOpportunities(db, { includeClosed: true, limit: 1000 })) {
     if (!opportunity.direction_id) continue;
     const metric = metrics[opportunity.direction_id] ?? { opportunities: 0, stale: 0 };
@@ -40,12 +47,14 @@ export default async function OpportunitiesPage(): Promise<React.ReactElement> {
           const direction = opportunity.direction_id ? directions.get(opportunity.direction_id) : null;
           const leads = listOpportunityLeads(db, opportunity.id);
           const evidence = leads.flatMap((lead) => listTechLeadEvidence(db, lead.id));
+          const traceId = isAdmin ? findGenerationTraceForEntity(db, { type: "technology_opportunity", locator: { kind: "id", id: opportunity.id } }) : null;
           return <article className="card lead-card opportunity-card" key={opportunity.id}>
             <div className="card-meta"><span className="tag-chip">{LANE[opportunity.lane]}</span>{opportunity.mapping_state === "stale" ? <span className="tag-chip">规则已更新 · 待复核</span> : null}<span className="imp-badge imp-4">{Math.round(opportunity.priority_score)} 分</span><span className="muted">{topicNames.get(opportunity.topic_id) ?? opportunity.topic_id} · {direction?.name ?? "待校准方向"} · {EFFECT[opportunity.planning_effect]}</span></div>
             <h3>{opportunity.title}</h3><p><strong>待验证假设：</strong>{opportunity.hypothesis.replace(/^待验证假设：/, "")}</p><p><strong>建议验证：</strong>{opportunity.proposed_validation}</p>
             <p className="muted">{opportunity.score_detail.reason} · 当前状态：{opportunity.status}</p>
             <details><summary>可追溯事实证据（{evidence.length}）</summary><ul>{evidence.map((item) => <li key={`${item.lead_id}:${item.insight_id}:${item.citation_index}`}><a href={item.url} target="_blank" rel="noreferrer">{item.source_name}</a> · {item.observed_at.slice(0, 10)}<br />「{item.quote}」</li>)}</ul></details>
             <details><summary>不确定性（{opportunity.uncertainties.length}）</summary><ul>{opportunity.uncertainties.map((item) => <li key={item}>{item}</li>)}</ul></details>
+            {traceId ? <ProvenanceTimeline traceId={traceId} /> : null}
             {isAdmin ? <p><OpportunityActions id={opportunity.id} status={opportunity.status} /></p> : null}
           </article>;
         })}
@@ -55,7 +64,7 @@ export default async function OpportunitiesPage(): Promise<React.ReactElement> {
   return <section>
     <h2>技术规划机会</h2>
     <p className="muted">候选由已校验技术线索确定性映射而来。它们是研究 / PoC / 立项输入，不是项目批准；“待验证假设”与原始事实严格分开。</p>
-    {isAdmin ? <PlanningTabs opportunityPool={opportunityPool} directionWorkbench={<DirectionWorkbench directions={directionList} topics={topics} metrics={metrics} />} /> : opportunityPool}
+    {isAdmin ? <PlanningTabs opportunityPool={opportunityPool} directionWorkbench={<DirectionWorkbench directions={directionList} topics={topics} metrics={metrics} traceIds={directionTraceIds} />} /> : opportunityPool}
     {!isAdmin ? <details className="card"><summary>当前方向档案（{directions.size}）</summary>{[...directions.values()].map((direction) => <section key={direction.id}><h4>{direction.name}</h4><p className="muted">{direction.objective} · {direction.status} · {direction.horizon} · v{direction.version}</p><p>关键问题：{direction.key_questions.join("；")}</p></section>)}</details> : null}
   </section>;
 }

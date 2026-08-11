@@ -21,7 +21,10 @@ import { consistencyCacheVersion, isValidationDegraded, validateBatch } from "./
 import { extractLeadCandidates } from "./tech-leads.js";
 import { deriveOpportunityCandidates } from "./opportunity-planning.js";
 import { appendGenerationEvent, captureRevision, entityKey, type EntityRef } from "../db/provenance-facts.js";
-import { contentItemRef, contentItemRevisionSnapshot } from "../db/provenance-revisions.js";
+import {
+  contentItemRef, contentItemRevisionSnapshot, techLeadRef, techLeadRevisionSnapshot,
+  technologyOpportunityRef, technologyOpportunityRevisionSnapshot, topicDirectionRef, topicDirectionRevisionSnapshot,
+} from "../db/provenance-revisions.js";
 
 function contentRefs(items: ContentItem[]): EntityRef[] {
   return items.map((item) => contentItemRef(item));
@@ -184,37 +187,54 @@ export function runTechLeadExtraction(
   let leads: TechLead[];
   try {
     opts.assertWrite?.();
-    leads = upsertTechLeads(db, extractLeadCandidates(batch, validation, items, now), now);
-    if (opts.traceId) {
-      const refs = leads.map((lead): EntityRef => ({ type: "tech_lead", locator: { kind: "id", id: lead.id }, revision: lead.id, role: "output" }));
-      db.transaction(() => {
+    leads = db.transaction(() => {
+      const written = upsertTechLeads(db, extractLeadCandidates(batch, validation, items, now), now);
+      if (opts.traceId) {
+        const refs = written.map((lead) => techLeadRef(lead, "output"));
         opts.assertWrite?.();
-        for (let i = 0; i < leads.length; i += 1) captureRevision(db, { entity_type: "tech_lead", entity_key: entityKey(refs[i]), revision: refs[i].revision, snapshot: { id: leads[i].id, topic_id: leads[i].topic_id, kind: leads[i].kind, status: leads[i].status, latest_evidence_at: leads[i].latest_evidence_at } });
+        for (let i = 0; i < written.length; i += 1) captureRevision(db, { entity_type: refs[i].type, entity_key: entityKey(refs[i]), revision: refs[i].revision, snapshot: techLeadRevisionSnapshot(written[i]) });
         emitTrace(db, opts.traceId, { stage: "derive_lead", event_type: "completed", input_refs: [batchRef], output_refs: refs }, opts.assertWrite);
-      })();
-    }
+      }
+      return written;
+    })();
   } catch (error) {
     emitTrace(db, opts.traceId, { stage: "derive_lead", event_type: "failed", input_refs: [batchRef], error: { reason_code: "derive_lead_failed" } }, opts.assertWrite);
     throw error;
   }
   // 两个投影阶段均 non-blocking：失败不回滚已提交 Lead，也不阻断日报。
+  const leadRefs = opts.traceId ? leads.map((lead) => techLeadRef(lead)) : [];
   let candidates: ReturnType<typeof deriveOpportunityCandidates>;
+  let directionRefs: EntityRef[] = [];
   try {
-    emitTrace(db, opts.traceId, { stage: "map_direction", event_type: "started" }, opts.assertWrite);
+    emitTrace(db, opts.traceId, { stage: "map_direction", event_type: "started", input_refs: leadRefs }, opts.assertWrite);
     opts.assertWrite?.();
     seedDefaultDirections(db);
-    candidates = deriveOpportunityCandidates(leads, listTopicDirections(db, { topic: batch.topic_id }), now);
-    emitTrace(db, opts.traceId, { stage: "map_direction", event_type: "completed", metrics: { candidate_count: candidates.length } }, opts.assertWrite);
+    const directions = listTopicDirections(db, { topic: batch.topic_id });
+    directionRefs = opts.traceId ? directions.map((direction) => topicDirectionRef(direction)) : [];
+    candidates = deriveOpportunityCandidates(leads, directions, now);
+    if (opts.traceId) db.transaction(() => {
+      opts.assertWrite?.();
+      for (let i = 0; i < directions.length; i += 1) captureRevision(db, { entity_type: directionRefs[i].type, entity_key: entityKey(directionRefs[i]), revision: directionRefs[i].revision, snapshot: topicDirectionRevisionSnapshot(directions[i]) });
+      emitTrace(db, opts.traceId, { stage: "map_direction", event_type: "completed", input_refs: [...leadRefs, ...directionRefs], metrics: { candidate_count: candidates.length } }, opts.assertWrite);
+    })();
   } catch (error) {
     emitTrace(db, opts.traceId, { stage: "map_direction", event_type: "failed", error: { reason_code: "map_direction_failed" } }, opts.assertWrite);
     console.warn("⚠️ 技术机会投影失败（不影响技术线索与报告）", error);
     return leads;
   }
   try {
-    emitTrace(db, opts.traceId, { stage: "derive_opportunity", event_type: "started" }, opts.assertWrite);
+    const inputs = [...leadRefs, ...directionRefs];
+    emitTrace(db, opts.traceId, { stage: "derive_opportunity", event_type: "started", input_refs: inputs }, opts.assertWrite);
     opts.assertWrite?.();
-    const opportunities = upsertTechnologyOpportunities(db, candidates, new Map(leads.map((lead) => [lead.id, lead])), now);
-    emitTrace(db, opts.traceId, { stage: "derive_opportunity", event_type: "completed", metrics: { opportunity_count: opportunities.length } }, opts.assertWrite);
+    const opportunities = db.transaction(() => {
+      const written = upsertTechnologyOpportunities(db, candidates, new Map(leads.map((lead) => [lead.id, lead])), now);
+      if (opts.traceId) {
+        const refs = written.map((opportunity) => technologyOpportunityRef(opportunity, "output"));
+        for (let i = 0; i < written.length; i += 1) captureRevision(db, { entity_type: refs[i].type, entity_key: entityKey(refs[i]), revision: refs[i].revision, snapshot: technologyOpportunityRevisionSnapshot(written[i]) });
+        emitTrace(db, opts.traceId, { stage: "derive_opportunity", event_type: "completed", input_refs: inputs, output_refs: refs, metrics: { opportunity_count: written.length } }, opts.assertWrite);
+      }
+      return written;
+    })();
   } catch (error) {
     emitTrace(db, opts.traceId, { stage: "derive_opportunity", event_type: "failed", error: { reason_code: "derive_opportunity_failed" } }, opts.assertWrite);
     console.warn("⚠️ 技术机会投影失败（不影响技术线索与报告）", error);
