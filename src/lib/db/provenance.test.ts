@@ -1,9 +1,11 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { openDb, type DB } from "./index.js";
 import { applyProvenanceMigrations } from "./provenance-migrations.js";
-import { insertTopic } from "./repos.js";
+import { insertSource, insertTopic } from "./repos.js";
 import {
   claimNextGenerationDispatch,
+  claimSourceCollectTrace,
+  createScheduledSourceCollectTrace,
   createDeepDiveTraceRequest,
   createScheduledTraceRequest,
   getGenerationTraceStatus,
@@ -21,6 +23,10 @@ describe("generation provenance dispatch", () => {
     insertTopic(db, {
       id: "topic_a", name: "Topic A", keywords: [], language: "en", brief_schedule: "daily", enabled: true,
       archetype: "deep_vertical", facets: [],
+    });
+    insertSource(db, {
+      id: "source_a", name: "Source A", type: "rss", endpoint: "https://example.test/feed",
+      topic_ids: ["topic_a"], fetch_interval: "1h", backfill: null, enabled: true,
     });
   });
 
@@ -86,6 +92,29 @@ describe("generation provenance dispatch", () => {
       deployment_image_digest: `sha256:${"a".repeat(64)}`, deployment_git_sha: "b".repeat(40),
       runtime_version: JSON.stringify({ schema_version: 1, image_digest: `sha256:${"a".repeat(64)}`, git_sha: "b".repeat(40) }),
     });
+  });
+
+  it("deduplicates scheduled source collection by UTC hour and grants exactly one owned lease", () => {
+    const first = createScheduledSourceCollectTrace(db, { sourceId: "source_a", now });
+    const replay = createScheduledSourceCollectTrace(db, { sourceId: "source_a", now: new Date("2026-08-03T00:59:59.000Z") });
+    if (first.kind !== "accepted") throw new Error("expected accepted source trace");
+    expect(replay).toEqual({ kind: "replayed", traceId: first.traceId });
+    expect(db.prepare("SELECT scope_key FROM generation_trace_request WHERE trace_id=?").get(first.traceId)).toEqual({
+      scope_key: "source_collect:source_a:2026-08-03T00",
+    });
+    expect(claimSourceCollectTrace(db, first.traceId, now)).toMatchObject({ traceId: first.traceId, fencingEpoch: 1 });
+    expect(claimSourceCollectTrace(db, first.traceId, now)).toBeNull();
+  });
+
+  it("expires an unclaimed synchronous source lease instead of permanently blocking the next hour", () => {
+    const first = createScheduledSourceCollectTrace(db, { sourceId: "source_a", now });
+    if (first.kind !== "accepted") throw new Error("expected accepted source trace");
+    const next = createScheduledSourceCollectTrace(db, {
+      sourceId: "source_a", now: new Date("2026-08-03T01:00:00.000Z"),
+    });
+    expect(next.kind).toBe("accepted");
+    expect(getGenerationTraceStatus(db, first.traceId)).toMatchObject({ status: "failed" });
+    expect(db.prepare("SELECT state FROM generation_lease WHERE trace_id=?").get(first.traceId)).toEqual({ state: "released" });
   });
 
   it("creates an auditable full retry for a terminal failed scheduled trace", () => {

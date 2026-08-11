@@ -114,15 +114,22 @@ export function appendGenerationEvent(db: DB, input: GenerationEventInput): { id
 
 /** P0a 冻结 policy 的最小 projector；只从 append-only event 重建，不把 summary 当状态事实。 */
 export function projectTrace(db: DB, traceId: string): "running" | "done" | "failed" | "partial" {
+  const trace = db.prepare("SELECT scope_kind FROM generation_trace WHERE id=?").get(traceId) as { scope_kind: string } | undefined;
+  if (!trace) throw new Error("generation_trace_not_found");
   const rows = db.prepare("SELECT stage,event_type FROM generation_event WHERE trace_id=? ORDER BY sequence").all(traceId) as { stage: string; event_type: string }[];
   const required = ["analyze", "validate", "generate_report"];
   const state = new Map<string, Set<string>>();
   for (const row of rows) (state.get(row.stage) ?? state.set(row.stage, new Set()).get(row.stage)!).add(row.event_type);
   const terminal = (stage: string) => state.get(stage) ?? new Set<string>();
   let result: "running" | "done" | "failed" | "partial" = "running";
-  if (required.some((stage) => terminal(stage).has("failed"))) result = "failed";
-  else if (required.every((stage) => terminal(stage).has("completed") || terminal(stage).has("skipped"))) {
-    result = ["derive_lead", "map_direction", "derive_opportunity", "deliver"].some((stage) => terminal(stage).has("failed")) ? "partial" : "done";
+  if (trace.scope_kind === "source_collect") {
+    if (["collect", "normalize"].some((stage) => terminal(stage).has("failed"))) result = "failed";
+    else if (terminal("collect").has("completed") && terminal("normalize").has("completed")) result = "done";
+  } else {
+    if (required.some((stage) => terminal(stage).has("failed"))) result = "failed";
+    else if (required.every((stage) => terminal(stage).has("completed") || terminal(stage).has("skipped"))) {
+      result = ["derive_lead", "map_direction", "derive_opportunity", "deliver"].some((stage) => terminal(stage).has("failed")) ? "partial" : "done";
+    }
   }
   db.prepare("UPDATE generation_trace SET status=? WHERE id=? AND status <> ?").run(result, traceId, result);
   return result;

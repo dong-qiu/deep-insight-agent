@@ -5,6 +5,8 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type DB, openDb } from "../db/index.js";
+import { applyProvenanceMigrations } from "../db/provenance-migrations.js";
+import { claimSourceCollectTrace, createScheduledSourceCollectTrace, getGenerationTraceStatus } from "../db/provenance.js";
 import { getContentByUrl, getContentItem, insertContentItem, insertSource } from "../db/repos.js";
 import { normalizeUrl, rawToContentItem } from "../sources/normalize.js";
 import type { RawItem } from "../sources/types.js";
@@ -14,9 +16,12 @@ import type { Source } from "../types.js";
 const { raws, article, ctl } = vi.hoisted(() => ({
   raws: { value: [] as RawItem[] },
   article: { fn: vi.fn(async (_url: string) => null as string | null) },
-  ctl: { transcript: null as string | null, lastContainer: undefined as string | null | undefined },
+  ctl: { transcript: null as string | null, lastContainer: undefined as string | null | undefined, fetchError: null as Error | null },
 }));
-vi.mock("../sources/index.js", () => ({ fetchFromSource: vi.fn(async () => raws.value) }));
+vi.mock("../sources/index.js", () => ({ fetchFromSource: vi.fn(async () => {
+  if (ctl.fetchError) throw ctl.fetchError;
+  return raws.value;
+}) }));
 vi.mock("../sources/article.js", () => ({
   MIN_ARTICLE_CHARS: 200,
   articleFetchEnabled: () => process.env.ARTICLE_FETCH === "1",
@@ -58,6 +63,7 @@ let db: DB;
 beforeEach(() => {
   process.env.DATA_DIR = mkdtempSync(join(tmpdir(), "collector-test-"));
   db = openDb(":memory:");
+  applyProvenanceMigrations(db);
   insertSource(db, sourceAnq);
   insertSource(db, sourcePod);
   insertSource(db, sourceFullText);
@@ -69,6 +75,7 @@ afterEach(() => {
   delete process.env.ARTICLE_FETCH_MAX_PER_RUN;
   raws.value = [];
   ctl.transcript = null;
+  ctl.fetchError = null;
   vi.clearAllMocks();
 });
 
@@ -231,5 +238,62 @@ describe("collector B族转写抓取（6a）", () => {
     const item = getContentItem(db, tr.id)!;
     expect(item.body_kind).toBe("transcript");
     expect(item.body).toBe("Transcript text.");
+  });
+});
+
+describe("collector P0b-1 source_collect provenance", () => {
+  it("以 source scoped trace 固化 source / Content revision，并以同一 ingest Run 作为根", async () => {
+    raws.value = [mkRaw("https://pod/provenance", "A durable, normalized item.")];
+    const now = new Date();
+    const accepted = createScheduledSourceCollectTrace(db, {
+      sourceId: sourcePod.id,
+      now,
+    });
+    if (accepted.kind !== "accepted") throw new Error("expected source trace accepted");
+    const claim = claimSourceCollectTrace(db, accepted.traceId, now);
+    if (!claim) throw new Error("expected source trace claim");
+
+    const result = await collectSource(db, sourcePod, { traceClaim: claim });
+    expect(getGenerationTraceStatus(db, accepted.traceId)).toMatchObject({
+      trace_id: accepted.traceId, source_id: sourcePod.id, scope_kind: "source_collect",
+      status: "done", root_run_id: result.runId,
+    });
+    expect(db.prepare("SELECT trace_id FROM run WHERE id=?").get(result.runId)).toEqual({ trace_id: accepted.traceId });
+    expect(db.prepare("SELECT stage,event_type FROM generation_event WHERE trace_id=? ORDER BY sequence").all(accepted.traceId)).toEqual([
+      { stage: "collect", event_type: "started" },
+      { stage: "collect", event_type: "completed" },
+      { stage: "normalize", event_type: "started" },
+      { stage: "normalize", event_type: "completed" },
+    ]);
+    const content = getContentByUrl(db, "https://pod/provenance")!;
+    const revision = db.prepare("SELECT snapshot FROM provenance_revision WHERE entity_type='content_item'").get() as { snapshot: string };
+    expect(revision.snapshot).toContain(content.content_hash);
+    expect(revision.snapshot).not.toContain("raw_ref");
+    expect(db.prepare("SELECT state FROM generation_trace_request WHERE trace_id=?").get(accepted.traceId)).toEqual({ state: "terminal" });
+    expect(db.prepare("SELECT state FROM generation_lease WHERE trace_id=?").get(accepted.traceId)).toEqual({ state: "released" });
+  });
+
+  it("抓取失败时留下 collect failed，并显式声明没有已提交、未知的 Content 输出", async () => {
+    raws.value = [];
+    const source = { ...sourcePod, id: "s_fail" };
+    insertSource(db, source);
+    const now = new Date();
+    const accepted = createScheduledSourceCollectTrace(db, {
+      sourceId: source.id,
+      now,
+    });
+    if (accepted.kind !== "accepted") throw new Error("expected source trace accepted");
+    const claim = claimSourceCollectTrace(db, accepted.traceId, now);
+    if (!claim) throw new Error("expected source trace claim");
+    ctl.fetchError = new Error("feed unavailable");
+
+    await expect(collectSource(db, source, { traceClaim: claim })).rejects.toThrow("feed unavailable");
+    expect(getGenerationTraceStatus(db, accepted.traceId)?.status).toBe("failed");
+    const event = db.prepare("SELECT metrics FROM generation_event WHERE trace_id=? AND stage='collect' AND event_type='failed'").get(accepted.traceId) as { metrics: string };
+    expect(JSON.parse(event.metrics)).toMatchObject({
+      committed_output_ref_count: 0,
+      rolled_back_output_ref_count: 1,
+      unknown_output_ref_count: 0,
+    });
   });
 });

@@ -573,6 +573,20 @@ P0 的图查询采用硬预算：时间线最多 100 条事件一页，因果图
 2. 增加线索、机会、方向页的 admin-only 时间线和证据下钻；人工写路径接入 `requireAdminActor()` 与同事务 audit。
 3. P0 不写 `raw_revision_ref`；如需历史正文跳转，移至 P1 不可变 archive。
 
+#### P0b-1：定时采集 Trace 与 Content revision
+
+- 每个启用来源在一个 UTC 小时槽内至多登记一个 `source_collect:{source_id}:{hour}` request；同步执行先取得
+  owned lease，再创建首个 `ingest` Run 并绑定 `root_run_id`。同槽重入返回原 trace；活跃来源冲突返回既有 trace，
+  不得并行写入同一来源。
+- `collect` 与 `normalize` 各有 started / terminal event；Source 配置以脱敏 canonical snapshot 固化，每个新建或
+  更新的 ContentItem 在业务 upsert 同一 SQLite 事务内写入 `content-v2:${content_hash}` revision。snapshot 仅含 URL、
+  来源、发布时间、正文长度与 hash，禁止 `raw_ref`、原文或 raw archive 指针。
+- 失败事件只引用已提交的 Content revision，并分别给出 `committed_output_ref_count`、
+  `rolled_back_output_ref_count` 和 `unknown_output_ref_count`。无法证明已提交的输出不得伪造 entity ref；所有三个计数
+  均须显式写入，即使为 0。
+- 本切片只覆盖定时采集；按需采集与失败 Run 的人工重试在后续 P0b 工作中接入调用方 idempotency / actor 审计，不改变
+  现有管理员操作语义。
+
 ### P0c：容量与受限视图
 
 1. 实现分页/图遍历预算；删除、恢复和 viewer 授权均是 P0a 的前置条件，P0c 只扩展受限图形视图与容量验证。

@@ -6,7 +6,7 @@
 import { getEffectiveSources, loadStaticConfig } from "../config/index.js";
 import type { DB } from "../db/index.js";
 import { finishRun, getTopic, listTopics } from "../db/repos.js";
-import { createScheduledTraceRequest } from "../db/provenance.js";
+import { claimSourceCollectTrace, createScheduledSourceCollectTrace, createScheduledTraceRequest, sourceCollectTracingAvailable } from "../db/provenance.js";
 import { appendGenerationEvent } from "../db/provenance-facts.js";
 import { listRecentBriefEvents, previousReportForTopic, topicHasReport } from "../db/reports.js";
 import { notifyBudget } from "../runtime/alert.js";
@@ -22,7 +22,7 @@ export interface ScheduleSummary {
   startedAt: string;
   finishedAt: string;
   windowHours: number;
-  collected: Array<{ source: string; fetched?: number; inserted?: number; updated?: number; error?: string }>;
+  collected: Array<{ source: string; traceId?: string; status?: "done" | "replayed" | "conflict"; fetched?: number; inserted?: number; updated?: number; error?: string }>;
   topics: Array<{ topic: string; items: number; traceId?: string; reportId?: string; included?: number; status: string; type?: Report["type"] }>;
   errors: string[];
   /** 成本预算触顶 → 本轮剩余 topic 被自动熔断跳过（A5）；未配预算或未触顶时省略。 */
@@ -83,10 +83,27 @@ export async function runCollectionCycle(db: DB): Promise<CollectionSummary> {
   const startedAt = new Date().toISOString();
   const summary: CollectionSummary = { startedAt, finishedAt: startedAt, collected: [], errors: [] };
   const sources = getEffectiveSources(db, loadStaticConfig()).filter((s) => s.enabled);
+  const traceEnabled = sourceCollectTracingAvailable(db);
   for (const s of sources) {
     try {
-      const r = await collectSource(db, s);
-      summary.collected.push({ source: s.id, fetched: r.fetched, inserted: r.inserted, updated: r.updated });
+      if (!traceEnabled) {
+        const r = await collectSource(db, s);
+        summary.collected.push({ source: s.id, fetched: r.fetched, inserted: r.inserted, updated: r.updated });
+        continue;
+      }
+      const accepted = createScheduledSourceCollectTrace(db, { sourceId: s.id });
+      if (accepted.kind === "replayed") {
+        summary.collected.push({ source: s.id, traceId: accepted.traceId, status: "replayed" });
+        continue;
+      }
+      if (accepted.kind === "conflict") {
+        summary.collected.push({ source: s.id, traceId: accepted.activeTraceId, status: "conflict" });
+        continue;
+      }
+      const claim = claimSourceCollectTrace(db, accepted.traceId);
+      if (!claim) throw new Error("source_collect_claim_lost");
+      const r = await collectSource(db, s, { traceClaim: claim });
+      summary.collected.push({ source: s.id, traceId: accepted.traceId, status: "done", fetched: r.fetched, inserted: r.inserted, updated: r.updated });
     } catch (e) {
       summary.collected.push({ source: s.id, error: errMsg(e) });
       summary.errors.push(`collect ${s.id}: ${errMsg(e)}`);
