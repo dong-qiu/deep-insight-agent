@@ -14,7 +14,7 @@ export interface EntityRef {
 }
 export interface GenerationEventInput {
   trace_id: string; stage: string; event_type: string; attempt?: number; run_id?: string | null;
-  actor_type?: "system" | "user" | "scheduler"; actor_id?: string | null; reason_code?: string | null;
+  actor_type?: "system" | "user" | "scheduler"; actor_id?: string | null; audit_log_id?: number | null; reason_code?: string | null;
   input_refs?: EntityRef[]; output_refs?: EntityRef[]; metrics?: Record<string, unknown>; version_context?: Record<string, unknown>;
   context_completeness?: "complete" | "partial"; error?: { reason_code: string; message?: string; retryable?: boolean } | null;
   occurred_at?: string;
@@ -65,7 +65,7 @@ export function captureRevision(db: DB, input: { entity_type: string; entity_key
 function semanticPayload(input: GenerationEventInput): Record<string, unknown> {
   return {
     trace_id: input.trace_id, stage: input.stage, event_type: input.event_type, attempt: input.attempt ?? 1,
-    run_id: input.run_id ?? null, actor_type: input.actor_type ?? "system", actor_id: input.actor_id ?? null,
+    run_id: input.run_id ?? null, actor_type: input.actor_type ?? "system", actor_id: input.actor_id ?? null, audit_log_id: input.audit_log_id ?? null,
     reason_code: input.reason_code ?? null, input_refs: input.input_refs ?? [], output_refs: input.output_refs ?? [],
     version_context: input.version_context ?? {}, context_completeness: input.context_completeness ?? "partial",
     error: input.error ? { reason_code: input.error.reason_code, retryable: input.error.retryable ?? false } : null,
@@ -92,14 +92,14 @@ export function appendGenerationEvent(db: DB, input: GenerationEventInput): { id
     const refs = { input_refs: input.input_refs ?? [], output_refs: input.output_refs ?? [] };
     const payload = {
       id, trace_id: input.trace_id, sequence, attempt, run_id: input.run_id ?? null, stage: input.stage, event_type: input.event_type,
-      occurred_at: occurredAt, actor_type: input.actor_type ?? "system", actor_id: input.actor_id ?? null,
+      occurred_at: occurredAt, actor_type: input.actor_type ?? "system", actor_id: input.actor_id ?? null, audit_log_id: input.audit_log_id ?? null,
       reason_code: input.reason_code ?? null, ...refs, metrics: input.metrics ?? {}, version_context: input.version_context ?? {},
       context_completeness: input.context_completeness ?? "partial", error: input.error ?? null, payload_schema_version: 1,
     };
     const payloadHash = canonicalHash(payload);
     db.prepare(`INSERT INTO generation_event
-      (id,trace_id,sequence,attempt,run_id,stage,event_type,occurred_at,actor_type,actor_id,reason_code,input_refs,output_refs,metrics,version_context,context_completeness,error,payload_schema_version,semantic_payload_hash,payload_hash)
-      VALUES (@id,@trace_id,@sequence,@attempt,@run_id,@stage,@event_type,@occurred_at,@actor_type,@actor_id,@reason_code,@input_refs,@output_refs,@metrics,@version_context,@context_completeness,@error,1,@semantic_payload_hash,@payload_hash)`).run({
+      (id,trace_id,sequence,attempt,run_id,stage,event_type,occurred_at,actor_type,actor_id,audit_log_id,reason_code,input_refs,output_refs,metrics,version_context,context_completeness,error,payload_schema_version,semantic_payload_hash,payload_hash)
+      VALUES (@id,@trace_id,@sequence,@attempt,@run_id,@stage,@event_type,@occurred_at,@actor_type,@actor_id,@audit_log_id,@reason_code,@input_refs,@output_refs,@metrics,@version_context,@context_completeness,@error,1,@semantic_payload_hash,@payload_hash)`).run({
       ...payload, input_refs: canonicalJson(refs.input_refs), output_refs: canonicalJson(refs.output_refs), metrics: canonicalJson(payload.metrics),
       version_context: canonicalJson(payload.version_context), error: payload.error ? canonicalJson(payload.error) : null, semantic_payload_hash: semanticHash, payload_hash: payloadHash,
     });
@@ -125,6 +125,9 @@ export function projectTrace(db: DB, traceId: string): "running" | "done" | "fai
   if (trace.scope_kind === "source_collect") {
     if (["collect", "normalize"].some((stage) => terminal(stage).has("failed"))) result = "failed";
     else if (terminal("collect").has("completed") && terminal("normalize").has("completed")) result = "done";
+  } else if (trace.scope_kind === "manual_decision") {
+    if (["human_review", "direction_change"].some((stage) => terminal(stage).has("failed"))) result = "failed";
+    else if (["human_review", "direction_change"].some((stage) => terminal(stage).has("manual_decided") || terminal(stage).has("config_changed"))) result = "done";
   } else {
     if (required.some((stage) => terminal(stage).has("failed"))) result = "failed";
     else if (required.every((stage) => terminal(stage).has("completed") || terminal(stage).has("skipped"))) {

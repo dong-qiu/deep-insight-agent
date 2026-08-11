@@ -15,7 +15,7 @@ export function OpportunityActions({ id, status }: { id: string; status: Technol
   async function decide(next: TechnologyOpportunityStatus): Promise<void> {
     setBusy(true);
     try {
-      const res = await fetch(`/api/opportunities/${id}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ status: next }) });
+      const res = await fetch(`/api/opportunities/${id}`, { method: "POST", headers: { "content-type": "application/json", "Idempotency-Key": crypto.randomUUID() }, body: JSON.stringify({ status: next }) });
       if (!res.ok) throw new Error("保存状态失败");
       router.refresh();
     } finally { setBusy(false); }

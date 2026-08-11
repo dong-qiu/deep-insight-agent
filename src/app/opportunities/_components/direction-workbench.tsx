@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { Topic, TopicDirection, TopicDirectionInput } from "../../../lib/types.js";
+import { ProvenanceTimeline } from "../../reports/[id]/_components/provenance-timeline.js";
 
 type ListField = "in_scope" | "out_of_scope" | "key_questions" | "constraints" | "success_signals" | "match_terms" | "adjacent_terms" | "challenge_terms";
 const LIST_FIELDS: Array<{ key: ListField; label: string; hint: string }> = [
@@ -43,7 +44,7 @@ function ChipEditor({ form, set, field, tone }: { form: FormState; set: <K exten
   </label>;
 }
 
-export function DirectionWorkbench({ directions, topics, metrics }: { directions: TopicDirection[]; topics: Topic[]; metrics: Record<string, DirectionMetric> }): React.ReactElement {
+export function DirectionWorkbench({ directions, topics, metrics, traceIds = {} }: { directions: TopicDirection[]; topics: Topic[]; metrics: Record<string, DirectionMetric>; traceIds?: Record<string, string> }): React.ReactElement {
   const router = useRouter();
   const [selectedId, setSelectedId] = useState(directions[0]?.id ?? "__new__");
   const selected = useMemo(() => directions.find((direction) => direction.id === selectedId), [directions, selectedId]);
@@ -75,12 +76,12 @@ export function DirectionWorkbench({ directions, topics, metrics }: { directions
     setBusy(true); setMessage(null);
     try {
       const direction = inputFrom(form); const isNew = !selected;
-      const res = await fetch(isNew ? "/api/directions" : `/api/directions/${selected.id}`, { method: isNew ? "POST" : "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(isNew ? direction : { direction, expected_version: selected.version }) });
+      const res = await fetch(isNew ? "/api/directions" : `/api/directions/${selected.id}`, { method: isNew ? "POST" : "PUT", headers: { "content-type": "application/json", "Idempotency-Key": crypto.randomUUID() }, body: JSON.stringify(isNew ? direction : { direction, expected_version: selected.version }) });
       const body = await res.json() as { direction?: TopicDirection; current?: TopicDirection; error?: string };
       if (res.status === 409 && body.current) { setMessage({ kind: "err", text: `版本冲突：服务器已是版本 ${body.current.version}，请刷新后再编辑。` }); return; }
       if (!res.ok || !body.direction) throw new Error(body.error ?? "保存失败");
       if (reproject) {
-        const projected = await fetch(`/api/directions/${body.direction.id}/reproject`, { method: "POST" }); const result = await projected.json() as { refreshed?: number; stale?: number; error?: string };
+        const projected = await fetch(`/api/directions/${body.direction.id}/reproject`, { method: "POST", headers: { "Idempotency-Key": crypto.randomUUID() } }); const result = await projected.json() as { refreshed?: number; stale?: number; error?: string };
         if (!projected.ok) throw new Error(result.error ?? "保存成功，但重投影失败");
         setPreview(null); setMessage({ kind: "ok", text: `已保存并重投影：刷新 ${result.refreshed ?? 0} 条候选；${result.stale ?? 0} 条仍待复核。` });
       } else setMessage({ kind: "ok", text: "已保存。词表变化仅影响后续线索；历史候选请在确认预览后显式重投影。" });
@@ -95,6 +96,7 @@ export function DirectionWorkbench({ directions, topics, metrics }: { directions
       <aside className="direction-rail" aria-label="技术方向列表"><p className="muted">{directions.length} 个方向</p><ul className="direction-list">{directions.map((direction) => { const metric = metrics[direction.id] ?? { opportunities: 0, stale: 0 }; return <li key={direction.id}><button className={selectedId === direction.id ? "direction-selected" : ""} onClick={() => selectDirection(direction.id)}><strong>{direction.name}</strong><span>{HORIZON[direction.horizon]} · {direction.status}</span><small><b>{metric.opportunities}</b> 个候选{metric.stale ? <em>{metric.stale} 待复核</em> : null}</small></button></li>; })}</ul></aside>
       <form className="direction-form" onSubmit={(event) => { event.preventDefault(); void save(false); }}>
         <header className="direction-form-header"><div><p className="eyebrow">{selected ? `版本 v${selected.version}` : "新方向"}</p><h3>{form.name || "未命名方向"}</h3></div>{selected ? <span className={`direction-status status-${form.status}`}>{form.status}</span> : null}</header>
+        {selected && traceIds[selected.id] ? <ProvenanceTimeline traceId={traceIds[selected.id]} /> : null}
         <section className="direction-form-section"><h4>战略定义</h4><div className="direction-field-grid direction-basics"><label>方向 ID <input value={form.id} disabled={!!selected} onChange={(event) => set("id", event.target.value)} required /></label><label>主题 <select value={form.topic_id} disabled={!!selected} onChange={(event) => set("topic_id", event.target.value)}>{topics.map((topic) => <option key={topic.id} value={topic.id}>{topic.name}</option>)}</select></label><label>方向名称 <input value={form.name} onChange={(event) => set("name", event.target.value)} required /></label><label>时间跨度 <select value={form.horizon} onChange={(event) => set("horizon", event.target.value as FormState["horizon"])}><option value="now">当前</option><option value="next">下一阶段</option><option value="explore">探索</option></select></label><label>状态 <select value={form.status} onChange={(event) => set("status", event.target.value as FormState["status"])}><option value="active">活跃</option><option value="watching">观察</option><option value="retired">停用</option></select></label></div><label className="direction-wide-field">目标 <textarea value={form.objective} onChange={(event) => set("objective", event.target.value)} required rows={2} /></label><label className="direction-wide-field">问题陈述 <textarea value={form.problem_statement} onChange={(event) => set("problem_statement", event.target.value)} required rows={3} /></label></section>
         <details className="direction-form-section" open><summary>范围与研究设计 <span>边界、问题和成功信号</span></summary><TextList form={form} set={set} fields={["in_scope", "out_of_scope", "key_questions", "constraints", "success_signals"]} /></details>
         <details className="direction-form-section" open><summary>映射规则 <span>决定线索进入哪个通道</span></summary><div className="rule-editor-grid"><ChipEditor form={form} set={set} field="match_terms" tone="core" /><ChipEditor form={form} set={set} field="adjacent_terms" tone="adjacent" /><ChipEditor form={form} set={set} field="challenge_terms" tone="challenge" /></div></details>

@@ -587,6 +587,18 @@ P0 的图查询采用硬预算：时间线最多 100 条事件一页，因果图
 - 本切片只覆盖定时采集；按需采集与失败 Run 的人工重试在后续 P0b 工作中接入调用方 idempotency / actor 审计，不改变
   现有管理员操作语义。
 
+#### P0b-2：规划人工决定与管理员下钻
+
+- 技术线索、技术机会和方向工作台仅在管理员会话中显示其最近一次 output Trace；时间线继续通过 admin-only
+  resolver 读取，普通用户只能看到既有的已校验 `pass` 证据，不返回 Trace ID、actor、版本或失败信息。
+- Lead / Opportunity 状态、方向创建 / 状态变更 / 完整编辑 / 显式重投影必须要求 `Idempotency-Key` 与
+  `requireAdminActor()`。一次成功决定在同一个 SQLite 事务写业务更新、`audit_log`、`manual_decision` Trace、
+  started + `manual_decided|config_changed` 事件、输出 revision 与 request/lease 终态；相同 key 在 24 小时内返回原 Trace，
+  不覆盖人工事实。
+- 人工 Trace 的 locator 使用实体类型 + 稳定 ID；方向 revision 包含版本和完整规则快照，Lead / Opportunity revision
+  包含状态、评分与其确定性输入的最小脱敏快照。分数以稳定十进制字符串存入 snapshot，禁止浮点序列化漂移。
+- 本切片不回填 P0b-2 前的人工动作，也不把 `raw_ref`、原文、提示词、密钥或渠道结果写入 event / revision。
+
 ### P0c：容量与受限视图
 
 1. 实现分页/图遍历预算；删除、恢复和 viewer 授权均是 P0a 的前置条件，P0c 只扩展受限图形视图与容量验证。

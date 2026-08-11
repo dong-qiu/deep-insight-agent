@@ -17,13 +17,15 @@ export interface AuditRow {
   detail: unknown;
 }
 
-export function appendAudit(db: DB, e: AuditEntry): void {
-  db.prepare("INSERT INTO audit_log (actor, action, target, detail) VALUES (?, ?, ?, ?)").run(
+/** 追加审计并返回不可变记录 ID，供同一事务内的 provenance event 关联。 */
+export function appendAudit(db: DB, e: AuditEntry): number {
+  const result = db.prepare("INSERT INTO audit_log (actor, action, target, detail) VALUES (?, ?, ?, ?)").run(
     e.actor ?? null,
     e.action,
     e.target ?? null,
     e.detail !== undefined ? JSON.stringify(e.detail) : null,
   );
+  return Number(result.lastInsertRowid);
 }
 
 export function listAudit(db: DB, opts: { limit?: number } = {}): AuditRow[] {
