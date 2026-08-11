@@ -78,7 +78,7 @@ export default async function ReportPage({ params }: { params: Promise<{ id: str
         </nav>
       ) : null}
 
-      {traceId ? <ProvenanceTimeline traceId={traceId} /> : null}
+      {traceId ? <ProvenanceTimeline traceId={traceId} showBriefFunnel={report.type === "brief"} /> : null}
       {isAdmin && report.type === "brief" && report.insight_ids.length === 0 && traceId ? (
         <p className="muted">本期为空并不等于未采集；展开“生成溯源”可查看分析输入、校验通过数以及新鲜度/已发布去重的过滤计数。</p>
       ) : null}

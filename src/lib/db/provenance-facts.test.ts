@@ -60,10 +60,10 @@ describe("provenance facts", () => {
     const db = dbWithTrace();
     appendGenerationEvent(db, {
       trace_id: "trace_1", stage: "generate_report", event_type: "completed",
-      metrics: { published_insight_count: 2, citation_pass: 3, prompt: "secret", negative: -1, enabled: true },
+      metrics: { published_insight_count: 2, citation_pass: 3, supplemental_candidate_count: 4, supplemental_published_insight_count: 2, prompt: "secret", negative: -1, enabled: true },
     });
     expect(listGenerationTraceTimeline(db, "trace_1")[0]).toMatchObject({
-      stage: "generate_report", metrics: { published_insight_count: 2, citation_pass: 3 },
+      stage: "generate_report", metrics: { published_insight_count: 2, citation_pass: 3, supplemental_candidate_count: 4, supplemental_published_insight_count: 2 },
     });
     expect(listGenerationTraceTimeline(db, "trace_1")[0].metrics).not.toHaveProperty("prompt");
   });

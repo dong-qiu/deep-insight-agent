@@ -331,6 +331,28 @@ describe("runReportGen", () => {
     }));
   });
 
+  it("trace 记录日报选择漏斗，较早未发布 event 的补充发现与主通道过滤可审计", async () => {
+    applyProvenanceMigrations(db);
+    db.prepare(`INSERT INTO generation_trace(id,scope_kind,trigger_kind,status,completion_policy,coverage,runtime_version,summary,started_at)
+      VALUES ('trace_1','topic_pipeline','api','running','{}','complete','{}','{}','2026-06-07T00:00:00Z')`).run();
+    buildReportMock.mockReturnValue({ report: mkReport(), index: mkReportIndex() });
+    saveReportMock.mockImplementation((_db, _report, _index, hooks) => hooks?.afterPublish?.());
+    const freshness = { since: "2026-06-06T00:00:00Z", content_item_ids: ["ci_new"], freshest_candidate_at: "2026-06-07T00:00:00Z" };
+    const batch = mkBatch();
+    batch.insights[0].event_id = "event_unpublished";
+
+    await runReportGen(db, { topic, batch, validation: mkValidation(), type: "brief", traceId: "trace_1", briefFreshness: freshness });
+
+    const event = db.prepare(`SELECT reason_code,metrics FROM generation_event
+      WHERE trace_id='trace_1' AND stage='generate_report' AND event_type='completed'`).get() as { reason_code: string | null; metrics: string };
+    expect(event.reason_code).toBeNull();
+    expect(JSON.parse(event.metrics)).toMatchObject({
+      includable_insight_count: 1, freshness_filtered_insight_count: 1,
+      supplemental_candidate_count: 1, supplemental_published_insight_count: 1,
+      published_insight_count: 1, published_citation_count: 1,
+    });
+  });
+
   it("非空但无可放行洞察：report-gen Run 失败，并保留不可公开的 failed Report", async () => {
     const validation = mkValidation();
     validation.report.releasable = false;

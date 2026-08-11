@@ -28,6 +28,10 @@ export interface BriefSelectionSummary {
   includable_insight_count: number;
   freshness_filtered_insight_count: number;
   already_published_filtered_insight_count: number;
+  /** 较早证据中具备稳定 event_id 且从未发布过的候选数（发布前，可能超过上限）。 */
+  supplemental_candidate_count: number;
+  /** 实际作为明确标注的“补充发现”发布的洞察数。 */
+  supplemental_published_insight_count: number;
   published_insight_count: number;
   published_citation_count: number;
 }
@@ -50,6 +54,8 @@ export interface IncludedInsight {
   flaggedError: boolean; // 保留渲染契约；发布白名单不含 flagged，恒为 false
   blockedCount: number; // 被 validator 屏蔽的引用数（不在 citationIndices 内）
   blockedReasonCounts: Record<string, number>; // 屏蔽理由直方图（如 exaggeration→2、out_of_context→1）
+  /** Brief 的非近期、未发布 event 才会带此标记；渲染端不得把它表述为今日新事件。 */
+  brief_inclusion?: "supplemental";
 }
 
 /** 里程碑判定的重要性下限（ADR-0006）：可调常量——6/23 看真实里程碑数量再校准（太严=永远没有、太松=稀释）。 */
@@ -58,6 +64,9 @@ export const MILESTONE_MIN_IMPORTANCE = 5;
 /** 列表卡片要点上限（headline 方案）：卡片只展示前 N 条 headline 供扫读，其余留详情页。
  *  5 条够覆盖一期 brief 的重点又不至于把卡片撑回一面墙。 */
 export const HIGHLIGHTS_MAX = 5;
+
+/** 较早但从未发布过的发现只作有限补充，避免在近期证据不足时把 Brief 重新变成长周期综述。 */
+export const BRIEF_SUPPLEMENTAL_MAX = 2;
 
 /** 重点关注阈值（importance ≥ 此值）：详版/概览置顶（orderInsights）与推送 ⭐重点 分级**共用单一口径**，
  *  改一处两处同步、不漂移。 */
@@ -139,41 +148,56 @@ export function summarizeBriefSelection(
     included,
     summary: {
       includable_insight_count: included.length, freshness_filtered_insight_count: 0,
-      already_published_filtered_insight_count: 0, published_insight_count: included.length,
+      already_published_filtered_insight_count: 0, supplemental_candidate_count: 0,
+      supplemental_published_insight_count: 0, published_insight_count: included.length,
       published_citation_count: included.reduce((total, x) => total + x.citationIndices.length, 0),
     },
   };
-  // 有近期候选时，每条可发布 Brief 洞察都必须引用至少一条通过校验的近期候选。
-  // 这是一道确定性发布门：模型即使偏好旧材料，也不能把旧事件包装成"今日"内容。
+  // 有近期候选时，带近期成功校验证据的洞察走主通道。较早证据只可作为明确标注的、
+  // 未发布 event 补充发现，不能被包装成“今日”内容（ADR-0021）。
   const freshItemIds = new Set(freshness?.content_item_ids ?? []);
-  const freshIncluded = freshItemIds.size
+  const hasFreshnessGate = freshItemIds.size > 0;
+  const freshIncluded = hasFreshnessGate
     ? included.filter((x) => x.includableCitationIndices.some((i) => freshItemIds.has(x.insight.citations[i].content_item_id)))
     : included;
-  const freshnessFiltered = included.length - freshIncluded.length;
-  if (!publishedEventEvidence.length) return {
-    included: freshIncluded,
-    summary: {
-      includable_insight_count: included.length, freshness_filtered_insight_count: freshnessFiltered,
-      already_published_filtered_insight_count: 0, published_insight_count: freshIncluded.length,
-      published_citation_count: freshIncluded.reduce((total, x) => total + x.citationIndices.length, 0),
-    },
-  };
+  const olderIncluded = hasFreshnessGate ? included.filter((x) => !freshIncluded.includes(x)) : [];
+  const freshnessFiltered = olderIncluded.length;
   const evidenceByEvent = new Map(
     publishedEventEvidence.map((event) => [event.event_id, new Set(event.content_item_ids)]),
   );
-  const selected = freshIncluded.filter((x) => {
+  const hasNewPublishedEvidence = (x: IncludedInsight): boolean => {
     const eventId = x.insight.event_id;
     const previousEvidence = eventId ? evidenceByEvent.get(eventId) : undefined;
     if (!previousEvidence) return true;
     return x.includableCitationIndices.some(
       (i) => !previousEvidence.has(x.insight.citations[i].content_item_id),
     );
+  };
+  const freshSelected = freshIncluded.filter(hasNewPublishedEvidence);
+  // “补充发现”必须是还没被发布过的稳定 event。即使旧 event 本轮有新增证据，也只允许在
+  // 主通道（带近期证据）更新，避免把旧事件以不同材料重复推送。
+  const seenSupplementalEvents = new Set<string>();
+  const supplementalCandidates = olderIncluded.filter((x) => {
+    const eventId = x.insight.event_id;
+    if (!eventId || evidenceByEvent.has(eventId) || seenSupplementalEvents.has(eventId)) return false;
+    seenSupplementalEvents.add(eventId);
+    return true;
   });
+  const supplementalSelected = supplementalCandidates
+    .sort((a, b) => b.insight.importance - a.insight.importance || a.insight.id.localeCompare(b.insight.id))
+    .slice(0, BRIEF_SUPPLEMENTAL_MAX)
+    .map((x) => ({ ...x, brief_inclusion: "supplemental" as const }));
+  const alreadyPublishedFiltered =
+    freshIncluded.filter((x) => !hasNewPublishedEvidence(x)).length +
+    olderIncluded.filter((x) => Boolean(x.insight.event_id) && evidenceByEvent.has(x.insight.event_id!)).length;
+  const selected = [...freshSelected, ...supplementalSelected];
   return {
     included: selected,
     summary: {
       includable_insight_count: included.length, freshness_filtered_insight_count: freshnessFiltered,
-      already_published_filtered_insight_count: freshIncluded.length - selected.length,
+      already_published_filtered_insight_count: alreadyPublishedFiltered,
+      supplemental_candidate_count: supplementalCandidates.length,
+      supplemental_published_insight_count: supplementalSelected.length,
       published_insight_count: selected.length,
       published_citation_count: selected.reduce((total, x) => total + x.citationIndices.length, 0),
     },
@@ -196,6 +220,12 @@ function pickHighlightInsights(included: IncludedInsight[]): IncludedInsight[] {
   return [...included].sort((a, b) => b.insight.importance - a.insight.importance).slice(0, HIGHLIGHTS_MAX);
 }
 
+/** 列表卡片与推送也必须保留补充发现语义，避免只在详情页标注而把它误读为今日新事件。 */
+function headlineText(x: IncludedInsight): string {
+  const headline = x.insight.headline?.trim() || x.insight.statement;
+  return x.brief_inclusion === "supplemental" ? `${headline}〔补充发现〕` : headline;
+}
+
 /** 报告推送要点（供邮件/webhook 富渲染）：一条洞察 → 一句话要点。
  *  - `text`：headline（≤40 字扫读版，analyzer 产）缺失回退 statement——与 index.highlights 同口径；
  *  - `key`：是否重点关注（importance ≥ KEY_MIN_IMPORTANCE），供邮件 ⭐重点/动态 分级。 */
@@ -215,7 +245,7 @@ export function reportHighlights(
   return pickHighlightInsights(
     selectBriefInsights(batch, validation, opts.type ?? "brief", opts.publishedEventEvidence, opts.freshness),
   ).map((x) => ({
-    text: x.insight.headline?.trim() || x.insight.statement,
+    text: headlineText(x),
     importance: x.insight.importance,
     key: x.insight.importance >= KEY_MIN_IMPORTANCE,
   }));
@@ -295,7 +325,7 @@ export function buildReport(input: BuildReportInput): { report: Report; index: R
   const summary = included.slice(0, 3).map((x) => x.insight.statement).join(" ");
   // 卡片要点列表（headline 方案）：按重要性降序取前 N 条洞察的一句话 headline，供列表卡片分点扫读，
   // 取代把多条长 statement 拼成一坨的 summary。headline 缺失（旧批次/未产出）则回退该条 statement。
-  const highlights = pickHighlightInsights(included).map((x) => x.insight.headline?.trim() || x.insight.statement);
+  const highlights = pickHighlightInsights(included).map(headlineText);
   // 实体追踪：跨纳入洞察聚合关键实体名（去重保序），供主题页「关键实体」按报告频次再聚合。
   const entityNames = uniq(included.flatMap((x) => (x.insight.entities ?? []).map((e) => e.name.trim()).filter(Boolean)));
 
@@ -419,12 +449,13 @@ function insightBlockMd(
   // analyzer 已在 prompt 层约束"无新进展则不出"，此标记仅作展示提示。flagged 洞察
   // 不进入发布渲染，待核实/重试状态仅保留在 ValidationResult 的人工处理队列。
   const followupTag = ins.is_followup ? " 〔更新〕" : "";
+  const supplementalTag = x.brief_inclusion === "supplemental" ? " 〔补充发现〕" : "";
   const label = flagLabel(x);
   const flaggedTag = label ? ` 〔${label}〕` : "";
   // 覆盖度外露：结论里有具体数字/实体未被已渲染引用覆盖 → 标 〔待补引：…〕。
   const gaps = coverageGapTokens(x);
   const coverageTag = gaps.length ? ` 〔待补引：${gaps.join("、")}〕` : "";
-  const L = [`${heading} ${statementWithRefs}${followupTag}${flaggedTag}${coverageTag}`, ""];
+  const L = [`${heading} ${statementWithRefs}${followupTag}${supplementalTag}${flaggedTag}${coverageTag}`, ""];
   L.push(`- 重要性：${ins.importance}/5 · 依据：${ins.importance_basis}`);
   if (detailed) L.push(`- 来源：${ins.source_count} 个 · ${ins.multi_source ? "多源印证" : "单源"}`);
   if (ins.type === "trend" && ins.confidence) L.push(`- 置信度：${ins.confidence}`);
@@ -622,11 +653,12 @@ function insightHtml(
     ? `<p class="meta blocked">校验阻断：${x.blockedCount} 条${esc(blockedReasonStr(x.blockedReasonCounts))}</p>`
     : "";
   const followupBadge = ins.is_followup ? ' <span class="followup">更新</span>' : "";
+  const supplementalBadge = x.brief_inclusion === "supplemental" ? ' <span class="supplemental">补充发现</span>' : "";
   const label = flagLabel(x);
   const flaggedBadge = label ? ` <span class="flag">${label}</span>` : "";
   const gaps = coverageGapTokens(x);
   const coverageBadge = gaps.length ? ` <span class="coverage-gap">待补引：${esc(gaps.join("、"))}</span>` : "";
-  return `<section><${tag}>${n}. ${esc(ins.statement)}${followupBadge}${flaggedBadge}${coverageBadge}</${tag}><p class="meta">重要性 ${ins.importance}/5 · ${esc(ins.importance_basis)}${conf}${src}${citeSummary}</p><ul>${cites}</ul>${blocked}</section>`;
+  return `<section><${tag}>${n}. ${esc(ins.statement)}${followupBadge}${supplementalBadge}${flaggedBadge}${coverageBadge}</${tag}><p class="meta">重要性 ${ins.importance}/5 · ${esc(ins.importance_basis)}${conf}${src}${citeSummary}</p><ul>${cites}</ul>${blocked}</section>`;
 }
 
 function renderHtml(
@@ -681,7 +713,7 @@ function renderHtml(
   }
   return `<!doctype html><html lang="${topic.language}"><head><meta charset="utf-8"><title>${esc(
     title,
-  )}</title><style>body{font-family:system-ui,sans-serif;max-width:46rem;margin:2rem auto;padding:0 1rem;line-height:1.6}h1{font-size:1.5rem}h2{font-size:1.1rem;margin-top:1.5rem}h3{font-size:1rem;margin-top:1rem}.meta{color:#666;font-size:.9rem}.meta.blocked{color:#6b7280;font-size:.8rem;margin-top:.25rem}.flag{color:#b45309;font-size:.75rem;border:1px solid #b45309;border-radius:4px;padding:0 .3rem}.coverage-gap{color:#6b7280;font-size:.75rem;border:1px dashed #9ca3af;border-radius:4px;padding:0 .3rem}q{color:#1f2937}code{color:#6b7280;font-size:.85rem}.src{color:#6b7280;font-size:.85rem}.cite-src{list-style:none;margin-top:.35rem;font-weight:500}.cite-quote{margin-left:1.1rem}li a q{cursor:pointer}table{border-collapse:collapse;width:100%;font-size:.85rem;margin:.5rem 0}th,td{border:1px solid #e5e7eb;padding:.3rem .5rem;text-align:left}th{background:#f9fafb}.tldr ul{padding-left:1.2rem}.tldr li{margin:.2rem 0}</style></head><body><h1>${esc(
+  )}</title><style>body{font-family:system-ui,sans-serif;max-width:46rem;margin:2rem auto;padding:0 1rem;line-height:1.6}h1{font-size:1.5rem}h2{font-size:1.1rem;margin-top:1.5rem}h3{font-size:1rem;margin-top:1rem}.meta{color:#666;font-size:.9rem}.meta.blocked{color:#6b7280;font-size:.8rem;margin-top:.25rem}.flag{color:#b45309;font-size:.75rem;border:1px solid #b45309;border-radius:4px;padding:0 .3rem}.supplemental{color:#1d4ed8;font-size:.75rem;border:1px solid #60a5fa;border-radius:4px;padding:0 .3rem}.coverage-gap{color:#6b7280;font-size:.75rem;border:1px dashed #9ca3af;border-radius:4px;padding:0 .3rem}q{color:#1f2937}code{color:#6b7280;font-size:.85rem}.src{color:#6b7280;font-size:.85rem}.cite-src{list-style:none;margin-top:.35rem;font-weight:500}.cite-quote{margin-left:1.1rem}li a q{cursor:pointer}table{border-collapse:collapse;width:100%;font-size:.85rem;margin:.5rem 0}th,td{border:1px solid #e5e7eb;padding:.3rem .5rem;text-align:left}th{background:#f9fafb}.tldr ul{padding-left:1.2rem}.tldr li{margin:.2rem 0}</style></head><body><h1>${esc(
     title,
   )}</h1><p class="meta">${esc(topic.name)}（${esc((topic.facets ?? []).map(facetLabel).join("·"))}）· ${date} · 共 ${included.length} 条洞察</p>${body}</body></html>`;
 }
