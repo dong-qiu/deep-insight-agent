@@ -5,6 +5,15 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { getContentByUrl, insertContentItem, setRunInserted, updateContentItem } from "../db/repos.js";
 import type { DB } from "../db/index.js";
+import {
+  assertSourceCollectClaim,
+  bindSourceCollectRootRun,
+  finishSourceCollectTrace,
+  heartbeatSourceCollectTrace,
+  type SourceCollectClaim,
+} from "../db/provenance.js";
+import { appendGenerationEvent, captureRevision, entityKey, type EntityRef } from "../db/provenance-facts.js";
+import { contentItemRef, contentItemRevisionSnapshot, sourceConfigRef, sourceConfigSnapshot } from "../db/provenance-revisions.js";
 import { runJob } from "../runtime/jobs.js";
 import type { Source } from "../types.js";
 import { MIN_ARTICLE_CHARS, articleFetchEnabled, articleFetchKilled, fetchArticleBody } from "../sources/article.js";
@@ -39,8 +48,25 @@ function archiveRaw(id: string, raw: string): string {
 export async function collectSource(
   db: DB,
   source: Source,
-  opts: { retryOf?: string | null; probe?: boolean } = {},
+  opts: { retryOf?: string | null; probe?: boolean; traceClaim?: SourceCollectClaim } = {},
 ): Promise<CollectResult> {
+  const trace = opts.traceClaim;
+  const sourceRef = trace ? sourceConfigRef(source) : null;
+  const outputs: EntityRef[] = [];
+  let stage: "collect" | "normalize" = "collect";
+  let fetched = 0;
+  let traceRunId: string | null = null;
+  let lostLease = false;
+  const heartbeat = trace ? setInterval(() => {
+    if (!heartbeatSourceCollectTrace(db, trace)) lostLease = true;
+  }, 30_000) : null;
+  const assertWrite = () => {
+    if (!trace) return;
+    if (lostLease) throw new Error("source_collect_fence_lost");
+    assertSourceCollectClaim(db, trace);
+  };
+
+  try {
   const { run, result } = await runJob(
     db,
     {
@@ -49,9 +75,45 @@ export async function collectSource(
       target: { source_id: source.id, ...(opts.probe ? { probe: true } : {}) },
       retryOf: opts.retryOf ?? null,
       silent: opts.probe,
+      traceId: trace?.traceId,
+      assertWrite: trace ? assertWrite : undefined,
     },
-    async () => {
+    async (ctx) => {
+    traceRunId = ctx.runId;
+    if (trace && sourceRef) {
+      db.transaction(() => {
+        assertWrite();
+        bindSourceCollectRootRun(db, trace, ctx.runId);
+        captureRevision(db, {
+          entity_type: sourceRef.type,
+          entity_key: entityKey(sourceRef),
+          revision: sourceRef.revision,
+          snapshot: sourceConfigSnapshot(source),
+        });
+        appendGenerationEvent(db, {
+          trace_id: trace.traceId, run_id: ctx.runId, stage: "collect", event_type: "started",
+          input_refs: [sourceRef],
+          version_context: { source_config_revision: sourceRef.revision, collection_mode: source.fetch_mode ?? "feed" },
+          context_completeness: "partial",
+        });
+      })();
+    }
     const raws = await fetchFromSource(source);
+    fetched = raws.length;
+    if (trace && sourceRef) {
+      assertWrite();
+      appendGenerationEvent(db, {
+        trace_id: trace.traceId, run_id: ctx.runId, stage: "collect", event_type: "completed",
+        input_refs: [sourceRef], metrics: { fetched_count: raws.length },
+        version_context: { source_config_revision: sourceRef.revision }, context_completeness: "partial",
+      });
+      appendGenerationEvent(db, {
+        trace_id: trace.traceId, run_id: ctx.runId, stage: "normalize", event_type: "started",
+        input_refs: [sourceRef], metrics: { fetched_count: raws.length },
+        version_context: { source_config_revision: sourceRef.revision }, context_completeness: "partial",
+      });
+    }
+    stage = "normalize";
     const fetchedAt = new Date().toISOString();
     let inserted = 0;
     let updated = 0;
@@ -112,17 +174,84 @@ export async function collectSource(
         continue;
       }
       item.raw_ref = archiveRaw(item.id, raw.raw);
-      if (existing) {
-        updateContentItem(db, item); // 同 URL 内容更新 → 原地更新、id 不变（AC2 ②）
-        updated++;
-      } else {
-        insertContentItem(db, item); // 新 URL（AC2 ③）
-        inserted++;
-      }
+      const outputRef = trace ? contentItemRef(item, "output") : null;
+      // Content 的新不可变 snapshot 与业务 upsert 同一 SQLite 事务：任一失败都不会留下
+      // “内容已更新、但 trace 指向不存在 revision”的半事实。raw_ref 依规不进入 P0 snapshot / ref。
+      db.transaction(() => {
+        assertWrite();
+        if (outputRef) {
+          captureRevision(db, {
+            entity_type: outputRef.type,
+            entity_key: entityKey(outputRef),
+            revision: outputRef.revision,
+            snapshot: contentItemRevisionSnapshot(item),
+          });
+        }
+        if (existing) updateContentItem(db, item); // 同 URL 内容更新 → 原地更新、id 不变（AC2 ②）
+        else insertContentItem(db, item); // 新 URL（AC2 ③）
+      })();
+      if (outputRef) outputs.push(outputRef);
+      if (existing) updated++;
+      else inserted++;
+    }
+    if (!opts.probe) {
+      assertWrite();
+      setRunInserted(db, ctx.runId, inserted); // 探测 run 不参与零产出统计
+    }
+    if (trace && sourceRef) {
+      assertWrite();
+      appendGenerationEvent(db, {
+        trace_id: trace.traceId, run_id: ctx.runId, stage: "normalize", event_type: "completed",
+        input_refs: [sourceRef], output_refs: outputs,
+        metrics: { fetched_count: raws.length, inserted_count: inserted, updated_count: updated, skipped_count: skipped },
+        version_context: { source_config_revision: sourceRef.revision }, context_completeness: "partial",
+      });
     }
       return { fetched: raws.length, inserted, updated, skipped };
     },
   );
-  if (!opts.probe) setRunInserted(db, run.id, result.inserted); // 切片3b-3：回填本轮入库数（探测 run 不算）
+  if (trace && !finishSourceCollectTrace(db, trace, {
+    status: "done",
+    summary: { fetched_count: result.fetched, inserted_count: result.inserted, updated_count: result.updated, skipped_count: result.skipped },
+  })) throw new Error("source_collect_finish_fence_lost");
   return { runId: run.id, ...result };
+  } catch (error) {
+    if (trace && !lostLease) {
+      try {
+        assertWrite();
+        // 逐条 upsert 已各自原子提交：此前成功的 Content revision 可明确列为 committed；
+        // 当前事务的失败会回滚，未知数量显式为 0，避免把不确定性藏进错误文本。
+        const outcome = outputs.length > 0 ? "committed" : "rolled_back";
+        appendGenerationEvent(db, {
+          trace_id: trace.traceId, run_id: traceRunId, stage, event_type: "failed",
+          input_refs: sourceRef ? [sourceRef] : [], output_refs: outputs,
+          reason_code: error instanceof Error && error.message === "provenance_revision_conflict"
+            ? "provenance_revision_conflict" : `${stage}_failed`,
+          metrics: {
+            fetched_count: fetched,
+            committed_output_ref_count: outputs.length,
+            rolled_back_output_ref_count: outcome === "rolled_back" ? 1 : 0,
+            unknown_output_ref_count: 0,
+          },
+          version_context: sourceRef ? { source_config_revision: sourceRef.revision } : {},
+          context_completeness: "partial",
+          error: { reason_code: `${stage}_failed`, retryable: true },
+        });
+        finishSourceCollectTrace(db, trace, {
+          status: "failed",
+          summary: {
+            failed_stage: stage,
+            committed_output_ref_count: outputs.length,
+            rolled_back_output_ref_count: outcome === "rolled_back" ? 1 : 0,
+            unknown_output_ref_count: 0,
+          },
+        });
+      } catch {
+        // 已失去 lease 时禁止旧 owner 再写失败事件；原始采集错误仍交给调用方和 Run 处理。
+      }
+    }
+    throw error;
+  } finally {
+    if (heartbeat) clearInterval(heartbeat);
+  }
 }

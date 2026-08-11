@@ -152,6 +152,12 @@ CREATE INDEX idx_deployment_record_at ON deployment_record(deployed_at DESC);
 CREATE TRIGGER deployment_record_no_update BEFORE UPDATE ON deployment_record BEGIN SELECT RAISE(ABORT, 'deployment_record is immutable'); END;
 CREATE TRIGGER deployment_record_no_delete BEFORE DELETE ON deployment_record BEGIN SELECT RAISE(ABORT, 'deployment_record is immutable'); END;
 `;
+// P0b-1：source_collect trace 需要可查询的根来源。不能把来源藏进 JSON summary，
+// 否则后续来源时间线和按来源检索会退化为全表扫描。
+const SOURCE_COLLECT_SQL = `
+ALTER TABLE generation_trace ADD COLUMN source_id TEXT REFERENCES source(id);
+CREATE INDEX IF NOT EXISTS idx_generation_trace_source_started ON generation_trace(source_id, started_at DESC);
+`;
 const MIGRATIONS = [
   { version: "20260803_01_provenance_core", sql: CORE_SQL },
   { version: "20260803_02_report_lifecycle", sql: REPORT_LIFECYCLE_SQL },
@@ -160,6 +166,7 @@ const MIGRATIONS = [
   { version: "20260803_05_redaction_request", sql: REDACTION_REQUEST_SQL },
   { version: "20260803_06_provenance_facts", sql: PROVENANCE_FACTS_SQL },
   { version: "20260803_07_deployment_record", sql: DEPLOYMENT_SQL },
+  { version: "20260811_08_source_collect", sql: SOURCE_COLLECT_SQL },
 ];
 
 function hasColumn(db: DB, table: string, column: string): boolean {
@@ -230,6 +237,9 @@ export function applyProvenanceMigrations(db: DB): void {
         db.exec(migration.sql);
       } else if (migration.version === "20260803_04_redaction_tombstone" || migration.version === "20260803_05_redaction_request" || migration.version === "20260803_06_provenance_facts" || migration.version === "20260803_07_deployment_record") {
         db.exec(migration.sql);
+      } else if (migration.version === "20260811_08_source_collect") {
+        if (!hasColumn(db, "generation_trace", "source_id")) db.exec("ALTER TABLE generation_trace ADD COLUMN source_id TEXT REFERENCES source(id)");
+        db.exec("CREATE INDEX IF NOT EXISTS idx_generation_trace_source_started ON generation_trace(source_id, started_at DESC)");
       }
       db.prepare("INSERT INTO schema_migration(version,checksum,applied_at) VALUES (?,?,?)")
         .run(migration.version, checksum, new Date().toISOString());

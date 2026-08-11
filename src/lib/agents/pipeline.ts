@@ -21,33 +21,10 @@ import { consistencyCacheVersion, isValidationDegraded, validateBatch } from "./
 import { extractLeadCandidates } from "./tech-leads.js";
 import { deriveOpportunityCandidates } from "./opportunity-planning.js";
 import { appendGenerationEvent, captureRevision, entityKey, type EntityRef } from "../db/provenance-facts.js";
-
-/**
- * content_hash 是正文的版本标识；采集时间是一次观测，不是正文修订的一部分。
- *
- * v2 与上线初期直接使用 content_hash 的 v1 revision 隔离，避免为修正快照语义而
- * 覆盖已有不可变事实。旧 v1 ref 仍可按原样审计，新运行统一写 content-v2 ref。
- */
-const CONTENT_REVISION_V2 = "content-v2";
-
-function contentRevision(item: ContentItem): string {
-  return `${CONTENT_REVISION_V2}:${item.content_hash}`;
-}
-
-function contentRevisionSnapshot(item: ContentItem): Record<string, unknown> {
-  return {
-    url: item.url,
-    source_id: item.source_id,
-    published_at: item.published_at,
-    body_length: item.body.length,
-    content_hash: item.content_hash,
-  };
-}
+import { contentItemRef, contentItemRevisionSnapshot } from "../db/provenance-revisions.js";
 
 function contentRefs(items: ContentItem[]): EntityRef[] {
-  return items.map((item) =>
-    ({ type: "content_item", locator: { kind: "id", id: item.id }, revision: contentRevision(item), role: "input" })
-  );
+  return items.map((item) => contentItemRef(item));
 }
 
 /** 只在阶段已开始且可被失败事件包住后，才固化输入快照。
@@ -59,7 +36,7 @@ function captureContentRevisions(db: DB, items: ContentItem[], refs: EntityRef[]
       const ref = refs[index];
       assertWrite?.();
       captureRevision(db, { entity_type: ref.type, entity_key: entityKey(ref), revision: ref.revision, snapshot: {
-        ...contentRevisionSnapshot(item),
+        ...contentItemRevisionSnapshot(item),
       } });
     }
   })();

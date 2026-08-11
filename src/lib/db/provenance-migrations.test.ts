@@ -9,7 +9,7 @@ describe("provenance migration runner", () => {
     applyProvenanceMigrations(db);
     applyProvenanceMigrations(db);
     expect(() => assertProvenanceSchema(db)).not.toThrow();
-    expect(db.prepare("SELECT COUNT(*) AS count FROM schema_migration").get()).toEqual({ count: 7 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM schema_migration").get()).toEqual({ count: 8 });
     expect((db.prepare("PRAGMA table_info(run)").all() as { name: string }[]).some((row) => row.name === "trace_id")).toBe(true);
     const reportColumns = db.prepare("PRAGMA table_info(report)").all() as { name: string; notnull: number }[];
     expect(reportColumns.find((column) => column.name === "body_path")?.notnull).toBe(0);
@@ -18,6 +18,7 @@ describe("provenance migration runner", () => {
     expect(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='provenance_redaction'").get()).toBeTruthy();
     expect(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='provenance_redaction_request'").get()).toBeTruthy();
     expect(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='generation_event'").get()).toBeTruthy();
+    expect((db.prepare("PRAGMA table_info(generation_trace)").all() as { name: string }[]).some((row) => row.name === "source_id")).toBe(true);
   });
 
   it("rejects a production writer when the runner has not applied the ledger", () => {
@@ -49,6 +50,9 @@ describe("provenance migration runner", () => {
       );
     `);
     db.pragma("foreign_keys = ON");
+    // 该 fixture 的 core migration ledger 已人为标记为完成；补最小父表以模拟其存在，
+    // 让后续 P0b 的 source_id ALTER 与本测试关注的 report rebuild 在同一遗留形态下运行。
+    db.exec("CREATE TABLE generation_trace (id TEXT PRIMARY KEY, started_at TEXT NOT NULL)");
     db.prepare("INSERT INTO topic(id,name,keywords,language,brief_schedule,enabled) VALUES ('t','T','[]','en','daily',1)").run();
     db.prepare(`INSERT INTO report(id,type,topic_id,status,generated_at,title,body_path,insight_ids,event_ids,prev_report_id,citation_count,cost)
       VALUES ('r','brief','t','done','2026-08-03T00:00:00Z','R','/data/reports/r','[]','[]',NULL,0,'{}')`).run();

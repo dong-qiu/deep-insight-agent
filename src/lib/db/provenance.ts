@@ -37,6 +37,18 @@ export type RetryTraceRequestResult = TraceRequestResult
   | { kind: "not_found" }
   | { kind: "not_retryable"; status: string; requestState: string };
 
+export type SourceCollectTraceRequestResult =
+  | { kind: "accepted"; traceId: string }
+  | { kind: "replayed"; traceId: string }
+  | { kind: "conflict"; activeTraceId: string };
+
+/** 同步 source_collect 不经过 dispatch worker，但仍先取 owned lease，所有业务写入均可 fencing。 */
+export interface SourceCollectClaim {
+  traceId: string;
+  ownerToken: string;
+  fencingEpoch: number;
+}
+
 export interface DispatchClaim {
   dispatchId: string;
   traceId: string;
@@ -209,6 +221,154 @@ export function createScheduledTraceRequest(
        VALUES (@id,@request_id,@trace_id,'topic_pipeline',@payload,'queued',0,0,@created_at,@updated_at)`,
     ).run({ id: dispatchId, request_id: requestId, trace_id: traceId, payload: JSON.stringify(payload), created_at: nowIso, updated_at: nowIso });
     return { kind: "accepted", traceId, requestId };
+  })();
+}
+
+function sourceCollectScopeKey(sourceId: string, now: Date): string {
+  return `source_collect:${sourceId}:${now.toISOString().slice(0, 13)}`;
+}
+
+/**
+ * 定时来源采集的同步 trace factory。
+ *
+ * 每来源、每 UTC 小时只登记一个 logical request；执行前由 claimSourceCollectTrace 取得 owned lease，
+ * 因此重入 cron 不会把同一来源的 Content 更新伪装成两条独立采集事实。
+ */
+export function createScheduledSourceCollectTrace(
+  db: DB,
+  input: { sourceId: string; now?: Date },
+): SourceCollectTraceRequestResult {
+  const now = input.now ?? new Date();
+  const nowIso = now.toISOString();
+  const scopeKey = sourceCollectScopeKey(input.sourceId, now);
+  const activeKey = `source_collect:${input.sourceId}`;
+
+  return db.transaction((): SourceCollectTraceRequestResult => {
+    const existing = db.prepare("SELECT trace_id FROM generation_trace_request WHERE scope_key=?").get(scopeKey) as { trace_id: string } | undefined;
+    if (existing) return { kind: "replayed", traceId: existing.trace_id };
+    // source_collect 是同步路径，没有 queued worker 在重启后自动领走 reserved lease。
+    // 因此先终结已过期的源 trace，既保留失败事实，又不会让一次进程中断永久封死该来源。
+    const stale = db.prepare(`SELECT trace_id FROM generation_lease
+      WHERE active_key=? AND state IN ('reserved','owned') AND expires_at IS NOT NULL AND expires_at < ?`).all(activeKey, nowIso) as { trace_id: string }[];
+    for (const row of stale) {
+      db.prepare("UPDATE generation_trace SET status='failed',ended_at=?,summary=? WHERE id=? AND status='running'").run(
+        nowIso, JSON.stringify({ reason_code: "source_collect_lease_expired" }), row.trace_id,
+      );
+      db.prepare("UPDATE generation_trace_request SET state='terminal' WHERE trace_id=?").run(row.trace_id);
+      db.prepare("UPDATE generation_lease SET state='released',released_at=?,expires_at=NULL WHERE trace_id=? AND state IN ('reserved','owned')").run(nowIso, row.trace_id);
+    }
+    const active = db.prepare(
+      "SELECT trace_id FROM generation_lease WHERE active_key=? AND state IN ('reserved','owned') LIMIT 1",
+    ).get(activeKey) as { trace_id: string } | undefined;
+    if (active) return { kind: "conflict", activeTraceId: active.trace_id };
+
+    const traceId = id("trace");
+    const requestId = id("trace_req");
+    const leaseId = id("lease");
+    db.prepare(
+      `INSERT INTO generation_trace
+       (id,scope_kind,trigger_kind,source_id,status,completion_policy,coverage,runtime_version,summary,started_at)
+       VALUES (@id,'source_collect','cron',@source_id,'running',@completion_policy,'complete',@runtime_version,'{}',@started_at)`,
+    ).run({
+      id: traceId,
+      source_id: input.sourceId,
+      completion_policy: JSON.stringify({ schema_version: 1, execution_kind: "sync", required_stages: ["collect", "normalize"] }),
+      runtime_version: runtimeVersionAt(db, nowIso),
+      started_at: nowIso,
+    });
+    db.prepare(
+      `INSERT INTO generation_trace_request
+       (id,scope_key,active_key,request_sequence,trace_id,state,retained_until,created_at)
+       VALUES (@id,@scope_key,@active_key,1,@trace_id,'accepted',@retained_until,@created_at)`,
+    ).run({ id: requestId, scope_key: scopeKey, active_key: activeKey, trace_id: traceId, retained_until: isoAfter(now, REQUEST_RETENTION_MS), created_at: nowIso });
+    db.prepare("UPDATE generation_trace SET request_id=? WHERE id=?").run(requestId, traceId);
+    db.prepare(
+      `INSERT INTO generation_lease (id,active_key,scope_key,trace_id,state,fencing_epoch,expires_at,created_at)
+       VALUES (@id,@active_key,@scope_key,@trace_id,'reserved',0,@expires_at,@created_at)`,
+    ).run({ id: leaseId, active_key: activeKey, scope_key: scopeKey, trace_id: traceId, expires_at: isoAfter(now, LEASE_TTL_MS), created_at: nowIso });
+    return { kind: "accepted", traceId };
+  })();
+}
+
+/** 本地旧库/未执行 migration runner 的兼容探针。生产 writer 由 PROVENANCE_SCHEMA_REQUIRED fail-closed，
+ * 此处只让历史单测与明确的非严格本地开发保留原有采集行为，绝不把“缺表”伪装成采集失败。 */
+export function sourceCollectTracingAvailable(db: DB): boolean {
+  const tables = db.prepare(`SELECT name FROM sqlite_master
+    WHERE type='table' AND name IN ('generation_trace_request','generation_lease','generation_event','provenance_revision')`).all() as { name: string }[];
+  if (tables.length !== 4) return false;
+  return (db.prepare("PRAGMA table_info(generation_trace)").all() as { name: string }[])
+    .some((column) => column.name === "source_id");
+}
+
+/** 同步采集取得 lease 后才允许创建 root ingest Run 或写任何 provenance/business fact。 */
+export function claimSourceCollectTrace(db: DB, traceId: string, now: Date = new Date()): SourceCollectClaim | null {
+  const nowIso = now.toISOString();
+  return db.transaction((): SourceCollectClaim | null => {
+    const lease = db.prepare(`SELECT fencing_epoch FROM generation_lease l
+      JOIN generation_trace t ON t.id=l.trace_id
+      WHERE l.trace_id=? AND t.scope_kind='source_collect' AND l.state='reserved' AND l.expires_at >= ?`).get(traceId, nowIso) as { fencing_epoch: number } | undefined;
+    if (!lease) return null;
+    const ownerToken = id("owner");
+    const fencingEpoch = lease.fencing_epoch + 1;
+    const expiresAt = isoAfter(now, LEASE_TTL_MS);
+    const updated = db.prepare(`UPDATE generation_lease
+      SET state='owned',owner_token=@owner_token,fencing_epoch=@fencing_epoch,heartbeat_at=@now,expires_at=@expires_at
+      WHERE trace_id=@trace_id AND state='reserved' AND expires_at >= @now`).run({ trace_id: traceId, owner_token: ownerToken, fencing_epoch: fencingEpoch, now: nowIso, expires_at: expiresAt });
+    if (updated.changes !== 1) return null;
+    return { traceId, ownerToken, fencingEpoch };
+  })();
+}
+
+export function assertSourceCollectClaim(db: DB, claim: SourceCollectClaim, now: Date = new Date()): void {
+  const owned = db.prepare(`SELECT 1 FROM generation_lease
+    WHERE trace_id=? AND state='owned' AND owner_token=? AND fencing_epoch=? AND expires_at >= ?`).get(
+    claim.traceId, claim.ownerToken, claim.fencingEpoch, now.toISOString(),
+  );
+  if (!owned) throw new Error("source_collect_fence_lost");
+}
+
+export function heartbeatSourceCollectTrace(db: DB, claim: SourceCollectClaim, now: Date = new Date()): boolean {
+  const nowIso = now.toISOString();
+  return db.prepare(`UPDATE generation_lease SET heartbeat_at=@now,expires_at=@expires_at
+    WHERE trace_id=@trace_id AND state='owned' AND owner_token=@owner_token AND fencing_epoch=@fencing_epoch AND expires_at >= @now`).run({
+    trace_id: claim.traceId, owner_token: claim.ownerToken, fencing_epoch: claim.fencingEpoch,
+    now: nowIso, expires_at: isoAfter(now, LEASE_TTL_MS),
+  }).changes === 1;
+}
+
+/** root_run_id 一经绑定不得替换；防止重入或失联 owner 把另一个 ingest Run 伪装成同一采集根。 */
+export function bindSourceCollectRootRun(db: DB, claim: SourceCollectClaim, runId: string): void {
+  assertSourceCollectClaim(db, claim);
+  const updated = db.prepare("UPDATE generation_trace SET root_run_id=? WHERE id=? AND root_run_id IS NULL").run(runId, claim.traceId);
+  if (updated.changes === 0) {
+    const row = db.prepare("SELECT root_run_id FROM generation_trace WHERE id=?").get(claim.traceId) as { root_run_id: string | null } | undefined;
+    if (row?.root_run_id !== runId) throw new Error("source_collect_root_run_already_bound");
+  }
+}
+
+/** 同步 trace 的终态与 request/lease 一起提交；失败摘要不含 URL、正文或原始错误栈。 */
+export function finishSourceCollectTrace(
+  db: DB,
+  claim: SourceCollectClaim,
+  outcome: { status: "done" | "failed"; summary: Record<string, unknown> },
+  now: Date = new Date(),
+): boolean {
+  const nowIso = now.toISOString();
+  return db.transaction(() => {
+    const owned = db.prepare(`SELECT 1 FROM generation_lease
+      WHERE trace_id=? AND state='owned' AND owner_token=? AND fencing_epoch=? AND expires_at >= ?`).get(
+      claim.traceId, claim.ownerToken, claim.fencingEpoch, nowIso,
+    );
+    if (!owned) return false;
+    db.prepare("UPDATE generation_trace SET status=?,ended_at=?,summary=? WHERE id=?").run(
+      outcome.status, nowIso, JSON.stringify(outcome.summary), claim.traceId,
+    );
+    db.prepare("UPDATE generation_trace_request SET state='terminal' WHERE trace_id=?").run(claim.traceId);
+    db.prepare(`UPDATE generation_lease SET state='released',released_at=@now,expires_at=NULL
+      WHERE trace_id=@trace_id AND state='owned' AND owner_token=@owner_token AND fencing_epoch=@fencing_epoch`).run({
+      trace_id: claim.traceId, owner_token: claim.ownerToken, fencing_epoch: claim.fencingEpoch, now: nowIso,
+    });
+    return true;
   })();
 }
 
@@ -394,7 +554,7 @@ export function finishGenerationDispatch(
 
 export function getGenerationTraceStatus(db: DB, traceId: string): Record<string, unknown> | null {
   return db.prepare(
-    `SELECT t.id AS trace_id,t.request_id,t.status,t.root_run_id,t.started_at,t.ended_at,t.coverage,t.runtime_version,
+    `SELECT t.id AS trace_id,t.request_id,t.status,t.root_run_id,t.topic_id,t.source_id,t.scope_kind,t.trigger_kind,t.started_at,t.ended_at,t.coverage,t.runtime_version,
       d.state AS dispatch_state,d.attempt,d.claimed_at,d.lease_expires_at,d.last_error,
       (SELECT image_digest FROM deployment_record dr WHERE dr.deployed_at <= t.started_at ORDER BY dr.deployed_at DESC,dr.id DESC LIMIT 1) AS deployment_image_digest,
       (SELECT git_sha FROM deployment_record dr WHERE dr.deployed_at <= t.started_at ORDER BY dr.deployed_at DESC,dr.id DESC LIMIT 1) AS deployment_git_sha
