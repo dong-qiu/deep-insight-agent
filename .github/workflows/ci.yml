@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+  pull-requests: read
+
 # 同分支新推送取消旧跑，省额度
 concurrency:
   group: ci-${{ github.ref }}
@@ -14,8 +18,8 @@ concurrency:
 jobs:
   # eval 门禁兜底：改了 AI 质量面(agents/sources/llm.ts/dataset)的提交必须带 Eval-Gate 盖章
   # （= 已在本地跑过 /eval-gate 对比基线）。与 .githooks/pre-push 同款判定脚本；这里绕不过
-  # （--no-verify / EVAL_GATE_ACK 只绕本地 hook，不影响 CI）。PR 与直推 main 都查——直推 main
-  # 用 before..after，作为分支保护之外的防御纵深。
+  # （--no-verify / EVAL_GATE_ACK 只绕本地 hook，不影响 CI）。PR 与直推 main 都查。对 squash
+  # 合并后的 push，GitHub API 将新提交关联回已验证 PR，再检查原 PR 区间；直接推送仍严格查 before..after。
   # 本 job 不跑真模型 eval（要 key/预算，见 verify job 注释与 eval.yml）——只校验盖章存在。
   eval-gate:
     name: eval-gate (trailer)
@@ -29,16 +33,27 @@ jobs:
           EVENT: ${{ github.event_name }}
           PR_BASE: ${{ github.event.pull_request.base.sha }}
           PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
           PUSH_BEFORE: ${{ github.event.before }}
           PUSH_AFTER: ${{ github.sha }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
-          if [ "$EVENT" = "pull_request" ]; then
-            range="$PR_BASE..$PR_HEAD"
-          elif printf '%s' "$PUSH_BEFORE" | grep -qE '^0+$'; then
+          if [ "$EVENT" != "pull_request" ] && printf '%s' "$PUSH_BEFORE" | grep -qE '^0+$'; then
             echo "首次/新分支 push（before 全 0），无前序区间，跳过 eval-gate。"; exit 0
-          else
-            range="$PUSH_BEFORE..$PUSH_AFTER"
           fi
+
+          resolution="$RUNNER_TEMP/eval-gate-range.json"
+          node ops/eval-gate-range.mjs > "$resolution"
+          base="$(node -e 'const r = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")); process.stdout.write(r.baseSha)' "$resolution")"
+          head="$(node -e 'const r = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")); process.stdout.write(r.headSha)' "$resolution")"
+          pull_number="$(node -e 'const r = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")); process.stdout.write(r.pullNumber ? String(r.pullNumber) : "")' "$resolution")"
+          source="$(node -e 'const r = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")); process.stdout.write(r.source)' "$resolution")"
+          if [ -n "$pull_number" ]; then
+            git fetch --no-tags origin "+refs/pull/$pull_number/head:refs/remotes/eval-gate/pr-$pull_number"
+            head="refs/remotes/eval-gate/pr-$pull_number"
+          fi
+          range="$base..$head"
+          echo "eval-gate source: $source"
           echo "eval-gate range: $range"
           bash .githooks/eval-gate-check.sh "$range"
 
