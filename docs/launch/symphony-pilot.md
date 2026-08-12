@@ -20,7 +20,7 @@ GitHub adapter 只将 `open` Issue 视为活跃、`closed` Issue 视为终态；
 
 `agent-ready` 表示可派发；controller 在启动 Codex 前先添加 `agent-working`、再移除 `agent-ready`。Codex 不得修改这两个认领标签。`agent-human-review`、`agent-needs-human` 与 `agent-blocked` 是停止标签，任一存在都会终止续跑并阻止运行标签残留的 Issue 被再次派发。交接时 Codex 添加 `agent-human-review`；人类确认会话已停止后移除 `agent-working`，需要返工时移除交接标签并重新添加 `agent-ready`。阻塞时 Codex 添加 `agent-needs-human` 或 `agent-blocked`，仍由人类解除运行标签。人类合入后关闭 Issue。
 
-停止标签只能由 Codex 添加、不能移除；解除交接/阻塞并重新派发始终是人工操作。服务必须通过 `flock` 对 `symphony-github-dong-qiu--deep-insight-agent` 取得排他锁；未取得锁即退出，禁止同一仓库存在两个 controller。
+停止标签只能由 Codex 添加、不能移除；解除交接/阻塞并重新派发始终是人工操作。Hardened Symphony runtime 会对 `symphony-github-dong-qiu--deep-insight-agent` 取得非阻塞排他锁；未取得锁即拒绝启动，禁止同一仓库存在两个 controller。可选地将 `SYMPHONY_LOCK_ROOT` 设为 `/srv/symphony/locks`，并使该目录仅由服务用户可写。
 
 ## 2. 宿主机环境
 
@@ -68,8 +68,6 @@ EOF
 
 ```sh
 cd /srv/symphony/openai-symphony/elixir
-exec 9>/srv/symphony/symphony-github-dong-qiu--deep-insight-agent.lock
-flock -n 9 || { echo 'another Symphony controller owns this repository' >&2; exit 1; }
 mise exec -- ./bin/symphony /path/to/insight-agent/WORKFLOW.md
 ```
 
