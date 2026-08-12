@@ -32,7 +32,7 @@ open + agent-ready ──► agent-working ──► agent-human-review ──�
 
 - GitHub adapter 仅使用 Issue 的 `open` / `closed` 状态；试点工作状态全部由标签表达。只有开放且带 `agent-ready` 的 Issue 可被派发。
 - 编排器在启动 Codex 前添加 `agent-working`，再移除 `agent-ready`；继续运行和重启恢复只认 `agent-working`。因此 agent 不会因移除派发标签而在下一轮停止，也不会重复领取。
-- `agent-human-review`、`agent-needs-human` 与 `agent-blocked` 是 controller 的停止标签：任一存在都终止续跑且禁止带残留 `agent-working` 的 Issue 被重新派发。完成交接时 agent 添加 `agent-human-review` 并评论 PR、测试与 CI 证据；人工在确认没有运行会话后移除 `agent-working`，并在合入后关闭 Issue。
+- `agent-human-review`、`agent-needs-human` 与 `agent-blocked` 是 controller 的停止标签：任一存在都终止续跑且禁止带残留 `agent-working` 的 Issue 被重新派发。agent 只能添加、不能移除停止标签；完成交接时 agent 添加 `agent-human-review` 并评论 PR、测试与 CI 证据；人工在确认没有运行会话后移除 `agent-working`，并在合入后关闭 Issue。
 - 返工由人类移除 `agent-human-review` 并重新添加 `agent-ready`；agent 不关闭 Issue。缺少验收标准、权限或外部决策时，agent 添加 `agent-needs-human` 或 `agent-blocked`，并移除调度标签。
 
 ## 安全与权限模型
@@ -53,6 +53,7 @@ Symphony 宿主机必须使用专用 OS 用户与独立 workspace 根目录，�
 1. `WORKFLOW.md` 的 YAML 可由 Symphony 解析，且不含任何字面量密钥。
 2. 未设置 `SYMPHONY_GITHUB_TOKEN` 或 `SYMPHONY_WORKSPACE_ROOT` 时，服务必须拒绝开始派发。
 3. 只有开放且带 `agent-ready` 的 Issue 可被领取；controller 必须先加 `agent-working` 再移除 `agent-ready`，全局并发不超过 `1`。
+4. 同一仓库只允许一个 controller：服务启动时必须获得与仓库绑定的排他锁，拿不到锁则拒绝启动。
 4. 每个试点 Issue 在独立 workspace 中工作，且只能创建 feature branch 与 PR；不能合并、关闭 Issue 或部署。
 5. 成功运行的交接标签为 `agent-human-review`，并包含 PR、测试和 CI 证据。
 6. 首轮至少完成 3 个低风险 Issue；连续累计 10 个 Issue 后评估 CI 通过率、人工返工率、重试、成本、遗留 workspace 与越权事件，再决定是否将并发提高到 `2`。
