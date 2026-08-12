@@ -51,8 +51,9 @@
 
 ## M5 — Post-MVP：技术规划验证与研究入口
 
-- [~] P0 生成溯源与全链路可观测性 V1：以 `Run` / `audit_log` 为基础记录采集、分析、校验、报告、技术线索、方向映射和人工决策的实体—活动—执行者链路；P0a 已完成，P0b/P0c 与优化驾驶舱仍待完成。见 `docs/plan/specs/generation-provenance.md`。
+- [~] P0 生成溯源与全链路可观测性 V1：以 `Run` / `audit_log` 为基础记录采集、分析、校验、报告、技术线索、方向映射和人工决策的实体—活动—执行者链路；P0a、P0b 已完成生产验收，P0c 与优化驾驶舱仍待完成。见 `docs/plan/specs/generation-provenance.md`。
   - [x] P0a 报告纵切已在生产 Deep Dive 与非空正常 Brief 验收通过（trace、实体引用、部署事实、admin/viewer 边界）；Brief 证据见 `docs/verify/p0a-brief-production-acceptance-2026-08-08.md`。
+  - [x] P0b 采集与规划链路已在生产验收通过（自动 Opportunity → Lead / Direction revision / mapping lane / priority，以及人工 Direction 决定、审计与历史 revision）；证据见 `docs/verify/p0b-production-planning-acceptance-2026-08-12.md`。
 - [x] 技术线索 V1：从成功校验引用确定性派生可追溯的模型、框架、论文、基准、工具、方法与安全信号（2026-07-23）。
 - [x] 技术机会与方向工作台 V1：方向档案、核心 / 相邻 / 校准 / 反证通道、人工状态、词项预览与显式重投影已上线（2026-07-24）。
 - [~] P0-1 两周 dogfood：累计 50–100 条人工方向 / 通道标签，评估映射准确率与错分原因；窗口 2026-07-24 ～ 2026-08-07，见 `docs/verify/technology-planning-dogfood-2026-07-24.md`。
