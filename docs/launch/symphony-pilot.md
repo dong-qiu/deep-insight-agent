@@ -18,7 +18,7 @@
 
 GitHub adapter 只将 `open` Issue 视为活跃、`closed` Issue 视为终态；上述标签是试点工作流的唯一状态来源。只有验收标准、风险范围和完成定义均明确的低风险开放 Issue 才由人工添加 `agent-ready`。不要把生产故障、数据库迁移、人工 dogfood 标注或产品/架构决策标为 `agent-ready`。
 
-`agent-ready` 表示可派发；agent 领取后移除它并添加 `agent-working`。交接时移除两者并添加 `agent-human-review`；人类需要返工时移除该标签并重新添加 `agent-ready`。阻塞时使用 `agent-needs-human` 或 `agent-blocked`，同时移除可派发标签。人类合入后关闭 Issue。
+`agent-ready` 表示可派发；controller 在启动 Codex 前先添加 `agent-working`、再移除 `agent-ready`。Codex 不得修改这两个认领标签。`agent-human-review`、`agent-needs-human` 与 `agent-blocked` 是停止标签，任一存在都会终止续跑并阻止运行标签残留的 Issue 被再次派发。交接时 Codex 添加 `agent-human-review`；人类确认会话已停止后移除 `agent-working`，需要返工时移除交接标签并重新添加 `agent-ready`。阻塞时 Codex 添加 `agent-needs-human` 或 `agent-blocked`，仍由人类解除运行标签。人类合入后关闭 Issue。
 
 ## 2. 宿主机环境
 
@@ -26,9 +26,9 @@ GitHub adapter 只将 `open` Issue 视为活跃、`closed` Issue 视为终态；
 
 由服务管理器或宿主机密钥管理将 `SYMPHONY_GITHUB_TOKEN` 与 `SYMPHONY_WORKSPACE_ROOT` 注入专用服务账号；不要通过交互式 `export` 设置 token。`SYMPHONY_WORKSPACE_ROOT` 固定为 `/srv/symphony/insight-agent-workspaces`。
 
-不要在 shell history、systemd unit 文件、`WORKFLOW.md` 或仓库 `.env` 中写 token。`SYMPHONY_GITHUB_TOKEN` 必须是仅限 `dong-qiu/deep-insight-agent` 的 fine-grained token，权限仅为 Contents read/write、Pull requests read/write、Issues read/write、Metadata read；不得授予 Actions、Environments、Administration、Secrets、Webhooks、Deployments 或其他仓库。保护规则必须拒绝直接更新 `main`。
+不要在 shell history、systemd unit 文件、`WORKFLOW.md` 或仓库 `.env` 中写 token。`SYMPHONY_GITHUB_TOKEN` 必须是仅限 `dong-qiu/deep-insight-agent` 的 fine-grained tracker token，权限仅为 Pull requests read/write、Issues read/write、Metadata read；不得授予 Contents、Actions、Environments、Administration、Secrets、Webhooks、Deployments 或其他仓库。保护规则必须拒绝直接更新 `main`，并且 Symphony 的 bot/deploy key 无 bypass。
 
-Symphony 会从 Codex 子进程移除 `SYMPHONY_GITHUB_TOKEN`，所以 clone/push 不能依赖该环境变量。另配置一个仅对 `symphony` 用户可读的 Git credential helper，由宿主机密钥管理器提供同一 fine-grained token；不得把 token 写入远程 URL、`.git/config`、workspace、shell history 或服务日志。该 helper 只允许 `https://github.com/dong-qiu/deep-insight-agent.git`。
+Symphony 会从 Codex 子进程移除 `SYMPHONY_GITHUB_TOKEN`，所以 clone/push 不能依赖该环境变量。另配置一个仅对 `symphony` 用户可读的 Git credential helper，由宿主机密钥管理器提供独立的 repository-scoped deploy key 或非管理员 bot 身份；不得把 token 写入远程 URL、`.git/config`、workspace、shell history 或服务日志。该 helper 只允许 `https://github.com/dong-qiu/deep-insight-agent.git`。
 
 ## 3. Preflight
 
