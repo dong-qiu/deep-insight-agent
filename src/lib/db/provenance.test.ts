@@ -95,6 +95,29 @@ describe("generation provenance dispatch", () => {
     });
   });
 
+  it("records an admin-triggered brief atomically with its audit and planned event", () => {
+    const accepted = createScheduledTraceRequest(db, {
+      topicId: "topic_a", reportType: "brief", period: "2026-08-03", windowHours: 168, items: 15, now,
+      triggerKind: "api", actorId: "admin_1", idempotencyKeyHash: hashIdempotencyKey("abcdefgh", "test-secret"),
+    });
+    if (accepted.kind !== "accepted") throw new Error("expected accepted request");
+    expect(db.prepare("SELECT trigger_kind FROM generation_trace WHERE id=?").get(accepted.traceId)).toEqual({ trigger_kind: "api" });
+    expect(db.prepare("SELECT idempotency_key_hash FROM generation_trace_request WHERE id=?").get(accepted.requestId))
+      .toEqual({ idempotency_key_hash: hashIdempotencyKey("abcdefgh", "test-secret") });
+    expect(db.prepare("SELECT actor,action,target FROM audit_log").all())
+      .toEqual([{ actor: "admin_1", action: "topic_brief_trigger", target: "topic_a" }]);
+    expect(db.prepare("SELECT stage,event_type,actor_type,actor_id,audit_log_id,reason_code FROM generation_event WHERE trace_id=?").all(accepted.traceId))
+      .toEqual([{ stage: "select", event_type: "planned", actor_type: "user", actor_id: "admin_1", audit_log_id: 1, reason_code: "admin_topic_brief_trigger" }]);
+  });
+
+  it("does not accept an API scheduled request without an attributed actor and key hash", () => {
+    expect(() => createScheduledTraceRequest(db, {
+      topicId: "topic_a", reportType: "brief", period: "2026-08-03", windowHours: 168, items: 15, now,
+      triggerKind: "api",
+    })).toThrow("manual_scheduled_request_missing_actor_or_idempotency_key");
+    expect(db.prepare("SELECT COUNT(*) AS count FROM generation_trace").get()).toEqual({ count: 0 });
+  });
+
   it("deduplicates scheduled source collection by UTC hour and grants exactly one owned lease", () => {
     const first = createScheduledSourceCollectTrace(db, { sourceId: "source_a", now });
     const replay = createScheduledSourceCollectTrace(db, { sourceId: "source_a", now: new Date("2026-08-03T00:59:59.000Z") });

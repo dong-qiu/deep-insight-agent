@@ -12,6 +12,7 @@ import { type EntityTrend, entityTrends, queryReportIndex, topicEvolution } from
 import { getTopic } from "../../../lib/db/repos.js";
 import { facetLabel } from "../../../lib/topics/facets.js";
 import { DeepDiveButton } from "../../settings/_components/deep-dive-button.js";
+import { TopicBriefButton } from "../../settings/_components/topic-brief-button.js";
 
 export const dynamic = "force-dynamic";
 
@@ -58,7 +59,10 @@ export default async function TopicPage({ params }: { params: Promise<{ id: stri
       </h2>
       <p className="muted">
         {(topic.facets ?? []).map(facetLabel).join("·")} · {topic.language} · brief {topic.brief_schedule}
-        {isAdmin ? <DeepDiveButton topicId={topic.id} topicName={topic.name} enabled={topic.enabled} /> : null}
+        {isAdmin ? <>
+          <TopicBriefButton topicId={topic.id} topicName={topic.name} enabled={topic.enabled} />
+          <DeepDiveButton topicId={topic.id} topicName={topic.name} enabled={topic.enabled} />
+        </> : null}
       </p>
       {topic.keywords.length ? <p className="muted">关键词：{topic.keywords.join(" / ")}</p> : null}
 

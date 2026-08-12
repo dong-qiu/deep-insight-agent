@@ -9,6 +9,7 @@ describe("isAdminOnlyPath（多账号分权闸门）", () => {
   });
 
   it("烧钱端点（深挖/追问/PPT）→ admin only", () => {
+    expect(isAdminOnlyPath("/api/topics/t_abc/brief")).toBe(true);
     expect(isAdminOnlyPath("/api/topics/t_abc/deep-dive")).toBe(true);
     expect(isAdminOnlyPath("/api/topics/t_abc/deep-dive/status")).toBe(true); // 进度轮询同限
     expect(isAdminOnlyPath("/api/reports/rep_1/followup")).toBe(true);
