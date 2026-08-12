@@ -53,10 +53,11 @@ Symphony 宿主机必须使用专用 OS 用户与独立 workspace 根目录，�
 1. `WORKFLOW.md` 的 YAML 可由 Symphony 解析，且不含任何字面量密钥。
 2. 未设置 `SYMPHONY_GITHUB_TOKEN` 或 `SYMPHONY_WORKSPACE_ROOT` 时，服务必须拒绝开始派发。
 3. 只有开放且带 `agent-ready` 的 Issue 可被领取；controller 必须先加 `agent-working` 再移除 `agent-ready`，全局并发不超过 `1`。
-4. 同一仓库只允许一个 controller：Hardened Symphony runtime 启动时必须获得与仓库绑定的排他锁，拿不到锁则拒绝启动。
-4. 每个试点 Issue 在独立 workspace 中工作，且只能创建 feature branch 与 PR；不能合并、关闭 Issue 或部署。
-5. 成功运行的交接标签为 `agent-human-review`，并包含 PR、测试和 CI 证据。
-6. 首轮至少完成 3 个低风险 Issue；连续累计 10 个 Issue 后评估 CI 通过率、人工返工率、重试、成本、遗留 workspace 与越权事件，再决定是否将并发提高到 `2`。
+4. 同一仓库只允许一个 controller 宿主机：Hardened Symphony runtime 启动时必须获得与仓库绑定的排他锁，拿不到锁则拒绝启动；锁丢失时必须停止调度，重新取得锁后才可恢复。
+5. 运行中的 `WORKFLOW.md` 不得切换到/离开 GitHub tracker 或变更 `provider.repo`；此类变更必须停止并完整重启服务。
+6. 每个试点 Issue 在独立 workspace 中工作，且只能创建 feature branch 与 PR；不能合并、关闭 Issue 或部署。
+7. 成功运行的交接标签为 `agent-human-review`，并包含 PR、测试和 CI 证据。
+8. 首轮至少完成 3 个低风险 Issue；连续累计 10 个 Issue 后评估 CI 通过率、人工返工率、重试、成本、遗留 workspace 与越权事件，再决定是否将并发提高到 `2`。
 
 ## 上线前人工前置项
 
