@@ -270,6 +270,11 @@ export function createScheduledTraceRequest(
     period: string;
     windowHours: number;
     items: number;
+    /** cron 保持 system 触发；受控 API 可在同一受理事务登记真实管理员与审计。 */
+    triggerKind?: "cron" | "api";
+    actorId?: string;
+    /** API 的 Idempotency-Key 只持久化 HMAC；日报的 canonical 去重边界仍是 UTC topic/day。 */
+    idempotencyKeyHash?: string;
     now?: Date;
   },
 ): TraceRequestResult {
@@ -294,22 +299,29 @@ export function createScheduledTraceRequest(
       topic_id: input.topicId, planning: true, report_type: input.reportType,
       window_hours: input.windowHours, window_end: nowIso, items: input.items, schema_version: 1 as const,
     };
+    const triggerKind = input.triggerKind ?? "cron";
+    if (triggerKind === "api" && (!input.actorId || !input.idempotencyKeyHash)) {
+      throw new Error("manual_scheduled_request_missing_actor_or_idempotency_key");
+    }
     const runtimeVersion = runtimeVersionAt(db, nowIso);
     db.prepare(
       `INSERT INTO generation_trace
        (id,scope_kind,trigger_kind,topic_id,status,completion_policy,coverage,runtime_version,summary,started_at)
-       VALUES (@id,'topic_pipeline','cron',@topic_id,'running',@completion_policy,'complete',@runtime_version,'{}',@started_at)`,
+       VALUES (@id,'topic_pipeline',@trigger_kind,@topic_id,'running',@completion_policy,'complete',@runtime_version,'{}',@started_at)`,
     ).run({
-      id: traceId, topic_id: input.topicId,
+      id: traceId, topic_id: input.topicId, trigger_kind: triggerKind,
       completion_policy: JSON.stringify({ schema_version: 1, planning: true, report_type: input.reportType }),
       runtime_version: runtimeVersion,
       started_at: nowIso,
     });
     db.prepare(
       `INSERT INTO generation_trace_request
-       (id,scope_key,active_key,request_sequence,trace_id,state,retained_until,created_at)
-       VALUES (@id,@scope_key,@active_key,1,@trace_id,'accepted',@retained_until,@created_at)`,
-    ).run({ id: requestId, scope_key: scopeKey, active_key: activeKey, trace_id: traceId, retained_until: isoAfter(now, REQUEST_RETENTION_MS), created_at: nowIso });
+       (id,scope_key,active_key,idempotency_key_hash,request_sequence,trace_id,state,retained_until,created_at)
+       VALUES (@id,@scope_key,@active_key,@idempotency_key_hash,1,@trace_id,'accepted',@retained_until,@created_at)`,
+    ).run({
+      id: requestId, scope_key: scopeKey, active_key: activeKey, idempotency_key_hash: input.idempotencyKeyHash ?? null,
+      trace_id: traceId, retained_until: isoAfter(now, REQUEST_RETENTION_MS), created_at: nowIso,
+    });
     db.prepare("UPDATE generation_trace SET request_id=? WHERE id=?").run(requestId, traceId);
     db.prepare(
       `INSERT INTO generation_lease (id,active_key,scope_key,trace_id,state,fencing_epoch,created_at)
@@ -320,6 +332,16 @@ export function createScheduledTraceRequest(
        (id,request_id,trace_id,kind,payload,state,attempt,claim_epoch,created_at,updated_at)
        VALUES (@id,@request_id,@trace_id,'topic_pipeline',@payload,'queued',0,0,@created_at,@updated_at)`,
     ).run({ id: dispatchId, request_id: requestId, trace_id: traceId, payload: JSON.stringify(payload), created_at: nowIso, updated_at: nowIso });
+    if (triggerKind === "api") {
+      const auditLogId = appendAudit(db, {
+        actor: input.actorId!, action: "topic_brief_trigger", target: input.topicId,
+        detail: { trace_id: traceId, request_id: requestId, report_type: input.reportType, period: input.period, window_hours: input.windowHours, items: input.items },
+      });
+      appendGenerationEvent(db, {
+        trace_id: traceId, stage: "select", event_type: "planned", actor_type: "user", actor_id: input.actorId,
+        audit_log_id: auditLogId, reason_code: "admin_topic_brief_trigger", context_completeness: "complete", occurred_at: nowIso,
+      });
+    }
     return { kind: "accepted", traceId, requestId };
   })();
 }

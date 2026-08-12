@@ -599,6 +599,21 @@ P0 的图查询采用硬预算：时间线最多 100 条事件一页，因果图
   包含状态、评分与其确定性输入的最小脱敏快照。分数以稳定十进制字符串存入 snapshot，禁止浮点序列化漂移。
 - 本切片不回填 P0b-2 前的人工动作，也不把 `raw_ref`、原文、提示词、密钥或渠道结果写入 event / revision。
 
+#### P0b-2a：管理员单主题 Daily Brief
+
+- 管理员可在主题页和设置页通过 `POST /api/topics/{topic_id}/brief` 对一个启用主题登记一次标准 `brief`；路由只写
+  request / trace / lease / dispatch，实际 analyze → validate → report 仍必须由 generation-dispatch worker claim 后执行。
+  它不得调用全局 cron、采集其他来源或主题，也不得直接写报告、Run 或业务数据。
+- 请求必须携带长度 8–128 的 ASCII `Idempotency-Key`，并由 `requireAdminActor()` 取得可信 actor；只保存 key 的 HMAC。
+  canonical 幂等边界是 `topic_pipeline:{topic_id}:brief:{UTC date}`：同一主题同一 UTC 日的重复请求返回既有 trace（200），
+  不因更换 key 产生第二份日报；不同日但上一个 brief 尚持有 lease 时返回
+  `409 { code: "active_generation", active_trace_id }`。
+- 成功受理返回 202，冻结现行 `PIPELINE_WINDOW_HOURS`（默认 168）、`PIPELINE_ITEMS_PER_TOPIC`（默认 15）及
+  `window_end`，并在创建 trace / request / lease / dispatch 的同一 SQLite 事务写 `audit_log` 和 `select/planned` event。
+  audit 只记录 actor、topic、trace/request ID、报告类型、UTC period、窗口与条数，禁止记录明文 key、正文、提示词或密钥。
+- UI 仅管理员可见，触发前必须显示成本/窗口确认提示，并基于 `/api/generation-traces/{trace_id}` 展示受理后的 worker
+  状态；普通用户既不可见入口，也会被 middleware 与 handler 的双重鉴权拒绝。
+
 ### P0c：容量与受限视图
 
 1. 实现分页/图遍历预算；删除、恢复和 viewer 授权均是 P0a 的前置条件，P0c 只扩展受限图形视图与容量验证。

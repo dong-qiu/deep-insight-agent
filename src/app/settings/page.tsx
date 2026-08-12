@@ -11,6 +11,7 @@ import { facetLabel } from "../../lib/topics/facets.js";
 import { DOMAIN_ORDER, sourceDomains, sourceForm } from "./source-display.js";
 import { CollectButton } from "./_components/collect-button.js";
 import { DeepDiveButton } from "./_components/deep-dive-button.js";
+import { TopicBriefButton } from "./_components/topic-brief-button.js";
 import { DeleteButton } from "./_components/delete-button.js";
 import { RecipientAdmin } from "./_components/recipient-admin.js";
 import { SettingsStatusProvider } from "./_components/settings-status.js";
@@ -100,6 +101,7 @@ export default function SettingsPage() {
             <div className="muted">
               {(t.facets ?? []).map(facetLabel).join("·")} · {t.language} · brief {t.brief_schedule} · 关键词 {t.keywords.join("、")}
               {t.enabled ? "" : " · 已停用"}
+              <TopicBriefButton topicId={t.id} topicName={t.name} enabled={t.enabled} />
               <DeepDiveButton topicId={t.id} topicName={t.name} enabled={t.enabled} />
               <DeleteButton entity="topics" id={t.id} name={t.name} />
             </div>

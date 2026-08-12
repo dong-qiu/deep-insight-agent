@@ -9,6 +9,7 @@ const ADMIN_PREFIXES = ["/admin", "/settings", "/api/admin"] as const;
 // 烧钱端点不在 /api/admin 下（挂在 /api/topics、/api/reports），按精确形态匹配；
 // `(\/|$)` 兼带子路径（如 deep-dive/status 轮询同样限 admin——viewer 无从触发深挖、无需轮询）。
 const ADMIN_PATTERNS: RegExp[] = [
+  /^\/api\/topics\/[^/]+\/brief$/, // 单主题日报触发
   /^\/api\/topics\/[^/]+\/deep-dive(\/|$)/, // 触发深挖 + 进度轮询
   /^\/api\/reports\/[^/]+\/followup(\/|$)/, // 报告追问
   /^\/api\/reports\/[^/]+\/pptx(\/|$)/, // PPT 导出（B 路径 LLM polish 烧钱）
