@@ -640,8 +640,9 @@ P0 的图查询采用硬预算：时间线最多 100 条事件一页，因果图
   引用、模型/规则版本与运行镜像；切换点前的 Brief 明确显示为 `legacy` 或 `partial`。
   - 报告纵切的生产证据已通过：`docs/verify/p0a-production-report-acceptance-2026-08-04.md`。该样本是 Deep Dive，不能替代本 AC 要求的 Brief。
   - 正常日报的验收步骤与证据模板见 `docs/verify/p0a-brief-production-acceptance-runbook.md`；非空生产 Brief 已于 2026-08-08 通过，证据见 `docs/verify/p0a-brief-production-acceptance-2026-08-08.md`。
-- [ ] P0b 后，切换点后生成或变更的任一技术机会可回溯 Lead、方向 revision、mapping lane、优先级明细和全部人工决定；复合实体
-  引用可被唯一解析，历史快照不会被当前业务行覆盖。
+- [x] P0b 后，切换点后生成或变更的任一技术机会可回溯 Lead、方向 revision、mapping lane、优先级明细和全部人工决定；复合实体
+  引用可被唯一解析，历史快照不会被当前业务行覆盖。生产证据见
+  `docs/verify/p0b-production-planning-acceptance-2026-08-12.md`。
 - [ ] 每个 trace 的 `completion_policy` 中所有阶段都具有终态或可解释的进行中状态；失败、跳过、空刊不可混淆。
 - [ ] 根 Run、子 Run 与 trace 的 `done` / `failed` / `partial` / `cancelled` 聚合符合 §4.1，且不反向改写既有 Run 状态。
 - [ ] SQLite 业务写入、event、revision、索引和 trace 投影要么一起提交，要么均不可见；文件等外部副作用通过
