@@ -11,6 +11,9 @@ const POLL_MS = 5000;
 const MAX_POLL_MS = 20 * 60 * 1000;
 const terminal = (status: Status["status"]): boolean => ["done", "failed", "partial", "cancelled"].includes(status);
 
+/** Trace API 是当前管理员可读的权威溯源入口；参数始终来自服务端受理响应，仍做 path escaping。 */
+export const generationTraceHref = (traceId: string): string => `/api/generation-traces/${encodeURIComponent(traceId)}`;
+
 export function TopicBriefButton({
   topicId,
   topicName,
@@ -91,6 +94,14 @@ export function TopicBriefButton({
         {busy ? "受理中…" : polling ? "日报生成中…" : "生成日报"}
       </button>
       {error ? <span className="muted deepdive-msg deepdive-err">❌ {error}</span> : null}
+      {!error && traceId ? (
+        <span className="deepdive-progress" aria-live="polite">
+          <span className="muted">Trace <code>{traceId}</code></span>
+          <a className="deepdive-link" href={generationTraceHref(traceId)} target="_blank" rel="noreferrer">
+            查看生成溯源
+          </a>
+        </span>
+      ) : null}
       {!error && status ? (
         <span className="deepdive-progress">
           {terminal(status.status) ? (
