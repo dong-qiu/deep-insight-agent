@@ -58,21 +58,21 @@ Source / SourceConfig
 
 一次根触发的汇总记录；通常与根 `Run` 一一对应。
 
-| 字段 | 说明 |
-|---|---|
-| `id` | 全局唯一 `trace_id` |
-| `root_run_id?` | → 本 trace 首个编排 Run；创建中、零输入和人工纯决策可为空，绑定后不可变 |
-| `scope_kind` | `topic_pipeline` / `source_collect` / `report` / `manual_decision`；决定 trace 的唯一粒度 |
-| `trigger_kind` | `cron` / `api` / `manual` / `retry` / `backfill` / `reproject` |
-| `topic_id?` / `source_id?` / `report_id?` | 与 `scope_kind` 对应的根作用域；不得在一个 trace 中混合多个主题 |
-| `started_at` / `ended_at` / `status` | `running` / `done` / `failed` / `partial` / `cancelled` |
-| `parent_trace_id?` / `retry_of_trace_id?` | 深挖、重试和派生运行的关联 |
-| `runtime_version` | Git SHA、镜像 digest、schema 版本 |
-| `completion_policy` | 本次 trace 的执行形态、阻断级别、可接受终态和 skip 规则快照；状态聚合只读取此快照和终态事件 |
-| `coverage` | `complete` / `partial` / `legacy`；避免把上线前无法证明的历史伪装为完整链路 |
-| `next_sequence` | 同 trace 事件序号的事务内计数器；仅 allocator 可更新 |
-| `request_id` | → `generation_trace_request.id`；一次逻辑触发的持久登记 |
-| `summary` | 各阶段数量、耗时、成本、错误摘要；不含正文 |
+| 字段                                      | 说明                                                                                        |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `id`                                      | 全局唯一 `trace_id`                                                                         |
+| `root_run_id?`                            | → 本 trace 首个编排 Run；创建中、零输入和人工纯决策可为空，绑定后不可变                     |
+| `scope_kind`                              | `topic_pipeline` / `source_collect` / `report` / `manual_decision`；决定 trace 的唯一粒度   |
+| `trigger_kind`                            | `cron` / `api` / `manual` / `retry` / `backfill` / `reproject`                              |
+| `topic_id?` / `source_id?` / `report_id?` | 与 `scope_kind` 对应的根作用域；不得在一个 trace 中混合多个主题                             |
+| `started_at` / `ended_at` / `status`      | `running` / `done` / `failed` / `partial` / `cancelled`                                     |
+| `parent_trace_id?` / `retry_of_trace_id?` | 深挖、重试和派生运行的关联                                                                  |
+| `runtime_version`                         | Git SHA、镜像 digest、schema 版本                                                           |
+| `completion_policy`                       | 本次 trace 的执行形态、阻断级别、可接受终态和 skip 规则快照；状态聚合只读取此快照和终态事件 |
+| `coverage`                                | `complete` / `partial` / `legacy`；避免把上线前无法证明的历史伪装为完整链路                 |
+| `next_sequence`                           | 同 trace 事件序号的事务内计数器；仅 allocator 可更新                                        |
+| `request_id`                              | → `generation_trace_request.id`；一次逻辑触发的持久登记                                     |
+| `summary`                                 | 各阶段数量、耗时、成本、错误摘要；不含正文                                                  |
 
 `Run` 仍是单个 agent 执行的状态事实源，且其枚举保持 `running` / `done` / `failed`；`generation_trace.status`
 是由 Run 与事件重算的**物化只读投影**，只能由 provenance projector 在同一事务更新，不能反向更新 Run，也不能由
@@ -133,11 +133,11 @@ Scheduled topic pipeline 的 durable payload 还必须冻结 `window_end`（RFC 
 
 手动请求使用如下固定格式，并把 endpoint、scope 与响应一并冻结：
 
-| 场景 | `scope_key` / `active_key` | 响应 |
-|---|---|---|
-| Deep Dive / 独立报告 | `report:{topic_id}:{type}:manual:{idempotency_hash}:{request_sequence}` / `topic_pipeline:{topic_id}:{type}` | 同一未过期 key 返回原 trace；active 冲突返回 409 |
-| 人工方向、Lead 或 Opportunity 决定 | `manual_decision:{entity_key}:{idempotency_hash}:{request_sequence}` / `manual_decision:{entity_key}` | 同一未过期 key 返回原 trace；active 冲突返回 409 |
-| 全量重跑 | `retry:{retry_of_trace_id}:{idempotency_hash}:{request_sequence}` / 原 trace 的 active key | 仅原 trace 终态后允许创建 |
+| 场景                               | `scope_key` / `active_key`                                                                                   | 响应                                             |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------ |
+| Deep Dive / 独立报告               | `report:{topic_id}:{type}:manual:{idempotency_hash}:{request_sequence}` / `topic_pipeline:{topic_id}:{type}` | 同一未过期 key 返回原 trace；active 冲突返回 409 |
+| 人工方向、Lead 或 Opportunity 决定 | `manual_decision:{entity_key}:{idempotency_hash}:{request_sequence}` / `manual_decision:{entity_key}`        | 同一未过期 key 返回原 trace；active 冲突返回 409 |
+| 全量重跑                           | `retry:{retry_of_trace_id}:{idempotency_hash}:{request_sequence}` / 原 trace 的 active key                   | 仅原 trace 终态后允许创建                        |
 
 `idempotency_key_hash` 的有效期固定为 24 小时。`trace_factory` 在事务内先按未过期 hash 查询；过期后保留旧 request 供审计，
 递增 `request_sequence` 创建新 scope，避免 `scope_key UNIQUE` 阻止合法的新请求。清理任务仅在 trace、审计与备份保留期均结束后
@@ -211,14 +211,14 @@ Projector 是唯一的纯函数 `projectTrace(runs, stageAttempts, completionPol
 Projector 先将各 stage 的 allowed terminal event 归一为 `completed | skipped | failed | cancelled` 再套用下表；测试必须
 逐行覆盖。
 
-| 条件（按优先级） | trace 状态 | 说明 |
-|---|---|---|
-| 任一根/必需阶段以 `cancelled` 结束 | `cancelled` | 现有 Run 用 `failed + error.type=cancelled` 映射 |
-| 任一根/必需阶段 `failed`，且没有 policy 允许的已发布替代终态 | `failed` | 包含 recovery 补写的失败 |
-| 任一必需阶段未终态 | `running` | 包含 retry 中与 event-only 正在进行 |
-| 全部必需阶段 `completed`，或以 policy 允许的 `skipped` 结束；任一非阻断阶段 `failed` | `partial` | P0 delivery `attempted` 不是失败 |
-| 全部必需阶段 `completed`，或以 policy 允许的 `skipped` 结束 | `done` | `no_content` / `budget_exceeded` / `window_closed` 是允许 skip 的 `done` |
-| 纯人工 trace 的 `manual_decided` / `config_changed` 已终态 | `done` | 无 Run 合法 |
+| 条件（按优先级）                                                                     | trace 状态  | 说明                                                                     |
+| ------------------------------------------------------------------------------------ | ----------- | ------------------------------------------------------------------------ |
+| 任一根/必需阶段以 `cancelled` 结束                                                   | `cancelled` | 现有 Run 用 `failed + error.type=cancelled` 映射                         |
+| 任一根/必需阶段 `failed`，且没有 policy 允许的已发布替代终态                         | `failed`    | 包含 recovery 补写的失败                                                 |
+| 任一必需阶段未终态                                                                   | `running`   | 包含 retry 中与 event-only 正在进行                                      |
+| 全部必需阶段 `completed`，或以 policy 允许的 `skipped` 结束；任一非阻断阶段 `failed` | `partial`   | P0 delivery `attempted` 不是失败                                         |
+| 全部必需阶段 `completed`，或以 policy 允许的 `skipped` 结束                          | `done`      | `no_content` / `budget_exceeded` / `window_closed` 是允许 skip 的 `done` |
+| 纯人工 trace 的 `manual_decided` / `config_changed` 已终态                           | `done`      | 无 Run 合法                                                              |
 
 P0a 冻结 policy：`analyze` / `validate` / `generate_report` 均为 `run + required`，其接受终态为
 `completed|failed|cancelled`。`ValidationResult.releasable=false`（但非空批次）保持既有质量契约：不调用模型生成，但必须
@@ -247,21 +247,21 @@ trace 归为 `partial`，不得回滚已提交事实。Deep Dive 与 scheduled p
 `UNIQUE(trace_id, sequence)`；`occurred_at` 仅用于展示，不能用于完整性顺序。常规应用路径不得 `UPDATE` /
 `DELETE` 已写事件。
 
-| 字段 | 说明 |
-|---|---|
-| `id` / `trace_id` / `sequence` / `attempt` / `parent_event_id?` | 事件身份、稳定顺序、阶段尝试号与树形父子关系 |
-| `semantic_payload_hash` | 排除运行时易变字段后的幂等语义 hash；用于安全重放比较 |
-| `run_id?` | → `Run.id`，复用现有重试、成本和状态追踪 |
-| `stage` | 见下方受控阶段表 |
-| `event_type` | `started` / `planned` / `attempted` / `completed` / `failed` / `skipped` / `retried` / `manual_decided` / `config_changed` / `published` |
-| `occurred_at` / `duration_ms?` | 时序与阶段耗时 |
-| `actor_type` / `actor_id?` / `audit_log_id?` | `system` / `user` / `scheduler`；人工需保留账号与既有审计记录关联 |
-| `reason_code?` | 机器可聚合的失败、跳过或人工决定原因 |
-| `input_refs` / `output_refs` | 结构化实体引用数组，见 4.3 |
-| `metrics` | 数量、token、金额、freshness、重试次数等小型 JSON |
-| `version_context` / `context_completeness` | 模型、prompt/config、方向规则、Git/镜像的不可变版本快照，以及 `complete` / `partial` |
-| `error` | 脱敏后的错误类别、消息摘要、retryable；不存 stack / 凭据 |
-| `payload_schema_version` / `payload_hash` | `v1` 规范化、脱敏后 payload 的 SHA-256；P0 用于写入/读取校验，不声称防篡改 |
+| 字段                                                            | 说明                                                                                                                                     |
+| --------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `id` / `trace_id` / `sequence` / `attempt` / `parent_event_id?` | 事件身份、稳定顺序、阶段尝试号与树形父子关系                                                                                             |
+| `semantic_payload_hash`                                         | 排除运行时易变字段后的幂等语义 hash；用于安全重放比较                                                                                    |
+| `run_id?`                                                       | → `Run.id`，复用现有重试、成本和状态追踪                                                                                                 |
+| `stage`                                                         | 见下方受控阶段表                                                                                                                         |
+| `event_type`                                                    | `started` / `planned` / `attempted` / `completed` / `failed` / `skipped` / `retried` / `manual_decided` / `config_changed` / `published` |
+| `occurred_at` / `duration_ms?`                                  | 时序与阶段耗时                                                                                                                           |
+| `actor_type` / `actor_id?` / `audit_log_id?`                    | `system` / `user` / `scheduler`；人工需保留账号与既有审计记录关联                                                                        |
+| `reason_code?`                                                  | 机器可聚合的失败、跳过或人工决定原因                                                                                                     |
+| `input_refs` / `output_refs`                                    | 结构化实体引用数组，见 4.3                                                                                                               |
+| `metrics`                                                       | 数量、token、金额、freshness、重试次数等小型 JSON                                                                                        |
+| `version_context` / `context_completeness`                      | 模型、prompt/config、方向规则、Git/镜像的不可变版本快照，以及 `complete` / `partial`                                                     |
+| `error`                                                         | 脱敏后的错误类别、消息摘要、retryable；不存 stack / 凭据                                                                                 |
+| `payload_schema_version` / `payload_hash`                       | `v1` 规范化、脱敏后 payload 的 SHA-256；P0 用于写入/读取校验，不声称防篡改                                                               |
 
 `stage` 受控为：`collect`、`normalize`、`select`、`analyze`、`validate`、`derive_lead`、
 `map_direction`、`derive_opportunity`、`generate_report`、`deliver`、`human_review`、`direction_change`。
@@ -318,14 +318,14 @@ entity_key, revision, captured_at, snapshot, snapshot_hash)`：`snapshot` 只含
 revision registry 是封闭契约，所有 type 必须有下列 revision generator、snapshot 白名单和 resolver，未列类型不得以
 `not_versioned` 绕过原地更新：
 
-| type | revision generator / snapshot 白名单 |
-|---|---|
-| `source` / `source_config` | 脱敏来源配置 canonical hash；URL、类型、启停和选择规则，不含凭据 |
-| `topic` / `direction` | version 或结构化规划规则 canonical hash；名称、目标、词项、约束 |
-| `content_item` | `content-v2:${content_hash}`；URL、来源、发布时间、正文长度与正文哈希。`fetched_at` 是可变采集观测时间，不进入不可变 revision snapshot；历史 `content_hash`（v1）引用保留原样，**P0 不写 `raw_revision_ref`** |
-| `analysis_batch` / `insight` / `citation` / `citation_check` / `validation_result` | batch-scoped immutable key；窗口、纳入决定、verdict 和理由代码，不复制 quote / 正文 |
-| `tech_lead` / `tech_lead_evidence` / `direction_map` / `opportunity` / `opportunity_lead` | 每次原地更新前的 canonical snapshot hash；状态、lane、评分输入、规则版本、人工决定 |
-| `report` / `delivery` / `run` / `config` | 不可变 ID 或 canonical metadata hash；报告纳入清单、effect intent、Run 状态、运行配置版本 |
+| type                                                                                      | revision generator / snapshot 白名单                                                                                                                                                                          |
+| ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `source` / `source_config`                                                                | 脱敏来源配置 canonical hash；URL、类型、启停和选择规则，不含凭据                                                                                                                                              |
+| `topic` / `direction`                                                                     | version 或结构化规划规则 canonical hash；名称、目标、词项、约束                                                                                                                                               |
+| `content_item`                                                                            | `content-v2:${content_hash}`；URL、来源、发布时间、正文长度与正文哈希。`fetched_at` 是可变采集观测时间，不进入不可变 revision snapshot；历史 `content_hash`（v1）引用保留原样，**P0 不写 `raw_revision_ref`** |
+| `analysis_batch` / `insight` / `citation` / `citation_check` / `validation_result`        | batch-scoped immutable key；窗口、纳入决定、verdict 和理由代码，不复制 quote / 正文                                                                                                                           |
+| `tech_lead` / `tech_lead_evidence` / `direction_map` / `opportunity` / `opportunity_lead` | 每次原地更新前的 canonical snapshot hash；状态、lane、评分输入、规则版本、人工决定                                                                                                                            |
+| `report` / `delivery` / `run` / `config`                                                  | 不可变 ID 或 canonical metadata hash；报告纳入清单、effect intent、Run 状态、运行配置版本                                                                                                                     |
 
 业务表原地更新时必须先写对应 revision；历史查询不得以当前正文、方向或映射反向补全。P0 一律返回“历史正文未保留”，
 不得暴露可能已指向新正文的 `raw_ref`。P1 如建设 content-hash 命名、不可变且授权可读的 raw archive，才可新增
@@ -459,12 +459,12 @@ P0 的图查询采用硬预算：时间线最多 100 条事件一页，因果图
 
 在 P1 提供按时间、主题、来源、模型、版本和 trace 筛选的四类视图；P0 仅提供单 trace 的 admin 查询。
 
-| 视图 | 核心问题 |
-|---|---|
-| 阶段漏斗 | 内容为何没有成为报告、线索或机会？ |
-| 质量与新鲜度 | 引用拦截、有效 yield、Brief 时滞是否恶化？ |
-| 成本与性能 | 哪个模型/来源/阶段带来 token、金额或耗时异常？ |
-| 规划反馈 | 映射准确率、各 lane 人工采纳率和错分原因是什么？ |
+| 视图         | 核心问题                                         |
+| ------------ | ------------------------------------------------ |
+| 阶段漏斗     | 内容为何没有成为报告、线索或机会？               |
+| 质量与新鲜度 | 引用拦截、有效 yield、Brief 时滞是否恶化？       |
+| 成本与性能   | 哪个模型/来源/阶段带来 token、金额或耗时异常？   |
+| 规划反馈     | 映射准确率、各 lane 人工采纳率和错分原因是什么？ |
 
 首批指标：采集成功率/重复率、正文 partial 率、分析 yield、Citation `pass` 率、阻断原因分布、
 报告 freshness、`Lead → Opportunity → research_candidate` 转化率、人工采纳/忽略率、每阶段 P50/P95
