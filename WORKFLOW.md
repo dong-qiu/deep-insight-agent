@@ -1,5 +1,5 @@
 ---
-# OpenAI Symphony 的仓库契约。实际 token 仅由试点宿主机的环境变量提供。
+# OpenAI Symphony repository contract. Tokens are supplied only by the pilot host environment.
 tracker:
   kind: github
   provider:
@@ -31,7 +31,7 @@ tracker:
 polling:
   interval_ms: 60000
 workspace:
-  # 仅允许试点宿主机上的专用目录；不得指向生产机、共享 checkout 或含生产数据的卷。
+  # Dedicated pilot-host directory only; never production, a shared checkout, or live data.
   root: $SYMPHONY_WORKSPACE_ROOT
 hooks:
   timeout_ms: 300000
