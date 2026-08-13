@@ -43,7 +43,7 @@
     "@aws-sdk/client-s3": "3.1106.0",
     "@aws-sdk/client-secrets-manager": "3.1106.0",
     "@aws-sdk/client-sts": "3.1106.0",
-    "better-sqlite3": "12.11.1",
+    "better-sqlite3": "13.0.3",
     "d3-force": "3.0.0",
     "fast-xml-parser": "5.10.1",
     "image-size": "file:vendor/image-size",
