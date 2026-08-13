@@ -58,6 +58,7 @@ Symphony 宿主机必须使用专用 OS 用户与独立 workspace 根目录，�
 6. 每个试点 Issue 在独立 workspace 中工作，且只能创建 feature branch 与 PR；不能合并、关闭 Issue 或部署。
 7. 成功运行的交接标签为 `agent-human-review`，并包含 PR、测试和 CI 证据。
 8. 首轮至少完成 3 个低风险 Issue；连续累计 10 个 Issue 后评估 CI 通过率、人工返工率、重试、成本、遗留 workspace 与越权事件，再决定是否将并发提高到 `2`。
+9. 可选本机状态页只能绑定 `127.0.0.1`，只读展示 LaunchAgent、控制器锁、固定运行时版本与 workspace 数量；不得读取或输出 GitHub token、Git 凭据、日志正文、workspace 名称，且不得提供 GitHub/服务写操作。
 
 ## 上线前人工前置项
 
