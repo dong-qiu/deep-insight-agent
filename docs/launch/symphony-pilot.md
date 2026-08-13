@@ -73,6 +73,14 @@ mise exec -- ./bin/symphony /path/to/insight-agent/WORKFLOW.md
 
 初始并发固定为 `1`。发现越权命令、凭据暴露、错误领取、不预期的 PR/标签变化时，立即停止服务并在相关 GitHub Issue 留下说明，移除 `agent-ready`、添加 `agent-needs-human` 或 `agent-blocked`；保留 workspace 与日志供复盘，不做自动清理。
 
+## 4.1 可选本机状态页（macOS）
+
+`npm run symphony:dashboard` 提供只读状态页。它只监听固定的 `127.0.0.1:4173`，读取本机 LaunchAgent、控制器锁、运行时提交和 workspace 数量；它不读取 GitHub token、Git 凭据、日志正文或 workspace 名称，也不提供写接口。GitHub 的 Issue、PR 和 CI 状态以浏览器直链打开，不经本机服务转发。
+
+必须以专用 `symphony` 用户运行，并使用独立 LaunchAgent；不要把它加入应用的生产 Web 服务或绑定到 `0.0.0.0`。安装时从已合入 `main` 的提交复制以下三个版本化文件到 `$HOME/symphony-runtime/dashboard/`：`ops/symphony-dashboard.mjs`、`ops/symphony-dashboard-launcher.zsh`（安装为 `run-dashboard`）及 `ops/io.insight-agent.symphony-dashboard.plist`（安装到 `$HOME/Library/LaunchAgents/`）。前两个文件权限为 `700`，plist 为 `600`；启动器会清除 tracker token、Git、AWS、数据库和代理环境变量。
+
+再以 `symphony` 用户运行 `launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/io.insight-agent.symphony-dashboard.plist"`。安装后浏览器只访问 `http://127.0.0.1:4173`。验证方式：`curl --noproxy '*' -fsS http://127.0.0.1:4173/healthz`，并确认 `lsof -nP -iTCP:4173 -sTCP:LISTEN` 只显示 `127.0.0.1:4173`。
+
 ## 5. 试点评审
 
 每个 Issue 的人工审查包至少含：Issue 链接、PR 链接、测试命令与结果、CI 状态、已知风险、是否产生/保留 workspace。连续 10 个 Issue 后，依据 `symphony-pilot.md` 的验收标准决定是否扩并发或扩大范围。
