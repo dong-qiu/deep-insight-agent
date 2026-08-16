@@ -10,6 +10,15 @@ updates:
       # 次/补丁版聚合成一个 PR，减少噪音
       minor-and-patch:
         update-types: [minor, patch]
+    # `better-sqlite3` 13 要求 Node 22+；项目仍受 Node 20 运行时契约约束。
+    # 在独立的 Node 22 / SQLite 原生模块迁移完成前，不创建 major PR。
+    ignore:
+      - dependency-name: "better-sqlite3"
+        update-types: ["version-update:semver-major"]
+      # Next 16 当前的 ESLint 插件链只支持 ESLint 9。
+      # 等上游工具链支持后，再以独立迁移解除此 major ignore。
+      - dependency-name: "eslint"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: github-actions
     directory: "/"
