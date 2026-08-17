@@ -105,6 +105,19 @@ describe("provenance facts", () => {
     expect(detail).not.toContain("USE TEMP B-TREE");
   });
 
+  it("ref 投影图的 event 入口保持 rowid 顺序而不建立临时排序", () => {
+    const db = dbWithTrace();
+    const event = appendGenerationEvent(db, { trace_id: "trace_1", stage: "analyze", event_type: "started", input_refs: [
+      { type: "content_item", locator: { kind: "id", id: "content" }, revision: "v1", role: "input" },
+    ] });
+    const plan = db.prepare(`EXPLAIN QUERY PLAN SELECT r.rowid,r.event_id,event.sequence
+      FROM generation_entity_ref r INDEXED BY idx_generation_entity_ref_trace_event CROSS JOIN generation_event event ON event.id=r.event_id
+      WHERE r.trace_id='trace_1' AND r.event_id=? ORDER BY r.rowid LIMIT 501`).all(event.id) as { detail: string }[];
+    const detail = plan.map((row) => row.detail).join("\n");
+    expect(detail).toContain("idx_generation_entity_ref_trace_event");
+    expect(detail).not.toContain("USE TEMP B-TREE");
+  });
+
   it("限制单 trace 图遍历的深度和元素数，并安全处理环", () => {
     const db = dbWithTrace();
     const first = appendGenerationEvent(db, { trace_id: "trace_1", stage: "analyze", event_type: "started" });

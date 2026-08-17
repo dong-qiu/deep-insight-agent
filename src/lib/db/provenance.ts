@@ -862,7 +862,7 @@ function refGraphRowsForNodes(db: DB, traceId: string, nodes: TraceGraphNode[], 
   if (!nodes.length || limit < 1) return { rows: [], overflow: false };
   const perNodeLimit = Math.max(1, Math.ceil(limit / nodes.length));
   const eventRefs = db.prepare(`SELECT r.rowid AS ref_rowid,r.event_id,event.sequence,event.stage,event.event_type,r.entity_type,r.entity_key,r.revision,r.role,r.visibility_class
-    FROM generation_entity_ref r JOIN generation_event event ON event.id=r.event_id
+    FROM generation_entity_ref r INDEXED BY idx_generation_entity_ref_trace_event CROSS JOIN generation_event event ON event.id=r.event_id
     WHERE r.trace_id=? AND r.event_id=? ORDER BY r.rowid LIMIT ?`);
   const entityRefs = db.prepare(`SELECT r.rowid AS ref_rowid,r.event_id,event.sequence,event.stage,event.event_type,r.entity_type,r.entity_key,r.revision,r.role,r.visibility_class
     FROM generation_entity_ref r JOIN generation_event event ON event.id=r.event_id
