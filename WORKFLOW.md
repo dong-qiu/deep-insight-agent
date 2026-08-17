@@ -37,6 +37,7 @@ hooks:
   timeout_ms: 300000
   after_create: |
     git clone --origin origin https://github.com/dong-qiu/deep-insight-agent.git .
+    npm ci
   before_run: |
     test -f AGENTS.md
     test -f package.json
@@ -47,8 +48,13 @@ agent:
 codex:
   command: codex app-server
   # Symphony is an unattended, dedicated pilot. Commands remain scoped to the
-  # issue workspace by the configured workspace-write sandbox below.
+  # dedicated `symphony` account and GitHub allowlist.
   approval_policy: never
+  # Git branch, commit, and push operations write `.git` metadata, which the
+  # workspace-write sandbox denies. This pilot uses an isolated account only.
+  thread_sandbox: danger-full-access
+  turn_sandbox_policy:
+    type: dangerFullAccess
 ---
 
 # Insight Agent Symphony 试点
