@@ -9,7 +9,7 @@ describe("provenance migration runner", () => {
     applyProvenanceMigrations(db);
     applyProvenanceMigrations(db);
     expect(() => assertProvenanceSchema(db)).not.toThrow();
-    expect(db.prepare("SELECT COUNT(*) AS count FROM schema_migration").get()).toEqual({ count: 8 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM schema_migration").get()).toEqual({ count: 10 });
     expect((db.prepare("PRAGMA table_info(run)").all() as { name: string }[]).some((row) => row.name === "trace_id")).toBe(true);
     const reportColumns = db.prepare("PRAGMA table_info(report)").all() as { name: string; notnull: number }[];
     expect(reportColumns.find((column) => column.name === "body_path")?.notnull).toBe(0);
@@ -19,6 +19,7 @@ describe("provenance migration runner", () => {
     expect(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='provenance_redaction_request'").get()).toBeTruthy();
     expect(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='generation_event'").get()).toBeTruthy();
     expect((db.prepare("PRAGMA table_info(generation_trace)").all() as { name: string }[]).some((row) => row.name === "source_id")).toBe(true);
+    expect(db.prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_generation_edge_trace_from'").get()).toBeTruthy();
   });
 
   it("rejects a production writer when the runner has not applied the ledger", () => {
@@ -31,6 +32,18 @@ describe("provenance migration runner", () => {
     if (original == null) delete process.env.PROVENANCE_SCHEMA_REQUIRED;
     else process.env.PROVENANCE_SCHEMA_REQUIRED = original;
     delete process.env.DB_PATH;
+  });
+
+  it("upgrades a database that had already applied the original bounded-view index", () => {
+    const db = openDb(":memory:");
+    applyProvenanceMigrations(db);
+    // 模拟 _09 已应用、但尚未获得 _10 修复的实际部署状态。
+    db.exec("DROP INDEX idx_generation_entity_ref_trace_event; CREATE INDEX idx_generation_entity_ref_trace_event ON generation_entity_ref(trace_id,event_id,role,entity_type,entity_key,revision)");
+    db.prepare("DELETE FROM schema_migration WHERE version=?").run("20260817_10_bounded_provenance_view_index_fix");
+    applyProvenanceMigrations(db);
+    const columns = db.prepare("PRAGMA index_info(idx_generation_entity_ref_trace_event)").all() as { name: string }[];
+    expect(columns.map((column) => column.name)).toEqual(["trace_id", "event_id"]);
+    expect(db.prepare("SELECT 1 FROM schema_migration WHERE version='20260817_10_bounded_provenance_view_index_fix'").get()).toBeTruthy();
   });
 
   it("rebuilds a legacy NOT NULL body_path table without losing a published report", () => {

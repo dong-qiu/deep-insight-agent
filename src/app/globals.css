@@ -106,6 +106,9 @@ nav a { margin-right: 1rem; }
 /* 校验下钻（A2）：折叠区，不抢主报告视线 */
 .audit { margin-top: 1.5rem; border-top: 1px dashed #e5e7eb; padding-top: 1rem; }
 .audit > summary { cursor: pointer; font-weight: 600; color: #b45309; }
+.link-button { margin: .35rem .45rem; border: 0; padding: 0; background: transparent; color: #2563eb; font: inherit; text-decoration: underline; cursor: pointer; }
+.provenance-graph { margin-top: .75rem; padding-top: .5rem; border-top: 1px dashed #e5e7eb; }
+.provenance-graph ul { margin: .35rem 0; padding-left: 1.25rem; }
 .audit-card { background: #fafafa; }
 .audit-row { margin: .75rem 0; padding-left: .75rem; border-left: 3px solid #fca5a5; }
 .audit-row blockquote { margin: .25rem 0; color: #1f2937; }

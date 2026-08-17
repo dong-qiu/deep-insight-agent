@@ -158,6 +158,20 @@ const SOURCE_COLLECT_SQL = `
 ALTER TABLE generation_trace ADD COLUMN source_id TEXT REFERENCES source(id);
 CREATE INDEX IF NOT EXISTS idx_generation_trace_source_started ON generation_trace(source_id, started_at DESC);
 `;
+// P0c：单 trace 的分页 refs 与受限图遍历。索引只服务于 append-only provenance 读路径，
+// 不改变 trace/event/revision 的事实语义；部署仍须先由 migration runner 应用。
+const BOUNDED_VIEW_SQL = `
+CREATE INDEX IF NOT EXISTS idx_generation_entity_ref_trace_event ON generation_entity_ref(trace_id, event_id, role, entity_type, entity_key, revision);
+CREATE INDEX IF NOT EXISTS idx_generation_entity_ref_trace_entity_event ON generation_entity_ref(trace_id, entity_type, entity_key, revision, event_id);
+CREATE INDEX IF NOT EXISTS idx_generation_edge_trace_from ON generation_edge(trace_id, from_type, from_key, from_revision, event_id);
+CREATE INDEX IF NOT EXISTS idx_generation_edge_trace_to ON generation_edge(trace_id, to_type, to_key, to_revision, event_id);
+`;
+// 09 已在部分环境应用过，必须保留其 SQL 的 checksum；用独立迁移把旧的
+// role 先导索引替换为能支持 rowid keyset 的 (trace_id,event_id) 路径。
+const BOUNDED_VIEW_INDEX_FIX_SQL = `
+DROP INDEX IF EXISTS idx_generation_entity_ref_trace_event;
+CREATE INDEX idx_generation_entity_ref_trace_event ON generation_entity_ref(trace_id, event_id);
+`;
 const MIGRATIONS = [
   { version: "20260803_01_provenance_core", sql: CORE_SQL },
   { version: "20260803_02_report_lifecycle", sql: REPORT_LIFECYCLE_SQL },
@@ -167,6 +181,8 @@ const MIGRATIONS = [
   { version: "20260803_06_provenance_facts", sql: PROVENANCE_FACTS_SQL },
   { version: "20260803_07_deployment_record", sql: DEPLOYMENT_SQL },
   { version: "20260811_08_source_collect", sql: SOURCE_COLLECT_SQL },
+  { version: "20260817_09_bounded_provenance_views", sql: BOUNDED_VIEW_SQL },
+  { version: "20260817_10_bounded_provenance_view_index_fix", sql: BOUNDED_VIEW_INDEX_FIX_SQL },
 ];
 
 function hasColumn(db: DB, table: string, column: string): boolean {
@@ -240,6 +256,8 @@ export function applyProvenanceMigrations(db: DB): void {
       } else if (migration.version === "20260811_08_source_collect") {
         if (!hasColumn(db, "generation_trace", "source_id")) db.exec("ALTER TABLE generation_trace ADD COLUMN source_id TEXT REFERENCES source(id)");
         db.exec("CREATE INDEX IF NOT EXISTS idx_generation_trace_source_started ON generation_trace(source_id, started_at DESC)");
+      } else if (migration.version === "20260817_09_bounded_provenance_views" || migration.version === "20260817_10_bounded_provenance_view_index_fix") {
+        db.exec(migration.sql);
       }
       db.prepare("INSERT INTO schema_migration(version,checksum,applied_at) VALUES (?,?,?)")
         .run(migration.version, checksum, new Date().toISOString());

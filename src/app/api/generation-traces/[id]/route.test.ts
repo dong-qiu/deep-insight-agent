@@ -2,11 +2,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../../../lib/auth-guard.js", () => ({ forbidNonAdmin: vi.fn() }));
 vi.mock("../../../../lib/db/index.js", () => ({ getDb: vi.fn(() => ({})) }));
-vi.mock("../../../../lib/db/provenance.js", () => ({ getGenerationTraceStatus: vi.fn(), listGenerationTraceTimeline: vi.fn(() => []) }));
+vi.mock("../../../../lib/db/provenance.js", () => ({ getGenerationTraceStatus: vi.fn(), listGenerationTraceTimelinePage: vi.fn(() => ({ items: [], nextCursor: null, truncated: false })) }));
 
 import { NextResponse } from "next/server";
 import { forbidNonAdmin } from "../../../../lib/auth-guard.js";
-import { getGenerationTraceStatus, listGenerationTraceTimeline } from "../../../../lib/db/provenance.js";
+import { getGenerationTraceStatus, listGenerationTraceTimelinePage } from "../../../../lib/db/provenance.js";
 import { GET } from "./route.js";
 
 const call = (): Promise<Response> => GET(new Request("http://x/api/generation-traces/trace_1"), {
@@ -39,7 +39,7 @@ describe("GET /api/generation-traces/[id]", () => {
     expect(body.runtime).toEqual({ schema_version: 1, git_sha: "a".repeat(40), image_digest: `sha256:${"b".repeat(64)}`, provenance_schema_version: "20260803_06_provenance_facts" });
     expect(JSON.stringify(body)).not.toContain("private upstream exception");
     expect(JSON.stringify(body)).not.toContain("do-not-leak");
-    expect(listGenerationTraceTimeline).toHaveBeenCalledWith({}, "trace_1");
+    expect(listGenerationTraceTimelinePage).toHaveBeenCalledWith({}, "trace_1", { limit: 50, afterSequence: 0 });
   });
 
   it("uses the deployment record at trace time for legacy traces without a runtime snapshot", async () => {
@@ -53,5 +53,12 @@ describe("GET /api/generation-traces/[id]", () => {
 
     const body = await (await call()).json();
     expect(body.runtime).toEqual({ git_sha: "c".repeat(40), image_digest: `sha256:${"d".repeat(64)}` });
+  });
+
+  it("rejects unbounded or malformed pagination before opening the database", async () => {
+    vi.mocked(forbidNonAdmin).mockResolvedValueOnce(null);
+    const response = await GET(new Request("http://x/api/generation-traces/trace_1?limit=101"), { params: Promise.resolve({ id: "trace_1" }) });
+    expect(response.status).toBe(400);
+    expect(getGenerationTraceStatus).not.toHaveBeenCalled();
   });
 });
