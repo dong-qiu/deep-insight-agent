@@ -716,6 +716,249 @@ export function listGenerationTraceTimeline(db: DB, traceId: string): Array<Reco
   });
 }
 
+export interface TracePage<T> {
+  items: T[];
+  nextCursor: string | null;
+  truncated: boolean;
+}
+
+export interface TraceTimelineItem {
+  sequence: number;
+  stage: string;
+  event_type: string;
+  attempt: number;
+  occurred_at: string;
+  reason_code: string | null;
+  context_completeness: string;
+  metrics: Record<string, number>;
+  ref_count: number;
+}
+
+export interface TraceEntityRef {
+  type: string;
+  entity_key: string;
+  revision: string;
+  role: string;
+  visibility_class: string;
+}
+
+const TIMELINE_METRIC_KEYS = new Set([
+  "input_content_count", "analysis_insight_count", "no_significant_event", "citation_total", "citation_pass", "citation_blocked",
+  "citation_flagged", "citation_errored", "includable_insight_count", "releasable", "freshness_filtered_insight_count",
+  "already_published_filtered_insight_count", "supplemental_candidate_count", "supplemental_published_insight_count",
+  "published_insight_count", "published_citation_count", "candidate_count", "opportunity_count",
+]);
+
+function timelineMetrics(value: unknown): Record<string, number> {
+  if (typeof value !== "string") return {};
+  try {
+    const parsed = JSON.parse(value) as Record<string, unknown>;
+    return Object.fromEntries(Object.entries(parsed).filter(([key, metric]) =>
+      TIMELINE_METRIC_KEYS.has(key) && typeof metric === "number" && Number.isSafeInteger(metric) && metric >= 0,
+    )) as Record<string, number>;
+  } catch { return {}; }
+}
+
+function timelineReason(event: Record<string, unknown>): string | null {
+  if (typeof event.reason_code === "string") return event.reason_code;
+  if (typeof event.error !== "string") return null;
+  try {
+    const parsed = JSON.parse(event.error) as { reason_code?: unknown };
+    return typeof parsed.reason_code === "string" ? parsed.reason_code : "stage_failed";
+  } catch { return "stage_failed"; }
+}
+
+/** P0c 的 timeline 首页：按 sequence keyset 分页；相关子查询避免 GROUP BY 的临时排序。 */
+export function listGenerationTraceTimelinePage(
+  db: DB, traceId: string, options: { afterSequence?: number; limit?: number } = {},
+): TracePage<TraceTimelineItem> {
+  const limit = Math.min(Math.max(options.limit ?? 50, 1), 100);
+  const afterSequence = Math.max(options.afterSequence ?? 0, 0);
+  const rows = db.prepare(`SELECT e.id,e.sequence,e.stage,e.event_type,e.attempt,e.occurred_at,e.reason_code,e.error,e.metrics,e.context_completeness,
+      (SELECT COUNT(*) FROM generation_entity_ref r WHERE r.event_id=e.id) AS ref_count
+    FROM generation_event e
+    WHERE e.trace_id=? AND e.sequence>?
+    ORDER BY e.sequence ASC
+    LIMIT ?`).all(traceId, afterSequence, limit + 1) as Array<Record<string, unknown>>;
+  const truncated = rows.length > limit;
+  const page = rows.slice(0, limit).map((event) => ({
+    sequence: event.sequence as number, stage: event.stage as string, event_type: event.event_type as string,
+    attempt: event.attempt as number, occurred_at: event.occurred_at as string, reason_code: timelineReason(event),
+    context_completeness: event.context_completeness as string, metrics: timelineMetrics(event.metrics), ref_count: event.ref_count as number,
+  }));
+  return { items: page, truncated, nextCursor: truncated ? String(page.at(-1)!.sequence) : null };
+}
+
+/** 单 event refs 用 SQLite rowid keyset 分页；cursor 只在相同 trace/event 的 WHERE 内生效。 */
+export function listGenerationEventRefs(
+  db: DB, traceId: string, sequence: number, options: { afterRowId?: number; limit?: number } = {},
+): TracePage<TraceEntityRef> | null {
+  const event = db.prepare("SELECT id FROM generation_event WHERE trace_id=? AND sequence=?").get(traceId, sequence) as { id: string } | undefined;
+  if (!event) return null;
+  const limit = Math.min(Math.max(options.limit ?? 50, 1), 100);
+  const afterRowId = Math.max(options.afterRowId ?? 0, 0);
+  const rows = db.prepare(`SELECT rowid AS row_id,entity_type,entity_key,revision,role,visibility_class
+    FROM generation_entity_ref WHERE trace_id=? AND event_id=? AND rowid>?
+    ORDER BY rowid ASC LIMIT ?`).all(traceId, event.id, afterRowId, limit + 1) as Array<Record<string, unknown>>;
+  const truncated = rows.length > limit;
+  const page = rows.slice(0, limit);
+  return {
+    items: page.map((ref) => ({ type: ref.entity_type as string, entity_key: ref.entity_key as string, revision: ref.revision as string,
+      role: ref.role as string, visibility_class: ref.visibility_class as string })),
+    truncated,
+    nextCursor: truncated ? String(page.at(-1)!.row_id) : null,
+  };
+}
+
+export interface TraceGraphNode { id: string; type: string; entity_key: string; revision: string; }
+export interface TraceGraphEdge { event_sequence: number; relation: string; from: string; to: string; visibility_class: string; }
+export interface TraceGraph { nodes: TraceGraphNode[]; edges: TraceGraphEdge[]; truncated: boolean; truncation_reason: "depth_budget" | "element_budget" | null; }
+
+interface GraphEdgeRow {
+  event_id: string; sequence: number; from_type: string; from_key: string; from_revision: string;
+  to_type: string; to_key: string; to_revision: string; relation: string; visibility_class: string;
+}
+
+function graphNodeId(type: string, key: string, revision: string): string { return `${type}\u0000${key}\u0000${revision}`; }
+function graphEdgeId(row: GraphEdgeRow): string {
+  return `${row.event_id}\u0000${row.relation}\u0000${graphNodeId(row.from_type, row.from_key, row.from_revision)}\u0000${graphNodeId(row.to_type, row.to_key, row.to_revision)}`;
+}
+
+interface BoundedRows<T> { rows: T[]; overflow: boolean; }
+
+function graphRowsForNodes(db: DB, traceId: string, nodes: TraceGraphNode[], limit: number): BoundedRows<GraphEdgeRow> {
+  if (!nodes.length || limit < 1) return { rows: [], overflow: false };
+  const perLookupLimit = Math.max(1, Math.ceil(limit / (nodes.length * 2)));
+  const from = db.prepare(`SELECT e.event_id,e.from_type,e.from_key,e.from_revision,e.to_type,e.to_key,e.to_revision,e.relation,e.visibility_class,event.sequence
+    FROM generation_edge e JOIN generation_event event ON event.id=e.event_id
+    WHERE e.trace_id=? AND e.from_type=? AND e.from_key=? AND e.from_revision=? ORDER BY e.event_id,e.rowid LIMIT ?`);
+  const to = db.prepare(`SELECT e.event_id,e.from_type,e.from_key,e.from_revision,e.to_type,e.to_key,e.to_revision,e.relation,e.visibility_class,event.sequence
+    FROM generation_edge e JOIN generation_event event ON event.id=e.event_id
+    WHERE e.trace_id=? AND e.to_type=? AND e.to_key=? AND e.to_revision=? ORDER BY e.event_id,e.rowid LIMIT ?`);
+  const queries = nodes.flatMap((node) => [
+    from.all(traceId, node.type, node.entity_key, node.revision, perLookupLimit + 1) as GraphEdgeRow[],
+    to.all(traceId, node.type, node.entity_key, node.revision, perLookupLimit + 1) as GraphEdgeRow[],
+  ]);
+  return { overflow: queries.some((rows) => rows.length > perLookupLimit), rows: queries.flatMap((rows) => rows.slice(0, perLookupLimit))
+    .sort((a, b) => a.sequence - b.sequence || a.event_id.localeCompare(b.event_id)) };
+}
+
+function graphRowsForEventNodes(db: DB, traceId: string, nodes: TraceGraphNode[], limit: number): BoundedRows<GraphEdgeRow> {
+  const eventIds = nodes.filter((node) => node.type === "event").map((node) => node.entity_key);
+  if (!eventIds.length || limit < 1) return { rows: [], overflow: false };
+  const perEventLimit = Math.max(1, Math.ceil(limit / eventIds.length));
+  const statement = db.prepare(`SELECT e.event_id,e.from_type,e.from_key,e.from_revision,e.to_type,e.to_key,e.to_revision,e.relation,e.visibility_class,event.sequence
+    FROM generation_edge e JOIN generation_event event ON event.id=e.event_id
+    WHERE e.trace_id=? AND e.event_id=? ORDER BY e.rowid LIMIT ?`);
+  const queries = eventIds.map((eventId) => statement.all(traceId, eventId, perEventLimit + 1) as GraphEdgeRow[]);
+  return { overflow: queries.some((rows) => rows.length > perEventLimit), rows: queries.flatMap((rows) => rows.slice(0, perEventLimit))
+    .sort((a, b) => a.sequence - b.sequence || a.event_id.localeCompare(b.event_id)) };
+}
+
+interface RefGraphRow { ref_rowid: number; event_id: string; sequence: number; stage: string; event_type: string; entity_type: string; entity_key: string; revision: string; role: string; visibility_class: string; }
+
+/** generation_edge 尚未由生产写路径填充时，以已落地的 event ↔ entity ref 投影同一条受限 provenance 图。 */
+function refGraphRowsForNodes(db: DB, traceId: string, nodes: TraceGraphNode[], limit: number): BoundedRows<RefGraphRow> {
+  if (!nodes.length || limit < 1) return { rows: [], overflow: false };
+  const perNodeLimit = Math.max(1, Math.ceil(limit / nodes.length));
+  const eventRefs = db.prepare(`SELECT r.rowid AS ref_rowid,r.event_id,event.sequence,event.stage,event.event_type,r.entity_type,r.entity_key,r.revision,r.role,r.visibility_class
+    FROM generation_entity_ref r JOIN generation_event event ON event.id=r.event_id
+    WHERE r.trace_id=? AND r.event_id=? ORDER BY r.rowid LIMIT ?`);
+  const entityRefs = db.prepare(`SELECT r.rowid AS ref_rowid,r.event_id,event.sequence,event.stage,event.event_type,r.entity_type,r.entity_key,r.revision,r.role,r.visibility_class
+    FROM generation_entity_ref r JOIN generation_event event ON event.id=r.event_id
+    WHERE r.trace_id=? AND r.entity_type=? AND r.entity_key=? AND r.revision=? ORDER BY r.event_id,r.rowid LIMIT ?`);
+  const queries = nodes.map((node) => node.type === "event"
+    ? eventRefs.all(traceId, node.entity_key, perNodeLimit + 1) as RefGraphRow[]
+    : entityRefs.all(traceId, node.type, node.entity_key, node.revision, perNodeLimit + 1) as RefGraphRow[]);
+  return { overflow: queries.some((rows) => rows.length > perNodeLimit), rows: queries.flatMap((rows) => rows.slice(0, perNodeLimit))
+    .sort((a, b) => a.sequence - b.sequence || a.ref_rowid - b.ref_rowid) };
+}
+
+/** 将已写入的 edge 与 event/entity refs 合并为同一受限图，支持逐步迁移的混合 trace。 */
+function buildGenerationTraceRefGraph(db: DB, traceId: string, root: { id: string; sequence: number }, depth: number, maxElements: number): TraceGraph {
+  const nodeMap = new Map<string, TraceGraphNode>();
+  const edgeMap = new Map<string, TraceGraphEdge>();
+  const rootNode = { id: graphNodeId("event", root.id, String(root.sequence)), type: "event", entity_key: root.id, revision: String(root.sequence) };
+  nodeMap.set(rootNode.id, rootNode);
+  let frontier = [rootNode];
+  let elementBudget = false;
+  const addRefRow = (row: RefGraphRow, nextFrontier: TraceGraphNode[]): "added" | "known" | "budget" => {
+    const eventId = graphNodeId("event", row.event_id, String(row.sequence));
+    const entityId = graphNodeId(row.entity_type, row.entity_key, row.revision);
+    const edgeId = `ref\u0000${row.ref_rowid}`;
+    if (edgeMap.has(edgeId)) return "known";
+    const additions = (nodeMap.has(eventId) ? 0 : 1) + (nodeMap.has(entityId) ? 0 : 1) + 1;
+    if (nodeMap.size + edgeMap.size + additions > maxElements) return "budget";
+    const event = { id: eventId, type: "event", entity_key: row.event_id, revision: `${row.sequence}:${row.stage}/${row.event_type}` };
+    const entity = { id: entityId, type: row.entity_type, entity_key: row.entity_key, revision: row.revision };
+    if (!nodeMap.has(eventId)) { nodeMap.set(eventId, event); nextFrontier.push(event); }
+    if (!nodeMap.has(entityId)) { nodeMap.set(entityId, entity); nextFrontier.push(entity); }
+    edgeMap.set(edgeId, { event_sequence: row.sequence, relation: row.role, from: eventId, to: entityId, visibility_class: row.visibility_class });
+    return "added";
+  };
+  const addEdgeRow = (row: GraphEdgeRow, nextFrontier: TraceGraphNode[]): "added" | "known" | "budget" => {
+    const fromId = graphNodeId(row.from_type, row.from_key, row.from_revision);
+    const toId = graphNodeId(row.to_type, row.to_key, row.to_revision);
+    const edgeId = graphEdgeId(row);
+    if (edgeMap.has(edgeId)) return "known";
+    const additions = (nodeMap.has(fromId) ? 0 : 1) + (nodeMap.has(toId) ? 0 : 1) + 1;
+    if (nodeMap.size + edgeMap.size + additions > maxElements) return "budget";
+    const from = { id: fromId, type: row.from_type, entity_key: row.from_key, revision: row.from_revision };
+    const to = { id: toId, type: row.to_type, entity_key: row.to_key, revision: row.to_revision };
+    if (!nodeMap.has(fromId)) { nodeMap.set(fromId, from); nextFrontier.push(from); }
+    if (!nodeMap.has(toId)) { nodeMap.set(toId, to); nextFrontier.push(to); }
+    edgeMap.set(edgeId, { event_sequence: row.sequence, relation: row.relation, from: fromId, to: toId, visibility_class: row.visibility_class });
+    return "added";
+  };
+  const addRows = <T>(rows: T[], add: (row: T, next: TraceGraphNode[]) => "added" | "known" | "budget", next: TraceGraphNode[]) => {
+    for (const row of rows) if (add(row, next) === "budget") { elementBudget = true; return; }
+  };
+  const hasUnseenRows = (nodes: TraceGraphNode[]): boolean => {
+    const refs = refGraphRowsForNodes(db, traceId, nodes, maxElements + 1);
+    if (refs.overflow || refs.rows.some((row) => !edgeMap.has(`ref\u0000${row.ref_rowid}`))) return true;
+    const eventEdges = graphRowsForEventNodes(db, traceId, nodes, maxElements + 1);
+    if (eventEdges.overflow || eventEdges.rows.some((row) => !edgeMap.has(graphEdgeId(row)))) return true;
+    const entities = nodes.filter((node) => node.type !== "event");
+    const entityEdges = graphRowsForNodes(db, traceId, entities, maxElements + 1);
+    return entityEdges.overflow || entityEdges.rows.some((row) => !edgeMap.has(graphEdgeId(row)));
+  };
+  for (let level = 0; level < depth && frontier.length && !elementBudget; level += 1) {
+    const current = frontier;
+    frontier = [];
+    const refs = refGraphRowsForNodes(db, traceId, current, maxElements + 1);
+    addRows(refs.rows, addRefRow, frontier);
+    if (refs.overflow) elementBudget = true;
+    if (!elementBudget) {
+      const eventEdges = graphRowsForEventNodes(db, traceId, current, maxElements + 1);
+      addRows(eventEdges.rows, addEdgeRow, frontier);
+      if (eventEdges.overflow) elementBudget = true;
+    }
+    if (!elementBudget) {
+      const entityEdges = graphRowsForNodes(db, traceId, current.filter((node) => node.type !== "event"), maxElements + 1);
+      addRows(entityEdges.rows, addEdgeRow, frontier);
+      if (entityEdges.overflow) elementBudget = true;
+    }
+  }
+  const depthTruncated = !elementBudget && frontier.length > 0 && hasUnseenRows(frontier);
+  return {
+    nodes: [...nodeMap.values()], edges: [...edgeMap.values()], truncated: elementBudget || depthTruncated,
+    truncation_reason: elementBudget ? "element_budget" : depthTruncated ? "depth_budget" : null,
+  };
+}
+
+/** P0c 单 trace 受限 BFS。不会跨 trace 扩展；visited 集合保证循环边不会导致无界递归。 */
+export function buildGenerationTraceGraph(
+  db: DB, traceId: string, options: { rootSequence?: number; depth?: number; maxElements?: number } = {},
+): TraceGraph | null {
+  const depth = Math.min(Math.max(options.depth ?? 2, 1), 4);
+  const maxElements = Math.min(Math.max(options.maxElements ?? 200, 1), 500);
+  const root = options.rootSequence == null
+    ? db.prepare("SELECT id,sequence FROM generation_event WHERE trace_id=? ORDER BY sequence LIMIT 1").get(traceId) as { id: string; sequence: number } | undefined
+    : db.prepare("SELECT id,sequence FROM generation_event WHERE trace_id=? AND sequence=?").get(traceId, options.rootSequence) as { id: string; sequence: number } | undefined;
+  if (!root) return null;
+  return buildGenerationTraceRefGraph(db, traceId, root, depth, maxElements);
+}
+
 /** 已发布报告只通过 output ref 反查 trace；历史/未接入溯源的报告返回 null。 */
 export function findGenerationTraceForReport(db: DB, reportId: string): string | null {
   return findGenerationTraceForEntity(db, { type: "report", locator: { kind: "id", id: reportId } });

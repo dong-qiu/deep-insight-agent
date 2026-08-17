@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { forbidNonAdmin } from "../../../../lib/auth-guard.js";
 import { getDb } from "../../../../lib/db/index.js";
-import { getGenerationTraceStatus, listGenerationTraceTimeline } from "../../../../lib/db/provenance.js";
+import { getGenerationTraceStatus, listGenerationTraceTimelinePage } from "../../../../lib/db/provenance.js";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -43,10 +43,22 @@ function stableRuntimeFacts(trace: Record<string, unknown>): Record<string, stri
   return Object.keys(facts).length ? facts : undefined;
 }
 
-export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }): Promise<Response> {
+function boundedPositive(value: string | null, fallback: number, max: number): number | null {
+  if (value == null) return fallback;
+  if (!/^[1-9][0-9]*$/.test(value)) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed <= max ? parsed : null;
+}
+
+export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }): Promise<Response> {
   const denied = await forbidNonAdmin();
   if (denied) return denied;
   const { id } = await params;
+  const url = new URL(req.url);
+  const limit = boundedPositive(url.searchParams.get("limit"), 50, 100);
+  const cursor = url.searchParams.get("cursor");
+  const afterSequence = cursor == null ? 0 : boundedPositive(cursor, 0, Number.MAX_SAFE_INTEGER);
+  if (limit == null || afterSequence == null) return NextResponse.json({ error: "invalid_pagination" }, { status: 400 });
   const db = getDb();
   const trace = getGenerationTraceStatus(db, id);
   if (!trace) return NextResponse.json({ error: "not_found" }, { status: 404 });
@@ -62,6 +74,6 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
       ...(lastErrorReason ? { last_error_reason: lastErrorReason } : {}),
     },
     ...(runtime ? { runtime } : {}),
-    timeline: listGenerationTraceTimeline(db, id),
+    timeline: listGenerationTraceTimelinePage(db, id, { limit, afterSequence }),
   }, { headers: terminal ? {} : { "Cache-Control": "no-store" } });
 }

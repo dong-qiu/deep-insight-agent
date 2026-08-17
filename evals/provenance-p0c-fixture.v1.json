@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "source": "synthetic; replace parameters only after an approved read-only production-scale measurement",
+  "traces": 8,
+  "events_per_trace": 100,
+  "refs_per_event": 4,
+  "graph_fanout": 2,
+  "concurrent_writers_assumption": 1,
+  "page_size": 100,
+  "graph_depth": 4,
+  "graph_element_budget": 500
+}
