@@ -46,6 +46,9 @@ agent:
   max_retry_backoff_ms: 300000
 codex:
   command: codex app-server
+  # Symphony is an unattended, dedicated pilot. Commands remain scoped to the
+  # issue workspace by the configured workspace-write sandbox below.
+  approval_policy: never
 ---
 
 # Insight Agent Symphony 试点
