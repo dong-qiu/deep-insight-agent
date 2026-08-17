@@ -21,7 +21,7 @@ tracker:
     # PR creation is constrained to the ticket branch and the protected base.
     pull_request:
       base_branch: main
-      branch_prefix: symphony/
+      branch_prefix: symphony/gh-
   required_labels:
     - agent-ready
   active_states:
