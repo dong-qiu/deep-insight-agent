@@ -2,7 +2,7 @@
 
 ## 结论
 
-生产规模匿名 fixture 已就绪，但容量门待 event-ref 图查询计划修复部署后复验。匿名生产规模测量已固化为
+生产规模匿名 fixture、受限视图索引计划与性能门均已验收通过。匿名生产规模测量已固化为
 [`evals/provenance-p0c-fixture.v2.json`](../../evals/provenance-p0c-fixture.v2.json)，
 `npm run benchmark:provenance-p0c -- --enforce` 默认使用该 fixture。
 
@@ -32,8 +32,8 @@
 - timeline：`idx_generation_event_trace_sequence`，并以 generation entity-ref 主键索引完成相关计数；
 - event refs：`idx_generation_entity_ref_trace_event`；
 - graph edge：`idx_generation_edge_trace_from` 和 generation-event 主键索引；
-- graph ref projection：entity-ref 入口已命中 `idx_generation_entity_ref_trace_entity_event`；event-ref 入口的执行计划修复会在本次变更部署后复验。
+- graph ref projection：entity-ref 入口命中 `idx_generation_entity_ref_trace_entity_event`；event-ref 入口命中 `idx_generation_entity_ref_trace_event`，随后以 generation-event 主键索引关联。
 
-timeline、event refs、graph edge 与 entity-ref projection 均未出现 `USE TEMP B-TREE`。event-ref projection 的临时排序在本次验收中被发现，已添加索引驱动修复和回归；修复部署后才可将本门标记通过。基准强制 `page_size ≤ 100`、图深度 `≤4`、图元素 `≤500`，并拒绝临时排序或任一 P95 超出 timeline/ref 1 秒、graph 2 秒的结果。
+timeline、event refs、graph edge 与两种 entity-ref projection 均未出现 `USE TEMP B-TREE`。event-ref projection 的临时排序已由索引驱动查询修复并加入回归测试；生产在 `ff8c4785a7dfa67a9d4f1b66f3ee25cf2e16a2dd` 部署后复验，执行计划为 `idx_generation_entity_ref_trace_event` 加 generation-event 主键索引，无临时排序。基准强制 `page_size ≤ 100`、图深度 `≤4`、图元素 `≤500`，并拒绝临时排序或任一 P95 超出 timeline/ref 1 秒、graph 2 秒的结果。
 
-v2 gate 在记录的本地基准机（Darwin arm64、Apple M4、10 CPU、Node 25.9.0、SQLite 3.53.2）执行：timeline 0.037 ms、event refs 0.029 ms、graph 0.178 ms（各自 P95）。该性能数值仅适用于此已记录基准机；生产测量用于确定匿名容量分布和验证真实索引计划。最终通过结论待修复部署后的同一门控复跑。
+v2 gate 在记录的本地基准机（Darwin arm64、Apple M4、10 CPU、Node 25.9.0、SQLite 3.53.2）执行：timeline 0.037 ms、event refs 0.029 ms、graph 0.178 ms（各自 P95）。该性能数值仅适用于此已记录基准机；生产测量用于确定匿名容量分布和验证真实索引计划。生产已完成同一受限查询计划复验，P0c 容量门正式通过。
