@@ -1,0 +1,35 @@
+{
+  "version": 2,
+  "source": "anonymous aggregate from approved read-only production measurement",
+  "production_measurement": {
+    "measured_at": "2026-08-17T15:47:12.206Z",
+    "trace_count": 906,
+    "db_size_bytes": 65961984,
+    "per_trace": {
+      "events": { "p50": 4, "p95": 4, "max": 13 },
+      "refs": { "p50": 4, "p95": 32, "max": 177 },
+      "edges": { "p50": 0, "p95": 0, "max": 0 }
+    },
+    "refs_per_event": { "p50": 1, "p95": 15, "max": 34 },
+    "sqlite": "3.53.2",
+    "pragmas": { "journal_mode": "wal", "busy_timeout": 5000 },
+    "machine": { "arch": "x86_64", "cpu": "Intel Xeon Platinum 8175M", "cpu_count": 2 },
+    "writer_services": ["app", "cron", "generation-dispatch-worker"],
+    "sqlite_serializes_writers": true
+  },
+  "traces": 906,
+  "events_per_trace": 4,
+  "refs_per_event": 8,
+  "trace_profiles": [
+    { "traces": 453, "events_per_trace": 4, "refs_per_event_pattern": [1, 1, 1, 1] },
+    { "traces": 408, "events_per_trace": 4, "refs_per_event_pattern": [15, 15, 1, 1] },
+    { "traces": 44, "events_per_trace": 13, "refs_per_event_pattern": [14, 14, 14, 14, 14, 14, 14, 14, 14, 14, 14, 14, 9] },
+    { "traces": 1, "events_per_trace": 13, "refs_per_event_pattern": [34, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 11] }
+  ],
+  "database_target_bytes": 65961984,
+  "graph_fanout": 0,
+  "concurrent_writers_assumption": 3,
+  "page_size": 100,
+  "graph_depth": 4,
+  "graph_element_budget": 500
+}
