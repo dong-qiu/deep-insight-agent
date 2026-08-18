@@ -22,8 +22,6 @@
     "db:backup": "node --no-warnings ops/backup-db.mjs",
     "branches:cleanup": "node ops/cleanup-merged-branches.mjs",
     "branches:cleanup:test": "node --test ops/cleanup-merged-branches.node-test.mjs",
-    "symphony:dashboard": "node ops/symphony-dashboard.mjs",
-    "symphony:dashboard:test": "node --test ops/symphony-dashboard.node-test.mjs",
     "eval:a1": "tsx evals/run-a1.ts",
     "eval:opportunity-map": "tsx evals/score-opportunity-map.ts",
     "eval:build-local": "tsx evals/build-local-eval.ts",
