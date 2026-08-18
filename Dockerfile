@@ -4,8 +4,8 @@
 #   且全程不依赖 apt 镜像源。运行阶段用 slim 并去除 curl 依赖（healthcheck / cron 均用 Node fetch）。
 # 镜像 tag 锁定到具体 patch（不用 latest）；cron 服务复用同镜像跑 supercronic。
 
-ARG NODE_BUILD_IMAGE=node:20.19.0-bookworm
-ARG NODE_RUNTIME_IMAGE=node:20.19.0-bookworm-slim
+ARG NODE_BUILD_IMAGE=node:24.19.0-bookworm
+ARG NODE_RUNTIME_IMAGE=node:24.19.0-bookworm-slim
 
 # ---- 依赖层 ----
 FROM ${NODE_BUILD_IMAGE} AS deps
