@@ -38,8 +38,8 @@ Source → ContentItem → AnalysisBatch → ValidationResult → Report
 
 ### 前置条件
 
-- Node.js `>=20.19 <21`
-- npm `>=10 <11`
+- Node.js `>=24.19 <25`
+- npm `>=11 <12`
 - 用于运行分析与评测的 Anthropic API Key 或兼容中转站配置
 
 ### 本地运行

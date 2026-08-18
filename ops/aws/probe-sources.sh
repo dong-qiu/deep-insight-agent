@@ -15,7 +15,7 @@ set -euo pipefail
 RGN=ap-southeast-1
 IID=i-061dc19d7f7ff81ad
 
-# 容器内自包含探测脚本（仅用 Node 20 内置 fetch + 正则，无第三方依赖）。
+# 容器内自包含探测脚本（仅用 Node 24 内置 fetch + 正则，无第三方依赖）。
 read -r -d '' PROBE <<'JS' || true
 "use strict";
 const UA = "InsightAgentBot";              // = src/lib/sources/robots.ts

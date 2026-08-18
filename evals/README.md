@@ -8,7 +8,7 @@
 
 ## 跑之前
 
-1. **Node 20+**，安装依赖：`npm install`
+1. **Node 24+**，安装依赖：`npm install`
    > `package.json` 把 `@anthropic-ai/sdk` 标为 `latest`（要用到 `messages.parse` + `zodOutputFormat`）；
    > 首次安装后建议 `npm ls @anthropic-ai/sdk` 看实际版本并 pin 进 lockfile。
 2. **API key**：`cp .env.example .env.local`，填入 `ANTHROPIC_API_KEY`（`.env*` 已忽略，不入仓）。

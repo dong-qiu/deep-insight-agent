@@ -1240,3 +1240,28 @@ Daily Brief 的输入选择会保留近期候选，但报告层在任一近期�
 日报不会为了填满版面重发旧事件，也不会放宽引用校验；当近期内容不足以被模型直接引用时，读者仍可得到有限、
 明确标注且可追溯的未发布发现。补充发现不是“今日新闻”，后续应根据生产漏斗数据评估上限和 48 小时新鲜度窗口，
 而不是在缺少证据时继续放宽白名单或去重窗口。
+
+---
+
+## ADR-0022: 运行时迁移至 Node 24 LTS 与 npm 11
+
+- **日期**: 2026-08-19
+- **状态**: Accepted
+
+### 背景
+
+ADR-0013 将运行时固定在 Node 20.19.0 / npm 10，以消除当时本机、CI 与 Docker 的漂移。Node 20 已结束支持，
+继续使用会失去安全修复；同时项目的原生 SQLite 与图像依赖需要在新 ABI 和 Linux 生产镜像中重新验证。
+
+### 决定
+
+1. 统一 `.nvmrc`、`engines`、`packageManager`、GitHub Actions 与 Docker build/runtime image 至 Node 24.19.0 / npm 11.17.0。
+2. `engines` 仅接受 Node `>=24.19 <25` 与 npm `>=11 <12`，避免开发机、CI 与生产镜像重新漂移。
+3. 本次迁移不修改业务依赖版本、SQLite schema 或报告/引用语义；`better-sqlite3` 与 `sharp` 的 Linux Docker 安装、
+   测试和构建是发布前阻断验证项。
+
+### 验证与回滚
+
+- 在干净 Node 24/npm 11 环境运行 `npm ci`、lint、typecheck、全量测试、Next build、生产依赖 audit 和 Linux Docker build。
+- 在 staging 验证真实抓取、LLM 调用、报告生成以及 TLS 连接；Node 24 的 OpenSSL 与 fetch 行为变化不得仅以单元测试替代。
+- 保留当前生产镜像 digest 作为回滚目标。因为本迁移不含 schema 或数据迁移，回滚仅切回先前已验证镜像。
