@@ -101,11 +101,10 @@ jobs:
         run: npm run build
         env:
           NEXT_TELEMETRY_DISABLED: "1"
-      # 供应链：生产依赖 high/critical 漏洞**阻断**门（与 architecture.md「CI npm audit」自述对齐）。
-      # 只卡 --omit=dev：dev/构建链漏洞（esbuild/vite/vitest 等）不随生产镜像 ship、噪声大，
-      # 不阻断 PR；真正进生产运行时的依赖出 high+ 才挡。Dependabot 负责升级、本门兜底。
-      - name: npm audit (prod deps, high+ blocking)
-        run: npm audit --omit=dev --audit-level=high
+      # 供应链：整个 lockfile 的 high/critical 漏洞均阻断。开发/构建依赖同样会在 CI 与
+      # 开发者机器执行，不能仅因不随生产镜像 ship 就忽略；Dependabot 负责提出升级，本门兜底。
+      - name: npm audit (all deps, high+ blocking)
+        run: npm audit --audit-level=high
 
   docker:
     name: docker build

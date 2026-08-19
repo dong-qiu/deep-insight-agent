@@ -7,11 +7,25 @@ updates:
       interval: weekly
     open-pull-requests-limit: 5
     groups:
-      # 次/补丁版聚合成一个 PR，减少噪音
-      minor-and-patch:
+      # 把同一运行域的次/补丁更新放在一起，避免一次 PR 横跨运行时、解析器与测试栈。
+      aws-sdk:
+        patterns: ["@aws-sdk/*"]
         update-types: [minor, patch]
-    # `better-sqlite3` 13 要求 Node 22+；项目仍受 Node 20 运行时契约约束。
-    # 在独立的 Node 22 / SQLite 原生模块迁移完成前，不创建 major PR。
+      application-runtime:
+        patterns: ["next", "next-auth", "react", "react-dom", "eslint", "eslint-*", "@eslint/*"]
+        update-types: [minor, patch]
+      test-tooling:
+        patterns: ["vitest", "@vitest/*", "vite", "tsx", "typescript", "@typescript/*"]
+        update-types: [minor, patch]
+      source-parsers:
+        patterns: ["fast-xml-parser", "@extractus/*"]
+        update-types: [minor, patch]
+      other-minor-and-patch:
+        patterns: ["*"]
+        exclude-patterns: ["@aws-sdk/*", "next", "next-auth", "react", "react-dom", "eslint", "eslint-*", "@eslint/*", "vitest", "@vitest/*", "vite", "tsx", "typescript", "@typescript/*", "fast-xml-parser", "@extractus/*"]
+        update-types: [minor, patch]
+    # Node 24 已满足 better-sqlite3 13 的 engine，但它是原生 SQLite 模块：major 升级仍需
+    # 单独验证 ABI、迁移与备份/恢复路径，不能混入常规依赖更新。
     ignore:
       - dependency-name: "better-sqlite3"
         update-types: ["version-update:semver-major"]
