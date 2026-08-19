@@ -53,7 +53,8 @@ export function topicPipelineCompletionPolicy(input: { planning: boolean; select
       policyStage("derive_lead", input.planning ? "event_only" : "omitted", "non_blocking", ["completed", "failed", "cancelled"]),
       policyStage("map_direction", input.planning ? "event_only" : "omitted", "non_blocking", ["completed", "failed", "cancelled"]),
       policyStage("derive_opportunity", input.planning ? "event_only" : "omitted", "non_blocking", ["completed", "failed", "cancelled"]),
-      policyStage("deliver", "event_only", "non_blocking", ["completed", "skipped", "failed", "cancelled"], true),
+      // deliver 是 side effect 观测，不参与主链路失败：只允许 attempted / skipped，二者均归一为成功。
+      policyStage("deliver", "event_only", "non_blocking", ["completed", "skipped"], true),
     ],
   };
 }
@@ -179,9 +180,17 @@ function parseCompletionPolicy(value: string, scopeKind: string): CompletionPoli
   let parsed: unknown;
   try { parsed = JSON.parse(value); } catch { throw new Error("invalid_completion_policy"); }
   if (!parsed || typeof parsed !== "object") throw new Error("invalid_completion_policy");
-  const policy = parsed as Partial<CompletionPolicy>;
+  const policy = parsed as Partial<CompletionPolicy> & { planning?: unknown; selection?: unknown };
   // Pre-P0d traces are immutable historical facts: keep them readable with a deterministic legacy shape.
   if (Object.keys(policy).length === 0) return legacyCompletionPolicy(scopeKind);
+  // P0a 已发布的 topic snapshot 只有 schema_version / planning（以及部分 trace 的 selection），
+  // 没有 P0d 的 stages 数组。投影时将其只读地解释成相同的 legacy policy，绝不回写事实快照。
+  const legacyP0aKeys = Object.keys(policy).every((key) => ["schema_version", "planning", "selection"].includes(key));
+  if (scopeKind === "topic_pipeline" && legacyP0aKeys && policy.schema_version === 1
+    && (policy.planning === undefined || typeof policy.planning === "boolean")
+    && (policy.selection === undefined || typeof policy.selection === "boolean") && policy.stages === undefined) {
+    return topicPipelineCompletionPolicy({ planning: policy.planning ?? true, selection: policy.selection ?? false });
+  }
   if (policy.schema_version !== 1 || !Array.isArray(policy.stages) || policy.stages.length === 0) throw new Error("invalid_completion_policy");
   for (const stage of policy.stages) {
     if (!stage || typeof stage.stage !== "string" || !["run", "event_only", "omitted"].includes(stage.execution_kind ?? "")
@@ -219,38 +228,74 @@ function runKindForStage(stage: string): string | null {
   return ({ analyze: "analyze", validate: "validate", generate_report: "report-gen", collect: "ingest", normalize: "ingest" } as Record<string, string>)[stage] ?? null;
 }
 
+function eventOutcomeForStage(stage: CompletionPolicyStage, event: { event_type: string; error: string | null }): TerminalOutcome | null {
+  const outcome = eventOutcome(event);
+  // The policy stores normalized outcomes, while deliver's public contract names raw events.
+  // A direct completed/failed/cancelled delivery event is therefore an invalid terminal outcome.
+  if (stage.stage === "deliver" && outcome && !["attempted", "skipped"].includes(event.event_type)) return "failed";
+  return outcome;
+}
+
 /** 唯一的 trace 状态写入点：只读取冻结 policy、Run 聚合与 append-only 终态 event。 */
 export function projectTrace(db: DB, traceId: string): TraceStatus {
   const trace = db.prepare("SELECT scope_kind,completion_policy FROM generation_trace WHERE id=?").get(traceId) as { scope_kind: string; completion_policy: string } | undefined;
   if (!trace) throw new Error("generation_trace_not_found");
   const policy = parseCompletionPolicy(trace.completion_policy, trace.scope_kind);
-  const events = db.prepare("SELECT stage,attempt,event_type,error FROM generation_event WHERE trace_id=? ORDER BY sequence")
-    .all(traceId) as { stage: string; attempt: number; event_type: string; error: string | null }[];
-  const runs = db.prepare("SELECT kind,status,error FROM run WHERE trace_id=? ORDER BY started_at,id")
-    .all(traceId) as { kind: string; status: string; error: string | null }[];
-  const eventByStage = new Map<string, TerminalOutcome>();
+  const events = db.prepare("SELECT sequence,stage,attempt,run_id,event_type,error FROM generation_event WHERE trace_id=? ORDER BY sequence")
+    .all(traceId) as { sequence: number; stage: string; attempt: number; run_id: string | null; event_type: string; error: string | null }[];
+  const runs = db.prepare("SELECT id,kind,status,error,retry_of,started_at FROM run WHERE trace_id=? ORDER BY started_at,id")
+    .all(traceId) as { id: string; kind: string; status: string; error: string | null; retry_of: string | null; started_at: string }[];
+  const runById = new Map(runs.map((run) => [run.id, run]));
+  const runAttempt = new Map<string, number>();
+  const attemptForRun = (run: typeof runs[number], seen = new Set<string>()): number => {
+    const cached = runAttempt.get(run.id);
+    if (cached) return cached;
+    if (!run.retry_of || seen.has(run.id)) return 1;
+    seen.add(run.id);
+    const parent = runById.get(run.retry_of);
+    const attempt = parent && parent.kind === run.kind ? attemptForRun(parent, seen) + 1 : 1;
+    runAttempt.set(run.id, attempt);
+    return attempt;
+  };
+  const eventRunStage = new Map<string, { stage: string; attempt: number; sequence: number }>();
   for (const event of events) {
-    const outcome = eventOutcome(event);
-    if (outcome) eventByStage.set(event.stage, outcome);
+    if (event.run_id) eventRunStage.set(event.run_id, { stage: event.stage, attempt: event.attempt, sequence: event.sequence });
   }
-  const runByKind = new Map<string, TerminalOutcome>();
-  for (const run of runs) {
-    const outcome = runOutcome(run);
-    if (outcome) runByKind.set(run.kind, outcome);
-  }
+  const runsWithAttempt = runs.map((run) => {
+    const linked = eventRunStage.get(run.id);
+    return { ...run, attempt: linked?.attempt ?? attemptForRun(run), stage: linked?.stage ?? null };
+  });
   const stageOutcome = (stage: CompletionPolicyStage): TerminalOutcome | null => {
     if (stage.execution_kind === "omitted") return "completed";
-    const event = eventByStage.get(stage.stage);
-    if (stage.execution_kind === "event_only") {
-      if (!event) return null;
-      return stage.allowed_terminal_events.includes(event) && (event !== "skipped" || stage.skip_is_success) ? event : "failed";
-    }
+    const stageEvents = events.filter((event) => event.stage === stage.stage);
     const kind = runKindForStage(stage.stage);
-    const run = kind ? runByKind.get(kind) : undefined;
-    const result = run === "cancelled" || event === "cancelled" ? "cancelled"
-      : run === "failed" || event === "failed" ? "failed"
-        : run === "completed" && event === "completed" ? "completed"
-          : event === "skipped" && stage.skip_is_success && run === "completed" ? "skipped" : null;
+    // Prefer an explicit event → Run binding. Legacy rows without it retain the kind fallback.
+    const stageRuns = kind ? runsWithAttempt.filter((run) => run.stage === stage.stage || (run.stage === null && run.kind === kind)) : [];
+    const attempt = Math.max(0, ...stageEvents.map((event) => event.attempt), ...stageRuns.map((run) => run.attempt));
+    if (attempt === 0) return null;
+    const latestEvent = stageEvents.filter((event) => event.attempt === attempt)
+      .reduce<TerminalOutcome | null>((outcome, event) => eventOutcomeForStage(stage, event) ?? outcome, null);
+    if (stage.execution_kind === "event_only") {
+      if (!latestEvent) return null;
+      return stage.allowed_terminal_events.includes(latestEvent) && (latestEvent !== "skipped" || stage.skip_is_success) ? latestEvent : "failed";
+    }
+    const currentRuns = stageRuns.filter((run) => run.attempt === attempt);
+    // A retry that has started (or whose Run is still running) must hide terminal facts from older attempts.
+    if (currentRuns.some((run) => run.status === "running")) return null;
+    // A terminal infrastructure/recovery failure may be recorded before a stage event is available.
+    // Success still requires both sides, so a lone completed Run/event remains running.
+    if (!latestEvent) {
+      const run = currentRuns.length ? runOutcome(currentRuns[currentRuns.length - 1]) : null;
+      return run === "failed" || run === "cancelled" ? run : null;
+    }
+    if (currentRuns.length === 0) return latestEvent === "failed" || latestEvent === "cancelled" ? latestEvent : null;
+    const latestRun = currentRuns[currentRuns.length - 1];
+    const run = runOutcome(latestRun);
+    if (!run) return null;
+    const result = run === "cancelled" || latestEvent === "cancelled" ? "cancelled"
+      : run === "failed" || latestEvent === "failed" ? "failed"
+        : run === "completed" && latestEvent === "completed" ? "completed"
+          : latestEvent === "skipped" && stage.skip_is_success && run === "completed" ? "skipped" : null;
     if (!result) return null;
     return stage.allowed_terminal_events.includes(result) && (result !== "skipped" || stage.skip_is_success) ? result : "failed";
   };
