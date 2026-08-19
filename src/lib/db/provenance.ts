@@ -8,6 +8,7 @@ import {
   appendGenerationEvent,
   captureRevision,
   entityKey,
+  GENERATION_EVENT_METRIC_KEYS,
   manualDecisionCompletionPolicy,
   projectTrace,
   sourceCollectCompletionPolicy,
@@ -712,7 +713,7 @@ export function listGenerationTraceTimeline(db: DB, traceId: string): Array<Reco
       try {
         const parsed = JSON.parse(event.metrics) as Record<string, unknown>;
         // Timeline 是 admin read model，但仍只投影已登记的整数计数，避免把任意未来 metrics 外泄。
-        const allowed = new Set(["input_content_count", "analysis_insight_count", "no_significant_event", "citation_total", "citation_pass", "citation_blocked", "citation_flagged", "citation_errored", "includable_insight_count", "releasable", "freshness_filtered_insight_count", "already_published_filtered_insight_count", "supplemental_candidate_count", "supplemental_published_insight_count", "published_insight_count", "published_citation_count", "candidate_count", "opportunity_count"]);
+        const allowed = new Set<string>(GENERATION_EVENT_METRIC_KEYS);
         for (const [key, value] of Object.entries(parsed)) {
           if (allowed.has(key) && typeof value === "number" && Number.isSafeInteger(value) && value >= 0) metrics[key] = value;
         }

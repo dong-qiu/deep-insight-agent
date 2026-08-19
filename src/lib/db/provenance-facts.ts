@@ -20,6 +20,49 @@ export interface GenerationEventInput {
   occurred_at?: string;
 }
 
+/**
+ * generation_event 是长期保留的溯源事实，不能让调用方把任意调试 payload 塞进 metrics 或 version_context。
+ * 新的观测字段须先在这里登记、补回归测试，并确认其值不是 prompt、原文、凭据或用户内容。
+ */
+export const GENERATION_EVENT_METRIC_KEYS = [
+  "selected_count", "input_content_count", "analysis_insight_count", "no_significant_event",
+  "citation_total", "citation_pass", "citation_blocked", "citation_flagged", "citation_errored",
+  "includable_insight_count", "releasable", "freshness_filtered_insight_count",
+  "already_published_filtered_insight_count", "supplemental_candidate_count",
+  "supplemental_published_insight_count", "published_insight_count", "published_citation_count",
+  "candidate_count", "opportunity_count", "fetched_count", "inserted_count", "updated_count",
+  "skipped_count", "committed_output_ref_count", "rolled_back_output_ref_count",
+  "unknown_output_ref_count",
+] as const;
+const ALLOWED_METRIC_KEYS = new Set<string>(GENERATION_EVENT_METRIC_KEYS);
+
+function validatedMetrics(metrics: Record<string, unknown> | undefined): Record<string, number> {
+  const result: Record<string, number> = {};
+  for (const [key, value] of Object.entries(metrics ?? {})) {
+    if (!ALLOWED_METRIC_KEYS.has(key)) throw new Error("generation_event_metric_not_allowed");
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+      throw new Error("generation_event_metric_invalid");
+    }
+    result[key] = value;
+  }
+  return result;
+}
+
+/** P0 当前只需要记录脱敏的 source 配置 revision 与枚举采集模式；不为任意版本字符串留旁路。 */
+function validatedVersionContext(versionContext: Record<string, unknown> | undefined): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const [key, value] of Object.entries(versionContext ?? {})) {
+    if (key === "source_config_revision" && typeof value === "string" && /^source-v1:[a-f0-9]{64}$/.test(value)) {
+      result[key] = value;
+    } else if (key === "collection_mode" && (value === "feed" || value === "full_text")) {
+      result[key] = value;
+    } else {
+      throw new Error("generation_event_version_context_not_allowed");
+    }
+  }
+  return result;
+}
+
 export type TraceStatus = "running" | "done" | "failed" | "partial" | "cancelled";
 type TerminalOutcome = "completed" | "skipped" | "failed" | "cancelled";
 export interface CompletionPolicyStage {
@@ -128,7 +171,11 @@ function semanticPayload(input: GenerationEventInput): Record<string, unknown> {
 /** 同一 stage/attempt/event_type 重放只在语义 hash 相等时返回旧事件；否则拒绝覆盖。 */
 export function appendGenerationEvent(db: DB, input: GenerationEventInput): { id: string; sequence: number; replayed: boolean } {
   const attempt = input.attempt ?? 1;
-  const semanticHash = canonicalHash(semanticPayload(input));
+  // Validate before checking the idempotency key: an invalid retry must never be mistaken for a safe replay.
+  const metrics = validatedMetrics(input.metrics);
+  const versionContext = validatedVersionContext(input.version_context);
+  const normalizedInput = { ...input, metrics, version_context: versionContext };
+  const semanticHash = canonicalHash(semanticPayload(normalizedInput));
   return db.transaction(() => {
     const existing = (db.prepare(`SELECT id,sequence,semantic_payload_hash FROM generation_event
       WHERE trace_id=? AND stage=? AND attempt=? AND event_type=?`).get(input.trace_id, input.stage, attempt, input.event_type) as { id: string; sequence: number; semantic_payload_hash: string } | undefined);
@@ -146,7 +193,7 @@ export function appendGenerationEvent(db: DB, input: GenerationEventInput): { id
     const payload = {
       id, trace_id: input.trace_id, sequence, attempt, run_id: input.run_id ?? null, stage: input.stage, event_type: input.event_type,
       occurred_at: occurredAt, actor_type: input.actor_type ?? "system", actor_id: input.actor_id ?? null, audit_log_id: input.audit_log_id ?? null,
-      reason_code: input.reason_code ?? null, ...refs, metrics: input.metrics ?? {}, version_context: input.version_context ?? {},
+      reason_code: input.reason_code ?? null, ...refs, metrics, version_context: versionContext,
       context_completeness: input.context_completeness ?? "partial", error: input.error ?? null, payload_schema_version: 1,
     };
     const payloadHash = canonicalHash(payload);
