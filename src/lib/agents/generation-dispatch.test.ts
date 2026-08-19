@@ -2,8 +2,8 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { openDb, type DB } from "../db/index.js";
 import { applyProvenanceMigrations } from "../db/provenance-migrations.js";
 import { assertGenerationDispatchClaim, claimNextGenerationDispatch, createDeepDiveTraceRequest, createScheduledTraceRequest, hashIdempotencyKey } from "../db/provenance.js";
-import { insertContentItem, insertSource, insertTopic } from "../db/repos.js";
-import { captureRevision, entityKey, type EntityRef } from "../db/provenance-facts.js";
+import { finishRun, insertContentItem, insertRun, insertSource, insertTopic } from "../db/repos.js";
+import { appendGenerationEvent, captureRevision, entityKey, type EntityRef } from "../db/provenance-facts.js";
 import type { ContentItem, Report, Source } from "../types.js";
 import { runGenerationDispatchOnce } from "./generation-dispatch.js";
 
@@ -27,6 +27,20 @@ describe("generation dispatch worker", () => {
     return result;
   }
 
+  function completeTopicPipeline(runDb: DB, traceId: string, rootRunId: string) {
+    runDb.prepare("UPDATE run SET status='done', ended_at=? WHERE id=?").run(new Date().toISOString(), rootRunId);
+    appendGenerationEvent(runDb, { trace_id: traceId, stage: "select", event_type: "completed" });
+    appendGenerationEvent(runDb, { trace_id: traceId, run_id: rootRunId, stage: "analyze", event_type: "completed" });
+    for (const [id, kind, stage] of [["run_validate", "validate", "validate"], ["run_report", "report-gen", "generate_report"]] as const) {
+      insertRun(runDb, {
+        id, kind, target: {}, status: "running", started_at: new Date().toISOString(), ended_at: null,
+        duration_ms: null, cost: null, error: null, retry_of: null, trace_id: traceId,
+      });
+      appendGenerationEvent(runDb, { trace_id: traceId, run_id: id, stage, event_type: "completed" });
+      finishRun(runDb, id, { status: "done", duration_ms: 1 });
+    }
+  }
+
   it("claims durable work, passes its trace/root Run to the pipeline, then closes the reservation", async () => {
     const accepted = accept();
     let received: { topicId: string; traceId?: string; rootRunId?: string } | null = null;
@@ -35,8 +49,8 @@ describe("generation dispatch worker", () => {
       const rootRunId = opts?.rootRunId;
       if (!rootRunId) throw new Error("dispatcher must provide its root Run");
       received = { topicId, traceId, rootRunId };
-      // runAnalysis normally closes the root Run. The fake pipeline reproduces that terminal write.
-      runDb.prepare("UPDATE run SET status='done', ended_at=? WHERE id=?").run(new Date().toISOString(), rootRunId);
+      // The fake pipeline writes the same terminal Run/event facts as the real pipeline.
+      completeTopicPipeline(runDb, traceId!, rootRunId);
       return {} as Report;
     });
 
@@ -91,6 +105,7 @@ describe("generation dispatch worker", () => {
     expect(db.prepare("SELECT state FROM generation_dispatch WHERE trace_id=?").get(accepted.traceId)).toEqual({ state: "failed" });
     expect(db.prepare("SELECT status FROM run WHERE trace_id=?").get(accepted.traceId)).toEqual({ status: "failed" });
     expect(db.prepare("SELECT stage,event_type,error FROM generation_event WHERE trace_id=? ORDER BY sequence").all(accepted.traceId)).toEqual([
+      { stage: "select", event_type: "completed", error: null },
       { stage: "analyze", event_type: "started", error: null },
       { stage: "analyze", event_type: "failed", error: '{"reason_code":"provenance_revision_conflict"}' },
     ]);
@@ -106,7 +121,7 @@ describe("generation dispatch worker", () => {
     let received: { reportType: string; windowHours?: number; windowEnd?: string; items?: number; traceId?: string } | null = null;
     const result = await runGenerationDispatchOnce(db, async (runDb, _topicId, opts) => {
       received = opts;
-      runDb.prepare("UPDATE run SET status='done', ended_at=? WHERE id=?").run(new Date().toISOString(), opts.rootRunId);
+      completeTopicPipeline(runDb, opts.traceId!, opts.rootRunId!);
     });
     expect(result).toMatchObject({ claimed: true, traceId: accepted.traceId, status: "done" });
     expect(received).toMatchObject({ reportType: "brief", windowHours: 168, windowEnd: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/), items: 15, traceId: accepted.traceId });

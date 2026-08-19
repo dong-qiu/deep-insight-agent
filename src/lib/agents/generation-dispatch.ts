@@ -4,6 +4,7 @@ import {
   claimNextGenerationDispatch,
   assertGenerationDispatchClaim,
   finishGenerationDispatch,
+  getGenerationTraceStatus,
   heartbeatGenerationDispatch,
 } from "../db/provenance.js";
 import { runPipelineForTopic, runScheduledTopicPipeline, type GenerationExecutionOptions } from "./scheduler.js";
@@ -35,6 +36,10 @@ export async function runGenerationDispatchOnce(
     });
     if (lostLease || !finishGenerationDispatch(db, claim, { status: "done" })) {
       throw new Error("generation dispatch lease was lost before completion");
+    }
+    const traceStatus = getGenerationTraceStatus(db, claim.traceId)?.status;
+    if (traceStatus !== "done" && traceStatus !== "partial") {
+      throw new Error(`generation dispatch completed without a publishable trace (${String(traceStatus)})`);
     }
     return { claimed: true, traceId: claim.traceId, status: "done" };
   } catch (error) {

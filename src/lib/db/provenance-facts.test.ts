@@ -1,14 +1,20 @@
 import { describe, expect, it } from "vitest";
 import { openDb } from "./index.js";
-import { appendGenerationEvent, canonicalHash, canonicalJson, captureRevision, entityKey, initializeProvenanceMeta, projectTrace } from "./provenance-facts.js";
+import { appendGenerationEvent, canonicalHash, canonicalJson, captureRevision, entityKey, initializeProvenanceMeta, projectTrace, type CompletionPolicy } from "./provenance-facts.js";
 import { applyProvenanceMigrations } from "./provenance-migrations.js";
 import { buildGenerationTraceGraph, listGenerationEventRefs, listGenerationTraceTimeline, listGenerationTraceTimelinePage } from "./provenance.js";
+import { finishRun, insertRun } from "./repos.js";
 
-function dbWithTrace() {
+const eventOnlyPolicy = (stages: CompletionPolicy["stages"]): CompletionPolicy => ({ schema_version: 1, stages });
+const requiredEvent = (stage = "analyze"): CompletionPolicy["stages"][number] => ({
+  stage, execution_kind: "event_only", criticality: "required", allowed_terminal_events: ["completed", "skipped", "failed", "cancelled"], skip_is_success: true,
+});
+
+function dbWithTrace(policy = eventOnlyPolicy([requiredEvent()])) {
   const db = openDb(":memory:");
   applyProvenanceMigrations(db);
   db.prepare(`INSERT INTO generation_trace(id,scope_kind,trigger_kind,status,completion_policy,coverage,runtime_version,summary,started_at)
-    VALUES ('trace_1','topic_pipeline','api','running','{}','complete','{}','{}','2026-08-03T00:00:00.000Z')`).run();
+    VALUES ('trace_1','topic_pipeline','api','running',?,'complete','{}','{}','2026-08-03T00:00:00.000Z')`).run(JSON.stringify(policy));
   return db;
 }
 
@@ -48,12 +54,34 @@ describe("provenance facts", () => {
     expect(db.prepare("SELECT meta_value FROM provenance_meta WHERE meta_key='provenance_started_at'").get()).toEqual({ meta_value: "2026-08-03T00:00:00.000Z" });
   });
 
-  it("projects non-blocking planning failure to partial after required stages complete", () => {
-    const db = dbWithTrace();
-    for (const stage of ["analyze", "validate", "generate_report"]) appendGenerationEvent(db, { trace_id: "trace_1", stage, event_type: "completed" });
-    appendGenerationEvent(db, { trace_id: "trace_1", stage: "derive_opportunity", event_type: "failed", error: { reason_code: "failed" } });
-    expect(projectTrace(db, "trace_1")).toBe("partial");
-    expect(db.prepare("SELECT status FROM generation_trace WHERE id='trace_1'").get()).toEqual({ status: "partial" });
+  it.each([
+    ["required stage still active", eventOnlyPolicy([requiredEvent()]), [{ stage: "analyze", event_type: "started" }], "running"],
+    ["required completed", eventOnlyPolicy([requiredEvent()]), [{ stage: "analyze", event_type: "completed" }], "done"],
+    ["allowed skip", eventOnlyPolicy([requiredEvent()]), [{ stage: "analyze", event_type: "skipped" }], "done"],
+    ["required failed", eventOnlyPolicy([requiredEvent()]), [{ stage: "analyze", event_type: "failed" }], "failed"],
+    ["required cancelled", eventOnlyPolicy([requiredEvent()]), [{ stage: "analyze", event_type: "failed", error: { reason_code: "cancelled" } }], "cancelled"],
+    ["non-blocking failure after required completion", eventOnlyPolicy([
+      requiredEvent(), { stage: "derive_opportunity", execution_kind: "event_only", criticality: "non_blocking", allowed_terminal_events: ["completed", "failed"], skip_is_success: false },
+    ]), [{ stage: "analyze", event_type: "completed" }, { stage: "derive_opportunity", event_type: "failed" }], "partial"],
+  ])("projects truth-table row: %s", (_label, policy, events, expected) => {
+    const db = dbWithTrace(policy);
+    for (const event of events) appendGenerationEvent(db, { trace_id: "trace_1", ...event });
+    expect(projectTrace(db, "trace_1")).toBe(expected);
+    expect(db.prepare("SELECT status FROM generation_trace WHERE id='trace_1'").get()).toEqual({ status: expected });
+  });
+
+  it("requires both the linked Run aggregation and terminal event for a run stage", () => {
+    const db = dbWithTrace(eventOnlyPolicy([{
+      stage: "analyze", execution_kind: "run", criticality: "required", allowed_terminal_events: ["completed", "failed", "cancelled"], skip_is_success: false,
+    }]));
+    insertRun(db, {
+      id: "run_1", kind: "analyze", target: { topic_id: "topic_a" }, status: "running", started_at: "2026-08-03T00:00:00.000Z",
+      ended_at: null, duration_ms: null, cost: null, error: null, retry_of: null, trace_id: "trace_1",
+    });
+    appendGenerationEvent(db, { trace_id: "trace_1", stage: "analyze", event_type: "completed" });
+    expect(projectTrace(db, "trace_1")).toBe("running");
+    finishRun(db, "run_1", { status: "done", duration_ms: 1 });
+    expect(db.prepare("SELECT status FROM generation_trace WHERE id='trace_1'").get()).toEqual({ status: "done" });
   });
 
   it("管理员时间线只投影登记的非负整数指标，不泄露任意 metrics 字段", () => {

@@ -211,7 +211,6 @@ export async function collectSource(
     },
   );
   if (trace && !finishSourceCollectTrace(db, trace, {
-    status: "done",
     summary: { fetched_count: result.fetched, inserted_count: result.inserted, updated_count: result.updated, skipped_count: result.skipped },
   })) throw new Error("source_collect_finish_fence_lost");
   return { runId: run.id, ...result };
@@ -238,7 +237,6 @@ export async function collectSource(
           error: { reason_code: `${stage}_failed`, retryable: true },
         });
         finishSourceCollectTrace(db, trace, {
-          status: "failed",
           summary: {
             failed_stage: stage,
             committed_output_ref_count: outputs.length,

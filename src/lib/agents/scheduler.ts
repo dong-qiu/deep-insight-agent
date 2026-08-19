@@ -240,6 +240,13 @@ export async function runScheduledTopicPipeline(
     })();
     return null;
   }
+  if (input.traceId) {
+    input.assertWrite?.();
+    appendGenerationEvent(db, {
+      trace_id: input.traceId, stage: "select", event_type: "completed",
+      metrics: { selected_count: items.length },
+    });
+  }
   const history = input.reportType === "brief" ? listRecentBriefEvents(db, topic.id) : [];
   const batch = await runAnalysis(db, topic, items, { start: since, end: endIso }, {
     history, traceId: input.traceId, rootRunId: input.rootRunId, assertWrite: input.assertWrite,
