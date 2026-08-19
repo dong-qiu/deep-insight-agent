@@ -134,6 +134,24 @@ describe("provenance facts", () => {
     expect(db.prepare("SELECT status FROM run WHERE id='run_1'").get()).toEqual({ status: "done" });
   });
 
+  it("reads scheduled-topic, source-collect and manual-decision P0a policy snapshots", () => {
+    const scheduled = dbWithTrace();
+    scheduled.prepare("UPDATE generation_trace SET completion_policy=? WHERE id='trace_1'")
+      .run(JSON.stringify({ schema_version: 1, planning: true, report_type: "brief" }));
+    expect(() => projectTrace(scheduled, "trace_1")).not.toThrow();
+
+    const sourceCollect = dbWithTrace();
+    sourceCollect.prepare("UPDATE generation_trace SET scope_kind='source_collect',completion_policy=? WHERE id='trace_1'")
+      .run(JSON.stringify({ schema_version: 1, execution_kind: "sync", required_stages: ["collect", "normalize"] }));
+    expect(() => projectTrace(sourceCollect, "trace_1")).not.toThrow();
+
+    const manual = dbWithTrace();
+    manual.prepare("UPDATE generation_trace SET scope_kind='manual_decision',completion_policy=? WHERE id='trace_1'")
+      .run(JSON.stringify({ schema_version: 1, execution_kind: "event_only", required_stages: ["direction_change"] }));
+    appendGenerationEvent(manual, { trace_id: "trace_1", stage: "direction_change", event_type: "config_changed" });
+    expect(projectTrace(manual, "trace_1")).toBe("done");
+  });
+
   it("rolls back the Run terminal write when trace projection fails", () => {
     const db = dbWithTrace();
     db.prepare("UPDATE generation_trace SET completion_policy=? WHERE id='trace_1'").run(JSON.stringify({ schema_version: 99 }));

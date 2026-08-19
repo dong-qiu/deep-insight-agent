@@ -176,20 +176,47 @@ function legacyCompletionPolicy(scopeKind: string): CompletionPolicy {
   return topicPipelineCompletionPolicy({ planning: true, selection: false });
 }
 
+function hasOnlyKeys(value: object, allowed: string[]): boolean {
+  return Object.keys(value).every((key) => allowed.includes(key));
+}
+
+function sameStages(value: unknown, expected: string[]): boolean {
+  return Array.isArray(value) && value.length === expected.length
+    && value.every((stage, index) => stage === expected[index]);
+}
+
 function parseCompletionPolicy(value: string, scopeKind: string): CompletionPolicy {
   let parsed: unknown;
   try { parsed = JSON.parse(value); } catch { throw new Error("invalid_completion_policy"); }
   if (!parsed || typeof parsed !== "object") throw new Error("invalid_completion_policy");
-  const policy = parsed as Partial<CompletionPolicy> & { planning?: unknown; selection?: unknown };
+  const policy = parsed as Partial<CompletionPolicy> & {
+    planning?: unknown; selection?: unknown; report_type?: unknown; execution_kind?: unknown; required_stages?: unknown;
+  };
   // Pre-P0d traces are immutable historical facts: keep them readable with a deterministic legacy shape.
   if (Object.keys(policy).length === 0) return legacyCompletionPolicy(scopeKind);
-  // P0a 已发布的 topic snapshot 只有 schema_version / planning（以及部分 trace 的 selection），
-  // 没有 P0d 的 stages 数组。投影时将其只读地解释成相同的 legacy policy，绝不回写事实快照。
-  const legacyP0aKeys = Object.keys(policy).every((key) => ["schema_version", "planning", "selection"].includes(key));
-  if (scopeKind === "topic_pipeline" && legacyP0aKeys && policy.schema_version === 1
+  // P0a 已发布快照没有 P0d 的 stages 数组。投影时按 scope 只读解释其全部已发布形状，绝不回写事实快照。
+  const topicKeys = hasOnlyKeys(policy, ["schema_version", "planning", "selection", "report_type"]);
+  if (scopeKind === "topic_pipeline" && topicKeys && policy.schema_version === 1
     && (policy.planning === undefined || typeof policy.planning === "boolean")
-    && (policy.selection === undefined || typeof policy.selection === "boolean") && policy.stages === undefined) {
-    return topicPipelineCompletionPolicy({ planning: policy.planning ?? true, selection: policy.selection ?? false });
+    && (policy.selection === undefined || typeof policy.selection === "boolean")
+    && (policy.report_type === undefined || ["brief", "deep_dive", "initial_digest"].includes(policy.report_type as string))
+    && policy.stages === undefined) {
+    // scheduled P0a snapshots identified the report type rather than selection; they always execute select.
+    return topicPipelineCompletionPolicy({ planning: policy.planning ?? true, selection: policy.selection ?? policy.report_type !== undefined });
+  }
+  if (scopeKind === "source_collect" && hasOnlyKeys(policy, ["schema_version", "execution_kind", "required_stages"])
+    && policy.schema_version === 1 && policy.execution_kind === "sync"
+    && sameStages(policy.required_stages, ["collect", "normalize"]) && policy.stages === undefined) {
+    return sourceCollectCompletionPolicy();
+  }
+  if (scopeKind === "manual_decision" && hasOnlyKeys(policy, ["schema_version", "execution_kind", "required_stages"])
+    && policy.schema_version === 1 && policy.execution_kind === "event_only" && Array.isArray(policy.required_stages)
+    && policy.required_stages.length > 0 && policy.required_stages.every((stage) => stage === "human_review" || stage === "direction_change")
+    && policy.stages === undefined) {
+    return {
+      schema_version: 1,
+      stages: policy.required_stages.map((stage) => policyStage(stage, "event_only", "required", ["completed", "failed", "cancelled"])),
+    };
   }
   if (policy.schema_version !== 1 || !Array.isArray(policy.stages) || policy.stages.length === 0) throw new Error("invalid_completion_policy");
   for (const stage of policy.stages) {
