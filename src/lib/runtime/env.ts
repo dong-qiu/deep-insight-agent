@@ -24,8 +24,11 @@ export const validatorBatchOn = (): boolean => process.env.VALIDATOR_BATCH !== "
 /** LLM 单次调用超时 ms，默认 120000。 */
 export const llmTimeoutMs = (): number => Number(process.env.LLM_TIMEOUT_MS) || 120_000;
 
-/** LLM SDK 内置重试次数，默认 2。 */
-export const llmMaxRetries = (): number => Number(process.env.LLM_MAX_RETRIES) || 2;
+/** LLM SDK 内置重试次数，默认 2。0 是有效配置，用于排障时禁用 SDK 重试。 */
+export const llmMaxRetries = (): number => {
+  const value = Number(process.env.LLM_MAX_RETRIES ?? 2);
+  return Number.isFinite(value) && value >= 0 ? Math.floor(value) : 2;
+};
 
 /** Prompt caching 开关：PROMPT_CACHE=0 关（治中转站只写不读的白付溢价）。 */
 export const promptCacheOn = (): boolean => process.env.PROMPT_CACHE !== "0";

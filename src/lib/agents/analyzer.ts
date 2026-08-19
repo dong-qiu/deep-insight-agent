@@ -29,13 +29,13 @@ const SYSTEM = `你是行业洞察分析引擎。给定一个主题与一批已�
 规则：
 1. 主题聚合：跨源整合同主题信息，归并近义说法。
 2. 信号去噪：只保留重要性 ≥ 3 的洞察；若无重要事件，置 no_significant_event=true 且 insights 为空，绝不凑数。
-3. 可溯源（逐字、宁短勿拼）：每条洞察挂 ≥ 1 条引用；quote 必须能**原样在 body 里搜到**——逐字逐标点复制 body 中**一段连续**的原文，**优先短而精确的片段（一句话以内、尽量 ≤ 30 字）**；绝不改写/转述/补全/把分散句子拼接（需要多处证据就拆成多条 citation）。**与其引一段长而可能漂移的，不如引一小段绝对逐字的。** content_item_id 必须来自输入清单。
+3. 可溯源（逐字、宁短勿拼）：每条洞察挂 ≥ 1 条引用；quote 必须能**原样在该 citation 的 content_item_id 对应 body 里搜到**——逐字逐标点复制 body 中**一段连续**的原文，**优先短而精确的片段（一句话以内、尽量 ≤ 30 字）**；绝不改写/转述/补全/把分散句子拼接（需要多处证据就拆成多条 citation）。**不得把某篇的 quote 挂到另一篇 content_item_id，也不得把 title、URL、发布时间等元数据当作 quote。**与其引一段长而可能漂移的，不如引一小段绝对逐字的。content_item_id 必须来自输入清单。
 4. 引用覆盖结论（**每个具体声明都要有覆盖它的 quote**）：结论里出现的每一个具体数字、金额、百分比、专有名称、关键限定，都必须有**一条所挂 quote 直接包含它**。若已挂的 quote 没覆盖到某个数字/实体，就**为它单独再加一条短 quote**（逐字复制 body 中含该数字/实体的那句）——结论综合了原文多句时，**每个被引用的事实各挂一条短 quote**；宁可多挂几条逐字短引用，也不得让任何具体声明无 quote 覆盖（例：结论说"900 份调查"，就必须有一条 quote 含 "900"；说"得分 1507"，就必须有一条含 "1507"）。没有 quote 直接支撑的具体数字/论断，不要写进结论。
-4.5. 原子 claim 对齐：每条 citation 都要填 claim——它是该条 quote **单独、直接**支撑的一个完整事实，使用 statement 的语言；不得把其他来源的事实、跨来源共识、因果解释或泛化结论塞进同一个 claim。跨来源洞察要拆成多个 citation claim，而非让任一来源支撑整段综合结论。标题、URL、发布时间等来源元数据可写进 claim，但仅当输入条目显示的对应元数据与表述完全一致。
+4.5. 原子 claim 对齐：每条 citation 都要填 claim——它是该条 quote **单独、直接**支撑的一个完整事实，使用 statement 的语言；不得把其他来源的事实、跨来源共识、因果解释或泛化结论塞进同一个 claim。跨来源洞察要拆成多个 citation claim，而非让任一来源支撑整段综合结论。标题、URL、发布时间等元数据即使可在输入条目中看到，也**不能单独作为 citation claim 或 quote**；若要提及论文/来源名称，必须同时用该条 body 中的原文事实支撑结论。
 5. 不得放大：结论的适用范围/程度/条件必须与来源严格一致。不得把"仅在 X 上"写成"在多类/所有上"，不得把"最高 N / up to N"写成"总是 N"，不得把"提示 / 有限证据"写成"证明"。
 6. 完整自足：statement 必须是完整句子，不得截断或留半句。
 6.5. 一句话要点（headline）：为每条洞察额外产出 headline——≤40 字、把最关键的结论/数字/主体置于句首、去掉铺垫与从句，供列表卡片扫读；须忠实浓缩同条 statement，不得新增 statement 没有的事实、不得放大范围/程度。
-7. 偏好非显然：优先产出**跨多个来源的综合**或揭示非显然模式/共识/张力的洞察；尽量避免对单篇的直接复述。若一条只能复述单篇，要么提炼其非显然含义，要么不输出。**但不得为了"综合"而编造来源间并不存在的关联。**
+7. 偏好非显然：优先产出**跨多个来源的综合**或揭示非显然模式/共识/张力的洞察；尽量避免对单篇的直接复述。若一条只能复述单篇，要么提炼其非显然含义，要么不输出。**但不得为了"综合"而编造来源间并不存在的关联。尤其不得从多篇文章同期出现，推出它们相互验证、彼此无关、构成共同瓶颈、共同因果、独立研究方向等关系；原文未明确陈述的来源间关系不要写进 statement 或 claim。**
 8. 去重：同一来源的同一发现只产出一条洞察，不拆成多条。
 9. 中性叙述：客观陈述已发生的事，不预测、不评论、不带情绪。
 10. type：主题聚合用 aggregation；描述时间维度的变化用 trend（trend 必须填 confidence，需有足够证据支撑时间维度变化，不得仅凭单篇就断言"趋势/动向"，且只描述已发生变化、不做方向性预测）。
@@ -55,7 +55,7 @@ const SYSTEM = `你是行业洞察分析引擎。给定一个主题与一批已�
  *  纳入 analyzerCacheVersion 哈希——保证「schema/派生变但 SYSTEM 没变」也使旧缓存失效（review m3：
  *  否则切片2 会据旧逻辑产的缓存洞察错命中、喂进新版报告）。SYSTEM 文案变由 promptHash 自动覆盖，此常量只管
  *  「非 SYSTEM 的输出形态/派生」变更。 */
-export const ANALYZER_OUTPUT_VERSION = 2;
+export const ANALYZER_OUTPUT_VERSION = 3;
 
 /** 分析缓存版本（ADR-0009）：analyzer 模型 + SYSTEM prompt 哈希 + 输出契约版本——任一变 → 版本变 → 旧分析缓存
  *  自动失效（不复用陈旧 prompt/schema/派生的洞察）。镜像 validator.consistencyCacheVersion 的版本隔离口径。 */
@@ -226,15 +226,50 @@ export function repairQuote(body: string, quote: string, minLen = 24): string | 
   const { key: nb, map: bodyMap } = collapseWithMap(body);
   const nq = compareKey(quote);
   if (nq.length < minLen || nb.includes(nq)) return null; // 太短 / 已可达 → 用原 quote
-  const at = nb.indexOf(nq.slice(0, minLen)); // 以前 minLen 字符为锚定位（起头通常逐字）
+  // 大小写漂移也是模型摘录的常见机械误差。这里只用不区分大小写的键来**定位**，
+  // 返回值仍是 body 的原始子串；因此不会放宽下游的可达性判定或伪造引用。
+  const foldedBody = nb.toLocaleLowerCase();
+  const foldedQuote = nq.toLocaleLowerCase();
+  const at = foldedBody.indexOf(foldedQuote.slice(0, minLen)); // 以前 minLen 字符为锚定位（起头通常逐字）
   if (at < 0) return null; // 起头都不在正文 = 真改写，放弃
   let len = minLen;
-  while (len < nq.length && at + len < nb.length && nb[at + len] === nq[len]) len++;
+  while (len < nq.length && at + len < nb.length && foldedBody[at + len] === foldedQuote[len]) len++;
   if (len < minLen) return null;
   // F1：映射回 body 原始字节切片（保 byte-verbatim，含 smart quote/块内空白/dash 原样）。
   // 尾部 trimEnd：match 停在 key-space 边界时 slice 末尾会带原始 ws 字符（'\n' / 多个 ' '），
   // 视觉与下游消费者期望不符；trim 后仍是 body 的字面子串（byte-verbatim 不破）。
   return body.slice(bodyMap[at], bodyMap[at + len - 1] + 1).trimEnd();
+}
+
+function bodyContainsQuote(body: string, quote: string): boolean {
+  const key = compareKey(quote);
+  return Boolean(key) && compareKey(body).includes(key);
+}
+
+/**
+ * 在模型把 quote 挂到错误 content_item_id 时，只在 quote 能**唯一**命中另一条输入 body 时
+ * 重绑来源。该修复不根据语义猜测，也不接受标题/URL：返回的 quote 仍须来自被引 body。
+ * 多个候选或无法命中时保留模型原选择，让 validator 阻断而不是误引。
+ */
+export function repairCitationSource(
+  citation: Pick<Citation, "content_item_id" | "quote">,
+  items: Iterable<ContentItem>,
+): Pick<Citation, "content_item_id" | "quote"> {
+  const allItems = [...items];
+  const selected = allItems.find((item) => item.id === citation.content_item_id);
+  const selectedQuote = selected ? (repairQuote(selected.body, citation.quote) ?? citation.quote) : citation.quote;
+  if (selected && bodyContainsQuote(selected.body, selectedQuote)) {
+    return { content_item_id: selected.id, quote: selectedQuote };
+  }
+
+  const matches = allItems.filter((item) => bodyContainsQuote(item.body, citation.quote));
+  if (matches.length !== 1) return { content_item_id: citation.content_item_id, quote: selectedQuote };
+
+  const item = matches[0];
+  return {
+    content_item_id: item.id,
+    quote: repairQuote(item.body, citation.quote) ?? citation.quote,
+  };
 }
 
 /** analyze 输入 body 上限（M3-3 降本 + 降时延）：富正文（Latent Space/Krebs 可达 5 万字）截到前 N 字喂分析。
@@ -409,15 +444,14 @@ ${renderItems(items, topic.keywords)}`;
   const byId = new Map(items.map((i) => [i.id, i]));
   const built: Insight[] = data.insights.map((li) => {
     const citations: Citation[] = li.citations.map((c) => {
-      const item = byId.get(c.content_item_id);
-      // M3-6：把漂移/拼接的 quote 对齐回正文连续 verbatim 子串（挽回可达性）；无法修复则用原 quote
-      const quote = item ? (repairQuote(item.body, c.quote) ?? c.quote) : c.quote;
+      const repaired = repairCitationSource(c, items);
+      const item = byId.get(repaired.content_item_id);
       return {
-        content_item_id: c.content_item_id,
+        content_item_id: repaired.content_item_id,
         claim: c.claim,
-        quote,
+        quote: repaired.quote,
         locator: item
-          ? computeLocator(item.body, quote)
+          ? computeLocator(item.body, repaired.quote)
           : { paragraph_index: -1, char_start: -1, char_end: -1 },
       };
     });

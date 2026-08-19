@@ -187,6 +187,41 @@ export function coerceStringifiedFields(
   return changed ? clone : null;
 }
 
+/**
+ * 为一次 LLM 请求建立硬性的墙钟超时，并合并调用方的取消信号。
+ *
+ * Anthropic SDK 的 `timeout` 不保证会终止仍持续传输数据的 SSE 流；因此长时间不完成的
+ * 中转站响应必须由我们自己的 AbortController 兜底。调用方 signal 的 reason 原样保留，
+ * 便于成本上限等上层策略区分主动取消与超时。
+ */
+export function createRequestAbortSignal(
+  timeoutMs: number,
+  callerSignal?: AbortSignal,
+): { signal: AbortSignal; dispose: () => void } {
+  const controller = new AbortController();
+  const onCallerAbort = (): void => controller.abort(callerSignal?.reason);
+
+  if (callerSignal?.aborted) {
+    onCallerAbort();
+    return { signal: controller.signal, dispose: () => {} };
+  }
+
+  if (callerSignal) callerSignal.addEventListener("abort", onCallerAbort, { once: true });
+
+  const delay = Number.isFinite(timeoutMs) ? Math.max(0, timeoutMs) : 0;
+  const timer = setTimeout(() => {
+    controller.abort(new Error(`LLM stream exceeded wall-clock timeout of ${delay}ms`));
+  }, delay);
+
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      clearTimeout(timer);
+      callerSignal?.removeEventListener("abort", onCallerAbort);
+    },
+  };
+}
+
 export async function callStructured<T extends z.ZodType>(
   opts: StructuredCall<T>,
 ): Promise<StructuredResult<z.infer<T>>> {
@@ -235,12 +270,36 @@ export async function callStructured<T extends z.ZodType>(
   // 流式生成（messages.stream + finalMessage）：长输出（dense 批 / 高 max_tokens）下避免中转站
   // 缓冲整段响应再返回导致的网关超时。流尾内容块中找 tool_use → 取 input 当结构化输出。
   // 敏感领域内容偶发安全拒答（stop_reason=refusal）——多为非确定性，重试至多 3 次。
-  // signal 透传到 SDK 选项，调用方 abort 时 SDK 抛 AbortError、由外层 catch 走"失败"路径。
-  const reqOpts = opts.signal ? { signal: opts.signal } : undefined;
-  let res = await getClient().messages.stream(params, reqOpts).finalMessage();
+  // 每次流式调用同时受调用方取消和 LLM_TIMEOUT_MS 的硬性墙钟超时约束；无论 SSE 是否持续有
+  // 心跳/分片数据，超时后都必须终止，避免中转站永不 finalMessage() 时卡住整个 Job。
+  const streamFinalMessage = async (): Promise<Anthropic.Message> => {
+    const request = createRequestAbortSignal(llmTimeoutMs(), opts.signal);
+    let onAbort: (() => void) | undefined;
+    try {
+      if (request.signal.aborted) throw request.signal.reason ?? new Error("LLM request aborted before start");
+
+      const stream = getClient().messages.stream(params, { signal: request.signal });
+      // SDK 0.98 会把 signal 透传给 fetch，但个别 SSE 中转站在连接已建立后可能忽略取消，导致
+      // finalMessage() 继续等待。这里同时显式 stream.abort()，并以 race 让本层立即返回；即使
+      // SDK 后台迟迟不结算该 Promise，reject handler 也已附着，不会形成未处理拒绝。
+      const aborted = new Promise<never>((_, reject) => {
+        onAbort = () => {
+          stream.abort();
+          reject(request.signal.reason ?? new Error("LLM request aborted"));
+        };
+        request.signal.addEventListener("abort", onAbort, { once: true });
+      });
+      return await Promise.race([stream.finalMessage(), aborted]);
+    } finally {
+      if (onAbort) request.signal.removeEventListener("abort", onAbort);
+      request.dispose();
+    }
+  };
+
+  let res = await streamFinalMessage();
   account(res.usage);
   for (let attempt = 1; res.stop_reason === "refusal" && attempt < 3; attempt++) {
-    res = await getClient().messages.stream(params, reqOpts).finalMessage();
+    res = await streamFinalMessage();
     account(res.usage);
   }
 
