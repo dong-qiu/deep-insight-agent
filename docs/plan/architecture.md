@@ -386,7 +386,7 @@ agent 执行单元的状态追踪；由 Job Runner 写入 SQLite，支撑管理�
 
 | 维度 | 选型 | 理由 |
 |---|---|---|
-| 运行时 | Next.js 15 (App Router) + TypeScript + Node.js 20 LTS | UI + API 同仓全栈一体；TS 类型与「数据模型」schema 强对齐；MVP 单仓低复杂度 |
+| 运行时 | Next.js 16 (App Router) + TypeScript + Node.js 24 LTS | UI + API 同仓全栈一体；TS 类型与「数据模型」schema 强对齐；MVP 单仓低复杂度 |
 | 前端 | React + Tailwind CSS（Next.js 内置） | 与运行时统一；满足 UI/UX 设计原则（高可读性排版、深色模式） |
 | 鉴权 | NextAuth（email magic link / credential），管理员独立 role | 与 Next.js 集成；session 落 SQLite；管理员路径 `/admin/*` 独立中间件鉴权（呼应安全设计「身份与隔离」） |
 | **Agent 运行时** | `src/lib/runtime/`：LLM Client + Job Runner + Observability + Cost Meter（自建） | Agent 共用基础设施；统一重试 / 限流 / 计量 / 状态追踪 / 告警 / 熔断；启动校验「分析模型 ID ≠ 校验模型 ID」 |
