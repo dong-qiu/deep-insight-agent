@@ -7,7 +7,7 @@ import type { Citation, ContentItem, Insight } from "../types.js";
 // callStructured mock 掉——repairCoverage 经 verifyCandidates 调它；无 API key、CI 可跑纯函数。
 vi.mock("../runtime/llm.js", () => ({ callStructured: vi.fn() }));
 import { callStructured } from "../runtime/llm.js";
-import { ANALYZE_BODY_CHARS, SELECT_SEPARATOR, carveQuote, chunkByChars, chunkWindows, coverageGaps, isCompleteStatement, repairCoverage, repairQuote, selectForAnalyze, specificClaims, truncateForAnalyze } from "./analyzer.js";
+import { ANALYZE_BODY_CHARS, SELECT_SEPARATOR, carveQuote, chunkByChars, chunkWindows, coverageGaps, isCompleteStatement, repairCitationSource, repairCoverage, repairQuote, selectForAnalyze, specificClaims, truncateForAnalyze } from "./analyzer.js";
 import { AnalyzerOutputSchema } from "../types.js";
 
 describe("AnalyzerOutputSchema 的原子 citation claim", () => {
@@ -170,6 +170,36 @@ describe("repairQuote（M3-6 引用对齐修复）", () => {
     expect(r).not.toBeNull();
     // F2：computeLocator 用 raw indexOf 即可命中（旧版返 nb.slice 时这里会 -1）
     expect(body.indexOf(r!)).toBeGreaterThanOrEqual(0);
+  });
+
+  it("大小写漂移 → 返回 body 中的原始连续切片", () => {
+    const body = "Our results show that accuracy degrades significantly for multi-source reasoning.";
+    const quote = "our results show that accuracy degrades significantly for multi-source reasoning.";
+    const r = repairQuote(body, quote);
+    expect(r).toBe(body);
+    expect(body.includes(r!)).toBe(true);
+  });
+});
+
+describe("repairCitationSource（错误来源映射的保守修复）", () => {
+  const mkItem = (id: string, body: string): ContentItem => ({
+    id, source_id: id, url: `https://x/${id}`, title: id, author: null, published_at: null,
+    fetched_at: "2026-06-01T00:00:00Z", language: "en", topic_ids: [], tags: [], body,
+    body_kind: "article", raw_ref: "", content_hash: id, fetch_status: "ok",
+  });
+
+  it("quote 唯一命中另一条 body → 只重绑到该条", () => {
+    const wrong = mkItem("wrong", "Unrelated source body.");
+    const right = mkItem("right", "SpecBench shows a 28 percentage points gap for every tenfold increase in code size.");
+    expect(repairCitationSource({ content_item_id: "wrong", quote: "28 percentage points gap for every tenfold increase" }, [wrong, right]))
+      .toEqual({ content_item_id: "right", quote: "28 percentage points gap for every tenfold increase" });
+  });
+
+  it("quote 不是唯一命中 → 不猜测来源，保留原映射", () => {
+    const first = mkItem("first", "Shared evidence appears in both sources.");
+    const second = mkItem("second", "Shared evidence appears in both sources.");
+    expect(repairCitationSource({ content_item_id: "missing", quote: "Shared evidence appears in both sources" }, [first, second]))
+      .toEqual({ content_item_id: "missing", quote: "Shared evidence appears in both sources" });
   });
 });
 
