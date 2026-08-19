@@ -8,6 +8,7 @@ import {
   createScheduledSourceCollectTrace,
   createDeepDiveTraceRequest,
   createScheduledTraceRequest,
+  finishGenerationDispatch,
   getGenerationTraceStatus,
   hashIdempotencyKey,
   recordManualDecision,
@@ -39,6 +40,13 @@ describe("generation provenance dispatch", () => {
     expect(first.kind).toBe("accepted");
     expect(replay).toEqual({ kind: "replayed", traceId: first.traceId, requestId: first.requestId });
     expect(db.prepare("SELECT COUNT(*) AS count FROM generation_dispatch").get()).toEqual({ count: 1 });
+    const policy = JSON.parse((db.prepare("SELECT completion_policy FROM generation_trace WHERE id=?").get(first.traceId) as { completion_policy: string }).completion_policy);
+    expect(policy).toMatchObject({ schema_version: 1 });
+    expect(policy.stages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ stage: "analyze", execution_kind: "run", criticality: "required", allowed_terminal_events: ["completed", "failed", "cancelled"], skip_is_success: false }),
+      expect.objectContaining({ stage: "derive_lead", execution_kind: "event_only", criticality: "non_blocking" }),
+      expect.objectContaining({ stage: "deliver", execution_kind: "event_only", criticality: "non_blocking" }),
+    ]));
   });
 
   it("keeps an accepted reservation active until the dispatch is terminal", () => {
@@ -126,6 +134,8 @@ describe("generation provenance dispatch", () => {
     expect(db.prepare("SELECT scope_key FROM generation_trace_request WHERE trace_id=?").get(first.traceId)).toEqual({
       scope_key: "source_collect:source_a:2026-08-03T00",
     });
+    expect(JSON.parse((db.prepare("SELECT completion_policy FROM generation_trace WHERE id=?").get(first.traceId) as { completion_policy: string }).completion_policy).stages)
+      .toEqual(expect.arrayContaining([expect.objectContaining({ stage: "collect", execution_kind: "run", criticality: "required" }), expect.objectContaining({ stage: "normalize", execution_kind: "run", criticality: "required" })]));
     expect(claimSourceCollectTrace(db, first.traceId, now)).toMatchObject({ traceId: first.traceId, fencingEpoch: 1 });
     expect(claimSourceCollectTrace(db, first.traceId, now)).toBeNull();
   });
@@ -147,6 +157,8 @@ describe("generation provenance dispatch", () => {
     expect(replay).toEqual({ kind: "replayed", traceId: first.traceId, requestId: first.requestId });
     expect(writes).toBe(1);
     expect(getGenerationTraceStatus(db, first.traceId)).toMatchObject({ status: "done", topic_id: "topic_a", scope_kind: "manual_decision" });
+    expect(JSON.parse((db.prepare("SELECT completion_policy FROM generation_trace WHERE id=?").get(first.traceId) as { completion_policy: string }).completion_policy).stages)
+      .toEqual([expect.objectContaining({ stage: "direction_change", execution_kind: "event_only", criticality: "required", allowed_terminal_events: ["completed", "failed", "cancelled"] })]);
     expect(db.prepare("SELECT state FROM generation_trace_request WHERE trace_id=?").get(first.traceId)).toEqual({ state: "terminal" });
     expect(db.prepare("SELECT state FROM generation_lease WHERE trace_id=?").get(first.traceId)).toEqual({ state: "released" });
     expect(db.prepare("SELECT stage,event_type,actor_id,audit_log_id FROM generation_event WHERE trace_id=? ORDER BY sequence").all(first.traceId)).toEqual([
@@ -173,10 +185,11 @@ describe("generation provenance dispatch", () => {
       topicId: "topic_a", reportType: "brief", period: "2026-08-03", windowHours: 168, items: 15, now,
     });
     if (original.kind !== "accepted") throw new Error("expected accepted request");
-    db.prepare("UPDATE generation_trace SET status='failed',ended_at=? WHERE id=?").run(now.toISOString(), original.traceId);
-    db.prepare("UPDATE generation_trace_request SET state='terminal' WHERE trace_id=?").run(original.traceId);
-    db.prepare("UPDATE generation_dispatch SET state='failed' WHERE trace_id=?").run(original.traceId);
-    db.prepare("UPDATE generation_lease SET state='released',released_at=? WHERE trace_id=?").run(now.toISOString(), original.traceId);
+    const claim = claimNextGenerationDispatch(db, now);
+    if (!claim) throw new Error("expected dispatch claim");
+    expect(finishGenerationDispatch(db, claim, {
+      status: "failed", error: { reason_code: "dispatch_failed", message: "synthetic failure" },
+    }, now)).toBe(true);
     // 兼容上线前未冻结 window_end 的生产 dispatch：从原 trace 受理时间重建窗口右边界。
     db.prepare("UPDATE generation_dispatch SET payload=? WHERE trace_id=?").run(
       JSON.stringify({ topic_id: "topic_a", planning: true, report_type: "brief", window_hours: 168, items: 15, schema_version: 1 }),

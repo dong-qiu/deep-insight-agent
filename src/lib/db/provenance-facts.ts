@@ -20,6 +20,59 @@ export interface GenerationEventInput {
   occurred_at?: string;
 }
 
+export type TraceStatus = "running" | "done" | "failed" | "partial" | "cancelled";
+type TerminalOutcome = "completed" | "skipped" | "failed" | "cancelled";
+export interface CompletionPolicyStage {
+  stage: string;
+  execution_kind: "run" | "event_only" | "omitted";
+  criticality: "required" | "non_blocking";
+  allowed_terminal_events: TerminalOutcome[];
+  skip_is_success: boolean;
+}
+export interface CompletionPolicy {
+  schema_version: 1;
+  stages: CompletionPolicyStage[];
+}
+
+const policyStage = (
+  stage: string,
+  execution_kind: CompletionPolicyStage["execution_kind"],
+  criticality: CompletionPolicyStage["criticality"],
+  allowed_terminal_events: TerminalOutcome[],
+  skip_is_success = false,
+): CompletionPolicyStage => ({ stage, execution_kind, criticality, allowed_terminal_events, skip_is_success });
+
+export function topicPipelineCompletionPolicy(input: { planning: boolean; selection: boolean }): CompletionPolicy {
+  return {
+    schema_version: 1,
+    stages: [
+      policyStage("select", input.selection ? "event_only" : "omitted", "required", ["completed", "skipped"], true),
+      policyStage("analyze", "run", "required", ["completed", "failed", "cancelled"]),
+      policyStage("validate", "run", "required", ["completed", "failed", "cancelled"]),
+      policyStage("generate_report", "run", "required", ["completed", "failed", "cancelled"]),
+      policyStage("derive_lead", input.planning ? "event_only" : "omitted", "non_blocking", ["completed", "failed", "cancelled"]),
+      policyStage("map_direction", input.planning ? "event_only" : "omitted", "non_blocking", ["completed", "failed", "cancelled"]),
+      policyStage("derive_opportunity", input.planning ? "event_only" : "omitted", "non_blocking", ["completed", "failed", "cancelled"]),
+      // deliver 是 side effect 观测，不参与主链路失败：只允许 attempted / skipped，二者均归一为成功。
+      policyStage("deliver", "event_only", "non_blocking", ["completed", "skipped"], true),
+    ],
+  };
+}
+
+export function sourceCollectCompletionPolicy(): CompletionPolicy {
+  return {
+    schema_version: 1,
+    stages: [
+      policyStage("collect", "run", "required", ["completed", "failed", "cancelled"]),
+      policyStage("normalize", "run", "required", ["completed", "failed", "cancelled"]),
+    ],
+  };
+}
+
+export function manualDecisionCompletionPolicy(stage: "human_review" | "direction_change"): CompletionPolicy {
+  return { schema_version: 1, stages: [policyStage(stage, "event_only", "required", ["completed", "failed", "cancelled"])] };
+}
+
 function compareUnicode(left: string, right: string): number {
   const a = Array.from(left); const b = Array.from(right);
   for (let i = 0; i < Math.min(a.length, b.length); i += 1) {
@@ -112,29 +165,194 @@ export function appendGenerationEvent(db: DB, input: GenerationEventInput): { id
   })();
 }
 
-/** P0a 冻结 policy 的最小 projector；只从 append-only event 重建，不把 summary 当状态事实。 */
-export function projectTrace(db: DB, traceId: string): "running" | "done" | "failed" | "partial" {
-  const trace = db.prepare("SELECT scope_kind FROM generation_trace WHERE id=?").get(traceId) as { scope_kind: string } | undefined;
-  if (!trace) throw new Error("generation_trace_not_found");
-  const rows = db.prepare("SELECT stage,event_type FROM generation_event WHERE trace_id=? ORDER BY sequence").all(traceId) as { stage: string; event_type: string }[];
-  const required = ["analyze", "validate", "generate_report"];
-  const state = new Map<string, Set<string>>();
-  for (const row of rows) (state.get(row.stage) ?? state.set(row.stage, new Set()).get(row.stage)!).add(row.event_type);
-  const terminal = (stage: string) => state.get(stage) ?? new Set<string>();
-  let result: "running" | "done" | "failed" | "partial" = "running";
-  if (trace.scope_kind === "source_collect") {
-    if (["collect", "normalize"].some((stage) => terminal(stage).has("failed"))) result = "failed";
-    else if (terminal("collect").has("completed") && terminal("normalize").has("completed")) result = "done";
-  } else if (trace.scope_kind === "manual_decision") {
-    if (["human_review", "direction_change"].some((stage) => terminal(stage).has("failed"))) result = "failed";
-    else if (["human_review", "direction_change"].some((stage) => terminal(stage).has("manual_decided") || terminal(stage).has("config_changed"))) result = "done";
-  } else {
-    if (required.some((stage) => terminal(stage).has("failed"))) result = "failed";
-    else if (required.every((stage) => terminal(stage).has("completed") || terminal(stage).has("skipped"))) {
-      result = ["derive_lead", "map_direction", "derive_opportunity", "deliver"].some((stage) => terminal(stage).has("failed")) ? "partial" : "done";
-    }
+function legacyCompletionPolicy(scopeKind: string): CompletionPolicy {
+  if (scopeKind === "source_collect") return sourceCollectCompletionPolicy();
+  if (scopeKind === "manual_decision") {
+    return { schema_version: 1, stages: [
+      policyStage("human_review", "event_only", "required", ["completed", "failed", "cancelled"]),
+      policyStage("direction_change", "event_only", "required", ["completed", "failed", "cancelled"]),
+    ] };
   }
-  db.prepare("UPDATE generation_trace SET status=? WHERE id=? AND status <> ?").run(result, traceId, result);
+  return topicPipelineCompletionPolicy({ planning: true, selection: false });
+}
+
+function hasOnlyKeys(value: object, allowed: string[]): boolean {
+  return Object.keys(value).every((key) => allowed.includes(key));
+}
+
+function sameStages(value: unknown, expected: string[]): boolean {
+  return Array.isArray(value) && value.length === expected.length
+    && value.every((stage, index) => stage === expected[index]);
+}
+
+function parseCompletionPolicy(value: string, scopeKind: string): CompletionPolicy {
+  let parsed: unknown;
+  try { parsed = JSON.parse(value); } catch { throw new Error("invalid_completion_policy"); }
+  if (!parsed || typeof parsed !== "object") throw new Error("invalid_completion_policy");
+  const policy = parsed as Partial<CompletionPolicy> & {
+    planning?: unknown; selection?: unknown; report_type?: unknown; execution_kind?: unknown; required_stages?: unknown;
+  };
+  // Pre-P0d traces are immutable historical facts: keep them readable with a deterministic legacy shape.
+  if (Object.keys(policy).length === 0) return legacyCompletionPolicy(scopeKind);
+  // P0a 已发布快照没有 P0d 的 stages 数组。投影时按 scope 只读解释其全部已发布形状，绝不回写事实快照。
+  const topicKeys = hasOnlyKeys(policy, ["schema_version", "planning", "selection", "report_type"]);
+  if (scopeKind === "topic_pipeline" && topicKeys && policy.schema_version === 1
+    && (policy.planning === undefined || typeof policy.planning === "boolean")
+    && (policy.selection === undefined || typeof policy.selection === "boolean")
+    && (policy.report_type === undefined || ["brief", "deep_dive", "initial_digest"].includes(policy.report_type as string))
+    && policy.stages === undefined) {
+    // scheduled P0a snapshots identified the report type rather than selection; they always execute select.
+    return topicPipelineCompletionPolicy({ planning: policy.planning ?? true, selection: policy.selection ?? policy.report_type !== undefined });
+  }
+  if (scopeKind === "source_collect" && hasOnlyKeys(policy, ["schema_version", "execution_kind", "required_stages"])
+    && policy.schema_version === 1 && policy.execution_kind === "sync"
+    && sameStages(policy.required_stages, ["collect", "normalize"]) && policy.stages === undefined) {
+    return sourceCollectCompletionPolicy();
+  }
+  if (scopeKind === "manual_decision" && hasOnlyKeys(policy, ["schema_version", "execution_kind", "required_stages"])
+    && policy.schema_version === 1 && policy.execution_kind === "event_only" && Array.isArray(policy.required_stages)
+    && policy.required_stages.length > 0 && policy.required_stages.every((stage) => stage === "human_review" || stage === "direction_change")
+    && policy.stages === undefined) {
+    return {
+      schema_version: 1,
+      stages: policy.required_stages.map((stage) => policyStage(stage, "event_only", "required", ["completed", "failed", "cancelled"])),
+    };
+  }
+  if (policy.schema_version !== 1 || !Array.isArray(policy.stages) || policy.stages.length === 0) throw new Error("invalid_completion_policy");
+  for (const stage of policy.stages) {
+    if (!stage || typeof stage.stage !== "string" || !["run", "event_only", "omitted"].includes(stage.execution_kind ?? "")
+      || !["required", "non_blocking"].includes(stage.criticality ?? "") || !Array.isArray(stage.allowed_terminal_events)
+      || typeof stage.skip_is_success !== "boolean") throw new Error("invalid_completion_policy");
+  }
+  return policy as CompletionPolicy;
+}
+
+function eventOutcome(row: { event_type: string; error: string | null }): TerminalOutcome | null {
+  if (row.event_type === "completed" || row.event_type === "manual_decided" || row.event_type === "config_changed" || row.event_type === "published" || row.event_type === "attempted") return "completed";
+  if (row.event_type === "skipped") return "skipped";
+  if (row.event_type !== "failed") return null;
+  try {
+    const error = row.error ? JSON.parse(row.error) as { reason_code?: unknown; type?: unknown } : {};
+    if (error.reason_code === "cancelled" || error.type === "cancelled") return "cancelled";
+  } catch { /* malformed legacy error remains a failure */ }
+  return "failed";
+}
+
+function runOutcome(row: { status: string; error: string | null }): TerminalOutcome | null {
+  if (row.status === "running") return null;
+  if (row.status === "done") return "completed";
+  if (row.status === "failed") {
+    try {
+      const error = row.error ? JSON.parse(row.error) as { type?: unknown; reason_code?: unknown } : {};
+      if (error.type === "cancelled" || error.reason_code === "cancelled") return "cancelled";
+    } catch { /* malformed legacy error remains a failure */ }
+    return "failed";
+  }
+  return null;
+}
+
+function runKindForStage(stage: string): string | null {
+  return ({ analyze: "analyze", validate: "validate", generate_report: "report-gen", collect: "ingest", normalize: "ingest" } as Record<string, string>)[stage] ?? null;
+}
+
+function eventOutcomeForStage(stage: CompletionPolicyStage, event: { event_type: string; error: string | null }): TerminalOutcome | null {
+  const outcome = eventOutcome(event);
+  // The policy stores normalized outcomes, while deliver's public contract names raw events.
+  // A direct completed/failed/cancelled delivery event is therefore an invalid terminal outcome.
+  if (stage.stage === "deliver" && outcome && !["attempted", "skipped"].includes(event.event_type)) return "failed";
+  return outcome;
+}
+
+/** 唯一的 trace 状态写入点：只读取冻结 policy、Run 聚合与 append-only 终态 event。 */
+export function projectTrace(db: DB, traceId: string): TraceStatus {
+  const trace = db.prepare("SELECT scope_kind,completion_policy FROM generation_trace WHERE id=?").get(traceId) as { scope_kind: string; completion_policy: string } | undefined;
+  if (!trace) throw new Error("generation_trace_not_found");
+  const policy = parseCompletionPolicy(trace.completion_policy, trace.scope_kind);
+  const events = db.prepare("SELECT sequence,stage,attempt,run_id,event_type,error FROM generation_event WHERE trace_id=? ORDER BY sequence")
+    .all(traceId) as { sequence: number; stage: string; attempt: number; run_id: string | null; event_type: string; error: string | null }[];
+  const runs = db.prepare("SELECT id,kind,status,error,retry_of,started_at FROM run WHERE trace_id=? ORDER BY started_at,id")
+    .all(traceId) as { id: string; kind: string; status: string; error: string | null; retry_of: string | null; started_at: string }[];
+  const runById = new Map(runs.map((run) => [run.id, run]));
+  const runAttempt = new Map<string, number>();
+  const attemptForRun = (run: typeof runs[number], seen = new Set<string>()): number => {
+    const cached = runAttempt.get(run.id);
+    if (cached) return cached;
+    if (!run.retry_of || seen.has(run.id)) return 1;
+    seen.add(run.id);
+    const parent = runById.get(run.retry_of);
+    const attempt = parent && parent.kind === run.kind ? attemptForRun(parent, seen) + 1 : 1;
+    runAttempt.set(run.id, attempt);
+    return attempt;
+  };
+  // A source-collect ingest Run legitimately spans collect and normalize, so retain every
+  // explicit stage binding instead of letting the latest event overwrite the earlier one.
+  const eventRunStages = new Map<string, Map<string, number>>();
+  for (const event of events) {
+    if (!event.run_id) continue;
+    const stages = eventRunStages.get(event.run_id) ?? new Map<string, number>();
+    stages.set(event.stage, Math.max(stages.get(event.stage) ?? 0, event.attempt));
+    eventRunStages.set(event.run_id, stages);
+  }
+  const runsWithAttempt = runs.map((run) => {
+    const stages = eventRunStages.get(run.id);
+    return { ...run, fallbackAttempt: attemptForRun(run), stages: stages ?? null };
+  });
+  const stageOutcome = (stage: CompletionPolicyStage): TerminalOutcome | null => {
+    if (stage.execution_kind === "omitted") return "completed";
+    const stageEvents = events.filter((event) => event.stage === stage.stage);
+    const kind = runKindForStage(stage.stage);
+    // Prefer explicit event → Run bindings. Legacy rows without any binding retain the kind fallback.
+    const stageRuns = kind ? runsWithAttempt.flatMap((run) => {
+      const linkedAttempt = run.stages?.get(stage.stage);
+      if (linkedAttempt) return [{ ...run, attempt: linkedAttempt }];
+      return run.stages === null && run.kind === kind ? [{ ...run, attempt: run.fallbackAttempt }] : [];
+    }) : [];
+    const attempt = Math.max(0, ...stageEvents.map((event) => event.attempt), ...stageRuns.map((run) => run.attempt));
+    if (attempt === 0) return null;
+    const latestEvent = stageEvents.filter((event) => event.attempt === attempt)
+      .reduce<TerminalOutcome | null>((outcome, event) => eventOutcomeForStage(stage, event) ?? outcome, null);
+    if (stage.execution_kind === "event_only") {
+      if (!latestEvent) return null;
+      return stage.allowed_terminal_events.includes(latestEvent) && (latestEvent !== "skipped" || stage.skip_is_success) ? latestEvent : "failed";
+    }
+    const currentRuns = stageRuns.filter((run) => run.attempt === attempt);
+    // A retry that has started (or whose Run is still running) must hide terminal facts from older attempts.
+    if (currentRuns.some((run) => run.status === "running")) return null;
+    // A terminal infrastructure/recovery failure may be recorded before a stage event is available.
+    // Success still requires both sides, so a lone completed Run/event remains running.
+    if (!latestEvent) {
+      const run = currentRuns.length ? runOutcome(currentRuns[currentRuns.length - 1]) : null;
+      return run === "failed" || run === "cancelled" ? run : null;
+    }
+    if (currentRuns.length === 0) return latestEvent === "failed" || latestEvent === "cancelled" ? latestEvent : null;
+    const latestRun = currentRuns[currentRuns.length - 1];
+    const run = runOutcome(latestRun);
+    if (!run) return null;
+    const result = run === "cancelled" || latestEvent === "cancelled" ? "cancelled"
+      : run === "failed" || latestEvent === "failed" ? "failed"
+        : run === "completed" && latestEvent === "completed" ? "completed"
+          : latestEvent === "skipped" && stage.skip_is_success && run === "completed" ? "skipped" : null;
+    if (!result) return null;
+    return stage.allowed_terminal_events.includes(result) && (result !== "skipped" || stage.skip_is_success) ? result : "failed";
+  };
+  const stages = policy.stages.map((stage) => ({ policy: stage, outcome: stageOutcome(stage) }));
+  const required = stages.filter(({ policy }) => policy.criticality === "required");
+  const requiredCancelled = required.some(({ outcome }) => outcome === "cancelled");
+  const requiredFailed = required.some(({ outcome, policy }) => outcome === "failed" || (outcome === "skipped" && !policy.skip_is_success));
+  // 零输入 cron 在 select 处以允许的 skip 收口；后续 run stages 本轮被 policy 明确省略执行。
+  const zeroInputCompleted = required.some(({ policy, outcome }) => policy.stage === "select" && outcome === "skipped" && policy.skip_is_success);
+  const requiredRunning = required.some(({ outcome }) => outcome === null);
+  const requiredDone = required.every(({ outcome, policy }) => outcome === "completed" || (outcome === "skipped" && policy.skip_is_success));
+  const nonBlockingFailed = stages.some(({ policy, outcome }) => policy.criticality === "non_blocking" && (outcome === "failed" || outcome === "cancelled"));
+  const result: TraceStatus = requiredCancelled ? "cancelled"
+    : requiredFailed ? "failed"
+      : zeroInputCompleted ? "done"
+      : requiredRunning ? "running"
+        : requiredDone && nonBlockingFailed ? "partial"
+          : requiredDone ? "done" : "running";
+  const endedAt = result === "running" ? null : new Date().toISOString();
+  db.prepare("UPDATE generation_trace SET status=@status,ended_at=CASE WHEN @ended_at IS NULL THEN NULL WHEN status <> @status THEN @ended_at ELSE COALESCE(ended_at,@ended_at) END WHERE id=@trace_id")
+    .run({ trace_id: traceId, status: result, ended_at: endedAt });
   return result;
 }
 

@@ -5,6 +5,7 @@
 import { parseFacets } from "../topics/facets.js";
 import type { ContentItem, Cost, Run, Source, Topic } from "../types.js";
 import type { DB } from "./index.js";
+import { projectTrace } from "./provenance-facts.js";
 
 const j = (v: unknown): string => JSON.stringify(v);
 const b = (v: boolean): number => (v ? 1 : 0);
@@ -310,18 +311,22 @@ export function finishRun(
   id: string,
   outcome: { status: "done" | "failed"; cost?: Cost | null; error?: Run["error"]; duration_ms?: number },
 ): void {
-  const ended = new Date().toISOString();
-  const row = db.prepare("SELECT started_at FROM run WHERE id = ?").get(id) as { started_at: string } | undefined;
-  if (!row) throw new Error(`finishRun: Run ${id} 不存在`);
-  // 优先用调用方传入的单调时钟耗时（runJob 提供）；缺省回退墙钟差（受 NTP 跳变影响，仅兜底）
-  const wall = Date.now() - new Date(row.started_at).getTime();
-  const duration = outcome.duration_ms ?? (Number.isFinite(wall) ? wall : null);
-  db.prepare(
-    "UPDATE run SET status=@status, ended_at=@ended_at, duration_ms=@duration_ms, cost=@cost, error=@error WHERE id=@id",
-  ).run({
-    id, status: outcome.status, ended_at: ended, duration_ms: duration,
-    cost: outcome.cost ? j(outcome.cost) : null, error: outcome.error ? j(outcome.error) : null,
-  });
+  db.transaction(() => {
+    const ended = new Date().toISOString();
+    const hasTrace = (db.prepare("PRAGMA table_info(run)").all() as { name: string }[]).some((column) => column.name === "trace_id");
+    const row = db.prepare(`SELECT started_at${hasTrace ? ",trace_id" : ""} FROM run WHERE id = ?`).get(id) as { started_at: string; trace_id?: string | null } | undefined;
+    if (!row) throw new Error(`finishRun: Run ${id} 不存在`);
+    // 优先用调用方传入的单调时钟耗时（runJob 提供）；缺省回退墙钟差（受 NTP 跳变影响，仅兜底）
+    const wall = Date.now() - new Date(row.started_at).getTime();
+    const duration = outcome.duration_ms ?? (Number.isFinite(wall) ? wall : null);
+    db.prepare(
+      "UPDATE run SET status=@status, ended_at=@ended_at, duration_ms=@duration_ms, cost=@cost, error=@error WHERE id=@id",
+    ).run({
+      id, status: outcome.status, ended_at: ended, duration_ms: duration,
+      cost: outcome.cost ? j(outcome.cost) : null, error: outcome.error ? j(outcome.error) : null,
+    });
+    if (row.trace_id) projectTrace(db, row.trace_id);
+  })();
 }
 export function getRun(db: DB, id: string): Run | null {
   const r = db.prepare("SELECT * FROM run WHERE id = ?").get(id) as Record<string, unknown> | undefined;

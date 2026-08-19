@@ -4,7 +4,16 @@
  * 这里故意不调用 agent 或网络，确保 202 的可靠性边界仅依赖一个 SQLite 事务。 */
 import { createHmac, randomUUID } from "node:crypto";
 import type { DB } from "./index.js";
-import { appendGenerationEvent, captureRevision, entityKey, type EntityRef } from "./provenance-facts.js";
+import {
+  appendGenerationEvent,
+  captureRevision,
+  entityKey,
+  manualDecisionCompletionPolicy,
+  projectTrace,
+  sourceCollectCompletionPolicy,
+  topicPipelineCompletionPolicy,
+  type EntityRef,
+} from "./provenance-facts.js";
 import { appendAudit } from "./audit.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -148,7 +157,7 @@ export function recordManualDecision(
       (id,scope_kind,trigger_kind,topic_id,status,completion_policy,coverage,runtime_version,summary,started_at)
       VALUES (@id,'manual_decision','api',@topic_id,'running',@completion_policy,'complete',@runtime_version,'{}',@started_at)`).run({
       id: traceId, topic_id: input.topicId ?? null,
-      completion_policy: JSON.stringify({ schema_version: 1, execution_kind: "event_only", required_stages: [input.stage] }),
+      completion_policy: JSON.stringify(manualDecisionCompletionPolicy(input.stage)),
       runtime_version: runtimeVersionAt(db, nowIso), started_at: nowIso,
     });
     db.prepare(`INSERT INTO generation_trace_request
@@ -178,7 +187,7 @@ export function recordManualDecision(
       audit_log_id: auditLogId, input_refs: input.previous ? [input.previous] : [], output_refs: [output],
       context_completeness: "complete", occurred_at: nowIso,
     });
-    db.prepare("UPDATE generation_trace SET status='done',ended_at=?,summary=? WHERE id=?").run(nowIso, JSON.stringify({ action: input.action }), traceId);
+    db.prepare("UPDATE generation_trace SET summary=? WHERE id=?").run(JSON.stringify({ action: input.action }), traceId);
     db.prepare("UPDATE generation_trace_request SET state='terminal' WHERE id=?").run(requestId);
     db.prepare("UPDATE generation_lease SET state='released',released_at=? WHERE id=?").run(nowIso, leaseId);
     return { kind: "accepted", traceId, requestId };
@@ -229,7 +238,7 @@ export function createDeepDiveTraceRequest(
     ).run({
       id: traceId,
       topic_id: input.topicId,
-      completion_policy: JSON.stringify({ schema_version: 1, planning: input.planning }),
+      completion_policy: JSON.stringify(topicPipelineCompletionPolicy({ planning: input.planning, selection: false })),
       runtime_version: runtimeVersion,
       started_at: nowIso,
     });
@@ -310,7 +319,7 @@ export function createScheduledTraceRequest(
        VALUES (@id,'topic_pipeline',@trigger_kind,@topic_id,'running',@completion_policy,'complete',@runtime_version,'{}',@started_at)`,
     ).run({
       id: traceId, topic_id: input.topicId, trigger_kind: triggerKind,
-      completion_policy: JSON.stringify({ schema_version: 1, planning: true, report_type: input.reportType }),
+      completion_policy: JSON.stringify(topicPipelineCompletionPolicy({ planning: true, selection: true })),
       runtime_version: runtimeVersion,
       started_at: nowIso,
     });
@@ -373,8 +382,12 @@ export function createScheduledSourceCollectTrace(
     const stale = db.prepare(`SELECT trace_id FROM generation_lease
       WHERE active_key=? AND state IN ('reserved','owned') AND expires_at IS NOT NULL AND expires_at < ?`).all(activeKey, nowIso) as { trace_id: string }[];
     for (const row of stale) {
-      db.prepare("UPDATE generation_trace SET status='failed',ended_at=?,summary=? WHERE id=? AND status='running'").run(
-        nowIso, JSON.stringify({ reason_code: "source_collect_lease_expired" }), row.trace_id,
+      appendGenerationEvent(db, {
+        trace_id: row.trace_id, stage: "collect", event_type: "failed",
+        error: { reason_code: "source_collect_lease_expired" }, occurred_at: nowIso,
+      });
+      db.prepare("UPDATE generation_trace SET summary=? WHERE id=?").run(
+        JSON.stringify({ reason_code: "source_collect_lease_expired" }), row.trace_id,
       );
       db.prepare("UPDATE generation_trace_request SET state='terminal' WHERE trace_id=?").run(row.trace_id);
       db.prepare("UPDATE generation_lease SET state='released',released_at=?,expires_at=NULL WHERE trace_id=? AND state IN ('reserved','owned')").run(nowIso, row.trace_id);
@@ -394,7 +407,7 @@ export function createScheduledSourceCollectTrace(
     ).run({
       id: traceId,
       source_id: input.sourceId,
-      completion_policy: JSON.stringify({ schema_version: 1, execution_kind: "sync", required_stages: ["collect", "normalize"] }),
+      completion_policy: JSON.stringify(sourceCollectCompletionPolicy()),
       runtime_version: runtimeVersionAt(db, nowIso),
       started_at: nowIso,
     });
@@ -472,7 +485,7 @@ export function bindSourceCollectRootRun(db: DB, claim: SourceCollectClaim, runI
 export function finishSourceCollectTrace(
   db: DB,
   claim: SourceCollectClaim,
-  outcome: { status: "done" | "failed"; summary: Record<string, unknown> },
+  outcome: { summary: Record<string, unknown> },
   now: Date = new Date(),
 ): boolean {
   const nowIso = now.toISOString();
@@ -482,9 +495,8 @@ export function finishSourceCollectTrace(
       claim.traceId, claim.ownerToken, claim.fencingEpoch, nowIso,
     );
     if (!owned) return false;
-    db.prepare("UPDATE generation_trace SET status=?,ended_at=?,summary=? WHERE id=?").run(
-      outcome.status, nowIso, JSON.stringify(outcome.summary), claim.traceId,
-    );
+    db.prepare("UPDATE generation_trace SET summary=? WHERE id=?").run(JSON.stringify(outcome.summary), claim.traceId);
+    projectTrace(db, claim.traceId);
     db.prepare("UPDATE generation_trace_request SET state='terminal' WHERE trace_id=?").run(claim.traceId);
     db.prepare(`UPDATE generation_lease SET state='released',released_at=@now,expires_at=NULL
       WHERE trace_id=@trace_id AND state='owned' AND owner_token=@owner_token AND fencing_epoch=@fencing_epoch`).run({
@@ -652,19 +664,18 @@ export function finishGenerationDispatch(
       `SELECT 1 FROM generation_dispatch WHERE id=? AND state='claimed' AND owner_token=? AND claim_epoch=? AND lease_expires_at >= ?`,
     ).get(claim.dispatchId, claim.ownerToken, claim.claimEpoch, nowIso);
     if (!claimed) return false;
-    const state = outcome.status === "done" ? "done" : "failed";
-    db.prepare(
-      `UPDATE generation_dispatch SET state=@state,last_error=@error,updated_at=@now WHERE id=@id`,
-    ).run({ id: claim.dispatchId, state, error: outcome.error ? JSON.stringify(outcome.error) : null, now: nowIso });
-    db.prepare(
-      `UPDATE generation_trace SET status=@status,ended_at=@now,summary=@summary WHERE id=@trace_id`,
-    ).run({ trace_id: claim.traceId, status: outcome.status, now: nowIso, summary: JSON.stringify(outcome.error ?? {}) });
     if (outcome.status === "failed") {
       db.prepare(
         `UPDATE run SET status='failed',ended_at=@now,error=@error
          WHERE id=@id AND status='running'`,
       ).run({ id: claim.rootRunId, now: nowIso, error: JSON.stringify(outcome.error ?? {}) });
     }
+    db.prepare("UPDATE generation_trace SET summary=? WHERE id=?").run(JSON.stringify(outcome.error ?? {}), claim.traceId);
+    const traceStatus = projectTrace(db, claim.traceId);
+    const state = traceStatus === "done" || traceStatus === "partial" ? "done" : "failed";
+    db.prepare(
+      `UPDATE generation_dispatch SET state=@state,last_error=@error,updated_at=@now WHERE id=@id`,
+    ).run({ id: claim.dispatchId, state, error: outcome.error ? JSON.stringify(outcome.error) : null, now: nowIso });
     db.prepare("UPDATE generation_trace_request SET state='terminal' WHERE trace_id=?").run(claim.traceId);
     db.prepare(
       `UPDATE generation_lease SET state='released',released_at=@now,expires_at=NULL
