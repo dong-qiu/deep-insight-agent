@@ -257,20 +257,29 @@ export function projectTrace(db: DB, traceId: string): TraceStatus {
     runAttempt.set(run.id, attempt);
     return attempt;
   };
-  const eventRunStage = new Map<string, { stage: string; attempt: number; sequence: number }>();
+  // A source-collect ingest Run legitimately spans collect and normalize, so retain every
+  // explicit stage binding instead of letting the latest event overwrite the earlier one.
+  const eventRunStages = new Map<string, Map<string, number>>();
   for (const event of events) {
-    if (event.run_id) eventRunStage.set(event.run_id, { stage: event.stage, attempt: event.attempt, sequence: event.sequence });
+    if (!event.run_id) continue;
+    const stages = eventRunStages.get(event.run_id) ?? new Map<string, number>();
+    stages.set(event.stage, Math.max(stages.get(event.stage) ?? 0, event.attempt));
+    eventRunStages.set(event.run_id, stages);
   }
   const runsWithAttempt = runs.map((run) => {
-    const linked = eventRunStage.get(run.id);
-    return { ...run, attempt: linked?.attempt ?? attemptForRun(run), stage: linked?.stage ?? null };
+    const stages = eventRunStages.get(run.id);
+    return { ...run, fallbackAttempt: attemptForRun(run), stages: stages ?? null };
   });
   const stageOutcome = (stage: CompletionPolicyStage): TerminalOutcome | null => {
     if (stage.execution_kind === "omitted") return "completed";
     const stageEvents = events.filter((event) => event.stage === stage.stage);
     const kind = runKindForStage(stage.stage);
-    // Prefer an explicit event → Run binding. Legacy rows without it retain the kind fallback.
-    const stageRuns = kind ? runsWithAttempt.filter((run) => run.stage === stage.stage || (run.stage === null && run.kind === kind)) : [];
+    // Prefer explicit event → Run bindings. Legacy rows without any binding retain the kind fallback.
+    const stageRuns = kind ? runsWithAttempt.flatMap((run) => {
+      const linkedAttempt = run.stages?.get(stage.stage);
+      if (linkedAttempt) return [{ ...run, attempt: linkedAttempt }];
+      return run.stages === null && run.kind === kind ? [{ ...run, attempt: run.fallbackAttempt }] : [];
+    }) : [];
     const attempt = Math.max(0, ...stageEvents.map((event) => event.attempt), ...stageRuns.map((run) => run.attempt));
     if (attempt === 0) return null;
     const latestEvent = stageEvents.filter((event) => event.attempt === attempt)

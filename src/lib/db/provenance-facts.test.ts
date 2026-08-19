@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { openDb } from "./index.js";
-import { appendGenerationEvent, canonicalHash, canonicalJson, captureRevision, entityKey, initializeProvenanceMeta, projectTrace, type CompletionPolicy } from "./provenance-facts.js";
+import { appendGenerationEvent, canonicalHash, canonicalJson, captureRevision, entityKey, initializeProvenanceMeta, projectTrace, sourceCollectCompletionPolicy, type CompletionPolicy } from "./provenance-facts.js";
 import { applyProvenanceMigrations } from "./provenance-migrations.js";
 import { buildGenerationTraceGraph, listGenerationEventRefs, listGenerationTraceTimeline, listGenerationTraceTimelinePage } from "./provenance.js";
 import { finishRun, insertRun } from "./repos.js";
@@ -104,6 +104,20 @@ describe("provenance facts", () => {
 
     appendGenerationEvent(db, { trace_id: "trace_1", run_id: "run_2", stage: "analyze", attempt: 2, event_type: "completed" });
     finishRun(db, "run_2", { status: "done", duration_ms: 1 });
+    expect(projectTrace(db, "trace_1")).toBe("done");
+  });
+
+  it("keeps every stage linked to a shared source-collect ingest Run", () => {
+    const db = dbWithTrace(sourceCollectCompletionPolicy());
+    insertRun(db, {
+      id: "run_ingest", kind: "ingest", target: { source_id: "source_a" }, status: "running", started_at: "2026-08-03T00:00:00.000Z",
+      ended_at: null, duration_ms: null, cost: null, error: null, retry_of: null, trace_id: "trace_1",
+    });
+    for (const stage of ["collect", "normalize"]) {
+      appendGenerationEvent(db, { trace_id: "trace_1", run_id: "run_ingest", stage, event_type: "started" });
+      appendGenerationEvent(db, { trace_id: "trace_1", run_id: "run_ingest", stage, event_type: "completed" });
+    }
+    finishRun(db, "run_ingest", { status: "done", duration_ms: 1 });
     expect(projectTrace(db, "trace_1")).toBe("done");
   });
 
