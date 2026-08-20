@@ -654,8 +654,9 @@ P0 的图查询采用硬预算：时间线最多 100 条事件一页，因果图
 - [ ] SQLite 业务写入、event、revision、索引和 trace 投影要么一起提交，要么均不可见；文件等外部副作用通过
   `generation_effect` 的 intent、staging、hash 校验和 reconciliation 达到可解释的至少一次处理，P0 不声称渠道成功。
 - [ ] 重试、重投影与人工决策都保留历史，不覆盖原记录；事件不含密钥、完整 prompt、原文副本或未授权信息。
-- [ ] 在版本化 benchmark fixture、记录的机器/SQLite 配置、`page_size≤100`、图深度≤4 和图元素≤500 下，单产物链路页面
-  P95 < 2 秒，单 trace 查询 P95 < 1 秒；关键查询的 query plan 命中规定索引。
+- [x] 在版本化 benchmark fixture、记录的机器/SQLite 配置、`page_size≤100`、图深度≤4 和图元素≤500 下，单产物链路页面
+  P95 < 2 秒，单 trace 查询 P95 < 1 秒；关键查询的 query plan 命中规定索引。生产规模测量、受限查询计划复验与性能门证据见
+  `docs/verify/p0c-production-capacity-acceptance-2026-08-17.md`。
 - [ ] P1 可按来源/主题/版本比较 `collect → report` 漏斗、freshness、耗时、成本与 validator 拦截原因，且筛选命中索引。
 - [ ] P1 的任意完整性校验失败可定位到 event 范围并告警；不影响已发布报告的读取。P0 仅校验 payload 格式、
   哈希重算和顺序完整性，不将其宣称为防篡改保证。
