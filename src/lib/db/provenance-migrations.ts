@@ -172,6 +172,12 @@ const BOUNDED_VIEW_INDEX_FIX_SQL = `
 DROP INDEX IF EXISTS idx_generation_entity_ref_trace_event;
 CREATE INDEX idx_generation_entity_ref_trace_event ON generation_entity_ref(trace_id, event_id);
 `;
+// P0e：effect 必须能回指生成它的 append-only 事件。既有 effect 保持可读，
+// 因而新增列可空；新 provenance writer 则要求 trace/event 成对写入。
+const EFFECT_EVENT_LINK_SQL = `
+ALTER TABLE generation_effect ADD COLUMN event_id TEXT REFERENCES generation_event(id);
+CREATE INDEX idx_generation_effect_trace_event ON generation_effect(trace_id, event_id);
+`;
 const MIGRATIONS = [
   { version: "20260803_01_provenance_core", sql: CORE_SQL },
   { version: "20260803_02_report_lifecycle", sql: REPORT_LIFECYCLE_SQL },
@@ -183,6 +189,7 @@ const MIGRATIONS = [
   { version: "20260811_08_source_collect", sql: SOURCE_COLLECT_SQL },
   { version: "20260817_09_bounded_provenance_views", sql: BOUNDED_VIEW_SQL },
   { version: "20260817_10_bounded_provenance_view_index_fix", sql: BOUNDED_VIEW_INDEX_FIX_SQL },
+  { version: "20260820_11_effect_event_link", sql: EFFECT_EVENT_LINK_SQL },
 ];
 
 function hasColumn(db: DB, table: string, column: string): boolean {
@@ -256,7 +263,7 @@ export function applyProvenanceMigrations(db: DB): void {
       } else if (migration.version === "20260811_08_source_collect") {
         if (!hasColumn(db, "generation_trace", "source_id")) db.exec("ALTER TABLE generation_trace ADD COLUMN source_id TEXT REFERENCES source(id)");
         db.exec("CREATE INDEX IF NOT EXISTS idx_generation_trace_source_started ON generation_trace(source_id, started_at DESC)");
-      } else if (migration.version === "20260817_09_bounded_provenance_views" || migration.version === "20260817_10_bounded_provenance_view_index_fix") {
+      } else if (migration.version === "20260817_09_bounded_provenance_views" || migration.version === "20260817_10_bounded_provenance_view_index_fix" || migration.version === "20260820_11_effect_event_link") {
         db.exec(migration.sql);
       }
       db.prepare("INSERT INTO schema_migration(version,checksum,applied_at) VALUES (?,?,?)")

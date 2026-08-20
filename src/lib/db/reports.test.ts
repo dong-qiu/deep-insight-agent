@@ -1,12 +1,14 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { AnalysisBatch, Report, ReportIndexEntry, Topic, ValidationResult } from "../types.js";
 import { saveAnalysisBatch, saveValidationResult } from "./analysis.js";
 import { type DB, openDb } from "./index.js";
-import { chainTypesFor, distinctIndexValues, entityTrends, getReport, latestReportForTopicSince, listBlockedChecksForReport, listRecentBriefEvents, listRecentPublishedEventEvidence, listRecentReports, previousReportForTopic, queryReportIndex, reportNeighbors, reportStatusCounts, sanitizeFtsQuery, saveFailedReport, saveReport, searchReports, SNIPPET_CLOSE, SNIPPET_OPEN, topicEvolution, topicReportStats } from "./reports.js";
+import { chainTypesFor, distinctIndexValues, entityTrends, getReport, latestReportForTopicSince, listBlockedChecksForReport, listRecentBriefEvents, listRecentPublishedEventEvidence, listRecentReports, previousReportForTopic, queryReportIndex, reconcileReportEffects, reportNeighbors, reportStatusCounts, sanitizeFtsQuery, saveFailedReport, saveReport, searchReports, SNIPPET_CLOSE, SNIPPET_OPEN, topicEvolution, topicReportStats } from "./reports.js";
 import { applyProvenanceMigrations } from "./provenance-migrations.js";
+import { appendGenerationEvent } from "./provenance-facts.js";
 import { getTopic, insertSource, insertTopic } from "./repos.js";
 
 const dir = mkdtempSync(join(tmpdir(), "ia-reports-"));
@@ -41,6 +43,59 @@ const index: ReportIndexEntry = {
 it("saveReport → getReport 往返（正文走 FS）", () => {
   saveReport(db, report, index, { dir });
   expect(getReport(db, "rep_test1")).toEqual(report);
+});
+
+it("provenance 报告 effect 成对关联创建它的 trace 与 started event", () => {
+  db.prepare(`INSERT INTO generation_trace(id,scope_kind,trigger_kind,status,completion_policy,coverage,runtime_version,summary,started_at)
+    VALUES ('trace_report','topic_pipeline','api','running','{}','complete','{}','{}','2026-05-07T00:00:00Z')`).run();
+  const event = appendGenerationEvent(db, {
+    trace_id: "trace_report", stage: "generate_report", event_type: "started",
+  });
+
+  saveReport(db, report, index, { dir, provenance: { traceId: "trace_report", eventId: event.id } });
+
+  expect(db.prepare("SELECT trace_id,event_id,status FROM generation_effect WHERE report_id=?").get(report.id))
+    .toEqual({ trace_id: "trace_report", event_id: event.id, status: "committed" });
+});
+
+it("reconcile 从完整 staging 恢复时原子提交报告、effect 与终态 trace event", () => {
+  const recovery = { ...report, id: "rep_recovered", title: "Recovered report" };
+  const recoveryIndex = { ...index, report_id: recovery.id, title: recovery.title };
+  db.prepare(`INSERT INTO generation_trace(id,scope_kind,trigger_kind,status,completion_policy,coverage,runtime_version,summary,started_at)
+    VALUES ('trace_recovery','topic_pipeline','api','running','{}','complete','{}','{}','2026-05-07T00:00:00Z')`).run();
+  const started = appendGenerationEvent(db, {
+    trace_id: "trace_recovery", stage: "generate_report", event_type: "started",
+  });
+  db.prepare(`INSERT INTO report
+    (id,type,topic_id,status,generated_at,title,body_path,insight_ids,event_ids,prev_report_id,citation_count,cost,failure)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,NULL)`).run(
+    recovery.id, recovery.type, recovery.topic_id, "generating", recovery.generated_at, recovery.title, null,
+    JSON.stringify(recovery.insight_ids), JSON.stringify(recovery.event_ids), recovery.prev_report_id,
+    recovery.citation_count, JSON.stringify(recovery.cost),
+  );
+  const effectId = "effect_recovery";
+  const manifest = [
+    { target: `${recovery.id}.md`, sha256: createHash("sha256").update(recovery.body_md).digest("hex"), size: Buffer.byteLength(recovery.body_md), report_id: recovery.id },
+    { target: `${recovery.id}.html`, sha256: createHash("sha256").update(recovery.body_html).digest("hex"), size: Buffer.byteLength(recovery.body_html), report_id: recovery.id },
+  ];
+  db.prepare(`INSERT INTO generation_effect
+    (id,trace_id,event_id,report_id,kind,idempotency_key,artifact_manifest,publication_payload,status,error,created_at,updated_at)
+    VALUES (?,?,?,?,'report_file',?,?,?,'planned',NULL,?,?)`).run(
+    effectId, "trace_recovery", started.id, recovery.id, `report_file:${recovery.id}`,
+    JSON.stringify(manifest), JSON.stringify(recoveryIndex), recovery.generated_at, recovery.generated_at,
+  );
+  const staging = join(dir, ".staging", effectId);
+  mkdirSync(staging, { recursive: true });
+  writeFileSync(join(staging, `${recovery.id}.md`), recovery.body_md);
+  writeFileSync(join(staging, `${recovery.id}.html`), recovery.body_html);
+
+  const reconciled = reconcileReportEffects(db, { dir });
+  expect(db.prepare("SELECT error FROM generation_effect WHERE id=?").get(effectId)).toEqual({ error: null });
+  expect(reconciled).toEqual({ committed: 1, failed: 0 });
+  expect(db.prepare("SELECT status FROM generation_effect WHERE id=?").get(effectId)).toEqual({ status: "committed" });
+  expect(db.prepare("SELECT status FROM report WHERE id=?").get(recovery.id)).toEqual({ status: "done" });
+  expect(db.prepare(`SELECT event_type FROM generation_event WHERE trace_id='trace_recovery' ORDER BY sequence`).all())
+    .toEqual([{ event_type: "started" }, { event_type: "completed" }]);
 });
 
 it("failed Report 没有正文、索引或 FTS，普通 reader 不可见", () => {

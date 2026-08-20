@@ -51,11 +51,12 @@ function traceFailureReason(error: unknown, fallback: string): string {
     : fallback;
 }
 
-function emitTrace(db: DB, traceId: string | undefined, input: Omit<Parameters<typeof appendGenerationEvent>[1], "trace_id">, assertWrite?: () => void): void {
+function emitTrace(db: DB, traceId: string | undefined, input: Omit<Parameters<typeof appendGenerationEvent>[1], "trace_id">, assertWrite?: () => void): ReturnType<typeof appendGenerationEvent> | undefined {
   if (traceId) {
     assertWrite?.();
-    appendGenerationEvent(db, { ...input, trace_id: traceId });
+    return appendGenerationEvent(db, { ...input, trace_id: traceId });
   }
+  return undefined;
 }
 
 /** 分析某主题某窗口的 ContentItem → AnalysisBatch 落库；包一条 analyze Run（含成本）。
@@ -258,7 +259,7 @@ export async function runReportGen(
 ): Promise<Report> {
   const batchRef: EntityRef = { type: "analysis_batch", locator: { kind: "id", id: opts.batch.id }, revision: opts.batch.id, role: "input" };
   const validationRef: EntityRef = { type: "validation_result", locator: { kind: "composite", key: { batch_id: opts.batch.id } }, revision: opts.batch.id, role: "input" };
-  emitTrace(db, opts.traceId, { stage: "generate_report", event_type: "started", input_refs: [batchRef, validationRef] }, opts.assertWrite);
+  const reportStarted = emitTrace(db, opts.traceId, { stage: "generate_report", event_type: "started", input_refs: [batchRef, validationRef] }, opts.assertWrite);
   // 为被引内容建展示元数据查找表：source_id / tags（派生 source_ids / tags）
   // + source_name / url / published_at（dogfood feedback：渲染时给用户可读源名 + 可点 quote）
   const contentLookup = new Map<string, CitationDisplay>();
@@ -330,6 +331,7 @@ export async function runReportGen(
         : undefined;
       opts.assertWrite?.();
       saveReport(db, report, index, {
+        provenance: opts.traceId && reportStarted ? { traceId: opts.traceId, eventId: reportStarted.id } : undefined,
         afterPublish: opts.traceId ? () => {
           opts.assertWrite?.();
           const ref: EntityRef = { type: "report", locator: { kind: "id", id: report.id }, revision: report.id, role: "output", visibility_class: "public_evidence" };

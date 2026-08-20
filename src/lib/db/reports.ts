@@ -5,6 +5,7 @@ import { join, relative, resolve } from "node:path";
 import { domainFacet, isDomainValue, isLensValue, lensFacet, parseFacets } from "../topics/facets.js";
 import type { Report, ReportIndexEntry } from "../types.js";
 import type { DB } from "./index.js";
+import { appendGenerationEvent, captureRevision, entityKey, type EntityRef } from "./provenance-facts.js";
 
 const j = (v: unknown): string => JSON.stringify(v);
 
@@ -21,6 +22,7 @@ function hasReportEffectTable(db: DB): boolean {
 }
 
 interface ReportArtifact { target: string; sha256: string; size: number; report_id: string }
+interface ReportEffectProvenance { traceId: string; eventId: string }
 const digest = (body: string): string => createHash("sha256").update(body, "utf8").digest("hex");
 function safeTarget(root: string, target: string): string {
   if (!/^[A-Za-z0-9_-]+\.(md|html)$/.test(target)) throw new Error("invalid report artifact target");
@@ -87,7 +89,10 @@ export function saveFailedReport(
 }
 
 /** P0a 已迁移库的发布协议：意图 + manifest 先入库，双 artifact 通过 staging 原子换名后才公开索引。 */
-function saveReportWithEffect(db: DB, report: Report, index: ReportIndexEntry, dir: string, afterPublish?: () => void): void {
+function saveReportWithEffect(
+  db: DB, report: Report, index: ReportIndexEntry, dir: string,
+  provenance: ReportEffectProvenance | undefined, afterPublish?: () => void,
+): void {
   const root = resolve(dir);
   const effectId = `effect_${randomUUID().replaceAll("-", "")}`;
   const now = new Date().toISOString();
@@ -100,11 +105,16 @@ function saveReportWithEffect(db: DB, report: Report, index: ReportIndexEntry, d
   }));
   // 先写 intent。publication_payload 仅存 index 元数据，正文只存在 staging/final artifact。
   db.transaction(() => {
+    if (provenance) {
+      const event = db.prepare("SELECT 1 FROM generation_event WHERE id=? AND trace_id=?").get(provenance.eventId, provenance.traceId);
+      if (!event) throw new Error("generation_effect_event_trace_mismatch");
+    }
     insertReportMetadata(db, { ...report, status: "generating" }, null);
     db.prepare(`INSERT INTO generation_effect
-      (id,trace_id,report_id,kind,idempotency_key,artifact_manifest,publication_payload,status,error,created_at,updated_at)
-      VALUES (@id,NULL,@report_id,'report_file',@idempotency_key,@artifact_manifest,@publication_payload,'planned',NULL,@now,@now)`)
-      .run({ id: effectId, report_id: report.id, idempotency_key: `report_file:${report.id}`,
+      (id,trace_id,event_id,report_id,kind,idempotency_key,artifact_manifest,publication_payload,status,error,created_at,updated_at)
+      VALUES (@id,@trace_id,@event_id,@report_id,'report_file',@idempotency_key,@artifact_manifest,@publication_payload,'planned',NULL,@now,@now)`)
+      .run({ id: effectId, trace_id: provenance?.traceId ?? null, event_id: provenance?.eventId ?? null,
+        report_id: report.id, idempotency_key: `report_file:${report.id}`,
         artifact_manifest: j(manifest), publication_payload: j(index), now });
   })();
 
@@ -157,7 +167,7 @@ export function saveReport(
   db: DB,
   report: Report,
   index: ReportIndexEntry,
-  opts: { dir?: string; afterPublish?: () => void } = {},
+  opts: { dir?: string; provenance?: ReportEffectProvenance; afterPublish?: () => void } = {},
 ): void {
   if (report.status !== "done") {
     // lifecycle 的非发布态只记录元数据；禁止给 failed/generating 写正文、索引或 FTS。
@@ -171,7 +181,7 @@ export function saveReport(
   }
   const dir = opts.dir ?? defaultBodyDir();
   if (hasReportEffectTable(db)) {
-    saveReportWithEffect(db, report, index, dir, opts.afterPublish);
+    saveReportWithEffect(db, report, index, dir, opts.provenance, opts.afterPublish);
     return;
   }
   const prefix = resolve(join(dir, report.id));
@@ -228,7 +238,7 @@ export function saveReport(
 export function reconcileReportEffects(db: DB, opts: { dir?: string } = {}): { committed: number; failed: number } {
   if (!hasReportEffectTable(db)) return { committed: 0, failed: 0 };
   const root = resolve(opts.dir ?? defaultBodyDir());
-  const rows = db.prepare(`SELECT e.*, r.* FROM generation_effect e JOIN report r ON r.id=e.report_id
+  const rows = db.prepare(`SELECT e.id AS effect_id,e.trace_id,e.event_id,e.report_id,e.artifact_manifest,e.publication_payload,e.status AS effect_status,r.* FROM generation_effect e JOIN report r ON r.id=e.report_id
     WHERE e.kind='report_file' AND r.status='generating' AND e.status IN ('planned','attempted','unknown')`).all() as any[];
   let committed = 0;
   let failed = 0;
@@ -236,7 +246,7 @@ export function reconcileReportEffects(db: DB, opts: { dir?: string } = {}): { c
     try {
       const manifest = JSON.parse(row.artifact_manifest) as ReportArtifact[];
       const index = JSON.parse(row.publication_payload) as ReportIndexEntry;
-      const staging = resolve(root, ".staging", row.id);
+      const staging = resolve(root, ".staging", row.effect_id);
       for (const artifact of manifest) {
         const finalPath = safeTarget(root, artifact.target);
         const stagedPath = safeTarget(staging, artifact.target);
@@ -261,14 +271,31 @@ export function reconcileReportEffects(db: DB, opts: { dir?: string } = {}): { c
           .run(resolve(join(root, row.report_id)), row.report_id);
         insertReportIndex(db, report, index);
         db.prepare("UPDATE generation_effect SET status='committed',error=NULL,updated_at=? WHERE id=?")
-          .run(new Date().toISOString(), row.id);
+          .run(new Date().toISOString(), row.effect_id);
+        if (row.trace_id && row.event_id) {
+          const started = db.prepare("SELECT input_refs FROM generation_event WHERE id=? AND trace_id=?")
+            .get(row.event_id, row.trace_id) as { input_refs: string } | undefined;
+          if (!started) throw new Error("generation_effect_event_trace_mismatch");
+          const output: EntityRef = {
+            type: "report", locator: { kind: "id", id: row.report_id }, revision: row.report_id,
+            role: "output", visibility_class: "public_evidence",
+          };
+          captureRevision(db, {
+            entity_type: output.type, entity_key: entityKey(output), revision: output.revision,
+            snapshot: { id: row.report_id, type: row.type, topic_id: row.topic_id, status: "done", insight_ids: report.insight_ids, citation_count: report.citation_count, event_ids: report.event_ids },
+          });
+          appendGenerationEvent(db, {
+            trace_id: row.trace_id, stage: "generate_report", event_type: "completed",
+            input_refs: JSON.parse(started.input_refs) as EntityRef[], output_refs: [output],
+          });
+        }
       })();
       committed += 1;
     } catch (error) {
       const message = error instanceof Error ? error.message.slice(0, 256) : String(error).slice(0, 256);
       db.transaction(() => {
         db.prepare("UPDATE generation_effect SET status='unknown',error=?,updated_at=? WHERE id=?")
-          .run(j({ reason_code: "report_reconcile_failed", message }), new Date().toISOString(), row.id);
+          .run(j({ reason_code: "report_reconcile_failed", message }), new Date().toISOString(), row.effect_id);
         db.prepare("UPDATE report SET status='failed',body_path=NULL,failure=? WHERE id=? AND status='generating'")
           .run(j({ reason_code: "report_reconcile_failed", message }), row.report_id);
       })();

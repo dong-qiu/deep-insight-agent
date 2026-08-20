@@ -9,12 +9,13 @@ describe("provenance migration runner", () => {
     applyProvenanceMigrations(db);
     applyProvenanceMigrations(db);
     expect(() => assertProvenanceSchema(db)).not.toThrow();
-    expect(db.prepare("SELECT COUNT(*) AS count FROM schema_migration").get()).toEqual({ count: 10 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM schema_migration").get()).toEqual({ count: 11 });
     expect((db.prepare("PRAGMA table_info(run)").all() as { name: string }[]).some((row) => row.name === "trace_id")).toBe(true);
     const reportColumns = db.prepare("PRAGMA table_info(report)").all() as { name: string; notnull: number }[];
     expect(reportColumns.find((column) => column.name === "body_path")?.notnull).toBe(0);
     expect(reportColumns.some((column) => column.name === "failure")).toBe(true);
     expect(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='generation_effect'").get()).toBeTruthy();
+    expect((db.prepare("PRAGMA table_info(generation_effect)").all() as { name: string }[]).some((row) => row.name === "event_id")).toBe(true);
     expect(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='provenance_redaction'").get()).toBeTruthy();
     expect(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='provenance_redaction_request'").get()).toBeTruthy();
     expect(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='generation_event'").get()).toBeTruthy();
