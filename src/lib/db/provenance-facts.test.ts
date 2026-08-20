@@ -180,16 +180,49 @@ describe("provenance facts", () => {
     expect(projectTrace(invalid, "trace_1")).toBe("partial");
   });
 
-  it("管理员时间线只投影登记的非负整数指标，不泄露任意 metrics 字段", () => {
+  it("管理员时间线只投影登记的非负整数指标", () => {
     const db = dbWithTrace();
     appendGenerationEvent(db, {
       trace_id: "trace_1", stage: "generate_report", event_type: "completed",
-      metrics: { published_insight_count: 2, citation_pass: 3, supplemental_candidate_count: 4, supplemental_published_insight_count: 2, prompt: "secret", negative: -1, enabled: true },
+      metrics: { published_insight_count: 2, citation_pass: 3, supplemental_candidate_count: 4, supplemental_published_insight_count: 2 },
     });
     expect(listGenerationTraceTimeline(db, "trace_1")[0]).toMatchObject({
       stage: "generate_report", metrics: { published_insight_count: 2, citation_pass: 3, supplemental_candidate_count: 4, supplemental_published_insight_count: 2 },
     });
-    expect(listGenerationTraceTimeline(db, "trace_1")[0].metrics).not.toHaveProperty("prompt");
+  });
+
+  it("在写入前拒绝敏感或未登记的 metrics/version_context，且保留安全事件的重放语义", () => {
+    const db = dbWithTrace();
+    const safe = {
+      trace_id: "trace_1", stage: "analyze", event_type: "started",
+      metrics: { input_content_count: 2 },
+      version_context: {
+        source_config_revision: `source-v1:${"a".repeat(64)}`,
+        collection_mode: "feed",
+      },
+    };
+    const first = appendGenerationEvent(db, safe);
+    expect(appendGenerationEvent(db, safe)).toEqual({ ...first, replayed: true });
+    expect(db.prepare("SELECT metrics,version_context FROM generation_event WHERE id=?").get(first.id)).toEqual({
+      metrics: '{"input_content_count":2}',
+      version_context: `{"collection_mode":"feed","source_config_revision":"source-v1:${"a".repeat(64)}"}`,
+    });
+
+    for (const field of ["prompt", "raw_content", "secret"]) {
+      expect(() => appendGenerationEvent(db, {
+        trace_id: "trace_1", stage: "validate", event_type: "started", metrics: { [field]: 1 },
+      })).toThrow("generation_event_metric_not_allowed");
+      expect(() => appendGenerationEvent(db, {
+        trace_id: "trace_1", stage: "validate", event_type: "started", version_context: { [field]: "do not persist" },
+      })).toThrow("generation_event_version_context_not_allowed");
+    }
+    expect(() => appendGenerationEvent(db, {
+      trace_id: "trace_1", stage: "validate", event_type: "started", metrics: { citation_total: -1 },
+    })).toThrow("generation_event_metric_invalid");
+    expect(() => appendGenerationEvent(db, {
+      trace_id: "trace_1", stage: "validate", event_type: "started", version_context: { source_config_revision: "raw-secret" },
+    })).toThrow("generation_event_version_context_not_allowed");
+    expect(db.prepare("SELECT COUNT(*) AS count FROM generation_event").get()).toEqual({ count: 1 });
   });
 
   it("分页 timeline 聚合 ref_count，且按 event 分页 refs", () => {

@@ -263,6 +263,12 @@ trace 归为 `partial`，不得回滚已提交事实。Deep Dive 与 scheduled p
 | `error`                                                         | 脱敏后的错误类别、消息摘要、retryable；不存 stack / 凭据                                                                                 |
 | `payload_schema_version` / `payload_hash`                       | `v1` 规范化、脱敏后 payload 的 SHA-256；P0 用于写入/读取校验，不声称防篡改                                                               |
 
+`metrics` 与 `version_context` 均为写入时 default-deny 的字段契约，不接受任意 JSON。P0 已登记的
+metrics 仅为非负整数计数（选择、输入/洞察、citation verdict、发布/freshness、候选/机会及采集/归一化
+计数）；`version_context` 仅允许规范化的 `source_config_revision`（`source-v1:<sha256>`）与
+`collection_mode`（`feed` / `full_text`）。新增字段必须先登记、说明其脱敏语义并补负向测试；prompt、
+raw content、secret、token 或嵌套调试 payload 一律在写入前拒绝。
+
 `stage` 受控为：`collect`、`normalize`、`select`、`analyze`、`validate`、`derive_lead`、
 `map_direction`、`derive_opportunity`、`generate_report`、`deliver`、`human_review`、`direction_change`。
 
