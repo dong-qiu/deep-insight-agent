@@ -1,6 +1,6 @@
 # Spec: 溯源驾驶舱与完整性能力（P1a）
 
-> 状态：🟡 Draft，须经人工设计评审后才能拆分 P1 实现任务。
+> 状态：🟡 Draft（已按方案 1 修订），须经人工设计评审后才能拆分 P1 实现任务。
 > 依赖：[生成溯源与全链路可观测性](generation-provenance.md) P0a–P0c 已启用。
 
 ## 1. 目的与边界
@@ -55,17 +55,43 @@ received → accepted → processed → validated → published
 
 API 明细查询最大 UTC 时间窗 31 天、每页最多 100 条；聚合查询最大 400 天。每一条驾驶舱 query 必须用 `EXPLAIN QUERY PLAN` 在版本化容量 fixture 上证明命中索引，禁止扫描 JSON 或无界递归。
 
-保留期是本 spec 的准入常量：原始明细 90 天在线、每日汇总 400 天、`generation_trace_request` 100 天；已发布报告及其对应 manifest 在报告可读/归档期内保留，删除后只保留 P0 redaction tombstone。每日外部完整性锚与 redaction registry 一样使用 Object Lock Compliance，至少 100 天。法律保全优先于生命周期清理；到期任务只可在保全不存在、备份/registry 义务满足且审计记录成功写入后执行。
+保留期是本 spec 的准入常量：原始明细 90 天在线、每日汇总 400 天、`generation_trace_request` 100 天；已发布报告及其对应 manifest 在报告可读/归档期内保留，删除后只保留 P0 redaction tombstone。每个 manifest/version 的外部锚与 redaction registry 一样使用 Object Lock Compliance，至少 100 天；每日 Merkle 汇总锚采用相同保护。法律保全优先于生命周期清理；到期任务只可在保全不存在、备份/registry 义务满足且审计记录成功写入后执行。
 
 ## 4. 完整性信任锚与原子发布
 
 每一个已发布的 `.md`、`.html` 与后续受支持 artifact 都有不可变 `(artifact_id, artifact_version)` manifest。内容 hash 是**原始、未解压的字节流**的 SHA-256 小写十六进制；大对象流式分块计算，但 hash 语义与一次读取完全相同。不得对 JSON、文本编码或压缩结果进行隐式规范化。
 
-manifest 本体使用 P0 定义的 UTF-8 canonical JSON，含 artifact/version、length、media type、created_at、上游 trace/revision、`content_hash_algorithm`、`content_hash`、父级或报告级 root、`manifest_schema_version`。其 `manifest_hash` 为该 canonical JSON（排除签名字段）的 SHA-256。每日锚把按 `(tenant_id, report_id, artifact_id, version, manifest_hash)` 排序的叶子做 Merkle root；根与清单一起以 `If-None-Match: *` 写入独立 Object-Lock Compliance bucket。
+manifest 本体使用 P0 定义的 UTF-8 canonical JSON，含 artifact/version、length、media type、created_at、上游 trace/revision、`content_hash_algorithm`、`content_hash`、父级或报告级 root、`manifest_schema_version`，以及下述固定的 `external_anchor` locator。其 `manifest_hash` 为该 canonical JSON（排除签名字段）的 SHA-256。
 
-`manifest_hash` 与每日 root 必须由 KMS/HSM 中的 Ed25519 发布密钥签名；记录 `key_id`、算法、签名、签发时间和撤销状态。运行时只持有签名权限，校验服务只持有公钥/验证权限，二者均没有 Object-Lock 删除、覆盖或保留期绕过权限。密钥轮换新建 key version，旧公钥保留至其所有 anchor 到期；撤销后新发布失败，历史校验仍以记录的公钥验证并标出 `key_revoked`。
+### 4.1 每个 manifest/version 的外部锚
 
-发布沿用 P0 `generation_effect`：先写 staging artifact 与待签名 manifest，流式校验所有 content hash，再原子 rename、条件写外部 anchor，最后在**同一 SQLite 事务**将 effect `committed`、报告 `done`、发布索引/FTS 与 `published` 事件置为可见。任一步失败则 report 不进入 reader resolver，reconciliation 只可重试相同 artifact/version 或置 `failed`，绝不可修补已发布版本。
+方案 1 是本 spec 的唯一发布信任边界：**每一个** `(tenant_id, report_id, artifact_id, artifact_version, manifest_hash)` 都必须有一个独立、签名、不可变的外部锚；每日 Merkle root 只做事后汇总，绝不作为发布成功或单个已发布版本校验的前提。
+
+在计算 `manifest_hash` 前，publisher 必须在 manifest 的 `external_anchor` 中写入以下固定 locator：
+
+```text
+anchor_schema_version = anchor-v1
+object_key = integrity-anchors/v1/{tenant_id}/{report_id}/{artifact_id}/{artifact_version}/anchor-v1.json
+binding = manifest_hash
+```
+
+`artifact_version` 是发布版本的不可变逻辑版本；`anchor-v1` 和完整 object key 是锚对象的不可变逻辑版本与定位符。完成 manifest hash 后，publisher 计算写锚幂等键 `SHA-256("anchor-v1\\0{tenant_id}\\0{report_id}\\0{artifact_id}\\0{artifact_version}\\0{manifest_hash}")`；它记录在 anchor payload 与 `generation_effect`，而非 manifest，以避免 hash 的自引用。支持 provider object version 时，条件写成功返回的 `provider_version_id` 也必须保存到 `artifact_manifest.anchor_provider_version_id`；不支持时该字段为 `NULL`，校验以不可覆盖的完整 key、Object-Lock retention 和锚 payload hash 定位唯一对象。任何版本字段都不得以可变的 “latest” 指针表示。
+
+锚 payload 是 canonical JSON，至少含 locator、完整 artifact/version、`manifest_hash`、`content_hash`、`manifest_schema_version`、`anchor_payload_hash`、签发时间及签名元数据。`anchor_payload_hash` 计算时排除自身和签名字段；它、`manifest_hash` 与每日 root 均必须由 KMS/HSM 中的 Ed25519 发布密钥签名，并记录 `key_id`、算法、签名、签发时间和撤销状态。锚的 locator 必须精确等于 manifest 中的 locator，且锚的 artifact/version 与 `manifest_hash` 必须精确等于 manifest 的值；任一不等即为 `anchor_mismatch`。运行时只持有签名权限，校验服务只持有公钥/验证权限，二者均没有 Object-Lock 删除、覆盖或保留期绕过权限。密钥轮换新建 key version，旧公钥保留至其所有 anchor 到期；撤销后新发布失败，历史校验仍以记录的公钥验证并标出 `key_revoked`。
+
+写锚只能使用该 object key 的 `If-None-Match: *`。网络失败或未知结果必须以相同 idempotency key 重试：若对象已存在，publisher 仅可读取并验证其 canonical bytes、payload hash、签名和所有绑定字段都与当前候选完全相同，才把它视为成功；任何不一致均为 `anchor_conflict` critical，禁止发布且不得覆盖对象。不得为同一 manifest/version 生成第二个 key 或“修正”已有锚。
+
+### 4.2 发布、补偿与对账
+
+发布沿用 P0 `generation_effect`：先写 staging artifact 与带固定 locator 的待签名 manifest，流式校验所有 content hash，再原子 rename、条件写该 manifest 自身 anchor，最后在**同一 SQLite 事务**将 effect `committed`、报告 `done`、发布索引/FTS、`published` 事件，以及 manifest 的 anchor key/provider version/payload hash/签名置为可见。只有这一 SQLite 提交点后，reader resolver 才可看到报告；外部锚已存在本身不构成发布。
+
+外部锚写成功而 SQLite 发布事务失败时，report 仍不可读。reconciliation 必须以 effect 的 artifact/version、manifest hash 和锚 idempotency key 扫描，记录 `anchor_written_sqlite_uncommitted` 指标与 critical 告警（含 effect ID、locator、重试次数和年龄，但不含内容或 URI 凭据）。它只可：(a) 再次验证同一不可变 anchor 后重试原 SQLite 事务；或 (b) 在发现 artifact/manifest/effect 的不可恢复冲突时将 effect 标为 `unknown`/`failed` 并保留不可删除的 orphan-anchor 审计记录。不得新建 anchor、覆盖已存在对象、暴露报告，或把另一版本接到该锚。恢复后写 `anchor_reconciled` 审计事件并关闭同一告警；超过 15 分钟未收敛升级为 high。所有路径必须可由 effect ID 与 idempotency key 定位。
+
+### 4.3 每日 Merkle 汇总（补充证据）
+
+每日 UTC 02:00 后，汇总 job 为前一 UTC 日内已完成 SQLite 提交的 per-manifest anchors，按 `(tenant_id, report_id, artifact_id, artifact_version, manifest_hash)` 排序生成一个 root。其 immutable key 为 `integrity-daily-roots/v1/{tenant_id}/{YYYY-MM-DD}/root.json`，同样条件写、签名并记录 leaf-count、cutoff、排序规则和 root。该 root 不覆盖也不延迟任何单个 anchor 的发布/校验保证。
+
+若 UTC 02:15 未见前一日 root，写 `daily_anchor_missing` high 告警，并在管理员诊断视图展示 `daily_summary=missing`；已发布报告读取与其自身 anchor 的 `pass` 证据照常可用，reader 不会同步检查此汇总。恢复 worker 只能按已冻结 cutoff 使用相同排序重建相同 root 并条件写入；已有对象时必须逐字段验证相同 root/leaf-count/signature 后才算幂等恢复。不一致写 `daily_anchor_conflict` critical，保留诊断并人工处置。恢复成功写审计事件、将状态展示为 `recovered` 并关闭缺失告警；在 cutoff 后才完成发布的 anchor 明确不补写既有 daily root，其自身 anchor 仍是完整信任证明。
 
 ## 5. 授权、审计与读取隔离
 
@@ -82,7 +108,7 @@ manifest 本体使用 P0 定义的 UTF-8 canonical JSON，含 artifact/version�
 
 ## 6. 校验、告警与处置
 
-重校验按指定且已授权的 artifact version：读取原始字节 → 重算 content hash → 验 manifest hash/签名 → 验 daily Merkle root/外部 anchor → 追加 `integrity_check`。终态为 `pass`、`content_mismatch`、`manifest_mismatch`、`anchor_mismatch`、`missing_artifact`、`unreadable`、`unsupported_algorithm`、`authorization_denied`。失败记录只显示 artifact/version、期望与实际 hash 的前 12 位、失败步骤、checker 版本与时间。
+重校验按指定且已授权的 artifact version：读取原始字节 → 重算 content hash → 验 manifest hash/签名 → 以 manifest 的固定 locator 读取并验证**该版本自身** external anchor（key、provider version 如有、payload hash、签名与 `manifest_hash` binding）→ 追加 `integrity_check`。每日 Merkle root 只在存在时作为补充交叉检查，缺失不能把单版本校验降级为失败。终态为 `pass`、`content_mismatch`、`manifest_mismatch`、`anchor_mismatch`、`missing_artifact`、`unreadable`、`unsupported_algorithm`、`authorization_denied`。失败记录只显示 artifact/version、期望与实际 hash 的前 12 位、失败步骤、checker 版本与时间。
 
 以下规则写为首版告警阈值：任一完整性失败或 manifest 缺失为 critical（5 分钟内通知）；7 天同 reason_code ≥5 次为 high；未知成本占当日 trace ≥1% 为 warning；任一漏斗转化率较最近 28 日同星期基线下降 30% 且样本 ≥20 为 warning；阶段 P95 超基线 50% 且样本 ≥20 为 warning。相同 `(tenant, rule, range, artifact?)` 30 分钟内去重。critical 完整性失败阻止该 artifact 的**新**发布；对已发布报告仅附管理员状态/告警，绝不回写正文、自动下线或影响 reader。
 
@@ -94,7 +120,7 @@ P1a 的 gate 是确定性、版本化的 `provenance-dashboard-integrity-v1` fix
 
 1. 重放/重复/乱序/迟到事件后，漏斗、成本、P50/P95/P99 与 reason-code 汇总精确匹配 fixture；超过 7 天回填窗的事件不改变冻结汇总。
 2. 100% 拒绝跨角色/跨 tenant 的聚合、明细、URI 与重校验访问，且响应无法区分不存在与无权；负向测试证明正文/prompt 不会进入索引、告警或审计。
-3. 对正常、篡改 artifact、篡改 manifest、替换二者、缺件、错误签名/撤销 key、并发发布半途失败，100% 得到指定终态；“同时替换 artifact + manifest”必须被外部已签名 anchor 检出。
+3. 对正常、篡改 artifact、篡改 manifest、替换二者、缺件、错误签名/撤销 key、并发发布半途失败，100% 得到指定终态；“同时替换 artifact + manifest”必须被该版本自身外部已签名 anchor 检出。fixture 还须覆盖 anchor 条件写的重放/冲突、anchor 写成但 SQLite 提交失败后的精确重试/孤儿告警，以及 daily root 缺失、幂等恢复和不影响 reader 的展示。
 4. report reader 在聚合库不可用、队列积压、checker/anchor 超时和告警失败时仍只读取已提交快照；端到端读取 P95 不劣于 P0c 基线超过 5%。
 5. 关键 dashboard 查询在容量 fixture 上命中规定索引；31 天明细与 400 天聚合均在 P0c 记录硬件上 P95 ≤2 秒；告警去重和阈值边界逐项通过。
 
