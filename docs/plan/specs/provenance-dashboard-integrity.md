@@ -73,35 +73,55 @@ manifest 本体使用 P0 定义的 UTF-8 canonical JSON，含 artifact/version�
 
 方案 1 是本 spec 的唯一发布信任边界：**每一个** `(tenant_id, report_id, artifact_id, artifact_version, manifest_hash)` 都必须有一个独立、签名、不可变的外部锚；每日 Merkle root 只做事后汇总，绝不作为发布成功或单个已发布版本校验的前提。
 
-在计算 `manifest_hash` 前，publisher 必须在 manifest 的 `external_anchor` 中写入以下固定 locator。`binding_kind` 是固定关系标签，**不是** digest 字段：
+在计算 `manifest_hash` 前，publisher 必须在 manifest 的 `external_anchor` 中写入以下固定 locator；manifest 中**没有** `binding`、`binding_kind`、anchor payload hash 或 anchor signature 字段：
 
 ```text
 anchor_schema_version = anchor-v1
 object_key = integrity-anchors/v1/{tenant_id}/{report_id}/{artifact_id}/{artifact_version}/anchor-v1.json
-binding_kind = manifest_hash
 ```
 
-`artifact_version` 是发布版本的不可变逻辑版本；`anchor-v1` 和完整 object key 是锚对象的不可变逻辑版本与定位符。`manifest-v1` 规范化为 RFC 8785 JCS 产出的 UTF-8 bytes；所有字符串先为 Unicode scalar value、不得做 NFC/NFD 转换，hash 使用这些 bytes 的 SHA-256。`manifest_hash` 的 preimage 是完整 manifest（包含固定 `external_anchor` locator）删除所有派生字段后的 JCS bytes；派生字段仅为 `manifest_hash`、`manifest_signature`、`anchor_provider_version_id`、`anchor_payload_hash` 与任何 anchor 签名，均**不**属于 preimage。因此 manifest 先有稳定身份和 hash，digest 不会循环写回自身或 `binding_kind`。
+`artifact_version` 是发布版本的不可变逻辑版本；`anchor-v1` 和完整 object key 是锚对象的不可变逻辑版本与定位符。ID 中的每一段必须符合 P0 的不可变 ID grammar（不得含 `/`、NUL 或路径规范化片段），所以此模板给出唯一 key。`manifest-v1` 规范化为 RFC 8785 JCS 产出的 UTF-8 bytes；字符串必须是 Unicode scalar value（拒绝孤立 surrogate）、不得做 NFC/NFD 转换，hash 使用这些 bytes 的 SHA-256。
 
-完成 manifest hash 后，publisher 计算写锚幂等键 `SHA-256("anchor-v1\\0{tenant_id}\\0{report_id}\\0{artifact_id}\\0{artifact_version}\\0{manifest_hash}")`；它记录在 anchor payload 与 `generation_effect`，而非 manifest。anchor payload 的 preimage 也是 RFC 8785 JCS UTF-8 bytes，字段为 `anchor_schema_version`、`object_key`、content hash/算法，以及 `binding` 对象：`{ binding_kind: "manifest_hash", tenant_id, report_id, artifact_id, artifact_version, manifest_schema_version, manifest_hash_algorithm: "sha-256", manifest_hash }`。`anchor_payload_hash` 是该 preimage 的 SHA-256；它和 anchor 签名是派生字段，不包含在其自身 preimage。由此 `binding_kind` 固定说明关系，而 manifest digest 只在 anchor 的 `binding.manifest_hash` 中出现，精确绑定 manifest 身份、版本与 locator，且没有自引用。支持 provider object version 时，条件写成功返回的 `provider_version_id` 也必须保存到 `artifact_manifest.anchor_provider_version_id`；不支持时该字段为 `NULL`，校验以不可覆盖的完整 key、Object-Lock retention 和锚 payload hash 定位唯一对象。任何版本字段都不得以可变的 “latest” 指针表示。
+`manifest_hash` 的唯一 preimage 为 `M = JCS-UTF8(manifest_without_derived_fields)`：它包含上述 `external_anchor` locator；排除 `manifest_hash`、`manifest_signature`、`anchor_provider_version_id`、`anchor_payload_hash` 与所有 anchor 签名。字段名使用 ASCII，数值按 JCS 表示；schema 禁止未声明字段。`manifest_hash = SHA-256(M)`。因此 manifest 身份与 anchor locator 先被固定，再产生 digest；任何 `binding` 字节都不属于 `M`。
 
-锚 payload 是上述 canonical JSON，至少含 locator、完整 artifact/version、`binding.manifest_hash`、`content_hash`、`manifest_schema_version`、`anchor_payload_hash`、签发时间及签名元数据。`anchor_payload_hash` 计算时排除自身和签名字段；它、`manifest_hash` 与每日 root 均必须由 KMS/HSM 中的 Ed25519 发布密钥签名，并记录 `key_id`、算法、签名、签发时间和撤销状态。锚的 locator 必须精确等于 manifest 中的 locator，且锚的 artifact/version 与 `binding.manifest_hash` 必须精确等于 manifest 的值；任一不等即为 `anchor_mismatch`。运行时只持有签名权限，校验服务只持有公钥/验证权限，二者均没有 Object-Lock 删除、覆盖或保留期绕过权限。密钥轮换新建 key version，旧公钥保留至其所有 anchor 到期；撤销后新发布失败，历史校验仍以记录的公钥验证并标出 `key_revoked`。
+完成 manifest hash 后才构造 `binding`。它是 anchor payload 的必填对象，严格等于下列 schema（不得遗漏或增加字段，所有值均为字符串）：
+
+```json
+{
+  "binding_schema_version": "binding-v1",
+  "binding_kind": "manifest-v1-sha256",
+  "tenant_id": "<manifest.tenant_id>",
+  "report_id": "<manifest.report_id>",
+  "artifact_id": "<manifest.artifact_id>",
+  "artifact_version": "<manifest.artifact_version>",
+  "manifest_schema_version": "<manifest.manifest_schema_version>",
+  "manifest_canonicalization": "rfc8785-jcs-utf8",
+  "manifest_hash_algorithm": "sha-256",
+  "manifest_hash": "<lowercase SHA-256(M)>"
+}
+```
+
+尖括号值只能逐字复制自已验证的 manifest 或由 `M` 计算；不得接受第二套调用方传入的 identity/hash。`binding` 本身不单独 hash、签名或携带 `object_key`、`anchor_payload_hash`、provider version、签名或 “latest” 指针：它的字节边界就是下述 anchor payload preimage 中的一个 JCS member。anchor 的 `object_key` 必须与 manifest 的 `external_anchor.object_key` 字节相等，且由 verifier 单独比较；这样 locator 被 `M` 承诺、又被 anchor payload 承诺，但没有把尚未生成的 anchor 或 binding 反写到 manifest。
+
+写锚幂等键为 `SHA-256("anchor-v1\\0{tenant_id}\\0{report_id}\\0{artifact_id}\\0{artifact_version}\\0{manifest_hash}")`；它记录在 `generation_effect`，而非 manifest。anchor payload preimage 的唯一边界为 `A = JCS-UTF8({anchor_schema_version, object_key, content_hash_algorithm, content_hash, issued_at, binding})`，其中 `binding` 为上述完整对象，且 `issued_at` 是 publisher 写入的 UTC RFC 3339 instant。`anchor_payload_hash = SHA-256(A)`；不可变对象存储的 envelope 是 `{payload: A-as-JSON, anchor_payload_hash, signature}`，其中后两项都**不**属于 `A`，Ed25519 签名覆盖 domain-separated bytes `"anchor-v1\\0" || A`。这建立了单向顺序 `manifest locator → M → binding → A → anchor hash/signature`，故 manifest 与 binding 不可能循环依赖。支持 provider object version 时，条件写成功返回的 `provider_version_id` 也必须保存到 `artifact_manifest.anchor_provider_version_id`；不支持时该字段为 `NULL`，校验以不可覆盖的完整 key、Object-Lock retention 和锚 payload hash 定位唯一对象。任何版本字段都不得以可变的 “latest” 指针表示。
+
+`manifest_hash` 与每日 root 的签名同样覆盖各自 domain-separated canonical preimage；所有签名记录 `key_id`、算法、签名、签发时间和撤销状态。校验器必须依次重建 `M`、比较 `binding` 的十个字段、比较 locator、重建 `A`、比较 `anchor_payload_hash` 并验签；任一不等即为 `manifest_mismatch` 或 `anchor_mismatch`。运行时只持有签名权限，校验服务只持有公钥/验证权限，二者均没有 Object-Lock 删除、覆盖或保留期绕过权限。密钥轮换新建 key version，旧公钥保留至其所有 anchor 到期；撤销后新发布失败，历史校验仍以记录的公钥验证并标出 `key_revoked`。
 
 #### 4.1.1 固定测试向量与可复现验证
 
-`provenance-dashboard-integrity-v1` 必须把以下 ASCII-only JCS bytes 作为固定测试向量（无 BOM、无尾随换行）。对原始 artifact bytes `abc`，`content_hash` 是 `ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad`。下列 manifest preimage 的 SHA-256 必须为 `cdbac62965f740f569c534edf69b1b3508948d2d8dbfd5e03f09fb12cc312e83`：
+`provenance-dashboard-integrity-v1` 必须把以下 ASCII-only JCS bytes 作为固定测试向量（无 BOM、无尾随换行）。对原始 artifact bytes `abc`，`content_hash` 是 `ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad`。下列 `M` 的 SHA-256 必须为 `85b88d5667e4e5e36dc461ff25b6f2b225354623774baddd9b3fddb6dae04907`：
 
 ```json
-{"artifact_id":"artifact-0001","artifact_version":"v1","content_hash":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad","content_hash_algorithm":"sha-256","created_at":"2026-08-21T00:00:00Z","external_anchor":{"anchor_schema_version":"anchor-v1","binding_kind":"manifest_hash","object_key":"integrity-anchors/v1/default/report-0001/artifact-0001/v1/anchor-v1.json"},"length":3,"manifest_schema_version":"manifest-v1","media_type":"text/plain","report_id":"report-0001","tenant_id":"default","upstream_trace_id":"trace-0001"}
+{"artifact_id":"artifact-0001","artifact_version":"v1","content_hash":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad","content_hash_algorithm":"sha-256","created_at":"2026-08-21T00:00:00Z","external_anchor":{"anchor_schema_version":"anchor-v1","object_key":"integrity-anchors/v1/default/report-0001/artifact-0001/v1/anchor-v1.json"},"length":3,"manifest_schema_version":"manifest-v1","media_type":"text/plain","report_id":"report-0001","tenant_id":"default","upstream_trace_id":"trace-0001"}
 ```
 
-将该 hash 写入 anchor 的 `binding.manifest_hash` 后，下列 anchor preimage 的 SHA-256 必须为 `3036381f0d12cbe3e527f6615564d94e83e48a22b72eaa07ab95968b539cd96a`：
+将该 hash 写入 `binding.manifest_hash` 并加入固定 `issued_at` 后，下列 `A` 的 SHA-256 必须为 `e9c15e12b101ae5d11b7f778e1ea27e6722569f813e324026d305260157a7bb0`：
 
 ```json
-{"anchor_schema_version":"anchor-v1","binding":{"artifact_id":"artifact-0001","artifact_version":"v1","binding_kind":"manifest_hash","manifest_hash":"cdbac62965f740f569c534edf69b1b3508948d2d8dbfd5e03f09fb12cc312e83","manifest_hash_algorithm":"sha-256","manifest_schema_version":"manifest-v1","report_id":"report-0001","tenant_id":"default"},"content_hash":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad","content_hash_algorithm":"sha-256","object_key":"integrity-anchors/v1/default/report-0001/artifact-0001/v1/anchor-v1.json"}
+{"anchor_schema_version":"anchor-v1","binding":{"artifact_id":"artifact-0001","artifact_version":"v1","binding_kind":"manifest-v1-sha256","binding_schema_version":"binding-v1","manifest_canonicalization":"rfc8785-jcs-utf8","manifest_hash":"85b88d5667e4e5e36dc461ff25b6f2b225354623774baddd9b3fddb6dae04907","manifest_hash_algorithm":"sha-256","manifest_schema_version":"manifest-v1","report_id":"report-0001","tenant_id":"default"},"content_hash":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad","content_hash_algorithm":"sha-256","issued_at":"2026-08-21T00:00:01Z","object_key":"integrity-anchors/v1/default/report-0001/artifact-0001/v1/anchor-v1.json"}
 ```
 
-实现必须重算两段 bytes、比较两个 digest，再验证 Ed25519 signatures；随后篡改任一 manifest identity 字段、locator 或 anchor binding，都必须得到 `manifest_mismatch` 或 `anchor_mismatch`。该过程既是可复现验证步骤，也是跨语言 canonicalization 的 gate fixture。
+可复现验证不依赖实现代码：将以上两个代码块各保存为无换行的 UTF-8 文件 `M.json`、`A.json`，执行 `shasum -a 256 M.json A.json`，输出必须依次为上述 `M`、`A` digest；随后以记录的 `key_id` 验证对 `"anchor-v1\\0" || A.json` 的 Ed25519 签名。负例只把 `A.json` 的 `binding.manifest_hash` 改为 64 个 `0`，重算 `A` 后必须仍能证明原签名/原 `anchor_payload_hash` 不匹配，并产生 `anchor_mismatch`。该过程既是可复现验证步骤，也是跨语言 canonicalization 的 gate fixture。
 
 写锚只能使用该 object key 的 `If-None-Match: *`。网络失败或未知结果必须以相同 idempotency key 重试：若对象已存在，publisher 仅可读取并验证其 canonical bytes、payload hash、签名和所有绑定字段都与当前候选完全相同，才把它视为成功；任何不一致均为 `anchor_conflict` critical，禁止发布且不得覆盖对象。不得为同一 manifest/version 生成第二个 key 或“修正”已有锚。
 
