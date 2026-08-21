@@ -55,7 +55,13 @@ received → accepted → processed → validated → published
 
 API 明细查询最大 UTC 时间窗 31 天、每页最多 100 条；聚合查询最大 400 天。每一条驾驶舱 query 必须用 `EXPLAIN QUERY PLAN` 在版本化容量 fixture 上证明命中索引，禁止扫描 JSON 或无界递归。
 
-保留期是本 spec 的准入常量：原始明细 90 天在线、每日汇总 400 天、`generation_trace_request` 100 天；已发布报告及其对应 manifest 在报告可读/归档期内保留，删除后只保留 P0 redaction tombstone。每个 manifest/version 的外部锚与 redaction registry 一样使用 Object Lock Compliance，至少 100 天；每日 Merkle 汇总锚采用相同保护。法律保全优先于生命周期清理；到期任务只可在保全不存在、备份/registry 义务满足且审计记录成功写入后执行。
+保留期是本 spec 的准入常量：原始明细 90 天在线、每日汇总 400 天、`generation_trace_request` 100 天；已发布报告及其对应 manifest 在报告可读/归档期内保留，删除后只保留 P0 redaction tombstone。
+
+每个 manifest/version 的**验证材料集合**为：不可变 anchor 的 canonical payload/签名/完整 object key 与 provider version（如有）、`manifest_hash` 与 manifest 签名、对应 content hash、签名 `key_id` 的公钥/证书/撤销历史、canonicalization 版本，以及 `integrity_check` 审计记录。集合的 `retain_until` 必须为 `max(报告可读期结束, 报告归档期结束, 该 artifact 的保留期结束, anchor 创建后 100 天)`；anchor 和每日 Merkle 汇总锚使用 Object Lock Compliance 至该时刻，验证材料的其余部分不得先于该时刻清理。法律保全优先于所有到期时间，并延长整套集合直到 hold 解除。
+
+报告删除请求的行为固定如下：有 legal hold 时拒绝物理删除并写 `deletion_blocked_legal_hold` 审计；无 hold 但仍在可读/归档期时仅可按授权将报告从 reader 下线为 `delete_pending`，不得删除 artifact、manifest、anchor 或验证材料；全部报告/归档保留期结束后才可销毁 artifact/manifest。销毁前必须追加含 locator、manifest/anchor payload hash、最后一次校验结果与销毁时间的签名 `retention_tombstone`；viewer 此后得到与不存在相同的 404，admin 只能读脱敏 tombstone，结论为“内容保留期已结束，原始内容不再可验证”，不得再显示 `pass`。anchor 与其他验证材料仍保留至其计算出的 `retain_until`，之后只保留 P0 redaction tombstone。到期任务只可在无 hold、备份/registry 义务满足、tombstone 和审计记录成功写入后执行。
+
+在报告仍可读/归档期间，anchor、历史公钥或任何验证材料不可用时，校验记录为 `verification_material_unavailable`，5 分钟内触发 critical 告警；reader 继续只读取已提交快照，viewer 的证据状态显示“暂不可验证”而不暴露对象键或存储细节，admin 可见受控诊断和恢复进度。恢复只能重新取得同一不可变 object version、原始 canonical bytes 和记录的公钥材料；不能恢复即持续告警并禁止为该 artifact 新发布版本，绝不能以新锚或新 key 把历史版本重新标为 `pass`。
 
 ## 4. 完整性信任锚与原子发布
 
@@ -67,17 +73,35 @@ manifest 本体使用 P0 定义的 UTF-8 canonical JSON，含 artifact/version�
 
 方案 1 是本 spec 的唯一发布信任边界：**每一个** `(tenant_id, report_id, artifact_id, artifact_version, manifest_hash)` 都必须有一个独立、签名、不可变的外部锚；每日 Merkle root 只做事后汇总，绝不作为发布成功或单个已发布版本校验的前提。
 
-在计算 `manifest_hash` 前，publisher 必须在 manifest 的 `external_anchor` 中写入以下固定 locator：
+在计算 `manifest_hash` 前，publisher 必须在 manifest 的 `external_anchor` 中写入以下固定 locator。`binding_kind` 是固定关系标签，**不是** digest 字段：
 
 ```text
 anchor_schema_version = anchor-v1
 object_key = integrity-anchors/v1/{tenant_id}/{report_id}/{artifact_id}/{artifact_version}/anchor-v1.json
-binding = manifest_hash
+binding_kind = manifest_hash
 ```
 
-`artifact_version` 是发布版本的不可变逻辑版本；`anchor-v1` 和完整 object key 是锚对象的不可变逻辑版本与定位符。完成 manifest hash 后，publisher 计算写锚幂等键 `SHA-256("anchor-v1\\0{tenant_id}\\0{report_id}\\0{artifact_id}\\0{artifact_version}\\0{manifest_hash}")`；它记录在 anchor payload 与 `generation_effect`，而非 manifest，以避免 hash 的自引用。支持 provider object version 时，条件写成功返回的 `provider_version_id` 也必须保存到 `artifact_manifest.anchor_provider_version_id`；不支持时该字段为 `NULL`，校验以不可覆盖的完整 key、Object-Lock retention 和锚 payload hash 定位唯一对象。任何版本字段都不得以可变的 “latest” 指针表示。
+`artifact_version` 是发布版本的不可变逻辑版本；`anchor-v1` 和完整 object key 是锚对象的不可变逻辑版本与定位符。`manifest-v1` 规范化为 RFC 8785 JCS 产出的 UTF-8 bytes；所有字符串先为 Unicode scalar value、不得做 NFC/NFD 转换，hash 使用这些 bytes 的 SHA-256。`manifest_hash` 的 preimage 是完整 manifest（包含固定 `external_anchor` locator）删除所有派生字段后的 JCS bytes；派生字段仅为 `manifest_hash`、`manifest_signature`、`anchor_provider_version_id`、`anchor_payload_hash` 与任何 anchor 签名，均**不**属于 preimage。因此 manifest 先有稳定身份和 hash，digest 不会循环写回自身或 `binding_kind`。
 
-锚 payload 是 canonical JSON，至少含 locator、完整 artifact/version、`manifest_hash`、`content_hash`、`manifest_schema_version`、`anchor_payload_hash`、签发时间及签名元数据。`anchor_payload_hash` 计算时排除自身和签名字段；它、`manifest_hash` 与每日 root 均必须由 KMS/HSM 中的 Ed25519 发布密钥签名，并记录 `key_id`、算法、签名、签发时间和撤销状态。锚的 locator 必须精确等于 manifest 中的 locator，且锚的 artifact/version 与 `manifest_hash` 必须精确等于 manifest 的值；任一不等即为 `anchor_mismatch`。运行时只持有签名权限，校验服务只持有公钥/验证权限，二者均没有 Object-Lock 删除、覆盖或保留期绕过权限。密钥轮换新建 key version，旧公钥保留至其所有 anchor 到期；撤销后新发布失败，历史校验仍以记录的公钥验证并标出 `key_revoked`。
+完成 manifest hash 后，publisher 计算写锚幂等键 `SHA-256("anchor-v1\\0{tenant_id}\\0{report_id}\\0{artifact_id}\\0{artifact_version}\\0{manifest_hash}")`；它记录在 anchor payload 与 `generation_effect`，而非 manifest。anchor payload 的 preimage 也是 RFC 8785 JCS UTF-8 bytes，字段为 `anchor_schema_version`、`object_key`、content hash/算法，以及 `binding` 对象：`{ binding_kind: "manifest_hash", tenant_id, report_id, artifact_id, artifact_version, manifest_schema_version, manifest_hash_algorithm: "sha-256", manifest_hash }`。`anchor_payload_hash` 是该 preimage 的 SHA-256；它和 anchor 签名是派生字段，不包含在其自身 preimage。由此 `binding_kind` 固定说明关系，而 manifest digest 只在 anchor 的 `binding.manifest_hash` 中出现，精确绑定 manifest 身份、版本与 locator，且没有自引用。支持 provider object version 时，条件写成功返回的 `provider_version_id` 也必须保存到 `artifact_manifest.anchor_provider_version_id`；不支持时该字段为 `NULL`，校验以不可覆盖的完整 key、Object-Lock retention 和锚 payload hash 定位唯一对象。任何版本字段都不得以可变的 “latest” 指针表示。
+
+锚 payload 是上述 canonical JSON，至少含 locator、完整 artifact/version、`binding.manifest_hash`、`content_hash`、`manifest_schema_version`、`anchor_payload_hash`、签发时间及签名元数据。`anchor_payload_hash` 计算时排除自身和签名字段；它、`manifest_hash` 与每日 root 均必须由 KMS/HSM 中的 Ed25519 发布密钥签名，并记录 `key_id`、算法、签名、签发时间和撤销状态。锚的 locator 必须精确等于 manifest 中的 locator，且锚的 artifact/version 与 `binding.manifest_hash` 必须精确等于 manifest 的值；任一不等即为 `anchor_mismatch`。运行时只持有签名权限，校验服务只持有公钥/验证权限，二者均没有 Object-Lock 删除、覆盖或保留期绕过权限。密钥轮换新建 key version，旧公钥保留至其所有 anchor 到期；撤销后新发布失败，历史校验仍以记录的公钥验证并标出 `key_revoked`。
+
+#### 4.1.1 固定测试向量与可复现验证
+
+`provenance-dashboard-integrity-v1` 必须把以下 ASCII-only JCS bytes 作为固定测试向量（无 BOM、无尾随换行）。对原始 artifact bytes `abc`，`content_hash` 是 `ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad`。下列 manifest preimage 的 SHA-256 必须为 `cdbac62965f740f569c534edf69b1b3508948d2d8dbfd5e03f09fb12cc312e83`：
+
+```json
+{"artifact_id":"artifact-0001","artifact_version":"v1","content_hash":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad","content_hash_algorithm":"sha-256","created_at":"2026-08-21T00:00:00Z","external_anchor":{"anchor_schema_version":"anchor-v1","binding_kind":"manifest_hash","object_key":"integrity-anchors/v1/default/report-0001/artifact-0001/v1/anchor-v1.json"},"length":3,"manifest_schema_version":"manifest-v1","media_type":"text/plain","report_id":"report-0001","tenant_id":"default","upstream_trace_id":"trace-0001"}
+```
+
+将该 hash 写入 anchor 的 `binding.manifest_hash` 后，下列 anchor preimage 的 SHA-256 必须为 `3036381f0d12cbe3e527f6615564d94e83e48a22b72eaa07ab95968b539cd96a`：
+
+```json
+{"anchor_schema_version":"anchor-v1","binding":{"artifact_id":"artifact-0001","artifact_version":"v1","binding_kind":"manifest_hash","manifest_hash":"cdbac62965f740f569c534edf69b1b3508948d2d8dbfd5e03f09fb12cc312e83","manifest_hash_algorithm":"sha-256","manifest_schema_version":"manifest-v1","report_id":"report-0001","tenant_id":"default"},"content_hash":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad","content_hash_algorithm":"sha-256","object_key":"integrity-anchors/v1/default/report-0001/artifact-0001/v1/anchor-v1.json"}
+```
+
+实现必须重算两段 bytes、比较两个 digest，再验证 Ed25519 signatures；随后篡改任一 manifest identity 字段、locator 或 anchor binding，都必须得到 `manifest_mismatch` 或 `anchor_mismatch`。该过程既是可复现验证步骤，也是跨语言 canonicalization 的 gate fixture。
 
 写锚只能使用该 object key 的 `If-None-Match: *`。网络失败或未知结果必须以相同 idempotency key 重试：若对象已存在，publisher 仅可读取并验证其 canonical bytes、payload hash、签名和所有绑定字段都与当前候选完全相同，才把它视为成功；任何不一致均为 `anchor_conflict` critical，禁止发布且不得覆盖对象。不得为同一 manifest/version 生成第二个 key 或“修正”已有锚。
 
@@ -108,7 +132,7 @@ binding = manifest_hash
 
 ## 6. 校验、告警与处置
 
-重校验按指定且已授权的 artifact version：读取原始字节 → 重算 content hash → 验 manifest hash/签名 → 以 manifest 的固定 locator 读取并验证**该版本自身** external anchor（key、provider version 如有、payload hash、签名与 `manifest_hash` binding）→ 追加 `integrity_check`。每日 Merkle root 只在存在时作为补充交叉检查，缺失不能把单版本校验降级为失败。终态为 `pass`、`content_mismatch`、`manifest_mismatch`、`anchor_mismatch`、`missing_artifact`、`unreadable`、`unsupported_algorithm`、`authorization_denied`。失败记录只显示 artifact/version、期望与实际 hash 的前 12 位、失败步骤、checker 版本与时间。
+重校验按指定且已授权的 artifact version：读取原始字节 → 重算 content hash → 验 manifest hash/签名 → 以 manifest 的固定 locator 读取并验证**该版本自身** external anchor（key、provider version 如有、payload hash、签名与 `binding.manifest_hash`）→ 追加 `integrity_check`。每日 Merkle root 只在存在时作为补充交叉检查，缺失不能把单版本校验降级为失败。终态为 `pass`、`content_mismatch`、`manifest_mismatch`、`anchor_mismatch`、`verification_material_unavailable`、`missing_artifact`、`unreadable`、`unsupported_algorithm`、`authorization_denied`。失败记录只显示 artifact/version、期望与实际 hash 的前 12 位、失败步骤、checker 版本与时间。
 
 以下规则写为首版告警阈值：任一完整性失败或 manifest 缺失为 critical（5 分钟内通知）；7 天同 reason_code ≥5 次为 high；未知成本占当日 trace ≥1% 为 warning；任一漏斗转化率较最近 28 日同星期基线下降 30% 且样本 ≥20 为 warning；阶段 P95 超基线 50% 且样本 ≥20 为 warning。相同 `(tenant, rule, range, artifact?)` 30 分钟内去重。critical 完整性失败阻止该 artifact 的**新**发布；对已发布报告仅附管理员状态/告警，绝不回写正文、自动下线或影响 reader。
 
@@ -121,7 +145,9 @@ P1a 的 gate 是确定性、版本化的 `provenance-dashboard-integrity-v1` fix
 1. 重放/重复/乱序/迟到事件后，漏斗、成本、P50/P95/P99 与 reason-code 汇总精确匹配 fixture；超过 7 天回填窗的事件不改变冻结汇总。
 2. 100% 拒绝跨角色/跨 tenant 的聚合、明细、URI 与重校验访问，且响应无法区分不存在与无权；负向测试证明正文/prompt 不会进入索引、告警或审计。
 3. 对正常、篡改 artifact、篡改 manifest、替换二者、缺件、错误签名/撤销 key、并发发布半途失败，100% 得到指定终态；“同时替换 artifact + manifest”必须被该版本自身外部已签名 anchor 检出。fixture 还须覆盖 anchor 条件写的重放/冲突、anchor 写成但 SQLite 提交失败后的精确重试/孤儿告警，以及 daily root 缺失、幂等恢复和不影响 reader 的展示。
-4. report reader 在聚合库不可用、队列积压、checker/anchor 超时和告警失败时仍只读取已提交快照；端到端读取 P95 不劣于 P0c 基线超过 5%。
-5. 关键 dashboard 查询在容量 fixture 上命中规定索引；31 天明细与 400 天聚合均在 P0c 记录硬件上 P95 ≤2 秒；告警去重和阈值边界逐项通过。
+4. 对报告可读/归档期长于 100 天的 fixture，生命周期任务在 `retain_until` 前删除 anchor、历史公钥或其他验证材料必须失败并留下审计；legal hold 期间删除同样失败。归档期结束后的销毁必须生成可验签 `retention_tombstone`，viewer 返回 404，admin 只得到“内容保留期已结束，原始内容不再可验证”的脱敏结论；验证材料不可用时必须产生 `verification_material_unavailable` 与 critical 告警而不阻断 reader。
+5. 固定测试向量的 manifest 与 anchor JCS UTF-8 bytes、SHA-256 值和 Ed25519 signatures 必须精确匹配；对 identity、locator、`binding_kind` 或 `binding.manifest_hash` 的任一单点篡改必须失败。该向量证明 digest 仅在 anchor binding 出现、不会参与自身 manifest preimage。
+6. report reader 在聚合库不可用、队列积压、checker/anchor 超时和告警失败时仍只读取已提交快照；端到端读取 P95 不劣于 P0c 基线超过 5%。
+7. 关键 dashboard 查询在容量 fixture 上命中规定索引；31 天明细与 400 天聚合均在 P0c 记录硬件上 P95 ≤2 秒；告警去重和阈值边界逐项通过。
 
 人工评审须确认：本 spec 与 `generation-provenance.md` 的术语/权限/发布原子性一致、保留常量符合业务及法务要求、KMS/HSM 与 Object-Lock 权限边界可由运维落地、以及上述 gate 产物可复现。评审签核前不得创建或启动 P1 实现子任务。
