@@ -1,7 +1,13 @@
 # Spec: 溯源驾驶舱与完整性能力（P1a）
 
-> 状态：🟡 Draft（已按方案 1 修订），须经人工设计评审后才能拆分 P1 实现任务。
+> 状态：🟢 设计已签核；生产前置待确认。
+> 设计签核记录：2026-08-22；签核人：项目负责人 dongqiu；[签核证据](https://github.com/dong-qiu/deep-insight-agent/pull/265#issuecomment-5381671917)。规格 PR [#264](https://github.com/dong-qiu/deep-insight-agent/pull/264) 已合入，INSI-12 已完成，独立评审记录为 INSI-24。
+> 实现准入：在 INSI-25「P1-0：治理签核与生产前置确认」完成前，不得启动 P1 实现任务。
 > 依赖：[生成溯源与全链路可观测性](generation-provenance.md) P0a–P0c 已启用。
+
+## 签核与实施准入
+
+本规格的设计取舍已经完成签核；这不等同于生产就绪。INSI-25 必须形成可审计证据，确认数据与法务保留规则、Object-Lock/KMS/IAM 最小权限、告警值班、P0c 性能基线、SQLite 迁移/备份及 orphan-anchor 恢复演练。只有该治理门完成后，后续 P1 实现任务才能从 `blocked` 解除。
 
 ## 1. 目的与边界
 
