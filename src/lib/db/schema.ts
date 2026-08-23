@@ -225,6 +225,36 @@ CREATE TRIGGER integrity_key_revocation_no_update BEFORE UPDATE ON integrity_key
 CREATE TRIGGER integrity_key_revocation_no_delete BEFORE DELETE ON integrity_key_revocation BEGIN SELECT RAISE(ABORT, 'integrity_key_revocation is append-only'); END;
 `;
 
+/** P1c verification ledger. Check rows contain only versions, result codes and
+ * hash prefixes; they must never contain artifact content or object-store URIs. */
+export const INTEGRITY_CHECK_SCHEMA_SQL = `
+CREATE TABLE integrity_check (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),
+  artifact_id TEXT NOT NULL,
+  artifact_version TEXT NOT NULL,
+  outcome TEXT NOT NULL CHECK(outcome IN ('pass','content_mismatch','manifest_mismatch','anchor_mismatch','verification_material_unavailable','missing_artifact','unreadable','unsupported_algorithm','authorization_denied')),
+  failure_step TEXT,
+  expected_hash_prefix TEXT,
+  actual_hash_prefix TEXT,
+  checker_version TEXT NOT NULL,
+  checked_at TEXT NOT NULL,
+  FOREIGN KEY(tenant_id,artifact_id,artifact_version) REFERENCES artifact_manifest(tenant_id,artifact_id,artifact_version)
+);
+CREATE INDEX idx_integrity_check_tenant_artifact_checked ON integrity_check(tenant_id,artifact_id,artifact_version,checked_at DESC);
+CREATE TRIGGER integrity_check_no_update BEFORE UPDATE ON integrity_check BEGIN SELECT RAISE(ABORT, 'integrity_check is append-only'); END;
+CREATE TRIGGER integrity_check_no_delete BEFORE DELETE ON integrity_check BEGIN SELECT RAISE(ABORT, 'integrity_check is append-only'); END;
+CREATE TABLE integrity_check_alert_dedup (
+  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),
+  artifact_id TEXT NOT NULL,
+  artifact_version TEXT NOT NULL,
+  window_start TEXT NOT NULL,
+  PRIMARY KEY(tenant_id,artifact_id,artifact_version,window_start)
+);
+CREATE TRIGGER integrity_check_alert_dedup_no_update BEFORE UPDATE ON integrity_check_alert_dedup BEGIN SELECT RAISE(ABORT, 'integrity_check_alert_dedup is append-only'); END;
+CREATE TRIGGER integrity_check_alert_dedup_no_delete BEFORE DELETE ON integrity_check_alert_dedup BEGIN SELECT RAISE(ABORT, 'integrity_check_alert_dedup is append-only'); END;
+`;
+
 /** P1b-2 dashboard facts. These are isolated from source-credit facts and report reads. */
 export const P1_METRICS_SCHEMA_SQL = `
 CREATE TABLE funnel_event (

@@ -11,9 +11,9 @@
 0 17 * * * node --no-warnings /app/ops/trigger.mjs
 
 # Integrity maintenance is independent of report dispatch: it reconciles
-# orphaned anchors every 15 min, creates yesterday's root at 02:00 UTC, and
+# orphaned anchors every 5 min, creates yesterday's root at 02:00 UTC, and
 # records the mandated missing-root alert at 02:15 UTC.
-*/15 * * * * CRON_MODE=integrity node --no-warnings /app/ops/trigger.mjs
+*/5 * * * * CRON_MODE=integrity node --no-warnings /app/ops/trigger.mjs
 
 # 每日卷备份：管线（17:00 UTC）跑完后 1 小时备份，确保当日 brief 已落库再快照。
 # SQLite 在线备份（一致）+ reports/ 正文 → /data/backups/<时间戳>/，默认留最近 14 份
