@@ -23,7 +23,7 @@ function hasPrePrReview(markdown) {
     /^-[ \t]*范围：[ \t]*\S[^\r\n]*$/m.test(markdown) &&
     /^-[ \t]*风险级别：[ \t]*(?:低|中|高)[ \t]*$/m.test(markdown) &&
     /^-[ \t]*结论：[ \t]*(?:通过|需修复|待确认)[^\r\n]*$/m.test(markdown) &&
-    /^Blocking：[ \t]*\d+；[ \t]*Warning：[ \t]*\d+/m.test(markdown)
+    /^Blocking:[ \t]*\d+;[ \t]*Warning:[ \t]*\d+$/m.test(markdown)
   );
 }
 
@@ -51,7 +51,7 @@ export function evaluatePolicy({ changedFiles, prBody, hasEvalGateException = fa
   const body = withoutComments(prBody ?? "");
   const reasons = [];
   if (!hasPrePrReview(body)) {
-    reasons.push("缺少完整的 `## Pre-PR AI Review` 摘要（基线、范围、风险级别、结论、Blocking/Warning）。");
+    reasons.push("缺少完整的 `## Pre-PR AI Review` 摘要（基线、范围、风险级别、结论、`Blocking: N; Warning: N`）。");
   }
 
   const hasMetricsAndArtifact = hasMetricTable(body) && hasNamedEvidence(body, "评测产物");

@@ -6,7 +6,7 @@ import { domainFacet, isDomainValue, isLensValue, lensFacet, parseFacets } from 
 import type { Report, ReportIndexEntry } from "../types.js";
 import type { DB } from "./index.js";
 import { appendGenerationEvent, captureRevision, entityKey, type EntityRef } from "./provenance-facts.js";
-import { manifestForArtifact, type AnchorSigner, type AnchorStore } from "./integrity-anchors.js";
+import { anchorEnvelopeBytes, anchorMatchesManifest, manifestForArtifact, parseCanonicalAnchorEnvelope, parseCanonicalJsonBytes, type AnchorSigner, type AnchorStore, type ArtifactManifest } from "./integrity-anchors.js";
 import { commitAnchoredPublications, writePlannedAnchor } from "./integrity-publication.js";
 
 const j = (v: unknown): string => JSON.stringify(v);
@@ -297,7 +297,8 @@ export function reconcileReportEffects(db: DB, opts: { dir?: string } = {}): { c
   if (!hasReportEffectTable(db)) return { committed: 0, failed: 0 };
   const root = resolve(opts.dir ?? defaultBodyDir());
   const rows = db.prepare(`SELECT e.id AS effect_id,e.trace_id,e.event_id,e.report_id,e.artifact_manifest,e.publication_payload,e.status AS effect_status,r.* FROM generation_effect e JOIN report r ON r.id=e.report_id
-    WHERE e.kind='report_file' AND r.status='generating' AND e.status IN ('planned','attempted','unknown')`).all() as any[];
+    WHERE e.kind='report_file' AND r.status='generating' AND e.status IN ('planned','attempted','unknown')
+      AND NOT EXISTS (SELECT 1 FROM generation_anchor_effect a WHERE a.generation_effect_id=e.id)`).all() as any[];
   let committed = 0;
   let failed = 0;
   for (const row of rows) {
@@ -356,6 +357,117 @@ export function reconcileReportEffects(db: DB, opts: { dir?: string } = {}): { c
           .run(j({ reason_code: "report_reconcile_failed", message }), new Date().toISOString(), row.effect_id);
         db.prepare("UPDATE report SET status='failed',body_path=NULL,failure=? WHERE id=? AND status='generating'")
           .run(j({ reason_code: "report_reconcile_failed", message }), row.report_id);
+      })();
+      failed += 1;
+    }
+  }
+  return { committed, failed };
+}
+
+interface AnchoredEffectRow {
+  anchor_id: string;
+  artifact_id: string;
+  artifact_version: string;
+  manifest_canonical: string;
+  anchor_payload: string;
+  anchor_provider_version_id: string | null;
+  created_at: string;
+}
+
+/**
+ * Report-level P1c recovery.  Unlike the legacy file-effect recovery, this
+ * verifies every already-written immutable anchor and then restores the whole
+ * reader projection in one transaction.  It never calls putIfAbsent, so a
+ * recovery cannot mint a different anchor or attach another artifact version.
+ */
+export async function reconcileAnchoredReportEffects(
+  db: DB,
+  anchor: Pick<ReportAnchorPublication, "store" | "signer">,
+  opts: { dir?: string; now?: Date } = {},
+): Promise<{ committed: number; failed: number }> {
+  if (!hasReportEffectTable(db)) return { committed: 0, failed: 0 };
+  const root = resolve(opts.dir ?? defaultBodyDir());
+  const effects = db.prepare(`SELECT e.id AS effect_id,e.idempotency_key,e.trace_id,e.event_id,e.report_id,e.artifact_manifest,e.publication_payload,r.*
+    FROM generation_effect e JOIN report r ON r.id=e.report_id
+    WHERE e.kind='report_file' AND r.status='generating' AND e.status IN ('planned','attempted','unknown')
+      AND EXISTS (SELECT 1 FROM generation_anchor_effect a WHERE a.generation_effect_id=e.id AND a.status='anchor_written')
+      AND NOT EXISTS (SELECT 1 FROM generation_anchor_effect a WHERE a.generation_effect_id=e.id AND a.status<>'anchor_written')`).all() as any[];
+  let committed = 0;
+  let failed = 0;
+  const clock = opts.now ?? new Date();
+  const publicKey = createPublicKey(anchor.signer.private_key);
+
+  for (const effect of effects) {
+    const anchors = db.prepare(`SELECT id AS anchor_id,artifact_id,artifact_version,manifest_canonical,anchor_payload,anchor_provider_version_id,created_at
+      FROM generation_anchor_effect WHERE generation_effect_id=? ORDER BY artifact_id,artifact_version`).all(effect.effect_id) as AnchoredEffectRow[];
+    try {
+      if (effect.idempotency_key !== `report_file:${effect.report_id}`) throw new Error("anchored_report_idempotency_conflict");
+      const fileManifest = JSON.parse(effect.artifact_manifest) as ReportArtifact[];
+      const index = JSON.parse(effect.publication_payload) as ReportIndexEntry;
+      const report: Report = {
+        id: effect.report_id, type: effect.type, topic_id: effect.topic_id, status: "done", generated_at: effect.generated_at,
+        title: effect.title, body_md: readFileSync(safeTarget(root, `${effect.report_id}.md`), "utf8"),
+        body_html: readFileSync(safeTarget(root, `${effect.report_id}.html`), "utf8"),
+        insight_ids: JSON.parse(effect.insight_ids), event_ids: JSON.parse(effect.event_ids), prev_report_id: effect.prev_report_id,
+        citation_count: effect.citation_count, cost: JSON.parse(effect.cost),
+      };
+      const requiredTargets = new Set([`${report.id}.md`, `${report.id}.html`]);
+      if (anchors.length !== fileManifest.length || fileManifest.length !== 2
+        || fileManifest.some((artifact) => !requiredTargets.delete(artifact.target))) throw new Error("anchored_report_manifest_incomplete");
+      for (const artifact of fileManifest) {
+        const body = readFileSync(safeTarget(root, artifact.target), "utf8");
+        if (digest(body) !== artifact.sha256 || Buffer.byteLength(body, "utf8") !== artifact.size) throw new Error("anchored_report_artifact_invalid");
+      }
+      const expected = [
+        { suffix: "md", body: report.body_md, media_type: "text/markdown" },
+        { suffix: "html", body: report.body_html, media_type: "text/html" },
+      ].map(({ suffix, body, media_type }) => manifestForArtifact({
+        tenant_id: "default", report_id: report.id, artifact_id: `${report.id}-${suffix}`, artifact_version: "v1",
+        length: Buffer.byteLength(body, "utf8"), media_type, created_at: report.generated_at,
+        upstream_trace_id: effect.trace_id ?? "legacy", content: new TextEncoder().encode(body),
+      }));
+      const publications = [] as Array<{ manifest: ArtifactManifest; provider_version_id: string | null }>;
+      for (const manifest of expected) {
+        const row = anchors.find((candidate) => candidate.artifact_id === manifest.artifact_id && candidate.artifact_version === manifest.artifact_version);
+        if (!row) throw new Error("anchored_report_manifest_incomplete");
+        const recordedManifest = parseCanonicalJsonBytes(new TextEncoder().encode(row.manifest_canonical), "anchor_effect_manifest_invalid") as ArtifactManifest;
+        const candidate = parseCanonicalAnchorEnvelope(new TextEncoder().encode(row.anchor_payload), publicKey);
+        const object = await anchor.store.get(candidate.payload.object_key);
+        const canonical = anchorEnvelopeBytes(candidate);
+        if (!object || !anchorMatchesManifest(candidate, recordedManifest) || !anchorMatchesManifest(candidate, manifest)
+          || object.body.byteLength !== canonical.byteLength || object.body.some((byte, i) => byte !== canonical[i])) throw new Error("orphan_anchor_conflict");
+        publications.push({ manifest, provider_version_id: row.anchor_provider_version_id });
+      }
+      commitAnchoredPublications(db, {
+        generation_effect_id: effect.effect_id, publications, public_key: publicKey,
+        finalize: () => {
+          const published = db.prepare("UPDATE report SET status='done',body_path=?,failure=NULL WHERE id=? AND status='generating'")
+            .run(resolve(join(root, report.id)), report.id);
+          if (published.changes !== 1) throw new Error(`report ${report.id} is no longer generating`);
+          insertReportIndex(db, report, index);
+          if (effect.trace_id && effect.event_id) {
+            const started = db.prepare("SELECT input_refs FROM generation_event WHERE id=? AND trace_id=?").get(effect.event_id, effect.trace_id) as { input_refs: string } | undefined;
+            if (!started) throw new Error("generation_effect_event_trace_mismatch");
+            const output: EntityRef = { type: "report", locator: { kind: "id", id: report.id }, revision: report.id, role: "output", visibility_class: "public_evidence" };
+            captureRevision(db, { entity_type: output.type, entity_key: entityKey(output), revision: output.revision, snapshot: { id: report.id, type: report.type, topic_id: report.topic_id, status: "done", insight_ids: report.insight_ids, citation_count: report.citation_count, event_ids: report.event_ids } });
+            appendGenerationEvent(db, { trace_id: effect.trace_id, stage: "generate_report", event_type: "completed", input_refs: JSON.parse(started.input_refs) as EntityRef[], output_refs: [output] });
+          }
+        },
+      });
+      committed += 1;
+    } catch (error) {
+      const message = error instanceof Error ? error.message.slice(0, 256) : String(error).slice(0, 256);
+      db.transaction(() => {
+        for (const row of anchors) {
+          db.prepare("UPDATE generation_anchor_effect SET status='unknown',error=?,updated_at=? WHERE id=? AND status='anchor_written'")
+            .run(j({ reason_code: "orphan_anchor_conflict", message }), clock.toISOString(), row.anchor_id);
+          db.prepare("INSERT INTO integrity_audit_event(id,tenant_id,effect_id,artifact_id,artifact_version,event_type,severity,details,created_at) VALUES (?,?,?,?,?,?,?,?,?)")
+            .run(`iae_${randomUUID().replaceAll("-", "")}`, "default", effect.effect_id, row.artifact_id, row.artifact_version, "orphan_anchor", "critical", j({ reason_code: "orphan_anchor_conflict", message }), clock.toISOString());
+          if (clock.getTime() - Date.parse(row.created_at) >= 15 * 60_000) {
+            db.prepare("INSERT INTO integrity_audit_event(id,tenant_id,effect_id,artifact_id,artifact_version,event_type,severity,details,created_at) VALUES (?,?,?,?,?,?,?,?,?)")
+              .run(`iae_${randomUUID().replaceAll("-", "")}`, "default", effect.effect_id, row.artifact_id, row.artifact_version, "anchor_written_sqlite_uncommitted", "high", j({ escalation: "unreconciled_over_15_minutes" }), clock.toISOString());
+          }
+        }
       })();
       failed += 1;
     }
