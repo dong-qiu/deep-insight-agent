@@ -83,6 +83,70 @@ CREATE TRIGGER source_credit_late_reconciliation_no_update BEFORE UPDATE ON sour
 CREATE TRIGGER source_credit_late_reconciliation_no_delete BEFORE DELETE ON source_credit_late_reconciliation BEGIN SELECT RAISE(ABORT, 'source_credit_late_reconciliation is append-only'); END;
 `;
 
+/** P1b-2 dashboard facts. These are isolated from source-credit facts and report reads. */
+export const P1_METRICS_SCHEMA_SQL = `
+CREATE TABLE funnel_event (
+  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'), event_id TEXT NOT NULL,
+  trace_id TEXT NOT NULL, run_id TEXT, report_id TEXT, topic_id TEXT, source_id TEXT, stage TEXT NOT NULL,
+  event_type TEXT NOT NULL CHECK(event_type IN ('entered','terminal')), attempt INTEGER NOT NULL CHECK(attempt > 0),
+  pipeline_version TEXT NOT NULL, skip_reason_code TEXT, reason_code TEXT,
+  occurred_at TEXT NOT NULL, ingested_at TEXT NOT NULL, schema_version TEXT NOT NULL CHECK(schema_version = 'funnel-v1'),
+  producer_version TEXT NOT NULL, semantic_payload_hash TEXT NOT NULL,
+  PRIMARY KEY(tenant_id,event_id)
+);
+CREATE UNIQUE INDEX idx_funnel_event_trace_stage_attempt_type ON funnel_event(tenant_id,trace_id,stage,attempt,event_type);
+CREATE INDEX idx_funnel_event_tenant_occurred ON funnel_event(tenant_id,occurred_at DESC);
+CREATE INDEX idx_funnel_event_tenant_report ON funnel_event(tenant_id,report_id);
+CREATE INDEX idx_funnel_event_tenant_pipeline_occurred ON funnel_event(tenant_id,pipeline_version,occurred_at DESC);
+CREATE INDEX idx_funnel_event_tenant_source_occurred ON funnel_event(tenant_id,source_id,occurred_at DESC);
+CREATE TABLE funnel_event_conflict (
+  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'), id TEXT NOT NULL, event_id TEXT NOT NULL,
+  trace_id TEXT NOT NULL, stage TEXT NOT NULL, attempt INTEGER NOT NULL, event_type TEXT NOT NULL,
+  existing_semantic_payload_hash TEXT, received_semantic_payload_hash TEXT NOT NULL, observed_at TEXT NOT NULL,
+  PRIMARY KEY(tenant_id,id)
+);
+CREATE INDEX idx_funnel_event_conflict_tenant_event ON funnel_event_conflict(tenant_id,event_id,observed_at DESC);
+CREATE TABLE cost_ledger (
+  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'), entry_id TEXT NOT NULL,
+  trace_id TEXT NOT NULL, stage TEXT NOT NULL, attempt INTEGER NOT NULL CHECK(attempt > 0),
+  pipeline_version TEXT NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL, currency TEXT NOT NULL,
+  amount_minor INTEGER, cost_status TEXT NOT NULL CHECK(cost_status IN ('known','unknown')),
+  input_tokens INTEGER NOT NULL DEFAULT 0 CHECK(input_tokens >= 0), output_tokens INTEGER NOT NULL DEFAULT 0 CHECK(output_tokens >= 0),
+  occurred_at TEXT NOT NULL, ingested_at TEXT NOT NULL, schema_version TEXT NOT NULL CHECK(schema_version = 'cost-ledger-v1'),
+  producer_version TEXT NOT NULL, semantic_payload_hash TEXT NOT NULL,
+  PRIMARY KEY(tenant_id,entry_id)
+);
+CREATE INDEX idx_cost_ledger_tenant_occurred_provider_model ON cost_ledger(tenant_id,occurred_at,provider,model);
+CREATE TABLE validator_result_fact (
+  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'), result_id TEXT NOT NULL,
+  trace_id TEXT NOT NULL, stage TEXT NOT NULL, attempt INTEGER NOT NULL CHECK(attempt > 0), pipeline_version TEXT NOT NULL,
+  validator TEXT NOT NULL, rule_version TEXT NOT NULL, reason_code TEXT NOT NULL,
+  severity TEXT NOT NULL CHECK(severity IN ('info','warning','error','critical')), terminal INTEGER NOT NULL CHECK(terminal IN (0,1)),
+  occurred_at TEXT NOT NULL, ingested_at TEXT NOT NULL, schema_version TEXT NOT NULL CHECK(schema_version = 'validator-result-v1'),
+  producer_version TEXT NOT NULL, semantic_payload_hash TEXT NOT NULL,
+  PRIMARY KEY(tenant_id,result_id)
+);
+CREATE INDEX idx_validator_result_tenant_validator_reason_occurred ON validator_result_fact(tenant_id,validator,reason_code,occurred_at);
+CREATE TABLE metric_late_event (
+  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'), fact_kind TEXT NOT NULL, event_id TEXT NOT NULL,
+  occurred_at TEXT NOT NULL, ingested_at TEXT NOT NULL, reason_code TEXT NOT NULL CHECK(reason_code = 'late_event_outside_backfill_window'),
+  PRIMARY KEY(tenant_id,fact_kind,event_id)
+);
+CREATE INDEX idx_metric_late_event_tenant_occurred ON metric_late_event(tenant_id,occurred_at DESC);
+CREATE TABLE metric_rollup (
+  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'), grain TEXT NOT NULL CHECK(grain IN ('hour','day')),
+  bucket_start TEXT NOT NULL, metric_kind TEXT NOT NULL CHECK(metric_kind IN ('funnel','cost','validator')),
+  pipeline_version TEXT NOT NULL DEFAULT '', stage TEXT NOT NULL DEFAULT '', provider TEXT NOT NULL DEFAULT '', model TEXT NOT NULL DEFAULT '',
+  currency TEXT NOT NULL DEFAULT '', validator TEXT NOT NULL DEFAULT '', reason_code TEXT NOT NULL DEFAULT '', severity TEXT NOT NULL DEFAULT '', rule_version TEXT NOT NULL DEFAULT '',
+  received_traces INTEGER NOT NULL DEFAULT 0, reached_traces INTEGER NOT NULL DEFAULT 0, terminal_events INTEGER NOT NULL DEFAULT 0,
+  known_cost_minor INTEGER NOT NULL DEFAULT 0, known_cost_entries INTEGER NOT NULL DEFAULT 0, unknown_cost_entries INTEGER NOT NULL DEFAULT 0,
+  validator_results INTEGER NOT NULL DEFAULT 0, validator_traces INTEGER NOT NULL DEFAULT 0,
+  frozen_at TEXT, revised_at TEXT,
+  PRIMARY KEY(tenant_id,grain,bucket_start,metric_kind,pipeline_version,stage,provider,model,currency,validator,reason_code,severity,rule_version)
+);
+CREATE INDEX idx_metric_rollup_tenant_grain_bucket ON metric_rollup(tenant_id,grain,bucket_start DESC);
+`;
+
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS source (
   id             TEXT PRIMARY KEY,
