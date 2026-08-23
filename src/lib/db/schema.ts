@@ -83,6 +83,92 @@ CREATE TRIGGER source_credit_late_reconciliation_no_update BEFORE UPDATE ON sour
 CREATE TRIGGER source_credit_late_reconciliation_no_delete BEFORE DELETE ON source_credit_late_reconciliation BEGIN SELECT RAISE(ABORT, 'source_credit_late_reconciliation is append-only'); END;
 `;
 
+/** P1c evidence schema.  Migration code consumes these strings verbatim. */
+export const INTEGRITY_ANCHOR_SCHEMA_SQL = `
+CREATE TABLE artifact_manifest (
+  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),
+  artifact_id TEXT NOT NULL,
+  artifact_version TEXT NOT NULL,
+  report_id TEXT NOT NULL REFERENCES report(id),
+  manifest_canonical TEXT NOT NULL,
+  manifest_hash TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  content_length INTEGER NOT NULL,
+  media_type TEXT NOT NULL,
+  anchor_object_key TEXT NOT NULL,
+  anchor_provider_version_id TEXT,
+  anchor_payload_hash TEXT,
+  anchor_signature TEXT,
+  anchor_key_id TEXT,
+  anchor_issued_at TEXT,
+  committed_at TEXT,
+  PRIMARY KEY(tenant_id, artifact_id, artifact_version),
+  UNIQUE(tenant_id, report_id, artifact_id, artifact_version),
+  UNIQUE(tenant_id, manifest_hash)
+);
+CREATE INDEX idx_artifact_manifest_report ON artifact_manifest(tenant_id, report_id, committed_at);
+CREATE TABLE generation_anchor_effect (
+  id TEXT PRIMARY KEY,
+  generation_effect_id TEXT NOT NULL REFERENCES generation_effect(id),
+  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),
+  report_id TEXT NOT NULL REFERENCES report(id),
+  artifact_id TEXT NOT NULL,
+  artifact_version TEXT NOT NULL,
+  manifest_hash TEXT NOT NULL,
+  manifest_canonical TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  content_length INTEGER NOT NULL,
+  media_type TEXT NOT NULL,
+  anchor_idempotency_key TEXT NOT NULL UNIQUE,
+  object_key TEXT NOT NULL,
+  anchor_payload TEXT NOT NULL,
+  anchor_provider_version_id TEXT,
+  status TEXT NOT NULL CHECK(status IN ('planned','anchor_written','committed','unknown','failed')),
+  retry_count INTEGER NOT NULL DEFAULT 0,
+  error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(generation_effect_id, artifact_id, artifact_version)
+);
+CREATE INDEX idx_generation_anchor_effect_reconcile ON generation_anchor_effect(status, created_at);
+CREATE TABLE integrity_audit_event (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),
+  effect_id TEXT,
+  artifact_id TEXT,
+  artifact_version TEXT,
+  event_type TEXT NOT NULL CHECK(event_type IN ('anchor_written_sqlite_uncommitted','anchor_reconciled','orphan_anchor','daily_anchor_missing','daily_anchor_conflict','daily_anchor_recovered')),
+  severity TEXT NOT NULL CHECK(severity IN ('high','critical')),
+  details TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX idx_integrity_audit_pending ON integrity_audit_event(tenant_id, event_type, created_at DESC);
+CREATE TABLE integrity_daily_root (
+  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),
+  utc_date TEXT NOT NULL,
+  cutoff TEXT NOT NULL,
+  leaf_count INTEGER NOT NULL,
+  merkle_root TEXT NOT NULL,
+  object_key TEXT NOT NULL UNIQUE,
+  payload TEXT NOT NULL,
+  signature TEXT NOT NULL,
+  key_id TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('committed','recovered','missing','conflict')),
+  committed_at TEXT,
+  PRIMARY KEY(tenant_id, utc_date)
+);
+`;
+
+/** Existing rows remain readable; newly applied P1c databases deny destructive mutations. */
+export const INTEGRITY_ANCHOR_IMMUTABILITY_SQL = `
+CREATE TRIGGER artifact_manifest_no_update BEFORE UPDATE ON artifact_manifest BEGIN SELECT RAISE(ABORT, 'artifact_manifest is append-only'); END;
+CREATE TRIGGER artifact_manifest_no_delete BEFORE DELETE ON artifact_manifest BEGIN SELECT RAISE(ABORT, 'artifact_manifest is append-only'); END;
+CREATE TRIGGER integrity_audit_event_no_update BEFORE UPDATE ON integrity_audit_event BEGIN SELECT RAISE(ABORT, 'integrity_audit_event is append-only'); END;
+CREATE TRIGGER integrity_audit_event_no_delete BEFORE DELETE ON integrity_audit_event BEGIN SELECT RAISE(ABORT, 'integrity_audit_event is append-only'); END;
+CREATE TRIGGER integrity_daily_root_no_update BEFORE UPDATE ON integrity_daily_root BEGIN SELECT RAISE(ABORT, 'integrity_daily_root is append-only'); END;
+CREATE TRIGGER integrity_daily_root_no_delete BEFORE DELETE ON integrity_daily_root BEGIN SELECT RAISE(ABORT, 'integrity_daily_root is append-only'); END;
+`;
+
 /** P1b-2 dashboard facts. These are isolated from source-credit facts and report reads. */
 export const P1_METRICS_SCHEMA_SQL = `
 CREATE TABLE funnel_event (

@@ -1,5 +1,5 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { createHash } from "node:crypto";
+import { createHash, generateKeyPairSync } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
@@ -10,6 +10,7 @@ import { chainTypesFor, distinctIndexValues, entityTrends, getReport, latestRepo
 import { applyProvenanceMigrations } from "./provenance-migrations.js";
 import { appendGenerationEvent } from "./provenance-facts.js";
 import { getTopic, insertSource, insertTopic } from "./repos.js";
+import { MemoryAnchorStore } from "./integrity-anchors.js";
 
 const dir = mkdtempSync(join(tmpdir(), "ia-reports-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -56,6 +57,18 @@ it("provenance 报告 effect 成对关联创建它的 trace 与 started event", 
 
   expect(db.prepare("SELECT trace_id,event_id,status FROM generation_effect WHERE report_id=?").get(report.id))
     .toEqual({ trace_id: "trace_report", event_id: event.id, status: "committed" });
+});
+
+it("anchored publication makes report, index, FTS, event effect, and manifest visible in one SQLite commit", async () => {
+  const keys = generateKeyPairSync("ed25519"); const store = new MemoryAnchorStore();
+  await saveReport(db, { ...report, id: "rep_anchor" }, { ...index, report_id: "rep_anchor" }, {
+    dir, anchor: { store, signer: { key_id: "test-key-v1", private_key: keys.privateKey }, retainUntil: "2027-01-01T00:00:00Z", issuedAt: "2026-05-07T00:00:01Z" },
+  });
+  expect(db.prepare("SELECT status FROM report WHERE id='rep_anchor'").get()).toEqual({ status: "done" });
+  expect(db.prepare("SELECT status FROM generation_effect WHERE report_id='rep_anchor'").get()).toEqual({ status: "committed" });
+  expect(db.prepare("SELECT status FROM generation_anchor_effect").get()).toEqual({ status: "committed" });
+  expect(db.prepare("SELECT COUNT(*) AS n FROM artifact_manifest WHERE report_id='rep_anchor'").get()).toEqual({ n: 2 });
+  expect(queryReportIndex(db, { topic: topic.id }).map((row) => row.report_id)).toContain("rep_anchor");
 });
 
 it("reconcile 从完整 staging 恢复时原子提交报告、effect 与终态 trace event", () => {

@@ -1,11 +1,13 @@
 /** 报告持久化：正文（.md/.html）落 FS，元数据 + 索引 + FTS5 落 SQLite。增量5。 */
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, createPublicKey, randomUUID } from "node:crypto";
 import { join, relative, resolve } from "node:path";
 import { domainFacet, isDomainValue, isLensValue, lensFacet, parseFacets } from "../topics/facets.js";
 import type { Report, ReportIndexEntry } from "../types.js";
 import type { DB } from "./index.js";
 import { appendGenerationEvent, captureRevision, entityKey, type EntityRef } from "./provenance-facts.js";
+import { manifestForArtifact, type AnchorSigner, type AnchorStore } from "./integrity-anchors.js";
+import { commitAnchoredPublications, writePlannedAnchor } from "./integrity-publication.js";
 
 const j = (v: unknown): string => JSON.stringify(v);
 
@@ -23,6 +25,7 @@ function hasReportEffectTable(db: DB): boolean {
 
 interface ReportArtifact { target: string; sha256: string; size: number; report_id: string }
 interface ReportEffectProvenance { traceId: string; eventId: string }
+export interface ReportAnchorPublication { store: AnchorStore; signer: AnchorSigner; retainUntil: string; issuedAt?: string }
 const digest = (body: string): string => createHash("sha256").update(body, "utf8").digest("hex");
 function safeTarget(root: string, target: string): string {
   if (!/^[A-Za-z0-9_-]+\.(md|html)$/.test(target)) throw new Error("invalid report artifact target");
@@ -159,6 +162,57 @@ function saveReportWithEffect(
   }
 }
 
+/**
+ * P1c publication variant.  The report's complete reader payload is one
+ * canonical artifact; after its immutable anchor is verified, the same SQLite
+ * transaction publishes report/index/FTS/event and both effect projections.
+ */
+async function saveAnchoredReportWithEffect(
+  db: DB, report: Report, index: ReportIndexEntry, dir: string, anchor: ReportAnchorPublication,
+  provenance: ReportEffectProvenance | undefined, afterPublish?: () => void,
+): Promise<void> {
+  const root = resolve(dir); const effectId = `effect_${randomUUID().replaceAll("-", "")}`; const created = new Date().toISOString();
+  const artifacts: Array<{ target: string; body: string }> = [{ target: `${report.id}.md`, body: report.body_md }, { target: `${report.id}.html`, body: report.body_html }];
+  const effectManifest: ReportArtifact[] = artifacts.map(({ target, body }) => ({ target, sha256: digest(body), size: Buffer.byteLength(body, "utf8"), report_id: report.id }));
+  db.transaction(() => {
+    if (provenance && !db.prepare("SELECT 1 FROM generation_event WHERE id=? AND trace_id=?").get(provenance.eventId, provenance.traceId)) throw new Error("generation_effect_event_trace_mismatch");
+    insertReportMetadata(db, { ...report, status: "generating" }, null);
+    db.prepare(`INSERT INTO generation_effect(id,trace_id,event_id,report_id,kind,idempotency_key,artifact_manifest,publication_payload,status,error,created_at,updated_at)
+      VALUES (@id,@trace_id,@event_id,@report_id,'report_file',@idempotency_key,@artifact_manifest,@publication_payload,'planned',NULL,@now,@now)`).run({
+      id: effectId, trace_id: provenance?.traceId ?? null, event_id: provenance?.eventId ?? null, report_id: report.id,
+      idempotency_key: `report_file:${report.id}`, artifact_manifest: j(effectManifest), publication_payload: j(index), now: created,
+    });
+  })();
+  const staging = resolve(root, ".staging", effectId);
+  try {
+    mkdirSync(staging, { recursive: true });
+    for (const artifact of artifacts) { writeFileSync(safeTarget(staging, artifact.target), artifact.body); if (digest(readFileSync(safeTarget(staging, artifact.target), "utf8")) !== effectManifest.find((item) => item.target === artifact.target)!.sha256) throw new Error(`report artifact hash mismatch: ${artifact.target}`); }
+    mkdirSync(root, { recursive: true });
+    db.prepare("UPDATE generation_effect SET status='attempted',updated_at=? WHERE id=? AND status='planned'").run(new Date().toISOString(), effectId);
+    for (const artifact of effectManifest) renameSync(safeTarget(staging, artifact.target), safeTarget(root, artifact.target));
+    const publications = artifacts.map(({ target, body }) => {
+      const content = new TextEncoder().encode(body);
+      const suffix = target.endsWith(".md") ? "md" : "html";
+      return { manifest: manifestForArtifact({ tenant_id: "default", report_id: report.id, artifact_id: `${report.id}-${suffix}`, artifact_version: "v1", length: content.byteLength, media_type: suffix === "md" ? "text/markdown" : "text/html", created_at: report.generated_at, upstream_trace_id: provenance?.traceId ?? "legacy", content }), content };
+    });
+    const written = await Promise.all(publications.map(({ manifest }) => writePlannedAnchor(db, anchor.store, { generation_effect_id: effectId, manifest, issued_at: anchor.issuedAt ?? new Date().toISOString(), retain_until: anchor.retainUntil }, anchor.signer)));
+    commitAnchoredPublications(db, { generation_effect_id: effectId, publications: publications.map(({ manifest }, index) => ({ manifest, provider_version_id: written[index]!.provider_version_id })), public_key: createPublicKey(anchor.signer.private_key), finalize: () => {
+      for (const artifact of effectManifest) { const finalPath = safeTarget(root, artifact.target); if (!existsSync(finalPath) || digest(readFileSync(finalPath, "utf8")) !== artifact.sha256) throw new Error(`report artifact is incomplete: ${artifact.target}`); }
+      const published = db.prepare("UPDATE report SET status='done',body_path=?,failure=NULL WHERE id=? AND status='generating'").run(resolve(join(root, report.id)), report.id);
+      if (published.changes !== 1) throw new Error(`report ${report.id} is no longer generating`);
+      insertReportIndex(db, report, index); afterPublish?.();
+    } });
+  } catch (error) {
+    const message = error instanceof Error ? error.message.slice(0, 256) : String(error).slice(0, 256);
+    const anchored = !!db.prepare("SELECT 1 FROM generation_anchor_effect WHERE generation_effect_id=? AND status='anchor_written'").get(effectId);
+    if (!anchored) db.transaction(() => {
+      db.prepare("UPDATE generation_effect SET status='unknown',error=?,updated_at=? WHERE id=? AND status <> 'committed'").run(j({ reason_code: "report_persistence_failed", message }), new Date().toISOString(), effectId);
+      db.prepare("UPDATE report SET status='failed',body_path=NULL,failure=? WHERE id=? AND status='generating'").run(j({ reason_code: "report_persistence_failed", message }), report.id);
+    })();
+    throw error;
+  }
+}
+
 /** 写正文到 FS + 落 report / report_index / report_fts。dir 可注入（测试用临时目录）。
  *  body_path **始终写绝对路径**——dogfood 2026-06-06 发现"相对路径在跨环境（本地 dev →
  *  容器，cwd 不同）时失效"是 5/31 practice-log "worktree 相对 DB 路径陷阱"的同根复发。
@@ -167,8 +221,8 @@ export function saveReport(
   db: DB,
   report: Report,
   index: ReportIndexEntry,
-  opts: { dir?: string; provenance?: ReportEffectProvenance; afterPublish?: () => void } = {},
-): void {
+  opts: { dir?: string; provenance?: ReportEffectProvenance; afterPublish?: () => void; anchor?: ReportAnchorPublication } = {},
+): void | Promise<void> {
   if (report.status !== "done") {
     // lifecycle 的非发布态只记录元数据；禁止给 failed/generating 写正文、索引或 FTS。
     insertReportMetadata(
@@ -180,6 +234,10 @@ export function saveReport(
     return;
   }
   const dir = opts.dir ?? defaultBodyDir();
+  if (opts.anchor) {
+    if (!hasReportEffectTable(db)) throw new Error("integrity_anchor_schema_required");
+    return saveAnchoredReportWithEffect(db, report, index, dir, opts.anchor, opts.provenance, opts.afterPublish);
+  }
   if (hasReportEffectTable(db)) {
     saveReportWithEffect(db, report, index, dir, opts.provenance, opts.afterPublish);
     return;

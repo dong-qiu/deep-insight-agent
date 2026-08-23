@@ -160,6 +160,25 @@ P1a funnel、成本或 rollup。SQLite 实体定义的事实源为 `src/lib/db/s
 切换点为 `legacy`，已有 partial 保持 partial，只有切换点后 complete trace 才为 complete。
 时间只接受秒值 `00`–`59` 的 UTC RFC3339 表示；闰秒（`60`）在本 SQLite/Node 写入边界明确拒绝。
 
+### P1c 发布完整性 (ArtifactManifest / AnchorEffect / DailyRoot)
+
+P1c 的 SQLite DDL 唯一事实源是 `src/lib/db/schema.ts`；provenance migration runner 只复用该定义。
+所有 tenant-scoped 键与查询索引以 `tenant_id` 开头，当前服务端固定为 `default`。`artifact_manifest`
+是 reader 的证据可见性边界：它与 `report.status=done`、`report_index`、FTS、`generation_effect=committed`
+及 published event 必须在同一 SQLite 事务中提交，事务失败时 reader 不得看到报告。
+
+| 实体 | 主键 / 索引 | 不可变与可见性契约 |
+|---|---|---|
+| `artifact_manifest` | `(tenant_id, artifact_id, artifact_version)`；`(tenant_id, report_id, committed_at)` | 保存 JCS manifest、hash、内容 hash、完整 anchor key、provider version 与签名材料；提交后不得 update/delete。 |
+| `generation_anchor_effect` | `(generation_effect_id, artifact_id, artifact_version)`；幂等 key | 外部条件写前保存唯一候选 envelope；unknown/412 只能读取、验签并逐字节复用相同对象，冲突保留 orphan audit，绝不重锚。 |
+| `integrity_audit_event` | `tenant_id,event_type,created_at` | `anchor_written_sqlite_uncommitted`、reconcile/orphan 与 daily-root 状态为追加审计；15 分钟未收敛为 high。 |
+| `integrity_daily_root` | `(tenant_id, utc_date)` | UTC 前一日 manifest hash 按 tenant-first 规定序排序后冻结 Merkle root；02:00 生成、02:15 缺失告警。已写 root 绝不 `ON CONFLICT` 改写；恢复仅验证同一对象。 |
+
+manifest 和 binding 均为闭合 schema，JSON 必须为原始 RFC 8785 JCS UTF-8 bytes（拒绝空白、重排、重复 key、
+未声明字段与孤立 surrogate）。每次读回 anchor 均以记录 key 的 Ed25519 公钥验证
+`"anchor-v1\\0" || canonical_payload`，再与候选 envelope bytes、payload hash、签名、binding 和 locator 严格比较。
+daily root 缺失、冲突或恢复只改变审计/告警语义，不阻塞已提交的 reader。
+
 ### P1b-2 驾驶舱指标事实 (FunnelEvent / CostLedger / ValidatorResultFact)
 
 P1b-2 的指标写模型由 collector、analysis 与 validation 的已提交写路径追加；它只做观测，绝不参与

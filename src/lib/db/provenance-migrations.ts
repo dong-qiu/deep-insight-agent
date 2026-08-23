@@ -1,7 +1,7 @@
 /** P0a 的显式 migration runner。应用启动不调用它；部署必须先运行本模块。 */
 import { createHash } from "node:crypto";
 import type { DB } from "./index.js";
-import { P1_METRICS_CONFLICT_AUDIT_SCHEMA_SQL, P1_METRICS_FOLLOWUP_SCHEMA_SQL, P1_METRICS_SCHEMA_SQL } from "./schema.js";
+import { INTEGRITY_ANCHOR_IMMUTABILITY_SQL, INTEGRITY_ANCHOR_SCHEMA_SQL, P1_METRICS_CONFLICT_AUDIT_SCHEMA_SQL, P1_METRICS_FOLLOWUP_SCHEMA_SQL, P1_METRICS_SCHEMA_SQL } from "./schema.js";
 
 const CORE_SQL = `
 ALTER TABLE run ADD COLUMN trace_id TEXT;
@@ -292,83 +292,6 @@ CREATE INDEX idx_source_credit_late_reconciliation_tenant_event ON source_credit
 CREATE TRIGGER source_credit_late_reconciliation_no_update BEFORE UPDATE ON source_credit_late_reconciliation BEGIN SELECT RAISE(ABORT, 'source_credit_late_reconciliation is append-only'); END;
 CREATE TRIGGER source_credit_late_reconciliation_no_delete BEFORE DELETE ON source_credit_late_reconciliation BEGIN SELECT RAISE(ABORT, 'source_credit_late_reconciliation is append-only'); END;
 `;
-// P1c: manifests and their external anchors are immutable evidence.  The
-// report-level effect remains the publication intent; each report artifact has
-// a child anchor effect so a retry can never silently mint a second key.
-const INTEGRITY_ANCHOR_SQL = `
-CREATE TABLE artifact_manifest (
-  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),
-  artifact_id TEXT NOT NULL,
-  artifact_version TEXT NOT NULL,
-  report_id TEXT NOT NULL REFERENCES report(id),
-  manifest_canonical TEXT NOT NULL,
-  manifest_hash TEXT NOT NULL,
-  content_hash TEXT NOT NULL,
-  content_length INTEGER NOT NULL,
-  media_type TEXT NOT NULL,
-  anchor_object_key TEXT NOT NULL,
-  anchor_provider_version_id TEXT,
-  anchor_payload_hash TEXT,
-  anchor_signature TEXT,
-  anchor_key_id TEXT,
-  anchor_issued_at TEXT,
-  committed_at TEXT,
-  PRIMARY KEY(tenant_id, artifact_id, artifact_version),
-  UNIQUE(tenant_id, report_id, artifact_id, artifact_version),
-  UNIQUE(tenant_id, manifest_hash)
-);
-CREATE INDEX idx_artifact_manifest_report ON artifact_manifest(tenant_id, report_id, committed_at);
-CREATE TABLE generation_anchor_effect (
-  id TEXT PRIMARY KEY,
-  generation_effect_id TEXT NOT NULL REFERENCES generation_effect(id),
-  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),
-  report_id TEXT NOT NULL REFERENCES report(id),
-  artifact_id TEXT NOT NULL,
-  artifact_version TEXT NOT NULL,
-  manifest_hash TEXT NOT NULL,
-  manifest_canonical TEXT NOT NULL,
-  content_hash TEXT NOT NULL,
-  content_length INTEGER NOT NULL,
-  media_type TEXT NOT NULL,
-  anchor_idempotency_key TEXT NOT NULL UNIQUE,
-  object_key TEXT NOT NULL,
-  anchor_payload TEXT NOT NULL,
-  anchor_provider_version_id TEXT,
-  status TEXT NOT NULL CHECK(status IN ('planned','anchor_written','committed','unknown','failed')),
-  retry_count INTEGER NOT NULL DEFAULT 0,
-  error TEXT,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  UNIQUE(generation_effect_id, artifact_id, artifact_version)
-);
-CREATE INDEX idx_generation_anchor_effect_reconcile ON generation_anchor_effect(status, created_at);
-CREATE TABLE integrity_audit_event (
-  id TEXT PRIMARY KEY,
-  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),
-  effect_id TEXT,
-  artifact_id TEXT,
-  artifact_version TEXT,
-  event_type TEXT NOT NULL CHECK(event_type IN ('anchor_written_sqlite_uncommitted','anchor_reconciled','orphan_anchor','daily_anchor_missing','daily_anchor_conflict','daily_anchor_recovered')),
-  severity TEXT NOT NULL CHECK(severity IN ('high','critical')),
-  details TEXT NOT NULL,
-  created_at TEXT NOT NULL
-);
-CREATE INDEX idx_integrity_audit_pending ON integrity_audit_event(tenant_id, event_type, created_at DESC);
-CREATE TABLE integrity_daily_root (
-  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),
-  utc_date TEXT NOT NULL,
-  cutoff TEXT NOT NULL,
-  leaf_count INTEGER NOT NULL,
-  merkle_root TEXT NOT NULL,
-  object_key TEXT NOT NULL UNIQUE,
-  payload TEXT NOT NULL,
-  signature TEXT NOT NULL,
-  key_id TEXT NOT NULL,
-  status TEXT NOT NULL CHECK(status IN ('committed','recovered','missing','conflict')),
-  committed_at TEXT,
-  PRIMARY KEY(tenant_id, utc_date)
-);
-`;
 const MIGRATIONS = [
   { version: "20260803_01_provenance_core", sql: CORE_SQL },
   { version: "20260803_02_report_lifecycle", sql: REPORT_LIFECYCLE_SQL },
@@ -386,7 +309,8 @@ const MIGRATIONS = [
   { version: "20260823_14_p1_metric_facts", sql: P1_METRICS_SCHEMA_SQL },
   { version: "20260823_15_p1_metric_fact_contracts", sql: P1_METRICS_FOLLOWUP_SCHEMA_SQL },
   { version: "20260823_16_p1_metric_conflict_audit", sql: P1_METRICS_CONFLICT_AUDIT_SCHEMA_SQL },
-  { version: "20260823_17_integrity_anchors", sql: INTEGRITY_ANCHOR_SQL },
+  { version: "20260823_17_integrity_anchors", sql: INTEGRITY_ANCHOR_SCHEMA_SQL },
+  { version: "20260823_18_integrity_anchor_immutability", sql: INTEGRITY_ANCHOR_IMMUTABILITY_SQL },
 ];
 
 function hasColumn(db: DB, table: string, column: string): boolean {
@@ -461,7 +385,7 @@ export function applyProvenanceMigrations(db: DB): void {
       } else if (migration.version === "20260811_08_source_collect") {
         if (!hasColumn(db, "generation_trace", "source_id")) db.exec("ALTER TABLE generation_trace ADD COLUMN source_id TEXT REFERENCES source(id)");
         db.exec("CREATE INDEX IF NOT EXISTS idx_generation_trace_source_started ON generation_trace(source_id, started_at DESC)");
-      } else if (migration.version === "20260817_09_bounded_provenance_views" || migration.version === "20260817_10_bounded_provenance_view_index_fix" || migration.version === "20260820_11_effect_event_link" || migration.version === "20260823_12_source_credit_facts" || migration.version === "20260823_14_p1_metric_facts" || migration.version === "20260823_15_p1_metric_fact_contracts" || migration.version === "20260823_16_p1_metric_conflict_audit" || migration.version === "20260823_17_integrity_anchors") {
+      } else if (migration.version === "20260817_09_bounded_provenance_views" || migration.version === "20260817_10_bounded_provenance_view_index_fix" || migration.version === "20260820_11_effect_event_link" || migration.version === "20260823_12_source_credit_facts" || migration.version === "20260823_14_p1_metric_facts" || migration.version === "20260823_15_p1_metric_fact_contracts" || migration.version === "20260823_16_p1_metric_conflict_audit" || migration.version === "20260823_17_integrity_anchors" || migration.version === "20260823_18_integrity_anchor_immutability") {
         db.exec(migration.sql);
       } else if (migration.version === "20260823_13_source_credit_tenant_primary_keys") {
         db.exec(migration.sql);

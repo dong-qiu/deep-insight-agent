@@ -1,6 +1,6 @@
 import { generateKeyPairSync } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { anchorMatchesManifest, anchorPayload, contentHash, jcs, manifestForArtifact, manifestHash, MemoryAnchorStore, sha256, verifySignedAnchor, writeAnchor } from "./integrity-anchors.js";
+import { anchorEnvelopeBytes, anchorMatchesManifest, anchorPayload, contentHash, jcs, manifestForArtifact, manifestHash, MemoryAnchorStore, parseCanonicalAnchorEnvelope, sha256, verifySignedAnchor, writeAnchor } from "./integrity-anchors.js";
 
 const keys = generateKeyPairSync("ed25519");
 const signer = { key_id: "test-key-v1", private_key: keys.privateKey };
@@ -30,5 +30,20 @@ describe("P1c manifest and anchor canonical vectors", () => {
     expect(anchorMatchesManifest(tampered, manifest)).toBe(false);
     store.replaceForTest(manifest.external_anchor.object_key, text.encode(jcs(tampered)));
     await expect(writeAnchor(store, manifest, "2026-08-21T00:00:01Z", "2027-01-01T00:00:00Z", signer)).rejects.toThrow("anchor_conflict");
+  });
+
+  it("rejects non-canonical, duplicate-key, unknown-schema, and invalid-signature read-backs", async () => {
+    const manifest = fixture(); const store = new MemoryAnchorStore();
+    const first = await writeAnchor(store, manifest, "2026-08-21T00:00:01Z", "2027-01-01T00:00:00Z", signer);
+    const body = new TextDecoder().decode(anchorEnvelopeBytes(first.anchor));
+    await expect(writeAnchor(store, manifest, "2026-08-21T00:00:01Z", "2027-01-01T00:00:00Z", signer)).resolves.toMatchObject({ reused: true });
+    store.replaceForTest(manifest.external_anchor.object_key, text.encode(` ${body}`));
+    await expect(writeAnchor(store, manifest, "2026-08-21T00:00:01Z", "2027-01-01T00:00:00Z", signer)).rejects.toThrow("anchor_conflict");
+    store.replaceForTest(manifest.external_anchor.object_key, text.encode(body.replace('{"algorithm"', '{"algorithm":"ed25519","algorithm"')));
+    await expect(writeAnchor(store, manifest, "2026-08-21T00:00:01Z", "2027-01-01T00:00:00Z", signer)).rejects.toThrow("anchor_conflict");
+    const unknown = structuredClone(first.anchor) as unknown as Record<string, unknown>; unknown.extra = "nope";
+    expect(() => parseCanonicalAnchorEnvelope(text.encode(jcs(unknown)), keys.publicKey)).toThrow("anchor_schema_invalid");
+    const badSignature = structuredClone(first.anchor); badSignature.signature = "invalid";
+    expect(() => parseCanonicalAnchorEnvelope(anchorEnvelopeBytes(badSignature), keys.publicKey)).toThrow("anchor_signature_invalid");
   });
 });
