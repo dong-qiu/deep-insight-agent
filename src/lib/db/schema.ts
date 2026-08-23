@@ -130,7 +130,7 @@ CREATE TABLE generation_anchor_effect (
   updated_at TEXT NOT NULL,
   UNIQUE(generation_effect_id, artifact_id, artifact_version)
 );
-CREATE INDEX idx_generation_anchor_effect_reconcile ON generation_anchor_effect(status, created_at);
+CREATE INDEX idx_generation_anchor_effect_reconcile ON generation_anchor_effect(tenant_id, status, created_at);
 CREATE TABLE integrity_audit_event (
   id TEXT PRIMARY KEY,
   tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),
@@ -158,6 +158,12 @@ CREATE TABLE integrity_daily_root (
   PRIMARY KEY(tenant_id, utc_date)
 );
 `;
+
+/** Immutable v17 migration payload. New databases use the tenant-first DDL
+ * above; this preserved text keeps the recorded v17 checksum valid while a
+ * later forward migration removes its legacy index. */
+export const INTEGRITY_ANCHOR_LEGACY_SCHEMA_SQL = INTEGRITY_ANCHOR_SCHEMA_SQL
+  .replace("ON generation_anchor_effect(tenant_id, status, created_at)", "ON generation_anchor_effect(status, created_at)");
 
 /** Existing rows remain readable; newly applied P1c databases deny destructive mutations. */
 export const INTEGRITY_ANCHOR_IMMUTABILITY_SQL = `

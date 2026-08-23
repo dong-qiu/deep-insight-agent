@@ -1,7 +1,7 @@
 /** P0a 的显式 migration runner。应用启动不调用它；部署必须先运行本模块。 */
 import { createHash } from "node:crypto";
 import type { DB } from "./index.js";
-import { INTEGRITY_ANCHOR_HARDENING_SCHEMA_SQL, INTEGRITY_ANCHOR_IMMUTABILITY_SQL, INTEGRITY_ANCHOR_RECOVERY_SCHEMA_SQL, INTEGRITY_ANCHOR_SCHEMA_SQL, P1_METRICS_CONFLICT_AUDIT_SCHEMA_SQL, P1_METRICS_FOLLOWUP_SCHEMA_SQL, P1_METRICS_SCHEMA_SQL } from "./schema.js";
+import { INTEGRITY_ANCHOR_HARDENING_SCHEMA_SQL, INTEGRITY_ANCHOR_IMMUTABILITY_SQL, INTEGRITY_ANCHOR_LEGACY_SCHEMA_SQL, INTEGRITY_ANCHOR_RECOVERY_SCHEMA_SQL, P1_METRICS_CONFLICT_AUDIT_SCHEMA_SQL, P1_METRICS_FOLLOWUP_SCHEMA_SQL, P1_METRICS_SCHEMA_SQL } from "./schema.js";
 
 const CORE_SQL = `
 ALTER TABLE run ADD COLUMN trace_id TEXT;
@@ -309,10 +309,11 @@ const MIGRATIONS = [
   { version: "20260823_14_p1_metric_facts", sql: P1_METRICS_SCHEMA_SQL },
   { version: "20260823_15_p1_metric_fact_contracts", sql: P1_METRICS_FOLLOWUP_SCHEMA_SQL },
   { version: "20260823_16_p1_metric_conflict_audit", sql: P1_METRICS_CONFLICT_AUDIT_SCHEMA_SQL },
-  { version: "20260823_17_integrity_anchors", sql: INTEGRITY_ANCHOR_SCHEMA_SQL },
+  { version: "20260823_17_integrity_anchors", sql: INTEGRITY_ANCHOR_LEGACY_SCHEMA_SQL },
   { version: "20260823_18_integrity_anchor_immutability", sql: INTEGRITY_ANCHOR_IMMUTABILITY_SQL },
   { version: "20260824_19_integrity_anchor_recovery_material", sql: INTEGRITY_ANCHOR_RECOVERY_SCHEMA_SQL },
   { version: "20260824_20_integrity_anchor_hardening", sql: INTEGRITY_ANCHOR_HARDENING_SCHEMA_SQL },
+  { version: "20260824_21_integrity_anchor_tenant_reconcile_index", sql: "DROP INDEX IF EXISTS idx_generation_anchor_effect_reconcile;" },
 ];
 
 function hasColumn(db: DB, table: string, column: string): boolean {
@@ -387,7 +388,7 @@ export function applyProvenanceMigrations(db: DB): void {
       } else if (migration.version === "20260811_08_source_collect") {
         if (!hasColumn(db, "generation_trace", "source_id")) db.exec("ALTER TABLE generation_trace ADD COLUMN source_id TEXT REFERENCES source(id)");
         db.exec("CREATE INDEX IF NOT EXISTS idx_generation_trace_source_started ON generation_trace(source_id, started_at DESC)");
-      } else if (migration.version === "20260817_09_bounded_provenance_views" || migration.version === "20260817_10_bounded_provenance_view_index_fix" || migration.version === "20260820_11_effect_event_link" || migration.version === "20260823_12_source_credit_facts" || migration.version === "20260823_14_p1_metric_facts" || migration.version === "20260823_15_p1_metric_fact_contracts" || migration.version === "20260823_16_p1_metric_conflict_audit" || migration.version === "20260823_17_integrity_anchors" || migration.version === "20260823_18_integrity_anchor_immutability" || migration.version === "20260824_19_integrity_anchor_recovery_material" || migration.version === "20260824_20_integrity_anchor_hardening") {
+      } else if (migration.version === "20260817_09_bounded_provenance_views" || migration.version === "20260817_10_bounded_provenance_view_index_fix" || migration.version === "20260820_11_effect_event_link" || migration.version === "20260823_12_source_credit_facts" || migration.version === "20260823_14_p1_metric_facts" || migration.version === "20260823_15_p1_metric_fact_contracts" || migration.version === "20260823_16_p1_metric_conflict_audit" || migration.version === "20260823_17_integrity_anchors" || migration.version === "20260823_18_integrity_anchor_immutability" || migration.version === "20260824_19_integrity_anchor_recovery_material" || migration.version === "20260824_20_integrity_anchor_hardening" || migration.version === "20260824_21_integrity_anchor_tenant_reconcile_index") {
         db.exec(migration.sql);
       } else if (migration.version === "20260823_13_source_credit_tenant_primary_keys") {
         db.exec(migration.sql);
