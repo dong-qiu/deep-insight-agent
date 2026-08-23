@@ -4,10 +4,12 @@ import { openDb } from "./index.js";
 import { applyProvenanceMigrations } from "./provenance-migrations.js";
 import { P1_METRICS_CAPACITY_FIXTURE } from "./p1-metrics-capacity-fixture.js";
 import { appendAnalysisMetricFacts, appendCollectorMetricFact, appendValidationMetricFacts } from "./p1-metrics-pipeline.js";
-import { appendCostLedger, appendFunnelEvent, appendValidatorResult, freezeDueMetricDay, freezeMetricDay, listCostLedgerDetails, listFunnelDetails, listValidatorResultDetails, purgeExpiredMetricFacts, queryMetricRollups, reconcileLateMetricEvent } from "./p1-metrics-facts.js";
+import { appendCostLedger, appendFunnelEvent, appendValidatorResult, freezeDueMetricDay, freezeMetricDay, listCostLedgerDetails, listFunnelDetails, listMetricFactConflicts, listValidatorResultDetails, purgeExpiredMetricFacts, queryMetricRollups, reconcileLateMetricEvent } from "./p1-metrics-facts.js";
 
 const metricAlerts = vi.hoisted(() => ({ late: vi.fn() }));
+const metricLogs = vi.hoisted(() => ({ warn: vi.fn() }));
 vi.mock("../runtime/metric-alert.js", () => ({ notifyMetricLateFact: metricAlerts.late }));
+vi.mock("../runtime/logger.js", () => ({ runLogger: () => ({ warn: metricLogs.warn }) }));
 
 function dbWithMetrics() {
   const db = openDb(":memory:");
@@ -26,6 +28,42 @@ describe("P1 dashboard metric facts", () => {
     expect(db.prepare("SELECT COUNT(*) AS count FROM funnel_event_conflict WHERE tenant_id='default'").get()).toEqual({ count: 1 });
     expect(() => appendFunnelEvent(db, { ...common, event_id: "bad-skip", stage: "validated", occurred_at: "2026-08-01T00:03:00.000Z" })).toThrow("funnel_skip_reason_required");
     expect(() => appendFunnelEvent(db, { ...common, event_id: "reverse", stage: "received", attempt: 1, occurred_at: "2026-08-01T00:04:00.000Z" })).toThrow("funnel_event_conflict");
+  });
+
+  it("appends immutable, queryable audit facts for divergent cost and validator replays", () => {
+    const db = dbWithMetrics(); const time = "2026-08-01T01:00:00.000Z";
+    const cost = { entry_id: "cost_replay", trace_id: "trace_1", stage: "processed", pipeline_version: "pipeline-v1", provider: "openai", model: "gpt", currency: "USD", amount_minor: 7, cost_status: "known" as const, occurred_at: time, ingested_at: time };
+    const validator = { result_id: "validator_replay", trace_id: "trace_1", stage: "validated", pipeline_version: "pipeline-v1", validator: "citation", rule_version: "v1", reason_code: "source_not_found", severity: "error" as const, terminal: true, occurred_at: time, ingested_at: time };
+    expect(appendCostLedger(db, cost)).toEqual({ entry_id: "cost_replay", replayed: false });
+    expect(appendCostLedger(db, cost)).toEqual({ entry_id: "cost_replay", replayed: true });
+    expect(() => appendCostLedger(db, { ...cost, amount_minor: 8 })).toThrow("cost_idempotency_conflict");
+    expect(appendValidatorResult(db, validator)).toEqual({ result_id: "validator_replay", replayed: false });
+    expect(appendValidatorResult(db, validator)).toEqual({ result_id: "validator_replay", replayed: true });
+    expect(() => appendValidatorResult(db, { ...validator, severity: "critical" })).toThrow("validator_idempotency_conflict");
+
+    const costAudit = listMetricFactConflicts(db, { fact_kind: "cost", business_id: cost.entry_id }) as Array<Record<string, string>>;
+    const validatorAudit = listMetricFactConflicts(db, { fact_kind: "validator", business_id: validator.result_id }) as Array<Record<string, string>>;
+    for (const [fact, kind, id] of [[costAudit[0], "cost", cost.entry_id], [validatorAudit[0], "validator", validator.result_id]] as const) {
+      expect(fact).toEqual(expect.objectContaining({ tenant_id: "default", fact_kind: kind, business_id: id, reason_code: "semantic_payload_mismatch", observed_at: time }));
+      expect(fact.existing_semantic_payload_hash).toMatch(/^[a-f0-9]{64}$/);
+      expect(fact.received_semantic_payload_hash).toMatch(/^[a-f0-9]{64}$/);
+      expect(fact.received_semantic_payload_hash).not.toBe(fact.existing_semantic_payload_hash);
+    }
+    expect(db.prepare("SELECT amount_minor FROM cost_ledger WHERE entry_id='cost_replay'").get()).toEqual({ amount_minor: 7 });
+    expect(db.prepare("SELECT severity FROM validator_result_fact WHERE result_id='validator_replay'").get()).toEqual({ severity: "error" });
+    expect(() => db.prepare("UPDATE metric_fact_conflict SET reason_code='other' WHERE business_id='cost_replay'").run()).toThrow("append-only");
+    expect(() => db.prepare("DELETE FROM metric_fact_conflict WHERE business_id='validator_replay'").run()).toThrow("append-only");
+    const plan = db.prepare("EXPLAIN QUERY PLAN SELECT * FROM metric_fact_conflict WHERE tenant_id='default' AND fact_kind='cost' AND business_id='cost_replay' ORDER BY observed_at DESC").all() as { detail: string }[];
+    expect(plan.map((row) => row.detail).join("\n")).toContain("idx_metric_fact_conflict_tenant_kind_business");
+  });
+
+  it("logs a controlled warning when a telemetry adapter cannot append its conflict audit", () => {
+    const db = dbWithMetrics(); const batch = { id: "batch_audit_failure", topic_id: "topic_1" } as AnalysisBatch;
+    metricLogs.warn.mockClear();
+    appendAnalysisMetricFacts(db, { batch, items: [], run_id: "run_1", costs: [{ tokens: 1, amount: 0.01 }] });
+    db.exec("CREATE TRIGGER metric_fact_conflict_reject BEFORE INSERT ON metric_fact_conflict BEGIN SELECT RAISE(ABORT, 'audit unavailable'); END;");
+    expect(() => appendAnalysisMetricFacts(db, { batch, items: [], run_id: "run_2", costs: [{ tokens: 1, amount: 0.02 }] })).not.toThrow();
+    expect(metricLogs.warn).toHaveBeenCalledWith(expect.objectContaining({ err: "metric_conflict_audit_write_failed" }), expect.stringContaining("指标事实写入失败"));
   });
 
   it("materializes exact known, unknown, and validator aggregates then revises only inside the seven-day window", () => {

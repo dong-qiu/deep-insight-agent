@@ -19,6 +19,11 @@ function metricFactExists(db: DB, kind: FactKind, id: string): boolean {
   const column = kind === "funnel" ? "event_id" : kind === "cost" ? "entry_id" : "result_id";
   return Boolean(db.prepare(`SELECT 1 FROM ${table} WHERE tenant_id=? AND ${column}=?`).get("default", id));
 }
+/** Replays retain the original event-time; other semantic changes still reach the append conflict audit. */
+function metricFactOccurredAt(db: DB, kind: Exclude<FactKind, "funnel">, id: string, fallback: string): string {
+  const table = kind === "cost" ? "cost_ledger" : "validator_result_fact"; const column = kind === "cost" ? "entry_id" : "result_id";
+  return (db.prepare(`SELECT occurred_at FROM ${table} WHERE tenant_id=? AND ${column}=?`).get("default", id) as { occurred_at: string } | undefined)?.occurred_at ?? fallback;
+}
 function safelyRecord(label: string, write: () => void): void {
   try { write(); } catch (error) {
     runLogger({ stage: "p1-metrics" }).warn({ err: error instanceof Error ? error.message : String(error) }, `${label} 指标事实写入失败（不影响主流水线）`);
@@ -72,10 +77,11 @@ export function appendAnalysisMetricFacts(db: DB, input: { batch: AnalysisBatch;
     const occurredAt = new Date().toISOString();
     appendAnalysisStages(db, { items: input.items, topicId: input.batch.topic_id, runId: input.run_id, occurredAt });
     input.costs.forEach((cost, index) => {
-      const id = metricFactId("cost", [input.batch.id, "analyze", index]); if (metricFactExists(db, "cost", id)) return;
+      const id = metricFactId("cost", [input.batch.id, "analyze", index]);
+      const factOccurredAt = metricFactOccurredAt(db, "cost", id, occurredAt);
       appendCostLedger(db, { entry_id: id, trace_id: `metric:batch:${input.batch.id}`, stage: "processed", pipeline_version: PIPELINE_VERSION, topic_id: input.batch.topic_id,
-        provider: "anthropic", model: MODELS.analyzer, currency: "USD", amount_minor: cents(cost), cost_status: "known", input_tokens: cost.tokens, output_tokens: 0, occurred_at: occurredAt, ingested_at: occurredAt });
-      alertIfQuarantined(db, "cost", id, occurredAt);
+        provider: "anthropic", model: MODELS.analyzer, currency: "USD", amount_minor: cents(cost), cost_status: "known", input_tokens: cost.tokens, output_tokens: 0, occurred_at: factOccurredAt, ingested_at: occurredAt });
+      alertIfQuarantined(db, "cost", id, factOccurredAt);
     });
   });
 }
@@ -93,11 +99,10 @@ export function appendValidationMetricFacts(db: DB, input: { batch: AnalysisBatc
       const reason = checkReason(check);
       if (!outcomes.has(item.id) || outcomes.get(item.id) === "not_evaluated") outcomes.set(item.id, reason);
       const id = metricFactId("validator", [input.batch.id, check.insight_id, check.citation_index]);
-      if (!metricFactExists(db, "validator", id)) {
-        appendValidatorResult(db, { result_id: id, trace_id: metricItemTrace(item, input.batch.topic_id), stage: "validated", pipeline_version: PIPELINE_VERSION, topic_id: input.batch.topic_id, source_id: item.source_id,
-          validator: "citation", rule_version: "citation-validation-v1", reason_code: checkReason(check), severity: check.verdict === "pass" ? "info" : check.verdict === "flagged" ? "warning" : "error", terminal: true, occurred_at: occurredAt, ingested_at: occurredAt });
-        alertIfQuarantined(db, "validator", id, occurredAt);
-      }
+      const factOccurredAt = metricFactOccurredAt(db, "validator", id, occurredAt);
+      appendValidatorResult(db, { result_id: id, trace_id: metricItemTrace(item, input.batch.topic_id), stage: "validated", pipeline_version: PIPELINE_VERSION, topic_id: input.batch.topic_id, source_id: item.source_id,
+        validator: "citation", rule_version: "citation-validation-v1", reason_code: checkReason(check), severity: check.verdict === "pass" ? "info" : check.verdict === "flagged" ? "warning" : "error", terminal: true, occurred_at: factOccurredAt, ingested_at: occurredAt });
+      alertIfQuarantined(db, "validator", id, factOccurredAt);
     }
     for (const [itemId, reasonCode] of outcomes) {
       const item = itemById.get(itemId)!;
@@ -105,10 +110,11 @@ export function appendValidationMetricFacts(db: DB, input: { batch: AnalysisBatc
       if (reasonCode !== "not_evaluated") appendItemStage(db, { item, topicId: input.batch.topic_id, runId: input.run_id, stage: "failed", occurredAt: new Date(Date.parse(occurredAt) + 1).toISOString(), reasonCode });
     }
     input.costs.forEach((cost, index) => {
-      const id = metricFactId("cost", [input.batch.id, "validate", index]); if (metricFactExists(db, "cost", id)) return;
+      const id = metricFactId("cost", [input.batch.id, "validate", index]);
+      const factOccurredAt = metricFactOccurredAt(db, "cost", id, occurredAt);
       appendCostLedger(db, { entry_id: id, trace_id: `metric:batch:${input.batch.id}`, stage: "validated", pipeline_version: PIPELINE_VERSION, topic_id: input.batch.topic_id,
-        provider: "anthropic", model: MODELS.validator, currency: "USD", amount_minor: cents(cost), cost_status: "known", input_tokens: cost.tokens, output_tokens: 0, occurred_at: occurredAt, ingested_at: occurredAt });
-      alertIfQuarantined(db, "cost", id, occurredAt);
+        provider: "anthropic", model: MODELS.validator, currency: "USD", amount_minor: cents(cost), cost_status: "known", input_tokens: cost.tokens, output_tokens: 0, occurred_at: factOccurredAt, ingested_at: occurredAt });
+      alertIfQuarantined(db, "cost", id, factOccurredAt);
     });
   });
 }

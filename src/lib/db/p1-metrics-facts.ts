@@ -35,6 +35,7 @@ export interface ValidatorResultInput {
   occurred_at: string; ingested_at?: string; producer_version?: string;
 }
 type FactKind = "funnel" | "cost" | "validator";
+type ConflictFactKind = Exclude<FactKind, "funnel">;
 
 /** Pipeline callers may safely remain compatible with a database before P1's explicit migration. */
 export function hasMetricFactsSchema(db: DB): boolean {
@@ -60,6 +61,17 @@ function stageRank(stage: FunnelStage): number { const index = FUNNEL_STAGES.ind
 function recordConflict(db: DB, input: { event_id: string; trace_id: string; stage: string; attempt: number; event_type: EventType; existing?: string; received: string; observed_at: string }): void {
   db.prepare(`INSERT INTO funnel_event_conflict(tenant_id,id,event_id,trace_id,stage,attempt,event_type,existing_semantic_payload_hash,received_semantic_payload_hash,observed_at)
     VALUES (?,?,?,?,?,?,?,?,?,?)`).run(METRICS_TENANT_ID, `fec_${randomUUID().replaceAll("-", "")}`, input.event_id, input.trace_id, input.stage, input.attempt, input.event_type, input.existing ?? null, input.received, input.observed_at);
+}
+
+/** Conflict facts deliberately store only semantic hashes, never telemetry payloads. */
+function recordMetricFactConflict(db: DB, input: { fact_kind: ConflictFactKind; business_id: string; existing_semantic_payload_hash: string; received_semantic_payload_hash: string; observed_at: string }): void {
+  try {
+    db.prepare(`INSERT INTO metric_fact_conflict(tenant_id,id,fact_kind,business_id,existing_semantic_payload_hash,received_semantic_payload_hash,reason_code,observed_at)
+      VALUES (?,?,?,?,?,?,?,?)`).run(METRICS_TENANT_ID, `mfc_${randomUUID().replaceAll("-", "")}`, input.fact_kind, input.business_id, input.existing_semantic_payload_hash, input.received_semantic_payload_hash, "semantic_payload_mismatch", input.observed_at);
+  } catch {
+    // Adapters may keep their telemetry-only contract, but their controlled warning must retain this failure.
+    throw new Error("metric_conflict_audit_write_failed");
+  }
 }
 
 function validateFunnelState(db: DB, candidate: Required<Pick<FunnelEventInput, "trace_id" | "stage" | "attempt" | "skip_reason_code" | "occurred_at">>): void {
@@ -120,7 +132,12 @@ export function appendFunnelEvent(db: DB, input: FunnelEventInput): { event_id: 
 function appendSimpleFact(db: DB, kind: Exclude<FactKind, "funnel">, id: string, payload: Record<string, unknown>, occurred_at: string, ingested_at: string): { id: string; replayed: boolean } {
   const table = kind === "cost" ? "cost_ledger" : "validator_result_fact"; const column = kind === "cost" ? "entry_id" : "result_id"; const semantic = canonicalHash(payload);
   const existing = db.prepare(`SELECT semantic_payload_hash FROM ${table} WHERE tenant_id=? AND ${column}=?`).get(METRICS_TENANT_ID, id) as { semantic_payload_hash: string } | undefined;
-  if (existing) { if (existing.semantic_payload_hash === semantic) return { id, replayed: true }; throw new Error(`${kind}_idempotency_conflict`); }
+  if (existing) {
+    if (existing.semantic_payload_hash === semantic) return { id, replayed: true };
+    // This must not run inside the rejected ledger transaction, otherwise SQLite rolls back the audit fact too.
+    recordMetricFactConflict(db, { fact_kind: kind, business_id: id, existing_semantic_payload_hash: existing.semantic_payload_hash, received_semantic_payload_hash: semantic, observed_at: ingested_at });
+    throw new Error(`${kind}_idempotency_conflict`);
+  }
   return { id, replayed: false };
 }
 
@@ -134,8 +151,8 @@ export function appendCostLedger(db: DB, input: CostLedgerInput): { entry_id: st
   const producer_version = defaulted(input.producer_version, "p1-metrics-producer-v1");
   if (input.topic_id) requireId(input.topic_id, "cost_topic"); if (input.source_id) requireId(input.source_id, "cost_source");
   const payload = { ...input, attempt, input_tokens, output_tokens, occurred_at, cost_ledger_schema_version: "cost-ledger-v1", producer_version, ingested_at: undefined };
+  const result = appendSimpleFact(db, "cost", input.entry_id, payload, occurred_at, ingested_at); if (result.replayed) return { entry_id: result.id, replayed: true };
   return db.transaction(() => {
-    const result = appendSimpleFact(db, "cost", input.entry_id, payload, occurred_at, ingested_at); if (result.replayed) return { entry_id: result.id, replayed: true };
     db.prepare(`INSERT INTO cost_ledger(tenant_id,entry_id,trace_id,stage,attempt,pipeline_version,provider,model,currency,topic_id,source_id,amount_minor,cost_status,input_tokens,output_tokens,occurred_at,ingested_at,schema_version,producer_version,semantic_payload_hash)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(METRICS_TENANT_ID,input.entry_id,input.trace_id,input.stage,attempt,input.pipeline_version,input.provider,input.model,input.currency,input.topic_id ?? null,input.source_id ?? null,input.amount_minor,input.cost_status,input_tokens,output_tokens,occurred_at,ingested_at,"cost-ledger-v1",producer_version,canonicalHash(payload));
     materializeForFact(db, "cost", input.entry_id, occurred_at, ingested_at); return { entry_id: input.entry_id, replayed: false };
@@ -149,8 +166,8 @@ export function appendValidatorResult(db: DB, input: ValidatorResultInput): { re
   const occurred_at = instant(input.occurred_at); const ingested_at = instant(input.ingested_at ?? new Date().toISOString()); if (epoch(ingested_at) < epoch(occurred_at)) throw new Error("metric_occurred_after_ingested");
   const producer_version = defaulted(input.producer_version, "p1-metrics-producer-v1"); const payload = { ...input, attempt, occurred_at, validator_result_schema_version: "validator-result-v1", producer_version, ingested_at: undefined };
   if (input.topic_id) requireId(input.topic_id, "validator_topic"); if (input.source_id) requireId(input.source_id, "validator_source");
+  const result = appendSimpleFact(db, "validator", input.result_id, payload, occurred_at, ingested_at); if (result.replayed) return { result_id: result.id, replayed: true };
   return db.transaction(() => {
-    const result = appendSimpleFact(db, "validator", input.result_id, payload, occurred_at, ingested_at); if (result.replayed) return { result_id: result.id, replayed: true };
     db.prepare(`INSERT INTO validator_result_fact(tenant_id,result_id,trace_id,stage,attempt,pipeline_version,validator,rule_version,reason_code,severity,terminal,topic_id,source_id,occurred_at,ingested_at,schema_version,producer_version,semantic_payload_hash)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(METRICS_TENANT_ID,input.result_id,input.trace_id,input.stage,attempt,input.pipeline_version,input.validator,input.rule_version,input.reason_code,input.severity,input.terminal ? 1 : 0,input.topic_id ?? null,input.source_id ?? null,occurred_at,ingested_at,"validator-result-v1",producer_version,canonicalHash(payload));
     materializeForFact(db, "validator", input.result_id, occurred_at, ingested_at); return { result_id: input.result_id, replayed: false };
@@ -260,6 +277,14 @@ export function listValidatorResultDetails(db: DB, input: { from: string; to: st
   return db.prepare("SELECT * FROM validator_result_fact WHERE tenant_id=? AND occurred_at>=? AND occurred_at<? ORDER BY occurred_at DESC LIMIT ?").all(METRICS_TENANT_ID,from,to,limit);
 }
 
+/** Bounded audit lookup for an operator investigating a rejected divergent replay. */
+export function listMetricFactConflicts(db: DB, input: { fact_kind: ConflictFactKind; business_id: string; limit?: number }) {
+  const limit = input.limit ?? 100; if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new Error("metric_page_limit_invalid");
+  requireId(input.business_id, "metric_conflict_business_id");
+  return db.prepare("SELECT * FROM metric_fact_conflict WHERE tenant_id=? AND fact_kind=? AND business_id=? ORDER BY observed_at DESC LIMIT ?")
+    .all(METRICS_TENANT_ID, input.fact_kind, input.business_id, limit);
+}
+
 export function queryMetricRollups(db: DB, input: { from: string; to: string; grain: "hour" | "day"; limit?: number }) {
   const from = instant(input.from); const to = instant(input.to); const max = ROLLUP_QUERY_MAX_DAYS * 24 * 60 * 60 * 1000;
   if (epoch(to) <= epoch(from) || epoch(to) - epoch(from) > max) throw new Error("metric_rollup_window_invalid");
@@ -279,6 +304,7 @@ export function purgeExpiredMetricFacts(db: DB, now = new Date().toISOString()):
     )`).run(METRICS_TENANT_ID, cutoff).changes;
     for (const table of ["funnel_event", "cost_ledger", "validator_result_fact", "metric_late_event"]) details += db.prepare(`DELETE FROM ${table} WHERE tenant_id=? AND occurred_at<?`).run(METRICS_TENANT_ID,cutoff).changes;
     details += db.prepare("DELETE FROM funnel_event_conflict WHERE tenant_id=? AND observed_at<?").run(METRICS_TENANT_ID,cutoff).changes;
+    details += db.prepare("DELETE FROM metric_fact_conflict WHERE tenant_id=? AND observed_at<?").run(METRICS_TENANT_ID,cutoff).changes;
     const rollups = db.prepare("DELETE FROM metric_rollup WHERE tenant_id=? AND ((grain='hour' AND bucket_start<?) OR (grain='day' AND bucket_start<?))").run(METRICS_TENANT_ID,cutoff,dailyCutoff).changes;
     db.prepare("UPDATE metric_maintenance_guard SET retention_delete=0 WHERE id=1").run();
     return { details, rollups };

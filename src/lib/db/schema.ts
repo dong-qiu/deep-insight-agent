@@ -202,6 +202,20 @@ CREATE TRIGGER metric_late_reconciliation_no_update BEFORE UPDATE ON metric_late
 CREATE TRIGGER metric_late_reconciliation_no_delete BEFORE DELETE ON metric_late_reconciliation WHEN (SELECT retention_delete FROM metric_maintenance_guard WHERE id=1) = 0 BEGIN SELECT RAISE(ABORT, 'metric_late_reconciliation is append-only'); END;
 `;
 
+/** P1b-2 conflict audit follow-up.  Keep the original metric migrations immutable. */
+export const P1_METRICS_CONFLICT_AUDIT_SCHEMA_SQL = `
+CREATE TABLE metric_fact_conflict (
+  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'), id TEXT NOT NULL,
+  fact_kind TEXT NOT NULL CHECK(fact_kind IN ('cost','validator')), business_id TEXT NOT NULL,
+  existing_semantic_payload_hash TEXT NOT NULL, received_semantic_payload_hash TEXT NOT NULL,
+  reason_code TEXT NOT NULL CHECK(reason_code = 'semantic_payload_mismatch'), observed_at TEXT NOT NULL,
+  PRIMARY KEY(tenant_id,id)
+);
+CREATE INDEX idx_metric_fact_conflict_tenant_kind_business ON metric_fact_conflict(tenant_id,fact_kind,business_id,observed_at DESC);
+CREATE TRIGGER metric_fact_conflict_no_update BEFORE UPDATE ON metric_fact_conflict BEGIN SELECT RAISE(ABORT, 'metric_fact_conflict is append-only'); END;
+CREATE TRIGGER metric_fact_conflict_no_delete BEFORE DELETE ON metric_fact_conflict WHEN (SELECT retention_delete FROM metric_maintenance_guard WHERE id=1) = 0 BEGIN SELECT RAISE(ABORT, 'metric_fact_conflict is append-only'); END;
+`;
+
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS source (
   id             TEXT PRIMARY KEY,

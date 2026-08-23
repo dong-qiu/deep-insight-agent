@@ -171,6 +171,7 @@ P1b-2 的指标写模型由 collector、analysis 与 validation 的已提交写�
 | `FunnelEvent` | `(tenant_id,event_id)`；`trace_id`、`topic_id?`、`source_id?`、`stage`、`attempt`、`reason_code?`、event/ingest time | `funnel-v1` 的追加式阶段事实；相同逻辑事件语义冲突另写 conflict，不覆盖原事实。漏斗失败按同 trace/attempt 的第一个终态 `reason_code` 归因。 |
 | `CostLedger` | `(tenant_id,entry_id)`；`trace_id`、`topic_id?`、`source_id?`、`pipeline_version`、`stage`、provider/model/currency、token 与 minor-unit amount | 已知和未知成本分开保存，未知绝不以 0 替代。 |
 | `ValidatorResultFact` | `(tenant_id,result_id)`；`trace_id`、`topic_id?`、`source_id?`、validator/rule version、reason/severity | 每个已完成引用校验一条结构化结果；不保存 prompt、原文或诊断正文。 |
+| `MetricFactConflict` | `(tenant_id,id)`；`fact_kind`、业务 ID、existing/received semantic hash、`semantic_payload_mismatch`、`observed_at` | 相同 `CostLedger.entry_id` 或 `ValidatorResultFact.result_id` 的异语义重放追加独立审计事实，不改写原明细；仅保存安全 hash。 |
 | `MetricRollup` | tenant、UTC hour/day bucket、指标种类及 topic/source/pipeline/stage/归因维度 | 确定性物化读模型，日桶在下一 UTC 日 02:00 冻结。冻结后 7 个自然日内迟到事实受控重算并写 `revised_at`；超过窗口写 `MetricLateEvent` quarantine。 |
 | `MetricLateReconciliation` | `(tenant_id,id)`；fact kind/event、`backfilled` / `declined`、actor/time | 管理员显式回填/拒绝的追加审计记录；只有 `backfilled` 才重算对应小时/日桶。 |
 
