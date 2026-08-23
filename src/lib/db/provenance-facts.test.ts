@@ -4,6 +4,7 @@ import { appendGenerationEvent, canonicalHash, canonicalJson, captureRevision, e
 import { applyProvenanceMigrations } from "./provenance-migrations.js";
 import { buildGenerationTraceGraph, listGenerationEventRefs, listGenerationTraceTimeline, listGenerationTraceTimelinePage } from "./provenance.js";
 import { finishRun, insertRun } from "./repos.js";
+import { appendSourceCredit, reconcileLateSourceCredit, SOURCE_CREDIT_TOTAL_MICROS } from "./source-credit-facts.js";
 
 const eventOnlyPolicy = (stages: CompletionPolicy["stages"]): CompletionPolicy => ({ schema_version: 1, stages });
 const requiredEvent = (stage = "analyze"): CompletionPolicy["stages"][number] => ({
@@ -19,6 +20,53 @@ function dbWithTrace(policy = eventOnlyPolicy([requiredEvent()])) {
 }
 
 describe("provenance facts", () => {
+  it("writes conserved source credits once, observes conflicts, and keeps a late event reconcilable", () => {
+    const db = dbWithTrace();
+    initializeProvenanceMeta(db, "2026-08-03T00:00:00.000Z");
+    const revision = `source-v1:${"a".repeat(64)}`;
+    const input = {
+      event_id: "source-credit-1", trace_id: "trace_1", occurred_at: "2026-08-03T00:00:00.000Z", ingested_at: "2026-08-05T00:00:00.000Z",
+      // Input order must not affect allocation or the semantic idempotency key.
+      sources: [{ source_id: "source_c", source_revision: revision }, { source_id: "source_b", source_revision: revision }, { source_id: "source_a", source_revision: revision }],
+    };
+    expect(appendSourceCredit(db, input)).toMatchObject({ replayed: false, trace_coverage: "complete", lateness: "reconcilable" });
+    expect(appendSourceCredit(db, { ...input, sources: [...input.sources].reverse() })).toMatchObject({ replayed: true });
+    expect(db.prepare("SELECT source_id,credit_micros FROM source_credit_fact WHERE tenant_id='default' AND event_id=? ORDER BY source_id").all(input.event_id))
+      .toEqual([
+        { source_id: "source_a", credit_micros: 333_334 },
+        { source_id: "source_b", credit_micros: 333_333 },
+        { source_id: "source_c", credit_micros: 333_333 },
+      ]);
+    expect(db.prepare("SELECT SUM(credit_micros) AS credits FROM source_credit_fact WHERE tenant_id='default' AND event_id=?").get(input.event_id))
+      .toEqual({ credits: SOURCE_CREDIT_TOTAL_MICROS });
+    const reconciliation = reconcileLateSourceCredit(db, { event_id: input.event_id, action: "reconciled", actor_id: "admin_1", recorded_at: "2026-08-05T01:00:00.000Z" });
+    expect(db.prepare("SELECT action FROM source_credit_late_reconciliation WHERE id=?").get(reconciliation.id)).toEqual({ action: "reconciled" });
+    const plan = db.prepare("EXPLAIN QUERY PLAN SELECT event_id FROM source_credit_fact WHERE tenant_id='default' AND source_id='source_a'").all() as { detail: string }[];
+    expect(plan.map((row) => row.detail).join("\\n")).toContain("idx_source_credit_fact_tenant_source_event");
+    expect(() => appendSourceCredit(db, { ...input, sources: [{ source_id: "source_a", source_revision: revision }] })).toThrow("source_credit_idempotency_conflict");
+    expect(db.prepare("SELECT COUNT(*) AS count FROM source_credit_conflict WHERE tenant_id='default' AND event_id=?").get(input.event_id)).toEqual({ count: 1 });
+    expect(() => db.prepare("DELETE FROM source_credit_fact WHERE tenant_id='default' AND event_id=?").run(input.event_id)).toThrow("append-only");
+  });
+
+  it("never upgrades absent, pre-cutover, or partial provenance into complete source-credit coverage", () => {
+    const db = dbWithTrace();
+    initializeProvenanceMeta(db, "2026-08-04T00:00:00.000Z");
+    const revision = `source-v1:${"b".repeat(64)}`;
+    expect(appendSourceCredit(db, {
+      event_id: "source-credit-legacy", trace_id: "trace_1", occurred_at: "2026-08-03T00:00:00.000Z", ingested_at: "2026-08-03T01:00:00.000Z",
+      sources: [{ source_id: "source_a", source_revision: revision }],
+    }).trace_coverage).toBe("legacy");
+    db.prepare("UPDATE generation_trace SET started_at='2026-08-05T00:00:00.000Z',coverage='partial' WHERE id='trace_1'").run();
+    expect(appendSourceCredit(db, {
+      event_id: "source-credit-partial", trace_id: "trace_1", occurred_at: "2026-08-05T00:00:00.000Z", ingested_at: "2026-08-05T01:00:00.000Z",
+      sources: [{ source_id: "source_a", source_revision: revision }],
+    }).trace_coverage).toBe("partial");
+    expect(appendSourceCredit(db, {
+      event_id: "source-credit-no-trace", trace_id: "unknown_trace", occurred_at: "2026-08-05T00:00:00.000Z", ingested_at: "2026-08-05T01:00:00.000Z",
+      sources: [{ source_id: "source_a", source_revision: revision }],
+    }).trace_coverage).toBe("legacy");
+  });
+
   it("uses stable canonical vectors including Unicode keys and array order", () => {
     expect(canonicalJson({ z: 1, "😀": null, a: ["b", "a"] })).toBe('{"a":["b","a"],"z":1,"😀":null}');
     expect(canonicalHash({ b: 1, a: 2 })).toBe(canonicalHash({ a: 2, b: 1 }));
