@@ -7,7 +7,7 @@ import type { Report, ReportIndexEntry } from "../types.js";
 import type { DB } from "./index.js";
 import { appendGenerationEvent, captureRevision, entityKey, type EntityRef } from "./provenance-facts.js";
 import { anchorEnvelopeBytes, anchorMatchesManifest, manifestForArtifact, parseCanonicalAnchorEnvelope, parseCanonicalJsonBytes, type AnchorSigner, type AnchorStore, type ArtifactManifest } from "./integrity-anchors.js";
-import { commitAnchoredPublications, writePlannedAnchor } from "./integrity-publication.js";
+import { assertAnchorPublicationKeyActive, commitAnchoredPublications, writePlannedAnchor } from "./integrity-publication.js";
 
 const j = (v: unknown): string => JSON.stringify(v);
 
@@ -25,11 +25,12 @@ function hasReportEffectTable(db: DB): boolean {
 
 interface ReportArtifact { target: string; sha256: string; size: number; report_id: string }
 interface ReportEffectProvenance { traceId: string; eventId: string }
-export interface ReportAnchorPublication { store: AnchorStore; signer: AnchorSigner; retainUntil: string; retentionEnds?: string[]; issuedAt?: string }
+export interface ReportAnchorPublication { store: AnchorStore; signer: AnchorSigner; retainUntil: string; retentionEnds: readonly [string, string, string]; issuedAt?: string }
 const digest = (body: string): string => createHash("sha256").update(body, "utf8").digest("hex");
 function requiredAnchorRetention(anchor: ReportAnchorPublication, issuedAt: string): string {
   const minimum = new Date(Date.parse(issuedAt) + 100 * 24 * 60 * 60_000).toISOString();
-  const values = [anchor.retainUntil, ...(anchor.retentionEnds ?? []), minimum];
+  if (anchor.retentionEnds.length !== 3) throw new Error("integrity_anchor_retention_policy_required");
+  const values = [anchor.retainUntil, ...anchor.retentionEnds, minimum];
   if (values.some((value) => !Number.isFinite(Date.parse(value)))) throw new Error("integrity_anchor_retain_until_invalid");
   return values.reduce((latest, value) => Date.parse(value) > Date.parse(latest) ? value : latest);
 }
@@ -458,6 +459,7 @@ export async function reconcileAnchoredReportEffects(
         const key = db.prepare("SELECT public_key_pem FROM integrity_signing_key WHERE tenant_id='default' AND key_id=?").get(raw.key_id) as { public_key_pem: string } | undefined;
         if (!key) throw new Error("anchor_verification_key_unavailable");
         const candidate = parseCanonicalAnchorEnvelope(new TextEncoder().encode(row.anchor_payload), createPublicKey(key.public_key_pem));
+        assertAnchorPublicationKeyActive(db, candidate.key_id);
         const object = await anchor.store.get(candidate.payload.object_key, row.anchor_provider_version_id);
         const canonical = anchorEnvelopeBytes(candidate);
         if (!object || !anchorMatchesManifest(candidate, recordedManifest) || !anchorMatchesManifest(candidate, manifest)
@@ -484,14 +486,14 @@ export async function reconcileAnchoredReportEffects(
       committed += 1;
     } catch (error) {
       const message = error instanceof Error ? error.message.slice(0, 256) : String(error).slice(0, 256);
-      const terminal = ["orphan_anchor_conflict", "anchored_report_manifest_incomplete", "anchored_report_artifact_invalid", "anchored_report_idempotency_conflict", "anchor_signature_invalid", "anchor_verification_key_unavailable"].includes(message);
+      const terminal = ["orphan_anchor_conflict", "anchored_report_manifest_incomplete", "anchored_report_artifact_invalid", "anchored_report_idempotency_conflict", "anchor_signature_invalid", "anchor_verification_key_unavailable", "anchor_signing_key_revoked"].includes(message);
       db.transaction(() => {
         for (const row of anchors) {
           if (terminal) {
             db.prepare("UPDATE generation_anchor_effect SET status='unknown',error=?,updated_at=? WHERE id=? AND status IN ('planned','anchor_written')")
-              .run(j({ reason_code: "orphan_anchor_conflict", message }), clock.toISOString(), row.anchor_id);
+              .run(j({ reason_code: message, message }), clock.toISOString(), row.anchor_id);
             db.prepare("INSERT INTO integrity_audit_event(id,tenant_id,effect_id,artifact_id,artifact_version,event_type,severity,details,created_at) VALUES (?,?,?,?,?,?,?,?,?)")
-              .run(`iae_${randomUUID().replaceAll("-", "")}`, "default", effect.effect_id, row.artifact_id, row.artifact_version, "orphan_anchor", "critical", j({ reason_code: "orphan_anchor_conflict", message }), clock.toISOString());
+              .run(`iae_${randomUUID().replaceAll("-", "")}`, "default", effect.effect_id, row.artifact_id, row.artifact_version, "orphan_anchor", "critical", j({ reason_code: message, message }), clock.toISOString());
           }
           if (!terminal && clock.getTime() - Date.parse(row.created_at) >= 15 * 60_000) {
             db.prepare("INSERT INTO integrity_audit_event(id,tenant_id,effect_id,artifact_id,artifact_version,event_type,severity,details,created_at) VALUES (?,?,?,?,?,?,?,?,?)")
@@ -499,7 +501,7 @@ export async function reconcileAnchoredReportEffects(
           }
         }
         if (terminal) db.prepare("UPDATE generation_effect SET status='unknown',error=?,updated_at=? WHERE id=? AND status <> 'committed'")
-          .run(j({ reason_code: "orphan_anchor_conflict", message }), clock.toISOString(), effect.effect_id);
+          .run(j({ reason_code: message, message }), clock.toISOString(), effect.effect_id);
       })();
       failed += 1;
     }

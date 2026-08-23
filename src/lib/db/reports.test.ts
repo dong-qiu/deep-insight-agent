@@ -62,7 +62,7 @@ it("provenance 报告 effect 成对关联创建它的 trace 与 started event", 
 it("anchored publication makes report, index, FTS, event effect, and manifest visible in one SQLite commit", async () => {
   const keys = generateKeyPairSync("ed25519"); const store = new MemoryAnchorStore();
   await saveReport(db, { ...report, id: "rep_anchor" }, { ...index, report_id: "rep_anchor" }, {
-    dir, anchor: { store, signer: { key_id: "test-key-v1", private_key: keys.privateKey }, retainUntil: "2027-01-01T00:00:00Z", issuedAt: "2026-05-07T00:00:01Z" },
+    dir, anchor: { store, signer: { key_id: "test-key-v1", private_key: keys.privateKey }, retainUntil: "2027-01-01T00:00:00Z", retentionEnds: ["2027-01-01T00:00:00Z", "2027-02-01T00:00:00Z", "2027-03-01T00:00:00Z"], issuedAt: "2026-05-07T00:00:01Z" },
   });
   expect(db.prepare("SELECT status FROM report WHERE id='rep_anchor'").get()).toEqual({ status: "done" });
   expect(db.prepare("SELECT status FROM generation_effect WHERE report_id='rep_anchor'").get()).toEqual({ status: "committed" });
@@ -75,7 +75,7 @@ it("report-level anchored reconciliation restores both artifacts and every reade
   const keys = generateKeyPairSync("ed25519"); const store = new MemoryAnchorStore();
   const anchored = { ...report, id: "rep_anchor_recover" };
   await expect(saveReport(db, anchored, { ...index, report_id: anchored.id }, {
-    dir, anchor: { store, signer: { key_id: "test-key-v1", private_key: keys.privateKey }, retainUntil: "2027-01-01T00:00:00Z", issuedAt: "2026-05-07T00:00:01Z" },
+    dir, anchor: { store, signer: { key_id: "test-key-v1", private_key: keys.privateKey }, retainUntil: "2027-01-01T00:00:00Z", retentionEnds: ["2027-01-01T00:00:00Z", "2027-02-01T00:00:00Z", "2027-03-01T00:00:00Z"], issuedAt: "2026-05-07T00:00:01Z" },
     afterPublish: () => { throw new Error("sqlite_commit_failure"); },
   })).rejects.toThrow("sqlite_commit_failure");
   expect(getReport(db, anchored.id)).toBeNull();
@@ -102,7 +102,7 @@ it("resumes a one-of-two anchor write using the original effect and idempotency 
     },
   };
   const partial = { ...report, id: "rep_anchor_partial" };
-  const anchor = { store, signer: { key_id: "test-key-v1", private_key: keys.privateKey }, retainUntil: "2027-01-01T00:00:00Z", issuedAt: "2026-05-07T00:00:01Z" };
+  const anchor = { store, signer: { key_id: "test-key-v1", private_key: keys.privateKey }, retainUntil: "2027-01-01T00:00:00Z", retentionEnds: ["2027-01-01T00:00:00Z", "2027-02-01T00:00:00Z", "2027-03-01T00:00:00Z"] as const, issuedAt: "2026-05-07T00:00:01Z" };
   await expect(saveReport(db, partial, { ...index, report_id: partial.id }, { dir, anchor })).rejects.toThrow("temporary_store_failure");
   expect(db.prepare("SELECT status FROM report WHERE id=?").get(partial.id)).toEqual({ status: "generating" });
   expect(db.prepare("SELECT status FROM generation_anchor_effect ORDER BY artifact_id").all()).toEqual(expect.arrayContaining([expect.objectContaining({ status: "anchor_written" }), expect.objectContaining({ status: "planned" })]));

@@ -33,6 +33,12 @@ function keyMaterial(db: DB, keyId: string): { publicKey: KeyObject; revoked: bo
   return { publicKey: createPublicKey(row.public_key_pem), revoked: row.revoked_key != null };
 }
 
+/** Revocation never removes a historical public key, but it does stop any
+ * publication boundary that would make a new artifact reader-visible. */
+export function assertAnchorPublicationKeyActive(db: DB, keyId: string): void {
+  if (keyMaterial(db, keyId).revoked) throw new Error("anchor_signing_key_revoked");
+}
+
 /** Rotation adds a new immutable key record; revocation never erases history. */
 export function registerAnchorSigningKey(db: DB, signer: AnchorSigner): void {
   const publicPem = createPublicKey(signer.private_key).export({ type: "spki", format: "pem" }).toString();
@@ -91,6 +97,7 @@ function verifyManifestMaterial(db: DB, row: StoredAnchorEffect): void {
  */
 export async function writePlannedAnchor(db: DB, store: AnchorStore, input: AnchorPublication, signer: AnchorSigner): Promise<{ reused: boolean; provider_version_id: string | null }> {
   const row = planAnchorPublication(db, input, signer); const candidate = parseCandidate(db, row);
+  assertAnchorPublicationKeyActive(db, candidate.key_id);
   let providerVersion: string | null = null; let reused = false;
   try {
     const result = await store.putIfAbsent(row.object_key, anchorEnvelopeBytes(candidate), input.retain_until);
@@ -135,6 +142,7 @@ export function commitAnchoredPublication(db: DB, input: CommitAnchoredPublicati
   if (row.anchor_provider_version_id !== input.provider_version_id) throw new Error("anchor_provider_version_mismatch");
   verifyManifestMaterial(db, row);
   const anchor = parseCandidate(db, row);
+  assertAnchorPublicationKeyActive(db, anchor.key_id);
   finalizeAnchoredProjection(db, row, anchor, input.provider_version_id, input.finalize);
 }
 
@@ -147,7 +155,9 @@ export function commitAnchoredPublications(db: DB, input: { generation_effect_id
     if (row.manifest_canonical !== jcs(manifest)) throw new Error("anchor_effect_manifest_conflict");
     if (row.anchor_provider_version_id !== provider_version_id) throw new Error("anchor_provider_version_mismatch");
     verifyManifestMaterial(db, row);
-    return { row, anchor: parseCandidate(db, row), providerVersion: provider_version_id };
+    const anchor = parseCandidate(db, row);
+    assertAnchorPublicationKeyActive(db, anchor.key_id);
+    return { row, anchor, providerVersion: provider_version_id };
   });
   const committedAt = now();
   db.transaction(() => {
@@ -168,6 +178,7 @@ export async function reconcileAnchoredEffects(db: DB, store: AnchorStore, _publ
     try {
       const manifest = parseCanonicalJsonBytes(new TextEncoder().encode(row.manifest_canonical), "anchor_effect_manifest_invalid") as ArtifactManifest; const candidate = parseCandidate(db, row);
       verifyManifestMaterial(db, row);
+      assertAnchorPublicationKeyActive(db, candidate.key_id);
       const object = await store.get(row.object_key, row.anchor_provider_version_id); const candidateBytes = anchorEnvelopeBytes(candidate);
       if (!object || !anchorMatchesManifest(candidate, manifest)) throw new Error("orphan_anchor_conflict");
       if (object.provider_version_id !== row.anchor_provider_version_id) throw new Error("orphan_anchor_conflict");
@@ -176,11 +187,11 @@ export async function reconcileAnchoredEffects(db: DB, store: AnchorStore, _publ
       reconciled += 1;
     } catch (error) {
       const message = error instanceof Error ? error.message : "anchor_read_failed";
-      const terminal = ["orphan_anchor_conflict", "anchor_signature_invalid", "anchor_noncanonical_body", "anchor_provider_version_mismatch"].includes(message);
+      const terminal = ["orphan_anchor_conflict", "anchor_signature_invalid", "anchor_noncanonical_body", "anchor_provider_version_mismatch", "anchor_signing_key_revoked"].includes(message);
       db.transaction(() => {
         if (terminal) {
-          db.prepare("UPDATE generation_anchor_effect SET status='unknown',error=?,updated_at=? WHERE id=? AND status='anchor_written'").run(JSON.stringify({ reason_code: "orphan_anchor_conflict" }), now(), row.id);
-          db.prepare("UPDATE generation_effect SET status='unknown',error=?,updated_at=? WHERE id=? AND status <> 'committed'").run(JSON.stringify({ reason_code: "orphan_anchor_conflict" }), now(), row.generation_effect_id);
+          db.prepare("UPDATE generation_anchor_effect SET status='unknown',error=?,updated_at=? WHERE id=? AND status='anchor_written'").run(JSON.stringify({ reason_code: message }), now(), row.id);
+          db.prepare("UPDATE generation_effect SET status='unknown',error=?,updated_at=? WHERE id=? AND status <> 'committed'").run(JSON.stringify({ reason_code: message }), now(), row.generation_effect_id);
           audit(db, { effectId: row.generation_effect_id, artifactId: row.artifact_id, artifactVersion: row.artifact_version, type: "orphan_anchor", severity: "critical", details: { anchor_effect_id: row.id, retry_count: row.retry_count } });
         } else if (row.created_at && clock.getTime() - Date.parse(row.created_at) >= 15 * 60_000) {
           audit(db, { effectId: row.generation_effect_id, artifactId: row.artifact_id, artifactVersion: row.artifact_version, type: "anchor_written_sqlite_uncommitted", severity: "high", details: { anchor_effect_id: row.id, escalation: "unreconciled_over_15_minutes" } });
@@ -192,41 +203,77 @@ export async function reconcileAnchoredEffects(db: DB, store: AnchorStore, _publ
 }
 
 export interface DailyRoot { tenant_id: string; utc_date: string; cutoff: string; leaf_count: number; merkle_root: string; sort: "tenant_id,report_id,artifact_id,artifact_version,manifest_hash" }
-export async function writeDailyMerkleRoot(db: DB, store: AnchorStore, utcDate: string, cutoff: string, signer: AnchorSigner): Promise<{ status: "committed" | "recovered" | "missing" }> {
+interface DailyRootEnvelope { payload: DailyRoot; payload_hash: string; signature: string; key_id: string; algorithm: "ed25519"; issued_at: string }
+interface StoredDailyRoot { payload: string; signature: string; key_id: string; algorithm: string | null; issued_at: string | null; provider_version_id: string | null; retain_until: string | null }
+
+function exactObject(value: unknown, keys: readonly string[], code: string): asserts value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(code);
+  const actual = Object.keys(value);
+  if (actual.length !== keys.length || actual.some((key) => !keys.includes(key))) throw new Error(code);
+}
+function dailyEnvelopeBytes(envelope: DailyRootEnvelope): Uint8Array { return utf8(envelope); }
+function parseDailyRootEnvelope(db: DB, bytes: Uint8Array): DailyRootEnvelope {
+  const raw = parseCanonicalJsonBytes(bytes, "daily_anchor_noncanonical_body") as DailyRootEnvelope;
+  exactObject(raw, ["payload", "payload_hash", "signature", "key_id", "algorithm", "issued_at"], "daily_anchor_schema_invalid");
+  exactObject(raw.payload, ["tenant_id", "utc_date", "cutoff", "leaf_count", "merkle_root", "sort"], "daily_anchor_schema_invalid");
+  if (raw.algorithm !== "ed25519" || typeof raw.key_id !== "string" || typeof raw.signature !== "string" || typeof raw.issued_at !== "string" || typeof raw.payload_hash !== "string") throw new Error("daily_anchor_schema_invalid");
+  if (raw.payload.tenant_id !== tenant || !/^\d{4}-\d{2}-\d{2}$/.test(raw.payload.utc_date) || typeof raw.payload.cutoff !== "string" || !Number.isSafeInteger(raw.payload.leaf_count) || raw.payload.leaf_count < 0 || !/^[0-9a-f]{64}$/.test(raw.payload.merkle_root) || raw.payload.sort !== "tenant_id,report_id,artifact_id,artifact_version,manifest_hash") throw new Error("daily_anchor_schema_invalid");
+  const payloadBytes = utf8(raw.payload);
+  if (sha256(payloadBytes) !== raw.payload_hash) throw new Error("daily_anchor_payload_hash_mismatch");
+  const material = keyMaterial(db, raw.key_id);
+  if (!verify(null, Buffer.concat([Buffer.from("daily-root-v1\0"), Buffer.from(payloadBytes)]), material.publicKey, Buffer.from(raw.signature, "base64url"))) throw new Error("daily_anchor_signature_invalid");
+  return raw;
+}
+function dailyRootConflict(db: DB, utcDate: string, objectKey: string, reason: string): never {
+  db.transaction(() => audit(db, { type: "daily_anchor_conflict", severity: "critical", details: { utc_date: utcDate, object_key: objectKey, reason } }))();
+  throw new Error(reason);
+}
+
+export async function writeDailyMerkleRoot(db: DB, store: AnchorStore, utcDate: string, cutoff: string, signer: AnchorSigner, retainUntil: string): Promise<{ status: "committed" | "recovered" | "missing" }> {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(utcDate)) throw new Error("daily_date_invalid");
   const dayStart = `${utcDate}T00:00:00.000Z`; const dayEnd = new Date(Date.parse(dayStart) + 24 * 60 * 60 * 1000).toISOString();
   if (!Number.isFinite(Date.parse(dayStart)) || !Number.isFinite(Date.parse(cutoff)) || Date.parse(cutoff) < Date.parse(dayEnd)) throw new Error("daily_cutoff_invalid");
   // A root is frozen over anchors committed during the named UTC day.  Late
   // commits retain their per-manifest proof and never rewrite an old root.
-  const rows = db.prepare(`SELECT tenant_id,report_id,artifact_id,artifact_version,manifest_hash FROM artifact_manifest WHERE tenant_id=? AND committed_at >= ? AND committed_at < ? ORDER BY tenant_id,report_id,artifact_id,artifact_version,manifest_hash`).all(tenant, dayStart, dayEnd) as Array<{ manifest_hash: string }>;
+  const rows = db.prepare(`SELECT tenant_id,report_id,artifact_id,artifact_version,manifest_hash,retain_until FROM artifact_manifest WHERE tenant_id=? AND committed_at >= ? AND committed_at < ? ORDER BY tenant_id,report_id,artifact_id,artifact_version,manifest_hash`).all(tenant, dayStart, dayEnd) as Array<{ manifest_hash: string; retain_until: string | null }>;
   const payload: DailyRoot = { tenant_id: tenant, utc_date: utcDate, cutoff, leaf_count: rows.length, merkle_root: merkleRoot(rows.map((row) => row.manifest_hash)), sort: "tenant_id,report_id,artifact_id,artifact_version,manifest_hash" };
-  const objectKey = `integrity-daily-roots/v1/${tenant}/${utcDate}/root.json`; const bytes = utf8(payload); const envelope = { payload, payload_hash: sha256(bytes), signature: sign(null, Buffer.concat([Buffer.from("daily-root-v1\0"), Buffer.from(bytes)]), signer.private_key).toString("base64url"), key_id: signer.key_id, algorithm: "ed25519" };
-  let recovered = false;
-  try { await store.putIfAbsent(objectKey, utf8(envelope), cutoff); }
-  catch {
-    const existing = await store.get(objectKey);
-    if (!existing || jcs(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(existing.body))) !== jcs(envelope)) { db.transaction(() => audit(db, { type: "daily_anchor_conflict", severity: "critical", details: { utc_date: utcDate, object_key: objectKey } }))(); throw new Error("daily_anchor_conflict"); }
-    recovered = true;
+  const objectKey = `integrity-daily-roots/v1/${tenant}/${utcDate}/root.json`;
+  const rootRetention = [retainUntil, ...rows.map((row) => row.retain_until).filter((value): value is string => value != null)].reduce((latest, value) => Date.parse(value) > Date.parse(latest) ? value : latest);
+  if (!Number.isFinite(Date.parse(rootRetention))) throw new Error("daily_anchor_retain_until_invalid");
+  const existingRoot = db.prepare("SELECT payload,signature,key_id,algorithm,issued_at,provider_version_id,retain_until FROM integrity_daily_root WHERE tenant_id=? AND utc_date=?").get(tenant, utcDate) as StoredDailyRoot | undefined;
+  if (existingRoot) {
+    if (!existingRoot.algorithm || !existingRoot.issued_at || !existingRoot.retain_until) dailyRootConflict(db, utcDate, objectKey, "daily_verification_material_unavailable");
+    const object = await store.get(objectKey, existingRoot.provider_version_id);
+    if (!object) dailyRootConflict(db, utcDate, objectKey, "daily_anchor_missing");
+    let recorded: DailyRootEnvelope;
+    try { recorded = parseDailyRootEnvelope(db, object.body); } catch (error) { dailyRootConflict(db, utcDate, objectKey, error instanceof Error ? error.message : "daily_anchor_conflict"); }
+    if (jcs(recorded.payload) !== jcs(payload) || recorded.signature !== existingRoot.signature || recorded.key_id !== existingRoot.key_id || recorded.algorithm !== existingRoot.algorithm || recorded.issued_at !== existingRoot.issued_at || object.provider_version_id !== existingRoot.provider_version_id || existingRoot.payload !== jcs(payload)) dailyRootConflict(db, utcDate, objectKey, "daily_anchor_conflict");
+    db.transaction(() => audit(db, { type: "daily_anchor_recovered", severity: "high", details: { utc_date: utcDate, object_key: objectKey } }))();
+    return { status: "recovered" };
   }
-  const existingRoot = db.prepare("SELECT payload,signature,key_id FROM integrity_daily_root WHERE tenant_id=? AND utc_date=?").get(tenant, utcDate) as { payload: string; signature: string; key_id: string } | undefined;
+
+  registerAnchorSigningKey(db, signer);
+  const issuedAt = now(); const bytes = utf8(payload);
+  let envelope: DailyRootEnvelope = { payload, payload_hash: sha256(bytes), signature: sign(null, Buffer.concat([Buffer.from("daily-root-v1\0"), Buffer.from(bytes)]), signer.private_key).toString("base64url"), key_id: signer.key_id, algorithm: "ed25519", issued_at: issuedAt };
+  let providerVersion: string | null; let recovered = false;
+  try { providerVersion = (await store.putIfAbsent(objectKey, dailyEnvelopeBytes(envelope), rootRetention)).provider_version_id; }
+  catch {
+    const object = await store.get(objectKey);
+    if (!object) dailyRootConflict(db, utcDate, objectKey, "daily_anchor_conflict");
+    try { envelope = parseDailyRootEnvelope(db, object.body); } catch (error) { dailyRootConflict(db, utcDate, objectKey, error instanceof Error ? error.message : "daily_anchor_conflict"); }
+    if (jcs(envelope.payload) !== jcs(payload)) dailyRootConflict(db, utcDate, objectKey, "daily_anchor_conflict");
+    providerVersion = object.provider_version_id; recovered = true;
+  }
   db.transaction(() => {
-    if (existingRoot) {
-      if (existingRoot.payload !== jcs(payload) || existingRoot.signature !== envelope.signature || existingRoot.key_id !== signer.key_id) {
-        audit(db, { type: "daily_anchor_conflict", severity: "critical", details: { utc_date: utcDate, object_key: objectKey } });
-        throw new Error("daily_anchor_conflict");
-      }
-      recovered = true;
-    } else {
-      db.prepare(`INSERT INTO integrity_daily_root(tenant_id,utc_date,cutoff,leaf_count,merkle_root,object_key,payload,signature,key_id,status,committed_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(tenant, utcDate, cutoff, payload.leaf_count, payload.merkle_root, objectKey, jcs(payload), envelope.signature, signer.key_id, "committed", now());
-    }
+    db.prepare(`INSERT INTO integrity_daily_root(tenant_id,utc_date,cutoff,leaf_count,merkle_root,object_key,payload,signature,key_id,status,committed_at,algorithm,issued_at,provider_version_id,retain_until)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(tenant, utcDate, cutoff, payload.leaf_count, payload.merkle_root, objectKey, jcs(payload), envelope.signature, envelope.key_id, recovered ? "recovered" : "committed", now(), envelope.algorithm, envelope.issued_at, providerVersion, rootRetention);
     if (recovered) audit(db, { type: "daily_anchor_recovered", severity: "high", details: { utc_date: utcDate, object_key: objectKey } });
   })();
   return { status: recovered ? "recovered" : "committed" };
 }
 
 /** UTC scheduler hook: freeze yesterday at 02:00; record a high missing-root audit at 02:15 without touching readers. */
-export async function runDailyAnchorSchedule(db: DB, store: AnchorStore, signer: AnchorSigner, nowIso = now()): Promise<{ status: "skipped" | "committed" | "recovered" | "missing" }> {
+export async function runDailyAnchorSchedule(db: DB, store: AnchorStore, signer: AnchorSigner, retainUntil: string, nowIso = now()): Promise<{ status: "skipped" | "committed" | "recovered" | "missing" }> {
   const clock = new Date(nowIso);
   if (!Number.isFinite(clock.getTime())) throw new Error("daily_schedule_now_invalid");
   const minutes = clock.getUTCHours() * 60 + clock.getUTCMinutes();
@@ -238,7 +285,7 @@ export async function runDailyAnchorSchedule(db: DB, store: AnchorStore, signer:
   // silently change the frozen cutoff; explicit recovery uses the function
   // below with this exact cutoff.
   if (minutes < 135) {
-    try { return await writeDailyMerkleRoot(db, store, utcDate, cutoff, signer); }
+    try { return await writeDailyMerkleRoot(db, store, utcDate, cutoff, signer, retainUntil); }
     catch { return { status: "missing" }; }
   }
   const root = db.prepare("SELECT status FROM integrity_daily_root WHERE tenant_id=? AND utc_date=?").get(tenant, utcDate) as { status: string } | undefined;
@@ -250,19 +297,19 @@ export async function runDailyAnchorSchedule(db: DB, store: AnchorStore, signer:
 }
 
 /** Recovery is independently schedulable and always uses the original cutoff. */
-export async function recoverDailyAnchorRoot(db: DB, store: AnchorStore, signer: AnchorSigner, utcDate: string): Promise<{ status: "committed" | "recovered" | "missing" }> {
+export async function recoverDailyAnchorRoot(db: DB, store: AnchorStore, signer: AnchorSigner, utcDate: string, retainUntil: string): Promise<{ status: "committed" | "recovered" | "missing" }> {
   const next = new Date(`${utcDate}T00:00:00.000Z`);
   if (!Number.isFinite(next.getTime())) throw new Error("daily_date_invalid");
   const cutoff = new Date(next.getTime() + 26 * 60 * 60_000).toISOString();
-  return writeDailyMerkleRoot(db, store, utcDate, cutoff, signer);
+  return writeDailyMerkleRoot(db, store, utcDate, cutoff, signer, retainUntil);
 }
 
 /** Independent maintenance entry point: reconciliation never needs a queued
  * generation dispatch.  Cron invokes this beside the 02:00/02:15 jobs. */
 export async function runIntegrityMaintenance(
-  db: DB, input: { store: AnchorStore; signer: AnchorSigner }, nowIso = now(),
+  db: DB, input: { store: AnchorStore; signer: AnchorSigner; retainUntil: string }, nowIso = now(),
 ): Promise<{ reconciliation: { committed: number; failed: number }; daily: "skipped" | "committed" | "recovered" | "missing" }> {
   const reconciliation = await import("./reports.js").then(({ reconcileAnchoredReportEffects }) => reconcileAnchoredReportEffects(db, input));
-  const daily = await runDailyAnchorSchedule(db, input.store, input.signer, nowIso);
+  const daily = await runDailyAnchorSchedule(db, input.store, input.signer, input.retainUntil, nowIso);
   return { reconciliation, daily: daily.status };
 }

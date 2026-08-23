@@ -46,28 +46,47 @@ describe("P1c publication visibility and recovery", () => {
     const db = seeded(); const input = { generation_effect_id: "effect-1", manifest: manifest(), issued_at: "2026-08-21T00:00:01Z", retain_until: "2027-01-01T00:00:00Z" }; const store = new MemoryAnchorStore();
     await writePlannedAnchor(db, store, input, signer);
     commitAnchoredPublication(db, { manifest: input.manifest, generation_effect_id: "effect-1", provider_version_id: null, public_key: keys.publicKey, finalize: () => db.prepare("UPDATE report SET status='done' WHERE id='report-1'").run() });
-    expect(await writeDailyMerkleRoot(db, store, "2026-08-21", "2026-08-22T02:00:00Z", signer)).toEqual({ status: "committed" });
-    expect(await writeDailyMerkleRoot(db, store, "2026-08-21", "2026-08-22T02:00:00Z", signer)).toEqual({ status: "recovered" });
+    expect(await writeDailyMerkleRoot(db, store, "2026-08-21", "2026-08-22T02:00:00Z", signer, "2027-01-01T00:00:00Z")).toEqual({ status: "committed" });
+    expect(await writeDailyMerkleRoot(db, store, "2026-08-21", "2026-08-22T02:00:00Z", signer, "2027-01-01T00:00:00Z")).toEqual({ status: "recovered" });
     expect(db.prepare("SELECT status FROM report WHERE id='report-1'").get()).toEqual({ status: "done" });
+  });
+
+  it("recovers a canonical daily root with its historical key after signer rotation", async () => {
+    const db = seeded(); const store = new MemoryAnchorStore(); const oldKeys = generateKeyPairSync("ed25519");
+    const old = { key_id: "daily-old", private_key: oldKeys.privateKey };
+    await expect(writeDailyMerkleRoot(db, store, "2026-08-21", "2026-08-22T02:00:00Z", old, "2027-01-01T00:00:00Z")).resolves.toEqual({ status: "committed" });
+    const next = { key_id: "daily-next", private_key: generateKeyPairSync("ed25519").privateKey };
+    await expect(writeDailyMerkleRoot(db, store, "2026-08-21", "2026-08-22T02:00:00Z", next, "2027-01-01T00:00:00Z")).resolves.toEqual({ status: "recovered" });
+    expect(db.prepare("SELECT key_id,algorithm,issued_at FROM integrity_daily_root WHERE utc_date='2026-08-21'").get()).toMatchObject({ key_id: "daily-old", algorithm: "ed25519" });
+  });
+
+  it("rejects non-canonical daily-root bytes instead of JSON-normalizing them", async () => {
+    const db = seeded(); const store = new MemoryAnchorStore(); const date = "2026-08-21";
+    await writeDailyMerkleRoot(db, store, date, "2026-08-22T02:00:00Z", signer, "2027-01-01T00:00:00Z");
+    const key = `integrity-daily-roots/v1/default/${date}/root.json`;
+    const original = await store.get(key);
+    if (!original) throw new Error("expected daily root");
+    store.replaceForTest(key, encoder.encode(` ${new TextDecoder().decode(original.body)}`));
+    await expect(writeDailyMerkleRoot(db, store, date, "2026-08-22T02:00:00Z", signer, "2027-01-01T00:00:00Z")).rejects.toThrow("daily_anchor_noncanonical_body");
   });
 
   it("runs the UTC daily schedule at 02:00 and records a high missing-root audit after 02:15", async () => {
     const db = seeded(); const unavailable: AnchorStore = { async putIfAbsent() { throw new Error("store_unavailable"); }, async get() { return null; } };
-    await expect(runDailyAnchorSchedule(db, new MemoryAnchorStore(), signer, "2026-08-22T02:00:00.000Z")).resolves.toEqual({ status: "committed" });
-    await expect(runDailyAnchorSchedule(db, unavailable, signer, "2026-08-23T02:15:00.000Z")).resolves.toEqual({ status: "missing" });
+    await expect(runDailyAnchorSchedule(db, new MemoryAnchorStore(), signer, "2027-01-01T00:00:00Z", "2026-08-22T02:00:00.000Z")).resolves.toEqual({ status: "committed" });
+    await expect(runDailyAnchorSchedule(db, unavailable, signer, "2027-01-01T00:00:00Z", "2026-08-23T02:15:00.000Z")).resolves.toEqual({ status: "missing" });
     expect(db.prepare("SELECT event_type,severity FROM integrity_audit_event WHERE event_type='daily_anchor_missing'").get()).toEqual({ event_type: "daily_anchor_missing", severity: "high" });
   });
 
-  it("verifies the historical key selected by the stored key id and retains revocation history", async () => {
+  it("retains historical key material but blocks a planned publication after key revocation", async () => {
     const db = seeded(); const oldKeys = generateKeyPairSync("ed25519"); const old = { key_id: "old-key", private_key: oldKeys.privateKey };
     const input = { generation_effect_id: "effect-1", manifest: manifest(), issued_at: "2026-08-21T00:00:01Z", retain_until: "2027-01-01T00:00:00Z" };
     const store = new MemoryAnchorStore();
-    await writePlannedAnchor(db, store, input, old);
+    planAnchorPublication(db, input, old);
     registerAnchorSigningKey(db, { key_id: "new-key", private_key: generateKeyPairSync("ed25519").privateKey });
     revokeAnchorSigningKey(db, "old-key", "rotation", "2026-08-22T00:00:00Z");
-    // Revocation blocks new use but does not make historical evidence unverifiable.
-    expect(await reconcileAnchoredEffects(db, store, keys.publicKey, () => undefined)).toEqual({ reconciled: 1, failed: 0 });
+    await expect(writePlannedAnchor(db, store, input, old)).rejects.toThrow("anchor_signing_key_revoked");
     expect(db.prepare("SELECT revoked_at FROM integrity_key_revocation WHERE key_id='old-key'").get()).toEqual({ revoked_at: "2026-08-22T00:00:00Z" });
+    expect(() => db.prepare("DELETE FROM integrity_signing_key WHERE key_id='old-key'").run()).toThrow("integrity_signing_key is append-only");
   });
 
   it("keeps transient versioned reads retryable and escalates only after fifteen minutes", async () => {

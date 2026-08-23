@@ -204,6 +204,21 @@ CREATE INDEX idx_generation_anchor_effect_tenant_reconcile ON generation_anchor_
 CREATE UNIQUE INDEX idx_generation_anchor_effect_tenant_effect_artifact ON generation_anchor_effect(tenant_id,generation_effect_id,artifact_id,artifact_version);
 `;
 
+/** P1c review hardening. Existing P1c rows stay readable, but new migrations
+ * retain enough root material for rotation-safe verification and make key
+ * history append-only. */
+export const INTEGRITY_ANCHOR_HARDENING_SCHEMA_SQL = `
+ALTER TABLE integrity_daily_root ADD COLUMN algorithm TEXT;
+ALTER TABLE integrity_daily_root ADD COLUMN issued_at TEXT;
+ALTER TABLE integrity_daily_root ADD COLUMN provider_version_id TEXT;
+ALTER TABLE integrity_daily_root ADD COLUMN retain_until TEXT;
+
+CREATE TRIGGER integrity_signing_key_no_update BEFORE UPDATE ON integrity_signing_key BEGIN SELECT RAISE(ABORT, 'integrity_signing_key is append-only'); END;
+CREATE TRIGGER integrity_signing_key_no_delete BEFORE DELETE ON integrity_signing_key BEGIN SELECT RAISE(ABORT, 'integrity_signing_key is append-only'); END;
+CREATE TRIGGER integrity_key_revocation_no_update BEFORE UPDATE ON integrity_key_revocation BEGIN SELECT RAISE(ABORT, 'integrity_key_revocation is append-only'); END;
+CREATE TRIGGER integrity_key_revocation_no_delete BEFORE DELETE ON integrity_key_revocation BEGIN SELECT RAISE(ABORT, 'integrity_key_revocation is append-only'); END;
+`;
+
 /** P1b-2 dashboard facts. These are isolated from source-credit facts and report reads. */
 export const P1_METRICS_SCHEMA_SQL = `
 CREATE TABLE funnel_event (

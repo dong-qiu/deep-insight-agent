@@ -1,13 +1,15 @@
 /** POST /api/cron 的模式分流：collect 只能采集，不得误触发分析/出刊。 */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { collectionMock, pipelineMock, recoverMock } = vi.hoisted(() => ({
-  collectionMock: vi.fn(), pipelineMock: vi.fn(), recoverMock: vi.fn(),
+const { collectionMock, pipelineMock, integrityMock, anchorMock, recoverMock } = vi.hoisted(() => ({
+  collectionMock: vi.fn(), pipelineMock: vi.fn(), integrityMock: vi.fn(), anchorMock: vi.fn(), recoverMock: vi.fn(),
 }));
 vi.mock("../../../lib/agents/scheduler.js", () => ({
   runCollectionCycle: collectionMock,
   runScheduledPipeline: pipelineMock,
 }));
+vi.mock("../../../lib/db/integrity-publication.js", () => ({ runIntegrityMaintenance: integrityMock }));
+vi.mock("../../../lib/runtime/integrity-anchor-runtime.js", () => ({ deploymentAnchorPublication: anchorMock }));
 vi.mock("../../../lib/db/index.js", () => ({ getDb: vi.fn(() => ({ db: true })) }));
 vi.mock("../../../lib/db/repos.js", () => ({ recoverOrphanedRuns: recoverMock }));
 vi.mock("../../../lib/runtime/logger.js", () => ({
@@ -25,6 +27,8 @@ beforeEach(() => {
   process.env.CRON_SECRET = "test-secret";
   collectionMock.mockReset().mockResolvedValue({ collected: [], errors: [] });
   pipelineMock.mockReset().mockResolvedValue({ topics: [], errors: [] });
+  integrityMock.mockReset().mockResolvedValue({ reconciliation: { committed: 0, failed: 0 }, daily: "skipped" });
+  anchorMock.mockReset().mockReturnValue({ store: {}, signer: {}, retainUntil: "2027-01-01T00:00:00Z" });
   recoverMock.mockReset().mockReturnValue(0);
 });
 afterEach(() => { delete process.env.CRON_SECRET; });
@@ -44,6 +48,15 @@ describe("POST /api/cron", () => {
     expect(await res.json()).toMatchObject({ ok: true, mode: "pipeline" });
     expect(pipelineMock).toHaveBeenCalledWith({ db: true }, {});
     expect(collectionMock).not.toHaveBeenCalled();
+  });
+
+  it("mode=integrity 独立运行维护，不触发采集或报告管线", async () => {
+    const res = await call("integrity");
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ ok: true, mode: "integrity" });
+    expect(integrityMock).toHaveBeenCalledWith({ db: true }, { store: {}, signer: {}, retainUntil: "2027-01-01T00:00:00Z" });
+    expect(collectionMock).not.toHaveBeenCalled();
+    expect(pipelineMock).not.toHaveBeenCalled();
   });
 
   it("非法模式与未鉴权请求在执行前被拒绝", async () => {
