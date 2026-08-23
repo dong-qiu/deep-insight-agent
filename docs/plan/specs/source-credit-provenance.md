@@ -15,7 +15,10 @@
 
 相同 `(tenant_id,event_id)` 和相同 canonical semantic payload 重放原结果，不新增 credit 行；不同 payload 追加 `source_credit_conflict` 后以稳定错误 `source_credit_idempotency_conflict` 拒绝，绝不覆盖原 event。
 
-`occurred_at` 与 `ingested_at` 都是 UTC RFC 3339 instant。入库不足 24 小时为 `timely`；超过 24 小时且不超过 7 天为 `reconcilable`；超过 7 天为 `quarantined`。全部迟到 event 都进入 `source_credit_late_event`，并只能通过追加 `source_credit_late_reconciliation`（`reconciled` 或 `declined`）记录对账决定；本期不改写任何日报或 rollup。
+`occurred_at` 与 `ingested_at` 都是 UTC RFC 3339 instant，接受秒值 `00`–`59` 及 1–9 位小数秒；闰秒
+（`60`）在 SQLite/Node 写入边界明确拒绝。入库不足 24 小时为 `timely`；超过 24 小时且不超过 7 天为
+`reconcilable`；超过 7 天为 `quarantined`。全部迟到 event 都进入 `source_credit_late_event`，并只能通过追加
+`source_credit_late_reconciliation`（`reconciled` 或 `declined`）记录对账决定；本期不改写任何日报或 rollup。
 
 ## 覆盖度与边界
 

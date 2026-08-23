@@ -92,6 +92,7 @@ describe("provenance facts", () => {
     ["2026-02-31T00:00:00Z", "2026-03-01T00:00:00Z"],
     ["2026-04-30T00:00:00Z", "2026-04-31T00:00:00Z"],
     ["2026-02-29T00:00:00Z", "2026-03-01T00:00:00Z"],
+    ["2016-12-31T23:59:60Z", "2017-01-01T00:00:00Z"],
   ])("rejects RFC 3339-shaped but invalid calendar instants: %s / %s", (occurred_at, ingested_at) => {
     const db = dbWithTrace();
     insertCreditSource(db, "source_a");

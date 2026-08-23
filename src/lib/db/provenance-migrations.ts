@@ -1,7 +1,6 @@
 /** P0a 的显式 migration runner。应用启动不调用它；部署必须先运行本模块。 */
 import { createHash } from "node:crypto";
 import type { DB } from "./index.js";
-import { SOURCE_CREDIT_FACTS_SCHEMA_SQL } from "./schema.js";
 
 const CORE_SQL = `
 ALTER TABLE run ADD COLUMN trace_id TEXT;
@@ -183,7 +182,80 @@ CREATE INDEX idx_generation_effect_trace_event ON generation_effect(trace_id, ev
 // event header 与每来源分配拆开，以便一个 event 的整数 micro-credit 可以精确守恒；迟到和冲突
 // 也保留为可审计记录，绝不通过覆盖原事实来“修正”。当前服务端只有 default tenant，但索引仍以
 // tenant 前缀开始，避免把单租户假设编码进未来查询路径。
-const SOURCE_CREDIT_FACTS_SQL = SOURCE_CREDIT_FACTS_SCHEMA_SQL;
+// 此 SQL 已作为 20260823_12 的 checksum 契约被记录。即使 schema.ts 中的现行实体定义
+// 随后修正，也绝不能改写这里；后续物理变更必须以新 migration 前进。
+const SOURCE_CREDIT_FACTS_SQL = `
+CREATE TABLE source_credit_event (
+  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),
+  event_id TEXT NOT NULL,
+  trace_id TEXT,
+  occurred_at TEXT NOT NULL,
+  ingested_at TEXT NOT NULL,
+  schema_version TEXT NOT NULL CHECK(schema_version = 'source-credit-v1'),
+  allocation_version TEXT NOT NULL CHECK(allocation_version = 'equal-split-micros-v1'),
+  producer_version TEXT NOT NULL CHECK(producer_version = 'source-credit-producer-v1'),
+  trace_coverage TEXT NOT NULL CHECK(trace_coverage IN ('complete','partial','legacy')),
+  lateness TEXT NOT NULL CHECK(lateness IN ('timely','reconcilable','quarantined')),
+  semantic_payload_hash TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(tenant_id, event_id)
+);
+CREATE INDEX idx_source_credit_event_tenant_occurred ON source_credit_event(tenant_id, occurred_at DESC);
+CREATE INDEX idx_source_credit_event_tenant_trace ON source_credit_event(tenant_id, trace_id, occurred_at DESC);
+CREATE TRIGGER source_credit_event_no_update BEFORE UPDATE ON source_credit_event BEGIN SELECT RAISE(ABORT, 'source_credit_event is append-only'); END;
+CREATE TRIGGER source_credit_event_no_delete BEFORE DELETE ON source_credit_event BEGIN SELECT RAISE(ABORT, 'source_credit_event is append-only'); END;
+
+CREATE TABLE source_credit_fact (
+  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),
+  event_id TEXT NOT NULL,
+  source_id TEXT NOT NULL,
+  source_revision TEXT NOT NULL,
+  credit_micros INTEGER NOT NULL CHECK(credit_micros > 0 AND credit_micros <= 1000000),
+  PRIMARY KEY(tenant_id, event_id, source_id),
+  FOREIGN KEY(tenant_id, event_id) REFERENCES source_credit_event(tenant_id, event_id)
+);
+CREATE INDEX idx_source_credit_fact_tenant_source_event ON source_credit_fact(tenant_id, source_id, event_id);
+CREATE TRIGGER source_credit_fact_no_update BEFORE UPDATE ON source_credit_fact BEGIN SELECT RAISE(ABORT, 'source_credit_fact is append-only'); END;
+CREATE TRIGGER source_credit_fact_no_delete BEFORE DELETE ON source_credit_fact BEGIN SELECT RAISE(ABORT, 'source_credit_fact is append-only'); END;
+
+CREATE TABLE source_credit_conflict (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),
+  event_id TEXT NOT NULL,
+  existing_semantic_payload_hash TEXT NOT NULL,
+  received_semantic_payload_hash TEXT NOT NULL,
+  observed_at TEXT NOT NULL
+);
+CREATE INDEX idx_source_credit_conflict_tenant_event ON source_credit_conflict(tenant_id, event_id, observed_at DESC);
+CREATE TRIGGER source_credit_conflict_no_update BEFORE UPDATE ON source_credit_conflict BEGIN SELECT RAISE(ABORT, 'source_credit_conflict is append-only'); END;
+CREATE TRIGGER source_credit_conflict_no_delete BEFORE DELETE ON source_credit_conflict BEGIN SELECT RAISE(ABORT, 'source_credit_conflict is append-only'); END;
+
+CREATE TABLE source_credit_late_event (
+  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),
+  event_id TEXT NOT NULL,
+  lateness TEXT NOT NULL CHECK(lateness IN ('reconcilable','quarantined')),
+  recorded_at TEXT NOT NULL,
+  PRIMARY KEY(tenant_id, event_id),
+  FOREIGN KEY(tenant_id, event_id) REFERENCES source_credit_event(tenant_id, event_id)
+);
+CREATE INDEX idx_source_credit_late_event_tenant_lateness ON source_credit_late_event(tenant_id, lateness, recorded_at DESC);
+CREATE TRIGGER source_credit_late_event_no_update BEFORE UPDATE ON source_credit_late_event BEGIN SELECT RAISE(ABORT, 'source_credit_late_event is append-only'); END;
+CREATE TRIGGER source_credit_late_event_no_delete BEFORE DELETE ON source_credit_late_event BEGIN SELECT RAISE(ABORT, 'source_credit_late_event is append-only'); END;
+
+CREATE TABLE source_credit_late_reconciliation (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),
+  event_id TEXT NOT NULL,
+  action TEXT NOT NULL CHECK(action IN ('reconciled','declined')),
+  actor_id TEXT NOT NULL,
+  recorded_at TEXT NOT NULL,
+  FOREIGN KEY(tenant_id, event_id) REFERENCES source_credit_late_event(tenant_id, event_id)
+);
+CREATE INDEX idx_source_credit_late_reconciliation_tenant_event ON source_credit_late_reconciliation(tenant_id, event_id, recorded_at DESC);
+CREATE TRIGGER source_credit_late_reconciliation_no_update BEFORE UPDATE ON source_credit_late_reconciliation BEGIN SELECT RAISE(ABORT, 'source_credit_late_reconciliation is append-only'); END;
+CREATE TRIGGER source_credit_late_reconciliation_no_delete BEFORE DELETE ON source_credit_late_reconciliation BEGIN SELECT RAISE(ABORT, 'source_credit_late_reconciliation is append-only'); END;
+`;
+const SOURCE_CREDIT_TENANT_PRIMARY_KEY_FIX_SQL = "source-credit conflict and reconciliation primary keys become tenant-leading";
 const MIGRATIONS = [
   { version: "20260803_01_provenance_core", sql: CORE_SQL },
   { version: "20260803_02_report_lifecycle", sql: REPORT_LIFECYCLE_SQL },
@@ -197,6 +269,7 @@ const MIGRATIONS = [
   { version: "20260817_10_bounded_provenance_view_index_fix", sql: BOUNDED_VIEW_INDEX_FIX_SQL },
   { version: "20260820_11_effect_event_link", sql: EFFECT_EVENT_LINK_SQL },
   { version: "20260823_12_source_credit_facts", sql: SOURCE_CREDIT_FACTS_SQL },
+  { version: "20260823_13_source_credit_tenant_primary_keys", sql: SOURCE_CREDIT_TENANT_PRIMARY_KEY_FIX_SQL },
 ];
 
 function hasColumn(db: DB, table: string, column: string): boolean {
@@ -240,6 +313,46 @@ function migrateReportLifecycle(db: DB): void {
   if (!hasColumn(db, "report", "failure")) db.exec("ALTER TABLE report ADD COLUMN failure TEXT");
 }
 
+/** SQLite 不能 ALTER PRIMARY KEY；v13 重建两张无子表依赖的 append-only 事实表并保留所有行。 */
+function migrateSourceCreditTenantPrimaryKeys(db: DB): void {
+  db.exec(`
+    CREATE TABLE source_credit_conflict_next (
+      id TEXT NOT NULL,
+      tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),
+      event_id TEXT NOT NULL,
+      existing_semantic_payload_hash TEXT NOT NULL,
+      received_semantic_payload_hash TEXT NOT NULL,
+      observed_at TEXT NOT NULL,
+      PRIMARY KEY(tenant_id, id)
+    );
+    INSERT INTO source_credit_conflict_next(id,tenant_id,event_id,existing_semantic_payload_hash,received_semantic_payload_hash,observed_at)
+      SELECT id,tenant_id,event_id,existing_semantic_payload_hash,received_semantic_payload_hash,observed_at FROM source_credit_conflict;
+    DROP TABLE source_credit_conflict;
+    ALTER TABLE source_credit_conflict_next RENAME TO source_credit_conflict;
+    CREATE INDEX idx_source_credit_conflict_tenant_event ON source_credit_conflict(tenant_id, event_id, observed_at DESC);
+    CREATE TRIGGER source_credit_conflict_no_update BEFORE UPDATE ON source_credit_conflict BEGIN SELECT RAISE(ABORT, 'source_credit_conflict is append-only'); END;
+    CREATE TRIGGER source_credit_conflict_no_delete BEFORE DELETE ON source_credit_conflict BEGIN SELECT RAISE(ABORT, 'source_credit_conflict is append-only'); END;
+
+    CREATE TABLE source_credit_late_reconciliation_next (
+      id TEXT NOT NULL,
+      tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),
+      event_id TEXT NOT NULL,
+      action TEXT NOT NULL CHECK(action IN ('reconciled','declined')),
+      actor_id TEXT NOT NULL,
+      recorded_at TEXT NOT NULL,
+      PRIMARY KEY(tenant_id, id),
+      FOREIGN KEY(tenant_id, event_id) REFERENCES source_credit_late_event(tenant_id, event_id)
+    );
+    INSERT INTO source_credit_late_reconciliation_next(id,tenant_id,event_id,action,actor_id,recorded_at)
+      SELECT id,tenant_id,event_id,action,actor_id,recorded_at FROM source_credit_late_reconciliation;
+    DROP TABLE source_credit_late_reconciliation;
+    ALTER TABLE source_credit_late_reconciliation_next RENAME TO source_credit_late_reconciliation;
+    CREATE INDEX idx_source_credit_late_reconciliation_tenant_event ON source_credit_late_reconciliation(tenant_id, event_id, recorded_at DESC);
+    CREATE TRIGGER source_credit_late_reconciliation_no_update BEFORE UPDATE ON source_credit_late_reconciliation BEGIN SELECT RAISE(ABORT, 'source_credit_late_reconciliation is append-only'); END;
+    CREATE TRIGGER source_credit_late_reconciliation_no_delete BEFORE DELETE ON source_credit_late_reconciliation BEGIN SELECT RAISE(ABORT, 'source_credit_late_reconciliation is append-only'); END;
+  `);
+}
+
 /** 只允许 migration runner 调用；重复运行验证 checksum，不会重复执行 DDL。 */
 export function applyProvenanceMigrations(db: DB): void {
   db.exec("CREATE TABLE IF NOT EXISTS schema_migration (version TEXT PRIMARY KEY, checksum TEXT NOT NULL, applied_at TEXT NOT NULL)");
@@ -253,7 +366,8 @@ export function applyProvenanceMigrations(db: DB): void {
     // DDL 与 ledger 必须在同一把 SQLite 排他锁中提交：其它 writer 只能看到迁移前或迁移后，
     // 不会观察到半个 provenance schema。
     const rebuildReport = migration.version === "20260803_02_report_lifecycle" && !reportBodyPathIsNullable(db);
-    if (rebuildReport) db.pragma("foreign_keys = OFF");
+    const rebuildSourceCreditPrimaryKeys = migration.version === "20260823_13_source_credit_tenant_primary_keys";
+    if (rebuildReport || rebuildSourceCreditPrimaryKeys) db.pragma("foreign_keys = OFF");
     db.exec("BEGIN EXCLUSIVE");
     try {
       if (migration.version === "20260803_01_provenance_core") {
@@ -272,6 +386,8 @@ export function applyProvenanceMigrations(db: DB): void {
         db.exec("CREATE INDEX IF NOT EXISTS idx_generation_trace_source_started ON generation_trace(source_id, started_at DESC)");
       } else if (migration.version === "20260817_09_bounded_provenance_views" || migration.version === "20260817_10_bounded_provenance_view_index_fix" || migration.version === "20260820_11_effect_event_link" || migration.version === "20260823_12_source_credit_facts") {
         db.exec(migration.sql);
+      } else if (migration.version === "20260823_13_source_credit_tenant_primary_keys") {
+        migrateSourceCreditTenantPrimaryKeys(db);
       }
       db.prepare("INSERT INTO schema_migration(version,checksum,applied_at) VALUES (?,?,?)")
         .run(migration.version, checksum, new Date().toISOString());
@@ -280,7 +396,7 @@ export function applyProvenanceMigrations(db: DB): void {
       try { db.exec("ROLLBACK"); } catch { /* transaction may already have been rolled back */ }
       throw error;
     } finally {
-      if (rebuildReport) db.pragma("foreign_keys = ON");
+      if (rebuildReport || rebuildSourceCreditPrimaryKeys) db.pragma("foreign_keys = ON");
     }
   }
 }

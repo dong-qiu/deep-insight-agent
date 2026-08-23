@@ -158,6 +158,7 @@ P1a funnel、成本或 rollup。SQLite 实体定义的事实源为 `src/lib/db/s
 所有 source-credit 表均禁止 update/delete；索引以 `tenant_id` 开头。trace coverage 以
 `generation_trace` 与 `provenance_started_at` 的实际 instant 比较推导：无 trace、切换点前或未知
 切换点为 `legacy`，已有 partial 保持 partial，只有切换点后 complete trace 才为 complete。
+时间只接受秒值 `00`–`59` 的 UTC RFC3339 表示；闰秒（`60`）在本 SQLite/Node 写入边界明确拒绝。
 
 ### 主题 (Topic)
 
