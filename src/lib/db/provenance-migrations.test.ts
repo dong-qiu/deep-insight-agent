@@ -9,7 +9,7 @@ describe("provenance migration runner", () => {
     applyProvenanceMigrations(db);
     applyProvenanceMigrations(db);
     expect(() => assertProvenanceSchema(db)).not.toThrow();
-    expect(db.prepare("SELECT COUNT(*) AS count FROM schema_migration").get()).toEqual({ count: 11 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM schema_migration").get()).toEqual({ count: 13 });
     expect((db.prepare("PRAGMA table_info(run)").all() as { name: string }[]).some((row) => row.name === "trace_id")).toBe(true);
     const reportColumns = db.prepare("PRAGMA table_info(report)").all() as { name: string; notnull: number }[];
     expect(reportColumns.find((column) => column.name === "body_path")?.notnull).toBe(0);
@@ -19,6 +19,8 @@ describe("provenance migration runner", () => {
     expect(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='provenance_redaction'").get()).toBeTruthy();
     expect(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='provenance_redaction_request'").get()).toBeTruthy();
     expect(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='generation_event'").get()).toBeTruthy();
+    expect(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='source_credit_event'").get()).toBeTruthy();
+    expect(db.prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_source_credit_fact_tenant_source_event'").get()).toBeTruthy();
     expect((db.prepare("PRAGMA table_info(generation_trace)").all() as { name: string }[]).some((row) => row.name === "source_id")).toBe(true);
     expect(db.prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_generation_edge_trace_from'").get()).toBeTruthy();
   });
@@ -45,6 +47,91 @@ describe("provenance migration runner", () => {
     const columns = db.prepare("PRAGMA index_info(idx_generation_entity_ref_trace_event)").all() as { name: string }[];
     expect(columns.map((column) => column.name)).toEqual(["trace_id", "event_id"]);
     expect(db.prepare("SELECT 1 FROM schema_migration WHERE version='20260817_10_bounded_provenance_view_index_fix'").get()).toBeTruthy();
+  });
+
+  it("upgrades an existing v11 provenance ledger with no source-credit tables", () => {
+    const db = openDb(":memory:");
+    applyProvenanceMigrations(db);
+    // Recreate the exact physical pre-v12 state: the base schema plus migrations 01–11,
+    // with no v12 ledger entry or source-credit objects left behind.
+    db.pragma("foreign_keys = OFF");
+    db.exec(`
+      DROP TABLE source_credit_late_reconciliation;
+      DROP TABLE source_credit_late_event;
+      DROP TABLE source_credit_fact;
+      DROP TABLE source_credit_conflict;
+      DROP TABLE source_credit_event;
+    `);
+    db.pragma("foreign_keys = ON");
+    db.prepare("DELETE FROM schema_migration WHERE version IN ('20260823_12_source_credit_facts','20260823_13_source_credit_tenant_primary_keys')").run();
+
+    applyProvenanceMigrations(db);
+    expect(db.prepare("SELECT COUNT(*) AS count FROM schema_migration").get()).toEqual({ count: 13 });
+    expect(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='source_credit_event'").get()).toBeTruthy();
+    expect(db.prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_source_credit_fact_tenant_source_event'").get()).toBeTruthy();
+    for (const table of ["source_credit_conflict", "source_credit_late_reconciliation"]) {
+      const primaryKey = (db.prepare(`PRAGMA index_list(${table})`).all() as { name: string; origin: string }[])
+        .find((index) => index.origin === "pk");
+      expect(primaryKey).toBeTruthy();
+      expect((db.prepare(`PRAGMA index_info(${primaryKey!.name})`).all() as { name: string }[]).map((column) => column.name))
+        .toEqual(["tenant_id", "id"]);
+    }
+  });
+
+  it("upgrades an already-ledgered v12 source-credit schema without checksum drift", () => {
+    const db = openDb(":memory:");
+    applyProvenanceMigrations(db);
+    db.exec(`
+      INSERT INTO source_credit_event(tenant_id,event_id,trace_id,occurred_at,ingested_at,schema_version,allocation_version,producer_version,trace_coverage,lateness,semantic_payload_hash,created_at)
+        VALUES ('default','credit_event',NULL,'2026-08-23T00:00:00Z','2026-08-23T00:00:00Z','source-credit-v1','equal-split-micros-v1','source-credit-producer-v1','legacy','reconcilable','hash','2026-08-23T00:00:00Z');
+      INSERT INTO source_credit_late_event(tenant_id,event_id,lateness,recorded_at)
+        VALUES ('default','credit_event','reconcilable','2026-08-23T00:00:00Z');
+      INSERT INTO source_credit_conflict(id,tenant_id,event_id,existing_semantic_payload_hash,received_semantic_payload_hash,observed_at)
+        VALUES ('conflict_1','default','credit_event','old','new','2026-08-23T00:00:00Z');
+      INSERT INTO source_credit_late_reconciliation(id,tenant_id,event_id,action,actor_id,recorded_at)
+        VALUES ('reconciliation_1','default','credit_event','reconciled','admin_1','2026-08-23T00:00:00Z');
+    `);
+    // Restore the v12 physical primary keys while retaining its original checksum ledger.
+    db.pragma("foreign_keys = OFF");
+    db.exec(`
+      CREATE TABLE source_credit_conflict_v12 (
+        id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'), event_id TEXT NOT NULL,
+        existing_semantic_payload_hash TEXT NOT NULL, received_semantic_payload_hash TEXT NOT NULL, observed_at TEXT NOT NULL
+      );
+      INSERT INTO source_credit_conflict_v12 SELECT id,tenant_id,event_id,existing_semantic_payload_hash,received_semantic_payload_hash,observed_at FROM source_credit_conflict;
+      DROP TABLE source_credit_conflict;
+      ALTER TABLE source_credit_conflict_v12 RENAME TO source_credit_conflict;
+      CREATE INDEX idx_source_credit_conflict_tenant_event ON source_credit_conflict(tenant_id, event_id, observed_at DESC);
+      CREATE TRIGGER source_credit_conflict_no_update BEFORE UPDATE ON source_credit_conflict BEGIN SELECT RAISE(ABORT, 'source_credit_conflict is append-only'); END;
+      CREATE TRIGGER source_credit_conflict_no_delete BEFORE DELETE ON source_credit_conflict BEGIN SELECT RAISE(ABORT, 'source_credit_conflict is append-only'); END;
+      CREATE TABLE source_credit_late_reconciliation_v12 (
+        id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'), event_id TEXT NOT NULL,
+        action TEXT NOT NULL CHECK(action IN ('reconciled','declined')), actor_id TEXT NOT NULL, recorded_at TEXT NOT NULL,
+        FOREIGN KEY(tenant_id, event_id) REFERENCES source_credit_late_event(tenant_id, event_id)
+      );
+      INSERT INTO source_credit_late_reconciliation_v12 SELECT id,tenant_id,event_id,action,actor_id,recorded_at FROM source_credit_late_reconciliation;
+      DROP TABLE source_credit_late_reconciliation;
+      ALTER TABLE source_credit_late_reconciliation_v12 RENAME TO source_credit_late_reconciliation;
+      CREATE INDEX idx_source_credit_late_reconciliation_tenant_event ON source_credit_late_reconciliation(tenant_id, event_id, recorded_at DESC);
+      CREATE TRIGGER source_credit_late_reconciliation_no_update BEFORE UPDATE ON source_credit_late_reconciliation BEGIN SELECT RAISE(ABORT, 'source_credit_late_reconciliation is append-only'); END;
+      CREATE TRIGGER source_credit_late_reconciliation_no_delete BEFORE DELETE ON source_credit_late_reconciliation BEGIN SELECT RAISE(ABORT, 'source_credit_late_reconciliation is append-only'); END;
+    `);
+    db.pragma("foreign_keys = ON");
+    db.prepare("DELETE FROM schema_migration WHERE version='20260823_13_source_credit_tenant_primary_keys'").run();
+
+    expect(() => applyProvenanceMigrations(db)).not.toThrow();
+    expect(db.prepare("SELECT tenant_id,event_id FROM source_credit_conflict WHERE id='conflict_1'").get())
+      .toEqual({ tenant_id: "default", event_id: "credit_event" });
+    expect(db.prepare("SELECT tenant_id,event_id,action FROM source_credit_late_reconciliation WHERE id='reconciliation_1'").get())
+      .toEqual({ tenant_id: "default", event_id: "credit_event", action: "reconciled" });
+    expect(db.prepare("SELECT 1 FROM schema_migration WHERE version='20260823_13_source_credit_tenant_primary_keys'").get()).toBeTruthy();
+    for (const object of [
+      "idx_source_credit_conflict_tenant_event", "idx_source_credit_late_reconciliation_tenant_event",
+      "source_credit_conflict_no_update", "source_credit_conflict_no_delete",
+      "source_credit_late_reconciliation_no_update", "source_credit_late_reconciliation_no_delete",
+    ]) {
+      expect(db.prepare("SELECT 1 FROM sqlite_master WHERE name=?").get(object)).toBeTruthy();
+    }
   });
 
   it("rebuilds a legacy NOT NULL body_path table without losing a published report", () => {
