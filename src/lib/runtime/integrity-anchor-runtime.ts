@@ -23,6 +23,12 @@ function optionalInstant(env: AnchorEnvironment, name: string): string | undefin
   return value;
 }
 
+function requiredFutureInstant(env: AnchorEnvironment, name: string, now: Date): string {
+  const value = optionalInstant(env, name);
+  if (!value || Date.parse(value) <= now.getTime()) throw new Error("integrity_anchor_retention_policy_required");
+  return value;
+}
+
 /** Deployment-owned signer/store injection for the real dispatch path. */
 export function deploymentAnchorPublication(
   env: AnchorEnvironment = process.env,
@@ -31,7 +37,7 @@ export function deploymentAnchorPublication(
   const bucket = required(env, "INTEGRITY_ANCHOR_BUCKET");
   const keyId = required(env, "INTEGRITY_ANCHOR_KEY_ID");
   const pem = required(env, "INTEGRITY_ANCHOR_PRIVATE_KEY_PEM").replace(/\\n/g, "\n");
-  const artifactDays = env.INTEGRITY_ANCHOR_RETAIN_DAYS == null ? undefined : Number(env.INTEGRITY_ANCHOR_RETAIN_DAYS);
+  const artifactDays = env.INTEGRITY_ANCHOR_RETAIN_DAYS == null ? 100 : Number(env.INTEGRITY_ANCHOR_RETAIN_DAYS);
   if (artifactDays != null && (!Number.isInteger(artifactDays) || artifactDays < 1 || artifactDays > 36500)) throw new Error("integrity_anchor_retain_days_invalid");
   let privateKey;
   try { privateKey = createPrivateKey(pem); } catch { throw new Error("integrity_anchor_signer_invalid"); }
@@ -41,11 +47,11 @@ export function deploymentAnchorPublication(
     signer: { key_id: keyId, private_key: privateKey },
     // The report writer also adds `anchor issued_at + 100 days`; these are the
     // three policy horizons that must never be shortened by a deployment default.
-    retainUntil: new Date(now.getTime() + (artifactDays ?? 0) * DAY_MS).toISOString(),
+    retainUntil: new Date(now.getTime() + artifactDays * DAY_MS).toISOString(),
     retentionEnds: [
-      optionalInstant(env, "INTEGRITY_REPORT_READABLE_UNTIL"),
-      optionalInstant(env, "INTEGRITY_REPORT_ARCHIVE_UNTIL"),
-      optionalInstant(env, "INTEGRITY_ARTIFACT_RETAIN_UNTIL"),
-    ].filter((value): value is string => value != null),
+      requiredFutureInstant(env, "INTEGRITY_REPORT_READABLE_UNTIL", now),
+      requiredFutureInstant(env, "INTEGRITY_REPORT_ARCHIVE_UNTIL", now),
+      requiredFutureInstant(env, "INTEGRITY_ARTIFACT_RETAIN_UNTIL", now),
+    ],
   };
 }

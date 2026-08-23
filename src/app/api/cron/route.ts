@@ -4,8 +4,10 @@
 import { timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
 import { runCollectionCycle, runScheduledPipeline } from "../../../lib/agents/scheduler.js";
+import { runIntegrityMaintenance } from "../../../lib/db/integrity-publication.js";
 import { getDb } from "../../../lib/db/index.js";
 import { recoverOrphanedRuns } from "../../../lib/db/repos.js";
+import { deploymentAnchorPublication } from "../../../lib/runtime/integrity-anchor-runtime.js";
 import { runLogger } from "../../../lib/runtime/logger.js";
 
 export const dynamic = "force-dynamic";
@@ -27,8 +29,8 @@ export async function POST(req: Request): Promise<NextResponse> {
     return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
   }
   const mode = new URL(req.url).searchParams.get("mode") ?? "pipeline";
-  if (mode !== "pipeline" && mode !== "collect") {
-    return NextResponse.json({ ok: false, error: "mode 必须是 pipeline 或 collect" }, { status: 400 });
+  if (mode !== "pipeline" && mode !== "collect" && mode !== "integrity") {
+    return NextResponse.json({ ok: false, error: "mode 必须是 pipeline、collect 或 integrity" }, { status: 400 });
   }
 
   const log = runLogger({ stage: "cron" });
@@ -39,6 +41,11 @@ export async function POST(req: Request): Promise<NextResponse> {
     // 再扫一次 >staleMs 的孤儿。stale 阈值保证本轮即将创建的 run 不被误杀。
     const swept = recoverOrphanedRuns(db);
     if (swept > 0) log.info({ swept }, "周期清扫孤儿 Run");
+    if (mode === "integrity") {
+      const summary = await runIntegrityMaintenance(db, deploymentAnchorPublication());
+      log.info({ reconciliation: summary.reconciliation, daily: summary.daily }, "完整性维护完成");
+      return NextResponse.json({ ok: true, mode, summary });
+    }
     if (mode === "collect") {
       const summary = await runCollectionCycle(db);
       log.info({ collected: summary.collected.length, errors: summary.errors.length }, "定时采集完成");
