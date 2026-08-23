@@ -8,7 +8,8 @@
 
 `source-credit-v1` 是唯一 schema version，`equal-split-micros-v1` 是唯一 allocation version，`source-credit-producer-v1` 是唯一 producer version。每个 event 固定有 `1,000,000` micro-credits；来源 ID 经字典序排序后平分，余数依序加一。因此任一 event 的 credit 总和严格等于 `1,000,000`，不会出现浮点舍入或重试加写。
 
-每个 source 必须附已受控的 `source-v1:<sha256>` revision。事实不保存内容、prompt、模型响应、凭据或报告正文。
+调用方只提交 `source_id`；writer 必须读取持久化 `Source` 并以 `sourceConfigRevision` 服务端派生受控的
+`source-v1:<sha256>` revision。缺失 source 必须拒绝写入，调用方不得声明 revision。事实不保存内容、prompt、模型响应、凭据或报告正文。
 
 ## 幂等、冲突与迟到
 

@@ -3,7 +3,8 @@ import { openDb } from "./index.js";
 import { appendGenerationEvent, canonicalHash, canonicalJson, captureRevision, entityKey, initializeProvenanceMeta, projectTrace, sourceCollectCompletionPolicy, type CompletionPolicy } from "./provenance-facts.js";
 import { applyProvenanceMigrations } from "./provenance-migrations.js";
 import { buildGenerationTraceGraph, listGenerationEventRefs, listGenerationTraceTimeline, listGenerationTraceTimelinePage } from "./provenance.js";
-import { finishRun, insertRun } from "./repos.js";
+import { finishRun, insertRun, insertSource, updateSource } from "./repos.js";
+import { sourceConfigRevision } from "./provenance-revisions.js";
 import { appendSourceCredit, reconcileLateSourceCredit, SOURCE_CREDIT_TOTAL_MICROS } from "./source-credit-facts.js";
 
 const eventOnlyPolicy = (stages: CompletionPolicy["stages"]): CompletionPolicy => ({ schema_version: 1, stages });
@@ -19,15 +20,23 @@ function dbWithTrace(policy = eventOnlyPolicy([requiredEvent()])) {
   return db;
 }
 
+function insertCreditSource(db: ReturnType<typeof dbWithTrace>, id: string, endpoint = `https://${id}.example.test/feed`) {
+  const source = {
+    id, name: id, type: "rss" as const, endpoint, topic_ids: [], fetch_interval: "1h", backfill: null, enabled: true,
+  };
+  insertSource(db, source);
+  return source;
+}
+
 describe("provenance facts", () => {
   it("writes conserved source credits once, observes conflicts, and keeps a late event reconcilable", () => {
     const db = dbWithTrace();
     initializeProvenanceMeta(db, "2026-08-03T00:00:00.000Z");
-    const revision = `source-v1:${"a".repeat(64)}`;
+    ["source_a", "source_b", "source_c"].forEach((id) => insertCreditSource(db, id));
     const input = {
       event_id: "source-credit-1", trace_id: "trace_1", occurred_at: "2026-08-03T00:00:00.000Z", ingested_at: "2026-08-05T00:00:00.000Z",
       // Input order must not affect allocation or the semantic idempotency key.
-      sources: [{ source_id: "source_c", source_revision: revision }, { source_id: "source_b", source_revision: revision }, { source_id: "source_a", source_revision: revision }],
+      sources: [{ source_id: "source_c" }, { source_id: "source_b" }, { source_id: "source_a" }],
     };
     expect(appendSourceCredit(db, input)).toMatchObject({ replayed: false, trace_coverage: "complete", lateness: "reconcilable" });
     expect(appendSourceCredit(db, { ...input, sources: [...input.sources].reverse() })).toMatchObject({ replayed: true });
@@ -43,28 +52,56 @@ describe("provenance facts", () => {
     expect(db.prepare("SELECT action FROM source_credit_late_reconciliation WHERE id=?").get(reconciliation.id)).toEqual({ action: "reconciled" });
     const plan = db.prepare("EXPLAIN QUERY PLAN SELECT event_id FROM source_credit_fact WHERE tenant_id='default' AND source_id='source_a'").all() as { detail: string }[];
     expect(plan.map((row) => row.detail).join("\\n")).toContain("idx_source_credit_fact_tenant_source_event");
-    expect(() => appendSourceCredit(db, { ...input, sources: [{ source_id: "source_a", source_revision: revision }] })).toThrow("source_credit_idempotency_conflict");
+    expect(() => appendSourceCredit(db, { ...input, sources: [{ source_id: "source_a" }] })).toThrow("source_credit_idempotency_conflict");
     expect(db.prepare("SELECT COUNT(*) AS count FROM source_credit_conflict WHERE tenant_id='default' AND event_id=?").get(input.event_id)).toEqual({ count: 1 });
     expect(() => db.prepare("DELETE FROM source_credit_fact WHERE tenant_id='default' AND event_id=?").run(input.event_id)).toThrow("append-only");
   });
 
   it("never upgrades absent, pre-cutover, or partial provenance into complete source-credit coverage", () => {
     const db = dbWithTrace();
-    initializeProvenanceMeta(db, "2026-08-04T00:00:00.000Z");
-    const revision = `source-v1:${"b".repeat(64)}`;
+    insertCreditSource(db, "source_a");
+    // RFC 3339 allows both whole-second and fractional-second forms. This trace predates
+    // the cutover even though lexicographic string comparison would say otherwise.
+    db.prepare("UPDATE generation_trace SET started_at='2026-08-03T00:00:00Z' WHERE id='trace_1'").run();
+    initializeProvenanceMeta(db, "2026-08-03T00:00:00.500Z");
     expect(appendSourceCredit(db, {
       event_id: "source-credit-legacy", trace_id: "trace_1", occurred_at: "2026-08-03T00:00:00.000Z", ingested_at: "2026-08-03T01:00:00.000Z",
-      sources: [{ source_id: "source_a", source_revision: revision }],
+      sources: [{ source_id: "source_a" }],
     }).trace_coverage).toBe("legacy");
     db.prepare("UPDATE generation_trace SET started_at='2026-08-05T00:00:00.000Z',coverage='partial' WHERE id='trace_1'").run();
     expect(appendSourceCredit(db, {
       event_id: "source-credit-partial", trace_id: "trace_1", occurred_at: "2026-08-05T00:00:00.000Z", ingested_at: "2026-08-05T01:00:00.000Z",
-      sources: [{ source_id: "source_a", source_revision: revision }],
+      sources: [{ source_id: "source_a" }],
     }).trace_coverage).toBe("partial");
     expect(appendSourceCredit(db, {
       event_id: "source-credit-no-trace", trace_id: "unknown_trace", occurred_at: "2026-08-05T00:00:00.000Z", ingested_at: "2026-08-05T01:00:00.000Z",
-      sources: [{ source_id: "source_a", source_revision: revision }],
+      sources: [{ source_id: "source_a" }],
     }).trace_coverage).toBe("legacy");
+  });
+
+  it("derives immutable credit revisions from persisted Sources and rejects missing sources", () => {
+    const db = dbWithTrace();
+    const source = insertCreditSource(db, "source_a");
+    const firstRevision = sourceConfigRevision(source);
+    appendSourceCredit(db, {
+      event_id: "source-credit-revision-1", occurred_at: "2026-08-05T00:00:00.000Z", ingested_at: "2026-08-05T01:00:00.000Z",
+      sources: [{ source_id: source.id }],
+    });
+    expect(db.prepare("SELECT source_revision FROM source_credit_fact WHERE event_id='source-credit-revision-1'").get())
+      .toEqual({ source_revision: firstRevision });
+
+    const updated = { ...source, endpoint: "https://source_a.example.test/updated" };
+    updateSource(db, updated);
+    appendSourceCredit(db, {
+      event_id: "source-credit-revision-2", occurred_at: "2026-08-05T00:00:00.000Z", ingested_at: "2026-08-05T01:00:00.000Z",
+      sources: [{ source_id: source.id }],
+    });
+    expect(db.prepare("SELECT source_revision FROM source_credit_fact WHERE event_id='source-credit-revision-2'").get())
+      .toEqual({ source_revision: sourceConfigRevision(updated) });
+    expect(() => appendSourceCredit(db, {
+      event_id: "source-credit-missing-source", occurred_at: "2026-08-05T00:00:00.000Z", ingested_at: "2026-08-05T01:00:00.000Z",
+      sources: [{ source_id: "missing" }],
+    })).toThrow("source_credit_source_not_found");
   });
 
   it("uses stable canonical vectors including Unicode keys and array order", () => {

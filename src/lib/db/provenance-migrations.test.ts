@@ -49,6 +49,28 @@ describe("provenance migration runner", () => {
     expect(db.prepare("SELECT 1 FROM schema_migration WHERE version='20260817_10_bounded_provenance_view_index_fix'").get()).toBeTruthy();
   });
 
+  it("upgrades an existing v11 provenance ledger with no source-credit tables", () => {
+    const db = openDb(":memory:");
+    applyProvenanceMigrations(db);
+    // Recreate the exact physical pre-v12 state: the base schema plus migrations 01–11,
+    // with no v12 ledger entry or source-credit objects left behind.
+    db.pragma("foreign_keys = OFF");
+    db.exec(`
+      DROP TABLE source_credit_late_reconciliation;
+      DROP TABLE source_credit_late_event;
+      DROP TABLE source_credit_fact;
+      DROP TABLE source_credit_conflict;
+      DROP TABLE source_credit_event;
+    `);
+    db.pragma("foreign_keys = ON");
+    db.prepare("DELETE FROM schema_migration WHERE version='20260823_12_source_credit_facts'").run();
+
+    applyProvenanceMigrations(db);
+    expect(db.prepare("SELECT COUNT(*) AS count FROM schema_migration").get()).toEqual({ count: 12 });
+    expect(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='source_credit_event'").get()).toBeTruthy();
+    expect(db.prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_source_credit_fact_tenant_source_event'").get()).toBeTruthy();
+  });
+
   it("rebuilds a legacy NOT NULL body_path table without losing a published report", () => {
     const checksumDb = openDb(":memory:");
     applyProvenanceMigrations(checksumDb);

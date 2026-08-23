@@ -1,6 +1,7 @@
 /** P0a 的显式 migration runner。应用启动不调用它；部署必须先运行本模块。 */
 import { createHash } from "node:crypto";
 import type { DB } from "./index.js";
+import { SOURCE_CREDIT_FACTS_SCHEMA_SQL } from "./schema.js";
 
 const CORE_SQL = `
 ALTER TABLE run ADD COLUMN trace_id TEXT;
@@ -182,77 +183,7 @@ CREATE INDEX idx_generation_effect_trace_event ON generation_effect(trace_id, ev
 // event header 与每来源分配拆开，以便一个 event 的整数 micro-credit 可以精确守恒；迟到和冲突
 // 也保留为可审计记录，绝不通过覆盖原事实来“修正”。当前服务端只有 default tenant，但索引仍以
 // tenant 前缀开始，避免把单租户假设编码进未来查询路径。
-const SOURCE_CREDIT_FACTS_SQL = `
-CREATE TABLE source_credit_event (
-  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),
-  event_id TEXT NOT NULL,
-  trace_id TEXT,
-  occurred_at TEXT NOT NULL,
-  ingested_at TEXT NOT NULL,
-  schema_version TEXT NOT NULL CHECK(schema_version = 'source-credit-v1'),
-  allocation_version TEXT NOT NULL CHECK(allocation_version = 'equal-split-micros-v1'),
-  producer_version TEXT NOT NULL CHECK(producer_version = 'source-credit-producer-v1'),
-  trace_coverage TEXT NOT NULL CHECK(trace_coverage IN ('complete','partial','legacy')),
-  lateness TEXT NOT NULL CHECK(lateness IN ('timely','reconcilable','quarantined')),
-  semantic_payload_hash TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  PRIMARY KEY(tenant_id, event_id)
-);
-CREATE INDEX idx_source_credit_event_tenant_occurred ON source_credit_event(tenant_id, occurred_at DESC);
-CREATE INDEX idx_source_credit_event_tenant_trace ON source_credit_event(tenant_id, trace_id, occurred_at DESC);
-CREATE TRIGGER source_credit_event_no_update BEFORE UPDATE ON source_credit_event BEGIN SELECT RAISE(ABORT, 'source_credit_event is append-only'); END;
-CREATE TRIGGER source_credit_event_no_delete BEFORE DELETE ON source_credit_event BEGIN SELECT RAISE(ABORT, 'source_credit_event is append-only'); END;
-
-CREATE TABLE source_credit_fact (
-  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),
-  event_id TEXT NOT NULL,
-  source_id TEXT NOT NULL,
-  source_revision TEXT NOT NULL,
-  credit_micros INTEGER NOT NULL CHECK(credit_micros > 0 AND credit_micros <= 1000000),
-  PRIMARY KEY(tenant_id, event_id, source_id),
-  FOREIGN KEY(tenant_id, event_id) REFERENCES source_credit_event(tenant_id, event_id)
-);
-CREATE INDEX idx_source_credit_fact_tenant_source_event ON source_credit_fact(tenant_id, source_id, event_id);
-CREATE TRIGGER source_credit_fact_no_update BEFORE UPDATE ON source_credit_fact BEGIN SELECT RAISE(ABORT, 'source_credit_fact is append-only'); END;
-CREATE TRIGGER source_credit_fact_no_delete BEFORE DELETE ON source_credit_fact BEGIN SELECT RAISE(ABORT, 'source_credit_fact is append-only'); END;
-
-CREATE TABLE source_credit_conflict (
-  id TEXT PRIMARY KEY,
-  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),
-  event_id TEXT NOT NULL,
-  existing_semantic_payload_hash TEXT NOT NULL,
-  received_semantic_payload_hash TEXT NOT NULL,
-  observed_at TEXT NOT NULL
-);
-CREATE INDEX idx_source_credit_conflict_tenant_event ON source_credit_conflict(tenant_id, event_id, observed_at DESC);
-CREATE TRIGGER source_credit_conflict_no_update BEFORE UPDATE ON source_credit_conflict BEGIN SELECT RAISE(ABORT, 'source_credit_conflict is append-only'); END;
-CREATE TRIGGER source_credit_conflict_no_delete BEFORE DELETE ON source_credit_conflict BEGIN SELECT RAISE(ABORT, 'source_credit_conflict is append-only'); END;
-
-CREATE TABLE source_credit_late_event (
-  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),
-  event_id TEXT NOT NULL,
-  lateness TEXT NOT NULL CHECK(lateness IN ('reconcilable','quarantined')),
-  recorded_at TEXT NOT NULL,
-  PRIMARY KEY(tenant_id, event_id),
-  FOREIGN KEY(tenant_id, event_id) REFERENCES source_credit_event(tenant_id, event_id)
-);
-CREATE INDEX idx_source_credit_late_event_tenant_lateness ON source_credit_late_event(tenant_id, lateness, recorded_at DESC);
-CREATE TRIGGER source_credit_late_event_no_update BEFORE UPDATE ON source_credit_late_event BEGIN SELECT RAISE(ABORT, 'source_credit_late_event is append-only'); END;
-CREATE TRIGGER source_credit_late_event_no_delete BEFORE DELETE ON source_credit_late_event BEGIN SELECT RAISE(ABORT, 'source_credit_late_event is append-only'); END;
-
-CREATE TABLE source_credit_late_reconciliation (
-  id TEXT PRIMARY KEY,
-  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),
-  event_id TEXT NOT NULL,
-  action TEXT NOT NULL CHECK(action IN ('reconciled','declined')),
-  actor_id TEXT NOT NULL,
-  recorded_at TEXT NOT NULL,
-  FOREIGN KEY(tenant_id, event_id) REFERENCES source_credit_late_event(tenant_id, event_id)
-);
-CREATE INDEX idx_source_credit_late_reconciliation_tenant_event ON source_credit_late_reconciliation(tenant_id, event_id, recorded_at DESC);
-CREATE TRIGGER source_credit_late_reconciliation_no_update BEFORE UPDATE ON source_credit_late_reconciliation BEGIN SELECT RAISE(ABORT, 'source_credit_late_reconciliation is append-only'); END;
-CREATE TRIGGER source_credit_late_reconciliation_no_delete BEFORE DELETE ON source_credit_late_reconciliation BEGIN SELECT RAISE(ABORT, 'source_credit_late_reconciliation is append-only'); END;
-`;
+const SOURCE_CREDIT_FACTS_SQL = SOURCE_CREDIT_FACTS_SCHEMA_SQL;
 const MIGRATIONS = [
   { version: "20260803_01_provenance_core", sql: CORE_SQL },
   { version: "20260803_02_report_lifecycle", sql: REPORT_LIFECYCLE_SQL },
