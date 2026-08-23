@@ -2,12 +2,18 @@
 
 > 状态：🟢 设计已签核；生产前置待确认。
 > 设计签核记录：2026-08-22；签核人：项目负责人 dongqiu；[签核证据](https://github.com/dong-qiu/deep-insight-agent/pull/265#issuecomment-5381671917)。规格 PR [#264](https://github.com/dong-qiu/deep-insight-agent/pull/264) 已合入，INSI-12 已完成，独立评审记录为 INSI-24。
-> 实现准入：在 INSI-25「P1-0：治理签核与生产前置确认」完成前，不得启动 P1 实现任务。
+> 实现准入：在 INSI-27「P1-0a：实现准入与本地安全核对」完成前，不得启动 P1 实现任务。
+> 生产准入：在 INSI-25「P1-0b：生产治理与发布前置确认」完成前，不得将 P1 能力部署、启用或宣称为生产就绪。
 > 依赖：[生成溯源与全链路可观测性](generation-provenance.md) P0a–P0c 已启用。
 
-## 签核与实施准入
+## 签核、实施与生产准入
 
-本规格的设计取舍已经完成签核；这不等同于生产就绪。INSI-25 必须形成可审计证据，确认数据与法务保留规则、Object-Lock/KMS/IAM 最小权限、告警值班、P0c 性能基线、SQLite 迁移/备份及 orphan-anchor 恢复演练。只有该治理门完成后，后续 P1 实现任务才能从 `blocked` 解除。
+本规格的设计取舍已经完成签核；这不等同于生产就绪。实施与生产使用两道不同的门，不能互相替代：
+
+- **INSI-27 实现准入门**只允许在隔离开发环境中开始 P1 代码。它确认所有实现使用 task-local SQLite 与合成/许可 fixture、不得访问生产数据或凭据、不得部署或启用 P1 能力，并继续受 feature branch、PR、CI、引用白名单和本规格的数据最小化约束。此门完成后，只有 INSI-15 可以从 `blocked` 解除；它不是 Object Lock、KMS、IAM、值班或恢复演练已经完成的证明。
+- **INSI-25 生产准入门**必须形成可审计证据，确认数据与法务保留规则、Object-Lock/KMS/IAM 最小权限、告警值班、P0c 性能基线、SQLite 迁移/备份及 orphan-anchor 恢复演练。它是任何 P1 部署、功能启用、生产验收或“生产就绪”声明的阻断门；在 INSI-18 和 INSI-21 前必须完成。
+
+测试替身、mock anchor 或本地演练只能证明代码行为，不能被记作生产配置或生产恢复证据。任何实现若需要读取生产凭据、写入生产 bucket、变更生产 IAM 或部署，仍必须先完成 INSI-25。
 
 ## 1. 目的与边界
 
@@ -176,4 +182,4 @@ P1a 的 gate 是确定性、版本化的 `provenance-dashboard-integrity-v1` fix
 6. report reader 在聚合库不可用、队列积压、checker/anchor 超时和告警失败时仍只读取已提交快照；端到端读取 P95 不劣于 P0c 基线超过 5%。
 7. 关键 dashboard 查询在容量 fixture 上命中规定索引；31 天明细与 400 天聚合均在 P0c 记录硬件上 P95 ≤2 秒；告警去重和阈值边界逐项通过。
 
-人工评审须确认：本 spec 与 `generation-provenance.md` 的术语/权限/发布原子性一致、保留常量符合业务及法务要求、KMS/HSM 与 Object-Lock 权限边界可由运维落地、以及上述 gate 产物可复现。评审签核前不得创建或启动 P1 实现子任务。
+人工评审须确认：本 spec 与 `generation-provenance.md` 的术语/权限/发布原子性一致、保留常量符合业务及法务要求、KMS/HSM 与 Object-Lock 权限边界可由运维落地、以及上述 gate 产物可复现。INSI-27 实现准入签核前不得启动 P1 实现子任务；INSI-25 生产准入签核前不得部署、启用或完成 P1 的生产验收。

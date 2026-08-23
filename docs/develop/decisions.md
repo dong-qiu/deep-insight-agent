@@ -1265,3 +1265,24 @@ ADR-0013 将运行时固定在 Node 20.19.0 / npm 10，以消除当时本机、C
 - 在干净 Node 24/npm 11 环境运行 `npm ci`、lint、typecheck、全量测试、Next build、生产依赖 audit 和 Linux Docker build。
 - 在 staging 验证真实抓取、LLM 调用、报告生成以及 TLS 连接；Node 24 的 OpenSSL 与 fetch 行为变化不得仅以单元测试替代。
 - 保留当前生产镜像 digest 作为回滚目标。因为本迁移不含 schema 或数据迁移，回滚仅切回先前已验证镜像。
+
+---
+
+## ADR-0023: P1 实现准入与生产准入分离
+
+- **日期**: 2026-08-22
+- **状态**: Accepted
+
+### 背景
+
+P1a 原先把数据/法务、Object Lock、KMS/IAM、值班、性能基线与恢复演练作为开始任何 P1 代码之前的单一前置门。该顺序会让尚未配置生产完整性基础设施的开发环境无法验证实现，并产生把开发替身误记为生产证据的压力。
+
+### 决定
+
+1. 新设 **INSI-27 实现准入门**：仅确认隔离 task-local SQLite、合成或许可 fixture、无生产凭据/数据访问、无部署或功能启用，以及既有 feature-branch/PR/CI 约束。它完成后只解除 INSI-15 的 `blocked` 状态。
+2. 原 **INSI-25** 更名为 **P1-0b 生产治理与发布前置确认**，继续要求数据/法务、Object Lock、条件写、KMS/HSM、最小 IAM、值班、P0c 基线、迁移/备份与恢复演练的可审计证据。它阻断任何 P1 部署、功能启用、生产就绪声明、INSI-18 发布准备和 INSI-21 最终生产验收。
+3. 不降低 P1a 的完整性、保留、授权或 reader 隔离契约。mock、local anchor 与测试演练只证明代码路径，不能替代生产 Object Lock、密钥、IAM 或恢复证据。任何需要访问生产凭据、写生产 bucket、变更生产 IAM 或部署的工作仍须先完成 INSI-25。
+
+### 后果
+
+开发可以以可回滚、无生产副作用的方式开始 P1b-1；生产风险仍在发布前被完整治理门阻断。任务依赖改为 INSI-27 → INSI-15 → INSI-19 → INSI-22 → INSI-23，后续 dashboard 与验收链不变。若生产治理结论改变保留或权限契约，必须先更新 P1a spec 和本 ADR，再推进受影响实现。
