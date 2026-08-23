@@ -3,7 +3,7 @@
  * immutable store or is rejected before it can become reader-visible. */
 import { createPrivateKey } from "node:crypto";
 import { S3Client } from "@aws-sdk/client-s3";
-import { S3AnchorStore } from "../db/integrity-anchors.js";
+import { S3AnchorStore, type AnchorStore } from "../db/integrity-anchors.js";
 import type { ReportAnchorPublication } from "../db/reports.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -27,6 +27,11 @@ function requiredFutureInstant(env: AnchorEnvironment, name: string, now: Date):
   const value = optionalInstant(env, name);
   if (!value || Date.parse(value) <= now.getTime()) throw new Error("integrity_anchor_retention_policy_required");
   return value;
+}
+
+/** Verification has only Object-Store read authority; it never loads signing material. */
+export function deploymentAnchorVerificationStore(env: AnchorEnvironment = process.env): AnchorStore {
+  return new S3AnchorStore(new S3Client({}), required(env, "INTEGRITY_ANCHOR_BUCKET"));
 }
 
 /** Deployment-owned signer/store injection for the real dispatch path. */

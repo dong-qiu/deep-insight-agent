@@ -308,8 +308,12 @@ export async function recoverDailyAnchorRoot(db: DB, store: AnchorStore, signer:
  * generation dispatch.  Cron invokes this beside the 02:00/02:15 jobs. */
 export async function runIntegrityMaintenance(
   db: DB, input: { store: AnchorStore; signer: AnchorSigner; retainUntil: string }, nowIso = now(),
-): Promise<{ reconciliation: { committed: number; failed: number }; daily: "skipped" | "committed" | "recovered" | "missing" }> {
+): Promise<{ reconciliation: { committed: number; failed: number }; daily: "skipped" | "committed" | "recovered" | "missing"; checks: { checked: number; passed: number; failed: number } }> {
   const reconciliation = await import("./reports.js").then(({ reconcileAnchoredReportEffects }) => reconcileAnchoredReportEffects(db, input));
+  const checks = await import("./integrity-checks.js").then(async ({ runAutomaticIntegrityChecks }) => {
+    const { notifyIntegrityFailure } = await import("../runtime/integrity-alert.js");
+    return runAutomaticIntegrityChecks(db, input.store, notifyIntegrityFailure, new Date(nowIso));
+  });
   const daily = await runDailyAnchorSchedule(db, input.store, input.signer, input.retainUntil, nowIso);
-  return { reconciliation, daily: daily.status };
+  return { reconciliation, daily: daily.status, checks: { checked: checks.checked, passed: checks.passed, failed: checks.failed } };
 }
