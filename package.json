@@ -23,6 +23,7 @@
     "branches:cleanup": "node ops/cleanup-merged-branches.mjs",
     "branches:cleanup:test": "node --test ops/cleanup-merged-branches.node-test.mjs",
     "eval:a1": "tsx evals/run-a1.ts",
+    "eval:provenance-integrity": "tsx evals/provenance-dashboard-integrity-v1.ts",
     "eval:opportunity-map": "tsx evals/score-opportunity-map.ts",
     "eval:build-local": "tsx evals/build-local-eval.ts",
     "benchmark:provenance-p0c": "tsx evals/provenance-p0c-benchmark.ts",
