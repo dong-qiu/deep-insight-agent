@@ -169,6 +169,41 @@ CREATE TRIGGER integrity_daily_root_no_update BEFORE UPDATE ON integrity_daily_r
 CREATE TRIGGER integrity_daily_root_no_delete BEFORE DELETE ON integrity_daily_root BEGIN SELECT RAISE(ABORT, 'integrity_daily_root is append-only'); END;
 `;
 
+/** P1c follow-up.  Keep v17/v18 immutable: deployed databases advance through
+ * this additive migration, while schema.ts remains the single DDL source. */
+export const INTEGRITY_ANCHOR_RECOVERY_SCHEMA_SQL = `
+ALTER TABLE artifact_manifest ADD COLUMN anchor_algorithm TEXT;
+ALTER TABLE artifact_manifest ADD COLUMN manifest_signature TEXT;
+ALTER TABLE artifact_manifest ADD COLUMN manifest_key_id TEXT;
+ALTER TABLE artifact_manifest ADD COLUMN manifest_algorithm TEXT;
+ALTER TABLE artifact_manifest ADD COLUMN manifest_issued_at TEXT;
+ALTER TABLE artifact_manifest ADD COLUMN retain_until TEXT;
+ALTER TABLE generation_anchor_effect ADD COLUMN manifest_signature TEXT;
+ALTER TABLE generation_anchor_effect ADD COLUMN manifest_key_id TEXT;
+ALTER TABLE generation_anchor_effect ADD COLUMN manifest_algorithm TEXT;
+ALTER TABLE generation_anchor_effect ADD COLUMN manifest_issued_at TEXT;
+ALTER TABLE generation_anchor_effect ADD COLUMN retain_until TEXT;
+
+CREATE TABLE integrity_signing_key (
+  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),
+  key_id TEXT NOT NULL,
+  public_key_pem TEXT NOT NULL,
+  certificate_pem TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(tenant_id,key_id)
+);
+CREATE TABLE integrity_key_revocation (
+  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),
+  key_id TEXT NOT NULL,
+  revoked_at TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  PRIMARY KEY(tenant_id,key_id),
+  FOREIGN KEY(tenant_id,key_id) REFERENCES integrity_signing_key(tenant_id,key_id)
+);
+CREATE INDEX idx_generation_anchor_effect_tenant_reconcile ON generation_anchor_effect(tenant_id,status,created_at);
+CREATE UNIQUE INDEX idx_generation_anchor_effect_tenant_effect_artifact ON generation_anchor_effect(tenant_id,generation_effect_id,artifact_id,artifact_version);
+`;
+
 /** P1b-2 dashboard facts. These are isolated from source-credit facts and report reads. */
 export const P1_METRICS_SCHEMA_SQL = `
 CREATE TABLE funnel_event (

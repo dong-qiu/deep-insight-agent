@@ -1,7 +1,7 @@
 import { generateKeyPairSync } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { type AnchorObject, type AnchorStore, manifestForArtifact, MemoryAnchorStore } from "./integrity-anchors.js";
-import { commitAnchoredPublication, planAnchorPublication, reconcileAnchoredEffects, runDailyAnchorSchedule, writeDailyMerkleRoot, writePlannedAnchor } from "./integrity-publication.js";
+import { commitAnchoredPublication, planAnchorPublication, reconcileAnchoredEffects, registerAnchorSigningKey, revokeAnchorSigningKey, runDailyAnchorSchedule, writeDailyMerkleRoot, writePlannedAnchor } from "./integrity-publication.js";
 import { openDb, type DB } from "./index.js";
 import { applyProvenanceMigrations } from "./provenance-migrations.js";
 import { insertTopic } from "./repos.js";
@@ -56,5 +56,37 @@ describe("P1c publication visibility and recovery", () => {
     await expect(runDailyAnchorSchedule(db, new MemoryAnchorStore(), signer, "2026-08-22T02:00:00.000Z")).resolves.toEqual({ status: "committed" });
     await expect(runDailyAnchorSchedule(db, unavailable, signer, "2026-08-23T02:15:00.000Z")).resolves.toEqual({ status: "missing" });
     expect(db.prepare("SELECT event_type,severity FROM integrity_audit_event WHERE event_type='daily_anchor_missing'").get()).toEqual({ event_type: "daily_anchor_missing", severity: "high" });
+  });
+
+  it("verifies the historical key selected by the stored key id and retains revocation history", async () => {
+    const db = seeded(); const oldKeys = generateKeyPairSync("ed25519"); const old = { key_id: "old-key", private_key: oldKeys.privateKey };
+    const input = { generation_effect_id: "effect-1", manifest: manifest(), issued_at: "2026-08-21T00:00:01Z", retain_until: "2027-01-01T00:00:00Z" };
+    const store = new MemoryAnchorStore();
+    await writePlannedAnchor(db, store, input, old);
+    registerAnchorSigningKey(db, { key_id: "new-key", private_key: generateKeyPairSync("ed25519").privateKey });
+    revokeAnchorSigningKey(db, "old-key", "rotation", "2026-08-22T00:00:00Z");
+    // Revocation blocks new use but does not make historical evidence unverifiable.
+    expect(await reconcileAnchoredEffects(db, store, keys.publicKey, () => undefined)).toEqual({ reconciled: 1, failed: 0 });
+    expect(db.prepare("SELECT revoked_at FROM integrity_key_revocation WHERE key_id='old-key'").get()).toEqual({ revoked_at: "2026-08-22T00:00:00Z" });
+  });
+
+  it("keeps transient versioned reads retryable and escalates only after fifteen minutes", async () => {
+    const db = seeded(); const input = { generation_effect_id: "effect-1", manifest: manifest(), issued_at: "2026-08-21T00:00:01Z", retain_until: "2027-01-01T00:00:00Z" };
+    const store: AnchorStore = { async putIfAbsent() { return { provider_version_id: "version-a" }; }, async get() { throw new Error("temporary_read_failure"); } };
+    await writePlannedAnchor(db, store, input, signer);
+    const created = db.prepare("SELECT created_at FROM generation_anchor_effect").get() as { created_at: string };
+    await expect(reconcileAnchoredEffects(db, store, keys.publicKey, () => undefined, new Date(Date.parse(created.created_at) + 10 * 60_000))).resolves.toEqual({ reconciled: 0, failed: 1 });
+    expect(db.prepare("SELECT status FROM generation_anchor_effect").get()).toEqual({ status: "anchor_written" });
+    await reconcileAnchoredEffects(db, store, keys.publicKey, () => undefined, new Date(Date.parse(created.created_at) + 16 * 60_000));
+    expect(db.prepare("SELECT COUNT(*) AS n FROM integrity_audit_event WHERE event_type='anchor_written_sqlite_uncommitted' AND severity='high'").get()).toEqual({ n: 1 });
+  });
+
+  it("rejects a response whose returned immutable VersionId differs from the recorded one", async () => {
+    const db = seeded(); const input = { generation_effect_id: "effect-1", manifest: manifest(), issued_at: "2026-08-21T00:00:01Z", retain_until: "2027-01-01T00:00:00Z" };
+    const body = new Map<string, Uint8Array>();
+    const store: AnchorStore = { async putIfAbsent(key, bytes) { body.set(key, bytes); return { provider_version_id: "version-a" }; }, async get(key) { return { body: body.get(key)!, provider_version_id: "version-b" }; } };
+    await writePlannedAnchor(db, store, input, signer);
+    expect(await reconcileAnchoredEffects(db, store, keys.publicKey, () => undefined)).toEqual({ reconciled: 0, failed: 1 });
+    expect(db.prepare("SELECT status FROM generation_anchor_effect").get()).toEqual({ status: "unknown" });
   });
 });

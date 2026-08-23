@@ -169,15 +169,17 @@ P1c 的 SQLite DDL 唯一事实源是 `src/lib/db/schema.ts`；provenance migrat
 
 | 实体 | 主键 / 索引 | 不可变与可见性契约 |
 |---|---|---|
-| `artifact_manifest` | `(tenant_id, artifact_id, artifact_version)`；`(tenant_id, report_id, committed_at)` | 保存 JCS manifest、hash、内容 hash、完整 anchor key、provider version 与签名材料；提交后不得 update/delete。 |
-| `generation_anchor_effect` | `(generation_effect_id, artifact_id, artifact_version)`；幂等 key | 外部条件写前保存唯一候选 envelope；unknown/412 只能读取、验签并逐字节复用相同对象，冲突保留 orphan audit，绝不重锚。 |
+| `artifact_manifest` | `(tenant_id, artifact_id, artifact_version)`；`(tenant_id, report_id, committed_at)` | 保存 JCS manifest、hash、内容 hash、完整 anchor key、provider version、manifest/anchor 签名及其 key/algorithm/issued-at/retain-until 材料；提交后不得 update/delete。 |
+| `generation_anchor_effect` | `(tenant_id, generation_effect_id, artifact_id, artifact_version)`；tenant-first reconciliation index 与幂等 key | 外部条件写前保存唯一候选 envelope 和 manifest 验签材料；partial write/SQLite 失败用同 effect 重试，冲突保留 orphan audit，绝不重锚。 |
 | `integrity_audit_event` | `tenant_id,event_type,created_at` | `anchor_written_sqlite_uncommitted`、reconcile/orphan 与 daily-root 状态为追加审计；15 分钟未收敛为 high。 |
 | `integrity_daily_root` | `(tenant_id, utc_date)` | UTC 前一日 manifest hash 按 tenant-first 规定序排序后冻结 Merkle root；02:00 生成、02:15 缺失告警。已写 root 绝不 `ON CONFLICT` 改写；恢复仅验证同一对象。 |
 
 manifest 和 binding 均为闭合 schema，JSON 必须为原始 RFC 8785 JCS UTF-8 bytes（拒绝空白、重排、重复 key、
-未声明字段与孤立 surrogate）。每次读回 anchor 均以记录 key 的 Ed25519 公钥验证
-`"anchor-v1\\0" || canonical_payload`，再与候选 envelope bytes、payload hash、签名、binding 和 locator 严格比较。
-daily root 缺失、冲突或恢复只改变审计/告警语义，不阻塞已提交的 reader。
+未声明字段与孤立 surrogate）。每次读回 anchor 均以 `artifact_manifest` / effect 记录的 `key_id`
+从保留的 public-key/certificate/revocation 历史中查找 Ed25519 公钥，并以指定 provider `VersionId` 读取后逐字段验证
+`"anchor-v1\\0" || canonical_payload`、manifest 签名、envelope bytes、payload hash、binding 和 locator。
+轮换后的撤销 key 仍可验证历史材料，但禁止新发布。02:00 root、02:15 缺失检查（30 分钟去重）及
+anchored-effect reconciliation 是独立 maintenance jobs，不依赖 generation dispatch；daily root 缺失、冲突或恢复只改变审计/告警语义，不阻塞已提交的 reader。
 
 ### P1b-2 驾驶舱指标事实 (FunnelEvent / CostLedger / ValidatorResultFact)
 

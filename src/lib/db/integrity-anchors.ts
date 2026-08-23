@@ -28,12 +28,13 @@ export interface AnchorPayload {
   content_hash_algorithm: "sha-256"; content_hash: string; issued_at: string; binding: AnchorBinding;
 }
 export interface SignedAnchor { payload: AnchorPayload; anchor_payload_hash: string; signature: string; key_id: string; algorithm: "ed25519" }
-export interface AnchorSigner { key_id: string; private_key: KeyObject }
+export interface AnchorSigner { key_id: string; private_key: KeyObject; certificate_pem?: string }
 export interface AnchorObject { body: Uint8Array; provider_version_id: string | null }
 export interface AnchorStore {
   /** Must be an If-None-Match:* equivalent.  Never overwrite an object. */
   putIfAbsent(key: string, body: Uint8Array, retainUntil: string): Promise<{ provider_version_id: string | null }>;
-  get(key: string): Promise<AnchorObject | null>;
+  /** A version id, when recorded, must select that immutable object version. */
+  get(key: string, providerVersionId?: string | null): Promise<AnchorObject | null>;
 }
 interface S3ObjectResponse { VersionId?: string; Body?: { transformToByteArray: () => Promise<Uint8Array> } }
 type S3Sender = { send(command: unknown): Promise<S3ObjectResponse> };
@@ -237,7 +238,10 @@ export class MemoryAnchorStore implements AnchorStore {
     if (this.objects.has(key)) throw new Error("precondition_failed");
     this.objects.set(key, { body: new Uint8Array(body), provider_version_id: null }); return { provider_version_id: null };
   }
-  async get(key: string): Promise<AnchorObject | null> { return this.objects.get(key) ?? null; }
+  async get(key: string, providerVersionId?: string | null): Promise<AnchorObject | null> {
+    const object = this.objects.get(key) ?? null;
+    return object && (providerVersionId == null || object.provider_version_id === providerVersionId) ? object : null;
+  }
   replaceForTest(key: string, body: Uint8Array): void { this.objects.set(key, { body, provider_version_id: null }); }
 }
 
@@ -248,11 +252,13 @@ export class S3AnchorStore implements AnchorStore {
     const output = await this.client.send(new PutObjectCommand({ Bucket: this.bucket, Key: key, Body: body, ContentType: "application/json", IfNoneMatch: "*", ObjectLockMode: "COMPLIANCE", ObjectLockRetainUntilDate: new Date(retainUntil) }));
     return { provider_version_id: output.VersionId ?? null };
   }
-  async get(key: string): Promise<AnchorObject | null> {
+  async get(key: string, providerVersionId?: string | null): Promise<AnchorObject | null> {
     try {
-      const output = await this.client.send(new GetObjectCommand({ Bucket: this.bucket, Key: key }));
+      const output = await this.client.send(new GetObjectCommand({ Bucket: this.bucket, Key: key, ...(providerVersionId ? { VersionId: providerVersionId } : {}) }));
       if (!output.Body) fail("anchor_object_unreadable");
-      return { body: await output.Body.transformToByteArray(), provider_version_id: output.VersionId ?? null };
+      const actualVersion = output.VersionId ?? null;
+      if (providerVersionId != null && actualVersion !== providerVersionId) fail("anchor_provider_version_mismatch");
+      return { body: await output.Body.transformToByteArray(), provider_version_id: actualVersion };
     } catch (error) {
       const code = error as { name?: string; $metadata?: { httpStatusCode?: number } };
       if (code.name === "NoSuchKey" || code.$metadata?.httpStatusCode === 404) return null;

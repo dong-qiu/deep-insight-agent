@@ -16,6 +16,13 @@ function required(env: AnchorEnvironment, name: string): string {
   return value;
 }
 
+function optionalInstant(env: AnchorEnvironment, name: string): string | undefined {
+  const value = env[name]?.trim();
+  if (!value) return undefined;
+  if (!Number.isFinite(Date.parse(value))) throw new Error("integrity_anchor_retain_until_invalid");
+  return value;
+}
+
 /** Deployment-owned signer/store injection for the real dispatch path. */
 export function deploymentAnchorPublication(
   env: AnchorEnvironment = process.env,
@@ -24,14 +31,21 @@ export function deploymentAnchorPublication(
   const bucket = required(env, "INTEGRITY_ANCHOR_BUCKET");
   const keyId = required(env, "INTEGRITY_ANCHOR_KEY_ID");
   const pem = required(env, "INTEGRITY_ANCHOR_PRIVATE_KEY_PEM").replace(/\\n/g, "\n");
-  const retainDays = Number(env.INTEGRITY_ANCHOR_RETAIN_DAYS ?? "365");
-  if (!Number.isInteger(retainDays) || retainDays < 1 || retainDays > 36500) throw new Error("integrity_anchor_retain_days_invalid");
+  const artifactDays = env.INTEGRITY_ANCHOR_RETAIN_DAYS == null ? undefined : Number(env.INTEGRITY_ANCHOR_RETAIN_DAYS);
+  if (artifactDays != null && (!Number.isInteger(artifactDays) || artifactDays < 1 || artifactDays > 36500)) throw new Error("integrity_anchor_retain_days_invalid");
   let privateKey;
   try { privateKey = createPrivateKey(pem); } catch { throw new Error("integrity_anchor_signer_invalid"); }
   if (privateKey.asymmetricKeyType !== "ed25519") throw new Error("integrity_anchor_signer_invalid");
   return {
     store: new S3AnchorStore(new S3Client({}), bucket),
     signer: { key_id: keyId, private_key: privateKey },
-    retainUntil: new Date(now.getTime() + retainDays * DAY_MS).toISOString(),
+    // The report writer also adds `anchor issued_at + 100 days`; these are the
+    // three policy horizons that must never be shortened by a deployment default.
+    retainUntil: new Date(now.getTime() + (artifactDays ?? 0) * DAY_MS).toISOString(),
+    retentionEnds: [
+      optionalInstant(env, "INTEGRITY_REPORT_READABLE_UNTIL"),
+      optionalInstant(env, "INTEGRITY_REPORT_ARCHIVE_UNTIL"),
+      optionalInstant(env, "INTEGRITY_ARTIFACT_RETAIN_UNTIL"),
+    ].filter((value): value is string => value != null),
   };
 }

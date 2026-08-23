@@ -9,8 +9,7 @@ import {
 } from "../db/provenance.js";
 import { runPipelineForTopic, runScheduledTopicPipeline, type GenerationExecutionOptions } from "./scheduler.js";
 import { deploymentAnchorPublication } from "../runtime/integrity-anchor-runtime.js";
-import { reconcileAnchoredReportEffects } from "../db/reports.js";
-import { runDailyAnchorSchedule } from "../db/integrity-publication.js";
+import { runIntegrityMaintenance } from "../db/integrity-publication.js";
 
 const HEARTBEAT_MS = 30_000;
 
@@ -66,8 +65,7 @@ async function executeDispatch(
   // The dispatch worker is the production publication composition root. A
   // missing deployment signer/store must never select an unanchored fallback.
   const anchor = deploymentAnchorPublication();
-  await reconcileAnchoredReportEffects(db, anchor);
-  await runDailyAnchorSchedule(db, anchor.store, anchor.signer);
+  await runIntegrityMaintenance(db, anchor);
   if (opts.reportType === "deep_dive" && opts.windowHours == null) {
     return runPipelineForTopic(db, topicId, { ...opts, anchor });
   }
