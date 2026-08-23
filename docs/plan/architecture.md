@@ -151,9 +151,9 @@ P1a funnel、成本或 rollup。SQLite 实体定义的事实源为 `src/lib/db/s
 |---|---|---|
 | `SourceCreditEvent` | `(tenant_id, event_id)`；`trace_id`、`occurred_at`、`ingested_at`、`schema_version`、`allocation_version`、`producer_version`、`trace_coverage`、`lateness`、`semantic_payload_hash` | 一个可归因输出的不可变 event header；当前服务端固定 `tenant_id=default`。 |
 | `SourceCreditFact` | `(tenant_id, event_id, source_id)`；`source_revision`、`credit_micros` | 每来源一条不可变 credit；同 event 合计严格为 1,000,000 micro-credits。`source_revision` 仅由服务端读取持久化 `Source` 后以 `sourceConfigRevision` 派生，调用方不得声明。 |
-| `SourceCreditConflict` | `id`；`tenant_id`、`event_id`、两个 semantic hash、`observed_at` | 相同 event ID 的语义冲突追加记录，原 event/fact 不覆盖。 |
+| `SourceCreditConflict` | `(tenant_id, id)`；`event_id`、两个 semantic hash、`observed_at` | 相同 event ID 的语义冲突追加记录，原 event/fact 不覆盖。 |
 | `SourceCreditLateEvent` | `(tenant_id, event_id)`；`lateness`、`recorded_at` | `reconcilable` / `quarantined` 迟到 event 的不可变审计锚点。 |
-| `SourceCreditLateReconciliation` | `id`；`tenant_id`、`event_id`、`action`、`actor_id`、`recorded_at` | 对迟到 event 的 `reconciled` / `declined` 决定；只追加，不改写 credit。 |
+| `SourceCreditLateReconciliation` | `(tenant_id, id)`；`event_id`、`action`、`actor_id`、`recorded_at` | 对迟到 event 的 `reconciled` / `declined` 决定；只追加，不改写 credit。 |
 
 所有 source-credit 表均禁止 update/delete；索引以 `tenant_id` 开头。trace coverage 以
 `generation_trace` 与 `provenance_started_at` 的实际 instant 比较推导：无 trace、切换点前或未知

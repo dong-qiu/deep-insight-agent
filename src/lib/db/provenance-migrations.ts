@@ -255,7 +255,42 @@ CREATE INDEX idx_source_credit_late_reconciliation_tenant_event ON source_credit
 CREATE TRIGGER source_credit_late_reconciliation_no_update BEFORE UPDATE ON source_credit_late_reconciliation BEGIN SELECT RAISE(ABORT, 'source_credit_late_reconciliation is append-only'); END;
 CREATE TRIGGER source_credit_late_reconciliation_no_delete BEFORE DELETE ON source_credit_late_reconciliation BEGIN SELECT RAISE(ABORT, 'source_credit_late_reconciliation is append-only'); END;
 `;
-const SOURCE_CREDIT_TENANT_PRIMARY_KEY_FIX_SQL = "source-credit conflict and reconciliation primary keys become tenant-leading";
+const SOURCE_CREDIT_TENANT_PRIMARY_KEY_FIX_SQL = `
+CREATE TABLE source_credit_conflict_next (
+  id TEXT NOT NULL,
+  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),
+  event_id TEXT NOT NULL,
+  existing_semantic_payload_hash TEXT NOT NULL,
+  received_semantic_payload_hash TEXT NOT NULL,
+  observed_at TEXT NOT NULL,
+  PRIMARY KEY(tenant_id, id)
+);
+INSERT INTO source_credit_conflict_next(id,tenant_id,event_id,existing_semantic_payload_hash,received_semantic_payload_hash,observed_at)
+  SELECT id,tenant_id,event_id,existing_semantic_payload_hash,received_semantic_payload_hash,observed_at FROM source_credit_conflict;
+DROP TABLE source_credit_conflict;
+ALTER TABLE source_credit_conflict_next RENAME TO source_credit_conflict;
+CREATE INDEX idx_source_credit_conflict_tenant_event ON source_credit_conflict(tenant_id, event_id, observed_at DESC);
+CREATE TRIGGER source_credit_conflict_no_update BEFORE UPDATE ON source_credit_conflict BEGIN SELECT RAISE(ABORT, 'source_credit_conflict is append-only'); END;
+CREATE TRIGGER source_credit_conflict_no_delete BEFORE DELETE ON source_credit_conflict BEGIN SELECT RAISE(ABORT, 'source_credit_conflict is append-only'); END;
+
+CREATE TABLE source_credit_late_reconciliation_next (
+  id TEXT NOT NULL,
+  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),
+  event_id TEXT NOT NULL,
+  action TEXT NOT NULL CHECK(action IN ('reconciled','declined')),
+  actor_id TEXT NOT NULL,
+  recorded_at TEXT NOT NULL,
+  PRIMARY KEY(tenant_id, id),
+  FOREIGN KEY(tenant_id, event_id) REFERENCES source_credit_late_event(tenant_id, event_id)
+);
+INSERT INTO source_credit_late_reconciliation_next(id,tenant_id,event_id,action,actor_id,recorded_at)
+  SELECT id,tenant_id,event_id,action,actor_id,recorded_at FROM source_credit_late_reconciliation;
+DROP TABLE source_credit_late_reconciliation;
+ALTER TABLE source_credit_late_reconciliation_next RENAME TO source_credit_late_reconciliation;
+CREATE INDEX idx_source_credit_late_reconciliation_tenant_event ON source_credit_late_reconciliation(tenant_id, event_id, recorded_at DESC);
+CREATE TRIGGER source_credit_late_reconciliation_no_update BEFORE UPDATE ON source_credit_late_reconciliation BEGIN SELECT RAISE(ABORT, 'source_credit_late_reconciliation is append-only'); END;
+CREATE TRIGGER source_credit_late_reconciliation_no_delete BEFORE DELETE ON source_credit_late_reconciliation BEGIN SELECT RAISE(ABORT, 'source_credit_late_reconciliation is append-only'); END;
+`;
 const MIGRATIONS = [
   { version: "20260803_01_provenance_core", sql: CORE_SQL },
   { version: "20260803_02_report_lifecycle", sql: REPORT_LIFECYCLE_SQL },
@@ -313,46 +348,6 @@ function migrateReportLifecycle(db: DB): void {
   if (!hasColumn(db, "report", "failure")) db.exec("ALTER TABLE report ADD COLUMN failure TEXT");
 }
 
-/** SQLite 不能 ALTER PRIMARY KEY；v13 重建两张无子表依赖的 append-only 事实表并保留所有行。 */
-function migrateSourceCreditTenantPrimaryKeys(db: DB): void {
-  db.exec(`
-    CREATE TABLE source_credit_conflict_next (
-      id TEXT NOT NULL,
-      tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),
-      event_id TEXT NOT NULL,
-      existing_semantic_payload_hash TEXT NOT NULL,
-      received_semantic_payload_hash TEXT NOT NULL,
-      observed_at TEXT NOT NULL,
-      PRIMARY KEY(tenant_id, id)
-    );
-    INSERT INTO source_credit_conflict_next(id,tenant_id,event_id,existing_semantic_payload_hash,received_semantic_payload_hash,observed_at)
-      SELECT id,tenant_id,event_id,existing_semantic_payload_hash,received_semantic_payload_hash,observed_at FROM source_credit_conflict;
-    DROP TABLE source_credit_conflict;
-    ALTER TABLE source_credit_conflict_next RENAME TO source_credit_conflict;
-    CREATE INDEX idx_source_credit_conflict_tenant_event ON source_credit_conflict(tenant_id, event_id, observed_at DESC);
-    CREATE TRIGGER source_credit_conflict_no_update BEFORE UPDATE ON source_credit_conflict BEGIN SELECT RAISE(ABORT, 'source_credit_conflict is append-only'); END;
-    CREATE TRIGGER source_credit_conflict_no_delete BEFORE DELETE ON source_credit_conflict BEGIN SELECT RAISE(ABORT, 'source_credit_conflict is append-only'); END;
-
-    CREATE TABLE source_credit_late_reconciliation_next (
-      id TEXT NOT NULL,
-      tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),
-      event_id TEXT NOT NULL,
-      action TEXT NOT NULL CHECK(action IN ('reconciled','declined')),
-      actor_id TEXT NOT NULL,
-      recorded_at TEXT NOT NULL,
-      PRIMARY KEY(tenant_id, id),
-      FOREIGN KEY(tenant_id, event_id) REFERENCES source_credit_late_event(tenant_id, event_id)
-    );
-    INSERT INTO source_credit_late_reconciliation_next(id,tenant_id,event_id,action,actor_id,recorded_at)
-      SELECT id,tenant_id,event_id,action,actor_id,recorded_at FROM source_credit_late_reconciliation;
-    DROP TABLE source_credit_late_reconciliation;
-    ALTER TABLE source_credit_late_reconciliation_next RENAME TO source_credit_late_reconciliation;
-    CREATE INDEX idx_source_credit_late_reconciliation_tenant_event ON source_credit_late_reconciliation(tenant_id, event_id, recorded_at DESC);
-    CREATE TRIGGER source_credit_late_reconciliation_no_update BEFORE UPDATE ON source_credit_late_reconciliation BEGIN SELECT RAISE(ABORT, 'source_credit_late_reconciliation is append-only'); END;
-    CREATE TRIGGER source_credit_late_reconciliation_no_delete BEFORE DELETE ON source_credit_late_reconciliation BEGIN SELECT RAISE(ABORT, 'source_credit_late_reconciliation is append-only'); END;
-  `);
-}
-
 /** 只允许 migration runner 调用；重复运行验证 checksum，不会重复执行 DDL。 */
 export function applyProvenanceMigrations(db: DB): void {
   db.exec("CREATE TABLE IF NOT EXISTS schema_migration (version TEXT PRIMARY KEY, checksum TEXT NOT NULL, applied_at TEXT NOT NULL)");
@@ -387,7 +382,7 @@ export function applyProvenanceMigrations(db: DB): void {
       } else if (migration.version === "20260817_09_bounded_provenance_views" || migration.version === "20260817_10_bounded_provenance_view_index_fix" || migration.version === "20260820_11_effect_event_link" || migration.version === "20260823_12_source_credit_facts") {
         db.exec(migration.sql);
       } else if (migration.version === "20260823_13_source_credit_tenant_primary_keys") {
-        migrateSourceCreditTenantPrimaryKeys(db);
+        db.exec(migration.sql);
       }
       db.prepare("INSERT INTO schema_migration(version,checksum,applied_at) VALUES (?,?,?)")
         .run(migration.version, checksum, new Date().toISOString());

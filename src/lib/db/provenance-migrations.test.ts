@@ -95,18 +95,26 @@ describe("provenance migration runner", () => {
     db.pragma("foreign_keys = OFF");
     db.exec(`
       CREATE TABLE source_credit_conflict_v12 (
-        id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, event_id TEXT NOT NULL,
+        id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'), event_id TEXT NOT NULL,
         existing_semantic_payload_hash TEXT NOT NULL, received_semantic_payload_hash TEXT NOT NULL, observed_at TEXT NOT NULL
       );
       INSERT INTO source_credit_conflict_v12 SELECT id,tenant_id,event_id,existing_semantic_payload_hash,received_semantic_payload_hash,observed_at FROM source_credit_conflict;
       DROP TABLE source_credit_conflict;
       ALTER TABLE source_credit_conflict_v12 RENAME TO source_credit_conflict;
+      CREATE INDEX idx_source_credit_conflict_tenant_event ON source_credit_conflict(tenant_id, event_id, observed_at DESC);
+      CREATE TRIGGER source_credit_conflict_no_update BEFORE UPDATE ON source_credit_conflict BEGIN SELECT RAISE(ABORT, 'source_credit_conflict is append-only'); END;
+      CREATE TRIGGER source_credit_conflict_no_delete BEFORE DELETE ON source_credit_conflict BEGIN SELECT RAISE(ABORT, 'source_credit_conflict is append-only'); END;
       CREATE TABLE source_credit_late_reconciliation_v12 (
-        id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, event_id TEXT NOT NULL, action TEXT NOT NULL, actor_id TEXT NOT NULL, recorded_at TEXT NOT NULL
+        id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'), event_id TEXT NOT NULL,
+        action TEXT NOT NULL CHECK(action IN ('reconciled','declined')), actor_id TEXT NOT NULL, recorded_at TEXT NOT NULL,
+        FOREIGN KEY(tenant_id, event_id) REFERENCES source_credit_late_event(tenant_id, event_id)
       );
       INSERT INTO source_credit_late_reconciliation_v12 SELECT id,tenant_id,event_id,action,actor_id,recorded_at FROM source_credit_late_reconciliation;
       DROP TABLE source_credit_late_reconciliation;
       ALTER TABLE source_credit_late_reconciliation_v12 RENAME TO source_credit_late_reconciliation;
+      CREATE INDEX idx_source_credit_late_reconciliation_tenant_event ON source_credit_late_reconciliation(tenant_id, event_id, recorded_at DESC);
+      CREATE TRIGGER source_credit_late_reconciliation_no_update BEFORE UPDATE ON source_credit_late_reconciliation BEGIN SELECT RAISE(ABORT, 'source_credit_late_reconciliation is append-only'); END;
+      CREATE TRIGGER source_credit_late_reconciliation_no_delete BEFORE DELETE ON source_credit_late_reconciliation BEGIN SELECT RAISE(ABORT, 'source_credit_late_reconciliation is append-only'); END;
     `);
     db.pragma("foreign_keys = ON");
     db.prepare("DELETE FROM schema_migration WHERE version='20260823_13_source_credit_tenant_primary_keys'").run();
@@ -117,6 +125,13 @@ describe("provenance migration runner", () => {
     expect(db.prepare("SELECT tenant_id,event_id,action FROM source_credit_late_reconciliation WHERE id='reconciliation_1'").get())
       .toEqual({ tenant_id: "default", event_id: "credit_event", action: "reconciled" });
     expect(db.prepare("SELECT 1 FROM schema_migration WHERE version='20260823_13_source_credit_tenant_primary_keys'").get()).toBeTruthy();
+    for (const object of [
+      "idx_source_credit_conflict_tenant_event", "idx_source_credit_late_reconciliation_tenant_event",
+      "source_credit_conflict_no_update", "source_credit_conflict_no_delete",
+      "source_credit_late_reconciliation_no_update", "source_credit_late_reconciliation_no_delete",
+    ]) {
+      expect(db.prepare("SELECT 1 FROM sqlite_master WHERE name=?").get(object)).toBeTruthy();
+    }
   });
 
   it("rebuilds a legacy NOT NULL body_path table without losing a published report", () => {
