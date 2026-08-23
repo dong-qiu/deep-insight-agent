@@ -147,6 +147,61 @@ CREATE TABLE metric_rollup (
 CREATE INDEX idx_metric_rollup_tenant_grain_bucket ON metric_rollup(tenant_id,grain,bucket_start DESC);
 `;
 
+/** P1b-2 follow-up. Keep this separate from the immutable v14 migration: existing
+ * databases must advance without a checksum rewrite. */
+export const P1_METRICS_FOLLOWUP_SCHEMA_SQL = `
+ALTER TABLE cost_ledger ADD COLUMN topic_id TEXT;
+ALTER TABLE cost_ledger ADD COLUMN source_id TEXT;
+ALTER TABLE validator_result_fact ADD COLUMN topic_id TEXT;
+ALTER TABLE validator_result_fact ADD COLUMN source_id TEXT;
+
+CREATE TABLE metric_rollup_next (
+  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'), grain TEXT NOT NULL CHECK(grain IN ('hour','day')),
+  bucket_start TEXT NOT NULL, metric_kind TEXT NOT NULL CHECK(metric_kind IN ('funnel','cost','validator')),
+  topic_id TEXT NOT NULL DEFAULT '', source_id TEXT NOT NULL DEFAULT '', pipeline_version TEXT NOT NULL DEFAULT '', stage TEXT NOT NULL DEFAULT '', provider TEXT NOT NULL DEFAULT '', model TEXT NOT NULL DEFAULT '',
+  currency TEXT NOT NULL DEFAULT '', validator TEXT NOT NULL DEFAULT '', reason_code TEXT NOT NULL DEFAULT '', severity TEXT NOT NULL DEFAULT '', rule_version TEXT NOT NULL DEFAULT '',
+  received_traces INTEGER NOT NULL DEFAULT 0, reached_traces INTEGER NOT NULL DEFAULT 0, terminal_events INTEGER NOT NULL DEFAULT 0,
+  known_cost_minor INTEGER NOT NULL DEFAULT 0, known_cost_entries INTEGER NOT NULL DEFAULT 0, unknown_cost_entries INTEGER NOT NULL DEFAULT 0,
+  validator_results INTEGER NOT NULL DEFAULT 0, validator_traces INTEGER NOT NULL DEFAULT 0,
+  frozen_at TEXT, revised_at TEXT,
+  PRIMARY KEY(tenant_id,grain,bucket_start,metric_kind,topic_id,source_id,pipeline_version,stage,provider,model,currency,validator,reason_code,severity,rule_version)
+);
+INSERT INTO metric_rollup_next(tenant_id,grain,bucket_start,metric_kind,pipeline_version,stage,provider,model,currency,validator,reason_code,severity,rule_version,received_traces,reached_traces,terminal_events,known_cost_minor,known_cost_entries,unknown_cost_entries,validator_results,validator_traces,frozen_at,revised_at)
+  SELECT tenant_id,grain,bucket_start,metric_kind,pipeline_version,stage,provider,model,currency,validator,reason_code,severity,rule_version,received_traces,reached_traces,terminal_events,known_cost_minor,known_cost_entries,unknown_cost_entries,validator_results,validator_traces,frozen_at,revised_at FROM metric_rollup;
+DROP TABLE metric_rollup;
+ALTER TABLE metric_rollup_next RENAME TO metric_rollup;
+CREATE INDEX idx_metric_rollup_tenant_grain_bucket ON metric_rollup(tenant_id,grain,bucket_start DESC);
+CREATE INDEX idx_metric_rollup_tenant_grain_topic_bucket ON metric_rollup(tenant_id,grain,topic_id,bucket_start DESC);
+CREATE INDEX idx_metric_rollup_tenant_grain_source_bucket ON metric_rollup(tenant_id,grain,source_id,bucket_start DESC);
+CREATE INDEX idx_cost_ledger_tenant_topic_occurred ON cost_ledger(tenant_id,topic_id,occurred_at DESC);
+CREATE INDEX idx_cost_ledger_tenant_source_occurred ON cost_ledger(tenant_id,source_id,occurred_at DESC);
+CREATE INDEX idx_validator_result_tenant_topic_occurred ON validator_result_fact(tenant_id,topic_id,occurred_at DESC);
+CREATE INDEX idx_validator_result_tenant_source_occurred ON validator_result_fact(tenant_id,source_id,occurred_at DESC);
+CREATE INDEX idx_validator_result_tenant_occurred ON validator_result_fact(tenant_id,occurred_at DESC);
+
+CREATE TABLE metric_late_reconciliation (
+  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'), id TEXT NOT NULL, fact_kind TEXT NOT NULL, event_id TEXT NOT NULL,
+  action TEXT NOT NULL CHECK(action IN ('backfilled','declined')), actor_id TEXT NOT NULL, recorded_at TEXT NOT NULL,
+  PRIMARY KEY(tenant_id,id), FOREIGN KEY(tenant_id,fact_kind,event_id) REFERENCES metric_late_event(tenant_id,fact_kind,event_id)
+);
+CREATE INDEX idx_metric_late_reconciliation_tenant_event ON metric_late_reconciliation(tenant_id,fact_kind,event_id,recorded_at DESC);
+CREATE TABLE metric_maintenance_guard (id INTEGER PRIMARY KEY CHECK(id = 1), retention_delete INTEGER NOT NULL CHECK(retention_delete IN (0,1)));
+INSERT INTO metric_maintenance_guard(id,retention_delete) VALUES (1,0);
+
+CREATE TRIGGER funnel_event_no_update BEFORE UPDATE ON funnel_event BEGIN SELECT RAISE(ABORT, 'funnel_event is append-only'); END;
+CREATE TRIGGER funnel_event_no_delete BEFORE DELETE ON funnel_event WHEN (SELECT retention_delete FROM metric_maintenance_guard WHERE id=1) = 0 BEGIN SELECT RAISE(ABORT, 'funnel_event is append-only'); END;
+CREATE TRIGGER funnel_event_conflict_no_update BEFORE UPDATE ON funnel_event_conflict BEGIN SELECT RAISE(ABORT, 'funnel_event_conflict is append-only'); END;
+CREATE TRIGGER funnel_event_conflict_no_delete BEFORE DELETE ON funnel_event_conflict WHEN (SELECT retention_delete FROM metric_maintenance_guard WHERE id=1) = 0 BEGIN SELECT RAISE(ABORT, 'funnel_event_conflict is append-only'); END;
+CREATE TRIGGER cost_ledger_no_update BEFORE UPDATE ON cost_ledger BEGIN SELECT RAISE(ABORT, 'cost_ledger is append-only'); END;
+CREATE TRIGGER cost_ledger_no_delete BEFORE DELETE ON cost_ledger WHEN (SELECT retention_delete FROM metric_maintenance_guard WHERE id=1) = 0 BEGIN SELECT RAISE(ABORT, 'cost_ledger is append-only'); END;
+CREATE TRIGGER validator_result_fact_no_update BEFORE UPDATE ON validator_result_fact BEGIN SELECT RAISE(ABORT, 'validator_result_fact is append-only'); END;
+CREATE TRIGGER validator_result_fact_no_delete BEFORE DELETE ON validator_result_fact WHEN (SELECT retention_delete FROM metric_maintenance_guard WHERE id=1) = 0 BEGIN SELECT RAISE(ABORT, 'validator_result_fact is append-only'); END;
+CREATE TRIGGER metric_late_event_no_update BEFORE UPDATE ON metric_late_event BEGIN SELECT RAISE(ABORT, 'metric_late_event is append-only'); END;
+CREATE TRIGGER metric_late_event_no_delete BEFORE DELETE ON metric_late_event WHEN (SELECT retention_delete FROM metric_maintenance_guard WHERE id=1) = 0 BEGIN SELECT RAISE(ABORT, 'metric_late_event is append-only'); END;
+CREATE TRIGGER metric_late_reconciliation_no_update BEFORE UPDATE ON metric_late_reconciliation BEGIN SELECT RAISE(ABORT, 'metric_late_reconciliation is append-only'); END;
+CREATE TRIGGER metric_late_reconciliation_no_delete BEFORE DELETE ON metric_late_reconciliation WHEN (SELECT retention_delete FROM metric_maintenance_guard WHERE id=1) = 0 BEGIN SELECT RAISE(ABORT, 'metric_late_reconciliation is append-only'); END;
+`;
+
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS source (
   id             TEXT PRIMARY KEY,

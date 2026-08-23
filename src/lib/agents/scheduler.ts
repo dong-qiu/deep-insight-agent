@@ -6,6 +6,7 @@
 import { getEffectiveSources, loadStaticConfig } from "../config/index.js";
 import type { DB } from "../db/index.js";
 import { finishRun, getTopic, listTopics } from "../db/repos.js";
+import { freezeDueMetricDay } from "../db/p1-metrics-facts.js";
 import { claimSourceCollectTrace, createScheduledSourceCollectTrace, createScheduledTraceRequest, sourceCollectTracingAvailable } from "../db/provenance.js";
 import { appendGenerationEvent } from "../db/provenance-facts.js";
 import { listRecentBriefEvents, previousReportForTopic, topicHasReport } from "../db/reports.js";
@@ -82,6 +83,8 @@ function utcIsoWeek(now: Date): string {
 export async function runCollectionCycle(db: DB): Promise<CollectionSummary> {
   const startedAt = new Date().toISOString();
   const summary: CollectionSummary = { startedAt, finishedAt: startedAt, collected: [], errors: [] };
+  // P1b-2 daily buckets freeze exactly once on the first scheduler cycle at/after UTC 02:00.
+  freezeDueMetricDay(db, startedAt);
   const sources = getEffectiveSources(db, loadStaticConfig()).filter((s) => s.enabled);
   const traceEnabled = sourceCollectTracingAvailable(db);
   for (const s of sources) {

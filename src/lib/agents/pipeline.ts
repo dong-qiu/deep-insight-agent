@@ -3,6 +3,7 @@
  *  端到端需 ANTHROPIC_API_KEY，由团队/定时任务跑。 */
 import type { DB } from "../db/index.js";
 import { saveAnalysisBatch, saveValidationResult } from "../db/analysis.js";
+import { appendAnalysisMetricFacts, appendValidationMetricFacts } from "../db/p1-metrics-pipeline.js";
 import {
   analysisCacheEnabled, analysisCacheReadEnabled, instantiateCachedInsights,
   isFullReanalyzeToday, lookupCachedInsights, recordAnalysisCache,
@@ -12,7 +13,7 @@ import { getContentItem, getSource } from "../db/repos.js";
 import { listRecentPublishedEventEvidence, saveFailedReport, saveReport } from "../db/reports.js";
 import { notifyBriefAcceptance, notifyFailure, notifyReport } from "../runtime/alert.js";
 import { runJob } from "../runtime/jobs.js";
-import type { AnalysisBatch, ContentItem, Report, TechLead, Topic, ValidationResult } from "../types.js";
+import type { AnalysisBatch, ContentItem, Cost, Report, TechLead, Topic, ValidationResult } from "../types.js";
 import { upsertTechLeads } from "../db/tech-leads.js";
 import { listTopicDirections, seedDefaultDirections, upsertTechnologyOpportunities } from "../db/planning.js";
 import { analyze, analyzerCacheVersion, type HistoricalEvent } from "./analyzer.js";
@@ -73,6 +74,8 @@ export async function runAnalysis(
   try {
   if (opts.traceId) captureContentRevisions(db, items, inputs, opts.assertWrite);
   const { result } = await runJob(db, { kind: "analyze", target: { topic_id: topic.id }, traceId: opts.traceId, existingRunId: opts.rootRunId, assertWrite: opts.assertWrite }, async (ctx) => {
+    const metricCosts: Cost[] = [];
+    const recordCost = (cost: Cost) => { ctx.recordCost(cost); metricCosts.push(cost); };
     const version = analyzerCacheVersion();
     const history = opts.history ?? [];
     let batch: AnalysisBatch;
@@ -83,13 +86,13 @@ export async function runAnalysis(
       // 命中的复用缓存洞察、实例化进本 batch（重生 id + 按当前 history 重判 is_followup）。LLM 只跑 miss。
       // ⚠️ 跨条综合（新 item × 旧 item）会丢——靠周期性全析兜底（切片2c：FULL_REANALYZE 时关闭读路径全析）。
       const { hits, missItems } = lookupCachedInsights(db, topic.id, items, version);
-      batch = await analyze(topic, missItems, window, ctx.recordCost, { history });
+      batch = await analyze(topic, missItems, window, recordCost, { history });
       newInsightsForCache = [...batch.insights]; // 本轮真析产出（写缓存用），须在追加复用洞察前快照
       const instantiated = instantiateCachedInsights(hits, batch.id, history, batch.insights.length);
       batch.insights.push(...instantiated);
       batch.no_significant_event = batch.insights.length === 0;
     } else {
-      batch = await analyze(topic, items, window, ctx.recordCost, { history });
+      batch = await analyze(topic, items, window, recordCost, { history });
       newInsightsForCache = batch.insights;
     }
     if (opts.traceId) {
@@ -103,6 +106,7 @@ export async function runAnalysis(
         } }, opts.assertWrite);
       });
     } else { opts.assertWrite?.(); saveAnalysisBatch(db, batch); }
+    appendAnalysisMetricFacts(db, { batch, items, run_id: ctx.runId, costs: metricCosts });
     // 写缓存（切片1，写路径默认开）：对全部 item 按键 upsert（命中++ 计度量 + 刷 last_seen），
     // insights_json 取**本轮真析产出**（miss 的新洞察；命中键 ON CONFLICT 不覆写、复用洞察不重记）。
     // recordAnalysisCache 内部全捕获、绝不连累管线。
@@ -132,11 +136,13 @@ export async function runValidation(
   try {
   if (opts.traceId) captureContentRevisions(db, items, inputs.slice(1), opts.assertWrite);
   const { result } = await runJob(db, { kind: "validate", target: { batch_id: batch.id }, traceId: opts.traceId, assertWrite: opts.assertWrite }, async (ctx) => {
+    const metricCosts: Cost[] = [];
+    const recordCost = (cost: Cost) => { ctx.recordCost(cost); metricCosts.push(cost); };
     // 跨批一致性缓存：relay 抖动重跑 / 报告重生成时复用已判定，省重复 Opus 校验（只缓存成功判定）。
     // 按 (模型+prompt) 版本隔离 + TTL（见 db/consistency-cache.ts）；CONSISTENCY_CACHE=0 可整体关闭（出事时的运维开关）。
     const cache =
       process.env.CONSISTENCY_CACHE === "0" ? undefined : makeConsistencyCache(db, consistencyCacheVersion());
-    const vr = await validateBatch(batch.insights, items, ctx.recordCost, cache);
+    const vr = await validateBatch(batch.insights, items, recordCost, cache);
     if (opts.traceId) {
       const ref: EntityRef = { type: "validation_result", locator: { kind: "composite", key: { batch_id: batch.id } }, revision: batch.id, role: "output" };
       saveValidationResult(db, batch.id, vr, () => {
@@ -149,6 +155,7 @@ export async function runValidation(
         } }, opts.assertWrite);
       });
     } else { opts.assertWrite?.(); saveValidationResult(db, batch.id, vr); }
+    appendValidationMetricFacts(db, { batch, validation: vr, items, run_id: ctx.runId, costs: metricCosts });
     // 抗抖告警：一致性调用大面积失败（疑似 LLM/中转站抖动）→ 主动告警，别让一整轮失败默默缺刊/记假数据。
     // 非致命：Run 仍 done（部分校验结果有效、已落库）；运维收到告警后重跑整管线即恢复（见 validator-uncertain-storms）。
     if (isValidationDegraded(vr.checks)) {

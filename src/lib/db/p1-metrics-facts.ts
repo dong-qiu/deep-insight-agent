@@ -24,15 +24,22 @@ export interface FunnelEventInput {
 }
 export interface CostLedgerInput {
   entry_id: string; trace_id: string; stage: string; attempt?: number; pipeline_version: string; provider: string; model: string; currency: string;
+  topic_id?: string | null; source_id?: string | null;
   amount_minor: number | null; cost_status: "known" | "unknown"; input_tokens?: number; output_tokens?: number;
   occurred_at: string; ingested_at?: string; producer_version?: string;
 }
 export interface ValidatorResultInput {
   result_id: string; trace_id: string; stage: string; attempt?: number; pipeline_version: string; validator: string; rule_version: string;
+  topic_id?: string | null; source_id?: string | null;
   reason_code: string; severity: "info" | "warning" | "error" | "critical"; terminal: boolean;
   occurred_at: string; ingested_at?: string; producer_version?: string;
 }
 type FactKind = "funnel" | "cost" | "validator";
+
+/** Pipeline callers may safely remain compatible with a database before P1's explicit migration. */
+export function hasMetricFactsSchema(db: DB): boolean {
+  return Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='metric_rollup'").get());
+}
 
 function requireId(value: string, name: string): void {
   if (!/^[A-Za-z0-9._:-]{1,128}$/.test(value)) throw new Error(`${name}_invalid`);
@@ -125,11 +132,12 @@ export function appendCostLedger(db: DB, input: CostLedgerInput): { entry_id: st
   if (![input_tokens, output_tokens].every((value) => Number.isSafeInteger(value) && value >= 0)) throw new Error("cost_usage_invalid");
   const occurred_at = instant(input.occurred_at); const ingested_at = instant(input.ingested_at ?? new Date().toISOString()); if (epoch(ingested_at) < epoch(occurred_at)) throw new Error("metric_occurred_after_ingested");
   const producer_version = defaulted(input.producer_version, "p1-metrics-producer-v1");
+  if (input.topic_id) requireId(input.topic_id, "cost_topic"); if (input.source_id) requireId(input.source_id, "cost_source");
   const payload = { ...input, attempt, input_tokens, output_tokens, occurred_at, cost_ledger_schema_version: "cost-ledger-v1", producer_version, ingested_at: undefined };
   return db.transaction(() => {
     const result = appendSimpleFact(db, "cost", input.entry_id, payload, occurred_at, ingested_at); if (result.replayed) return { entry_id: result.id, replayed: true };
-    db.prepare(`INSERT INTO cost_ledger(tenant_id,entry_id,trace_id,stage,attempt,pipeline_version,provider,model,currency,amount_minor,cost_status,input_tokens,output_tokens,occurred_at,ingested_at,schema_version,producer_version,semantic_payload_hash)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(METRICS_TENANT_ID,input.entry_id,input.trace_id,input.stage,attempt,input.pipeline_version,input.provider,input.model,input.currency,input.amount_minor,input.cost_status,input_tokens,output_tokens,occurred_at,ingested_at,"cost-ledger-v1",producer_version,canonicalHash(payload));
+    db.prepare(`INSERT INTO cost_ledger(tenant_id,entry_id,trace_id,stage,attempt,pipeline_version,provider,model,currency,topic_id,source_id,amount_minor,cost_status,input_tokens,output_tokens,occurred_at,ingested_at,schema_version,producer_version,semantic_payload_hash)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(METRICS_TENANT_ID,input.entry_id,input.trace_id,input.stage,attempt,input.pipeline_version,input.provider,input.model,input.currency,input.topic_id ?? null,input.source_id ?? null,input.amount_minor,input.cost_status,input_tokens,output_tokens,occurred_at,ingested_at,"cost-ledger-v1",producer_version,canonicalHash(payload));
     materializeForFact(db, "cost", input.entry_id, occurred_at, ingested_at); return { entry_id: input.entry_id, replayed: false };
   })();
 }
@@ -140,10 +148,11 @@ export function appendValidatorResult(db: DB, input: ValidatorResultInput): { re
   const attempt = input.attempt ?? 1; if (!Number.isSafeInteger(attempt) || attempt < 1) throw new Error("validator_attempt_invalid");
   const occurred_at = instant(input.occurred_at); const ingested_at = instant(input.ingested_at ?? new Date().toISOString()); if (epoch(ingested_at) < epoch(occurred_at)) throw new Error("metric_occurred_after_ingested");
   const producer_version = defaulted(input.producer_version, "p1-metrics-producer-v1"); const payload = { ...input, attempt, occurred_at, validator_result_schema_version: "validator-result-v1", producer_version, ingested_at: undefined };
+  if (input.topic_id) requireId(input.topic_id, "validator_topic"); if (input.source_id) requireId(input.source_id, "validator_source");
   return db.transaction(() => {
     const result = appendSimpleFact(db, "validator", input.result_id, payload, occurred_at, ingested_at); if (result.replayed) return { result_id: result.id, replayed: true };
-    db.prepare(`INSERT INTO validator_result_fact(tenant_id,result_id,trace_id,stage,attempt,pipeline_version,validator,rule_version,reason_code,severity,terminal,occurred_at,ingested_at,schema_version,producer_version,semantic_payload_hash)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(METRICS_TENANT_ID,input.result_id,input.trace_id,input.stage,attempt,input.pipeline_version,input.validator,input.rule_version,input.reason_code,input.severity,input.terminal ? 1 : 0,occurred_at,ingested_at,"validator-result-v1",producer_version,canonicalHash(payload));
+    db.prepare(`INSERT INTO validator_result_fact(tenant_id,result_id,trace_id,stage,attempt,pipeline_version,validator,rule_version,reason_code,severity,terminal,topic_id,source_id,occurred_at,ingested_at,schema_version,producer_version,semantic_payload_hash)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(METRICS_TENANT_ID,input.result_id,input.trace_id,input.stage,attempt,input.pipeline_version,input.validator,input.rule_version,input.reason_code,input.severity,input.terminal ? 1 : 0,input.topic_id ?? null,input.source_id ?? null,occurred_at,ingested_at,"validator-result-v1",producer_version,canonicalHash(payload));
     materializeForFact(db, "validator", input.result_id, occurred_at, ingested_at); return { result_id: input.result_id, replayed: false };
   })();
 }
@@ -163,16 +172,70 @@ function materializeBucket(db: DB, grain: "hour" | "day", start: string, frozenA
   const end = after(start, grain === "hour" ? 1 : 24);
   const prior = db.prepare("SELECT frozen_at FROM metric_rollup WHERE tenant_id=? AND grain=? AND bucket_start=? LIMIT 1").get(METRICS_TENANT_ID, grain, start) as { frozen_at: string | null } | undefined;
   db.prepare("DELETE FROM metric_rollup WHERE tenant_id=? AND grain=? AND bucket_start=?").run(METRICS_TENANT_ID, grain, start);
-  const insert = db.prepare(`INSERT INTO metric_rollup(tenant_id,grain,bucket_start,metric_kind,pipeline_version,stage,provider,model,currency,validator,reason_code,severity,rule_version,received_traces,reached_traces,terminal_events,known_cost_minor,known_cost_entries,unknown_cost_entries,validator_results,validator_traces,frozen_at,revised_at)
-    VALUES (@tenant_id,@grain,@bucket_start,@metric_kind,@pipeline_version,@stage,@provider,@model,@currency,@validator,@reason_code,@severity,@rule_version,@received_traces,@reached_traces,@terminal_events,@known_cost_minor,@known_cost_entries,@unknown_cost_entries,@validator_results,@validator_traces,@frozen_at,@revised_at)`);
-  const base = { tenant_id: METRICS_TENANT_ID, grain, bucket_start: start, stage: "", provider: "", model: "", currency: "", validator: "", reason_code: "", severity: "", rule_version: "", received_traces: 0, reached_traces: 0, terminal_events: 0, known_cost_minor: 0, known_cost_entries: 0, unknown_cost_entries: 0, validator_results: 0, validator_traces: 0, frozen_at: frozenAt ?? prior?.frozen_at ?? null, revised_at: revisedAt };
-  const funnel = db.prepare(`SELECT pipeline_version,stage,COUNT(DISTINCT trace_id) AS reached,COUNT(*) FILTER (WHERE event_type='terminal') AS terminal FROM funnel_event WHERE tenant_id=? AND occurred_at>=? AND occurred_at<? GROUP BY pipeline_version,stage`).all(METRICS_TENANT_ID,start,end) as Array<{ pipeline_version: string; stage: string; reached: number; terminal: number }>;
-  const received = new Map((db.prepare(`SELECT pipeline_version,COUNT(DISTINCT trace_id) AS count FROM funnel_event WHERE tenant_id=? AND stage='received' AND occurred_at>=? AND occurred_at<? GROUP BY pipeline_version`).all(METRICS_TENANT_ID,start,end) as Array<{ pipeline_version: string; count: number }>).map((row) => [row.pipeline_version, row.count]));
-  for (const row of funnel) insert.run({ ...base, metric_kind: "funnel", pipeline_version: row.pipeline_version, stage: row.stage, received_traces: received.get(row.pipeline_version) ?? 0, reached_traces: row.reached, terminal_events: row.terminal });
-  const costs = db.prepare(`SELECT pipeline_version,stage,provider,model,currency,COALESCE(SUM(amount_minor),0) AS known_cost,COUNT(*) FILTER (WHERE cost_status='known') AS known_entries,COUNT(*) FILTER (WHERE cost_status='unknown') AS unknown_entries FROM cost_ledger WHERE tenant_id=? AND occurred_at>=? AND occurred_at<? GROUP BY pipeline_version,stage,provider,model,currency`).all(METRICS_TENANT_ID,start,end) as Array<{ pipeline_version: string; stage: string; provider: string; model: string; currency: string; known_cost: number; known_entries: number; unknown_entries: number }>;
+  const insert = db.prepare(`INSERT INTO metric_rollup(tenant_id,grain,bucket_start,metric_kind,topic_id,source_id,pipeline_version,stage,provider,model,currency,validator,reason_code,severity,rule_version,received_traces,reached_traces,terminal_events,known_cost_minor,known_cost_entries,unknown_cost_entries,validator_results,validator_traces,frozen_at,revised_at)
+    VALUES (@tenant_id,@grain,@bucket_start,@metric_kind,@topic_id,@source_id,@pipeline_version,@stage,@provider,@model,@currency,@validator,@reason_code,@severity,@rule_version,@received_traces,@reached_traces,@terminal_events,@known_cost_minor,@known_cost_entries,@unknown_cost_entries,@validator_results,@validator_traces,@frozen_at,@revised_at)`);
+  const base = { tenant_id: METRICS_TENANT_ID, grain, bucket_start: start, topic_id: "", source_id: "", stage: "", provider: "", model: "", currency: "", validator: "", reason_code: "", severity: "", rule_version: "", received_traces: 0, reached_traces: 0, terminal_events: 0, known_cost_minor: 0, known_cost_entries: 0, unknown_cost_entries: 0, validator_results: 0, validator_traces: 0, frozen_at: frozenAt ?? prior?.frozen_at ?? null, revised_at: revisedAt };
+  const funnel = db.prepare(`WITH first_terminal AS (
+      SELECT trace_id,attempt,reason_code FROM funnel_event f WHERE tenant_id=? AND event_type='terminal'
+        AND NOT EXISTS (SELECT 1 FROM funnel_event earlier WHERE earlier.tenant_id=f.tenant_id AND earlier.trace_id=f.trace_id AND earlier.attempt=f.attempt AND earlier.event_type='terminal' AND earlier.occurred_at<f.occurred_at)
+    ) SELECT f.pipeline_version,f.stage,COALESCE(f.topic_id,'') AS topic_id,COALESCE(f.source_id,'') AS source_id,
+      CASE WHEN f.event_type='terminal' THEN COALESCE(t.reason_code,'') ELSE '' END AS reason_code,
+      COUNT(DISTINCT f.trace_id) AS reached,COUNT(*) FILTER (WHERE f.event_type='terminal') AS terminal
+    FROM funnel_event f LEFT JOIN first_terminal t ON t.trace_id=f.trace_id AND t.attempt=f.attempt
+    WHERE f.tenant_id=? AND f.occurred_at>=? AND f.occurred_at<?
+    GROUP BY f.pipeline_version,f.stage,COALESCE(f.topic_id,''),COALESCE(f.source_id,''),CASE WHEN f.event_type='terminal' THEN COALESCE(t.reason_code,'') ELSE '' END`).all(METRICS_TENANT_ID, METRICS_TENANT_ID,start,end) as Array<{ pipeline_version: string; stage: string; topic_id: string; source_id: string; reason_code: string; reached: number; terminal: number }>;
+  const received = new Map((db.prepare(`SELECT pipeline_version,COALESCE(topic_id,'') AS topic_id,COALESCE(source_id,'') AS source_id,COUNT(DISTINCT trace_id) AS count FROM funnel_event WHERE tenant_id=? AND stage='received' AND occurred_at>=? AND occurred_at<? GROUP BY pipeline_version,COALESCE(topic_id,''),COALESCE(source_id,'')`).all(METRICS_TENANT_ID,start,end) as Array<{ pipeline_version: string; topic_id: string; source_id: string; count: number }>).map((row) => [`${row.pipeline_version}\u0000${row.topic_id}\u0000${row.source_id}`, row.count]));
+  for (const row of funnel) insert.run({ ...base, metric_kind: "funnel", ...row, received_traces: received.get(`${row.pipeline_version}\u0000${row.topic_id}\u0000${row.source_id}`) ?? 0, reached_traces: row.reached, terminal_events: row.terminal });
+  const costs = db.prepare(`SELECT pipeline_version,stage,provider,model,currency,COALESCE(topic_id,'') AS topic_id,COALESCE(source_id,'') AS source_id,COALESCE(SUM(amount_minor),0) AS known_cost,COUNT(*) FILTER (WHERE cost_status='known') AS known_entries,COUNT(*) FILTER (WHERE cost_status='unknown') AS unknown_entries FROM cost_ledger WHERE tenant_id=? AND occurred_at>=? AND occurred_at<? GROUP BY pipeline_version,stage,provider,model,currency,COALESCE(topic_id,''),COALESCE(source_id,'')`).all(METRICS_TENANT_ID,start,end) as Array<{ pipeline_version: string; stage: string; provider: string; model: string; currency: string; topic_id: string; source_id: string; known_cost: number; known_entries: number; unknown_entries: number }>;
   for (const row of costs) insert.run({ ...base, metric_kind: "cost", ...row, known_cost_minor: row.known_cost, known_cost_entries: row.known_entries, unknown_cost_entries: row.unknown_entries });
-  const validators = db.prepare(`SELECT pipeline_version,validator,reason_code,severity,rule_version,COUNT(*) AS total,COUNT(DISTINCT trace_id) AS traces FROM validator_result_fact WHERE tenant_id=? AND occurred_at>=? AND occurred_at<? GROUP BY pipeline_version,validator,reason_code,severity,rule_version`).all(METRICS_TENANT_ID,start,end) as Array<{ pipeline_version: string; validator: string; reason_code: string; severity: string; rule_version: string; total: number; traces: number }>;
-  for (const row of validators) insert.run({ ...base, metric_kind: "validator", pipeline_version: row.pipeline_version, validator: row.validator, reason_code: row.reason_code, severity: row.severity, rule_version: row.rule_version, validator_results: row.total, validator_traces: row.traces });
+  const validators = db.prepare(`SELECT pipeline_version,validator,reason_code,severity,rule_version,COALESCE(topic_id,'') AS topic_id,COALESCE(source_id,'') AS source_id,COUNT(*) AS total,COUNT(DISTINCT trace_id) AS traces FROM validator_result_fact WHERE tenant_id=? AND occurred_at>=? AND occurred_at<? GROUP BY pipeline_version,validator,reason_code,severity,rule_version,COALESCE(topic_id,''),COALESCE(source_id,'')`).all(METRICS_TENANT_ID,start,end) as Array<{ pipeline_version: string; validator: string; reason_code: string; severity: string; rule_version: string; topic_id: string; source_id: string; total: number; traces: number }>;
+  for (const row of validators) insert.run({ ...base, metric_kind: "validator", ...row, validator_results: row.total, validator_traces: row.traces });
+}
+
+/** Invoked by the UTC scheduler at/after 02:00 to freeze a completed daily bucket. */
+export function freezeMetricDay(db: DB, day: string, now = new Date().toISOString()): void {
+  const start = `${day}T00:00:00.000Z`; const cutoff = after(start, 26);
+  if (instant(now) < cutoff) throw new Error("metric_day_freeze_too_early");
+  materializeBucket(db, "day", start, cutoff, null);
+}
+
+/** Scheduler entrypoint: after UTC 02:00, freeze yesterday once if it has materialized data. */
+export function freezeDueMetricDay(db: DB, now = new Date().toISOString()): boolean {
+  if (!hasMetricFactsSchema(db)) return false;
+  const at = new Date(epoch(now));
+  if (at.getUTCHours() < 2) return false;
+  const yesterday = new Date(Date.UTC(at.getUTCFullYear(), at.getUTCMonth(), at.getUTCDate() - 1)).toISOString().slice(0, 10);
+  const start = `${yesterday}T00:00:00.000Z`;
+  const unfrozen = db.prepare("SELECT 1 FROM metric_rollup WHERE tenant_id=? AND grain='day' AND bucket_start=? AND frozen_at IS NULL LIMIT 1")
+    .get(METRICS_TENANT_ID, start);
+  if (!unfrozen) return false;
+  freezeMetricDay(db, yesterday, now);
+  return true;
+}
+
+export function isMetricLateEvent(db: DB, kind: FactKind, eventId: string): boolean {
+  return Boolean(db.prepare("SELECT 1 FROM metric_late_event WHERE tenant_id=? AND fact_kind=? AND event_id=?")
+    .get(METRICS_TENANT_ID, kind, eventId));
+}
+
+/** Explicit administrator-only reconciliation; append-only facts stay untouched while the selected bucket is recomputed. */
+export function reconcileLateMetricEvent(db: DB, input: { fact_kind: FactKind; event_id: string; action: "backfilled" | "declined"; actor_id: string; recorded_at?: string }): { id: string } {
+  [input.event_id, input.actor_id].forEach((value) => requireId(value, "metric_reconciliation"));
+  const recordedAt = instant(input.recorded_at ?? new Date().toISOString());
+  const late = db.prepare("SELECT occurred_at FROM metric_late_event WHERE tenant_id=? AND fact_kind=? AND event_id=?")
+    .get(METRICS_TENANT_ID, input.fact_kind, input.event_id) as { occurred_at: string } | undefined;
+  if (!late) throw new Error("metric_late_event_not_found");
+  const id = `mlr_${randomUUID().replaceAll("-", "")}`;
+  db.transaction(() => {
+    db.prepare("INSERT INTO metric_late_reconciliation(tenant_id,id,fact_kind,event_id,action,actor_id,recorded_at) VALUES (?,?,?,?,?,?,?)")
+      .run(METRICS_TENANT_ID, id, input.fact_kind, input.event_id, input.action, input.actor_id, recordedAt);
+    if (input.action === "backfilled") {
+      const day = dayAt(late.occurred_at); const cutoff = after(day, 26);
+      materializeBucket(db, "hour", hourAt(late.occurred_at), null, recordedAt);
+      materializeBucket(db, "day", day, cutoff, recordedAt);
+    }
+  })();
+  return { id };
 }
 
 /** Detail endpoints are intentionally time-bounded and tenant-prefixed; callers never supply a tenant. */
@@ -181,6 +244,20 @@ export function listFunnelDetails(db: DB, input: { from: string; to: string; lim
   if (epoch(to) <= epoch(from) || epoch(to) - epoch(from) > max) throw new Error("metric_detail_window_invalid");
   const limit = input.limit ?? 100; if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new Error("metric_page_limit_invalid");
   return db.prepare("SELECT * FROM funnel_event WHERE tenant_id=? AND occurred_at>=? AND occurred_at<? ORDER BY occurred_at DESC LIMIT ?").all(METRICS_TENANT_ID,from,to,limit);
+}
+
+export function listCostLedgerDetails(db: DB, input: { from: string; to: string; limit?: number }) {
+  const from = instant(input.from); const to = instant(input.to); const max = DETAIL_QUERY_MAX_DAYS * 24 * 60 * 60 * 1000;
+  if (epoch(to) <= epoch(from) || epoch(to) - epoch(from) > max) throw new Error("metric_detail_window_invalid");
+  const limit = input.limit ?? 100; if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new Error("metric_page_limit_invalid");
+  return db.prepare("SELECT * FROM cost_ledger WHERE tenant_id=? AND occurred_at>=? AND occurred_at<? ORDER BY occurred_at DESC LIMIT ?").all(METRICS_TENANT_ID,from,to,limit);
+}
+
+export function listValidatorResultDetails(db: DB, input: { from: string; to: string; limit?: number }) {
+  const from = instant(input.from); const to = instant(input.to); const max = DETAIL_QUERY_MAX_DAYS * 24 * 60 * 60 * 1000;
+  if (epoch(to) <= epoch(from) || epoch(to) - epoch(from) > max) throw new Error("metric_detail_window_invalid");
+  const limit = input.limit ?? 100; if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new Error("metric_page_limit_invalid");
+  return db.prepare("SELECT * FROM validator_result_fact WHERE tenant_id=? AND occurred_at>=? AND occurred_at<? ORDER BY occurred_at DESC LIMIT ?").all(METRICS_TENANT_ID,from,to,limit);
 }
 
 export function queryMetricRollups(db: DB, input: { from: string; to: string; grain: "hour" | "day"; limit?: number }) {
@@ -195,9 +272,15 @@ export function purgeExpiredMetricFacts(db: DB, now = new Date().toISOString()):
   const cutoff = new Date(epoch(now) - DETAIL_RETENTION_DAYS * 86400000).toISOString(); const dailyCutoff = new Date(epoch(now) - DAILY_ROLLUP_RETENTION_DAYS * 86400000).toISOString();
   return db.transaction(() => {
     let details = 0;
+    db.prepare("UPDATE metric_maintenance_guard SET retention_delete=1 WHERE id=1").run();
+    details += db.prepare(`DELETE FROM metric_late_reconciliation WHERE tenant_id=? AND EXISTS (
+      SELECT 1 FROM metric_late_event late WHERE late.tenant_id=metric_late_reconciliation.tenant_id
+        AND late.fact_kind=metric_late_reconciliation.fact_kind AND late.event_id=metric_late_reconciliation.event_id AND late.occurred_at<?
+    )`).run(METRICS_TENANT_ID, cutoff).changes;
     for (const table of ["funnel_event", "cost_ledger", "validator_result_fact", "metric_late_event"]) details += db.prepare(`DELETE FROM ${table} WHERE tenant_id=? AND occurred_at<?`).run(METRICS_TENANT_ID,cutoff).changes;
     details += db.prepare("DELETE FROM funnel_event_conflict WHERE tenant_id=? AND observed_at<?").run(METRICS_TENANT_ID,cutoff).changes;
     const rollups = db.prepare("DELETE FROM metric_rollup WHERE tenant_id=? AND ((grain='hour' AND bucket_start<?) OR (grain='day' AND bucket_start<?))").run(METRICS_TENANT_ID,cutoff,dailyCutoff).changes;
+    db.prepare("UPDATE metric_maintenance_guard SET retention_delete=0 WHERE id=1").run();
     return { details, rollups };
   })();
 }

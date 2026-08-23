@@ -273,13 +273,19 @@ describe("runAnalysis", () => {
 
 describe("runValidation", () => {
   it("落 validation + validate Run(done)，按 batch.id 关联", async () => {
+    applyProvenanceMigrations(db);
+    const source: Source = { id: "s1", name: "S", type: "rss", endpoint: "https://x", topic_ids: ["t1"], fetch_interval: "1h", backfill: null, enabled: true };
+    const item: ContentItem = { id: "ci1", source_id: "s1", url: "https://x/a", title: "A", author: null, published_at: null, fetched_at: "2026-06-07T00:00:00.000Z", language: "zh", topic_ids: ["t1"], tags: [], body: "body", body_kind: "article", raw_ref: "raw", content_hash: "hash_ci1", fetch_status: "ok" };
+    insertSource(db, source); insertContentItem(db, item);
     saveAnalysisBatch(db, mkBatch()); // 先落 batch（validation_result/citation_check 需 FK 到 batch/insight）
     validateBatchMock.mockResolvedValue(mkValidation());
-    const vr = await runValidation(db, mkBatch(), []);
+    const vr = await runValidation(db, mkBatch(), [item]);
     expect(vr.report.releasable).toBe(true);
     expect(getValidationResult(db, "b1")?.report.pass).toBe(1); // 真落库
     const run = listRuns(db, { kind: "validate" }).find((r) => r.target.batch_id === "b1")!;
     expect(run.status).toBe("done");
+    expect(db.prepare("SELECT COUNT(*) AS count FROM funnel_event WHERE stage='validated'").get()).toEqual({ count: 1 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM validator_result_fact WHERE validator='citation'").get()).toEqual({ count: 1 });
   });
 
   it("输入 revision 冲突时追加可审计失败事件，不调用校验器", async () => {
