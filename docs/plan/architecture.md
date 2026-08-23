@@ -160,6 +160,25 @@ P1a funnel、成本或 rollup。SQLite 实体定义的事实源为 `src/lib/db/s
 切换点为 `legacy`，已有 partial 保持 partial，只有切换点后 complete trace 才为 complete。
 时间只接受秒值 `00`–`59` 的 UTC RFC3339 表示；闰秒（`60`）在本 SQLite/Node 写入边界明确拒绝。
 
+### P1b-2 驾驶舱指标事实 (FunnelEvent / CostLedger / ValidatorResultFact)
+
+P1b-2 的指标写模型由 collector、analysis 与 validation 的已提交写路径追加；它只做观测，绝不参与
+报告选择或引用白名单。SQLite 实体契约在 `src/lib/db/schema.ts` 的 `P1_METRICS_SCHEMA_SQL` 与
+`P1_METRICS_FOLLOWUP_SCHEMA_SQL`，只能由 provenance migration runner 前进。
+
+| 实体 | 主键 / 关键字段 | 契约 |
+|---|---|---|
+| `FunnelEvent` | `(tenant_id,event_id)`；`trace_id`、`topic_id?`、`source_id?`、`stage`、`attempt`、`reason_code?`、event/ingest time | `funnel-v1` 的追加式阶段事实；相同逻辑事件语义冲突另写 conflict，不覆盖原事实。漏斗失败按同 trace/attempt 的第一个终态 `reason_code` 归因。 |
+| `CostLedger` | `(tenant_id,entry_id)`；`trace_id`、`topic_id?`、`source_id?`、`pipeline_version`、`stage`、provider/model/currency、token 与 minor-unit amount | 已知和未知成本分开保存，未知绝不以 0 替代。 |
+| `ValidatorResultFact` | `(tenant_id,result_id)`；`trace_id`、`topic_id?`、`source_id?`、validator/rule version、reason/severity | 每个已完成引用校验一条结构化结果；不保存 prompt、原文或诊断正文。 |
+| `MetricFactConflict` | `(tenant_id,id)`；`fact_kind`、业务 ID、existing/received semantic hash、`semantic_payload_mismatch`、`observed_at` | 相同 `CostLedger.entry_id` 或 `ValidatorResultFact.result_id` 的异语义重放追加独立审计事实，不改写原明细；仅保存安全 hash。 |
+| `MetricRollup` | tenant、UTC hour/day bucket、指标种类及 topic/source/pipeline/stage/归因维度 | 确定性物化读模型，日桶在下一 UTC 日 02:00 冻结。冻结后 7 个自然日内迟到事实受控重算并写 `revised_at`；超过窗口写 `MetricLateEvent` quarantine。 |
+| `MetricLateReconciliation` | `(tenant_id,id)`；fact kind/event、`backfilled` / `declined`、actor/time | 管理员显式回填/拒绝的追加审计记录；只有 `backfilled` 才重算对应小时/日桶。 |
+
+所有明细事实有 update/delete 保护；90 天保留任务只能在 migration 创建的受控 maintenance guard 内删除过期行。
+所有驾驶舱读取强制服务端 `tenant_id=default` 与 UTC 窗口上限，并由版本化容量 fixture 以 `EXPLAIN QUERY PLAN`
+验证索引命中；当前 fixture 标识为 `p1-metrics-capacity-v1`。
+
 ### 主题 (Topic)
 
 用户订阅的追踪主题；MVP 来自用户在设置页配置（非头脑风暴产物）。

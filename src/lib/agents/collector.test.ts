@@ -271,6 +271,7 @@ describe("collector P0b-1 source_collect provenance", () => {
     expect(revision.snapshot).not.toContain("raw_ref");
     expect(db.prepare("SELECT state FROM generation_trace_request WHERE trace_id=?").get(accepted.traceId)).toEqual({ state: "terminal" });
     expect(db.prepare("SELECT state FROM generation_lease WHERE trace_id=?").get(accepted.traceId)).toEqual({ state: "released" });
+    expect(db.prepare("SELECT topic_id,source_id,stage FROM funnel_event WHERE run_id=?").get(result.runId)).toEqual({ topic_id: "t1", source_id: "s1", stage: "received" });
   });
 
   it("抓取失败时留下 collect failed，并显式声明没有已提交、未知的 Content 输出", async () => {

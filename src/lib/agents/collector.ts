@@ -14,6 +14,7 @@ import {
 } from "../db/provenance.js";
 import { appendGenerationEvent, captureRevision, entityKey, type EntityRef } from "../db/provenance-facts.js";
 import { contentItemRef, contentItemRevisionSnapshot, sourceConfigRef, sourceConfigSnapshot } from "../db/provenance-revisions.js";
+import { appendCollectorMetricFact } from "../db/p1-metrics-pipeline.js";
 import { runJob } from "../runtime/jobs.js";
 import type { Source } from "../types.js";
 import { MIN_ARTICLE_CHARS, articleFetchEnabled, articleFetchKilled, fetchArticleBody } from "../sources/article.js";
@@ -190,6 +191,8 @@ export async function collectSource(
         if (existing) updateContentItem(db, item); // 同 URL 内容更新 → 原地更新、id 不变（AC2 ②）
         else insertContentItem(db, item); // 新 URL（AC2 ③）
       })();
+      // P1b-2 observes the committed collector output only; it never feeds report selection or citation validation.
+      appendCollectorMetricFact(db, { run_id: ctx.runId, item });
       if (outputRef) outputs.push(outputRef);
       if (existing) updated++;
       else inserted++;

@@ -9,7 +9,7 @@ describe("provenance migration runner", () => {
     applyProvenanceMigrations(db);
     applyProvenanceMigrations(db);
     expect(() => assertProvenanceSchema(db)).not.toThrow();
-    expect(db.prepare("SELECT COUNT(*) AS count FROM schema_migration").get()).toEqual({ count: 13 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM schema_migration").get()).toEqual({ count: 16 });
     expect((db.prepare("PRAGMA table_info(run)").all() as { name: string }[]).some((row) => row.name === "trace_id")).toBe(true);
     const reportColumns = db.prepare("PRAGMA table_info(report)").all() as { name: string; notnull: number }[];
     expect(reportColumns.find((column) => column.name === "body_path")?.notnull).toBe(0);
@@ -20,6 +20,8 @@ describe("provenance migration runner", () => {
     expect(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='provenance_redaction_request'").get()).toBeTruthy();
     expect(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='generation_event'").get()).toBeTruthy();
     expect(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='source_credit_event'").get()).toBeTruthy();
+    expect(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='funnel_event'").get()).toBeTruthy();
+    expect(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='metric_fact_conflict'").get()).toBeTruthy();
     expect(db.prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_source_credit_fact_tenant_source_event'").get()).toBeTruthy();
     expect((db.prepare("PRAGMA table_info(generation_trace)").all() as { name: string }[]).some((row) => row.name === "source_id")).toBe(true);
     expect(db.prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_generation_edge_trace_from'").get()).toBeTruthy();
@@ -66,7 +68,7 @@ describe("provenance migration runner", () => {
     db.prepare("DELETE FROM schema_migration WHERE version IN ('20260823_12_source_credit_facts','20260823_13_source_credit_tenant_primary_keys')").run();
 
     applyProvenanceMigrations(db);
-    expect(db.prepare("SELECT COUNT(*) AS count FROM schema_migration").get()).toEqual({ count: 13 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM schema_migration").get()).toEqual({ count: 16 });
     expect(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='source_credit_event'").get()).toBeTruthy();
     expect(db.prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_source_credit_fact_tenant_source_event'").get()).toBeTruthy();
     for (const table of ["source_credit_conflict", "source_credit_late_reconciliation"]) {
@@ -132,6 +134,19 @@ describe("provenance migration runner", () => {
     ]) {
       expect(db.prepare("SELECT 1 FROM sqlite_master WHERE name=?").get(object)).toBeTruthy();
     }
+  });
+
+  it("upgrades a deployed v15 metric schema by adding immutable conflict audit facts", () => {
+    const db = openDb(":memory:");
+    applyProvenanceMigrations(db);
+    db.exec("DROP TABLE metric_fact_conflict");
+    db.prepare("DELETE FROM schema_migration WHERE version='20260823_16_p1_metric_conflict_audit'").run();
+
+    expect(() => applyProvenanceMigrations(db)).not.toThrow();
+    for (const object of ["metric_fact_conflict", "idx_metric_fact_conflict_tenant_kind_business", "metric_fact_conflict_no_update", "metric_fact_conflict_no_delete"]) {
+      expect(db.prepare("SELECT 1 FROM sqlite_master WHERE name=?").get(object)).toBeTruthy();
+    }
+    expect(db.prepare("SELECT 1 FROM schema_migration WHERE version='20260823_16_p1_metric_conflict_audit'").get()).toBeTruthy();
   });
 
   it("rebuilds a legacy NOT NULL body_path table without losing a published report", () => {
