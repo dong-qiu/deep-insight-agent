@@ -29,17 +29,32 @@ export interface SourceCreditWriteResult {
 
 type NormalizedSourceId = { source_id: string };
 type NormalizedSource = NormalizedSourceId & { source_revision: string };
+const NANOS_PER_MILLISECOND = 1_000_000n;
+const NANOS_PER_HOUR = 60n * 60n * 1_000_000_000n;
+const RFC3339_UTC_INSTANT = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?Z$/;
+
+/** Parses only real UTC calendar instants and preserves RFC 3339's allowed nanosecond precision. */
+function instantEpochNanos(value: string): bigint | null {
+  const match = RFC3339_UTC_INSTANT.exec(value);
+  if (!match) return null;
+  const wholeSecond = `${match[1]}-${match[2]}-${match[3]}T${match[4]}:${match[5]}:${match[6]}Z`;
+  const milliseconds = Date.parse(wholeSecond);
+  if (!Number.isFinite(milliseconds) || new Date(milliseconds).toISOString().slice(0, 19) !== wholeSecond.slice(0, 19)) return null;
+  return BigInt(milliseconds) * NANOS_PER_MILLISECOND + BigInt((match[7] ?? "").padEnd(9, "0"));
+}
 
 function validInstant(value: string): boolean {
-  return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/.test(value) && Number.isFinite(Date.parse(value));
+  return instantEpochNanos(value) !== null;
 }
 
 function normalizeInput(input: SourceCreditInput): { event_id: string; trace_id: string | null; occurred_at: string; ingested_at: string; sources: NormalizedSourceId[] } {
   if (!/^[A-Za-z0-9._:-]{1,128}$/.test(input.event_id)) throw new Error("source_credit_event_id_invalid");
   if (input.trace_id != null && !/^[A-Za-z0-9._:-]{1,128}$/.test(input.trace_id)) throw new Error("source_credit_trace_id_invalid");
   const ingestedAt = input.ingested_at ?? new Date().toISOString();
-  if (!validInstant(input.occurred_at) || !validInstant(ingestedAt)) throw new Error("source_credit_timestamp_invalid");
-  if (Date.parse(input.occurred_at) > Date.parse(ingestedAt)) throw new Error("source_credit_occurred_after_ingested");
+  const occurredNanos = instantEpochNanos(input.occurred_at);
+  const ingestedNanos = instantEpochNanos(ingestedAt);
+  if (occurredNanos === null || ingestedNanos === null) throw new Error("source_credit_timestamp_invalid");
+  if (occurredNanos > ingestedNanos) throw new Error("source_credit_occurred_after_ingested");
   if (input.sources.length === 0 || input.sources.length > SOURCE_CREDIT_TOTAL_MICROS) throw new Error("source_credit_sources_invalid");
   const sources = input.sources.map((source) => {
     if (!/^[A-Za-z0-9._:-]{1,128}$/.test(source.source_id)) throw new Error("source_credit_source_id_invalid");
@@ -65,14 +80,18 @@ function traceCoverage(db: DB, traceId: string | null): SourceCreditWriteResult[
   const trace = db.prepare("SELECT coverage,started_at FROM generation_trace WHERE id=?").get(traceId) as { coverage: "complete" | "partial"; started_at: string } | undefined;
   if (!trace) return "legacy";
   const cutover = db.prepare("SELECT meta_value FROM provenance_meta WHERE meta_key='provenance_started_at'").get() as { meta_value: string } | undefined;
-  if (!cutover || Date.parse(trace.started_at) < Date.parse(cutover.meta_value)) return "legacy";
+  const traceStartedAt = instantEpochNanos(trace.started_at);
+  const cutoverAt = cutover ? instantEpochNanos(cutover.meta_value) : null;
+  if (traceStartedAt === null || cutoverAt === null || traceStartedAt < cutoverAt) return "legacy";
   return trace.coverage === "complete" ? "complete" : "partial";
 }
 
 function lateness(occurredAt: string, ingestedAt: string): SourceCreditWriteResult["lateness"] {
-  const elapsed = Date.parse(ingestedAt) - Date.parse(occurredAt);
-  if (elapsed < 24 * 60 * 60 * 1000) return "timely";
-  return elapsed <= 7 * 24 * 60 * 60 * 1000 ? "reconcilable" : "quarantined";
+  // normalizeInput has already validated both values; nanosecond arithmetic keeps duration
+  // boundaries consistent with the precision preserved in the stored facts.
+  const elapsed = instantEpochNanos(ingestedAt)! - instantEpochNanos(occurredAt)!;
+  if (elapsed < 24n * NANOS_PER_HOUR) return "timely";
+  return elapsed <= 7n * 24n * NANOS_PER_HOUR ? "reconcilable" : "quarantined";
 }
 
 function semanticPayload(input: ReturnType<typeof normalizeInput>) {

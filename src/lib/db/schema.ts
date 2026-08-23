@@ -44,12 +44,13 @@ CREATE TRIGGER source_credit_fact_no_update BEFORE UPDATE ON source_credit_fact 
 CREATE TRIGGER source_credit_fact_no_delete BEFORE DELETE ON source_credit_fact BEGIN SELECT RAISE(ABORT, 'source_credit_fact is append-only'); END;
 
 CREATE TABLE source_credit_conflict (
-  id TEXT PRIMARY KEY,
+  id TEXT NOT NULL,
   tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),
   event_id TEXT NOT NULL,
   existing_semantic_payload_hash TEXT NOT NULL,
   received_semantic_payload_hash TEXT NOT NULL,
-  observed_at TEXT NOT NULL
+  observed_at TEXT NOT NULL,
+  PRIMARY KEY(tenant_id, id)
 );
 CREATE INDEX idx_source_credit_conflict_tenant_event ON source_credit_conflict(tenant_id, event_id, observed_at DESC);
 CREATE TRIGGER source_credit_conflict_no_update BEFORE UPDATE ON source_credit_conflict BEGIN SELECT RAISE(ABORT, 'source_credit_conflict is append-only'); END;
@@ -68,12 +69,13 @@ CREATE TRIGGER source_credit_late_event_no_update BEFORE UPDATE ON source_credit
 CREATE TRIGGER source_credit_late_event_no_delete BEFORE DELETE ON source_credit_late_event BEGIN SELECT RAISE(ABORT, 'source_credit_late_event is append-only'); END;
 
 CREATE TABLE source_credit_late_reconciliation (
-  id TEXT PRIMARY KEY,
+  id TEXT NOT NULL,
   tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),
   event_id TEXT NOT NULL,
   action TEXT NOT NULL CHECK(action IN ('reconciled','declined')),
   actor_id TEXT NOT NULL,
   recorded_at TEXT NOT NULL,
+  PRIMARY KEY(tenant_id, id),
   FOREIGN KEY(tenant_id, event_id) REFERENCES source_credit_late_event(tenant_id, event_id)
 );
 CREATE INDEX idx_source_credit_late_reconciliation_tenant_event ON source_credit_late_reconciliation(tenant_id, event_id, recorded_at DESC);

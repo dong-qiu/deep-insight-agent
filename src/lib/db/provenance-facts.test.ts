@@ -77,6 +77,36 @@ describe("provenance facts", () => {
       event_id: "source-credit-no-trace", trace_id: "unknown_trace", occurred_at: "2026-08-05T00:00:00.000Z", ingested_at: "2026-08-05T01:00:00.000Z",
       sources: [{ source_id: "source_a" }],
     }).trace_coverage).toBe("legacy");
+
+    const nanosecondDb = dbWithTrace();
+    insertCreditSource(nanosecondDb, "source_a");
+    nanosecondDb.prepare("UPDATE generation_trace SET started_at='2026-08-03T00:00:00.100000000Z' WHERE id='trace_1'").run();
+    initializeProvenanceMeta(nanosecondDb, "2026-08-03T00:00:00.100000001Z");
+    expect(appendSourceCredit(nanosecondDb, {
+      event_id: "source-credit-nanosecond-legacy", trace_id: "trace_1", occurred_at: "2026-08-03T00:00:00.000Z", ingested_at: "2026-08-03T01:00:00.000Z",
+      sources: [{ source_id: "source_a" }],
+    }).trace_coverage).toBe("legacy");
+  });
+
+  it.each([
+    ["2026-02-31T00:00:00Z", "2026-03-01T00:00:00Z"],
+    ["2026-04-30T00:00:00Z", "2026-04-31T00:00:00Z"],
+    ["2026-02-29T00:00:00Z", "2026-03-01T00:00:00Z"],
+  ])("rejects RFC 3339-shaped but invalid calendar instants: %s / %s", (occurred_at, ingested_at) => {
+    const db = dbWithTrace();
+    insertCreditSource(db, "source_a");
+    expect(() => appendSourceCredit(db, {
+      event_id: "source-credit-invalid-calendar", occurred_at, ingested_at, sources: [{ source_id: "source_a" }],
+    })).toThrow("source_credit_timestamp_invalid");
+  });
+
+  it("accepts a real leap-day instant", () => {
+    const db = dbWithTrace();
+    insertCreditSource(db, "source_a");
+    expect(() => appendSourceCredit(db, {
+      event_id: "source-credit-leap-day", occurred_at: "2024-02-29T00:00:00Z", ingested_at: "2024-02-29T00:00:00.000000001Z",
+      sources: [{ source_id: "source_a" }],
+    })).not.toThrow();
   });
 
   it("derives immutable credit revisions from persisted Sources and rejects missing sources", () => {

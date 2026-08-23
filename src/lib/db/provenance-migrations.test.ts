@@ -69,6 +69,13 @@ describe("provenance migration runner", () => {
     expect(db.prepare("SELECT COUNT(*) AS count FROM schema_migration").get()).toEqual({ count: 12 });
     expect(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='source_credit_event'").get()).toBeTruthy();
     expect(db.prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_source_credit_fact_tenant_source_event'").get()).toBeTruthy();
+    for (const table of ["source_credit_conflict", "source_credit_late_reconciliation"]) {
+      const primaryKey = (db.prepare(`PRAGMA index_list(${table})`).all() as { name: string; origin: string }[])
+        .find((index) => index.origin === "pk");
+      expect(primaryKey).toBeTruthy();
+      expect((db.prepare(`PRAGMA index_info(${primaryKey!.name})`).all() as { name: string }[]).map((column) => column.name))
+        .toEqual(["tenant_id", "id"]);
+    }
   });
 
   it("rebuilds a legacy NOT NULL body_path table without losing a published report", () => {
