@@ -20,7 +20,8 @@ const limiter = new RateLimiter({ limit: 120, windowMs: 60_000 });
 
 export default auth((req) => {
   const { pathname } = req.nextUrl;
-  const trustedDispatchWorker = pathname === "/api/internal/generation-dispatch"
+  const trustedDispatchWorker = (pathname === "/api/internal/generation-dispatch"
+    || pathname === "/api/internal/generation-dispatch/health")
     && hasDispatchWorkerSecret(req.headers.get("x-dispatch-worker-secret"), process.env.DISPATCH_WORKER_SECRET);
 
   if (pathname.startsWith("/api")) {

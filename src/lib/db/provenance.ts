@@ -79,6 +79,53 @@ export interface DispatchClaim {
   };
 }
 
+export const GENERATION_DISPATCH_ALERT_AGE_MS = 5 * 60_000;
+export const GENERATION_DISPATCH_READINESS_AGE_MS = 15 * 60_000;
+
+/**
+ * Worker control-plane health.  A queued dispatch and an expired claimed
+ * dispatch are both work that no healthy owner is currently progressing.
+ * Keep this query read-only: it is called by the worker's Docker healthcheck
+ * and must never compete with claim/recovery writes.
+ */
+export interface GenerationDispatchHealth {
+  queuedCount: number;
+  expiredClaimedCount: number;
+  oldestActionableAt: string | null;
+  oldestActionableAgeMs: number | null;
+  status: "ready" | "degraded" | "not_ready";
+}
+
+export function getGenerationDispatchHealth(db: DB, now: Date = new Date()): GenerationDispatchHealth {
+  const nowIso = now.toISOString();
+  const row = db.prepare(`
+    SELECT
+      SUM(CASE WHEN state='queued' THEN 1 ELSE 0 END) AS queued_count,
+      SUM(CASE WHEN state='claimed' AND lease_expires_at < @now THEN 1 ELSE 0 END) AS expired_claimed_count,
+      MIN(CASE WHEN state='queued' OR (state='claimed' AND lease_expires_at < @now) THEN created_at END) AS oldest_actionable_at
+    FROM generation_dispatch
+  `).get({ now: nowIso }) as {
+    queued_count: number | null;
+    expired_claimed_count: number | null;
+    oldest_actionable_at: string | null;
+  };
+  const oldestAt = row.oldest_actionable_at ?? null;
+  const parsed = oldestAt ? Date.parse(oldestAt) : NaN;
+  const ageMs = Number.isFinite(parsed) ? Math.max(0, now.getTime() - parsed) : null;
+  const status = ageMs != null && ageMs > GENERATION_DISPATCH_READINESS_AGE_MS
+    ? "not_ready"
+    : ageMs != null && ageMs > GENERATION_DISPATCH_ALERT_AGE_MS
+      ? "degraded"
+      : "ready";
+  return {
+    queuedCount: row.queued_count ?? 0,
+    expiredClaimedCount: row.expired_claimed_count ?? 0,
+    oldestActionableAt: oldestAt,
+    oldestActionableAgeMs: ageMs,
+    status,
+  };
+}
+
 /** 在每次异步外部调用返回后的业务写入前复验。旧 owner 即使仍持有内存中的 claim，
  * 也无法在 dispatch/lease 已被接管或到期后提交任何事实。 */
 export function assertGenerationDispatchClaim(db: DB, claim: Pick<DispatchClaim, "dispatchId" | "traceId" | "ownerToken" | "claimEpoch" | "fencingEpoch">, now = new Date()): void {

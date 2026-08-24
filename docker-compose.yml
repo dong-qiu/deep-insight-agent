@@ -104,8 +104,16 @@ services:
     environment:
       APP_URL: http://app:3000
     command: ["node", "/app/ops/generation-dispatch-worker.mjs"]
+    # Give an in-flight request one 120s lease window to finish before Docker
+    # kills the worker.  Compose stops dependents before app, so app can keep
+    # heartbeating the current fenced claim during this drain.
+    stop_grace_period: 2m15s
     healthcheck:
-      disable: true
+      test: ["CMD", "node", "--no-warnings", "/app/ops/generation-dispatch-healthcheck.mjs"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
 
 volumes:
   insight-data:

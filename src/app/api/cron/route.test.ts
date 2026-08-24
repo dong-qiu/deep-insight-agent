@@ -27,7 +27,7 @@ beforeEach(() => {
   process.env.CRON_SECRET = "test-secret";
   collectionMock.mockReset().mockResolvedValue({ collected: [], errors: [] });
   pipelineMock.mockReset().mockResolvedValue({ topics: [], errors: [] });
-  integrityMock.mockReset().mockResolvedValue({ reconciliation: { committed: 0, failed: 0 }, daily: "skipped" });
+  integrityMock.mockReset().mockResolvedValue({ skipped: false, reconciliation: { committed: 0, failed: 0 }, daily: "skipped", checks: { checked: 0, passed: 0, failed: 0 } });
   anchorMock.mockReset().mockReturnValue({ store: {}, signer: {}, retainUntil: "2027-01-01T00:00:00Z" });
   recoverMock.mockReset().mockReturnValue(0);
 });

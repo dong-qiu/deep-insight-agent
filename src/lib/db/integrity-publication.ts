@@ -6,12 +6,58 @@ import { anchorEnvelopeBytes, anchorIdempotencyKey, anchorMatchesManifest, parse
 const tenant = "default";
 const now = () => new Date().toISOString();
 const id = (prefix: string) => `${prefix}_${randomUUID().replaceAll("-", "")}`;
+const INTEGRITY_MAINTENANCE_LEASE_MS = 15 * 60_000;
+const INTEGRITY_MAINTENANCE_HEARTBEAT_MS = 30_000;
 
 export interface AnchorPublication {
   generation_effect_id: string;
   manifest: ArtifactManifest;
   issued_at: string;
   retain_until: string;
+}
+
+interface IntegrityMaintenanceLease { ownerToken: string }
+
+/** Claim a short-lived operational lease.  The lease is separate from the
+ * immutable integrity ledger so overlapping cron/manual triggers can safely
+ * skip work without changing any evidence facts. */
+export function claimIntegrityMaintenanceLease(
+  db: DB,
+  clock: Date = new Date(),
+  leaseMs = INTEGRITY_MAINTENANCE_LEASE_MS,
+): IntegrityMaintenanceLease | null {
+  const ownerToken = id("integrity_maintenance");
+  const nowIso = clock.toISOString();
+  const expiresAt = new Date(clock.getTime() + leaseMs).toISOString();
+  const changes = db.transaction(() => db.prepare(`
+    INSERT INTO integrity_maintenance_lease(tenant_id,owner_token,lease_expires_at,heartbeat_at,updated_at)
+    VALUES (@tenant,@owner,@expires_at,@now,@now)
+    ON CONFLICT(tenant_id) DO UPDATE SET
+      owner_token=excluded.owner_token,
+      lease_expires_at=excluded.lease_expires_at,
+      heartbeat_at=excluded.heartbeat_at,
+      updated_at=excluded.updated_at
+    WHERE integrity_maintenance_lease.lease_expires_at IS NULL
+       OR integrity_maintenance_lease.lease_expires_at < @now
+  `).run({ tenant, owner: ownerToken, expires_at: expiresAt, now: nowIso }).changes)();
+  return changes === 1 ? { ownerToken } : null;
+}
+
+function heartbeatIntegrityMaintenanceLease(db: DB, lease: IntegrityMaintenanceLease, clock = new Date()): boolean {
+  const nowIso = clock.toISOString();
+  const expiresAt = new Date(clock.getTime() + INTEGRITY_MAINTENANCE_LEASE_MS).toISOString();
+  return db.prepare(`UPDATE integrity_maintenance_lease
+    SET heartbeat_at=?,lease_expires_at=?,updated_at=?
+    WHERE tenant_id=? AND owner_token=? AND lease_expires_at >= ?`).run(
+    nowIso, expiresAt, nowIso, tenant, lease.ownerToken, nowIso,
+  ).changes === 1;
+}
+
+export function releaseIntegrityMaintenanceLease(db: DB, lease: IntegrityMaintenanceLease, clock = new Date()): boolean {
+  const nowIso = clock.toISOString();
+  return db.prepare(`UPDATE integrity_maintenance_lease
+    SET owner_token=NULL,lease_expires_at=NULL,heartbeat_at=?,updated_at=?
+    WHERE tenant_id=? AND owner_token=?`).run(nowIso, nowIso, tenant, lease.ownerToken).changes === 1;
 }
 interface StoredAnchorEffect { id: string; generation_effect_id: string; report_id: string; artifact_id: string; artifact_version: string; manifest_hash: string; manifest_canonical: string; content_hash: string; content_length: number; media_type: string; object_key: string; anchor_payload: string; anchor_provider_version_id: string | null; manifest_signature: string | null; manifest_key_id: string | null; manifest_algorithm: string | null; manifest_issued_at: string | null; retain_until: string | null; status: string; retry_count: number; created_at?: string }
 
@@ -308,12 +354,39 @@ export async function recoverDailyAnchorRoot(db: DB, store: AnchorStore, signer:
  * generation dispatch.  Cron invokes this beside the 02:00/02:15 jobs. */
 export async function runIntegrityMaintenance(
   db: DB, input: { store: AnchorStore; signer: AnchorSigner; retainUntil: string }, nowIso = now(),
-): Promise<{ reconciliation: { committed: number; failed: number }; daily: "skipped" | "committed" | "recovered" | "missing"; checks: { checked: number; passed: number; failed: number } }> {
-  const reconciliation = await import("./reports.js").then(({ reconcileAnchoredReportEffects }) => reconcileAnchoredReportEffects(db, input));
-  const checks = await import("./integrity-checks.js").then(async ({ runAutomaticIntegrityChecks }) => {
-    const { notifyIntegrityFailure } = await import("../runtime/integrity-alert.js");
-    return runAutomaticIntegrityChecks(db, input.store, notifyIntegrityFailure, new Date(nowIso));
-  });
-  const daily = await runDailyAnchorSchedule(db, input.store, input.signer, input.retainUntil, nowIso);
-  return { reconciliation, daily: daily.status, checks: { checked: checks.checked, passed: checks.passed, failed: checks.failed } };
+): Promise<{ skipped: boolean; reconciliation: { committed: number; failed: number }; daily: "skipped" | "committed" | "recovered" | "missing"; checks: { checked: number; passed: number; failed: number } }> {
+  const lease = claimIntegrityMaintenanceLease(db);
+  if (!lease) return {
+    skipped: true,
+    reconciliation: { committed: 0, failed: 0 },
+    daily: "skipped",
+    checks: { checked: 0, passed: 0, failed: 0 },
+  };
+  let leaseLost = false;
+  const heartbeatTimer = setInterval(() => {
+    try {
+      if (!heartbeatIntegrityMaintenanceLease(db, lease)) leaseLost = true;
+    } catch {
+      // Never leak a timer exception. The next phase boundary fails closed.
+      leaseLost = true;
+    }
+  }, INTEGRITY_MAINTENANCE_HEARTBEAT_MS);
+  heartbeatTimer.unref();
+  const assertLease = (): void => {
+    if (leaseLost || !heartbeatIntegrityMaintenanceLease(db, lease)) throw new Error("integrity_maintenance_lease_lost");
+  };
+  try {
+    const reconciliation = await import("./reports.js").then(({ reconcileAnchoredReportEffects }) => reconcileAnchoredReportEffects(db, input));
+    assertLease();
+    const checks = await import("./integrity-checks.js").then(async ({ runAutomaticIntegrityChecks }) => {
+      const { notifyIntegrityFailure } = await import("../runtime/integrity-alert.js");
+      return runAutomaticIntegrityChecks(db, input.store, notifyIntegrityFailure, new Date(nowIso));
+    });
+    assertLease();
+    const daily = await runDailyAnchorSchedule(db, input.store, input.signer, input.retainUntil, nowIso);
+    return { skipped: false, reconciliation, daily: daily.status, checks: { checked: checks.checked, passed: checks.passed, failed: checks.failed } };
+  } finally {
+    clearInterval(heartbeatTimer);
+    releaseIntegrityMaintenanceLease(db, lease);
+  }
 }

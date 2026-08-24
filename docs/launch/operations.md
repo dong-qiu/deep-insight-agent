@@ -28,7 +28,7 @@ bucket 的读取权限，不加载签名私钥。
 |---|---|
 | `app` 容器 | Next.js standalone（`server.js`，:3000）+ Job Runner（worker 经内部端点在此执行分析/校验/报告，非 serverless、无超时） |
 | `cron` 容器 | 复用同镜像跑 supercronic，按 `ops/crontab` 每 6h `POST /api/cron`（经 `ops/trigger.mjs`，Node HTTP 免 curl） |
-| `generation-dispatch-worker` 容器 | 持续领取日报与 Deep Dive 的 durable dispatch；持有 lease/fencing 后才启动主题流水线，崩溃后可接管重试 |
+| `generation-dispatch-worker` 容器 | 持续领取日报与 Deep Dive 的 durable dispatch；持有 lease/fencing 后才启动主题流水线，崩溃后可接管重试。收到 `SIGTERM` 时先进入 drain：不再领取新任务、等待在途内部请求完成，最长一个 lease 窗口后退出并由 lease recovery 接管。 |
 | 持久卷 `insight-data` | 挂 `/data`：SQLite 库（`insight.db`，WAL+FTS5）+ 报告正文 FS（`/data/reports`）+ 原文归档（`/data/raw`） |
 | 镜像 | slim 运行层、**非 root**（uid 1001）、tag 锁定 `deep-insight:0.1.0`（不用 latest）；supercronic 校验和锁版本 + 架构 |
 
@@ -40,9 +40,14 @@ bucket 的读取权限，不加载签名私钥。
 cp .env.example .env.local        # 按 §3 填全（尤其 CRON_SECRET、中转站 Opus 模型）
 # Apple Silicon / arm64 主机构建需指定（默认 amd64；supercronic 校验和按架构锁定）
 TARGETARCH=arm64 docker compose up -d --build      # x86_64 主机省略 TARGETARCH
-docker compose ps                 # 期望 app、cron、generation-dispatch-worker 均 healthy / running
+docker compose ps                 # app、generation-dispatch-worker 应为 healthy；cron 应为 running
 curl -fsS http://127.0.0.1:3000/api/health         # {"status":"ok","reports":N}
 ```
+
+`/api/health` 仅代表 Web/app 与数据库的基础存活，**不代表**生成队列已被消费。
+`generation-dispatch-worker` 的健康检查会读取内部 queue-age readiness：最老 queued 或
+过期 claimed dispatch 超过 5 分钟会发送告警，超过 15 分钟会标为 `unhealthy`。部署、扩缩容
+或手动停止 worker 时，Compose 会给予它 2 分 15 秒 drain 窗口；不要用 `kill -9` 代替正常停止。
 
 首跑库为空时 `getEffectiveSources` 会自举播种默认 Topic/Source；首轮 cron（每 6h）或手动触发后才有报告。**冷启动**（topic 尚无任何报告）自动产出**首版综述 `initial_digest`**（更宽回看窗口 + 更多条），其后该主题回落到常规 brief/deep_dive——新增主题同理。手动触发一轮：
 
@@ -66,7 +71,7 @@ curl -fsS -X POST http://127.0.0.1:3000/api/cron -H "authorization: Bearer $CRON
 | `AUTH_SECRET` | ✅ | NextAuth 密钥，`openssl rand -base64 32` |
 | `ADMIN_EMAIL` / `ADMIN_PASSWORD` | ✅ | **内置管理员**（bootstrap，role=admin、全权、不入库、不可删/锁死）。受邀的其他账号在**设置页 → 用户/访问**里增删（存 `app_user` 表、密码 scrypt 哈希，缺省 role=viewer——只读 Brief/报告/主题，不可进配置/管理、不可触发烧钱端点）。对外分享只需建 viewer 账号、把邮箱+密码发对方。鉴权拆 runtime-safe `auth.config.ts`（middleware 读 JWT 角色）/ Node `auth.ts`（查库验密码）；自托管 middleware 显式运行在 Node.js runtime。 |
 | `CRON_SECRET` | ✅（定时） | `openssl rand -base64 32`；**未设则 `/api/cron` 返回 503、定时管线不工作** |
-| `DISPATCH_WORKER_SECRET` | ✅（P0a） | `openssl rand -base64 32`，且不得复用 `AUTH_SECRET`；只供 compose 内 `generation-dispatch-worker` 调用内部接口。缺失时 Deep Dive dispatch fail-closed。 |
+| `DISPATCH_WORKER_SECRET` | ✅（P0a） | `openssl rand -base64 32`，且不得复用 `AUTH_SECRET`；只供 compose 内 `generation-dispatch-worker` 调用内部 dispatch / health 接口。缺失时 Deep Dive dispatch fail-closed。 |
 | `PROVENANCE_IDEMPOTENCY_SECRET` | 建议 | Deep Dive `Idempotency-Key` 的 HMAC 专用密钥；未设时暂回退 `AUTH_SECRET`，上线后应独立配置以缩小轮换影响面。 |
 | `PIPELINE_WINDOW_HOURS` | 否 | 单轮回看窗口，默认 168（7 天） |
 | `INITIAL_DIGEST_WINDOW_HOURS` / `INITIAL_DIGEST_ITEMS` | 否 | 冷启动首版综述的窗口/条数，默认 720（30 天）/ 25 |
@@ -97,7 +102,8 @@ curl -fsS -X POST http://127.0.0.1:3000/api/cron -H "authorization: Bearer $CRON
 
 ## 5. 运行与监控
 
-- **健康**：`GET /api/health`（查一次库、不触发 LLM）；`docker compose ps` 看 healthy；`docker compose logs -f app|cron`。
+- **健康**：`GET /api/health` 是 app liveness（查一次库、不触发 LLM）；`generation-dispatch-worker` 另有受 secret 保护的 queue-age readiness，二者不可互相替代。`docker compose ps` 应见 app 和 worker healthy；查看 `docker compose logs -f app cron generation-dispatch-worker`。
+- **生成调度队列**：在 worker 容器执行 `node --no-warnings /app/ops/generation-dispatch-healthcheck.mjs` 可复现其探针。若其失败，查 worker 日志、`generation_dispatch` / `generation_lease` 的过期记录、SQLite 锁与上游 LLM/网络；不要因 Web `/api/health` 为 200 而忽略该状态。
 - **Run 记录**：每次采集/分析/校验/报告经 Job Runner 落一条 Run（单调时钟耗时 + 失败捕获 + 成本透传）；`audit_log` 记关键动作；成本计量按模型累计。
 - **报告**：Web `/reports`（报告库）/ 今日 Brief / 看板 / `/settings`；登录 `/login`。
 - **cron 是否在跑**：`docker compose logs cron` 应见每 6h 一行 `POST .../api/cron → HTTP 200`。
@@ -239,6 +245,7 @@ docker compose run --rm --no-deps migrate \
 |---|---|
 | `cron` 容器起不来 | app 未 healthy（`depends_on: service_healthy`）；查 app 健康探针；**镜像 slim 无 curl，探针/触发用 Node fetch**（compose 与 Dockerfile 已一致） |
 | `cron` 容器**无健康状态**（`ps` 不显示 healthy） | 正常——cron 跑 supercronic、非 Web 服务，已在 compose **禁用**继承自镜像的 Web 探针（否则会误报 unhealthy）。判活看 `docker compose logs cron` |
+| `generation-dispatch-worker` unhealthy | 内部 queue-age readiness 已判定最老 queued/过期 claimed dispatch 超过 15 分钟，或 worker 正在 drain。先看 `docker compose logs generation-dispatch-worker app`，确认没有持续的 LLM/网络失败、SQLite 锁或卡住的 in-flight Run；正常部署 drain 最多等待 2 分 15 秒，超过后由 fenced lease recovery 接管。 |
 | `/api/cron` 返回 503 | `CRON_SECRET` 未配置 → 定时禁用；填 `.env.local` 重起 |
 | 改 `.env.local` 后凭据/密钥不生效（如管理员密码改了登不上） | `docker compose restart` **不重读 `env_file`**——它只重启进程、env 用的是上次容器创建时的快照。必须 `docker compose up -d --force-recreate`（保留卷、重建容器即重读 env） |
 | `/api/cron` 返回 401 | Bearer 与 `CRON_SECRET` 不符 |

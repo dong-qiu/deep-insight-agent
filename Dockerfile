@@ -83,6 +83,7 @@ COPY --chown=app:app ops/backup-db.mjs ./ops/backup-db.mjs
 COPY --chown=app:app ops/cost-backfill.mjs ./ops/cost-backfill.mjs
 COPY --chown=app:app ops/probe-alert.mjs ./ops/probe-alert.mjs
 COPY --chown=app:app ops/generation-dispatch-worker.mjs ./ops/generation-dispatch-worker.mjs
+COPY --chown=app:app ops/generation-dispatch-healthcheck.mjs ./ops/generation-dispatch-healthcheck.mjs
 COPY --from=builder --chown=app:app /tmp/run-provenance-migrations.mjs ./ops/run-provenance-migrations.mjs
 COPY --from=builder --chown=app:app /tmp/record-deployment.mjs ./ops/record-deployment.mjs
 COPY --from=builder --chown=app:app /tmp/replay-redaction-registry.cjs ./ops/replay-redaction-registry.cjs
