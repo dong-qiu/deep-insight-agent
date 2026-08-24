@@ -8,17 +8,45 @@ import { rmSync } from "node:fs";
 import type { DB } from "./index.js";
 import { jcs, sha256, type AnchorSigner } from "./integrity-anchors.js";
 import { registerAnchorSigningKey } from "./integrity-publication.js";
+import {
+  registerRedaction,
+  type RedactionRegistryClients,
+  type RedactionRegistryConfig,
+} from "./redaction-registry-writer.js";
 
 const tenant = "default";
 const TOMBSTONE_DOMAIN = "retention-tombstone-v1\0";
 
-type LifecycleState = "active" | "delete_pending" | "destroyed";
+type LifecycleState = "active" | "delete_pending" | "purge_pending" | "destroyed";
 type HoldAction = "placed" | "released";
 
 interface LifecycleRow { reader_state: LifecycleState; readable_until: string; archive_until: string; artifact_body_path: string | null; destroyed_at: string | null }
 interface ArtifactRow {
   artifact_id: string; artifact_version: string; anchor_object_key: string; manifest_hash: string;
   anchor_payload_hash: string | null; retain_until: string | null; last_outcome: string | null;
+}
+
+interface RetentionCompletionRow {
+  backup_reference: string;
+  backup_receipt: string;
+  backup_receipt_hash: string;
+  backup_receipt_signature: string;
+  backup_receipt_key_id: string;
+  registry_record_id: string;
+  registry_ref: string;
+}
+
+export interface BackupRetentionReceipt {
+  reference: string;
+  receipt: string;
+  signature: string;
+  key_id: string;
+}
+
+/** This verifier is supplied by the backup integration with its configured
+ * trust anchor; callers cannot replace it with an unverified DB assertion. */
+export interface BackupRetentionReceiptVerifier {
+  verify(receipt: BackupRetentionReceipt): boolean;
 }
 
 export type RetentionResult =
@@ -92,6 +120,9 @@ export function requestReportDeletion(db: DB, input: { report_id: string; actor_
   }
   const existing = lifecycleRow(db, input.report_id);
   if (existing?.reader_state === "destroyed") return { kind: "already_destroyed" };
+  // A retry owns the purge_pending state. Do not turn it back into a new
+  // deletion request and risk conflicting with its immutable tombstone.
+  if (existing?.reader_state === "purge_pending") return { kind: "delete_pending" };
   db.transaction(() => {
     db.prepare(`INSERT INTO integrity_report_lifecycle(tenant_id,report_id,reader_state,readable_until,archive_until,artifact_body_path,delete_requested_at,destroyed_at)
       VALUES (?,?,?,?,?,?,?,NULL)
@@ -107,24 +138,72 @@ export function requestReportDeletion(db: DB, input: { report_id: string; actor_
   return { kind: "delete_pending" };
 }
 
-/** Records that the external backup and P0 registry obligations are complete.
- * The registry tombstone must already be durable; lifecycle code never claims
- * an external registry write happened based only on caller input. */
-export function recordRetentionDestructionCompletion(db: DB, input: { report_id: string; actor_id: string; backup_reference: string; registry_record_id: string; registry_ref: string; completed_at?: string }): boolean {
+function receiptHash(receipt: BackupRetentionReceipt): string {
+  return sha256(new TextEncoder().encode(jcs(receipt)));
+}
+
+/**
+ * The controlled completion path. It verifies a backup-provider receipt and
+ * uses the conditional-write registry workflow; only its post-write callback
+ * can persist the immutable completion proof.
+ */
+export async function completeRetentionDestruction(
+  db: DB,
+  input: {
+    report_id: string;
+    actor_id: string;
+    deletion_request_id: string;
+    redaction_expiry_at: string;
+    backup_receipt: BackupRetentionReceipt;
+    completed_at?: string;
+  },
+  registry: { config: RedactionRegistryConfig; clients: RedactionRegistryClients },
+  backupReceiptVerifier: BackupRetentionReceiptVerifier,
+): Promise<boolean> {
   const completedAt = input.completed_at ?? new Date().toISOString();
-  if (!input.backup_reference.trim()) throw new Error("retention_backup_reference_invalid");
-  if (!input.registry_record_id.trim() || !input.registry_ref.trim()) throw new Error("retention_registry_reference_invalid");
+  const receipt = input.backup_receipt;
+  if (!receipt.reference.trim() || !receipt.receipt.trim() || !receipt.signature.trim() || !receipt.key_id.trim()) {
+    throw new Error("retention_backup_receipt_invalid");
+  }
+  if (!backupReceiptVerifier.verify(receipt)) throw new Error("retention_backup_receipt_unverified");
   if (!lifecycleRow(db, input.report_id)) return false;
-  const redaction = db.prepare(`SELECT 1 FROM provenance_redaction
-    WHERE record_id=? AND entity_key=? AND scope='report' AND reason_code='retention_expired' AND registry_ref=?`).get(input.registry_record_id, `report:${input.report_id}`, input.registry_ref);
-  if (!redaction) throw new Error("retention_registry_completion_missing");
-  const result = db.prepare(`INSERT OR IGNORE INTO integrity_retention_completion(tenant_id,report_id,backup_reference,registry_record_id,registry_ref,actor_id,completed_at)
-    VALUES (?,?,?,?,?,?,?)`).run(tenant, input.report_id, input.backup_reference, input.registry_record_id, input.registry_ref, input.actor_id, completedAt);
-  if (result.changes) return true;
-  const existing = db.prepare(`SELECT backup_reference,registry_record_id,registry_ref FROM integrity_retention_completion
-    WHERE tenant_id=? AND report_id=?`).get(tenant, input.report_id) as { backup_reference: string; registry_record_id: string; registry_ref: string };
-  if (existing.backup_reference !== input.backup_reference || existing.registry_record_id !== input.registry_record_id || existing.registry_ref !== input.registry_ref) throw new Error("retention_completion_conflict");
-  return false;
+  const existingRedaction = db.prepare(`SELECT record_id,registry_ref FROM provenance_redaction
+    WHERE entity_key=? AND scope='report' AND reason_code='retention_expired'`).get(`report:${input.report_id}`) as { record_id: string; registry_ref: string } | undefined;
+  if (existingRedaction) {
+    const registeredRequest = db.prepare(`SELECT 1 FROM provenance_redaction_request
+      WHERE record_id=? AND status='registered' AND ? = 's3://' || ? || '/' || registry_key`).get(
+      existingRedaction.record_id, existingRedaction.registry_ref, registry.config.bucket,
+    );
+    if (!registeredRequest) throw new Error("retention_registry_completion_missing");
+  }
+  let written = false;
+  await registerRedaction(db, {
+    deletion_request_id: input.deletion_request_id,
+    entity_key: `report:${input.report_id}`,
+    scope: "report",
+    reason_code: "retention_expired",
+    expiry_at: input.redaction_expiry_at,
+  }, registry.config, registry.clients, (registered) => {
+    const result = db.prepare(`INSERT OR IGNORE INTO integrity_retention_completion(
+      tenant_id,report_id,backup_reference,backup_receipt,backup_receipt_hash,backup_receipt_signature,backup_receipt_key_id,
+      registry_record_id,registry_ref,actor_id,completed_at
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(
+      tenant, input.report_id, receipt.reference, receipt.receipt, receiptHash(receipt), receipt.signature, receipt.key_id,
+      registered.record_id, registered.registry_ref, input.actor_id, completedAt,
+    );
+    if (result.changes) {
+      written = true;
+      return;
+    }
+    const existing = db.prepare(`SELECT backup_reference,backup_receipt,backup_receipt_hash,backup_receipt_signature,backup_receipt_key_id,registry_record_id,registry_ref
+      FROM integrity_retention_completion WHERE tenant_id=? AND report_id=?`).get(tenant, input.report_id) as RetentionCompletionRow;
+    if (existing.backup_reference !== receipt.reference || existing.backup_receipt !== receipt.receipt ||
+      existing.backup_receipt_hash !== receiptHash(receipt) || existing.backup_receipt_signature !== receipt.signature ||
+      existing.backup_receipt_key_id !== receipt.key_id || existing.registry_record_id !== registered.record_id || existing.registry_ref !== registered.registry_ref) {
+      throw new Error("retention_completion_conflict");
+    }
+  });
+  return written;
 }
 
 function artifactRows(db: DB, reportId: string): ArtifactRow[] {
@@ -163,7 +242,8 @@ function purgeRetainedMaterial(db: DB, reportId: string, now: string): void {
         UNION SELECT key_id FROM integrity_retention_tombstone WHERE tenant_id=?
       )`).run(tenant, tenant, tenant, tenant, tenant);
       db.prepare("DELETE FROM integrity_retention_completion WHERE tenant_id=? AND report_id=?").run(tenant, reportId);
-      db.prepare("DELETE FROM integrity_report_lifecycle WHERE tenant_id=? AND report_id=?").run(tenant, reportId);
+      db.prepare("UPDATE integrity_report_lifecycle SET reader_state='destroyed',destroyed_at=? WHERE tenant_id=? AND report_id=? AND reader_state='purge_pending'")
+        .run(now, tenant, reportId);
     } finally {
       db.prepare("UPDATE integrity_retention_purge_guard SET enabled=0 WHERE id=1").run();
     }
@@ -172,7 +252,7 @@ function purgeRetainedMaterial(db: DB, reportId: string, now: string): void {
 
 /** Complete destruction only after report/archive, verification-material and
  * durable backup/registry retention obligations have all ended. */
-export function destroyRetainedReport(db: DB, input: { report_id: string; actor_id: string; signer: AnchorSigner; now?: string; deleteFiles?: (bodyPath: string) => void }): RetentionResult {
+export function destroyRetainedReport(db: DB, input: { report_id: string; actor_id: string; signer: AnchorSigner; backupReceiptVerifier: BackupRetentionReceiptVerifier; now?: string; deleteFiles?: (bodyPath: string) => void }): RetentionResult {
   const now = input.now ?? new Date().toISOString();
   const lifecycle = lifecycleRow(db, input.report_id);
   if (!lifecycle) return db.prepare("SELECT 1 FROM report WHERE id=?").get(input.report_id) ? { kind: "retention_not_eligible" } : { kind: "not_found" };
@@ -190,34 +270,41 @@ export function destroyRetainedReport(db: DB, input: { report_id: string; actor_
     db.transaction(() => audit(db, input.report_id, "retention_not_eligible", "retention_window_active", now, input.actor_id))();
     return { kind: "retention_not_eligible" };
   }
-  const completion = db.prepare("SELECT 1 FROM integrity_retention_completion WHERE tenant_id=? AND report_id=?").get(tenant, input.report_id);
-  if (!completion) {
+  const completion = db.prepare(`SELECT backup_reference,backup_receipt,backup_receipt_hash,backup_receipt_signature,backup_receipt_key_id,registry_record_id,registry_ref
+    FROM integrity_retention_completion WHERE tenant_id=? AND report_id=?`).get(tenant, input.report_id) as RetentionCompletionRow | undefined;
+  const receipt = completion && {
+    reference: completion.backup_reference,
+    receipt: completion.backup_receipt,
+    signature: completion.backup_receipt_signature,
+    key_id: completion.backup_receipt_key_id,
+  };
+  if (!completion || !receipt || completion.backup_receipt_hash !== receiptHash(receipt) || !input.backupReceiptVerifier.verify(receipt)) {
     db.transaction(() => audit(db, input.report_id, "retention_not_eligible", "retention_prerequisites_unmet", now, input.actor_id))();
     return { kind: "retention_prerequisites_unmet" };
   }
-  const payload = {
-    tombstone_schema_version: "retention-tombstone-v1",
-    report_id: input.report_id,
-    destroyed_at: now,
-    artifacts: artifacts.map(({ artifact_id, artifact_version, anchor_object_key, manifest_hash, anchor_payload_hash, last_outcome }) => ({ artifact_id, artifact_version, locator: anchor_object_key, manifest_hash, anchor_payload_hash, last_check_outcome: last_outcome })),
-  };
-  const canonical = jcs(payload);
-  const payloadHash = sha256(new TextEncoder().encode(canonical));
-  const signature = sign(null, Buffer.concat([Buffer.from(TOMBSTONE_DOMAIN), Buffer.from(canonical)]), input.signer.private_key).toString("base64url");
   if (!db.prepare("SELECT 1 FROM report WHERE id=?").get(input.report_id)) return { kind: "not_found" };
-  // A rotated tombstone signer must have public verification material retained
-  // before its signature becomes the only record of a destroyed report.
-  registerAnchorSigningKey(db, input.signer);
-  let written = false;
-  db.transaction(() => {
-    written = db.prepare(`INSERT OR IGNORE INTO integrity_retention_tombstone(tenant_id,report_id,payload,payload_hash,signature,key_id,algorithm,destroyed_at)
-      VALUES (?,?,?,?,?,?,?,?)`).run(tenant, input.report_id, canonical, payloadHash, signature, input.signer.key_id, "ed25519", now).changes === 1;
-    if (!written) return;
-    db.prepare("UPDATE integrity_report_lifecycle SET reader_state='destroyed',destroyed_at=? WHERE tenant_id=? AND report_id=? AND reader_state='delete_pending'")
-      .run(now, tenant, input.report_id);
-    audit(db, input.report_id, "retention_tombstone_written", "retention_expired", now, input.actor_id);
-  })();
-  if (!written) return { kind: "already_destroyed" };
+  if (lifecycle.reader_state === "delete_pending") {
+    const payload = {
+      tombstone_schema_version: "retention-tombstone-v1",
+      report_id: input.report_id,
+      destroyed_at: now,
+      artifacts: artifacts.map(({ artifact_id, artifact_version, anchor_object_key, manifest_hash, anchor_payload_hash, last_outcome }) => ({ artifact_id, artifact_version, locator: anchor_object_key, manifest_hash, anchor_payload_hash, last_check_outcome: last_outcome })),
+    };
+    const canonical = jcs(payload);
+    const payloadHash = sha256(new TextEncoder().encode(canonical));
+    const signature = sign(null, Buffer.concat([Buffer.from(TOMBSTONE_DOMAIN), Buffer.from(canonical)]), input.signer.private_key).toString("base64url");
+    // A rotated tombstone signer must have public verification material retained
+    // before its signature becomes the only record of a destroyed report.
+    registerAnchorSigningKey(db, input.signer);
+    db.transaction(() => {
+      const written = db.prepare(`INSERT OR IGNORE INTO integrity_retention_tombstone(tenant_id,report_id,payload,payload_hash,signature,key_id,algorithm,destroyed_at)
+        VALUES (?,?,?,?,?,?,?,?)`).run(tenant, input.report_id, canonical, payloadHash, signature, input.signer.key_id, "ed25519", now).changes === 1;
+      if (!written) throw new Error("retention_tombstone_conflict");
+      db.prepare("UPDATE integrity_report_lifecycle SET reader_state='purge_pending' WHERE tenant_id=? AND report_id=? AND reader_state='delete_pending'")
+        .run(tenant, input.report_id);
+      audit(db, input.report_id, "retention_tombstone_written", "retention_expired", now, input.actor_id);
+    })();
+  }
   if (lifecycle.artifact_body_path) {
     const remove = input.deleteFiles ?? ((bodyPath: string) => {
       for (const ext of [".md", ".html"]) rmSync(`${bodyPath}${ext}`, { force: true });

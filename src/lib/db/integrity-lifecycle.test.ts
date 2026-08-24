@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { MemoryAnchorStore, manifestForArtifact } from "./integrity-anchors.js";
-import { destroyRetainedReport, isReportReaderVisible, recordLegalHold, recordRetentionDestructionCompletion, requestReportDeletion, retentionConclusionForAdmin } from "./integrity-lifecycle.js";
+import { completeRetentionDestruction, destroyRetainedReport, isReportReaderVisible, recordLegalHold, requestReportDeletion, retentionConclusionForAdmin } from "./integrity-lifecycle.js";
 import { commitAnchoredPublication, writePlannedAnchor } from "./integrity-publication.js";
 import { openDb, type DB } from "./index.js";
 import { applyProvenanceMigrations } from "./provenance-migrations.js";
@@ -16,6 +16,38 @@ import { insertTopic } from "./repos.js";
 const encoder = new TextEncoder();
 const cleanup: string[] = [];
 afterEach(async () => { await Promise.all(cleanup.splice(0).map((path) => rm(path, { recursive: true, force: true }))); });
+
+const receiptVerifier = { verify: (receipt: { reference: string }) => receipt.reference === "backup://retention/report" };
+const registry = {
+  config: {
+    bucket: "redaction-registry",
+    kms_key_id: "redaction-kms",
+    hmac_secret_arn: "arn:aws:secretsmanager:ap-southeast-1:123456789012:secret:redaction",
+    hmac_key_version: "v1",
+    now: () => new Date("2026-02-02T00:00:00.000Z"),
+  },
+  clients: {
+    secrets: { send: async () => ({ SecretString: "a".repeat(32) }) },
+    kms: { send: async () => ({ Plaintext: Buffer.alloc(32, 1), CiphertextBlob: Buffer.from("encrypted-data-key") }) },
+    s3: { send: async () => ({}) },
+  },
+};
+
+async function completeRetention(db: DB): Promise<boolean> {
+  return completeRetentionDestruction(db, {
+    report_id: "report",
+    actor_id: "admin",
+    deletion_request_id: "retention-report-2026-02-02",
+    redaction_expiry_at: "2036-02-02T00:00:00.000Z",
+    backup_receipt: {
+      reference: "backup://retention/report",
+      receipt: "backup receipt body",
+      signature: "backup receipt signature",
+      key_id: "backup-key-v1",
+    },
+    completed_at: "2026-02-02T00:00:00.000Z",
+  }, registry, receiptVerifier);
+}
 
 async function seeded(retainUntil = "2026-02-01T00:00:00.000Z"): Promise<{ db: DB; signer: { key_id: string; private_key: ReturnType<typeof generateKeyPairSync>["privateKey"] }; reportPath: string }> {
   const db = openDb(":memory:"); applyProvenanceMigrations(db);
@@ -58,16 +90,15 @@ describe("integrity retention lifecycle", () => {
   it("requires durable backup/registry completion, then purges expired verification material after its signed tombstone", async () => {
     const { db, signer, reportPath } = await seeded();
     requestReportDeletion(db, { report_id: "report", actor_id: "admin", readable_until: "2026-01-10T00:00:00.000Z", archive_until: "2026-01-11T00:00:00.000Z", now: "2026-01-02T00:00:00.000Z" });
-    expect(destroyRetainedReport(db, { report_id: "report", actor_id: "admin", signer, now: "2026-01-12T00:00:00.000Z" })).toEqual({ kind: "retention_not_eligible" });
+    expect(destroyRetainedReport(db, { report_id: "report", actor_id: "admin", signer, backupReceiptVerifier: receiptVerifier, now: "2026-01-12T00:00:00.000Z" })).toEqual({ kind: "retention_not_eligible" });
     expect(db.prepare("SELECT COUNT(*) AS n FROM artifact_manifest WHERE report_id='report'").get()).toEqual({ n: 1 });
 
-    expect(destroyRetainedReport(db, { report_id: "report", actor_id: "admin", signer, now: "2026-02-02T00:00:00.000Z" })).toEqual({ kind: "retention_prerequisites_unmet" });
+    expect(destroyRetainedReport(db, { report_id: "report", actor_id: "admin", signer, backupReceiptVerifier: receiptVerifier, now: "2026-02-02T00:00:00.000Z" })).toEqual({ kind: "retention_prerequisites_unmet" });
     expect(db.prepare("SELECT reader_state FROM integrity_report_lifecycle WHERE report_id='report'").get()).toEqual({ reader_state: "delete_pending" });
     await expect(readFile(`${reportPath}.md`, "utf8")).resolves.toBe("# retained");
-    applyRedactionTombstone(db, { record_id: "redaction-report", entity_key: "report:report", scope: "report", reason_code: "retention_expired", effective_at: "2026-02-02T00:00:00.000Z", expiry_at: "2036-02-02T00:00:00.000Z", registry_ref: "records/2026/02/redaction-report.json" });
-    expect(recordRetentionDestructionCompletion(db, { report_id: "report", actor_id: "admin", backup_reference: "backup://retention/report", registry_record_id: "redaction-report", registry_ref: "records/2026/02/redaction-report.json", completed_at: "2026-02-02T00:00:00.000Z" })).toBe(true);
+    expect(await completeRetention(db)).toBe(true);
     let durableTombstoneObserved = false;
-    expect(destroyRetainedReport(db, { report_id: "report", actor_id: "admin", signer, now: "2026-02-02T00:00:00.000Z", deleteFiles: (bodyPath) => {
+    expect(destroyRetainedReport(db, { report_id: "report", actor_id: "admin", signer, backupReceiptVerifier: receiptVerifier, now: "2026-02-02T00:00:00.000Z", deleteFiles: (bodyPath) => {
       const tombstone = db.prepare("SELECT payload,payload_hash,signature FROM integrity_retention_tombstone WHERE report_id='report'").get() as { payload: string; payload_hash: string; signature: string };
       expect(tombstone.payload_hash).toHaveLength(64);
       expect(verify(null, Buffer.concat([Buffer.from("retention-tombstone-v1\0"), Buffer.from(tombstone.payload)]), signer.private_key, Buffer.from(tombstone.signature, "base64url"))).toBe(true);
@@ -83,5 +114,35 @@ describe("integrity retention lifecycle", () => {
     expect(db.prepare("SELECT COUNT(*) AS n FROM integrity_retention_tombstone").get()).toEqual({ n: 0 });
     expect(db.prepare("SELECT COUNT(*) AS n FROM provenance_redaction WHERE entity_key='report:report'").get()).toEqual({ n: 1 });
     expect(getReport(db, "report")).toBeNull();
+  });
+
+  it("does not let a local tombstone or backup reference claim external completion", async () => {
+    const { db, signer } = await seeded();
+    requestReportDeletion(db, { report_id: "report", actor_id: "admin", readable_until: "2026-01-10T00:00:00.000Z", archive_until: "2026-01-11T00:00:00.000Z", now: "2026-01-02T00:00:00.000Z" });
+    applyRedactionTombstone(db, { record_id: "forged-local-record", entity_key: "report:report", scope: "report", reason_code: "retention_expired", effective_at: "2026-02-02T00:00:00.000Z", expiry_at: "2036-02-02T00:00:00.000Z", registry_ref: "backup://forged-reference" });
+    expect(destroyRetainedReport(db, { report_id: "report", actor_id: "admin", signer, backupReceiptVerifier: receiptVerifier, now: "2026-02-02T00:00:00.000Z" })).toEqual({ kind: "retention_prerequisites_unmet" });
+    await expect(completeRetention(db)).rejects.toThrow("retention_registry_completion_missing");
+  });
+
+  it("keeps cleanup retryable after file deletion or database purge failures", async () => {
+    const { db, signer, reportPath } = await seeded();
+    requestReportDeletion(db, { report_id: "report", actor_id: "admin", readable_until: "2026-01-10T00:00:00.000Z", archive_until: "2026-01-11T00:00:00.000Z", now: "2026-01-02T00:00:00.000Z" });
+    await completeRetention(db);
+
+    expect(() => destroyRetainedReport(db, { report_id: "report", actor_id: "admin", signer, backupReceiptVerifier: receiptVerifier, now: "2026-02-02T00:00:00.000Z", deleteFiles: () => { throw new Error("disk unavailable"); } })).toThrow("disk unavailable");
+    expect(db.prepare("SELECT reader_state FROM integrity_report_lifecycle WHERE report_id='report'").get()).toEqual({ reader_state: "purge_pending" });
+    expect(destroyRetainedReport(db, { report_id: "report", actor_id: "admin", signer, backupReceiptVerifier: receiptVerifier, now: "2026-02-02T00:00:00.000Z" })).toEqual({ kind: "destroyed" });
+    await expect(readFile(`${reportPath}.md`, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+
+    const second = await seeded();
+    requestReportDeletion(second.db, { report_id: "report", actor_id: "admin", readable_until: "2026-01-10T00:00:00.000Z", archive_until: "2026-01-11T00:00:00.000Z", now: "2026-01-02T00:00:00.000Z" });
+    await completeRetention(second.db);
+    second.db.exec("CREATE TRIGGER fail_retention_purge BEFORE DELETE ON generation_effect BEGIN SELECT RAISE(ABORT, 'purge failed'); END");
+    expect(() => destroyRetainedReport(second.db, { report_id: "report", actor_id: "admin", signer: second.signer, backupReceiptVerifier: receiptVerifier, now: "2026-02-02T00:00:00.000Z" })).toThrow("purge failed");
+    expect(second.db.prepare("SELECT reader_state FROM integrity_report_lifecycle WHERE report_id='report'").get()).toEqual({ reader_state: "purge_pending" });
+    second.db.exec("DROP TRIGGER fail_retention_purge");
+    expect(destroyRetainedReport(second.db, { report_id: "report", actor_id: "admin", signer: second.signer, backupReceiptVerifier: receiptVerifier, now: "2026-02-02T00:00:00.000Z" })).toEqual({ kind: "destroyed" });
+    expect(second.db.prepare("SELECT reader_state FROM integrity_report_lifecycle WHERE report_id='report'").get()).toEqual({ reader_state: "destroyed" });
+    expect(destroyRetainedReport(second.db, { report_id: "report", actor_id: "admin", signer: second.signer, backupReceiptVerifier: receiptVerifier, now: "2026-02-02T00:00:00.000Z" })).toEqual({ kind: "already_destroyed" });
   });
 });

@@ -370,6 +370,36 @@ CREATE TRIGGER integrity_retention_tombstone_no_delete BEFORE DELETE ON integrit
 CREATE TRIGGER integrity_lifecycle_audit_no_delete BEFORE DELETE ON integrity_lifecycle_audit WHEN (SELECT enabled FROM integrity_retention_purge_guard WHERE id=1) = 0 BEGIN SELECT RAISE(ABORT, 'integrity_lifecycle_audit is append-only'); END;
 `;
 
+/** P1d review repair. Completion proof is an immutable fact: the registry
+ * writer records it only after its conditional external write succeeds, and a
+ * trusted backup verifier must accept the receipt both then and at purge. */
+export const INTEGRITY_LIFECYCLE_COMPLETION_PROOF_SCHEMA_SQL = `
+CREATE TABLE integrity_report_lifecycle_next (
+  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),
+  report_id TEXT NOT NULL REFERENCES report(id),
+  reader_state TEXT NOT NULL CHECK(reader_state IN ('active','delete_pending','purge_pending','destroyed')),
+  readable_until TEXT NOT NULL,
+  archive_until TEXT NOT NULL,
+  delete_requested_at TEXT,
+  destroyed_at TEXT,
+  artifact_body_path TEXT,
+  PRIMARY KEY(tenant_id,report_id)
+);
+INSERT INTO integrity_report_lifecycle_next(tenant_id,report_id,reader_state,readable_until,archive_until,delete_requested_at,destroyed_at,artifact_body_path)
+  SELECT tenant_id,report_id,reader_state,readable_until,archive_until,delete_requested_at,destroyed_at,artifact_body_path FROM integrity_report_lifecycle;
+DROP TABLE integrity_report_lifecycle;
+ALTER TABLE integrity_report_lifecycle_next RENAME TO integrity_report_lifecycle;
+CREATE INDEX idx_integrity_report_lifecycle_reader ON integrity_report_lifecycle(tenant_id,reader_state,report_id);
+
+ALTER TABLE integrity_retention_completion ADD COLUMN backup_receipt TEXT NOT NULL DEFAULT '';
+ALTER TABLE integrity_retention_completion ADD COLUMN backup_receipt_hash TEXT NOT NULL DEFAULT '';
+ALTER TABLE integrity_retention_completion ADD COLUMN backup_receipt_signature TEXT NOT NULL DEFAULT '';
+ALTER TABLE integrity_retention_completion ADD COLUMN backup_receipt_key_id TEXT NOT NULL DEFAULT '';
+
+CREATE TRIGGER integrity_retention_completion_no_update BEFORE UPDATE ON integrity_retention_completion BEGIN SELECT RAISE(ABORT, 'integrity_retention_completion is immutable'); END;
+CREATE TRIGGER integrity_retention_completion_no_delete BEFORE DELETE ON integrity_retention_completion WHEN (SELECT enabled FROM integrity_retention_purge_guard WHERE id=1) = 0 BEGIN SELECT RAISE(ABORT, 'integrity_retention_completion is append-only'); END;
+`;
+
 /** P1b-2 dashboard facts. These are isolated from source-credit facts and report reads. */
 export const P1_METRICS_SCHEMA_SQL = `
 CREATE TABLE funnel_event (
