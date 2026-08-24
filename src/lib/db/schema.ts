@@ -263,6 +263,66 @@ export const INTEGRITY_CHECK_KEY_REVOCATION_SCHEMA_SQL = `
 ALTER TABLE integrity_check ADD COLUMN key_revoked INTEGER NOT NULL DEFAULT 0 CHECK(key_revoked IN (0,1));
 `;
 
+/** P1d lifecycle facts are deliberately separate from immutable manifest and
+ * check ledgers. A report can be withdrawn from every reader before its
+ * evidence reaches the end of its retention period; that withdrawal must not
+ * rewrite an anchored publication or make a reader call an integrity worker. */
+export const INTEGRITY_LIFECYCLE_SCHEMA_SQL = `
+CREATE TABLE integrity_report_lifecycle (
+  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),
+  report_id TEXT NOT NULL REFERENCES report(id),
+  reader_state TEXT NOT NULL CHECK(reader_state IN ('active','delete_pending','destroyed')),
+  readable_until TEXT NOT NULL,
+  archive_until TEXT NOT NULL,
+  delete_requested_at TEXT,
+  destroyed_at TEXT,
+  PRIMARY KEY(tenant_id,report_id)
+);
+CREATE INDEX idx_integrity_report_lifecycle_reader ON integrity_report_lifecycle(tenant_id,reader_state,report_id);
+
+CREATE TABLE integrity_legal_hold_event (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),
+  report_id TEXT NOT NULL REFERENCES report(id),
+  hold_id TEXT NOT NULL,
+  action TEXT NOT NULL CHECK(action IN ('placed','released')),
+  actor_id TEXT NOT NULL,
+  reason_code TEXT NOT NULL,
+  occurred_at TEXT NOT NULL,
+  UNIQUE(tenant_id,report_id,hold_id,action)
+);
+CREATE INDEX idx_integrity_legal_hold_report ON integrity_legal_hold_event(tenant_id,report_id,hold_id,occurred_at DESC);
+CREATE TRIGGER integrity_legal_hold_event_no_update BEFORE UPDATE ON integrity_legal_hold_event BEGIN SELECT RAISE(ABORT, 'integrity_legal_hold_event is append-only'); END;
+CREATE TRIGGER integrity_legal_hold_event_no_delete BEFORE DELETE ON integrity_legal_hold_event BEGIN SELECT RAISE(ABORT, 'integrity_legal_hold_event is append-only'); END;
+
+CREATE TABLE integrity_retention_tombstone (
+  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),
+  report_id TEXT NOT NULL REFERENCES report(id),
+  payload TEXT NOT NULL,
+  payload_hash TEXT NOT NULL,
+  signature TEXT NOT NULL,
+  key_id TEXT NOT NULL,
+  algorithm TEXT NOT NULL CHECK(algorithm = 'ed25519'),
+  destroyed_at TEXT NOT NULL,
+  PRIMARY KEY(tenant_id,report_id)
+);
+CREATE TRIGGER integrity_retention_tombstone_no_update BEFORE UPDATE ON integrity_retention_tombstone BEGIN SELECT RAISE(ABORT, 'integrity_retention_tombstone is append-only'); END;
+CREATE TRIGGER integrity_retention_tombstone_no_delete BEFORE DELETE ON integrity_retention_tombstone BEGIN SELECT RAISE(ABORT, 'integrity_retention_tombstone is append-only'); END;
+
+CREATE TABLE integrity_lifecycle_audit (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),
+  report_id TEXT NOT NULL REFERENCES report(id),
+  event_type TEXT NOT NULL CHECK(event_type IN ('deletion_requested','deletion_blocked_legal_hold','retention_tombstone_written','retention_not_eligible')),
+  actor_id TEXT,
+  reason_code TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX idx_integrity_lifecycle_audit_report ON integrity_lifecycle_audit(tenant_id,report_id,created_at DESC);
+CREATE TRIGGER integrity_lifecycle_audit_no_update BEFORE UPDATE ON integrity_lifecycle_audit BEGIN SELECT RAISE(ABORT, 'integrity_lifecycle_audit is append-only'); END;
+CREATE TRIGGER integrity_lifecycle_audit_no_delete BEFORE DELETE ON integrity_lifecycle_audit BEGIN SELECT RAISE(ABORT, 'integrity_lifecycle_audit is append-only'); END;
+`;
+
 /** P1b-2 dashboard facts. These are isolated from source-credit facts and report reads. */
 export const P1_METRICS_SCHEMA_SQL = `
 CREATE TABLE funnel_event (

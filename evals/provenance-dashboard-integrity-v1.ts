@@ -4,8 +4,10 @@ import { generateKeyPairSync } from "node:crypto";
 import { anchorPayload, contentHash, jcs, manifestForArtifact, manifestHash, MemoryAnchorStore, sha256 } from "../src/lib/db/integrity-anchors.js";
 import { commitAnchoredPublication, writeDailyMerkleRoot, writePlannedAnchor } from "../src/lib/db/integrity-publication.js";
 import { verifyArtifactIntegrity } from "../src/lib/db/integrity-checks.js";
+import { destroyRetainedReport, recordLegalHold, requestReportDeletion, retentionConclusionForAdmin } from "../src/lib/db/integrity-lifecycle.js";
 import { openDb } from "../src/lib/db/index.js";
 import { applyProvenanceMigrations } from "../src/lib/db/provenance-migrations.js";
+import { getReport } from "../src/lib/db/reports.js";
 import { insertTopic } from "../src/lib/db/repos.js";
 import { deploymentAnchorPublication } from "../src/lib/runtime/integrity-anchor-runtime.js";
 
@@ -47,4 +49,16 @@ commitAnchoredPublication(db, { manifest: checkManifest, generation_effect_id: "
 assert.equal((await verifyArtifactIntegrity(db, store, { artifact_id: "check-report-md", artifact_version: "v1", readArtifact: async () => content }, "2026-08-22T01:00:00.000Z")).outcome, "pass");
 assert.equal((await verifyArtifactIntegrity(db, store, { artifact_id: "check-report-md", artifact_version: "v1", readArtifact: async () => new TextEncoder().encode("abd") }, "2026-08-22T01:01:00.000Z")).outcome, "content_mismatch");
 
-console.log(JSON.stringify({ gate: "provenance-dashboard-integrity-v1", result: "pass", vectors: 8, content_hash: manifest.content_hash, manifest_hash: manifestHash(manifest) }));
+// P1d lifecycle fixture: legal hold dominates deletion, a delete request
+// immediately withdraws reader visibility, and evidence cannot be destroyed
+// before retain_until. The reader path only resolves the committed snapshot.
+assert.equal(recordLegalHold(db, { report_id: "check-report", hold_id: "eval-hold", action: "placed", actor_id: "counsel", reason_code: "legal_request", occurred_at: "2026-08-22T01:02:00.000Z" }), true);
+assert.deepEqual(requestReportDeletion(db, { report_id: "check-report", actor_id: "admin", readable_until: "2026-08-23T00:00:00.000Z", archive_until: "2026-08-24T00:00:00.000Z", now: "2026-08-22T01:03:00.000Z" }), { kind: "legal_hold" });
+assert.equal(recordLegalHold(db, { report_id: "check-report", hold_id: "eval-hold", action: "released", actor_id: "counsel", reason_code: "legal_released", occurred_at: "2026-08-22T01:04:00.000Z" }), true);
+assert.deepEqual(requestReportDeletion(db, { report_id: "check-report", actor_id: "admin", readable_until: "2026-08-23T00:00:00.000Z", archive_until: "2026-08-24T00:00:00.000Z", now: "2026-08-22T01:05:00.000Z" }), { kind: "delete_pending" });
+assert.equal(getReport(db, "check-report"), null);
+assert.deepEqual(destroyRetainedReport(db, { report_id: "check-report", actor_id: "admin", signer: checkSigner, now: "2026-08-25T00:00:00.000Z" }), { kind: "retention_not_eligible" });
+assert.deepEqual(destroyRetainedReport(db, { report_id: "check-report", actor_id: "admin", signer: checkSigner, now: "2027-01-02T00:00:00.000Z" }), { kind: "destroyed" });
+assert.deepEqual(retentionConclusionForAdmin(db, "check-report"), { conclusion: "内容保留期已结束，原始内容不再可验证", destroyed_at: "2027-01-02T00:00:00.000Z" });
+
+console.log(JSON.stringify({ gate: "provenance-dashboard-integrity-v1", result: "pass", vectors: 15, content_hash: manifest.content_hash, manifest_hash: manifestHash(manifest) }));
