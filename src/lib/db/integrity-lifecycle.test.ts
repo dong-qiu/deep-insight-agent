@@ -142,6 +142,27 @@ describe("integrity retention lifecycle", () => {
     expect(db.prepare("SELECT COUNT(*) AS n FROM provenance_redaction WHERE entity_key='report:report'").get()).toEqual({ n: 1 });
   });
 
+  it("retains a destroyed report's tombstone proof through hold release", async () => {
+    const { db, signer } = await seeded();
+    requestReportDeletion(db, { report_id: "report", actor_id: "admin", readable_until: "2026-01-10T00:00:00.000Z", archive_until: "2026-01-11T00:00:00.000Z", now: "2026-01-02T00:00:00.000Z" });
+    await completeRetention(db);
+    expect(destroyRetainedReport(db, { report_id: "report", actor_id: "retention-worker", signer, now: "2026-02-02T00:00:00.000Z" })).toEqual({ kind: "destroyed" });
+
+    expect(recordLegalHold(db, { report_id: "report", hold_id: "hold-after-destruction", action: "placed", actor_id: "counsel", reason_code: "legal_request", occurred_at: "2030-01-01T00:00:00.000Z" })).toBe(true);
+    expect(db.prepare("SELECT material_kind,material_id,retain_until FROM integrity_legal_hold_material WHERE hold_id=? ORDER BY material_kind").all("hold-after-destruction")).toEqual(expect.arrayContaining([
+      { material_kind: "retention_tombstone", material_id: "report", retain_until: "2036-02-02T00:00:00.000Z" },
+      { material_kind: "signing_key", material_id: "retention-key", retain_until: null },
+    ]));
+    expect(purgeExpiredRetentionTombstones(db, "2036-02-02T00:00:00.000Z")).toBe(0);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM integrity_retention_tombstone WHERE report_id='report'").get()).toEqual({ n: 1 });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM integrity_signing_key WHERE key_id='retention-key'").get()).toEqual({ n: 1 });
+
+    expect(recordLegalHold(db, { report_id: "report", hold_id: "hold-after-destruction", action: "released", actor_id: "counsel", reason_code: "legal_release", occurred_at: "2036-02-03T00:00:00.000Z" })).toBe(true);
+    expect(purgeExpiredRetentionTombstones(db, "2036-02-03T00:00:00.000Z")).toBe(1);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM integrity_retention_tombstone WHERE report_id='report'").get()).toEqual({ n: 0 });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM integrity_signing_key WHERE key_id='retention-key'").get()).toEqual({ n: 0 });
+  });
+
   it("does not let a local tombstone or backup reference claim external completion", async () => {
     const { db, signer } = await seeded();
     requestReportDeletion(db, { report_id: "report", actor_id: "admin", readable_until: "2026-01-10T00:00:00.000Z", archive_until: "2026-01-11T00:00:00.000Z", now: "2026-01-02T00:00:00.000Z" });

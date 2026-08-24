@@ -128,6 +128,14 @@ export function recordLegalHold(db: DB, input: { report_id: string; hold_id: str
       FROM integrity_check WHERE tenant_id=? AND (artifact_id,artifact_version) IN (
         SELECT artifact_id,artifact_version FROM artifact_manifest WHERE tenant_id=? AND report_id=?
       )`).run(tenant, input.report_id, input.hold_id, now, tenant, tenant, input.report_id);
+    // A hold can be placed after the report is destroyed. Preserve the signed
+    // destruction proof and the key that verifies it in that case as well.
+    db.prepare(`INSERT OR IGNORE INTO integrity_legal_hold_material(tenant_id,report_id,hold_id,material_kind,material_id,retain_until,recorded_at)
+      SELECT ?,?,?, 'retention_tombstone', report_id, retain_until, ?
+      FROM integrity_retention_tombstone WHERE tenant_id=? AND report_id=?`).run(tenant, input.report_id, input.hold_id, now, tenant, input.report_id);
+    db.prepare(`INSERT OR IGNORE INTO integrity_legal_hold_material(tenant_id,report_id,hold_id,material_kind,material_id,retain_until,recorded_at)
+      SELECT ?,?,?, 'signing_key', key_id, NULL, ?
+      FROM integrity_retention_tombstone WHERE tenant_id=? AND report_id=?`).run(tenant, input.report_id, input.hold_id, now, tenant, input.report_id);
   })();
   return true;
 }
@@ -319,11 +327,21 @@ function purgeRetainedMaterial(db: DB, reportId: string, now: string): void {
  * after its own retention period, leaving the P0 redaction tombstone as the
  * sole remaining record. */
 export function purgeExpiredRetentionTombstones(db: DB, now = new Date().toISOString()): number {
-  if (!tableExists(db, "integrity_retention_tombstone")) return 0;
+  // Without the hold ledger, expiry cannot establish that destruction proof is
+  // releasable. Treat a partially migrated database as ineligible for purge.
+  if (!tableExists(db, "integrity_retention_tombstone") || !tableExists(db, "integrity_legal_hold_event")) return 0;
   return db.transaction(() => {
     db.prepare("UPDATE integrity_retention_purge_guard SET enabled=1 WHERE id=1").run();
     try {
-      const removed = db.prepare("DELETE FROM integrity_retention_tombstone WHERE tenant_id=? AND retain_until<=?").run(tenant, now).changes;
+      const expired = db.prepare("SELECT report_id FROM integrity_retention_tombstone WHERE tenant_id=? AND retain_until<=?").all(tenant, now) as Array<{ report_id: string }>;
+      let removed = 0;
+      for (const tombstone of expired) {
+        // Evaluate the append-only ledger inside this same transaction. An
+        // active hold must retain the complete proof, including its key.
+        if (activeHolds(db, tombstone.report_id).length) continue;
+        removed += db.prepare("DELETE FROM integrity_retention_tombstone WHERE tenant_id=? AND report_id=? AND retain_until<=?")
+          .run(tenant, tombstone.report_id, now).changes;
+      }
       db.prepare(`DELETE FROM integrity_key_revocation WHERE tenant_id=? AND key_id NOT IN (
         SELECT manifest_key_id FROM artifact_manifest WHERE tenant_id=? AND manifest_key_id IS NOT NULL
         UNION SELECT anchor_key_id FROM artifact_manifest WHERE tenant_id=? AND anchor_key_id IS NOT NULL

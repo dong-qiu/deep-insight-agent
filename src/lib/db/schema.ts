@@ -427,6 +427,30 @@ CREATE TRIGGER integrity_legal_hold_material_no_update BEFORE UPDATE ON integrit
 CREATE TRIGGER integrity_legal_hold_material_no_delete BEFORE DELETE ON integrity_legal_hold_material BEGIN SELECT RAISE(ABORT, 'integrity_legal_hold_material is append-only'); END;
 `;
 
+/** P1d review repair. Holds placed after a report has been destroyed must
+ * snapshot the destruction proof itself. SQLite requires rebuilding this
+ * append-only table to widen its material-kind contract. */
+export const INTEGRITY_LIFECYCLE_HOLD_TOMBSTONE_SNAPSHOT_SCHEMA_SQL = `
+DROP TRIGGER integrity_legal_hold_material_no_update;
+DROP TRIGGER integrity_legal_hold_material_no_delete;
+CREATE TABLE integrity_legal_hold_material_next (
+  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),
+  report_id TEXT NOT NULL REFERENCES report(id),
+  hold_id TEXT NOT NULL,
+  material_kind TEXT NOT NULL CHECK(material_kind IN ('artifact_manifest','anchor','signing_key','integrity_check','retention_tombstone')),
+  material_id TEXT NOT NULL,
+  retain_until TEXT,
+  recorded_at TEXT NOT NULL,
+  PRIMARY KEY(tenant_id,report_id,hold_id,material_kind,material_id)
+);
+INSERT INTO integrity_legal_hold_material_next(tenant_id,report_id,hold_id,material_kind,material_id,retain_until,recorded_at)
+  SELECT tenant_id,report_id,hold_id,material_kind,material_id,retain_until,recorded_at FROM integrity_legal_hold_material;
+DROP TABLE integrity_legal_hold_material;
+ALTER TABLE integrity_legal_hold_material_next RENAME TO integrity_legal_hold_material;
+CREATE TRIGGER integrity_legal_hold_material_no_update BEFORE UPDATE ON integrity_legal_hold_material BEGIN SELECT RAISE(ABORT, 'integrity_legal_hold_material is append-only'); END;
+CREATE TRIGGER integrity_legal_hold_material_no_delete BEFORE DELETE ON integrity_legal_hold_material BEGIN SELECT RAISE(ABORT, 'integrity_legal_hold_material is append-only'); END;
+`;
+
 /** P1b-2 dashboard facts. These are isolated from source-credit facts and report reads. */
 export const P1_METRICS_SCHEMA_SQL = `
 CREATE TABLE funnel_event (
