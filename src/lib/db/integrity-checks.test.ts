@@ -36,8 +36,8 @@ describe("integrity_check revalidation", () => {
     const db = seeded(); const { store, content } = await committed(db);
     revokeAnchorSigningKey(db, signer.key_id, "rotation", "2026-08-22T00:00:00Z");
     await expect(verifyArtifactIntegrity(db, store, { artifact_id: "report-1-md", artifact_version: "v1", readArtifact: async () => content }, "2026-08-22T01:00:00Z"))
-      .resolves.toMatchObject({ outcome: "pass", failure_step: null });
-    expect(db.prepare("SELECT outcome,checker_version FROM integrity_check").get()).toEqual({ outcome: "pass", checker_version: "integrity-checker-v1" });
+      .resolves.toMatchObject({ outcome: "pass", failure_step: null, key_revoked: true });
+    expect(db.prepare("SELECT outcome,key_revoked,checker_version FROM integrity_check").get()).toEqual({ outcome: "pass", key_revoked: 1, checker_version: "integrity-checker-v1" });
   });
 
   it("records deterministic outcomes for tampered content and unavailable verification material", async () => {
@@ -75,7 +75,7 @@ describe("integrity_check revalidation", () => {
   });
 
   it("atomically claims only one failure notification in a 30 minute window", async () => {
-    const db = seeded(); const check = { artifact_id: "report-1-md", artifact_version: "v1", outcome: "anchor_mismatch" as const, failure_step: "anchor", expected_hash_prefix: null, actual_hash_prefix: null, checked_at: "2026-08-22T01:05:00.000Z" };
+    const db = seeded(); const check = { artifact_id: "report-1-md", artifact_version: "v1", outcome: "anchor_mismatch" as const, failure_step: "anchor", expected_hash_prefix: null, actual_hash_prefix: null, key_revoked: false, checked_at: "2026-08-22T01:05:00.000Z" };
     expect(claimIntegrityFailureAlert(db, check)).toBe(true);
     expect(claimIntegrityFailureAlert(db, check)).toBe(false);
     expect(claimIntegrityFailureAlert(db, { ...check, checked_at: "2026-08-22T01:30:00.000Z" })).toBe(true);

@@ -19,6 +19,7 @@ export interface IntegrityCheckResult {
   failure_step: string | null;
   expected_hash_prefix: string | null;
   actual_hash_prefix: string | null;
+  key_revoked: boolean;
   checked_at: string;
 }
 
@@ -41,13 +42,19 @@ function keyMaterial(db: DB, keyId: string): KeyMaterial {
 }
 
 function prefix(value: string | null | undefined): string | null { return value ? value.slice(0, HASH_PREFIX) : null; }
-function result(row: Pick<ManifestRow, "artifact_id" | "artifact_version">, outcome: IntegrityCheckOutcome, checkedAt: string, step: string | null = null, expected?: string, actual?: string): IntegrityCheckResult {
-  return { artifact_id: row.artifact_id, artifact_version: row.artifact_version, outcome, failure_step: step, expected_hash_prefix: prefix(expected), actual_hash_prefix: prefix(actual), checked_at: checkedAt };
+function result(row: Pick<ManifestRow, "artifact_id" | "artifact_version">, outcome: IntegrityCheckOutcome, checkedAt: string, keyRevoked: boolean, step: string | null = null, expected?: string, actual?: string): IntegrityCheckResult {
+  return { artifact_id: row.artifact_id, artifact_version: row.artifact_version, outcome, failure_step: step, expected_hash_prefix: prefix(expected), actual_hash_prefix: prefix(actual), key_revoked: keyRevoked, checked_at: checkedAt };
 }
 function persist(db: DB, checked: IntegrityCheckResult): IntegrityCheckResult {
-  db.prepare(`INSERT INTO integrity_check(id,tenant_id,artifact_id,artifact_version,outcome,failure_step,expected_hash_prefix,actual_hash_prefix,checker_version,checked_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?)`).run(`ic_${randomUUID().replaceAll("-", "")}`, tenant, checked.artifact_id, checked.artifact_version, checked.outcome, checked.failure_step, checked.expected_hash_prefix, checked.actual_hash_prefix, CHECKER_VERSION, checked.checked_at);
+  db.prepare(`INSERT INTO integrity_check(id,tenant_id,artifact_id,artifact_version,outcome,failure_step,expected_hash_prefix,actual_hash_prefix,key_revoked,checker_version,checked_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(`ic_${randomUUID().replaceAll("-", "")}`, tenant, checked.artifact_id, checked.artifact_version, checked.outcome, checked.failure_step, checked.expected_hash_prefix, checked.actual_hash_prefix, Number(checked.key_revoked), CHECKER_VERSION, checked.checked_at);
   return checked;
+}
+function recordedKeyRevoked(db: DB, keyIds: Array<string | null>): boolean {
+  const ids = [...new Set(keyIds.filter((keyId): keyId is string => keyId != null))];
+  if (!ids.length) return false;
+  const placeholders = ids.map(() => "?").join(",");
+  return Boolean(db.prepare(`SELECT 1 FROM integrity_key_revocation WHERE tenant_id=? AND key_id IN (${placeholders}) LIMIT 1`).get(tenant, ...ids));
 }
 function rowFor(db: DB, artifactId: string, artifactVersion: string): ManifestRow | undefined {
   return db.prepare(`SELECT m.artifact_id,m.artifact_version,m.report_id,m.manifest_canonical,m.manifest_hash,m.content_hash,m.content_length,m.media_type,m.anchor_object_key,m.anchor_provider_version_id,m.anchor_payload_hash,m.anchor_signature,m.anchor_key_id,m.anchor_issued_at,m.anchor_algorithm,m.manifest_signature,m.manifest_key_id,m.manifest_algorithm,m.manifest_issued_at,r.body_path
@@ -78,7 +85,10 @@ export interface VerifyArtifactInput { artifact_id: string; artifact_version: st
 export async function verifyArtifactIntegrity(db: DB, store: AnchorStore, input: VerifyArtifactInput, checkedAt = new Date().toISOString()): Promise<IntegrityCheckResult> {
   const row = rowFor(db, input.artifact_id, input.artifact_version);
   if (!row) throw new Error("integrity_artifact_not_found");
-  const finish = (outcome: IntegrityCheckOutcome, step?: string | null, expected?: string, actual?: string) => persist(db, result(row, outcome, checkedAt, step, expected, actual));
+  // Revocation is a diagnostic property of the recorded verification material,
+  // not a reason to reject a historical signature.
+  const keyRevoked = recordedKeyRevoked(db, [row.manifest_key_id, row.anchor_key_id]);
+  const finish = (outcome: IntegrityCheckOutcome, step?: string | null, expected?: string, actual?: string) => persist(db, result(row, outcome, checkedAt, keyRevoked, step, expected, actual));
 
   if (row.manifest_algorithm !== "ed25519" || row.anchor_algorithm !== "ed25519") return finish("unsupported_algorithm", "algorithm");
   if (!row.manifest_signature || !row.manifest_key_id || !row.manifest_issued_at || !row.anchor_payload_hash || !row.anchor_signature || !row.anchor_key_id || !row.anchor_issued_at) return finish("verification_material_unavailable", "stored_material");
@@ -130,6 +140,13 @@ export function claimIntegrityFailureAlert(db: DB, checked: IntegrityCheckResult
   return inserted.changes === 1;
 }
 
+/** All check entry points use one append-only, atomic claim before notifying. */
+export function notifyIntegrityFailureOnce(db: DB, checked: IntegrityCheckResult, notifyFailure: (checked: IntegrityCheckResult) => void): boolean {
+  if (checked.outcome === "pass" || !claimIntegrityFailureAlert(db, checked)) return false;
+  notifyFailure(checked);
+  return true;
+}
+
 /** Automatic work stays diagnostic-only: it never changes a reader-visible report. */
 export async function runAutomaticIntegrityChecks(
   db: DB, store: AnchorStore, notifyFailure: (checked: IntegrityCheckResult) => void, clock = new Date(),
@@ -146,7 +163,7 @@ export async function runAutomaticIntegrityChecks(
       const outcome = await verifyArtifactIntegrity(db, store, item, clock.toISOString());
       checked += 1;
       if (outcome.outcome === "pass") passed += 1;
-      else if (claimIntegrityFailureAlert(db, outcome)) { notifications.push(outcome); notifyFailure(outcome); }
+      else if (notifyIntegrityFailureOnce(db, outcome, notifyFailure)) notifications.push(outcome);
     }
   };
   await Promise.all([worker(), worker()]);

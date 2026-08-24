@@ -255,6 +255,14 @@ CREATE TRIGGER integrity_check_alert_dedup_no_update BEFORE UPDATE ON integrity_
 CREATE TRIGGER integrity_check_alert_dedup_no_delete BEFORE DELETE ON integrity_check_alert_dedup BEGIN SELECT RAISE(ABORT, 'integrity_check_alert_dedup is append-only'); END;
 `;
 
+/** Historical signature verification remains valid after revocation, but the
+ * immutable check record must disclose that the recorded verification key is
+ * revoked.  This stays separate from v22 so installed ledgers never have
+ * their migration checksum rewritten. */
+export const INTEGRITY_CHECK_KEY_REVOCATION_SCHEMA_SQL = `
+ALTER TABLE integrity_check ADD COLUMN key_revoked INTEGER NOT NULL DEFAULT 0 CHECK(key_revoked IN (0,1));
+`;
+
 /** P1b-2 dashboard facts. These are isolated from source-credit facts and report reads. */
 export const P1_METRICS_SCHEMA_SQL = `
 CREATE TABLE funnel_event (

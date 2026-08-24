@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { requireAdminActor } from "../../../../../../lib/auth-guard.js";
 import { getDb } from "../../../../../../lib/db/index.js";
 import { appendAudit } from "../../../../../../lib/db/audit.js";
-import { verifyArtifactIntegrity } from "../../../../../../lib/db/integrity-checks.js";
+import { notifyIntegrityFailureOnce, verifyArtifactIntegrity } from "../../../../../../lib/db/integrity-checks.js";
 import { deploymentAnchorVerificationStore } from "../../../../../../lib/runtime/integrity-anchor-runtime.js";
 import { notifyIntegrityFailure } from "../../../../../../lib/runtime/integrity-alert.js";
 
@@ -25,7 +25,7 @@ export async function POST(_request: Request, { params }: { params: Promise<{ ar
     const db = getDb();
     const checked = await verifyArtifactIntegrity(db, deploymentAnchorVerificationStore(), { artifact_id: artifactId, artifact_version: version });
     appendAudit(db, { actor: actor.id, action: "integrity_check_requested", target: `${artifactId}@${version}`, detail: { outcome: checked.outcome, failure_step: checked.failure_step, checked_at: checked.checked_at } });
-    if (checked.outcome !== "pass") notifyIntegrityFailure(checked);
+    notifyIntegrityFailureOnce(db, checked, notifyIntegrityFailure);
     return NextResponse.json({ ok: true, check: checked });
   } catch (error) {
     if (error instanceof Error && error.message === "integrity_artifact_not_found") return NextResponse.json({ error: "not_found" }, { status: 404 });
