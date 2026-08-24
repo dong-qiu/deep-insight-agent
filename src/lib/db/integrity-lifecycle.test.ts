@@ -8,7 +8,7 @@ import { S3Client } from "@aws-sdk/client-s3";
 import { SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jcs, MemoryAnchorStore, manifestForArtifact } from "./integrity-anchors.js";
-import { completeRetentionDestruction, destroyRetainedReport, isReportReaderVisible, recordLegalHold, requestReportDeletion, retentionConclusionForAdmin } from "./integrity-lifecycle.js";
+import { completeRetentionDestruction, destroyRetainedReport, isReportReaderVisible, purgeExpiredRetentionTombstones, recordLegalHold, requestReportDeletion, retentionConclusionForAdmin } from "./integrity-lifecycle.js";
 import { commitAnchoredPublication, writePlannedAnchor } from "./integrity-publication.js";
 import { openDb, type DB } from "./index.js";
 import { applyProvenanceMigrations } from "./provenance-migrations.js";
@@ -94,6 +94,15 @@ describe("integrity retention lifecycle", () => {
     expect(db.prepare("SELECT reason_code FROM integrity_lifecycle_audit").get()).not.toHaveProperty("anchor_object_key");
   });
 
+  it("does not open cleanup before a verification-material retention longer than 100 days ends", async () => {
+    const { db, signer } = await seeded("2026-08-01T00:00:00.000Z");
+    requestReportDeletion(db, { report_id: "report", actor_id: "admin", readable_until: "2026-01-10T00:00:00.000Z", archive_until: "2026-01-11T00:00:00.000Z", now: "2026-01-02T00:00:00.000Z" });
+    expect(destroyRetainedReport(db, { report_id: "report", actor_id: "retention-worker", signer, now: "2026-06-01T00:00:00.000Z" })).toEqual({ kind: "retention_not_eligible" });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM artifact_manifest WHERE report_id='report'").get()).toEqual({ n: 1 });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM integrity_signing_key").get()).toEqual({ n: 1 });
+    expect(db.prepare("SELECT reason_code FROM integrity_lifecycle_audit ORDER BY created_at DESC LIMIT 1").get()).toEqual({ reason_code: "retention_window_active" });
+  });
+
   it("retains a verifiable signed tombstone and public key after destruction", async () => {
     const { db, signer, reportPath } = await seeded();
     requestReportDeletion(db, { report_id: "report", actor_id: "admin", readable_until: "2026-01-10T00:00:00.000Z", archive_until: "2026-01-11T00:00:00.000Z", now: "2026-01-02T00:00:00.000Z" });
@@ -126,6 +135,11 @@ describe("integrity retention lifecycle", () => {
     expect(db.prepare("SELECT COUNT(*) AS n FROM integrity_retention_tombstone").get()).toEqual({ n: 1 });
     expect(db.prepare("SELECT COUNT(*) AS n FROM provenance_redaction WHERE entity_key='report:report'").get()).toEqual({ n: 1 });
     expect(getReport(db, "report")).toBeNull();
+    expect(purgeExpiredRetentionTombstones(db, "2036-02-01T23:59:59.999Z")).toBe(0);
+    expect(purgeExpiredRetentionTombstones(db, "2036-02-02T00:00:00.000Z")).toBe(1);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM integrity_retention_tombstone").get()).toEqual({ n: 0 });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM integrity_signing_key").get()).toEqual({ n: 0 });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM provenance_redaction WHERE entity_key='report:report'").get()).toEqual({ n: 1 });
   });
 
   it("does not let a local tombstone or backup reference claim external completion", async () => {

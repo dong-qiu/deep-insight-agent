@@ -315,6 +315,34 @@ function purgeRetainedMaterial(db: DB, reportId: string, now: string): void {
   })();
 }
 
+/** A distinct, governed expiry path for the destruction proof. It runs only
+ * after its own retention period, leaving the P0 redaction tombstone as the
+ * sole remaining record. */
+export function purgeExpiredRetentionTombstones(db: DB, now = new Date().toISOString()): number {
+  if (!tableExists(db, "integrity_retention_tombstone")) return 0;
+  return db.transaction(() => {
+    db.prepare("UPDATE integrity_retention_purge_guard SET enabled=1 WHERE id=1").run();
+    try {
+      const removed = db.prepare("DELETE FROM integrity_retention_tombstone WHERE tenant_id=? AND retain_until<=?").run(tenant, now).changes;
+      db.prepare(`DELETE FROM integrity_key_revocation WHERE tenant_id=? AND key_id NOT IN (
+        SELECT manifest_key_id FROM artifact_manifest WHERE tenant_id=? AND manifest_key_id IS NOT NULL
+        UNION SELECT anchor_key_id FROM artifact_manifest WHERE tenant_id=? AND anchor_key_id IS NOT NULL
+        UNION SELECT key_id FROM integrity_daily_root WHERE tenant_id=?
+        UNION SELECT key_id FROM integrity_retention_tombstone WHERE tenant_id=?
+      )`).run(tenant, tenant, tenant, tenant, tenant);
+      db.prepare(`DELETE FROM integrity_signing_key WHERE tenant_id=? AND key_id NOT IN (
+        SELECT manifest_key_id FROM artifact_manifest WHERE tenant_id=? AND manifest_key_id IS NOT NULL
+        UNION SELECT anchor_key_id FROM artifact_manifest WHERE tenant_id=? AND anchor_key_id IS NOT NULL
+        UNION SELECT key_id FROM integrity_daily_root WHERE tenant_id=?
+        UNION SELECT key_id FROM integrity_retention_tombstone WHERE tenant_id=?
+      )`).run(tenant, tenant, tenant, tenant, tenant);
+      return removed;
+    } finally {
+      db.prepare("UPDATE integrity_retention_purge_guard SET enabled=0 WHERE id=1").run();
+    }
+  })();
+}
+
 /** Complete destruction only after report/archive, verification-material and
  * durable backup/registry retention obligations have all ended. */
 export function destroyRetainedReport(db: DB, input: { report_id: string; actor_id: string; signer: AnchorSigner; now?: string; deleteFiles?: (bodyPath: string) => void }): RetentionResult {

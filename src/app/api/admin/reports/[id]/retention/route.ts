@@ -2,6 +2,7 @@
  * worker-only: they require verified backup evidence and signing authority. */
 import { NextResponse } from "next/server";
 import { requireAdminActor } from "../../../../../../lib/auth-guard.js";
+import { appendAudit } from "../../../../../../lib/db/audit.js";
 import { getDb } from "../../../../../../lib/db/index.js";
 import { recordLegalHold, requestReportDeletion, retentionConclusionForAdmin } from "../../../../../../lib/db/integrity-lifecycle.js";
 
@@ -17,11 +18,16 @@ const notFound = (): Response => NextResponse.json({ error: "not_found" }, { sta
  * boundary so adding tenants cannot accidentally turn a request field into an
  * unscoped database lookup. */
 function tenantAllowed(value: unknown): boolean {
-  return value === undefined || value === "default";
+  return value === undefined;
+}
+
+function denied(): Response {
+  try { appendAudit(getDb(), { action: "retention_lifecycle_denied", target: "retention_lifecycle", detail: { reason_code: "authorization_denied", target_type: "report", tenant: "default" } }); } catch { /* 404 remains authoritative */ }
+  return notFound();
 }
 
 export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }): Promise<Response> {
-  if (!await requireAdminActor()) return notFound();
+  if (!await requireAdminActor()) return denied();
   const { id } = await params;
   if (!validId(id)) return notFound();
   const conclusion = retentionConclusionForAdmin(getDb(), id);
@@ -30,10 +36,10 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
 
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }): Promise<Response> {
   const actor = await requireAdminActor();
-  if (!actor) return notFound();
+  if (!actor) return denied();
   const { id } = await params;
   const body = await request.json().catch(() => null) as Record<string, unknown> | null;
-  if (!validId(id) || !body || !tenantAllowed(body.tenant_id)) return notFound();
+  if (!validId(id) || !body || !tenantAllowed(body.tenant_id)) return denied();
 
   if (body.action === "place_hold" || body.action === "release_hold") {
     if (!validId(body.hold_id) || !validReason(body.reason_code)) return NextResponse.json({ error: "invalid_retention_request" }, { status: 400 });
@@ -41,7 +47,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       report_id: id, hold_id: body.hold_id, action: body.action === "place_hold" ? "placed" : "released",
       actor_id: actor.id, reason_code: body.reason_code,
     });
-    return recorded ? NextResponse.json({ ok: true }) : notFound();
+    if (!recorded) return notFound();
+    appendAudit(getDb(), { actor: actor.id, action: "retention_legal_hold_recorded", target: "retention_lifecycle", detail: { allowed: true, target_type: "report", tenant: "default", action: body.action } });
+    return NextResponse.json({ ok: true });
   }
 
   if (body.action === "request_deletion") {
@@ -49,7 +57,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     const result = requestReportDeletion(getDb(), {
       report_id: id, actor_id: actor.id, readable_until: body.readable_until, archive_until: body.archive_until,
     });
-    return result.kind === "not_found" ? notFound() : NextResponse.json({ ok: true, result: result.kind });
+    if (result.kind === "not_found") return notFound();
+    appendAudit(getDb(), { actor: actor.id, action: "retention_deletion_requested", target: "retention_lifecycle", detail: { allowed: true, target_type: "report", tenant: "default", result: result.kind } });
+    return NextResponse.json({ ok: true, result: result.kind });
   }
 
   return NextResponse.json({ error: "invalid_retention_request" }, { status: 400 });

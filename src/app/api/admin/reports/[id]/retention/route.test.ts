@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({ actor: vi.fn(), db: vi.fn(), conclusion: vi.fn(), hold: vi.fn(), deletion: vi.fn() }));
+const mocks = vi.hoisted(() => ({ actor: vi.fn(), db: vi.fn(), audit: vi.fn(), conclusion: vi.fn(), hold: vi.fn(), deletion: vi.fn() }));
 vi.mock("../../../../../../lib/auth-guard.js", () => ({ requireAdminActor: mocks.actor }));
+vi.mock("../../../../../../lib/db/audit.js", () => ({ appendAudit: mocks.audit }));
 vi.mock("../../../../../../lib/db/index.js", () => ({ getDb: mocks.db }));
 vi.mock("../../../../../../lib/db/integrity-lifecycle.js", () => ({
   retentionConclusionForAdmin: mocks.conclusion, recordLegalHold: mocks.hold, requestReportDeletion: mocks.deletion,
@@ -32,8 +33,10 @@ describe("report retention lifecycle handler", () => {
     mocks.actor.mockResolvedValueOnce(null);
     expect((await GET(new Request("http://x"), { params })).status).toBe(404);
     expect((await post({ action: "place_hold", tenant_id: "other", hold_id: "hold_123", reason_code: "legal_request" })).status).toBe(404);
+    expect((await post({ action: "place_hold", tenant_id: "default", hold_id: "hold_123", reason_code: "legal_request" })).status).toBe(404);
     mocks.conclusion.mockReturnValueOnce(null);
     expect((await GET(new Request("http://x"), { params })).status).toBe(404);
+    expect(mocks.audit).toHaveBeenCalledWith({ db: true }, expect.objectContaining({ action: "retention_lifecycle_denied", detail: expect.objectContaining({ reason_code: "authorization_denied" }) }));
   });
 
   it("executes an admin lifecycle request with a server-owned actor and tenant", async () => {
