@@ -400,6 +400,12 @@ CREATE TRIGGER integrity_retention_completion_no_update BEFORE UPDATE ON integri
 CREATE TRIGGER integrity_retention_completion_no_delete BEFORE DELETE ON integrity_retention_completion WHEN (SELECT enabled FROM integrity_retention_purge_guard WHERE id=1) = 0 BEGIN SELECT RAISE(ABORT, 'integrity_retention_completion is append-only'); END;
 `;
 
+/** P1d review repair follow-up. Bind the completion to the exact immutable
+ * registry envelope rather than merely its local locator. */
+export const INTEGRITY_LIFECYCLE_REGISTRY_PROOF_SCHEMA_SQL = `
+ALTER TABLE integrity_retention_completion ADD COLUMN registry_payload_hash TEXT NOT NULL DEFAULT '';
+`;
+
 /** P1b-2 dashboard facts. These are isolated from source-credit facts and report reads. */
 export const P1_METRICS_SCHEMA_SQL = `
 CREATE TABLE funnel_event (

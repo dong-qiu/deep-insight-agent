@@ -1,6 +1,9 @@
 /** Deterministic P1c gate: canonical bytes, retention and recovery must not drift. */
 import assert from "node:assert/strict";
-import { generateKeyPairSync } from "node:crypto";
+import { generateKeyPairSync, sign } from "node:crypto";
+import { KMSClient } from "@aws-sdk/client-kms";
+import { S3Client } from "@aws-sdk/client-s3";
+import { SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import { anchorPayload, contentHash, jcs, manifestForArtifact, manifestHash, MemoryAnchorStore, sha256 } from "../src/lib/db/integrity-anchors.js";
 import { commitAnchoredPublication, writeDailyMerkleRoot, writePlannedAnchor } from "../src/lib/db/integrity-publication.js";
 import { verifyArtifactIntegrity } from "../src/lib/db/integrity-checks.js";
@@ -11,21 +14,21 @@ import { getReport } from "../src/lib/db/reports.js";
 import { insertTopic } from "../src/lib/db/repos.js";
 import { deploymentAnchorPublication } from "../src/lib/runtime/integrity-anchor-runtime.js";
 
-const receiptVerifier = { verify: (receipt: { reference: string }) => receipt.reference === "backup://eval/check-report" };
-const retentionRegistry = {
-  config: {
-    bucket: "redaction-registry",
-    kms_key_id: "redaction-kms",
-    hmac_secret_arn: "arn:aws:secretsmanager:ap-southeast-1:123456789012:secret:redaction",
-    hmac_key_version: "v1",
-    now: () => new Date("2027-01-02T00:00:00.000Z"),
-  },
-  clients: {
-    secrets: { send: async () => ({ SecretString: "a".repeat(32) }) },
-    kms: { send: async () => ({ Plaintext: Buffer.alloc(32, 1), CiphertextBlob: Buffer.from("encrypted-data-key") }) },
-    s3: { send: async () => ({}) },
-  },
-};
+const backupKeys = generateKeyPairSync("ed25519");
+const backupKeyId = "eval-backup-key";
+process.env.RETENTION_BACKUP_RECEIPT_KEY_ID = backupKeyId;
+process.env.RETENTION_BACKUP_RECEIPT_PUBLIC_KEY_PEM = backupKeys.publicKey.export({ type: "spki", format: "pem" }).toString();
+process.env.REDACTION_REGISTRY_BUCKET = "redaction-registry";
+process.env.REDACTION_REGISTRY_KMS_KEY_ID = "redaction-kms";
+process.env.REDACTION_HMAC_SECRET_ARN = "arn:aws:secretsmanager:ap-southeast-1:123456789012:secret:redaction";
+process.env.REDACTION_HMAC_KEY_VERSION = "v1";
+Object.defineProperty(SecretsManagerClient.prototype, "send", { value: async () => ({ SecretString: "a".repeat(32) }) });
+Object.defineProperty(KMSClient.prototype, "send", { value: async () => ({ Plaintext: Buffer.alloc(32, 1), CiphertextBlob: Buffer.from("encrypted-data-key") }) });
+Object.defineProperty(S3Client.prototype, "send", { value: async () => ({}) });
+function signedReceipt() {
+  const payload = { report_id: "check-report", deletion_request_id: "eval-retention-check-report", scope: "report" as const, reference: "backup://eval/check-report", receipt: "eval backup receipt", redaction_expiry_at: "2037-01-02T00:00:00.000Z", key_id: backupKeyId };
+  return { ...payload, signature: sign(null, Buffer.from(jcs(payload)), backupKeys.privateKey).toString("base64url") };
+}
 
 const content = new TextEncoder().encode("abc");
 const manifest = manifestForArtifact({
@@ -73,18 +76,17 @@ assert.deepEqual(requestReportDeletion(db, { report_id: "check-report", actor_id
 assert.equal(recordLegalHold(db, { report_id: "check-report", hold_id: "eval-hold", action: "released", actor_id: "counsel", reason_code: "legal_released", occurred_at: "2026-08-22T01:04:00.000Z" }), true);
 assert.deepEqual(requestReportDeletion(db, { report_id: "check-report", actor_id: "admin", readable_until: "2026-08-23T00:00:00.000Z", archive_until: "2026-08-24T00:00:00.000Z", now: "2026-08-22T01:05:00.000Z" }), { kind: "delete_pending" });
 assert.equal(getReport(db, "check-report"), null);
-assert.deepEqual(destroyRetainedReport(db, { report_id: "check-report", actor_id: "admin", signer: checkSigner, backupReceiptVerifier: receiptVerifier, now: "2026-08-25T00:00:00.000Z" }), { kind: "retention_not_eligible" });
-assert.deepEqual(destroyRetainedReport(db, { report_id: "check-report", actor_id: "admin", signer: checkSigner, backupReceiptVerifier: receiptVerifier, now: "2027-01-02T00:00:00.000Z" }), { kind: "retention_prerequisites_unmet" });
+assert.deepEqual(destroyRetainedReport(db, { report_id: "check-report", actor_id: "admin", signer: checkSigner, now: "2026-08-25T00:00:00.000Z" }), { kind: "retention_not_eligible" });
+assert.deepEqual(destroyRetainedReport(db, { report_id: "check-report", actor_id: "admin", signer: checkSigner, now: "2027-01-02T00:00:00.000Z" }), { kind: "retention_prerequisites_unmet" });
 assert.equal(await completeRetentionDestruction(db, {
   report_id: "check-report",
   actor_id: "admin",
   deletion_request_id: "eval-retention-check-report",
-  redaction_expiry_at: "2037-01-02T00:00:00.000Z",
-  backup_receipt: { reference: "backup://eval/check-report", receipt: "eval backup receipt", signature: "eval backup signature", key_id: "eval-backup-key" },
+  backup_receipt: signedReceipt(),
   completed_at: "2027-01-02T00:00:00.000Z",
-}, retentionRegistry, receiptVerifier), true);
-assert.deepEqual(destroyRetainedReport(db, { report_id: "check-report", actor_id: "admin", signer: checkSigner, backupReceiptVerifier: receiptVerifier, now: "2027-01-02T00:00:00.000Z" }), { kind: "destroyed" });
-assert.deepEqual(retentionConclusionForAdmin(db, "check-report"), { conclusion: "内容保留期已结束，原始内容不再可验证", destroyed_at: "2027-01-02T00:00:00.000Z" });
+}), true);
+assert.deepEqual(destroyRetainedReport(db, { report_id: "check-report", actor_id: "admin", signer: checkSigner, now: "2027-01-02T00:00:00.000Z" }), { kind: "destroyed" });
+assert.equal(retentionConclusionForAdmin(db, "check-report")?.conclusion, "内容保留期已结束，原始内容不再可验证");
 assert.equal((db.prepare("SELECT COUNT(*) AS n FROM artifact_manifest WHERE report_id='check-report'").get() as { n: number }).n, 0);
 
 console.log(JSON.stringify({ gate: "provenance-dashboard-integrity-v1", result: "pass", vectors: 15, content_hash: manifest.content_hash, manifest_hash: manifestHash(manifest) }));

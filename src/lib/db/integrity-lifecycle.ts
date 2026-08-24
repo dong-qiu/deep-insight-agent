@@ -3,8 +3,11 @@
  * boundary: report readers only consult `isReportReaderVisible`; they never
  * run an integrity check, read an anchor, or wait on this module's work.
  */
-import { randomUUID, sign } from "node:crypto";
+import { createPublicKey, randomUUID, sign, verify } from "node:crypto";
 import { rmSync } from "node:fs";
+import { KMSClient } from "@aws-sdk/client-kms";
+import { S3Client } from "@aws-sdk/client-s3";
+import { SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import type { DB } from "./index.js";
 import { jcs, sha256, type AnchorSigner } from "./integrity-anchors.js";
 import { registerAnchorSigningKey } from "./integrity-publication.js";
@@ -32,21 +35,20 @@ interface RetentionCompletionRow {
   backup_receipt_hash: string;
   backup_receipt_signature: string;
   backup_receipt_key_id: string;
+  registry_payload_hash: string;
   registry_record_id: string;
   registry_ref: string;
 }
 
 export interface BackupRetentionReceipt {
+  report_id: string;
+  deletion_request_id: string;
+  scope: "report";
   reference: string;
   receipt: string;
+  redaction_expiry_at: string;
   signature: string;
   key_id: string;
-}
-
-/** This verifier is supplied by the backup integration with its configured
- * trust anchor; callers cannot replace it with an unverified DB assertion. */
-export interface BackupRetentionReceiptVerifier {
-  verify(receipt: BackupRetentionReceipt): boolean;
 }
 
 export type RetentionResult =
@@ -142,6 +144,41 @@ function receiptHash(receipt: BackupRetentionReceipt): string {
   return sha256(new TextEncoder().encode(jcs(receipt)));
 }
 
+function requiredRuntimeSetting(name: string): string {
+  const value = process.env[name];
+  if (!value?.trim()) throw new Error(`retention_runtime_setting_missing:${name}`);
+  return value;
+}
+
+function backupReceiptTrust(): { key_id: string; public_key: ReturnType<typeof createPublicKey> } {
+  return {
+    key_id: requiredRuntimeSetting("RETENTION_BACKUP_RECEIPT_KEY_ID"),
+    public_key: createPublicKey(requiredRuntimeSetting("RETENTION_BACKUP_RECEIPT_PUBLIC_KEY_PEM")),
+  };
+}
+
+function retentionRegistryRuntime(): { config: RedactionRegistryConfig; clients: RedactionRegistryClients } {
+  return {
+    config: {
+      bucket: requiredRuntimeSetting("REDACTION_REGISTRY_BUCKET"),
+      kms_key_id: requiredRuntimeSetting("REDACTION_REGISTRY_KMS_KEY_ID"),
+      hmac_secret_arn: requiredRuntimeSetting("REDACTION_HMAC_SECRET_ARN"),
+      hmac_key_version: requiredRuntimeSetting("REDACTION_HMAC_KEY_VERSION"),
+    },
+    clients: { s3: new S3Client({}), kms: new KMSClient({}), secrets: new SecretsManagerClient({}) },
+  };
+}
+
+function verifyBackupReceipt(receipt: BackupRetentionReceipt): boolean {
+  const trust = backupReceiptTrust();
+  if (receipt.key_id !== trust.key_id) return false;
+  try {
+    return verify(null, Buffer.from(jcs({ report_id: receipt.report_id, deletion_request_id: receipt.deletion_request_id, scope: receipt.scope, reference: receipt.reference, receipt: receipt.receipt, redaction_expiry_at: receipt.redaction_expiry_at, key_id: receipt.key_id })), trust.public_key, Buffer.from(receipt.signature, "base64url"));
+  } catch {
+    return false;
+  }
+}
+
 /**
  * The controlled completion path. It verifies a backup-provider receipt and
  * uses the conditional-write registry workflow; only its post-write callback
@@ -153,20 +190,20 @@ export async function completeRetentionDestruction(
     report_id: string;
     actor_id: string;
     deletion_request_id: string;
-    redaction_expiry_at: string;
     backup_receipt: BackupRetentionReceipt;
     completed_at?: string;
   },
-  registry: { config: RedactionRegistryConfig; clients: RedactionRegistryClients },
-  backupReceiptVerifier: BackupRetentionReceiptVerifier,
 ): Promise<boolean> {
   const completedAt = input.completed_at ?? new Date().toISOString();
   const receipt = input.backup_receipt;
-  if (!receipt.reference.trim() || !receipt.receipt.trim() || !receipt.signature.trim() || !receipt.key_id.trim()) {
+  if (receipt.report_id !== input.report_id || receipt.deletion_request_id !== input.deletion_request_id || receipt.scope !== "report" ||
+    !receipt.reference.trim() || !receipt.receipt.trim() || !receipt.signature.trim() || !receipt.key_id.trim() || !Number.isFinite(Date.parse(receipt.redaction_expiry_at)) ||
+    Date.parse(receipt.redaction_expiry_at) <= Date.parse(completedAt)) {
     throw new Error("retention_backup_receipt_invalid");
   }
-  if (!backupReceiptVerifier.verify(receipt)) throw new Error("retention_backup_receipt_unverified");
+  if (!verifyBackupReceipt(receipt)) throw new Error("retention_backup_receipt_unverified");
   if (!lifecycleRow(db, input.report_id)) return false;
+  const registry = retentionRegistryRuntime();
   const existingRedaction = db.prepare(`SELECT record_id,registry_ref FROM provenance_redaction
     WHERE entity_key=? AND scope='report' AND reason_code='retention_expired'`).get(`report:${input.report_id}`) as { record_id: string; registry_ref: string } | undefined;
   if (existingRedaction) {
@@ -182,24 +219,30 @@ export async function completeRetentionDestruction(
     entity_key: `report:${input.report_id}`,
     scope: "report",
     reason_code: "retention_expired",
-    expiry_at: input.redaction_expiry_at,
+    expiry_at: receipt.redaction_expiry_at,
   }, registry.config, registry.clients, (registered) => {
+    const registryProof = db.prepare(`SELECT registry_payload FROM provenance_redaction_request
+      WHERE record_id=? AND status='registered' AND ? = 's3://' || ? || '/' || registry_key`).get(
+      registered.record_id, registered.registry_ref, registry.config.bucket,
+    ) as { registry_payload: string } | undefined;
+    if (!registryProof) throw new Error("retention_registry_completion_missing");
+    const registryPayloadHash = sha256(new TextEncoder().encode(registryProof.registry_payload));
     const result = db.prepare(`INSERT OR IGNORE INTO integrity_retention_completion(
       tenant_id,report_id,backup_reference,backup_receipt,backup_receipt_hash,backup_receipt_signature,backup_receipt_key_id,
-      registry_record_id,registry_ref,actor_id,completed_at
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(
-      tenant, input.report_id, receipt.reference, receipt.receipt, receiptHash(receipt), receipt.signature, receipt.key_id,
-      registered.record_id, registered.registry_ref, input.actor_id, completedAt,
+      registry_record_id,registry_ref,registry_payload_hash,actor_id,completed_at
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      tenant, input.report_id, receipt.reference, jcs(receipt), receiptHash(receipt), receipt.signature, receipt.key_id,
+      registered.record_id, registered.registry_ref, registryPayloadHash, input.actor_id, completedAt,
     );
     if (result.changes) {
       written = true;
       return;
     }
-    const existing = db.prepare(`SELECT backup_reference,backup_receipt,backup_receipt_hash,backup_receipt_signature,backup_receipt_key_id,registry_record_id,registry_ref
+    const existing = db.prepare(`SELECT backup_reference,backup_receipt,backup_receipt_hash,backup_receipt_signature,backup_receipt_key_id,registry_record_id,registry_ref,registry_payload_hash
       FROM integrity_retention_completion WHERE tenant_id=? AND report_id=?`).get(tenant, input.report_id) as RetentionCompletionRow;
-    if (existing.backup_reference !== receipt.reference || existing.backup_receipt !== receipt.receipt ||
+    if (existing.backup_reference !== receipt.reference || existing.backup_receipt !== jcs(receipt) ||
       existing.backup_receipt_hash !== receiptHash(receipt) || existing.backup_receipt_signature !== receipt.signature ||
-      existing.backup_receipt_key_id !== receipt.key_id || existing.registry_record_id !== registered.record_id || existing.registry_ref !== registered.registry_ref) {
+      existing.backup_receipt_key_id !== receipt.key_id || existing.registry_record_id !== registered.record_id || existing.registry_ref !== registered.registry_ref || existing.registry_payload_hash !== registryPayloadHash) {
       throw new Error("retention_completion_conflict");
     }
   });
@@ -252,7 +295,7 @@ function purgeRetainedMaterial(db: DB, reportId: string, now: string): void {
 
 /** Complete destruction only after report/archive, verification-material and
  * durable backup/registry retention obligations have all ended. */
-export function destroyRetainedReport(db: DB, input: { report_id: string; actor_id: string; signer: AnchorSigner; backupReceiptVerifier: BackupRetentionReceiptVerifier; now?: string; deleteFiles?: (bodyPath: string) => void }): RetentionResult {
+export function destroyRetainedReport(db: DB, input: { report_id: string; actor_id: string; signer: AnchorSigner; now?: string; deleteFiles?: (bodyPath: string) => void }): RetentionResult {
   const now = input.now ?? new Date().toISOString();
   const lifecycle = lifecycleRow(db, input.report_id);
   if (!lifecycle) return db.prepare("SELECT 1 FROM report WHERE id=?").get(input.report_id) ? { kind: "retention_not_eligible" } : { kind: "not_found" };
@@ -270,15 +313,19 @@ export function destroyRetainedReport(db: DB, input: { report_id: string; actor_
     db.transaction(() => audit(db, input.report_id, "retention_not_eligible", "retention_window_active", now, input.actor_id))();
     return { kind: "retention_not_eligible" };
   }
-  const completion = db.prepare(`SELECT backup_reference,backup_receipt,backup_receipt_hash,backup_receipt_signature,backup_receipt_key_id,registry_record_id,registry_ref
+  const completion = db.prepare(`SELECT backup_reference,backup_receipt,backup_receipt_hash,backup_receipt_signature,backup_receipt_key_id,registry_record_id,registry_ref,registry_payload_hash
     FROM integrity_retention_completion WHERE tenant_id=? AND report_id=?`).get(tenant, input.report_id) as RetentionCompletionRow | undefined;
-  const receipt = completion && {
-    reference: completion.backup_reference,
-    receipt: completion.backup_receipt,
-    signature: completion.backup_receipt_signature,
-    key_id: completion.backup_receipt_key_id,
-  };
-  if (!completion || !receipt || completion.backup_receipt_hash !== receiptHash(receipt) || !input.backupReceiptVerifier.verify(receipt)) {
+  let receipt: BackupRetentionReceipt | undefined;
+  if (completion) {
+    try { receipt = JSON.parse(completion.backup_receipt) as BackupRetentionReceipt; } catch { receipt = undefined; }
+  }
+  const registryProof = completion && db.prepare(`SELECT request.registry_payload FROM provenance_redaction AS redaction
+    JOIN provenance_redaction_request AS request ON request.record_id=redaction.record_id
+    WHERE redaction.record_id=? AND redaction.entity_key=? AND redaction.scope='report' AND redaction.reason_code='retention_expired'
+      AND redaction.registry_ref=? AND redaction.effective_at<=? AND redaction.expiry_at>? AND request.status='registered'
+      AND request.registry_payload IS NOT NULL`).get(completion.registry_record_id, `report:${input.report_id}`, completion.registry_ref, now, now) as { registry_payload: string } | undefined;
+  if (!completion || !receipt || receipt.report_id !== input.report_id || receipt.scope !== "report" || completion.backup_receipt_hash !== receiptHash(receipt) || !verifyBackupReceipt(receipt) ||
+    !registryProof || completion.registry_payload_hash !== sha256(new TextEncoder().encode(registryProof.registry_payload))) {
     db.transaction(() => audit(db, input.report_id, "retention_not_eligible", "retention_prerequisites_unmet", now, input.actor_id))();
     return { kind: "retention_prerequisites_unmet" };
   }
