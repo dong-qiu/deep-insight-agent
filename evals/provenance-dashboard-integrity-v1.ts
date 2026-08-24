@@ -4,11 +4,12 @@ import { generateKeyPairSync } from "node:crypto";
 import { anchorPayload, contentHash, jcs, manifestForArtifact, manifestHash, MemoryAnchorStore, sha256 } from "../src/lib/db/integrity-anchors.js";
 import { commitAnchoredPublication, writeDailyMerkleRoot, writePlannedAnchor } from "../src/lib/db/integrity-publication.js";
 import { verifyArtifactIntegrity } from "../src/lib/db/integrity-checks.js";
-import { destroyRetainedReport, recordLegalHold, requestReportDeletion, retentionConclusionForAdmin } from "../src/lib/db/integrity-lifecycle.js";
+import { destroyRetainedReport, recordLegalHold, recordRetentionDestructionCompletion, requestReportDeletion, retentionConclusionForAdmin } from "../src/lib/db/integrity-lifecycle.js";
 import { openDb } from "../src/lib/db/index.js";
 import { applyProvenanceMigrations } from "../src/lib/db/provenance-migrations.js";
 import { getReport } from "../src/lib/db/reports.js";
 import { insertTopic } from "../src/lib/db/repos.js";
+import { applyRedactionTombstone } from "../src/lib/db/redaction.js";
 import { deploymentAnchorPublication } from "../src/lib/runtime/integrity-anchor-runtime.js";
 
 const content = new TextEncoder().encode("abc");
@@ -58,7 +59,11 @@ assert.equal(recordLegalHold(db, { report_id: "check-report", hold_id: "eval-hol
 assert.deepEqual(requestReportDeletion(db, { report_id: "check-report", actor_id: "admin", readable_until: "2026-08-23T00:00:00.000Z", archive_until: "2026-08-24T00:00:00.000Z", now: "2026-08-22T01:05:00.000Z" }), { kind: "delete_pending" });
 assert.equal(getReport(db, "check-report"), null);
 assert.deepEqual(destroyRetainedReport(db, { report_id: "check-report", actor_id: "admin", signer: checkSigner, now: "2026-08-25T00:00:00.000Z" }), { kind: "retention_not_eligible" });
+assert.deepEqual(destroyRetainedReport(db, { report_id: "check-report", actor_id: "admin", signer: checkSigner, now: "2027-01-02T00:00:00.000Z" }), { kind: "retention_prerequisites_unmet" });
+applyRedactionTombstone(db, { record_id: "eval-retention-redaction", entity_key: "report:check-report", scope: "report", reason_code: "retention_expired", effective_at: "2027-01-02T00:00:00.000Z", expiry_at: "2037-01-02T00:00:00.000Z", registry_ref: "records/2027/01/eval-retention-redaction.json" });
+assert.equal(recordRetentionDestructionCompletion(db, { report_id: "check-report", actor_id: "admin", backup_reference: "backup://eval/check-report", registry_record_id: "eval-retention-redaction", registry_ref: "records/2027/01/eval-retention-redaction.json", completed_at: "2027-01-02T00:00:00.000Z" }), true);
 assert.deepEqual(destroyRetainedReport(db, { report_id: "check-report", actor_id: "admin", signer: checkSigner, now: "2027-01-02T00:00:00.000Z" }), { kind: "destroyed" });
 assert.deepEqual(retentionConclusionForAdmin(db, "check-report"), { conclusion: "内容保留期已结束，原始内容不再可验证", destroyed_at: "2027-01-02T00:00:00.000Z" });
+assert.equal((db.prepare("SELECT COUNT(*) AS n FROM artifact_manifest WHERE report_id='check-report'").get() as { n: number }).n, 0);
 
 console.log(JSON.stringify({ gate: "provenance-dashboard-integrity-v1", result: "pass", vectors: 15, content_hash: manifest.content_hash, manifest_hash: manifestHash(manifest) }));

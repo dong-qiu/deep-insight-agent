@@ -15,7 +15,7 @@ const TOMBSTONE_DOMAIN = "retention-tombstone-v1\0";
 type LifecycleState = "active" | "delete_pending" | "destroyed";
 type HoldAction = "placed" | "released";
 
-interface LifecycleRow { reader_state: LifecycleState; readable_until: string; archive_until: string; destroyed_at: string | null }
+interface LifecycleRow { reader_state: LifecycleState; readable_until: string; archive_until: string; artifact_body_path: string | null; destroyed_at: string | null }
 interface ArtifactRow {
   artifact_id: string; artifact_version: string; anchor_object_key: string; manifest_hash: string;
   anchor_payload_hash: string | null; retain_until: string | null; last_outcome: string | null;
@@ -26,6 +26,7 @@ export type RetentionResult =
   | { kind: "delete_pending" }
   | { kind: "legal_hold" }
   | { kind: "retention_not_eligible" }
+  | { kind: "retention_prerequisites_unmet" }
   | { kind: "destroyed" }
   | { kind: "already_destroyed" };
 
@@ -34,7 +35,7 @@ function tableExists(db: DB, name: string): boolean {
 }
 
 function lifecycleRow(db: DB, reportId: string): LifecycleRow | undefined {
-  return db.prepare(`SELECT reader_state,readable_until,archive_until,destroyed_at
+  return db.prepare(`SELECT reader_state,readable_until,archive_until,artifact_body_path,destroyed_at
     FROM integrity_report_lifecycle WHERE tenant_id=? AND report_id=?`).get(tenant, reportId) as LifecycleRow | undefined;
 }
 
@@ -83,7 +84,7 @@ export function recordLegalHold(db: DB, input: { report_id: string; hold_id: str
 export function requestReportDeletion(db: DB, input: { report_id: string; actor_id: string; readable_until: string; archive_until: string; now?: string }): RetentionResult {
   const now = input.now ?? new Date().toISOString();
   if (!Number.isFinite(Date.parse(input.readable_until)) || !Number.isFinite(Date.parse(input.archive_until))) throw new Error("retention_window_invalid");
-  const report = db.prepare("SELECT 1 FROM report WHERE id=?").get(input.report_id);
+  const report = db.prepare("SELECT body_path FROM report WHERE id=?").get(input.report_id) as { body_path: string | null } | undefined;
   if (!report) return { kind: "not_found" };
   if (activeHolds(db, input.report_id).length) {
     db.transaction(() => audit(db, input.report_id, "deletion_blocked_legal_hold", "legal_hold_active", now, input.actor_id))();
@@ -92,10 +93,10 @@ export function requestReportDeletion(db: DB, input: { report_id: string; actor_
   const existing = lifecycleRow(db, input.report_id);
   if (existing?.reader_state === "destroyed") return { kind: "already_destroyed" };
   db.transaction(() => {
-    db.prepare(`INSERT INTO integrity_report_lifecycle(tenant_id,report_id,reader_state,readable_until,archive_until,delete_requested_at,destroyed_at)
-      VALUES (?,?,?,?,?,?,NULL)
-      ON CONFLICT(tenant_id,report_id) DO UPDATE SET reader_state='delete_pending',readable_until=excluded.readable_until,archive_until=excluded.archive_until,delete_requested_at=excluded.delete_requested_at`)
-      .run(tenant, input.report_id, "delete_pending", input.readable_until, input.archive_until, now);
+    db.prepare(`INSERT INTO integrity_report_lifecycle(tenant_id,report_id,reader_state,readable_until,archive_until,artifact_body_path,delete_requested_at,destroyed_at)
+      VALUES (?,?,?,?,?,?,?,NULL)
+      ON CONFLICT(tenant_id,report_id) DO UPDATE SET reader_state='delete_pending',readable_until=excluded.readable_until,archive_until=excluded.archive_until,artifact_body_path=excluded.artifact_body_path,delete_requested_at=excluded.delete_requested_at`)
+      .run(tenant, input.report_id, "delete_pending", input.readable_until, input.archive_until, report.body_path, now);
     // Withdraw all reader projections in the same transaction. The immutable
     // report row remains for controlled admin lifecycle operations.
     db.prepare("DELETE FROM report_index WHERE report_id=?").run(input.report_id);
@@ -106,15 +107,71 @@ export function requestReportDeletion(db: DB, input: { report_id: string; actor_
   return { kind: "delete_pending" };
 }
 
+/** Records that the external backup and P0 registry obligations are complete.
+ * The registry tombstone must already be durable; lifecycle code never claims
+ * an external registry write happened based only on caller input. */
+export function recordRetentionDestructionCompletion(db: DB, input: { report_id: string; actor_id: string; backup_reference: string; registry_record_id: string; registry_ref: string; completed_at?: string }): boolean {
+  const completedAt = input.completed_at ?? new Date().toISOString();
+  if (!input.backup_reference.trim()) throw new Error("retention_backup_reference_invalid");
+  if (!input.registry_record_id.trim() || !input.registry_ref.trim()) throw new Error("retention_registry_reference_invalid");
+  if (!lifecycleRow(db, input.report_id)) return false;
+  const redaction = db.prepare(`SELECT 1 FROM provenance_redaction
+    WHERE record_id=? AND entity_key=? AND scope='report' AND reason_code='retention_expired' AND registry_ref=?`).get(input.registry_record_id, `report:${input.report_id}`, input.registry_ref);
+  if (!redaction) throw new Error("retention_registry_completion_missing");
+  const result = db.prepare(`INSERT OR IGNORE INTO integrity_retention_completion(tenant_id,report_id,backup_reference,registry_record_id,registry_ref,actor_id,completed_at)
+    VALUES (?,?,?,?,?,?,?)`).run(tenant, input.report_id, input.backup_reference, input.registry_record_id, input.registry_ref, input.actor_id, completedAt);
+  if (result.changes) return true;
+  const existing = db.prepare(`SELECT backup_reference,registry_record_id,registry_ref FROM integrity_retention_completion
+    WHERE tenant_id=? AND report_id=?`).get(tenant, input.report_id) as { backup_reference: string; registry_record_id: string; registry_ref: string };
+  if (existing.backup_reference !== input.backup_reference || existing.registry_record_id !== input.registry_record_id || existing.registry_ref !== input.registry_ref) throw new Error("retention_completion_conflict");
+  return false;
+}
+
 function artifactRows(db: DB, reportId: string): ArtifactRow[] {
   return db.prepare(`SELECT m.artifact_id,m.artifact_version,m.anchor_object_key,m.manifest_hash,m.anchor_payload_hash,m.retain_until,
     (SELECT c.outcome FROM integrity_check c WHERE c.tenant_id=m.tenant_id AND c.artifact_id=m.artifact_id AND c.artifact_version=m.artifact_version ORDER BY c.checked_at DESC LIMIT 1) AS last_outcome
     FROM artifact_manifest m WHERE m.tenant_id=? AND m.report_id=? ORDER BY m.artifact_id,m.artifact_version`).all(tenant, reportId) as ArtifactRow[];
 }
 
-/** Complete destruction only after report/archive AND verification-material
- * retention ends. Manifest/key/anchor records are not deleted here: later
- * evidence garbage collection is a separate, explicitly governed operation. */
+function purgeRetainedMaterial(db: DB, reportId: string, now: string): void {
+  db.transaction(() => {
+    db.prepare("UPDATE integrity_retention_purge_guard SET enabled=1 WHERE id=1").run();
+    try {
+      db.prepare(`DELETE FROM integrity_check_alert_dedup WHERE tenant_id=? AND (artifact_id,artifact_version) IN
+        (SELECT artifact_id,artifact_version FROM artifact_manifest WHERE tenant_id=? AND report_id=?)`).run(tenant, tenant, reportId);
+      db.prepare(`DELETE FROM integrity_check WHERE tenant_id=? AND (artifact_id,artifact_version) IN
+        (SELECT artifact_id,artifact_version FROM artifact_manifest WHERE tenant_id=? AND report_id=?)`).run(tenant, tenant, reportId);
+      db.prepare(`DELETE FROM integrity_audit_event WHERE tenant_id=? AND (artifact_id,artifact_version) IN
+        (SELECT artifact_id,artifact_version FROM artifact_manifest WHERE tenant_id=? AND report_id=?)`).run(tenant, tenant, reportId);
+      db.prepare("DELETE FROM generation_anchor_effect WHERE tenant_id=? AND report_id=?").run(tenant, reportId);
+      db.prepare("DELETE FROM artifact_manifest WHERE tenant_id=? AND report_id=?").run(tenant, reportId);
+      db.prepare("DELETE FROM generation_effect WHERE report_id=?").run(reportId);
+      db.prepare("DELETE FROM integrity_daily_root WHERE tenant_id=? AND retain_until IS NOT NULL AND retain_until <= ?").run(tenant, now);
+      db.prepare(`DELETE FROM integrity_retention_tombstone WHERE tenant_id=? AND report_id=?`).run(tenant, reportId);
+      db.prepare(`DELETE FROM integrity_lifecycle_audit WHERE tenant_id=? AND report_id=?`).run(tenant, reportId);
+      db.prepare(`DELETE FROM integrity_legal_hold_event WHERE tenant_id=? AND report_id=?`).run(tenant, reportId);
+      db.prepare(`DELETE FROM integrity_key_revocation WHERE tenant_id=? AND key_id NOT IN (
+        SELECT manifest_key_id FROM artifact_manifest WHERE tenant_id=? AND manifest_key_id IS NOT NULL
+        UNION SELECT anchor_key_id FROM artifact_manifest WHERE tenant_id=? AND anchor_key_id IS NOT NULL
+        UNION SELECT key_id FROM integrity_daily_root WHERE tenant_id=?
+        UNION SELECT key_id FROM integrity_retention_tombstone WHERE tenant_id=?
+      )`).run(tenant, tenant, tenant, tenant, tenant);
+      db.prepare(`DELETE FROM integrity_signing_key WHERE tenant_id=? AND key_id NOT IN (
+        SELECT manifest_key_id FROM artifact_manifest WHERE tenant_id=? AND manifest_key_id IS NOT NULL
+        UNION SELECT anchor_key_id FROM artifact_manifest WHERE tenant_id=? AND anchor_key_id IS NOT NULL
+        UNION SELECT key_id FROM integrity_daily_root WHERE tenant_id=?
+        UNION SELECT key_id FROM integrity_retention_tombstone WHERE tenant_id=?
+      )`).run(tenant, tenant, tenant, tenant, tenant);
+      db.prepare("DELETE FROM integrity_retention_completion WHERE tenant_id=? AND report_id=?").run(tenant, reportId);
+      db.prepare("DELETE FROM integrity_report_lifecycle WHERE tenant_id=? AND report_id=?").run(tenant, reportId);
+    } finally {
+      db.prepare("UPDATE integrity_retention_purge_guard SET enabled=0 WHERE id=1").run();
+    }
+  })();
+}
+
+/** Complete destruction only after report/archive, verification-material and
+ * durable backup/registry retention obligations have all ended. */
 export function destroyRetainedReport(db: DB, input: { report_id: string; actor_id: string; signer: AnchorSigner; now?: string; deleteFiles?: (bodyPath: string) => void }): RetentionResult {
   const now = input.now ?? new Date().toISOString();
   const lifecycle = lifecycleRow(db, input.report_id);
@@ -133,6 +190,11 @@ export function destroyRetainedReport(db: DB, input: { report_id: string; actor_
     db.transaction(() => audit(db, input.report_id, "retention_not_eligible", "retention_window_active", now, input.actor_id))();
     return { kind: "retention_not_eligible" };
   }
+  const completion = db.prepare("SELECT 1 FROM integrity_retention_completion WHERE tenant_id=? AND report_id=?").get(tenant, input.report_id);
+  if (!completion) {
+    db.transaction(() => audit(db, input.report_id, "retention_not_eligible", "retention_prerequisites_unmet", now, input.actor_id))();
+    return { kind: "retention_prerequisites_unmet" };
+  }
   const payload = {
     tombstone_schema_version: "retention-tombstone-v1",
     report_id: input.report_id,
@@ -142,8 +204,7 @@ export function destroyRetainedReport(db: DB, input: { report_id: string; actor_
   const canonical = jcs(payload);
   const payloadHash = sha256(new TextEncoder().encode(canonical));
   const signature = sign(null, Buffer.concat([Buffer.from(TOMBSTONE_DOMAIN), Buffer.from(canonical)]), input.signer.private_key).toString("base64url");
-  const report = db.prepare("SELECT body_path FROM report WHERE id=?").get(input.report_id) as { body_path: string | null } | undefined;
-  if (!report) return { kind: "not_found" };
+  if (!db.prepare("SELECT 1 FROM report WHERE id=?").get(input.report_id)) return { kind: "not_found" };
   // A rotated tombstone signer must have public verification material retained
   // before its signature becomes the only record of a destroyed report.
   registerAnchorSigningKey(db, input.signer);
@@ -157,19 +218,21 @@ export function destroyRetainedReport(db: DB, input: { report_id: string; actor_
     audit(db, input.report_id, "retention_tombstone_written", "retention_expired", now, input.actor_id);
   })();
   if (!written) return { kind: "already_destroyed" };
-  if (report.body_path) {
+  if (lifecycle.artifact_body_path) {
     const remove = input.deleteFiles ?? ((bodyPath: string) => {
       for (const ext of [".md", ".html"]) rmSync(`${bodyPath}${ext}`, { force: true });
     });
-    remove(report.body_path);
+    remove(lifecycle.artifact_body_path);
   }
+  purgeRetainedMaterial(db, input.report_id, now);
   return { kind: "destroyed" };
 }
 
 /** The only reader-safe admin conclusion after destruction. It intentionally
  * omits the signed payload, object locator, hashes, and signature. */
 export function retentionConclusionForAdmin(db: DB, reportId: string): { conclusion: string; destroyed_at: string } | null {
-  if (!tableExists(db, "integrity_retention_tombstone")) return null;
-  const row = db.prepare("SELECT destroyed_at FROM integrity_retention_tombstone WHERE tenant_id=? AND report_id=?").get(tenant, reportId) as { destroyed_at: string } | undefined;
+  if (!tableExists(db, "provenance_redaction")) return null;
+  const row = db.prepare(`SELECT effective_at AS destroyed_at FROM provenance_redaction
+    WHERE entity_key=? AND scope='report' AND reason_code='retention_expired'`).get(`report:${reportId}`) as { destroyed_at: string } | undefined;
   return row ? { conclusion: "内容保留期已结束，原始内容不再可验证", destroyed_at: row.destroyed_at } : null;
 }

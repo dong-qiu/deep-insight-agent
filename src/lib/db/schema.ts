@@ -323,6 +323,53 @@ CREATE TRIGGER integrity_lifecycle_audit_no_update BEFORE UPDATE ON integrity_li
 CREATE TRIGGER integrity_lifecycle_audit_no_delete BEFORE DELETE ON integrity_lifecycle_audit BEGIN SELECT RAISE(ABORT, 'integrity_lifecycle_audit is append-only'); END;
 `;
 
+/** P1d review repair.  Retention expiry is the sole governed exception to the
+ * append-only verification ledgers.  A durable backup/registry completion and
+ * an already-registered P0 redaction tombstone are required before the guard
+ * can be opened by the lifecycle operation. */
+export const INTEGRITY_LIFECYCLE_PURGE_SCHEMA_SQL = `
+ALTER TABLE integrity_report_lifecycle ADD COLUMN artifact_body_path TEXT;
+
+CREATE TABLE integrity_retention_completion (
+  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),
+  report_id TEXT NOT NULL REFERENCES report(id),
+  backup_reference TEXT NOT NULL,
+  registry_record_id TEXT NOT NULL,
+  registry_ref TEXT NOT NULL,
+  actor_id TEXT NOT NULL,
+  completed_at TEXT NOT NULL,
+  PRIMARY KEY(tenant_id,report_id)
+);
+
+CREATE TABLE integrity_retention_purge_guard (
+  id INTEGER PRIMARY KEY CHECK(id = 1),
+  enabled INTEGER NOT NULL CHECK(enabled IN (0,1))
+);
+INSERT INTO integrity_retention_purge_guard(id,enabled) VALUES (1,0);
+
+DROP TRIGGER artifact_manifest_no_delete;
+DROP TRIGGER integrity_audit_event_no_delete;
+DROP TRIGGER integrity_daily_root_no_delete;
+DROP TRIGGER integrity_signing_key_no_delete;
+DROP TRIGGER integrity_key_revocation_no_delete;
+DROP TRIGGER integrity_check_no_delete;
+DROP TRIGGER integrity_check_alert_dedup_no_delete;
+DROP TRIGGER integrity_legal_hold_event_no_delete;
+DROP TRIGGER integrity_retention_tombstone_no_delete;
+DROP TRIGGER integrity_lifecycle_audit_no_delete;
+
+CREATE TRIGGER artifact_manifest_no_delete BEFORE DELETE ON artifact_manifest WHEN (SELECT enabled FROM integrity_retention_purge_guard WHERE id=1) = 0 BEGIN SELECT RAISE(ABORT, 'artifact_manifest is append-only'); END;
+CREATE TRIGGER integrity_audit_event_no_delete BEFORE DELETE ON integrity_audit_event WHEN (SELECT enabled FROM integrity_retention_purge_guard WHERE id=1) = 0 BEGIN SELECT RAISE(ABORT, 'integrity_audit_event is append-only'); END;
+CREATE TRIGGER integrity_daily_root_no_delete BEFORE DELETE ON integrity_daily_root WHEN (SELECT enabled FROM integrity_retention_purge_guard WHERE id=1) = 0 BEGIN SELECT RAISE(ABORT, 'integrity_daily_root is append-only'); END;
+CREATE TRIGGER integrity_signing_key_no_delete BEFORE DELETE ON integrity_signing_key WHEN (SELECT enabled FROM integrity_retention_purge_guard WHERE id=1) = 0 BEGIN SELECT RAISE(ABORT, 'integrity_signing_key is append-only'); END;
+CREATE TRIGGER integrity_key_revocation_no_delete BEFORE DELETE ON integrity_key_revocation WHEN (SELECT enabled FROM integrity_retention_purge_guard WHERE id=1) = 0 BEGIN SELECT RAISE(ABORT, 'integrity_key_revocation is append-only'); END;
+CREATE TRIGGER integrity_check_no_delete BEFORE DELETE ON integrity_check WHEN (SELECT enabled FROM integrity_retention_purge_guard WHERE id=1) = 0 BEGIN SELECT RAISE(ABORT, 'integrity_check is append-only'); END;
+CREATE TRIGGER integrity_check_alert_dedup_no_delete BEFORE DELETE ON integrity_check_alert_dedup WHEN (SELECT enabled FROM integrity_retention_purge_guard WHERE id=1) = 0 BEGIN SELECT RAISE(ABORT, 'integrity_check_alert_dedup is append-only'); END;
+CREATE TRIGGER integrity_legal_hold_event_no_delete BEFORE DELETE ON integrity_legal_hold_event WHEN (SELECT enabled FROM integrity_retention_purge_guard WHERE id=1) = 0 BEGIN SELECT RAISE(ABORT, 'integrity_legal_hold_event is append-only'); END;
+CREATE TRIGGER integrity_retention_tombstone_no_delete BEFORE DELETE ON integrity_retention_tombstone WHEN (SELECT enabled FROM integrity_retention_purge_guard WHERE id=1) = 0 BEGIN SELECT RAISE(ABORT, 'integrity_retention_tombstone is append-only'); END;
+CREATE TRIGGER integrity_lifecycle_audit_no_delete BEFORE DELETE ON integrity_lifecycle_audit WHEN (SELECT enabled FROM integrity_retention_purge_guard WHERE id=1) = 0 BEGIN SELECT RAISE(ABORT, 'integrity_lifecycle_audit is append-only'); END;
+`;
+
 /** P1b-2 dashboard facts. These are isolated from source-credit facts and report reads. */
 export const P1_METRICS_SCHEMA_SQL = `
 CREATE TABLE funnel_event (

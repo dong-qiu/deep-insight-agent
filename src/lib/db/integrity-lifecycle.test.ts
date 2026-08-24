@@ -1,13 +1,15 @@
 import { generateKeyPairSync, verify } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { MemoryAnchorStore, manifestForArtifact } from "./integrity-anchors.js";
-import { destroyRetainedReport, isReportReaderVisible, recordLegalHold, requestReportDeletion, retentionConclusionForAdmin } from "./integrity-lifecycle.js";
+import { destroyRetainedReport, isReportReaderVisible, recordLegalHold, recordRetentionDestructionCompletion, requestReportDeletion, retentionConclusionForAdmin } from "./integrity-lifecycle.js";
 import { commitAnchoredPublication, writePlannedAnchor } from "./integrity-publication.js";
 import { openDb, type DB } from "./index.js";
 import { applyProvenanceMigrations } from "./provenance-migrations.js";
+import { applyRedactionTombstone } from "./redaction.js";
 import { getReport, queryReportIndex } from "./reports.js";
 import { insertTopic } from "./repos.js";
 
@@ -53,18 +55,33 @@ describe("integrity retention lifecycle", () => {
     expect(db.prepare("SELECT reason_code FROM integrity_lifecycle_audit").get()).not.toHaveProperty("anchor_object_key");
   });
 
-  it("refuses destruction before retain_until, then writes a signed tombstone and removes only the reader artifact", async () => {
+  it("requires durable backup/registry completion, then purges expired verification material after its signed tombstone", async () => {
     const { db, signer, reportPath } = await seeded();
     requestReportDeletion(db, { report_id: "report", actor_id: "admin", readable_until: "2026-01-10T00:00:00.000Z", archive_until: "2026-01-11T00:00:00.000Z", now: "2026-01-02T00:00:00.000Z" });
     expect(destroyRetainedReport(db, { report_id: "report", actor_id: "admin", signer, now: "2026-01-12T00:00:00.000Z" })).toEqual({ kind: "retention_not_eligible" });
     expect(db.prepare("SELECT COUNT(*) AS n FROM artifact_manifest WHERE report_id='report'").get()).toEqual({ n: 1 });
 
-    expect(destroyRetainedReport(db, { report_id: "report", actor_id: "admin", signer, now: "2026-02-02T00:00:00.000Z" })).toEqual({ kind: "destroyed" });
+    expect(destroyRetainedReport(db, { report_id: "report", actor_id: "admin", signer, now: "2026-02-02T00:00:00.000Z" })).toEqual({ kind: "retention_prerequisites_unmet" });
+    expect(db.prepare("SELECT reader_state FROM integrity_report_lifecycle WHERE report_id='report'").get()).toEqual({ reader_state: "delete_pending" });
+    await expect(readFile(`${reportPath}.md`, "utf8")).resolves.toBe("# retained");
+    applyRedactionTombstone(db, { record_id: "redaction-report", entity_key: "report:report", scope: "report", reason_code: "retention_expired", effective_at: "2026-02-02T00:00:00.000Z", expiry_at: "2036-02-02T00:00:00.000Z", registry_ref: "records/2026/02/redaction-report.json" });
+    expect(recordRetentionDestructionCompletion(db, { report_id: "report", actor_id: "admin", backup_reference: "backup://retention/report", registry_record_id: "redaction-report", registry_ref: "records/2026/02/redaction-report.json", completed_at: "2026-02-02T00:00:00.000Z" })).toBe(true);
+    let durableTombstoneObserved = false;
+    expect(destroyRetainedReport(db, { report_id: "report", actor_id: "admin", signer, now: "2026-02-02T00:00:00.000Z", deleteFiles: (bodyPath) => {
+      const tombstone = db.prepare("SELECT payload,payload_hash,signature FROM integrity_retention_tombstone WHERE report_id='report'").get() as { payload: string; payload_hash: string; signature: string };
+      expect(tombstone.payload_hash).toHaveLength(64);
+      expect(verify(null, Buffer.concat([Buffer.from("retention-tombstone-v1\0"), Buffer.from(tombstone.payload)]), signer.private_key, Buffer.from(tombstone.signature, "base64url"))).toBe(true);
+      durableTombstoneObserved = true;
+      rmSync(`${bodyPath}.md`, { force: true }); rmSync(`${bodyPath}.html`, { force: true });
+    } })).toEqual({ kind: "destroyed" });
+    expect(durableTombstoneObserved).toBe(true);
     await expect(readFile(`${reportPath}.md`, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
-    const tombstone = db.prepare("SELECT payload,payload_hash,signature,destroyed_at FROM integrity_retention_tombstone WHERE report_id='report'").get() as { payload: string; payload_hash: string; signature: string; destroyed_at: string };
-    expect(tombstone.payload_hash).toHaveLength(64);
-    expect(verify(null, Buffer.concat([Buffer.from("retention-tombstone-v1\0"), Buffer.from(tombstone.payload)]), signer.private_key, Buffer.from(tombstone.signature, "base64url"))).toBe(true);
     expect(retentionConclusionForAdmin(db, "report")).toEqual({ conclusion: "内容保留期已结束，原始内容不再可验证", destroyed_at: "2026-02-02T00:00:00.000Z" });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM artifact_manifest WHERE report_id='report'").get()).toEqual({ n: 0 });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM integrity_check").get()).toEqual({ n: 0 });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM integrity_signing_key").get()).toEqual({ n: 0 });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM integrity_retention_tombstone").get()).toEqual({ n: 0 });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM provenance_redaction WHERE entity_key='report:report'").get()).toEqual({ n: 1 });
     expect(getReport(db, "report")).toBeNull();
   });
 });
