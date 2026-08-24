@@ -406,6 +406,27 @@ export const INTEGRITY_LIFECYCLE_REGISTRY_PROOF_SCHEMA_SQL = `
 ALTER TABLE integrity_retention_completion ADD COLUMN registry_payload_hash TEXT NOT NULL DEFAULT '';
 `;
 
+/** P1d review repair. A destruction tombstone is verification material in its
+ * own right: its signature key and canonical payload remain available through
+ * the redaction registry's governed retention period. Legal-hold snapshots are
+ * immutable evidence of every material set protected by the hold. */
+export const INTEGRITY_LIFECYCLE_HOLD_AND_TOMBSTONE_RETENTION_SCHEMA_SQL = `
+ALTER TABLE integrity_retention_tombstone ADD COLUMN retain_until TEXT NOT NULL DEFAULT '9999-12-31T23:59:59.999Z';
+
+CREATE TABLE integrity_legal_hold_material (
+  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),
+  report_id TEXT NOT NULL REFERENCES report(id),
+  hold_id TEXT NOT NULL,
+  material_kind TEXT NOT NULL CHECK(material_kind IN ('artifact_manifest','anchor','signing_key','integrity_check')),
+  material_id TEXT NOT NULL,
+  retain_until TEXT,
+  recorded_at TEXT NOT NULL,
+  PRIMARY KEY(tenant_id,report_id,hold_id,material_kind,material_id)
+);
+CREATE TRIGGER integrity_legal_hold_material_no_update BEFORE UPDATE ON integrity_legal_hold_material BEGIN SELECT RAISE(ABORT, 'integrity_legal_hold_material is append-only'); END;
+CREATE TRIGGER integrity_legal_hold_material_no_delete BEFORE DELETE ON integrity_legal_hold_material BEGIN SELECT RAISE(ABORT, 'integrity_legal_hold_material is append-only'); END;
+`;
+
 /** P1b-2 dashboard facts. These are isolated from source-credit facts and report reads. */
 export const P1_METRICS_SCHEMA_SQL = `
 CREATE TABLE funnel_event (

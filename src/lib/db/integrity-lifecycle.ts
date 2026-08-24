@@ -104,8 +104,31 @@ export function recordLegalHold(db: DB, input: { report_id: string; hold_id: str
   const now = input.occurred_at ?? new Date().toISOString();
   const report = db.prepare("SELECT 1 FROM report WHERE id=?").get(input.report_id);
   if (!report) return false;
-  db.prepare(`INSERT OR IGNORE INTO integrity_legal_hold_event(id,tenant_id,report_id,hold_id,action,actor_id,reason_code,occurred_at)
-    VALUES (?,?,?,?,?,?,?,?)`).run(`ilh_${randomUUID().replaceAll("-", "")}`, tenant, input.report_id, input.hold_id, input.action, input.actor_id, input.reason_code, now);
+  db.transaction(() => {
+    const result = db.prepare(`INSERT OR IGNORE INTO integrity_legal_hold_event(id,tenant_id,report_id,hold_id,action,actor_id,reason_code,occurred_at)
+      VALUES (?,?,?,?,?,?,?,?)`).run(`ilh_${randomUUID().replaceAll("-", "")}`, tenant, input.report_id, input.hold_id, input.action, input.actor_id, input.reason_code, now);
+    if (!result.changes || input.action !== "placed") return;
+    // The snapshot makes the retention fence explicit and auditable. Destruction
+    // checks active holds before opening its purge guard, so these local facts,
+    // their historical keys, and their immutable Object-Lock anchors cannot be
+    // sent through cleanup until a separately recorded release is observed.
+    db.prepare(`INSERT OR IGNORE INTO integrity_legal_hold_material(tenant_id,report_id,hold_id,material_kind,material_id,retain_until,recorded_at)
+      SELECT ?,?,?, 'artifact_manifest', artifact_id || '@' || artifact_version, retain_until, ?
+      FROM artifact_manifest WHERE tenant_id=? AND report_id=?`).run(tenant, input.report_id, input.hold_id, now, tenant, input.report_id);
+    db.prepare(`INSERT OR IGNORE INTO integrity_legal_hold_material(tenant_id,report_id,hold_id,material_kind,material_id,retain_until,recorded_at)
+      SELECT ?,?,?, 'anchor', anchor_object_key, retain_until, ?
+      FROM artifact_manifest WHERE tenant_id=? AND report_id=?`).run(tenant, input.report_id, input.hold_id, now, tenant, input.report_id);
+    db.prepare(`INSERT OR IGNORE INTO integrity_legal_hold_material(tenant_id,report_id,hold_id,material_kind,material_id,retain_until,recorded_at)
+      SELECT DISTINCT ?,?,?, 'signing_key', key_id, NULL, ? FROM (
+        SELECT manifest_key_id AS key_id FROM artifact_manifest WHERE tenant_id=? AND report_id=?
+        UNION SELECT anchor_key_id AS key_id FROM artifact_manifest WHERE tenant_id=? AND report_id=?
+      ) WHERE key_id IS NOT NULL`).run(tenant, input.report_id, input.hold_id, now, tenant, input.report_id, tenant, input.report_id);
+    db.prepare(`INSERT OR IGNORE INTO integrity_legal_hold_material(tenant_id,report_id,hold_id,material_kind,material_id,retain_until,recorded_at)
+      SELECT ?,?,?, 'integrity_check', artifact_id || '@' || artifact_version || '@' || checked_at, NULL, ?
+      FROM integrity_check WHERE tenant_id=? AND (artifact_id,artifact_version) IN (
+        SELECT artifact_id,artifact_version FROM artifact_manifest WHERE tenant_id=? AND report_id=?
+      )`).run(tenant, input.report_id, input.hold_id, now, tenant, tenant, input.report_id);
+  })();
   return true;
 }
 
@@ -269,7 +292,6 @@ function purgeRetainedMaterial(db: DB, reportId: string, now: string): void {
       db.prepare("DELETE FROM artifact_manifest WHERE tenant_id=? AND report_id=?").run(tenant, reportId);
       db.prepare("DELETE FROM generation_effect WHERE report_id=?").run(reportId);
       db.prepare("DELETE FROM integrity_daily_root WHERE tenant_id=? AND retain_until IS NOT NULL AND retain_until <= ?").run(tenant, now);
-      db.prepare(`DELETE FROM integrity_retention_tombstone WHERE tenant_id=? AND report_id=?`).run(tenant, reportId);
       db.prepare(`DELETE FROM integrity_lifecycle_audit WHERE tenant_id=? AND report_id=?`).run(tenant, reportId);
       db.prepare(`DELETE FROM integrity_legal_hold_event WHERE tenant_id=? AND report_id=?`).run(tenant, reportId);
       db.prepare(`DELETE FROM integrity_key_revocation WHERE tenant_id=? AND key_id NOT IN (
@@ -344,8 +366,8 @@ export function destroyRetainedReport(db: DB, input: { report_id: string; actor_
     // before its signature becomes the only record of a destroyed report.
     registerAnchorSigningKey(db, input.signer);
     db.transaction(() => {
-      const written = db.prepare(`INSERT OR IGNORE INTO integrity_retention_tombstone(tenant_id,report_id,payload,payload_hash,signature,key_id,algorithm,destroyed_at)
-        VALUES (?,?,?,?,?,?,?,?)`).run(tenant, input.report_id, canonical, payloadHash, signature, input.signer.key_id, "ed25519", now).changes === 1;
+      const written = db.prepare(`INSERT OR IGNORE INTO integrity_retention_tombstone(tenant_id,report_id,payload,payload_hash,signature,key_id,algorithm,destroyed_at,retain_until)
+        VALUES (?,?,?,?,?,?,?,?,?)`).run(tenant, input.report_id, canonical, payloadHash, signature, input.signer.key_id, "ed25519", now, receipt!.redaction_expiry_at).changes === 1;
       if (!written) throw new Error("retention_tombstone_conflict");
       db.prepare("UPDATE integrity_report_lifecycle SET reader_state='purge_pending' WHERE tenant_id=? AND report_id=? AND reader_state='delete_pending'")
         .run(tenant, input.report_id);
@@ -365,8 +387,10 @@ export function destroyRetainedReport(db: DB, input: { report_id: string; actor_
 /** The only reader-safe admin conclusion after destruction. It intentionally
  * omits the signed payload, object locator, hashes, and signature. */
 export function retentionConclusionForAdmin(db: DB, reportId: string): { conclusion: string; destroyed_at: string } | null {
-  if (!tableExists(db, "provenance_redaction")) return null;
-  const row = db.prepare(`SELECT effective_at AS destroyed_at FROM provenance_redaction
-    WHERE entity_key=? AND scope='report' AND reason_code='retention_expired'`).get(`report:${reportId}`) as { destroyed_at: string } | undefined;
+  if (!tableExists(db, "provenance_redaction") || !tableExists(db, "integrity_retention_tombstone")) return null;
+  const row = db.prepare(`SELECT redaction.effective_at AS destroyed_at FROM provenance_redaction AS redaction
+    JOIN integrity_report_lifecycle AS lifecycle ON lifecycle.tenant_id=? AND lifecycle.report_id=? AND lifecycle.reader_state='destroyed'
+    JOIN integrity_retention_tombstone AS tombstone ON tombstone.tenant_id=lifecycle.tenant_id AND tombstone.report_id=lifecycle.report_id
+    WHERE redaction.entity_key=? AND redaction.scope='report' AND redaction.reason_code='retention_expired'`).get(tenant, reportId, `report:${reportId}`) as { destroyed_at: string } | undefined;
   return row ? { conclusion: "内容保留期已结束，原始内容不再可验证", destroyed_at: row.destroyed_at } : null;
 }
