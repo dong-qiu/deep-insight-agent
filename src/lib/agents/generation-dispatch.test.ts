@@ -73,7 +73,7 @@ describe("generation dispatch worker", () => {
     expect(db.prepare("SELECT state FROM generation_dispatch WHERE trace_id=?").get(accepted.traceId)).toEqual({ state: "failed" });
   });
 
-  it("records a revision conflict through the real scheduled dispatcher without leaving a running root Run", async () => {
+  it("fails closed before the real scheduled dispatcher can publish when anchor deployment config is absent", async () => {
     const source: Source = {
       id: "source_a", name: "Source A", type: "rss", endpoint: "https://example.test/feed",
       topic_ids: ["topic_a"], fetch_interval: "1h", backfill: null, enabled: true,
@@ -104,11 +104,7 @@ describe("generation dispatch worker", () => {
     expect(db.prepare("SELECT status FROM generation_trace WHERE id=?").get(accepted.traceId)).toEqual({ status: "failed" });
     expect(db.prepare("SELECT state FROM generation_dispatch WHERE trace_id=?").get(accepted.traceId)).toEqual({ state: "failed" });
     expect(db.prepare("SELECT status FROM run WHERE trace_id=?").get(accepted.traceId)).toEqual({ status: "failed" });
-    expect(db.prepare("SELECT stage,event_type,error FROM generation_event WHERE trace_id=? ORDER BY sequence").all(accepted.traceId)).toEqual([
-      { stage: "select", event_type: "completed", error: null },
-      { stage: "analyze", event_type: "started", error: null },
-      { stage: "analyze", event_type: "failed", error: '{"reason_code":"provenance_revision_conflict"}' },
-    ]);
+    expect(db.prepare("SELECT stage,event_type,error FROM generation_event WHERE trace_id=? ORDER BY sequence").all(accepted.traceId)).toEqual([]);
     expect(db.prepare("SELECT COUNT(*) AS count FROM analysis_batch").get()).toEqual({ count: 0 });
     expect(db.prepare("SELECT COUNT(*) AS count FROM run WHERE trace_id=?").get(accepted.traceId)).toEqual({ count: 1 });
   });
@@ -127,14 +123,14 @@ describe("generation dispatch worker", () => {
     expect(received).toMatchObject({ reportType: "brief", windowHours: 168, windowEnd: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/), items: 15, traceId: accepted.traceId });
   });
 
-  it("records no-content as an explicit skipped cron trace instead of an untraced failure", async () => {
+  it("does not process an otherwise empty dispatch when anchor deployment config is absent", async () => {
     const accepted = createScheduledTraceRequest(db, {
       topicId: "topic_a", reportType: "brief", period: "2026-08-03", windowHours: 168, items: 15,
     });
     if (accepted.kind !== "accepted") throw new Error("expected accepted request");
-    expect(await runGenerationDispatchOnce(db)).toMatchObject({ claimed: true, traceId: accepted.traceId, status: "done" });
+    expect(await runGenerationDispatchOnce(db)).toMatchObject({ claimed: true, traceId: accepted.traceId, status: "failed" });
     expect(db.prepare("SELECT stage,event_type,reason_code FROM generation_event WHERE trace_id=?").all(accepted.traceId))
-      .toEqual([{ stage: "select", event_type: "skipped", reason_code: "no_content" }]);
+      .toEqual([]);
   });
 
   it("rejects an old claim after its lease is taken over", () => {

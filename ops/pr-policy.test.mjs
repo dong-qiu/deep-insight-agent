@@ -9,7 +9,7 @@ const completeReview = `## Pre-PR AI Review
 - 结论：通过
 
 ### PR 交接
-Blocking：0；Warning：0（已处理）。`;
+Blocking: 0; Warning: 0`;
 
 const metricEvidence = `| 指标 | 基线 | 本次 | 变化 | 阈值 / 结论 |
 |---|---:|---:|---:|---|
@@ -43,6 +43,13 @@ describe("pr-policy", () => {
       changedFiles: ["src/lib/agents/analyzer.ts"],
       prBody: `${completeReview}\n\n${metricEvidence}`,
     })).toMatchObject({ ok: true, reasons: [] });
+  });
+
+  it("只接受 ASCII Blocking/Warning 门禁行", () => {
+    expect(evaluatePolicy({
+      changedFiles: ["src/lib/agents/analyzer.ts"],
+      prBody: `${completeReview.replace("Blocking: 0; Warning: 0", "Blocking：0；Warning：0")}\n\n${metricEvidence}`,
+    }).ok).toBe(false);
   });
 
   it("模板中的空指标行和注释不被当作评测证据", () => {

@@ -8,6 +8,8 @@ import {
   heartbeatGenerationDispatch,
 } from "../db/provenance.js";
 import { runPipelineForTopic, runScheduledTopicPipeline, type GenerationExecutionOptions } from "./scheduler.js";
+import { deploymentAnchorPublication } from "../runtime/integrity-anchor-runtime.js";
+import { runIntegrityMaintenance } from "../db/integrity-publication.js";
 
 const HEARTBEAT_MS = 30_000;
 
@@ -60,12 +62,16 @@ async function executeDispatch(
   topicId: string,
   opts: GenerationExecutionOptions & { reportType: "brief" | "deep_dive" | "initial_digest"; windowHours?: number; windowEnd?: string; items?: number },
 ): Promise<unknown> {
+  // The dispatch worker is the production publication composition root. A
+  // missing deployment signer/store must never select an unanchored fallback.
+  const anchor = deploymentAnchorPublication();
+  await runIntegrityMaintenance(db, anchor);
   if (opts.reportType === "deep_dive" && opts.windowHours == null) {
-    return runPipelineForTopic(db, topicId, opts);
+    return runPipelineForTopic(db, topicId, { ...opts, anchor });
   }
   if (opts.windowHours == null || opts.items == null) throw new Error("invalid_scheduled_dispatch_payload");
   return runScheduledTopicPipeline(db, topicId, {
     reportType: opts.reportType, windowHours: opts.windowHours, items: opts.items,
-    traceId: opts.traceId, rootRunId: opts.rootRunId, windowEnd: opts.windowEnd, assertWrite: opts.assertWrite,
+    traceId: opts.traceId, rootRunId: opts.rootRunId, windowEnd: opts.windowEnd, assertWrite: opts.assertWrite, anchor,
   });
 }

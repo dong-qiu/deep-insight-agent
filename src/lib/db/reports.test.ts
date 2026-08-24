@@ -1,15 +1,16 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { createHash } from "node:crypto";
+import { createHash, generateKeyPairSync } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { AnalysisBatch, Report, ReportIndexEntry, Topic, ValidationResult } from "../types.js";
 import { saveAnalysisBatch, saveValidationResult } from "./analysis.js";
 import { type DB, openDb } from "./index.js";
-import { chainTypesFor, distinctIndexValues, entityTrends, getReport, latestReportForTopicSince, listBlockedChecksForReport, listRecentBriefEvents, listRecentPublishedEventEvidence, listRecentReports, previousReportForTopic, queryReportIndex, reconcileReportEffects, reportNeighbors, reportStatusCounts, sanitizeFtsQuery, saveFailedReport, saveReport, searchReports, SNIPPET_CLOSE, SNIPPET_OPEN, topicEvolution, topicReportStats } from "./reports.js";
+import { chainTypesFor, distinctIndexValues, entityTrends, getReport, latestReportForTopicSince, listBlockedChecksForReport, listRecentBriefEvents, listRecentPublishedEventEvidence, listRecentReports, previousReportForTopic, queryReportIndex, reconcileAnchoredReportEffects, reconcileReportEffects, reportNeighbors, reportStatusCounts, sanitizeFtsQuery, saveFailedReport, saveReport, searchReports, SNIPPET_CLOSE, SNIPPET_OPEN, topicEvolution, topicReportStats } from "./reports.js";
 import { applyProvenanceMigrations } from "./provenance-migrations.js";
 import { appendGenerationEvent } from "./provenance-facts.js";
 import { getTopic, insertSource, insertTopic } from "./repos.js";
+import { type AnchorObject, type AnchorStore, MemoryAnchorStore } from "./integrity-anchors.js";
 
 const dir = mkdtempSync(join(tmpdir(), "ia-reports-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -56,6 +57,59 @@ it("provenance 报告 effect 成对关联创建它的 trace 与 started event", 
 
   expect(db.prepare("SELECT trace_id,event_id,status FROM generation_effect WHERE report_id=?").get(report.id))
     .toEqual({ trace_id: "trace_report", event_id: event.id, status: "committed" });
+});
+
+it("anchored publication makes report, index, FTS, event effect, and manifest visible in one SQLite commit", async () => {
+  const keys = generateKeyPairSync("ed25519"); const store = new MemoryAnchorStore();
+  await saveReport(db, { ...report, id: "rep_anchor" }, { ...index, report_id: "rep_anchor" }, {
+    dir, anchor: { store, signer: { key_id: "test-key-v1", private_key: keys.privateKey }, retainUntil: "2027-01-01T00:00:00Z", retentionEnds: ["2027-01-01T00:00:00Z", "2027-02-01T00:00:00Z", "2027-03-01T00:00:00Z"], issuedAt: "2026-05-07T00:00:01Z" },
+  });
+  expect(db.prepare("SELECT status FROM report WHERE id='rep_anchor'").get()).toEqual({ status: "done" });
+  expect(db.prepare("SELECT status FROM generation_effect WHERE report_id='rep_anchor'").get()).toEqual({ status: "committed" });
+  expect(db.prepare("SELECT status FROM generation_anchor_effect").get()).toEqual({ status: "committed" });
+  expect(db.prepare("SELECT COUNT(*) AS n FROM artifact_manifest WHERE report_id='rep_anchor'").get()).toEqual({ n: 2 });
+  expect(queryReportIndex(db, { topic: topic.id }).map((row) => row.report_id)).toContain("rep_anchor");
+});
+
+it("report-level anchored reconciliation restores both artifacts and every reader projection together", async () => {
+  const keys = generateKeyPairSync("ed25519"); const store = new MemoryAnchorStore();
+  const anchored = { ...report, id: "rep_anchor_recover" };
+  await expect(saveReport(db, anchored, { ...index, report_id: anchored.id }, {
+    dir, anchor: { store, signer: { key_id: "test-key-v1", private_key: keys.privateKey }, retainUntil: "2027-01-01T00:00:00Z", retentionEnds: ["2027-01-01T00:00:00Z", "2027-02-01T00:00:00Z", "2027-03-01T00:00:00Z"], issuedAt: "2026-05-07T00:00:01Z" },
+    afterPublish: () => { throw new Error("sqlite_commit_failure"); },
+  })).rejects.toThrow("sqlite_commit_failure");
+  expect(getReport(db, anchored.id)).toBeNull();
+  expect(db.prepare("SELECT COUNT(*) AS n FROM artifact_manifest WHERE report_id=?").get(anchored.id)).toEqual({ n: 0 });
+  await expect(reconcileAnchoredReportEffects(db, { store, signer: { key_id: "test-key-v1", private_key: keys.privateKey } }, { dir }))
+    .resolves.toEqual({ committed: 1, failed: 0 });
+  expect(getReport(db, anchored.id)).toEqual(anchored);
+  expect(db.prepare("SELECT status FROM generation_effect WHERE report_id=?").get(anchored.id)).toEqual({ status: "committed" });
+  expect(db.prepare("SELECT COUNT(*) AS n FROM artifact_manifest WHERE report_id=?").get(anchored.id)).toEqual({ n: 2 });
+  expect(queryReportIndex(db, { topic: topic.id }).map((entry) => entry.report_id)).toContain(anchored.id);
+});
+
+it("resumes a one-of-two anchor write using the original effect and idempotency keys", async () => {
+  const keys = generateKeyPairSync("ed25519"); const objects = new Map<string, AnchorObject>(); let writes = 0;
+  const store: AnchorStore = {
+    async putIfAbsent(key, body) {
+      writes += 1;
+      if (writes === 2) throw new Error("temporary_store_failure");
+      objects.set(key, { body, provider_version_id: "v1" }); return { provider_version_id: "v1" };
+    },
+    async get(key, version) {
+      const object = objects.get(key) ?? null;
+      return object && (version == null || version === object.provider_version_id) ? object : null;
+    },
+  };
+  const partial = { ...report, id: "rep_anchor_partial" };
+  const anchor = { store, signer: { key_id: "test-key-v1", private_key: keys.privateKey }, retainUntil: "2027-01-01T00:00:00Z", retentionEnds: ["2027-01-01T00:00:00Z", "2027-02-01T00:00:00Z", "2027-03-01T00:00:00Z"] as const, issuedAt: "2026-05-07T00:00:01Z" };
+  await expect(saveReport(db, partial, { ...index, report_id: partial.id }, { dir, anchor })).rejects.toThrow("temporary_store_failure");
+  expect(db.prepare("SELECT status FROM report WHERE id=?").get(partial.id)).toEqual({ status: "generating" });
+  expect(db.prepare("SELECT status FROM generation_anchor_effect ORDER BY artifact_id").all()).toEqual(expect.arrayContaining([expect.objectContaining({ status: "anchor_written" }), expect.objectContaining({ status: "planned" })]));
+  const effectBefore = db.prepare("SELECT id,idempotency_key FROM generation_effect WHERE report_id=?").get(partial.id) as { id: string; idempotency_key: string };
+  await expect(reconcileAnchoredReportEffects(db, anchor, { dir })).resolves.toEqual({ committed: 1, failed: 0 });
+  expect(db.prepare("SELECT id,idempotency_key,status FROM generation_effect WHERE report_id=?").get(partial.id)).toEqual({ ...effectBefore, status: "committed" });
+  expect(getReport(db, partial.id)).toEqual(partial);
 });
 
 it("reconcile 从完整 staging 恢复时原子提交报告、effect 与终态 trace event", () => {

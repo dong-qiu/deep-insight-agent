@@ -3,6 +3,25 @@
 > 自托管**单实例** Docker 部署：`app`（Web + Job Runner）+ `cron`（容器内 supercronic 调度）+ 持久卷。
 > 设计见 `docs/plan/architecture.md`「部署」；本文是上线/运维操作手册。
 
+## 完整性锚定维护
+
+完整性维护不依赖报告生成调度。容器内 `ops/crontab` 每 5 分钟调用一次
+`/api/cron?mode=integrity`：UTC 02:00 固化前一日 Merkle root，02:15 若 root
+缺失即写入高优先级审计告警，其余执行会恢复已写入锚点的 SQLite 投影，并以最多
+两个并发 worker 对每个已发布 artifact 每 24 小时重校验一次。任何非 `pass`
+结果只写入脱敏的版本、终态、失败步骤与 hash 前缀，并在五分钟调度窗口内告警；
+它绝不阻塞或下线已提交报告。
+
+管理员可按需调用 `POST /api/admin/integrity-checks/{artifactId}/{version}` 重校验一个
+版本。该 endpoint 不返回 artifact 路径、Object Store locator 或正文；校验身份只需要
+bucket 的读取权限，不加载签名私钥。
+
+启用锚定时，除 bucket、密钥 ID 与私钥外，必须显式配置且保持为未来时间的
+`INTEGRITY_REPORT_READABLE_UNTIL`、`INTEGRITY_REPORT_ARCHIVE_UNTIL` 与
+`INTEGRITY_ARTIFACT_RETAIN_UNTIL`。系统以这三个期限、artifact retain 期限和
+签发后 100 天的最大值保存验证材料；密钥与撤销记录是 append-only 历史材料，
+不得删除或覆写。
+
 ## 1. 架构与组件
 
 | 组件 | 角色 |

@@ -10,7 +10,7 @@ import {
 } from "../db/analysis-cache.js";
 import { makeConsistencyCache } from "../db/consistency-cache.js";
 import { getContentItem, getSource } from "../db/repos.js";
-import { listRecentPublishedEventEvidence, saveFailedReport, saveReport } from "../db/reports.js";
+import { listRecentPublishedEventEvidence, saveFailedReport, saveReport, type ReportAnchorPublication } from "../db/reports.js";
 import { notifyBriefAcceptance, notifyFailure, notifyReport } from "../runtime/alert.js";
 import { runJob } from "../runtime/jobs.js";
 import type { AnalysisBatch, ContentItem, Cost, Report, TechLead, Topic, ValidationResult } from "../types.js";
@@ -262,6 +262,7 @@ export async function runReportGen(
     briefFreshness?: BriefFreshness;
     traceId?: string;
     assertWrite?: () => void;
+    anchor?: ReportAnchorPublication;
   },
 ): Promise<Report> {
   const batchRef: EntityRef = { type: "analysis_batch", locator: { kind: "id", id: opts.batch.id }, revision: opts.batch.id, role: "input" };
@@ -337,8 +338,9 @@ export async function runReportGen(
             : "no_publishable_insight"
         : undefined;
       opts.assertWrite?.();
-      saveReport(db, report, index, {
+      await saveReport(db, report, index, {
         provenance: opts.traceId && reportStarted ? { traceId: opts.traceId, eventId: reportStarted.id } : undefined,
+        anchor: opts.anchor,
         afterPublish: opts.traceId ? () => {
           opts.assertWrite?.();
           const ref: EntityRef = { type: "report", locator: { kind: "id", id: report.id }, revision: report.id, role: "output", visibility_class: "public_evidence" };

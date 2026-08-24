@@ -9,7 +9,7 @@ import { finishRun, getTopic, listTopics } from "../db/repos.js";
 import { freezeDueMetricDay } from "../db/p1-metrics-facts.js";
 import { claimSourceCollectTrace, createScheduledSourceCollectTrace, createScheduledTraceRequest, sourceCollectTracingAvailable } from "../db/provenance.js";
 import { appendGenerationEvent } from "../db/provenance-facts.js";
-import { listRecentBriefEvents, previousReportForTopic, topicHasReport } from "../db/reports.js";
+import { listRecentBriefEvents, previousReportForTopic, topicHasReport, type ReportAnchorPublication } from "../db/reports.js";
 import { notifyBudget } from "../runtime/alert.js";
 import { getBudgetStatus } from "../runtime/cost-guard.js";
 import { runLogger } from "../runtime/logger.js";
@@ -53,6 +53,8 @@ export interface GenerationExecutionOptions {
   /** durable scheduled dispatch 固化的选择窗口右边界；完整重跑不得改用当前时间。 */
   windowEnd?: string;
   assertWrite?: () => void;
+  /** Supplied only by the deployment composition root. */
+  anchor?: ReportAnchorPublication;
 }
 
 /** 冷启动决策（纯函数，可测）：topic 无历史报告 → 首版综述 initial_digest（更宽窗口 / 更多条，
@@ -266,6 +268,7 @@ export async function runScheduledTopicPipeline(
   return runReportGen(db, {
     topic, batch, validation, type: input.reportType, prevReportId, traceId: input.traceId, assertWrite: input.assertWrite,
     briefFreshness: freshItems.length ? { since: freshnessSince, content_item_ids: freshItems.map((item) => item.id), freshest_candidate_at: freshestCandidateAt } : undefined,
+    anchor: input.anchor,
   });
 }
 
@@ -331,5 +334,5 @@ export async function runPipelineForTopic(
     runLogger({ stage: "tech-leads" }).warn({ topicId: topic.id, batchId: batch.id, err: errMsg(error) }, "深挖技术线索派生失败，继续生成报告");
   }
   const prevReportId = previousReportForTopic(db, topic.id, "deep_dive");
-  return runReportGen(db, { topic, batch, validation, type: "deep_dive", prevReportId, traceId: opts.traceId, assertWrite: opts.assertWrite });
+  return runReportGen(db, { topic, batch, validation, type: "deep_dive", prevReportId, traceId: opts.traceId, assertWrite: opts.assertWrite, anchor: opts.anchor });
 }

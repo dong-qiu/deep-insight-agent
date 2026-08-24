@@ -16,13 +16,13 @@ if (!secret) {
   console.error(`[cron ${ts}] CRON_SECRET 未设置，跳过触发`);
   process.exit(1);
 }
-if (mode !== "pipeline" && mode !== "collect") {
-  console.error(`[cron ${ts}] CRON_MODE 必须是 pipeline 或 collect，当前为 ${mode}`);
+if (mode !== "pipeline" && mode !== "collect" && mode !== "integrity") {
+  console.error(`[cron ${ts}] CRON_MODE 必须是 pipeline、collect 或 integrity，当前为 ${mode}`);
   process.exit(1);
 }
 
 const url = new URL("/api/cron", base);
-if (mode === "collect") url.searchParams.set("mode", mode);
+if (mode !== "pipeline") url.searchParams.set("mode", mode);
 const mod = url.protocol === "https:" ? https : http;
 
 const req = mod.request(
