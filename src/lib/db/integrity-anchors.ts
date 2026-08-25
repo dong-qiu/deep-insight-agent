@@ -4,7 +4,7 @@
  * visible only after `anchorCandidate` has succeeded.
  */
 import { createHash, createPublicKey, sign, verify, type KeyObject } from "node:crypto";
-import { GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
+import { GetObjectCommand, PutObjectCommand, PutObjectRetentionCommand } from "@aws-sdk/client-s3";
 
 export const SHA256 = "sha-256" as const;
 export const MANIFEST_SCHEMA = "manifest-v1" as const;
@@ -35,6 +35,8 @@ export interface AnchorStore {
   putIfAbsent(key: string, body: Uint8Array, retainUntil: string): Promise<{ provider_version_id: string | null }>;
   /** A version id, when recorded, must select that immutable object version. */
   get(key: string, providerVersionId?: string | null): Promise<AnchorObject | null>;
+  /** Extend Object Lock Compliance retention. Implementations must never shorten it. */
+  extendRetention?(key: string, providerVersionId: string | null, retainUntil: string): Promise<{ retain_until: string }>;
 }
 interface S3ObjectResponse { VersionId?: string; Body?: { transformToByteArray: () => Promise<Uint8Array> } }
 type S3Sender = { send(command: unknown): Promise<S3ObjectResponse> };
@@ -234,6 +236,7 @@ export async function writeAnchor(store: AnchorStore, manifest: ArtifactManifest
 /** Test/local adapter.  Production adapters must implement the same immutable contract. */
 export class MemoryAnchorStore implements AnchorStore {
   private readonly objects = new Map<string, AnchorObject>();
+  private readonly retentions = new Map<string, string>();
   async putIfAbsent(key: string, body: Uint8Array): Promise<{ provider_version_id: string | null }> {
     if (this.objects.has(key)) throw new Error("precondition_failed");
     this.objects.set(key, { body: new Uint8Array(body), provider_version_id: null }); return { provider_version_id: null };
@@ -241,6 +244,12 @@ export class MemoryAnchorStore implements AnchorStore {
   async get(key: string, providerVersionId?: string | null): Promise<AnchorObject | null> {
     const object = this.objects.get(key) ?? null;
     return object && (providerVersionId == null || object.provider_version_id === providerVersionId) ? object : null;
+  }
+  async extendRetention(key: string, providerVersionId: string | null, retainUntil: string): Promise<{ retain_until: string }> {
+    const prior = this.retentions.get(`${key}\0${providerVersionId ?? ""}`);
+    if (prior && Date.parse(prior) > Date.parse(retainUntil)) throw new Error("anchor_retention_shortening_forbidden");
+    this.retentions.set(`${key}\0${providerVersionId ?? ""}`, retainUntil);
+    return { retain_until: retainUntil };
   }
   replaceForTest(key: string, body: Uint8Array): void { this.objects.set(key, { body, provider_version_id: null }); }
 }
@@ -264,6 +273,14 @@ export class S3AnchorStore implements AnchorStore {
       if (code.name === "NoSuchKey" || code.$metadata?.httpStatusCode === 404) return null;
       throw error;
     }
+  }
+  async extendRetention(key: string, providerVersionId: string | null, retainUntil: string): Promise<{ retain_until: string }> {
+    assertInstant(retainUntil, "retain_until");
+    await this.client.send(new PutObjectRetentionCommand({
+      Bucket: this.bucket, Key: key, ...(providerVersionId ? { VersionId: providerVersionId } : {}),
+      Retention: { Mode: "COMPLIANCE", RetainUntilDate: new Date(retainUntil) },
+    }));
+    return { retain_until: retainUntil };
   }
 }
 

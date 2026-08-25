@@ -34,6 +34,15 @@ export function deploymentAnchorVerificationStore(env: AnchorEnvironment = proce
   return new S3AnchorStore(new S3Client({}), required(env, "INTEGRITY_ANCHOR_BUCKET"));
 }
 
+/** Legal holds need a deployment-owned horizon: callers cannot select or
+ * shorten Object Lock Compliance retention. Missing policy is fail-closed. */
+export function deploymentAnchorLegalHold(env: AnchorEnvironment = process.env, now = new Date()): { store: AnchorStore; retainUntil: string } {
+  return {
+    store: deploymentAnchorVerificationStore(env),
+    retainUntil: requiredFutureInstant(env, "INTEGRITY_LEGAL_HOLD_RETAIN_UNTIL", now),
+  };
+}
+
 /** Deployment-owned signer/store injection for the real dispatch path. */
 export function deploymentAnchorPublication(
   env: AnchorEnvironment = process.env,

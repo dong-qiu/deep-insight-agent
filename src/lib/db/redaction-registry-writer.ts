@@ -169,15 +169,27 @@ export async function registerRedaction(
   }
   // provenance_redaction 对 (entity_key,scope) 也是 append-only 唯一约束；实体已经脱敏时不得再写一个
   // 永久不可删除的外部对象，直接复用已登记的事实即可。
-  const existingTombstone = db.prepare("SELECT record_id,registry_ref FROM provenance_redaction WHERE entity_key=? AND scope=?")
-    .get(input.entity_key, input.scope) as { record_id: string; registry_ref: string } | undefined;
+  const existingTombstone = db.prepare("SELECT record_id,registry_ref,effective_at,reason_code,expiry_at FROM provenance_redaction WHERE entity_key=? AND scope=?")
+    .get(input.entity_key, input.scope) as { record_id: string; registry_ref: string; effective_at: string; reason_code: string; expiry_at: string } | undefined;
   if (existingTombstone) {
+    if (existingTombstone.reason_code !== input.reason_code || existingTombstone.expiry_at !== input.expiry_at) registryError("redaction_existing_tombstone_conflict");
+    const durableRequest = db.prepare(`SELECT 1 FROM provenance_redaction_request
+      WHERE record_id=? AND status='registered' AND ? = 's3://' || ? || '/' || registry_key`).get(
+      existingTombstone.record_id, existingTombstone.registry_ref, config.bucket,
+    );
+    if (onRegistered && durableRequest) db.transaction(() => onRegistered(existingTombstone))();
     return { record_id: existingTombstone.record_id, registry_ref: existingTombstone.registry_ref, already_registered: true };
   }
   let pending = loadPending(db, input.deletion_request_id);
   if (pending && !sameRequest(pending, input)) registryError("redaction_request_conflict");
   if (pending?.status === "registered") {
-    return { record_id: pending.record_id, registry_ref: `s3://${config.bucket}/${pending.registry_key}`, already_registered: true };
+    const registered = pending;
+    if (onRegistered) db.transaction(() => onRegistered({
+      record_id: registered.record_id,
+      registry_ref: `s3://${config.bucket}/${registered.registry_key}`,
+      effective_at: registered.effective_at,
+    }))();
+    return { record_id: registered.record_id, registry_ref: `s3://${config.bucket}/${registered.registry_key}`, already_registered: true };
   }
   if (!pending) pending = await buildPending(db, input, config, clients);
 
@@ -203,9 +215,11 @@ export async function registerRedaction(
       expiry_at: pending.expiry_at,
       registry_ref: ref,
     });
-    onRegistered?.({ record_id: pending.record_id, registry_ref: ref, effective_at: pending.effective_at });
     db.prepare("UPDATE provenance_redaction_request SET status='registered', registered_at=? WHERE deletion_request_id=? AND status='pending'")
       .run(new Date().toISOString(), pending.deletion_request_id);
+    // Completion callbacks may need to bind their own immutable proof to this
+    // exact registered envelope, so expose the durable local fact first.
+    onRegistered?.({ record_id: pending.record_id, registry_ref: ref, effective_at: pending.effective_at });
   })();
   return { record_id: pending.record_id, registry_ref: ref, already_registered: false };
 }

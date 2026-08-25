@@ -263,6 +263,258 @@ export const INTEGRITY_CHECK_KEY_REVOCATION_SCHEMA_SQL = `
 ALTER TABLE integrity_check ADD COLUMN key_revoked INTEGER NOT NULL DEFAULT 0 CHECK(key_revoked IN (0,1));
 `;
 
+/** P1d lifecycle facts are deliberately separate from immutable manifest and
+ * check ledgers. A report can be withdrawn from every reader before its
+ * evidence reaches the end of its retention period; that withdrawal must not
+ * rewrite an anchored publication or make a reader call an integrity worker. */
+export const INTEGRITY_LIFECYCLE_SCHEMA_SQL = `
+CREATE TABLE integrity_report_lifecycle (
+  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),
+  report_id TEXT NOT NULL REFERENCES report(id),
+  reader_state TEXT NOT NULL CHECK(reader_state IN ('active','delete_pending','destroyed')),
+  readable_until TEXT NOT NULL,
+  archive_until TEXT NOT NULL,
+  delete_requested_at TEXT,
+  destroyed_at TEXT,
+  PRIMARY KEY(tenant_id,report_id)
+);
+CREATE INDEX idx_integrity_report_lifecycle_reader ON integrity_report_lifecycle(tenant_id,reader_state,report_id);
+
+CREATE TABLE integrity_legal_hold_event (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),
+  report_id TEXT NOT NULL REFERENCES report(id),
+  hold_id TEXT NOT NULL,
+  action TEXT NOT NULL CHECK(action IN ('placed','released')),
+  actor_id TEXT NOT NULL,
+  reason_code TEXT NOT NULL,
+  occurred_at TEXT NOT NULL,
+  UNIQUE(tenant_id,report_id,hold_id,action)
+);
+CREATE INDEX idx_integrity_legal_hold_report ON integrity_legal_hold_event(tenant_id,report_id,hold_id,occurred_at DESC);
+CREATE TRIGGER integrity_legal_hold_event_no_update BEFORE UPDATE ON integrity_legal_hold_event BEGIN SELECT RAISE(ABORT, 'integrity_legal_hold_event is append-only'); END;
+CREATE TRIGGER integrity_legal_hold_event_no_delete BEFORE DELETE ON integrity_legal_hold_event BEGIN SELECT RAISE(ABORT, 'integrity_legal_hold_event is append-only'); END;
+
+CREATE TABLE integrity_retention_tombstone (
+  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),
+  report_id TEXT NOT NULL REFERENCES report(id),
+  payload TEXT NOT NULL,
+  payload_hash TEXT NOT NULL,
+  signature TEXT NOT NULL,
+  key_id TEXT NOT NULL,
+  algorithm TEXT NOT NULL CHECK(algorithm = 'ed25519'),
+  destroyed_at TEXT NOT NULL,
+  PRIMARY KEY(tenant_id,report_id)
+);
+CREATE TRIGGER integrity_retention_tombstone_no_update BEFORE UPDATE ON integrity_retention_tombstone BEGIN SELECT RAISE(ABORT, 'integrity_retention_tombstone is append-only'); END;
+CREATE TRIGGER integrity_retention_tombstone_no_delete BEFORE DELETE ON integrity_retention_tombstone BEGIN SELECT RAISE(ABORT, 'integrity_retention_tombstone is append-only'); END;
+
+CREATE TABLE integrity_lifecycle_audit (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),
+  report_id TEXT NOT NULL REFERENCES report(id),
+  event_type TEXT NOT NULL CHECK(event_type IN ('deletion_requested','deletion_blocked_legal_hold','retention_tombstone_written','retention_not_eligible')),
+  actor_id TEXT,
+  reason_code TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX idx_integrity_lifecycle_audit_report ON integrity_lifecycle_audit(tenant_id,report_id,created_at DESC);
+CREATE TRIGGER integrity_lifecycle_audit_no_update BEFORE UPDATE ON integrity_lifecycle_audit BEGIN SELECT RAISE(ABORT, 'integrity_lifecycle_audit is append-only'); END;
+CREATE TRIGGER integrity_lifecycle_audit_no_delete BEFORE DELETE ON integrity_lifecycle_audit BEGIN SELECT RAISE(ABORT, 'integrity_lifecycle_audit is append-only'); END;
+`;
+
+/** P1d review repair.  Retention expiry is the sole governed exception to the
+ * append-only verification ledgers.  A durable backup/registry completion and
+ * an already-registered P0 redaction tombstone are required before the guard
+ * can be opened by the lifecycle operation. */
+export const INTEGRITY_LIFECYCLE_PURGE_SCHEMA_SQL = `
+ALTER TABLE integrity_report_lifecycle ADD COLUMN artifact_body_path TEXT;
+
+CREATE TABLE integrity_retention_completion (
+  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),
+  report_id TEXT NOT NULL REFERENCES report(id),
+  backup_reference TEXT NOT NULL,
+  registry_record_id TEXT NOT NULL,
+  registry_ref TEXT NOT NULL,
+  actor_id TEXT NOT NULL,
+  completed_at TEXT NOT NULL,
+  PRIMARY KEY(tenant_id,report_id)
+);
+
+CREATE TABLE integrity_retention_purge_guard (
+  id INTEGER PRIMARY KEY CHECK(id = 1),
+  enabled INTEGER NOT NULL CHECK(enabled IN (0,1))
+);
+INSERT INTO integrity_retention_purge_guard(id,enabled) VALUES (1,0);
+
+DROP TRIGGER artifact_manifest_no_delete;
+DROP TRIGGER integrity_audit_event_no_delete;
+DROP TRIGGER integrity_daily_root_no_delete;
+DROP TRIGGER integrity_signing_key_no_delete;
+DROP TRIGGER integrity_key_revocation_no_delete;
+DROP TRIGGER integrity_check_no_delete;
+DROP TRIGGER integrity_check_alert_dedup_no_delete;
+DROP TRIGGER integrity_legal_hold_event_no_delete;
+DROP TRIGGER integrity_retention_tombstone_no_delete;
+DROP TRIGGER integrity_lifecycle_audit_no_delete;
+
+CREATE TRIGGER artifact_manifest_no_delete BEFORE DELETE ON artifact_manifest WHEN (SELECT enabled FROM integrity_retention_purge_guard WHERE id=1) = 0 BEGIN SELECT RAISE(ABORT, 'artifact_manifest is append-only'); END;
+CREATE TRIGGER integrity_audit_event_no_delete BEFORE DELETE ON integrity_audit_event WHEN (SELECT enabled FROM integrity_retention_purge_guard WHERE id=1) = 0 BEGIN SELECT RAISE(ABORT, 'integrity_audit_event is append-only'); END;
+CREATE TRIGGER integrity_daily_root_no_delete BEFORE DELETE ON integrity_daily_root WHEN (SELECT enabled FROM integrity_retention_purge_guard WHERE id=1) = 0 BEGIN SELECT RAISE(ABORT, 'integrity_daily_root is append-only'); END;
+CREATE TRIGGER integrity_signing_key_no_delete BEFORE DELETE ON integrity_signing_key WHEN (SELECT enabled FROM integrity_retention_purge_guard WHERE id=1) = 0 BEGIN SELECT RAISE(ABORT, 'integrity_signing_key is append-only'); END;
+CREATE TRIGGER integrity_key_revocation_no_delete BEFORE DELETE ON integrity_key_revocation WHEN (SELECT enabled FROM integrity_retention_purge_guard WHERE id=1) = 0 BEGIN SELECT RAISE(ABORT, 'integrity_key_revocation is append-only'); END;
+CREATE TRIGGER integrity_check_no_delete BEFORE DELETE ON integrity_check WHEN (SELECT enabled FROM integrity_retention_purge_guard WHERE id=1) = 0 BEGIN SELECT RAISE(ABORT, 'integrity_check is append-only'); END;
+CREATE TRIGGER integrity_check_alert_dedup_no_delete BEFORE DELETE ON integrity_check_alert_dedup WHEN (SELECT enabled FROM integrity_retention_purge_guard WHERE id=1) = 0 BEGIN SELECT RAISE(ABORT, 'integrity_check_alert_dedup is append-only'); END;
+CREATE TRIGGER integrity_legal_hold_event_no_delete BEFORE DELETE ON integrity_legal_hold_event WHEN (SELECT enabled FROM integrity_retention_purge_guard WHERE id=1) = 0 BEGIN SELECT RAISE(ABORT, 'integrity_legal_hold_event is append-only'); END;
+CREATE TRIGGER integrity_retention_tombstone_no_delete BEFORE DELETE ON integrity_retention_tombstone WHEN (SELECT enabled FROM integrity_retention_purge_guard WHERE id=1) = 0 BEGIN SELECT RAISE(ABORT, 'integrity_retention_tombstone is append-only'); END;
+CREATE TRIGGER integrity_lifecycle_audit_no_delete BEFORE DELETE ON integrity_lifecycle_audit WHEN (SELECT enabled FROM integrity_retention_purge_guard WHERE id=1) = 0 BEGIN SELECT RAISE(ABORT, 'integrity_lifecycle_audit is append-only'); END;
+`;
+
+/** P1d review repair. Completion proof is an immutable fact: the registry
+ * writer records it only after its conditional external write succeeds, and a
+ * trusted backup verifier must accept the receipt both then and at purge. */
+export const INTEGRITY_LIFECYCLE_COMPLETION_PROOF_SCHEMA_SQL = `
+CREATE TABLE integrity_report_lifecycle_next (
+  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),
+  report_id TEXT NOT NULL REFERENCES report(id),
+  reader_state TEXT NOT NULL CHECK(reader_state IN ('active','delete_pending','purge_pending','destroyed')),
+  readable_until TEXT NOT NULL,
+  archive_until TEXT NOT NULL,
+  delete_requested_at TEXT,
+  destroyed_at TEXT,
+  artifact_body_path TEXT,
+  PRIMARY KEY(tenant_id,report_id)
+);
+INSERT INTO integrity_report_lifecycle_next(tenant_id,report_id,reader_state,readable_until,archive_until,delete_requested_at,destroyed_at,artifact_body_path)
+  SELECT tenant_id,report_id,reader_state,readable_until,archive_until,delete_requested_at,destroyed_at,artifact_body_path FROM integrity_report_lifecycle;
+DROP TABLE integrity_report_lifecycle;
+ALTER TABLE integrity_report_lifecycle_next RENAME TO integrity_report_lifecycle;
+CREATE INDEX idx_integrity_report_lifecycle_reader ON integrity_report_lifecycle(tenant_id,reader_state,report_id);
+
+ALTER TABLE integrity_retention_completion ADD COLUMN backup_receipt TEXT NOT NULL DEFAULT '';
+ALTER TABLE integrity_retention_completion ADD COLUMN backup_receipt_hash TEXT NOT NULL DEFAULT '';
+ALTER TABLE integrity_retention_completion ADD COLUMN backup_receipt_signature TEXT NOT NULL DEFAULT '';
+ALTER TABLE integrity_retention_completion ADD COLUMN backup_receipt_key_id TEXT NOT NULL DEFAULT '';
+
+CREATE TRIGGER integrity_retention_completion_no_update BEFORE UPDATE ON integrity_retention_completion BEGIN SELECT RAISE(ABORT, 'integrity_retention_completion is immutable'); END;
+CREATE TRIGGER integrity_retention_completion_no_delete BEFORE DELETE ON integrity_retention_completion WHEN (SELECT enabled FROM integrity_retention_purge_guard WHERE id=1) = 0 BEGIN SELECT RAISE(ABORT, 'integrity_retention_completion is append-only'); END;
+`;
+
+/** P1d review repair follow-up. Bind the completion to the exact immutable
+ * registry envelope rather than merely its local locator. */
+export const INTEGRITY_LIFECYCLE_REGISTRY_PROOF_SCHEMA_SQL = `
+ALTER TABLE integrity_retention_completion ADD COLUMN registry_payload_hash TEXT NOT NULL DEFAULT '';
+`;
+
+/** P1d review repair. A destruction tombstone is verification material in its
+ * own right: its signature key and canonical payload remain available through
+ * the redaction registry's governed retention period. Legal-hold snapshots are
+ * immutable evidence of every material set protected by the hold. */
+export const INTEGRITY_LIFECYCLE_HOLD_AND_TOMBSTONE_RETENTION_SCHEMA_SQL = `
+ALTER TABLE integrity_retention_tombstone ADD COLUMN retain_until TEXT NOT NULL DEFAULT '9999-12-31T23:59:59.999Z';
+
+CREATE TABLE integrity_legal_hold_material (
+  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),
+  report_id TEXT NOT NULL REFERENCES report(id),
+  hold_id TEXT NOT NULL,
+  material_kind TEXT NOT NULL CHECK(material_kind IN ('artifact_manifest','anchor','signing_key','integrity_check')),
+  material_id TEXT NOT NULL,
+  retain_until TEXT,
+  recorded_at TEXT NOT NULL,
+  PRIMARY KEY(tenant_id,report_id,hold_id,material_kind,material_id)
+);
+CREATE TRIGGER integrity_legal_hold_material_no_update BEFORE UPDATE ON integrity_legal_hold_material BEGIN SELECT RAISE(ABORT, 'integrity_legal_hold_material is append-only'); END;
+CREATE TRIGGER integrity_legal_hold_material_no_delete BEFORE DELETE ON integrity_legal_hold_material BEGIN SELECT RAISE(ABORT, 'integrity_legal_hold_material is append-only'); END;
+`;
+
+/** P1d review repair. Holds placed after a report has been destroyed must
+ * snapshot the destruction proof itself. SQLite requires rebuilding this
+ * append-only table to widen its material-kind contract. */
+export const INTEGRITY_LIFECYCLE_HOLD_TOMBSTONE_SNAPSHOT_SCHEMA_SQL = `
+DROP TRIGGER integrity_legal_hold_material_no_update;
+DROP TRIGGER integrity_legal_hold_material_no_delete;
+CREATE TABLE integrity_legal_hold_material_next (
+  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),
+  report_id TEXT NOT NULL REFERENCES report(id),
+  hold_id TEXT NOT NULL,
+  material_kind TEXT NOT NULL CHECK(material_kind IN ('artifact_manifest','anchor','signing_key','integrity_check','retention_tombstone')),
+  material_id TEXT NOT NULL,
+  retain_until TEXT,
+  recorded_at TEXT NOT NULL,
+  PRIMARY KEY(tenant_id,report_id,hold_id,material_kind,material_id)
+);
+INSERT INTO integrity_legal_hold_material_next(tenant_id,report_id,hold_id,material_kind,material_id,retain_until,recorded_at)
+  SELECT tenant_id,report_id,hold_id,material_kind,material_id,retain_until,recorded_at FROM integrity_legal_hold_material;
+DROP TABLE integrity_legal_hold_material;
+ALTER TABLE integrity_legal_hold_material_next RENAME TO integrity_legal_hold_material;
+CREATE TRIGGER integrity_legal_hold_material_no_update BEFORE UPDATE ON integrity_legal_hold_material BEGIN SELECT RAISE(ABORT, 'integrity_legal_hold_material is append-only'); END;
+CREATE TRIGGER integrity_legal_hold_material_no_delete BEFORE DELETE ON integrity_legal_hold_material BEGIN SELECT RAISE(ABORT, 'integrity_legal_hold_material is append-only'); END;
+`;
+
+/** P1d review repair. A daily root is verification material for every leaf it
+ * summarizes. Hold placement also stores the successful external Object-Lock
+ * extension receipt; a failed extension creates an immutable local fence so
+ * retention cannot proceed while the operator retries it. */
+export const INTEGRITY_LIFECYCLE_EXTERNAL_HOLD_SCHEMA_SQL = `
+DROP TRIGGER integrity_legal_hold_material_no_update;
+DROP TRIGGER integrity_legal_hold_material_no_delete;
+CREATE TABLE integrity_legal_hold_material_next (
+  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'), report_id TEXT NOT NULL REFERENCES report(id), hold_id TEXT NOT NULL,
+  material_kind TEXT NOT NULL CHECK(material_kind IN ('artifact_manifest','anchor','daily_root','signing_key','integrity_check','retention_tombstone')),
+  material_id TEXT NOT NULL, retain_until TEXT, recorded_at TEXT NOT NULL,
+  PRIMARY KEY(tenant_id,report_id,hold_id,material_kind,material_id)
+);
+INSERT INTO integrity_legal_hold_material_next(tenant_id,report_id,hold_id,material_kind,material_id,retain_until,recorded_at)
+  SELECT tenant_id,report_id,hold_id,material_kind,material_id,retain_until,recorded_at FROM integrity_legal_hold_material;
+DROP TABLE integrity_legal_hold_material;
+ALTER TABLE integrity_legal_hold_material_next RENAME TO integrity_legal_hold_material;
+CREATE TRIGGER integrity_legal_hold_material_no_update BEFORE UPDATE ON integrity_legal_hold_material BEGIN SELECT RAISE(ABORT, 'integrity_legal_hold_material is append-only'); END;
+CREATE TRIGGER integrity_legal_hold_material_no_delete BEFORE DELETE ON integrity_legal_hold_material BEGIN SELECT RAISE(ABORT, 'integrity_legal_hold_material is append-only'); END;
+
+CREATE TABLE integrity_daily_root_material (
+  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),
+  utc_date TEXT NOT NULL,
+  report_id TEXT NOT NULL REFERENCES report(id),
+  artifact_id TEXT NOT NULL,
+  artifact_version TEXT NOT NULL,
+  manifest_hash TEXT NOT NULL,
+  PRIMARY KEY(tenant_id,utc_date,artifact_id,artifact_version),
+  FOREIGN KEY(tenant_id,utc_date) REFERENCES integrity_daily_root(tenant_id,utc_date)
+);
+CREATE INDEX idx_integrity_daily_root_material_report ON integrity_daily_root_material(tenant_id,report_id,utc_date);
+
+CREATE TABLE integrity_legal_hold_extension_failure (
+  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),
+  report_id TEXT NOT NULL REFERENCES report(id),
+  hold_id TEXT NOT NULL,
+  occurred_at TEXT NOT NULL,
+  reason_code TEXT NOT NULL,
+  PRIMARY KEY(tenant_id,report_id,hold_id,occurred_at)
+);
+CREATE TRIGGER integrity_legal_hold_extension_failure_no_update BEFORE UPDATE ON integrity_legal_hold_extension_failure BEGIN SELECT RAISE(ABORT, 'integrity_legal_hold_extension_failure is append-only'); END;
+CREATE TRIGGER integrity_legal_hold_extension_failure_no_delete BEFORE DELETE ON integrity_legal_hold_extension_failure BEGIN SELECT RAISE(ABORT, 'integrity_legal_hold_extension_failure is append-only'); END;
+
+CREATE TABLE integrity_legal_hold_external_proof (
+  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),
+  report_id TEXT NOT NULL REFERENCES report(id),
+  hold_id TEXT NOT NULL,
+  object_key TEXT NOT NULL,
+  provider_version_id TEXT,
+  retain_until TEXT NOT NULL,
+  recorded_at TEXT NOT NULL,
+  PRIMARY KEY(tenant_id,report_id,hold_id,object_key,provider_version_id)
+);
+CREATE TRIGGER integrity_legal_hold_external_proof_no_update BEFORE UPDATE ON integrity_legal_hold_external_proof BEGIN SELECT RAISE(ABORT, 'integrity_legal_hold_external_proof is append-only'); END;
+CREATE TRIGGER integrity_legal_hold_external_proof_no_delete BEFORE DELETE ON integrity_legal_hold_external_proof BEGIN SELECT RAISE(ABORT, 'integrity_legal_hold_external_proof is append-only'); END;
+`;
+
+/** P1d review repair. This code-backed migration reconstructs legacy daily
+ * root material only after the runner verifies the frozen leaf count and
+ * canonical Merkle root; ambiguous historic roots stay fail-closed. */
+export const INTEGRITY_LIFECYCLE_DAILY_ROOT_MATERIAL_BACKFILL_SQL = `
+-- The runner verifies ordered manifest hashes before it inserts this projection.
+`;
+
 /** P1b-2 dashboard facts. These are isolated from source-credit facts and report reads. */
 export const P1_METRICS_SCHEMA_SQL = `
 CREATE TABLE funnel_event (

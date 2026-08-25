@@ -173,6 +173,8 @@ P1c 的 SQLite DDL 唯一事实源是 `src/lib/db/schema.ts`；provenance migrat
 | `generation_anchor_effect` | `(tenant_id, generation_effect_id, artifact_id, artifact_version)`；tenant-first reconciliation index 与幂等 key | 外部条件写前保存唯一候选 envelope 和 manifest 验签材料；partial write/SQLite 失败用同 effect 重试，冲突保留 orphan audit，绝不重锚。 |
 | `integrity_audit_event` | `tenant_id,event_type,created_at` | `anchor_written_sqlite_uncommitted`、reconcile/orphan 与 daily-root 状态为追加审计；15 分钟未收敛为 high。 |
 | `integrity_daily_root` | `(tenant_id, utc_date)` | UTC 前一日 manifest hash 按 tenant-first 规定序排序后冻结 Merkle root；02:00 生成、02:15 缺失告警。已写 root 绝不 `ON CONFLICT` 改写；恢复仅验证同一对象。 |
+| `integrity_legal_hold_material` | `(tenant_id, report_id, hold_id, material_kind, material_id)` | legal hold 放置时追加的验证材料快照（manifest、Object-Lock anchor、历史签名 key、check）；全程不可改删。active hold 令 lifecycle purge fail-closed，release 后才按既有 retention 恢复受控清理。 |
+| `integrity_retention_tombstone` | `(tenant_id, report_id)` | 销毁前签名的 canonical proof；与签名公钥一起保留至 registry receipt 的 `retain_until`，到期的独立 purge 才可移除，最终仅留 P0 redaction tombstone。 |
 
 manifest 和 binding 均为闭合 schema，JSON 必须为原始 RFC 8785 JCS UTF-8 bytes（拒绝空白、重排、重复 key、
 未声明字段与孤立 surrogate）。每次读回 anchor 均以 `artifact_manifest` / effect 记录的 `key_id`
