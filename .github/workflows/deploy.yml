@@ -181,18 +181,19 @@ jobs:
             docker compose -f "\$compose_file" up -d --no-build --no-deps cron generation-dispatch-worker
           worker_id=\$(docker compose -f "\$compose_file" ps -q generation-dispatch-worker)
           [[ -n "\$worker_id" ]] || { echo "generation-dispatch-worker 未创建" >&2; exit 1; }
-          # The worker has no HTTP healthcheck.  A short stable-running window
-          # detects missing dispatch configuration and makes the release roll
-          # back instead of reporting a healthy app with a crash-looping worker.
-          for _ in 1 2 3; do
+          # Worker readiness covers both the private probe and the durable
+          # dispatch queue age. Do not call a merely running worker healthy.
+          for _ in \$(seq 1 18); do
             worker_running=\$(docker inspect --format '{{.State.Running}}' "\$worker_id")
             worker_restarts=\$(docker inspect --format '{{.RestartCount}}' "\$worker_id")
-            [[ "\$worker_running" == true && "\$worker_restarts" == 0 ]] || {
-              echo "generation-dispatch-worker 未稳定运行（running=\$worker_running, restarts=\$worker_restarts）" >&2
-              exit 1
-            }
+            worker_health=\$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "\$worker_id")
+            [[ "\$worker_running" == true && "\$worker_restarts" == 0 && "\$worker_health" == healthy ]] && break
             sleep 10
           done
+          [[ "\$worker_running" == true && "\$worker_restarts" == 0 && "\$worker_health" == healthy ]] || {
+            echo "generation-dispatch-worker 未就绪（running=\$worker_running, restarts=\$worker_restarts, health=\$worker_health）" >&2
+            exit 1
+          }
           rm -f "\$rollback_compose"
           deployment_complete=1
           trap - EXIT

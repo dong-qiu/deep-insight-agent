@@ -263,6 +263,19 @@ export const INTEGRITY_CHECK_KEY_REVOCATION_SCHEMA_SQL = `
 ALTER TABLE integrity_check ADD COLUMN key_revoked INTEGER NOT NULL DEFAULT 0 CHECK(key_revoked IN (0,1));
 `;
 
+/** One mutable operational row per tenant.  Unlike the evidence ledger this
+ * is not an audit fact: it is a fenced, expiring coordination lease for the
+ * independently scheduled integrity maintenance job. */
+export const INTEGRITY_MAINTENANCE_LEASE_SCHEMA_SQL = `
+CREATE TABLE integrity_maintenance_lease (
+  tenant_id TEXT PRIMARY KEY CHECK(tenant_id = 'default'),
+  owner_token TEXT,
+  lease_expires_at TEXT,
+  heartbeat_at TEXT,
+  updated_at TEXT NOT NULL
+);
+`;
+
 /** P1d lifecycle facts are deliberately separate from immutable manifest and
  * check ledgers. A report can be withdrawn from every reader before its
  * evidence reaches the end of its retention period; that withdrawal must not
@@ -512,7 +525,7 @@ CREATE TRIGGER integrity_legal_hold_external_proof_no_delete BEFORE DELETE ON in
  * root material only after the runner verifies the frozen leaf count and
  * canonical Merkle root; ambiguous historic roots stay fail-closed. */
 export const INTEGRITY_LIFECYCLE_DAILY_ROOT_MATERIAL_BACKFILL_SQL = `
--- The runner verifies ordered manifest hashes before it inserts this projection.
+ -- The runner verifies ordered manifest hashes before it inserts this projection.
 `;
 
 /** P1b-2 dashboard facts. These are isolated from source-credit facts and report reads. */

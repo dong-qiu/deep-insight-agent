@@ -1,4 +1,4 @@
-import { createPublicKey, generateKeyPairSync, sign, verify } from "node:crypto";
+import { createPublicKey, generateKeyPairSync, sign, verify, type KeyObject } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -7,7 +7,7 @@ import { KMSClient } from "@aws-sdk/client-kms";
 import { S3Client } from "@aws-sdk/client-s3";
 import { SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { jcs, MemoryAnchorStore, manifestForArtifact } from "./integrity-anchors.js";
+import { jcs, MemoryAnchorStore, manifestForArtifact, type AnchorSigner } from "./integrity-anchors.js";
 import { completeRetentionDestruction, destroyRetainedReport, isReportReaderVisible, purgeExpiredRetentionTombstones, recordLegalHold, requestReportDeletion, retentionConclusionForAdmin } from "./integrity-lifecycle.js";
 import { commitAnchoredPublication, writeDailyMerkleRoot, writePlannedAnchor } from "./integrity-publication.js";
 import { openDb, type DB } from "./index.js";
@@ -18,8 +18,9 @@ import { insertTopic } from "./repos.js";
 
 const encoder = new TextEncoder();
 const cleanup: string[] = [];
+type Ed25519KeyPair = { publicKey: KeyObject; privateKey: KeyObject };
 
-const backupKeys = generateKeyPairSync("ed25519");
+const backupKeys = generateKeyPairSync("ed25519") as Ed25519KeyPair;
 const backupKeyId = "backup-key-v1";
 process.env.RETENTION_BACKUP_RECEIPT_KEY_ID = backupKeyId;
 process.env.RETENTION_BACKUP_RECEIPT_PUBLIC_KEY_PEM = backupKeys.publicKey.export({ type: "spki", format: "pem" }).toString();
@@ -56,7 +57,7 @@ async function completeRetention(db: DB, backupReceipt = signedReceipt()): Promi
   });
 }
 
-async function seeded(retainUntil = "2026-02-01T00:00:00.000Z"): Promise<{ db: DB; signer: { key_id: string; private_key: ReturnType<typeof generateKeyPairSync>["privateKey"] }; reportPath: string; store: MemoryAnchorStore }> {
+async function seeded(retainUntil = "2026-02-01T00:00:00.000Z"): Promise<{ db: DB; signer: AnchorSigner; reportPath: string; store: MemoryAnchorStore }> {
   const db = openDb(":memory:"); applyProvenanceMigrations(db);
   insertTopic(db, { id: "topic", name: "Topic", keywords: [], facets: [], language: "en", brief_schedule: "daily", enabled: true });
   const dir = await mkdtemp(join(tmpdir(), "integrity-lifecycle-")); cleanup.push(dir);
@@ -66,7 +67,8 @@ async function seeded(retainUntil = "2026-02-01T00:00:00.000Z"): Promise<{ db: D
   db.prepare("INSERT INTO report_index(report_id,type,topic_id,facets,date,source_ids,title,summary,highlights,tags,entity_names,importance,event_ids,milestone_count) VALUES ('report','brief','topic','[]','2026-01-01','[]','R','retained','[]','[]','[]',0,'[]',0)").run();
   db.prepare("INSERT INTO report_fts(report_id,title,summary,body) VALUES ('report','R','retained','retained')").run();
   db.prepare("INSERT INTO generation_effect(id,trace_id,event_id,report_id,kind,idempotency_key,artifact_manifest,publication_payload,status,error,created_at,updated_at) VALUES ('effect',NULL,NULL,'report','report_file','effect','[]','{}','planned',NULL,'2026-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z')").run();
-  const keys = generateKeyPairSync("ed25519"); const signer = { key_id: "retention-key", private_key: keys.privateKey };
+  const keys = generateKeyPairSync("ed25519") as Ed25519KeyPair;
+  const signer: AnchorSigner = { key_id: "retention-key", private_key: keys.privateKey };
   const content = encoder.encode("retained");
   const manifest = manifestForArtifact({ tenant_id: "default", report_id: "report", artifact_id: "report-md", artifact_version: "v1", length: content.byteLength, media_type: "text/markdown", created_at: "2026-01-01T00:00:00.000Z", upstream_trace_id: "trace", content });
   const store = new MemoryAnchorStore();

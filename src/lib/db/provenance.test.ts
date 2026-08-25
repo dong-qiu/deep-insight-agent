@@ -9,6 +9,7 @@ import {
   createDeepDiveTraceRequest,
   createScheduledTraceRequest,
   finishGenerationDispatch,
+  getGenerationDispatchHealth,
   getGenerationTraceStatus,
   hashIdempotencyKey,
   recordManualDecision,
@@ -81,6 +82,27 @@ describe("generation provenance dispatch", () => {
     expect(takeover?.ownerToken).not.toBe(first?.ownerToken);
     expect(takeover?.rootRunId).toBe(first?.rootRunId);
     expect(getGenerationTraceStatus(db, accepted.traceId)?.dispatch_state).toBe("claimed");
+  });
+
+  it("reports queue age for queued and expired claims, and fails readiness only after 15 minutes", () => {
+    const accepted = createDeepDiveTraceRequest(db, {
+      topicId: "topic_a", idempotencyKeyHash: hashIdempotencyKey("abcdefgh", "test-secret"), planning: true, now,
+    });
+    if (accepted.kind !== "accepted") throw new Error("expected accepted request");
+
+    expect(getGenerationDispatchHealth(db, new Date("2026-08-03T00:04:59.000Z"))).toMatchObject({
+      queuedCount: 1, expiredClaimedCount: 0, oldestActionableAgeMs: 299_000, status: "ready",
+    });
+    expect(getGenerationDispatchHealth(db, new Date("2026-08-03T00:05:01.000Z"))).toMatchObject({ status: "degraded" });
+    expect(getGenerationDispatchHealth(db, new Date("2026-08-03T00:15:01.000Z"))).toMatchObject({ status: "not_ready" });
+
+    const claim = claimNextGenerationDispatch(db, new Date("2026-08-03T00:15:02.000Z"));
+    if (!claim) throw new Error("expected claim");
+    db.prepare("UPDATE generation_dispatch SET lease_expires_at=? WHERE id=?").run("2026-08-03T00:16:00.000Z", claim.dispatchId);
+    db.prepare("UPDATE generation_lease SET expires_at=? WHERE trace_id=?").run("2026-08-03T00:16:00.000Z", claim.traceId);
+    expect(getGenerationDispatchHealth(db, new Date("2026-08-03T00:16:01.000Z"))).toMatchObject({
+      queuedCount: 0, expiredClaimedCount: 1, status: "not_ready",
+    });
   });
 
   it("deduplicates a cron Brief by topic and UTC period, with a reconstructable worker payload", () => {

@@ -9,20 +9,34 @@ import {
 } from "../db/provenance.js";
 import { runPipelineForTopic, runScheduledTopicPipeline, type GenerationExecutionOptions } from "./scheduler.js";
 import { deploymentAnchorPublication } from "../runtime/integrity-anchor-runtime.js";
-import { runIntegrityMaintenance } from "../db/integrity-publication.js";
 
 const HEARTBEAT_MS = 30_000;
+
+/** Injection seam for deterministic failure tests.  Production always uses
+ * the DB CAS heartbeat and the standard 30s cadence. */
+export interface GenerationDispatchRuntime {
+  heartbeat?: typeof heartbeatGenerationDispatch;
+  heartbeatMs?: number;
+}
 
 export async function runGenerationDispatchOnce(
   db: DB,
   execute: (db: DB, topicId: string, opts: GenerationExecutionOptions & { reportType: "brief" | "deep_dive" | "initial_digest"; windowHours?: number; windowEnd?: string; items?: number }) => Promise<unknown> = executeDispatch,
+  runtime: GenerationDispatchRuntime = {},
 ): Promise<{ claimed: boolean; traceId?: string; status?: "done" | "failed" }> {
   const claim = claimNextGenerationDispatch(db);
   if (!claim) return { claimed: false };
   let lostLease = false;
+  const heartbeat = runtime.heartbeat ?? heartbeatGenerationDispatch;
   const timer = setInterval(() => {
-    if (!heartbeatGenerationDispatch(db, claim)) lostLease = true;
-  }, HEARTBEAT_MS);
+    try {
+      if (!heartbeat(db, claim)) lostLease = true;
+    } catch {
+      // A heartbeat error is equivalent to losing ownership.  Never let an
+      // interval callback throw outside the dispatch transaction boundary.
+      lostLease = true;
+    }
+  }, runtime.heartbeatMs ?? HEARTBEAT_MS);
   try {
     await execute(db, claim.payload.topic_id, {
       traceId: claim.traceId,
@@ -65,7 +79,6 @@ async function executeDispatch(
   // The dispatch worker is the production publication composition root. A
   // missing deployment signer/store must never select an unanchored fallback.
   const anchor = deploymentAnchorPublication();
-  await runIntegrityMaintenance(db, anchor);
   if (opts.reportType === "deep_dive" && opts.windowHours == null) {
     return runPipelineForTopic(db, topicId, { ...opts, anchor });
   }

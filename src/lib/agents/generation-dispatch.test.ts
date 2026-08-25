@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { openDb, type DB } from "../db/index.js";
 import { applyProvenanceMigrations } from "../db/provenance-migrations.js";
 import { assertGenerationDispatchClaim, claimNextGenerationDispatch, createDeepDiveTraceRequest, createScheduledTraceRequest, hashIdempotencyKey } from "../db/provenance.js";
@@ -18,6 +18,8 @@ describe("generation dispatch worker", () => {
       archetype: "deep_vertical", facets: [],
     });
   });
+
+  afterEach(() => vi.useRealTimers());
 
   function accept(): { traceId: string } {
     const result = createDeepDiveTraceRequest(db, {
@@ -71,6 +73,29 @@ describe("generation dispatch worker", () => {
     expect(db.prepare("SELECT status FROM generation_trace WHERE id=?").get(accepted.traceId)).toEqual({ status: "failed" });
     expect(db.prepare("SELECT status FROM run WHERE trace_id=?").get(accepted.traceId)).toEqual({ status: "failed" });
     expect(db.prepare("SELECT state FROM generation_dispatch WHERE trace_id=?").get(accepted.traceId)).toEqual({ state: "failed" });
+  });
+
+  it("fails closed when the heartbeat throws, without leaking an interval exception", async () => {
+    vi.useFakeTimers();
+    const accepted = accept();
+    let assertWrite: (() => void) | undefined;
+    let release: (() => void) | undefined;
+    const pending = runGenerationDispatchOnce(
+      db,
+      async (_runDb, _topicId, opts) => {
+        assertWrite = opts.assertWrite;
+        await new Promise<void>((resolve) => { release = resolve; });
+      },
+      { heartbeat: () => { throw new Error("sqlite heartbeat unavailable"); }, heartbeatMs: 1 },
+    );
+    await vi.advanceTimersByTimeAsync(1);
+    expect(assertWrite).toBeDefined();
+    expect(() => assertWrite?.()).toThrow("generation_fence_lost");
+    release?.();
+    await expect(pending).resolves.toEqual({ claimed: true, traceId: accepted.traceId, status: "failed" });
+    // A lost owner must not write a terminal dispatch state; recovery takes it
+    // over after the existing lease expires.
+    expect(db.prepare("SELECT state FROM generation_dispatch WHERE trace_id=?").get(accepted.traceId)).toEqual({ state: "claimed" });
   });
 
   it("fails closed before the real scheduled dispatcher can publish when anchor deployment config is absent", async () => {

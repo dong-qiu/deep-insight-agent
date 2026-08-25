@@ -118,8 +118,66 @@ jobs:
         with:
           context: .
           push: false
+          load: true
           tags: deep-insight:ci
           build-args: |
             TARGETARCH=amd64
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - name: verify dispatch worker runtime assets
+        run: |
+          docker run --rm --entrypoint node deep-insight:ci --check /app/ops/generation-dispatch-worker.mjs
+          docker run --rm --entrypoint node deep-insight:ci --check /app/ops/generation-dispatch-healthcheck.mjs
+      - name: e2e dispatch worker readiness
+        run: |
+          network="dispatch-health-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          volume="dispatch-health-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          app="dispatch-health-app-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          cleanup() {
+            docker rm -f "$app" >/dev/null 2>&1 || true
+            docker volume rm -f "$volume" >/dev/null 2>&1 || true
+            docker network rm "$network" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          docker network create "$network" >/dev/null
+          docker volume create "$volume" >/dev/null
+          docker run --rm --user 0 -v "$volume":/data deep-insight:ci sh -c 'chown -R app:app /data'
+          docker run --rm -v "$volume":/data deep-insight:ci node /app/ops/run-provenance-migrations.mjs
+          docker run -d --name "$app" --network "$network" \
+            -e AUTH_SECRET=ci-auth-secret -e ADMIN_EMAIL=ci@example.test -e ADMIN_PASSWORD=ci-password \
+            -e CRON_SECRET=ci-cron-secret -e DISPATCH_WORKER_SECRET=ci-dispatch-secret \
+            -e PROVENANCE_SCHEMA_REQUIRED=1 -v "$volume":/data deep-insight:ci >/dev/null
+          ready=0
+          for _ in $(seq 1 30); do
+            if docker run --rm --network "$network" --entrypoint node deep-insight:ci -e "fetch('http://$app:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"; then
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$ready" -ne 1 ]; then
+            echo "application never became ready" >&2
+            docker logs "$app" >&2 || true
+            exit 1
+          fi
+          if ! docker run --rm --network "$network" -e APP_URL="http://$app:3000" -e DISPATCH_WORKER_SECRET=ci-dispatch-secret \
+            --entrypoint node deep-insight:ci /app/ops/generation-dispatch-healthcheck.mjs; then
+            echo "ready application failed dispatch-worker probe" >&2
+            docker logs "$app" >&2 || true
+            exit 1
+          fi
+          docker run --rm -v "$volume":/data --entrypoint node deep-insight:ci --input-type=module -e '
+            import Database from "better-sqlite3";
+            const db = new Database("/data/insight.db"); db.pragma("foreign_keys=ON");
+            const at = "2020-01-01T00:00:00.000Z";
+            db.prepare("INSERT INTO generation_trace(id,request_id,scope_kind,trigger_kind,topic_id,root_run_id,status,completion_policy,coverage,runtime_version,summary,next_sequence,started_at,ended_at,retry_of_trace_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").run("trace_e2e", null, "topic_pipeline", "api", null, null, "running", "{}", "complete", "{}", "{}", 0, at, null, null);
+            db.prepare("INSERT INTO generation_trace_request(id,scope_key,active_key,idempotency_key_hash,request_sequence,trace_id,state,retained_until,created_at) VALUES (?,?,?,?,?,?,?,?,?)").run("request_e2e", "e2e", "e2e", null, 1, "trace_e2e", "accepted", "2027-01-01T00:00:00.000Z", at);
+            db.prepare("INSERT INTO generation_lease(id,active_key,scope_key,trace_id,state,owner_token,fencing_epoch,heartbeat_at,expires_at,created_at,released_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)").run("lease_e2e", "e2e", "e2e", "trace_e2e", "reserved", null, 0, null, null, at, null);
+            db.prepare("INSERT INTO generation_dispatch(id,request_id,trace_id,kind,payload,state,attempt,claim_epoch,owner_token,claimed_at,heartbeat_at,lease_expires_at,last_error,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").run("dispatch_e2e", "request_e2e", "trace_e2e", "topic_pipeline", "{}", "queued", 0, 0, null, null, null, null, null, at, at);
+            db.close();
+          '
+          if docker run --rm --network "$network" -e APP_URL="http://$app:3000" -e DISPATCH_WORKER_SECRET=ci-dispatch-secret \
+            --entrypoint node deep-insight:ci /app/ops/generation-dispatch-healthcheck.mjs; then
+            echo "stalled durable dispatch incorrectly passed worker readiness" >&2
+            exit 1
+          fi

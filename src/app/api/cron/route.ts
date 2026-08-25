@@ -43,7 +43,7 @@ export async function POST(req: Request): Promise<NextResponse> {
     if (swept > 0) log.info({ swept }, "周期清扫孤儿 Run");
     if (mode === "integrity") {
       const summary = await runIntegrityMaintenance(db, deploymentAnchorPublication());
-      log.info({ reconciliation: summary.reconciliation, daily: summary.daily, checks: summary.checks }, "完整性维护完成");
+      log.info({ skipped: summary.skipped, reconciliation: summary.reconciliation, daily: summary.daily, checks: summary.checks }, "完整性维护完成");
       return NextResponse.json({ ok: true, mode, summary });
     }
     if (mode === "collect") {

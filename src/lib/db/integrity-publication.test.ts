@@ -1,7 +1,7 @@
 import { generateKeyPairSync } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { type AnchorObject, type AnchorStore, manifestForArtifact, MemoryAnchorStore } from "./integrity-anchors.js";
-import { commitAnchoredPublication, planAnchorPublication, reconcileAnchoredEffects, registerAnchorSigningKey, revokeAnchorSigningKey, runDailyAnchorSchedule, writeDailyMerkleRoot, writePlannedAnchor } from "./integrity-publication.js";
+import { claimIntegrityMaintenanceLease, commitAnchoredPublication, planAnchorPublication, reconcileAnchoredEffects, registerAnchorSigningKey, releaseIntegrityMaintenanceLease, revokeAnchorSigningKey, runDailyAnchorSchedule, writeDailyMerkleRoot, writePlannedAnchor } from "./integrity-publication.js";
 import { openDb, type DB } from "./index.js";
 import { applyProvenanceMigrations } from "./provenance-migrations.js";
 import { insertTopic } from "./repos.js";
@@ -19,6 +19,18 @@ function seeded(): DB {
 }
 
 describe("P1c publication visibility and recovery", () => {
+  it("allows exactly one integrity maintenance owner and safely recovers an expired owner", () => {
+    const db = seeded();
+    const first = claimIntegrityMaintenanceLease(db, new Date("2026-08-22T00:00:00.000Z"));
+    expect(first).not.toBeNull();
+    expect(claimIntegrityMaintenanceLease(db, new Date("2026-08-22T00:00:01.000Z"))).toBeNull();
+    expect(releaseIntegrityMaintenanceLease(db, first!, new Date("2026-08-22T00:00:02.000Z"))).toBe(true);
+    const second = claimIntegrityMaintenanceLease(db, new Date("2026-08-22T00:00:03.000Z"));
+    expect(second).not.toBeNull();
+    expect(claimIntegrityMaintenanceLease(db, new Date("2026-08-22T00:15:02.000Z"))).toBeNull();
+    expect(claimIntegrityMaintenanceLease(db, new Date("2026-08-22T00:15:04.000Z"))).not.toBeNull();
+  });
+
   it("keeps reports invisible when the final SQLite transaction fails, then reconciles the same anchor", async () => {
     const db = seeded(); const input = { generation_effect_id: "effect-1", manifest: manifest(), issued_at: "2026-08-21T00:00:01Z", retain_until: "2027-01-01T00:00:00Z" }; const store = new MemoryAnchorStore();
     await writePlannedAnchor(db, store, input, signer);
