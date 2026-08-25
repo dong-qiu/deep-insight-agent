@@ -335,8 +335,12 @@ function purgeRetainedMaterial(db: DB, reportId: string, now: string): void {
       db.prepare("DELETE FROM generation_anchor_effect WHERE tenant_id=? AND report_id=?").run(tenant, reportId);
       db.prepare("DELETE FROM artifact_manifest WHERE tenant_id=? AND report_id=?").run(tenant, reportId);
       db.prepare("DELETE FROM generation_effect WHERE report_id=?").run(reportId);
-      const expiredRoots = db.prepare("SELECT utc_date FROM integrity_daily_root WHERE tenant_id=? AND retain_until IS NOT NULL AND retain_until <= ?").all(tenant, now) as Array<{ utc_date: string }>;
+      const expiredRoots = db.prepare("SELECT utc_date,leaf_count FROM integrity_daily_root WHERE tenant_id=? AND retain_until IS NOT NULL AND retain_until <= ?").all(tenant, now) as Array<{ utc_date: string; leaf_count: number }>;
       for (const root of expiredRoots) {
+        const materialCount = (db.prepare("SELECT COUNT(*) AS count FROM integrity_daily_root_material WHERE tenant_id=? AND utc_date=?").get(tenant, root.utc_date) as { count: number }).count;
+        // Legacy roots may predate the leaf projection. Never purge a root
+        // unless its complete set of report leaves is available for hold checks.
+        if (materialCount !== root.leaf_count) continue;
         const reports = db.prepare("SELECT DISTINCT report_id FROM integrity_daily_root_material WHERE tenant_id=? AND utc_date=?").all(tenant, root.utc_date) as Array<{ report_id: string }>;
         // A root is shared verification material. It can expire only when every
         // report leaf is releasable; a hold on report A therefore fences cleanup

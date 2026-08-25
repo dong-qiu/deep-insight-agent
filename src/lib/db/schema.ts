@@ -508,6 +508,13 @@ CREATE TRIGGER integrity_legal_hold_external_proof_no_update BEFORE UPDATE ON in
 CREATE TRIGGER integrity_legal_hold_external_proof_no_delete BEFORE DELETE ON integrity_legal_hold_external_proof BEGIN SELECT RAISE(ABORT, 'integrity_legal_hold_external_proof is append-only'); END;
 `;
 
+/** P1d review repair. This code-backed migration reconstructs legacy daily
+ * root material only after the runner verifies the frozen leaf count and
+ * canonical Merkle root; ambiguous historic roots stay fail-closed. */
+export const INTEGRITY_LIFECYCLE_DAILY_ROOT_MATERIAL_BACKFILL_SQL = `
+-- The runner verifies ordered manifest hashes before it inserts this projection.
+`;
+
 /** P1b-2 dashboard facts. These are isolated from source-credit facts and report reads. */
 export const P1_METRICS_SCHEMA_SQL = `
 CREATE TABLE funnel_event (

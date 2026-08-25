@@ -80,6 +80,15 @@ function held(db: DB, store: MemoryAnchorStore, hold_id: string, action: "placed
     ...(action === "placed" ? { store, retain_until: "2036-02-02T00:00:00.000Z" } : {}) });
 }
 
+function restorePreExternalHoldRootSchema(db: DB): void {
+  db.exec(`
+    DROP TABLE integrity_daily_root_material;
+    DROP TABLE integrity_legal_hold_external_proof;
+    DROP TABLE integrity_legal_hold_extension_failure;
+  `);
+  db.prepare("DELETE FROM schema_migration WHERE version IN ('20260825_30_integrity_lifecycle_external_hold','20260825_31_integrity_daily_root_material_backfill')").run();
+}
+
 describe("integrity retention lifecycle", () => {
   it("uses delete_pending as a reader-only withdrawal while keeping every verification material row", async () => {
     const { db } = await seeded();
@@ -208,7 +217,7 @@ describe("integrity retention lifecycle", () => {
     expect(destroyRetainedReport(db, { report_id: "report", actor_id: "retention-worker", signer, now: "2026-02-03T00:00:00.000Z" })).toEqual({ kind: "destroyed" });
   });
 
-  it("keeps a held report's shared daily root and key while another report is destroyed", async () => {
+  it("backfills pre-external-hold daily roots so a hold extends and preserves shared material", async () => {
     const { db, signer, store } = await seeded("2026-02-01T00:00:00.000Z");
     db.prepare("INSERT INTO report(id,type,topic_id,status,generated_at,title,body_path,insight_ids,event_ids,prev_report_id,citation_count,cost) VALUES ('report-b','brief','topic','generating','2026-01-01T00:00:00.000Z','B',NULL,'[]','[]',NULL,0,'{}')").run();
     db.prepare("INSERT INTO generation_effect(id,trace_id,event_id,report_id,kind,idempotency_key,artifact_manifest,publication_payload,status,error,created_at,updated_at) VALUES ('effect-b',NULL,NULL,'report-b','report_file','effect-b','[]','{}','planned',NULL,'2026-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z')").run();
@@ -217,7 +226,24 @@ describe("integrity retention lifecycle", () => {
     await writePlannedAnchor(db, store, { generation_effect_id: "effect-b", manifest, issued_at: "2026-01-01T00:00:01.000Z", retain_until: "2026-02-01T00:00:00.000Z" }, signer);
     commitAnchoredPublication(db, { manifest, generation_effect_id: "effect-b", provider_version_id: null, public_key: createPublicKey(signer.private_key) });
     await writeDailyMerkleRoot(db, store, "2026-02-02", "2026-02-03T02:00:00.000Z", signer, "2026-02-01T00:00:00.000Z");
-    await held(db, store, "hold-a", "placed", "2026-02-02T00:00:00.000Z");
+    // The root was committed before v30 created its leaf-material table. Run
+    // the real v29 -> v30 -> v31 upgrade path over that legacy root.
+    restorePreExternalHoldRootSchema(db);
+    applyProvenanceMigrations(db);
+    expect(db.prepare("SELECT report_id FROM integrity_daily_root_material WHERE utc_date='2026-02-02' ORDER BY report_id").all()).toEqual([
+      { report_id: "report" }, { report_id: "report-b" },
+    ]);
+    const extended: string[] = [];
+    const holdStore = {
+      async putIfAbsent() { throw new Error("unused"); },
+      async get() { return null; },
+      async extendRetention(objectKey: string, _providerVersionId: string | null, retainUntil: string) {
+        extended.push(objectKey);
+        return { retain_until: retainUntil };
+      },
+    };
+    await expect(recordLegalHold(db, { report_id: "report", hold_id: "hold-a", action: "placed", actor_id: "counsel", reason_code: "legal_request", occurred_at: "2026-02-02T00:00:00.000Z", store: holdStore, retain_until: "2036-02-02T00:00:00.000Z" })).resolves.toBe(true);
+    expect(extended).toContain("integrity-daily-roots/v1/default/2026-02-02/root.json");
     requestReportDeletion(db, { report_id: "report-b", actor_id: "admin", readable_until: "2026-01-10T00:00:00.000Z", archive_until: "2026-01-11T00:00:00.000Z", now: "2026-01-02T00:00:00.000Z" });
     await completeRetention(db, signedReceipt("report-b", "retention-report-b"));
     expect(destroyRetainedReport(db, { report_id: "report-b", actor_id: "retention-worker", signer, now: "2026-02-02T00:00:00.000Z" })).toEqual({ kind: "destroyed" });
@@ -229,6 +255,36 @@ describe("integrity retention lifecycle", () => {
     await completeRetention(db);
     expect(destroyRetainedReport(db, { report_id: "report", actor_id: "retention-worker", signer, now: "2026-02-03T00:00:00.000Z" })).toEqual({ kind: "destroyed" });
     expect(db.prepare("SELECT COUNT(*) AS n FROM integrity_daily_root WHERE utc_date='2026-02-02'").get()).toEqual({ n: 0 });
+  });
+
+  it("fails closed when surviving same-day leaves cannot reproduce a legacy root", async () => {
+    const { db, signer, store } = await seeded("2026-02-01T00:00:00.000Z");
+    await writeDailyMerkleRoot(db, store, "2026-02-02", "2026-02-03T02:00:00.000Z", signer, "2026-02-01T00:00:00.000Z");
+    restorePreExternalHoldRootSchema(db);
+    // A missing historic leaf replaced by another same-day candidate can keep
+    // the count unchanged, so the migration must also verify the Merkle root.
+    db.exec("DROP TRIGGER artifact_manifest_no_update");
+    db.prepare("UPDATE artifact_manifest SET manifest_hash=? WHERE report_id='report'").run("f".repeat(64));
+    db.exec("CREATE TRIGGER artifact_manifest_no_update BEFORE UPDATE ON artifact_manifest BEGIN SELECT RAISE(ABORT, 'artifact_manifest is append-only'); END");
+    applyProvenanceMigrations(db);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM integrity_daily_root_material WHERE utc_date='2026-02-02'").get()).toEqual({ n: 0 });
+
+    const extended: string[] = [];
+    const holdStore = {
+      async putIfAbsent() { throw new Error("unused"); },
+      async get() { return null; },
+      async extendRetention(objectKey: string, _providerVersionId: string | null, retainUntil: string) {
+        extended.push(objectKey);
+        return { retain_until: retainUntil };
+      },
+    };
+    await expect(recordLegalHold(db, { report_id: "report", hold_id: "legacy-hold", action: "placed", actor_id: "counsel", reason_code: "legal_request", occurred_at: "2026-02-02T00:00:00.000Z", store: holdStore, retain_until: "2036-02-02T00:00:00.000Z" })).resolves.toBe(true);
+    expect(extended).not.toContain("integrity-daily-roots/v1/default/2026-02-02/root.json");
+    await expect(recordLegalHold(db, { report_id: "report", hold_id: "legacy-hold", action: "released", actor_id: "counsel", reason_code: "legal_release", occurred_at: "2026-02-02T00:00:01.000Z" })).resolves.toBe(true);
+    requestReportDeletion(db, { report_id: "report", actor_id: "admin", readable_until: "2026-01-10T00:00:00.000Z", archive_until: "2026-01-11T00:00:00.000Z", now: "2026-01-02T00:00:00.000Z" });
+    await completeRetention(db);
+    expect(destroyRetainedReport(db, { report_id: "report", actor_id: "retention-worker", signer, now: "2026-02-02T00:00:00.000Z" })).toEqual({ kind: "destroyed" });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM integrity_daily_root WHERE utc_date='2026-02-02'").get()).toEqual({ n: 1 });
   });
 
   it("requires a signed backup receipt and a retention-specific registry record", async () => {
