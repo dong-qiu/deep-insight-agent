@@ -1,12 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({ actor: vi.fn(), db: vi.fn(), audit: vi.fn(), conclusion: vi.fn(), hold: vi.fn(), deletion: vi.fn() }));
+const mocks = vi.hoisted(() => ({ actor: vi.fn(), db: vi.fn(), audit: vi.fn(), conclusion: vi.fn(), hold: vi.fn(), deletion: vi.fn(), external: vi.fn() }));
 vi.mock("../../../../../../lib/auth-guard.js", () => ({ requireAdminActor: mocks.actor }));
 vi.mock("../../../../../../lib/db/audit.js", () => ({ appendAudit: mocks.audit }));
 vi.mock("../../../../../../lib/db/index.js", () => ({ getDb: mocks.db }));
 vi.mock("../../../../../../lib/db/integrity-lifecycle.js", () => ({
   retentionConclusionForAdmin: mocks.conclusion, recordLegalHold: mocks.hold, requestReportDeletion: mocks.deletion,
 }));
+vi.mock("../../../../../../lib/runtime/integrity-anchor-runtime.js", () => ({ deploymentAnchorLegalHold: mocks.external }));
 
 import { GET, POST } from "./route.js";
 
@@ -20,6 +21,7 @@ beforeEach(() => {
   mocks.conclusion.mockReturnValue({ conclusion: "内容保留期已结束，原始内容不再可验证", destroyed_at: "2026-02-02T00:00:00.000Z" });
   mocks.hold.mockReturnValue(true);
   mocks.deletion.mockReturnValue({ kind: "delete_pending" });
+  mocks.external.mockReturnValue({ store: { immutable: true }, retainUntil: "2036-02-02T00:00:00.000Z" });
 });
 
 describe("report retention lifecycle handler", () => {
@@ -42,6 +44,6 @@ describe("report retention lifecycle handler", () => {
   it("executes an admin lifecycle request with a server-owned actor and tenant", async () => {
     const response = await post({ action: "place_hold", hold_id: "hold_123", reason_code: "legal_request" });
     expect(response.status).toBe(200);
-    expect(mocks.hold).toHaveBeenCalledWith({ db: true }, { report_id: "report_123", hold_id: "hold_123", action: "placed", actor_id: "admin_1", reason_code: "legal_request" });
+    expect(mocks.hold).toHaveBeenCalledWith({ db: true }, { report_id: "report_123", hold_id: "hold_123", action: "placed", actor_id: "admin_1", reason_code: "legal_request", store: { immutable: true }, retain_until: "2036-02-02T00:00:00.000Z" });
   });
 });

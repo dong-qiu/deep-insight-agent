@@ -5,6 +5,7 @@ import { requireAdminActor } from "../../../../../../lib/auth-guard.js";
 import { appendAudit } from "../../../../../../lib/db/audit.js";
 import { getDb } from "../../../../../../lib/db/index.js";
 import { recordLegalHold, requestReportDeletion, retentionConclusionForAdmin } from "../../../../../../lib/db/integrity-lifecycle.js";
+import { deploymentAnchorLegalHold } from "../../../../../../lib/runtime/integrity-anchor-runtime.js";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -43,10 +44,14 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
 
   if (body.action === "place_hold" || body.action === "release_hold") {
     if (!validId(body.hold_id) || !validReason(body.reason_code)) return NextResponse.json({ error: "invalid_retention_request" }, { status: 400 });
-    const recorded = recordLegalHold(getDb(), {
+    let recorded: boolean;
+    try {
+      const external = body.action === "place_hold" ? deploymentAnchorLegalHold() : undefined;
+      recorded = await recordLegalHold(getDb(), {
       report_id: id, hold_id: body.hold_id, action: body.action === "place_hold" ? "placed" : "released",
-      actor_id: actor.id, reason_code: body.reason_code,
-    });
+      actor_id: actor.id, reason_code: body.reason_code, store: external?.store, retain_until: external?.retainUntil,
+      });
+    } catch { return NextResponse.json({ error: "legal_hold_unavailable" }, { status: 503 }); }
     if (!recorded) return notFound();
     appendAudit(getDb(), { actor: actor.id, action: "retention_legal_hold_recorded", target: "retention_lifecycle", detail: { allowed: true, target_type: "report", tenant: "default", action: body.action } });
     return NextResponse.json({ ok: true });

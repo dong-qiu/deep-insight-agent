@@ -71,9 +71,9 @@ assert.equal((await verifyArtifactIntegrity(db, store, { artifact_id: "check-rep
 // P1d lifecycle fixture: legal hold dominates deletion, a delete request
 // immediately withdraws reader visibility, and evidence cannot be destroyed
 // before retain_until. The reader path only resolves the committed snapshot.
-assert.equal(recordLegalHold(db, { report_id: "check-report", hold_id: "eval-hold", action: "placed", actor_id: "counsel", reason_code: "legal_request", occurred_at: "2026-08-22T01:02:00.000Z" }), true);
+assert.equal(await recordLegalHold(db, { report_id: "check-report", hold_id: "eval-hold", action: "placed", actor_id: "counsel", reason_code: "legal_request", occurred_at: "2026-08-22T01:02:00.000Z", store, retain_until: "2036-08-22T01:02:00.000Z" }), true);
 assert.deepEqual(requestReportDeletion(db, { report_id: "check-report", actor_id: "admin", readable_until: "2026-08-23T00:00:00.000Z", archive_until: "2026-08-24T00:00:00.000Z", now: "2026-08-22T01:03:00.000Z" }), { kind: "legal_hold" });
-assert.equal(recordLegalHold(db, { report_id: "check-report", hold_id: "eval-hold", action: "released", actor_id: "counsel", reason_code: "legal_released", occurred_at: "2026-08-22T01:04:00.000Z" }), true);
+assert.equal(await recordLegalHold(db, { report_id: "check-report", hold_id: "eval-hold", action: "released", actor_id: "counsel", reason_code: "legal_released", occurred_at: "2026-08-22T01:04:00.000Z" }), true);
 assert.deepEqual(requestReportDeletion(db, { report_id: "check-report", actor_id: "admin", readable_until: "2026-08-23T00:00:00.000Z", archive_until: "2026-08-24T00:00:00.000Z", now: "2026-08-22T01:05:00.000Z" }), { kind: "delete_pending" });
 assert.equal(getReport(db, "check-report"), null);
 assert.deepEqual(destroyRetainedReport(db, { report_id: "check-report", actor_id: "admin", signer: checkSigner, now: "2026-08-25T00:00:00.000Z" }), { kind: "retention_not_eligible" });

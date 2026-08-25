@@ -9,7 +9,7 @@ import { KMSClient } from "@aws-sdk/client-kms";
 import { S3Client } from "@aws-sdk/client-s3";
 import { SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import type { DB } from "./index.js";
-import { jcs, sha256, type AnchorSigner } from "./integrity-anchors.js";
+import { jcs, sha256, type AnchorSigner, type AnchorStore } from "./integrity-anchors.js";
 import { registerAnchorSigningKey } from "./integrity-publication.js";
 import {
   registerRedaction,
@@ -90,8 +90,10 @@ export function reportReaderVisibilitySql(db: DB, reportIdColumn: string): strin
 }
 
 function activeHolds(db: DB, reportId: string): string[] {
-  const rows = db.prepare(`SELECT hold_id,action FROM integrity_legal_hold_event
-    WHERE tenant_id=? AND report_id=? ORDER BY occurred_at ASC,id ASC`).all(tenant, reportId) as Array<{ hold_id: string; action: HoldAction }>;
+  const rows = db.prepare(`SELECT hold_id,action,occurred_at,sort_id FROM (
+      SELECT hold_id,action,occurred_at,id AS sort_id FROM integrity_legal_hold_event WHERE tenant_id=? AND report_id=?
+      UNION ALL SELECT hold_id,'placed' AS action,occurred_at,occurred_at AS sort_id FROM integrity_legal_hold_extension_failure WHERE tenant_id=? AND report_id=?
+    ) ORDER BY occurred_at ASC,sort_id ASC`).all(tenant, reportId, tenant, reportId) as Array<{ hold_id: string; action: HoldAction }>;
   const holds = new Set<string>();
   for (const row of rows) {
     if (row.action === "placed") holds.add(row.hold_id);
@@ -100,42 +102,76 @@ function activeHolds(db: DB, reportId: string): string[] {
   return [...holds];
 }
 
-export function recordLegalHold(db: DB, input: { report_id: string; hold_id: string; action: HoldAction; actor_id: string; reason_code: string; occurred_at?: string }): boolean {
-  const now = input.occurred_at ?? new Date().toISOString();
-  const report = db.prepare("SELECT 1 FROM report WHERE id=?").get(input.report_id);
-  if (!report) return false;
-  db.transaction(() => {
-    const result = db.prepare(`INSERT OR IGNORE INTO integrity_legal_hold_event(id,tenant_id,report_id,hold_id,action,actor_id,reason_code,occurred_at)
-      VALUES (?,?,?,?,?,?,?,?)`).run(`ilh_${randomUUID().replaceAll("-", "")}`, tenant, input.report_id, input.hold_id, input.action, input.actor_id, input.reason_code, now);
-    if (!result.changes || input.action !== "placed") return;
-    // The snapshot makes the retention fence explicit and auditable. Destruction
-    // checks active holds before opening its purge guard, so these local facts,
-    // their historical keys, and their immutable Object-Lock anchors cannot be
-    // sent through cleanup until a separately recorded release is observed.
-    db.prepare(`INSERT OR IGNORE INTO integrity_legal_hold_material(tenant_id,report_id,hold_id,material_kind,material_id,retain_until,recorded_at)
+interface HeldExternalObject { object_key: string; provider_version_id: string | null }
+
+function heldExternalObjects(db: DB, reportId: string): HeldExternalObject[] {
+  const rows = db.prepare(`SELECT anchor_object_key AS object_key,anchor_provider_version_id AS provider_version_id
+      FROM artifact_manifest WHERE tenant_id=? AND report_id=?
+    UNION
+    SELECT root.object_key,root.provider_version_id
+      FROM integrity_daily_root root JOIN integrity_daily_root_material material
+        ON material.tenant_id=root.tenant_id AND material.utc_date=root.utc_date
+      WHERE material.tenant_id=? AND material.report_id=?`).all(tenant, reportId, tenant, reportId) as HeldExternalObject[];
+  return rows;
+}
+
+function snapshotHeldMaterial(db: DB, reportId: string, holdId: string, now: string): void {
+  db.prepare(`INSERT OR IGNORE INTO integrity_legal_hold_material(tenant_id,report_id,hold_id,material_kind,material_id,retain_until,recorded_at)
       SELECT ?,?,?, 'artifact_manifest', artifact_id || '@' || artifact_version, retain_until, ?
-      FROM artifact_manifest WHERE tenant_id=? AND report_id=?`).run(tenant, input.report_id, input.hold_id, now, tenant, input.report_id);
-    db.prepare(`INSERT OR IGNORE INTO integrity_legal_hold_material(tenant_id,report_id,hold_id,material_kind,material_id,retain_until,recorded_at)
+      FROM artifact_manifest WHERE tenant_id=? AND report_id=?`).run(tenant, reportId, holdId, now, tenant, reportId);
+  db.prepare(`INSERT OR IGNORE INTO integrity_legal_hold_material(tenant_id,report_id,hold_id,material_kind,material_id,retain_until,recorded_at)
       SELECT ?,?,?, 'anchor', anchor_object_key, retain_until, ?
-      FROM artifact_manifest WHERE tenant_id=? AND report_id=?`).run(tenant, input.report_id, input.hold_id, now, tenant, input.report_id);
-    db.prepare(`INSERT OR IGNORE INTO integrity_legal_hold_material(tenant_id,report_id,hold_id,material_kind,material_id,retain_until,recorded_at)
+      FROM artifact_manifest WHERE tenant_id=? AND report_id=?`).run(tenant, reportId, holdId, now, tenant, reportId);
+  db.prepare(`INSERT OR IGNORE INTO integrity_legal_hold_material(tenant_id,report_id,hold_id,material_kind,material_id,retain_until,recorded_at)
+      SELECT ?,?,?, 'daily_root', root.object_key, root.retain_until, ?
+      FROM integrity_daily_root root JOIN integrity_daily_root_material material ON material.tenant_id=root.tenant_id AND material.utc_date=root.utc_date
+      WHERE material.tenant_id=? AND material.report_id=?`).run(tenant, reportId, holdId, now, tenant, reportId);
+  db.prepare(`INSERT OR IGNORE INTO integrity_legal_hold_material(tenant_id,report_id,hold_id,material_kind,material_id,retain_until,recorded_at)
       SELECT DISTINCT ?,?,?, 'signing_key', key_id, NULL, ? FROM (
         SELECT manifest_key_id AS key_id FROM artifact_manifest WHERE tenant_id=? AND report_id=?
         UNION SELECT anchor_key_id AS key_id FROM artifact_manifest WHERE tenant_id=? AND report_id=?
-      ) WHERE key_id IS NOT NULL`).run(tenant, input.report_id, input.hold_id, now, tenant, input.report_id, tenant, input.report_id);
-    db.prepare(`INSERT OR IGNORE INTO integrity_legal_hold_material(tenant_id,report_id,hold_id,material_kind,material_id,retain_until,recorded_at)
+        UNION SELECT root.key_id FROM integrity_daily_root root JOIN integrity_daily_root_material material ON material.tenant_id=root.tenant_id AND material.utc_date=root.utc_date WHERE material.tenant_id=? AND material.report_id=?
+      ) WHERE key_id IS NOT NULL`).run(tenant, reportId, holdId, now, tenant, reportId, tenant, reportId, tenant, reportId);
+  db.prepare(`INSERT OR IGNORE INTO integrity_legal_hold_material(tenant_id,report_id,hold_id,material_kind,material_id,retain_until,recorded_at)
       SELECT ?,?,?, 'integrity_check', artifact_id || '@' || artifact_version || '@' || checked_at, NULL, ?
-      FROM integrity_check WHERE tenant_id=? AND (artifact_id,artifact_version) IN (
-        SELECT artifact_id,artifact_version FROM artifact_manifest WHERE tenant_id=? AND report_id=?
-      )`).run(tenant, input.report_id, input.hold_id, now, tenant, tenant, input.report_id);
-    // A hold can be placed after the report is destroyed. Preserve the signed
-    // destruction proof and the key that verifies it in that case as well.
-    db.prepare(`INSERT OR IGNORE INTO integrity_legal_hold_material(tenant_id,report_id,hold_id,material_kind,material_id,retain_until,recorded_at)
-      SELECT ?,?,?, 'retention_tombstone', report_id, retain_until, ?
-      FROM integrity_retention_tombstone WHERE tenant_id=? AND report_id=?`).run(tenant, input.report_id, input.hold_id, now, tenant, input.report_id);
-    db.prepare(`INSERT OR IGNORE INTO integrity_legal_hold_material(tenant_id,report_id,hold_id,material_kind,material_id,retain_until,recorded_at)
-      SELECT ?,?,?, 'signing_key', key_id, NULL, ?
-      FROM integrity_retention_tombstone WHERE tenant_id=? AND report_id=?`).run(tenant, input.report_id, input.hold_id, now, tenant, input.report_id);
+      FROM integrity_check WHERE tenant_id=? AND (artifact_id,artifact_version) IN (SELECT artifact_id,artifact_version FROM artifact_manifest WHERE tenant_id=? AND report_id=?)`).run(tenant, reportId, holdId, now, tenant, tenant, reportId);
+  db.prepare(`INSERT OR IGNORE INTO integrity_legal_hold_material(tenant_id,report_id,hold_id,material_kind,material_id,retain_until,recorded_at)
+      SELECT ?,?,?, 'retention_tombstone', report_id, retain_until, ? FROM integrity_retention_tombstone WHERE tenant_id=? AND report_id=?`).run(tenant, reportId, holdId, now, tenant, reportId);
+  db.prepare(`INSERT OR IGNORE INTO integrity_legal_hold_material(tenant_id,report_id,hold_id,material_kind,material_id,retain_until,recorded_at)
+      SELECT ?,?,?, 'signing_key', key_id, NULL, ? FROM integrity_retention_tombstone WHERE tenant_id=? AND report_id=?`).run(tenant, reportId, holdId, now, tenant, reportId);
+}
+
+export async function recordLegalHold(db: DB, input: { report_id: string; hold_id: string; action: HoldAction; actor_id: string; reason_code: string; occurred_at?: string; store?: AnchorStore; retain_until?: string }): Promise<boolean> {
+  const now = input.occurred_at ?? new Date().toISOString();
+  const report = db.prepare("SELECT 1 FROM report WHERE id=?").get(input.report_id);
+  if (!report) return false;
+  const alreadyRecorded = db.prepare("SELECT 1 FROM integrity_legal_hold_event WHERE tenant_id=? AND report_id=? AND hold_id=? AND action=?").get(tenant, input.report_id, input.hold_id, input.action);
+  if (alreadyRecorded) return true;
+  let proofs: Array<HeldExternalObject & { retain_until: string }> = [];
+  if (input.action === "placed") {
+    if (!input.store?.extendRetention || !input.retain_until || !Number.isFinite(Date.parse(input.retain_until)) || Date.parse(input.retain_until) <= Date.parse(now)) {
+      throw new Error("legal_hold_anchor_retention_not_configured");
+    }
+    const objects = heldExternalObjects(db, input.report_id);
+    try {
+      proofs = await Promise.all(objects.map(async (object) => {
+        const proof = await input.store!.extendRetention!(object.object_key, object.provider_version_id, input.retain_until!);
+        if (proof.retain_until !== input.retain_until) throw new Error("legal_hold_anchor_retention_unproven");
+        return { ...object, retain_until: proof.retain_until };
+      }));
+    } catch (error) {
+      db.transaction(() => db.prepare(`INSERT INTO integrity_legal_hold_extension_failure(tenant_id,report_id,hold_id,occurred_at,reason_code) VALUES (?,?,?,?,?)`)
+        .run(tenant, input.report_id, input.hold_id, now, "external_retention_extension_failed"))();
+      throw error;
+    }
+  }
+  db.transaction(() => {
+    db.prepare(`INSERT INTO integrity_legal_hold_event(id,tenant_id,report_id,hold_id,action,actor_id,reason_code,occurred_at)
+      VALUES (?,?,?,?,?,?,?,?)`).run(`ilh_${randomUUID().replaceAll("-", "")}`, tenant, input.report_id, input.hold_id, input.action, input.actor_id, input.reason_code, now);
+    if (input.action !== "placed") return;
+    for (const proof of proofs) db.prepare(`INSERT INTO integrity_legal_hold_external_proof(tenant_id,report_id,hold_id,object_key,provider_version_id,retain_until,recorded_at) VALUES (?,?,?,?,?,?,?)`)
+      .run(tenant, input.report_id, input.hold_id, proof.object_key, proof.provider_version_id, proof.retain_until, now);
+    snapshotHeldMaterial(db, input.report_id, input.hold_id, now);
   })();
   return true;
 }
@@ -299,7 +335,16 @@ function purgeRetainedMaterial(db: DB, reportId: string, now: string): void {
       db.prepare("DELETE FROM generation_anchor_effect WHERE tenant_id=? AND report_id=?").run(tenant, reportId);
       db.prepare("DELETE FROM artifact_manifest WHERE tenant_id=? AND report_id=?").run(tenant, reportId);
       db.prepare("DELETE FROM generation_effect WHERE report_id=?").run(reportId);
-      db.prepare("DELETE FROM integrity_daily_root WHERE tenant_id=? AND retain_until IS NOT NULL AND retain_until <= ?").run(tenant, now);
+      const expiredRoots = db.prepare("SELECT utc_date FROM integrity_daily_root WHERE tenant_id=? AND retain_until IS NOT NULL AND retain_until <= ?").all(tenant, now) as Array<{ utc_date: string }>;
+      for (const root of expiredRoots) {
+        const reports = db.prepare("SELECT DISTINCT report_id FROM integrity_daily_root_material WHERE tenant_id=? AND utc_date=?").all(tenant, root.utc_date) as Array<{ report_id: string }>;
+        // A root is shared verification material. It can expire only when every
+        // report leaf is releasable; a hold on report A therefore fences cleanup
+        // initiated while report B is being destroyed.
+        if (reports.some((row) => activeHolds(db, row.report_id).length > 0)) continue;
+        db.prepare("DELETE FROM integrity_daily_root_material WHERE tenant_id=? AND utc_date=?").run(tenant, root.utc_date);
+        db.prepare("DELETE FROM integrity_daily_root WHERE tenant_id=? AND utc_date=?").run(tenant, root.utc_date);
+      }
       db.prepare(`DELETE FROM integrity_lifecycle_audit WHERE tenant_id=? AND report_id=?`).run(tenant, reportId);
       db.prepare(`DELETE FROM integrity_legal_hold_event WHERE tenant_id=? AND report_id=?`).run(tenant, reportId);
       db.prepare(`DELETE FROM integrity_key_revocation WHERE tenant_id=? AND key_id NOT IN (

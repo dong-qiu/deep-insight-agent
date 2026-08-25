@@ -451,6 +451,63 @@ CREATE TRIGGER integrity_legal_hold_material_no_update BEFORE UPDATE ON integrit
 CREATE TRIGGER integrity_legal_hold_material_no_delete BEFORE DELETE ON integrity_legal_hold_material BEGIN SELECT RAISE(ABORT, 'integrity_legal_hold_material is append-only'); END;
 `;
 
+/** P1d review repair. A daily root is verification material for every leaf it
+ * summarizes. Hold placement also stores the successful external Object-Lock
+ * extension receipt; a failed extension creates an immutable local fence so
+ * retention cannot proceed while the operator retries it. */
+export const INTEGRITY_LIFECYCLE_EXTERNAL_HOLD_SCHEMA_SQL = `
+DROP TRIGGER integrity_legal_hold_material_no_update;
+DROP TRIGGER integrity_legal_hold_material_no_delete;
+CREATE TABLE integrity_legal_hold_material_next (
+  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'), report_id TEXT NOT NULL REFERENCES report(id), hold_id TEXT NOT NULL,
+  material_kind TEXT NOT NULL CHECK(material_kind IN ('artifact_manifest','anchor','daily_root','signing_key','integrity_check','retention_tombstone')),
+  material_id TEXT NOT NULL, retain_until TEXT, recorded_at TEXT NOT NULL,
+  PRIMARY KEY(tenant_id,report_id,hold_id,material_kind,material_id)
+);
+INSERT INTO integrity_legal_hold_material_next(tenant_id,report_id,hold_id,material_kind,material_id,retain_until,recorded_at)
+  SELECT tenant_id,report_id,hold_id,material_kind,material_id,retain_until,recorded_at FROM integrity_legal_hold_material;
+DROP TABLE integrity_legal_hold_material;
+ALTER TABLE integrity_legal_hold_material_next RENAME TO integrity_legal_hold_material;
+CREATE TRIGGER integrity_legal_hold_material_no_update BEFORE UPDATE ON integrity_legal_hold_material BEGIN SELECT RAISE(ABORT, 'integrity_legal_hold_material is append-only'); END;
+CREATE TRIGGER integrity_legal_hold_material_no_delete BEFORE DELETE ON integrity_legal_hold_material BEGIN SELECT RAISE(ABORT, 'integrity_legal_hold_material is append-only'); END;
+
+CREATE TABLE integrity_daily_root_material (
+  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),
+  utc_date TEXT NOT NULL,
+  report_id TEXT NOT NULL REFERENCES report(id),
+  artifact_id TEXT NOT NULL,
+  artifact_version TEXT NOT NULL,
+  manifest_hash TEXT NOT NULL,
+  PRIMARY KEY(tenant_id,utc_date,artifact_id,artifact_version),
+  FOREIGN KEY(tenant_id,utc_date) REFERENCES integrity_daily_root(tenant_id,utc_date)
+);
+CREATE INDEX idx_integrity_daily_root_material_report ON integrity_daily_root_material(tenant_id,report_id,utc_date);
+
+CREATE TABLE integrity_legal_hold_extension_failure (
+  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),
+  report_id TEXT NOT NULL REFERENCES report(id),
+  hold_id TEXT NOT NULL,
+  occurred_at TEXT NOT NULL,
+  reason_code TEXT NOT NULL,
+  PRIMARY KEY(tenant_id,report_id,hold_id,occurred_at)
+);
+CREATE TRIGGER integrity_legal_hold_extension_failure_no_update BEFORE UPDATE ON integrity_legal_hold_extension_failure BEGIN SELECT RAISE(ABORT, 'integrity_legal_hold_extension_failure is append-only'); END;
+CREATE TRIGGER integrity_legal_hold_extension_failure_no_delete BEFORE DELETE ON integrity_legal_hold_extension_failure BEGIN SELECT RAISE(ABORT, 'integrity_legal_hold_extension_failure is append-only'); END;
+
+CREATE TABLE integrity_legal_hold_external_proof (
+  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),
+  report_id TEXT NOT NULL REFERENCES report(id),
+  hold_id TEXT NOT NULL,
+  object_key TEXT NOT NULL,
+  provider_version_id TEXT,
+  retain_until TEXT NOT NULL,
+  recorded_at TEXT NOT NULL,
+  PRIMARY KEY(tenant_id,report_id,hold_id,object_key,provider_version_id)
+);
+CREATE TRIGGER integrity_legal_hold_external_proof_no_update BEFORE UPDATE ON integrity_legal_hold_external_proof BEGIN SELECT RAISE(ABORT, 'integrity_legal_hold_external_proof is append-only'); END;
+CREATE TRIGGER integrity_legal_hold_external_proof_no_delete BEFORE DELETE ON integrity_legal_hold_external_proof BEGIN SELECT RAISE(ABORT, 'integrity_legal_hold_external_proof is append-only'); END;
+`;
+
 /** P1b-2 dashboard facts. These are isolated from source-credit facts and report reads. */
 export const P1_METRICS_SCHEMA_SQL = `
 CREATE TABLE funnel_event (

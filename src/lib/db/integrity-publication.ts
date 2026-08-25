@@ -235,7 +235,7 @@ export async function writeDailyMerkleRoot(db: DB, store: AnchorStore, utcDate: 
   if (!Number.isFinite(Date.parse(dayStart)) || !Number.isFinite(Date.parse(cutoff)) || Date.parse(cutoff) < Date.parse(dayEnd)) throw new Error("daily_cutoff_invalid");
   // A root is frozen over anchors committed during the named UTC day.  Late
   // commits retain their per-manifest proof and never rewrite an old root.
-  const rows = db.prepare(`SELECT tenant_id,report_id,artifact_id,artifact_version,manifest_hash,retain_until FROM artifact_manifest WHERE tenant_id=? AND committed_at >= ? AND committed_at < ? ORDER BY tenant_id,report_id,artifact_id,artifact_version,manifest_hash`).all(tenant, dayStart, dayEnd) as Array<{ manifest_hash: string; retain_until: string | null }>;
+  const rows = db.prepare(`SELECT tenant_id,report_id,artifact_id,artifact_version,manifest_hash,retain_until FROM artifact_manifest WHERE tenant_id=? AND committed_at >= ? AND committed_at < ? ORDER BY tenant_id,report_id,artifact_id,artifact_version,manifest_hash`).all(tenant, dayStart, dayEnd) as Array<{ report_id: string; artifact_id: string; artifact_version: string; manifest_hash: string; retain_until: string | null }>;
   const payload: DailyRoot = { tenant_id: tenant, utc_date: utcDate, cutoff, leaf_count: rows.length, merkle_root: merkleRoot(rows.map((row) => row.manifest_hash)), sort: "tenant_id,report_id,artifact_id,artifact_version,manifest_hash" };
   const objectKey = `integrity-daily-roots/v1/${tenant}/${utcDate}/root.json`;
   const rootRetention = [retainUntil, ...rows.map((row) => row.retain_until).filter((value): value is string => value != null)].reduce((latest, value) => Date.parse(value) > Date.parse(latest) ? value : latest);
@@ -267,6 +267,11 @@ export async function writeDailyMerkleRoot(db: DB, store: AnchorStore, utcDate: 
   db.transaction(() => {
     db.prepare(`INSERT INTO integrity_daily_root(tenant_id,utc_date,cutoff,leaf_count,merkle_root,object_key,payload,signature,key_id,status,committed_at,algorithm,issued_at,provider_version_id,retain_until)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(tenant, utcDate, cutoff, payload.leaf_count, payload.merkle_root, objectKey, jcs(payload), envelope.signature, envelope.key_id, recovered ? "recovered" : "committed", now(), envelope.algorithm, envelope.issued_at, providerVersion, rootRetention);
+    const material = db.prepare(`INSERT INTO integrity_daily_root_material(tenant_id,utc_date,report_id,artifact_id,artifact_version,manifest_hash)
+      VALUES (?,?,?,?,?,?)`);
+    for (const row of rows) {
+      material.run(tenant, utcDate, row.report_id, row.artifact_id, row.artifact_version, row.manifest_hash);
+    }
     if (recovered) audit(db, { type: "daily_anchor_recovered", severity: "high", details: { utc_date: utcDate, object_key: objectKey } });
   })();
   return { status: recovered ? "recovered" : "committed" };

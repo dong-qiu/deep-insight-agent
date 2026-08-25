@@ -9,7 +9,7 @@ import { SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jcs, MemoryAnchorStore, manifestForArtifact } from "./integrity-anchors.js";
 import { completeRetentionDestruction, destroyRetainedReport, isReportReaderVisible, purgeExpiredRetentionTombstones, recordLegalHold, requestReportDeletion, retentionConclusionForAdmin } from "./integrity-lifecycle.js";
-import { commitAnchoredPublication, writePlannedAnchor } from "./integrity-publication.js";
+import { commitAnchoredPublication, writeDailyMerkleRoot, writePlannedAnchor } from "./integrity-publication.js";
 import { openDb, type DB } from "./index.js";
 import { applyProvenanceMigrations } from "./provenance-migrations.js";
 import { applyRedactionTombstone } from "./redaction.js";
@@ -41,22 +41,22 @@ afterEach(async () => {
   await Promise.all(cleanup.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 });
 
-function signedReceipt() {
-  const payload = { report_id: "report", deletion_request_id: "retention-report-2026-02-02", scope: "report" as const, reference: "backup://retention/report", receipt: "backup receipt body", redaction_expiry_at: "2036-02-02T00:00:00.000Z", key_id: backupKeyId };
+function signedReceipt(report_id = "report", deletion_request_id = "retention-report-2026-02-02") {
+  const payload = { report_id, deletion_request_id, scope: "report" as const, reference: `backup://retention/${report_id}`, receipt: "backup receipt body", redaction_expiry_at: "2036-02-02T00:00:00.000Z", key_id: backupKeyId };
   return { ...payload, signature: sign(null, Buffer.from(jcs(payload)), backupKeys.privateKey).toString("base64url") };
 }
 
 async function completeRetention(db: DB, backupReceipt = signedReceipt()): Promise<boolean> {
   return completeRetentionDestruction(db, {
-    report_id: "report",
+    report_id: backupReceipt.report_id,
     actor_id: "admin",
-    deletion_request_id: "retention-report-2026-02-02",
+    deletion_request_id: backupReceipt.deletion_request_id,
     backup_receipt: backupReceipt,
     completed_at: "2026-02-02T00:00:00.000Z",
   });
 }
 
-async function seeded(retainUntil = "2026-02-01T00:00:00.000Z"): Promise<{ db: DB; signer: { key_id: string; private_key: ReturnType<typeof generateKeyPairSync>["privateKey"] }; reportPath: string }> {
+async function seeded(retainUntil = "2026-02-01T00:00:00.000Z"): Promise<{ db: DB; signer: { key_id: string; private_key: ReturnType<typeof generateKeyPairSync>["privateKey"] }; reportPath: string; store: MemoryAnchorStore }> {
   const db = openDb(":memory:"); applyProvenanceMigrations(db);
   insertTopic(db, { id: "topic", name: "Topic", keywords: [], facets: [], language: "en", brief_schedule: "daily", enabled: true });
   const dir = await mkdtemp(join(tmpdir(), "integrity-lifecycle-")); cleanup.push(dir);
@@ -72,7 +72,12 @@ async function seeded(retainUntil = "2026-02-01T00:00:00.000Z"): Promise<{ db: D
   const store = new MemoryAnchorStore();
   await writePlannedAnchor(db, store, { generation_effect_id: "effect", manifest, issued_at: "2026-01-01T00:00:01.000Z", retain_until: retainUntil }, signer);
   commitAnchoredPublication(db, { manifest, generation_effect_id: "effect", provider_version_id: null, public_key: keys.publicKey, finalize: () => db.prepare("UPDATE report SET status='done' WHERE id='report'").run() });
-  return { db, signer, reportPath };
+  return { db, signer, reportPath, store };
+}
+
+function held(db: DB, store: MemoryAnchorStore, hold_id: string, action: "placed" | "released", occurred_at: string) {
+  return recordLegalHold(db, { report_id: "report", hold_id, action, actor_id: "counsel", reason_code: action === "placed" ? "legal_request" : "legal_release", occurred_at,
+    ...(action === "placed" ? { store, retain_until: "2036-02-02T00:00:00.000Z" } : {}) });
 }
 
 describe("integrity retention lifecycle", () => {
@@ -87,11 +92,28 @@ describe("integrity retention lifecycle", () => {
   });
 
   it("rejects deletion and writes a locator-free audit while a legal hold is active", async () => {
-    const { db } = await seeded();
-    expect(recordLegalHold(db, { report_id: "report", hold_id: "hold-1", action: "placed", actor_id: "counsel", reason_code: "legal_request", occurred_at: "2026-01-02T00:00:00.000Z" })).toBe(true);
+    const { db, store } = await seeded();
+    await expect(held(db, store, "hold-1", "placed", "2026-01-02T00:00:00.000Z")).resolves.toBe(true);
     expect(requestReportDeletion(db, { report_id: "report", actor_id: "admin", readable_until: "2026-01-10T00:00:00.000Z", archive_until: "2026-01-11T00:00:00.000Z", now: "2026-01-02T00:00:01.000Z" })).toEqual({ kind: "legal_hold" });
     expect(db.prepare("SELECT event_type,reason_code FROM integrity_lifecycle_audit").get()).toEqual({ event_type: "deletion_blocked_legal_hold", reason_code: "legal_hold_active" });
     expect(db.prepare("SELECT reason_code FROM integrity_lifecycle_audit").get()).not.toHaveProperty("anchor_object_key");
+  });
+
+  it("extends every external anchor before recording a hold and fences cleanup on extension failure", async () => {
+    const { db } = await seeded();
+    const calls: Array<{ key: string; version: string | null; retainUntil: string }> = [];
+    const provider = {
+      async putIfAbsent() { throw new Error("unused"); }, async get() { return null; },
+      async extendRetention(key: string, version: string | null, retainUntil: string) { calls.push({ key, version, retainUntil }); return { retain_until: retainUntil }; },
+    };
+    await expect(recordLegalHold(db, { report_id: "report", hold_id: "hold-external", action: "placed", actor_id: "counsel", reason_code: "legal_request", occurred_at: "2026-01-02T00:00:00.000Z", store: provider, retain_until: "2036-02-02T00:00:00.000Z" })).resolves.toBe(true);
+    expect(calls).toEqual([{ key: expect.stringContaining("integrity-anchors/"), version: null, retainUntil: "2036-02-02T00:00:00.000Z" }]);
+    expect(db.prepare("SELECT object_key,retain_until FROM integrity_legal_hold_external_proof WHERE hold_id='hold-external'").get()).toEqual({ object_key: calls[0]!.key, retain_until: "2036-02-02T00:00:00.000Z" });
+
+    const failing = { ...provider, async extendRetention() { throw new Error("object_lock_unavailable"); } };
+    await expect(recordLegalHold(db, { report_id: "report", hold_id: "hold-failed", action: "placed", actor_id: "counsel", reason_code: "legal_request", occurred_at: "2026-01-02T00:00:01.000Z", store: failing, retain_until: "2036-02-02T00:00:00.000Z" })).rejects.toThrow("object_lock_unavailable");
+    expect(db.prepare("SELECT COUNT(*) AS n FROM integrity_legal_hold_event WHERE hold_id='hold-failed'").get()).toEqual({ n: 0 });
+    expect(requestReportDeletion(db, { report_id: "report", actor_id: "admin", readable_until: "2026-01-10T00:00:00.000Z", archive_until: "2026-01-11T00:00:00.000Z", now: "2026-01-02T00:00:02.000Z" })).toEqual({ kind: "legal_hold" });
   });
 
   it("does not open cleanup before a verification-material retention longer than 100 days ends", async () => {
@@ -143,12 +165,12 @@ describe("integrity retention lifecycle", () => {
   });
 
   it("retains a destroyed report's tombstone proof through hold release", async () => {
-    const { db, signer } = await seeded();
+    const { db, signer, store } = await seeded();
     requestReportDeletion(db, { report_id: "report", actor_id: "admin", readable_until: "2026-01-10T00:00:00.000Z", archive_until: "2026-01-11T00:00:00.000Z", now: "2026-01-02T00:00:00.000Z" });
     await completeRetention(db);
     expect(destroyRetainedReport(db, { report_id: "report", actor_id: "retention-worker", signer, now: "2026-02-02T00:00:00.000Z" })).toEqual({ kind: "destroyed" });
 
-    expect(recordLegalHold(db, { report_id: "report", hold_id: "hold-after-destruction", action: "placed", actor_id: "counsel", reason_code: "legal_request", occurred_at: "2030-01-01T00:00:00.000Z" })).toBe(true);
+    await expect(held(db, store, "hold-after-destruction", "placed", "2030-01-01T00:00:00.000Z")).resolves.toBe(true);
     expect(db.prepare("SELECT material_kind,material_id,retain_until FROM integrity_legal_hold_material WHERE hold_id=? ORDER BY material_kind").all("hold-after-destruction")).toEqual(expect.arrayContaining([
       { material_kind: "retention_tombstone", material_id: "report", retain_until: "2036-02-02T00:00:00.000Z" },
       { material_kind: "signing_key", material_id: "retention-key", retain_until: null },
@@ -157,7 +179,7 @@ describe("integrity retention lifecycle", () => {
     expect(db.prepare("SELECT COUNT(*) AS n FROM integrity_retention_tombstone WHERE report_id='report'").get()).toEqual({ n: 1 });
     expect(db.prepare("SELECT COUNT(*) AS n FROM integrity_signing_key WHERE key_id='retention-key'").get()).toEqual({ n: 1 });
 
-    expect(recordLegalHold(db, { report_id: "report", hold_id: "hold-after-destruction", action: "released", actor_id: "counsel", reason_code: "legal_release", occurred_at: "2036-02-03T00:00:00.000Z" })).toBe(true);
+    await expect(held(db, store, "hold-after-destruction", "released", "2036-02-03T00:00:00.000Z")).resolves.toBe(true);
     expect(purgeExpiredRetentionTombstones(db, "2036-02-03T00:00:00.000Z")).toBe(1);
     expect(db.prepare("SELECT COUNT(*) AS n FROM integrity_retention_tombstone WHERE report_id='report'").get()).toEqual({ n: 0 });
     expect(db.prepare("SELECT COUNT(*) AS n FROM integrity_signing_key WHERE key_id='retention-key'").get()).toEqual({ n: 0 });
@@ -172,18 +194,41 @@ describe("integrity retention lifecycle", () => {
   });
 
   it("keeps every snapshot material through an expired retention window until the legal hold is released", async () => {
-    const { db, signer } = await seeded("2026-01-15T00:00:00.000Z");
+    const { db, signer, store } = await seeded("2026-01-15T00:00:00.000Z");
     requestReportDeletion(db, { report_id: "report", actor_id: "admin", readable_until: "2026-01-10T00:00:00.000Z", archive_until: "2026-01-11T00:00:00.000Z", now: "2026-01-02T00:00:00.000Z" });
     await completeRetention(db);
-    expect(recordLegalHold(db, { report_id: "report", hold_id: "hold-1", action: "placed", actor_id: "counsel", reason_code: "legal_request", occurred_at: "2026-01-12T00:00:00.000Z" })).toBe(true);
+    await expect(held(db, store, "hold-1", "placed", "2026-01-12T00:00:00.000Z")).resolves.toBe(true);
     expect(db.prepare("SELECT material_kind,COUNT(*) AS n FROM integrity_legal_hold_material GROUP BY material_kind ORDER BY material_kind").all()).toEqual(expect.arrayContaining([
       { material_kind: "anchor", n: 1 }, { material_kind: "artifact_manifest", n: 1 }, { material_kind: "signing_key", n: 1 },
     ]));
     expect(destroyRetainedReport(db, { report_id: "report", actor_id: "retention-worker", signer, now: "2026-02-02T00:00:00.000Z" })).toEqual({ kind: "legal_hold" });
     expect(db.prepare("SELECT COUNT(*) AS n FROM artifact_manifest WHERE report_id='report'").get()).toEqual({ n: 1 });
     expect(db.prepare("SELECT COUNT(*) AS n FROM integrity_signing_key").get()).toEqual({ n: 1 });
-    expect(recordLegalHold(db, { report_id: "report", hold_id: "hold-1", action: "released", actor_id: "counsel", reason_code: "legal_release", occurred_at: "2026-02-03T00:00:00.000Z" })).toBe(true);
+    await expect(held(db, store, "hold-1", "released", "2026-02-03T00:00:00.000Z")).resolves.toBe(true);
     expect(destroyRetainedReport(db, { report_id: "report", actor_id: "retention-worker", signer, now: "2026-02-03T00:00:00.000Z" })).toEqual({ kind: "destroyed" });
+  });
+
+  it("keeps a held report's shared daily root and key while another report is destroyed", async () => {
+    const { db, signer, store } = await seeded("2026-02-01T00:00:00.000Z");
+    db.prepare("INSERT INTO report(id,type,topic_id,status,generated_at,title,body_path,insight_ids,event_ids,prev_report_id,citation_count,cost) VALUES ('report-b','brief','topic','generating','2026-01-01T00:00:00.000Z','B',NULL,'[]','[]',NULL,0,'{}')").run();
+    db.prepare("INSERT INTO generation_effect(id,trace_id,event_id,report_id,kind,idempotency_key,artifact_manifest,publication_payload,status,error,created_at,updated_at) VALUES ('effect-b',NULL,NULL,'report-b','report_file','effect-b','[]','{}','planned',NULL,'2026-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z')").run();
+    const content = encoder.encode("other");
+    const manifest = manifestForArtifact({ tenant_id: "default", report_id: "report-b", artifact_id: "report-b-md", artifact_version: "v1", length: content.byteLength, media_type: "text/markdown", created_at: "2026-01-01T00:00:00.000Z", upstream_trace_id: "trace", content });
+    await writePlannedAnchor(db, store, { generation_effect_id: "effect-b", manifest, issued_at: "2026-01-01T00:00:01.000Z", retain_until: "2026-02-01T00:00:00.000Z" }, signer);
+    commitAnchoredPublication(db, { manifest, generation_effect_id: "effect-b", provider_version_id: null, public_key: createPublicKey(signer.private_key) });
+    await writeDailyMerkleRoot(db, store, "2026-02-02", "2026-02-03T02:00:00.000Z", signer, "2026-02-01T00:00:00.000Z");
+    await held(db, store, "hold-a", "placed", "2026-02-02T00:00:00.000Z");
+    requestReportDeletion(db, { report_id: "report-b", actor_id: "admin", readable_until: "2026-01-10T00:00:00.000Z", archive_until: "2026-01-11T00:00:00.000Z", now: "2026-01-02T00:00:00.000Z" });
+    await completeRetention(db, signedReceipt("report-b", "retention-report-b"));
+    expect(destroyRetainedReport(db, { report_id: "report-b", actor_id: "retention-worker", signer, now: "2026-02-02T00:00:00.000Z" })).toEqual({ kind: "destroyed" });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM integrity_daily_root WHERE utc_date='2026-02-02'").get()).toEqual({ n: 1 });
+    expect(db.prepare("SELECT key_id FROM integrity_daily_root WHERE utc_date='2026-02-02'").get()).toEqual(expect.any(Object));
+    await held(db, store, "hold-a", "released", "2026-02-03T00:00:00.000Z");
+    // A controlled later destruction/retry is now allowed to clean expired root material.
+    requestReportDeletion(db, { report_id: "report", actor_id: "admin", readable_until: "2026-01-10T00:00:00.000Z", archive_until: "2026-01-11T00:00:00.000Z", now: "2026-01-02T00:00:00.000Z" });
+    await completeRetention(db);
+    expect(destroyRetainedReport(db, { report_id: "report", actor_id: "retention-worker", signer, now: "2026-02-03T00:00:00.000Z" })).toEqual({ kind: "destroyed" });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM integrity_daily_root WHERE utc_date='2026-02-02'").get()).toEqual({ n: 0 });
   });
 
   it("requires a signed backup receipt and a retention-specific registry record", async () => {
