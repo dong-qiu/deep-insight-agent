@@ -12,6 +12,8 @@ import { openDb } from "../src/lib/db/index.js";
 import { applyProvenanceMigrations } from "../src/lib/db/provenance-migrations.js";
 import { getReport } from "../src/lib/db/reports.js";
 import { insertTopic } from "../src/lib/db/repos.js";
+import { appendCostLedger, appendFunnelEvent, appendValidatorResult } from "../src/lib/db/p1-metrics-facts.js";
+import { readP1DashboardMetrics } from "../src/lib/db/p1-dashboard.js";
 import { deploymentAnchorPublication } from "../src/lib/runtime/integrity-anchor-runtime.js";
 
 const backupKeys = generateKeyPairSync("ed25519");
@@ -89,4 +91,16 @@ assert.deepEqual(destroyRetainedReport(db, { report_id: "check-report", actor_id
 assert.equal(retentionConclusionForAdmin(db, "check-report")?.conclusion, "内容保留期已结束，原始内容不再可验证");
 assert.equal((db.prepare("SELECT COUNT(*) AS n FROM artifact_manifest WHERE report_id='check-report'").get() as { n: number }).n, 0);
 
-console.log(JSON.stringify({ gate: "provenance-dashboard-integrity-v1", result: "pass", vectors: 15, content_hash: manifest.content_hash, manifest_hash: manifestHash(manifest) }));
+// P1 dashboard vector: the administrator read model remains fact-backed,
+// bounded and independent of the published-report resolver.
+const metricAt = "2026-08-21T01:00:00.000Z";
+appendFunnelEvent(db, { event_id: "eval-received", trace_id: "eval-trace", stage: "received", pipeline_version: "eval-v1", occurred_at: metricAt, ingested_at: metricAt });
+appendFunnelEvent(db, { event_id: "eval-failed", trace_id: "eval-trace", stage: "failed", pipeline_version: "eval-v1", reason_code: "quote_not_in_source", occurred_at: "2026-08-21T01:00:01.000Z", ingested_at: "2026-08-21T01:00:01.000Z" });
+appendCostLedger(db, { entry_id: "eval-cost", trace_id: "eval-trace", stage: "processed", pipeline_version: "eval-v1", provider: "eval", model: "eval-model", currency: "USD", amount_minor: 3, cost_status: "known", occurred_at: metricAt, ingested_at: metricAt });
+appendValidatorResult(db, { result_id: "eval-validator", trace_id: "eval-trace", stage: "validated", pipeline_version: "eval-v1", validator: "citation", rule_version: "eval-v1", reason_code: "quote_not_in_source", severity: "error", terminal: true, occurred_at: metricAt, ingested_at: metricAt });
+const dashboard = readP1DashboardMetrics(db, { from: "2026-08-21T00:00:00.000Z", to: "2026-08-22T00:00:00.000Z" });
+assert.equal(dashboard.funnel.find((row) => row.stage === "received")?.received_traces, 1);
+assert.equal(dashboard.funnel_loss_reasons[0]?.reason_code, "quote_not_in_source");
+assert.equal(dashboard.validator_reasons[0]?.rule_version, "eval-v1");
+
+console.log(JSON.stringify({ gate: "provenance-dashboard-integrity-v1", result: "pass", vectors: 18, content_hash: manifest.content_hash, manifest_hash: manifestHash(manifest) }));

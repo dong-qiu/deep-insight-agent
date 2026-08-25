@@ -323,6 +323,7 @@ export default async function AdminPage({ searchParams }: { searchParams: Promis
       <p className="muted">
         近 30 天 · {recentRuns.length} 次运行 · 失败 {failed} · 估算成本 ${totalCost.toFixed(4)}
       </p>
+      <p className="muted"><Link href="/admin/metrics">查看 P1 溯源驾驶舱（漏斗、成本、时延、validator 与完整性状态）</Link></p>
 
       <BudgetCard status={budget} />
 
