@@ -8,6 +8,7 @@ import type { DB } from "./index.js";
 import { appendGenerationEvent, captureRevision, entityKey, type EntityRef } from "./provenance-facts.js";
 import { anchorEnvelopeBytes, anchorMatchesManifest, manifestForArtifact, parseCanonicalAnchorEnvelope, parseCanonicalJsonBytes, type AnchorSigner, type AnchorStore, type ArtifactManifest } from "./integrity-anchors.js";
 import { assertAnchorPublicationKeyActive, commitAnchoredPublications, writePlannedAnchor } from "./integrity-publication.js";
+import { isReportReaderVisible, reportReaderVisibilitySql } from "./integrity-lifecycle.js";
 
 const j = (v: unknown): string => JSON.stringify(v);
 
@@ -511,7 +512,7 @@ export async function reconcileAnchoredReportEffects(
 
 export function getReport(db: DB, id: string): Report | null {
   const r = db.prepare("SELECT * FROM report WHERE id = ? AND status = 'done'").get(id) as any;
-  if (!r) return null;
+  if (!r || !isReportReaderVisible(db, id)) return null;
   // FS 正文兜底：DB 有行但磁盘正文缺失（写盘中断 / 卷未挂 / 手动删除）时不抛、不让阅读页崩，
   // 返回占位正文并告警，由看板/重生流程兜底。
   let body_md: string;
@@ -774,10 +775,11 @@ export function listRecentBriefEvents(
 
 /** FTS5 全文检索，按相关度返回 report_id。 */
 export function searchReports(db: DB, query: string): string[] {
+  const visible = reportReaderVisibilitySql(db, "f.report_id");
   const rows = db
     .prepare(`SELECT f.report_id FROM report_fts f
       JOIN report r ON r.id=f.report_id AND r.status='done'
-      WHERE report_fts MATCH ? ORDER BY rank`)
+      WHERE report_fts MATCH ? AND ${visible} ORDER BY rank`)
     .all(query) as any[];
   return rows.map((x) => x.report_id as string);
 }
@@ -812,7 +814,7 @@ export function distinctIndexValues(
     .prepare(
       `SELECT DISTINCT je.value AS v
        FROM report_index ri JOIN report r ON r.id=ri.report_id AND r.status='done', json_each(ri.${column}) je
-       WHERE je.value IS NOT NULL AND je.value <> ''
+       WHERE je.value IS NOT NULL AND je.value <> '' AND ${reportReaderVisibilitySql(db, "ri.report_id")}
        ORDER BY je.value`,
     )
     .all() as Array<{ v: string }>;
@@ -822,7 +824,8 @@ export function distinctIndexValues(
 /** 报告索引列表（报告库列表/筛选用），按日期倒序。 */
 export function listReportIndex(db: DB, opts: { limit?: number } = {}): ReportIndexEntry[] {
   const rows = db
-    .prepare("SELECT ri.* FROM report_index ri JOIN report r ON r.id=ri.report_id AND r.status='done' ORDER BY ri.date DESC LIMIT ?")
+    .prepare(`SELECT ri.* FROM report_index ri JOIN report r ON r.id=ri.report_id AND r.status='done'
+      WHERE ${reportReaderVisibilitySql(db, "ri.report_id")} ORDER BY ri.date DESC LIMIT ?`)
     .all(opts.limit ?? 100) as any[];
   return rows.map(rowToIndex);
 }
@@ -831,7 +834,8 @@ export function listReportIndex(db: DB, opts: { limit?: number } = {}): ReportIn
 export function topicReportStats(db: DB): Map<string, { count: number; latestDate: string }> {
   const rows = db
     .prepare(`SELECT ri.topic_id, COUNT(*) AS count, MAX(ri.date) AS latest
-      FROM report_index ri JOIN report r ON r.id=ri.report_id AND r.status='done' GROUP BY ri.topic_id`)
+      FROM report_index ri JOIN report r ON r.id=ri.report_id AND r.status='done'
+      WHERE ${reportReaderVisibilitySql(db, "ri.report_id")} GROUP BY ri.topic_id`)
     .all() as Array<{ topic_id: string; count: number; latest: string }>;
   const m = new Map<string, { count: number; latestDate: string }>();
   for (const r of rows) m.set(r.topic_id, { count: r.count, latestDate: r.latest });
@@ -886,7 +890,7 @@ const SNIPPET_EXPR = `snippet(report_fts, 3, '${SNIPPET_OPEN}', '${SNIPPET_CLOSE
 
 export function queryReportIndex(db: DB, opts: ReportQuery = {}): ReportIndexEntry[] {
   // report_index 是发布时才写入的派生层；这一道 JOIN 仍是强制边界，兼容旧库中可能遗留的失败索引行。
-  const where: string[] = ["EXISTS (SELECT 1 FROM report r WHERE r.id=report_index.report_id AND r.status='done')"];
+  const where: string[] = ["EXISTS (SELECT 1 FROM report r WHERE r.id=report_index.report_id AND r.status='done')", reportReaderVisibilitySql(db, "report_index.report_id")];
   const args: unknown[] = [];
 
   if (opts.type && REPORT_TYPES.has(opts.type)) {

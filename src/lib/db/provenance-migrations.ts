@@ -1,7 +1,8 @@
 /** P0a 的显式 migration runner。应用启动不调用它；部署必须先运行本模块。 */
 import { createHash } from "node:crypto";
 import type { DB } from "./index.js";
-import { INTEGRITY_ANCHOR_HARDENING_SCHEMA_SQL, INTEGRITY_ANCHOR_IMMUTABILITY_SQL, INTEGRITY_ANCHOR_LEGACY_SCHEMA_SQL, INTEGRITY_ANCHOR_RECOVERY_SCHEMA_SQL, INTEGRITY_CHECK_KEY_REVOCATION_SCHEMA_SQL, INTEGRITY_CHECK_SCHEMA_SQL, INTEGRITY_MAINTENANCE_LEASE_SCHEMA_SQL, P1_METRICS_CONFLICT_AUDIT_SCHEMA_SQL, P1_METRICS_FOLLOWUP_SCHEMA_SQL, P1_METRICS_SCHEMA_SQL } from "./schema.js";
+import { merkleRoot } from "./integrity-anchors.js";
+import { INTEGRITY_ANCHOR_HARDENING_SCHEMA_SQL, INTEGRITY_ANCHOR_IMMUTABILITY_SQL, INTEGRITY_ANCHOR_LEGACY_SCHEMA_SQL, INTEGRITY_ANCHOR_RECOVERY_SCHEMA_SQL, INTEGRITY_CHECK_KEY_REVOCATION_SCHEMA_SQL, INTEGRITY_CHECK_SCHEMA_SQL, INTEGRITY_LIFECYCLE_COMPLETION_PROOF_SCHEMA_SQL, INTEGRITY_LIFECYCLE_DAILY_ROOT_MATERIAL_BACKFILL_SQL, INTEGRITY_LIFECYCLE_EXTERNAL_HOLD_SCHEMA_SQL, INTEGRITY_LIFECYCLE_HOLD_AND_TOMBSTONE_RETENTION_SCHEMA_SQL, INTEGRITY_LIFECYCLE_HOLD_TOMBSTONE_SNAPSHOT_SCHEMA_SQL, INTEGRITY_LIFECYCLE_PURGE_SCHEMA_SQL, INTEGRITY_LIFECYCLE_REGISTRY_PROOF_SCHEMA_SQL, INTEGRITY_LIFECYCLE_SCHEMA_SQL, INTEGRITY_MAINTENANCE_LEASE_SCHEMA_SQL, P1_METRICS_CONFLICT_AUDIT_SCHEMA_SQL, P1_METRICS_FOLLOWUP_SCHEMA_SQL, P1_METRICS_SCHEMA_SQL } from "./schema.js";
 
 const CORE_SQL = `
 ALTER TABLE run ADD COLUMN trace_id TEXT;
@@ -316,7 +317,15 @@ const MIGRATIONS = [
   { version: "20260824_21_integrity_anchor_tenant_reconcile_index", sql: "DROP INDEX IF EXISTS idx_generation_anchor_effect_reconcile;" },
   { version: "20260824_22_integrity_check_ledger", sql: INTEGRITY_CHECK_SCHEMA_SQL },
   { version: "20260824_23_integrity_check_key_revocation", sql: INTEGRITY_CHECK_KEY_REVOCATION_SCHEMA_SQL },
-  { version: "20260825_24_integrity_maintenance_lease", sql: INTEGRITY_MAINTENANCE_LEASE_SCHEMA_SQL },
+  { version: "20260824_24_integrity_lifecycle", sql: INTEGRITY_LIFECYCLE_SCHEMA_SQL },
+  { version: "20260824_25_integrity_lifecycle_purge", sql: INTEGRITY_LIFECYCLE_PURGE_SCHEMA_SQL },
+  { version: "20260825_26_integrity_lifecycle_completion_proof", sql: INTEGRITY_LIFECYCLE_COMPLETION_PROOF_SCHEMA_SQL },
+  { version: "20260825_27_integrity_lifecycle_registry_proof", sql: INTEGRITY_LIFECYCLE_REGISTRY_PROOF_SCHEMA_SQL },
+  { version: "20260825_28_integrity_lifecycle_hold_and_tombstone_retention", sql: INTEGRITY_LIFECYCLE_HOLD_AND_TOMBSTONE_RETENTION_SCHEMA_SQL },
+  { version: "20260825_29_integrity_lifecycle_hold_tombstone_snapshot", sql: INTEGRITY_LIFECYCLE_HOLD_TOMBSTONE_SNAPSHOT_SCHEMA_SQL },
+  { version: "20260825_30_integrity_lifecycle_external_hold", sql: INTEGRITY_LIFECYCLE_EXTERNAL_HOLD_SCHEMA_SQL },
+  { version: "20260825_31_integrity_daily_root_material_backfill", sql: INTEGRITY_LIFECYCLE_DAILY_ROOT_MATERIAL_BACKFILL_SQL },
+  { version: "20260825_32_integrity_maintenance_lease", sql: INTEGRITY_MAINTENANCE_LEASE_SCHEMA_SQL },
 ];
 
 function hasColumn(db: DB, table: string, column: string): boolean {
@@ -327,6 +336,24 @@ function reportBodyPathIsNullable(db: DB): boolean {
   const row = (db.prepare("PRAGMA table_info(report)").all() as { name: string; notnull: number }[])
     .find((column) => column.name === "body_path");
   return row?.notnull === 0;
+}
+
+/** Pre-v30 roots carry only the frozen hash; reconstruct their leaf projection
+ * only when the surviving immutable manifests reproduce it exactly. */
+function backfillDailyRootMaterial(db: DB): void {
+  const roots = db.prepare("SELECT tenant_id,utc_date,leaf_count,merkle_root FROM integrity_daily_root").all() as Array<{ tenant_id: string; utc_date: string; leaf_count: number; merkle_root: string }>;
+  const leaves = db.prepare(`SELECT report_id,artifact_id,artifact_version,manifest_hash
+    FROM artifact_manifest WHERE tenant_id=? AND committed_at >= ? AND committed_at < ?
+    ORDER BY tenant_id,report_id,artifact_id,artifact_version,manifest_hash`);
+  const insert = db.prepare(`INSERT OR IGNORE INTO integrity_daily_root_material(tenant_id,utc_date,report_id,artifact_id,artifact_version,manifest_hash)
+    VALUES (?,?,?,?,?,?)`);
+  for (const root of roots) {
+    const start = `${root.utc_date}T00:00:00.000Z`;
+    const end = new Date(Date.parse(start) + 24 * 60 * 60 * 1000).toISOString();
+    const rows = leaves.all(root.tenant_id, start, end) as Array<{ report_id: string; artifact_id: string; artifact_version: string; manifest_hash: string }>;
+    if (rows.length !== root.leaf_count || merkleRoot(rows.map((row) => row.manifest_hash)) !== root.merkle_root) continue;
+    for (const row of rows) insert.run(root.tenant_id, root.utc_date, row.report_id, row.artifact_id, row.artifact_version, row.manifest_hash);
+  }
 }
 
 /** SQLite 不能移除 NOT NULL；旧 report 表需重建，保留所有既有发布记录和 child FK。 */
@@ -391,7 +418,9 @@ export function applyProvenanceMigrations(db: DB): void {
       } else if (migration.version === "20260811_08_source_collect") {
         if (!hasColumn(db, "generation_trace", "source_id")) db.exec("ALTER TABLE generation_trace ADD COLUMN source_id TEXT REFERENCES source(id)");
         db.exec("CREATE INDEX IF NOT EXISTS idx_generation_trace_source_started ON generation_trace(source_id, started_at DESC)");
-      } else if (migration.version === "20260817_09_bounded_provenance_views" || migration.version === "20260817_10_bounded_provenance_view_index_fix" || migration.version === "20260820_11_effect_event_link" || migration.version === "20260823_12_source_credit_facts" || migration.version === "20260823_14_p1_metric_facts" || migration.version === "20260823_15_p1_metric_fact_contracts" || migration.version === "20260823_16_p1_metric_conflict_audit" || migration.version === "20260823_17_integrity_anchors" || migration.version === "20260823_18_integrity_anchor_immutability" || migration.version === "20260824_19_integrity_anchor_recovery_material" || migration.version === "20260824_20_integrity_anchor_hardening" || migration.version === "20260824_21_integrity_anchor_tenant_reconcile_index" || migration.version === "20260824_22_integrity_check_ledger" || migration.version === "20260824_23_integrity_check_key_revocation" || migration.version === "20260825_24_integrity_maintenance_lease") {
+      } else if (migration.version === "20260825_31_integrity_daily_root_material_backfill") {
+        backfillDailyRootMaterial(db);
+      } else if (migration.version === "20260817_09_bounded_provenance_views" || migration.version === "20260817_10_bounded_provenance_view_index_fix" || migration.version === "20260820_11_effect_event_link" || migration.version === "20260823_12_source_credit_facts" || migration.version === "20260823_14_p1_metric_facts" || migration.version === "20260823_15_p1_metric_fact_contracts" || migration.version === "20260823_16_p1_metric_conflict_audit" || migration.version === "20260823_17_integrity_anchors" || migration.version === "20260823_18_integrity_anchor_immutability" || migration.version === "20260824_19_integrity_anchor_recovery_material" || migration.version === "20260824_20_integrity_anchor_hardening" || migration.version === "20260824_21_integrity_anchor_tenant_reconcile_index" || migration.version === "20260824_22_integrity_check_ledger" || migration.version === "20260824_23_integrity_check_key_revocation" || migration.version === "20260824_24_integrity_lifecycle" || migration.version === "20260824_25_integrity_lifecycle_purge" || migration.version === "20260825_26_integrity_lifecycle_completion_proof" || migration.version === "20260825_27_integrity_lifecycle_registry_proof" || migration.version === "20260825_28_integrity_lifecycle_hold_and_tombstone_retention" || migration.version === "20260825_29_integrity_lifecycle_hold_tombstone_snapshot" || migration.version === "20260825_30_integrity_lifecycle_external_hold" || migration.version === "20260825_32_integrity_maintenance_lease") {
         db.exec(migration.sql);
       } else if (migration.version === "20260823_13_source_credit_tenant_primary_keys") {
         db.exec(migration.sql);

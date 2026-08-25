@@ -1,6 +1,6 @@
 import { generateKeyPairSync } from "node:crypto";
-import { describe, expect, it } from "vitest";
-import { anchorEnvelopeBytes, anchorMatchesManifest, anchorPayload, contentHash, jcs, manifestForArtifact, manifestHash, MemoryAnchorStore, parseCanonicalAnchorEnvelope, sha256, verifySignedAnchor, writeAnchor } from "./integrity-anchors.js";
+import { describe, expect, it, vi } from "vitest";
+import { anchorEnvelopeBytes, anchorMatchesManifest, anchorPayload, contentHash, jcs, manifestForArtifact, manifestHash, MemoryAnchorStore, parseCanonicalAnchorEnvelope, S3AnchorStore, sha256, verifySignedAnchor, writeAnchor } from "./integrity-anchors.js";
 
 const keys = generateKeyPairSync("ed25519");
 const signer = { key_id: "test-key-v1", private_key: keys.privateKey };
@@ -45,5 +45,13 @@ describe("P1c manifest and anchor canonical vectors", () => {
     expect(() => parseCanonicalAnchorEnvelope(text.encode(jcs(unknown)), keys.publicKey)).toThrow("anchor_schema_invalid");
     const badSignature = structuredClone(first.anchor); badSignature.signature = "invalid";
     expect(() => parseCanonicalAnchorEnvelope(anchorEnvelopeBytes(badSignature), keys.publicKey)).toThrow("anchor_signature_invalid");
+  });
+
+  it("extends versioned Object Lock Compliance retention without issuing a rewrite", async () => {
+    const send = vi.fn().mockResolvedValue({}); const store = new S3AnchorStore({ send }, "immutable-bucket");
+    await expect(store.extendRetention("integrity-anchors/v1/default/r/a/v1/anchor-v1.json", "version-7", "2036-02-02T00:00:00.000Z")).resolves.toEqual({ retain_until: "2036-02-02T00:00:00.000Z" });
+    const command = send.mock.calls[0]![0] as { input: { Bucket: string; Key: string; VersionId: string; Retention: { Mode: string; RetainUntilDate: Date } } };
+    expect(command.input).toMatchObject({ Bucket: "immutable-bucket", Key: "integrity-anchors/v1/default/r/a/v1/anchor-v1.json", VersionId: "version-7", Retention: { Mode: "COMPLIANCE" } });
+    expect(command.input.Retention.RetainUntilDate.toISOString()).toBe("2036-02-02T00:00:00.000Z");
   });
 });
