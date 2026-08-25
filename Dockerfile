@@ -74,6 +74,13 @@ COPY --from=builder --chown=app:app /app/node_modules/better-sqlite3 ./node_modu
 # 同理显式带 nodemailer（邮件推送渠道）：含动态 require、被外部化后 standalone trace 漏拷 → 运行时
 # require('nodemailer') MODULE_NOT_FOUND（邮件静默发不出）。nodemailer 零依赖，单行 COPY 即够。
 COPY --from=builder --chown=app:app /app/node_modules/nodemailer ./node_modules/nodemailer
+# 迁移 runner 和完整性生命周期会在 Next standalone trace 之外直接加载 AWS SDK。
+# 显式带入其运行时闭包，避免部署前 migration 在镜像内 MODULE_NOT_FOUND。
+COPY --from=builder --chown=app:app /app/node_modules/@aws-sdk ./node_modules/@aws-sdk
+COPY --from=builder --chown=app:app /app/node_modules/@smithy ./node_modules/@smithy
+COPY --from=builder --chown=app:app /app/node_modules/@aws ./node_modules/@aws
+COPY --from=builder --chown=app:app /app/node_modules/bowser ./node_modules/bowser
+COPY --from=builder --chown=app:app /app/node_modules/tslib ./node_modules/tslib
 # 运行时读取的静态配置（standalone 不会自动带非 JS 资源，靠 INSIGHT_CONFIG_PATH 定位）
 COPY --from=builder --chown=app:app /app/src/lib/config/defaults.yaml ./config/defaults.yaml
 # 容器内 cron 调度表 + 触发脚本（用 Node fetch，免 curl）
