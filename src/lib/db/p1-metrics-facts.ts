@@ -58,6 +58,18 @@ function after(start: string, hours: number): string { return new Date(Date.pars
 function eventType(stage: FunnelStage): EventType { return (TERMINAL_STAGES as readonly string[]).includes(stage) ? "terminal" : "entered"; }
 function stageRank(stage: FunnelStage): number { const index = FUNNEL_STAGES.indexOf(stage as typeof FUNNEL_STAGES[number]); return index === -1 ? FUNNEL_STAGES.length : index; }
 
+/** Keep 400-day dashboard identity separate from 90-day operational details. */
+function appendDashboardTraceFact(db: DB, input: {
+  fact_kind: "funnel" | "validator"; fact_id: string; trace_id: string; attempt: number; stage: string;
+  event_type: "entered" | "terminal" | "validator_result"; pipeline_version: string; occurred_at: string;
+  validator?: string; rule_version?: string; reason_code?: string; severity?: string; terminal?: boolean;
+}): void {
+  if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='dashboard_trace_fact_v1'").get()) return;
+  db.prepare(`INSERT OR IGNORE INTO dashboard_trace_fact_v1(tenant_id,fact_kind,fact_id,trace_id,attempt,stage,event_type,pipeline_version,validator,rule_version,reason_code,severity,terminal,occurred_at,projection_version)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(METRICS_TENANT_ID, input.fact_kind, input.fact_id, input.trace_id, input.attempt, input.stage, input.event_type, input.pipeline_version, input.validator ?? "", input.rule_version ?? "", input.reason_code ?? "", input.severity ?? "", input.terminal ? 1 : 0, input.occurred_at, "dashboard-trace-v1");
+}
+
 function recordConflict(db: DB, input: { event_id: string; trace_id: string; stage: string; attempt: number; event_type: EventType; existing?: string; received: string; observed_at: string }): void {
   db.prepare(`INSERT INTO funnel_event_conflict(tenant_id,id,event_id,trace_id,stage,attempt,event_type,existing_semantic_payload_hash,received_semantic_payload_hash,observed_at)
     VALUES (?,?,?,?,?,?,?,?,?,?)`).run(METRICS_TENANT_ID, `fec_${randomUUID().replaceAll("-", "")}`, input.event_id, input.trace_id, input.stage, input.attempt, input.event_type, input.existing ?? null, input.received, input.observed_at);
@@ -124,6 +136,7 @@ export function appendFunnelEvent(db: DB, input: FunnelEventInput): { event_id: 
   return db.transaction(() => {
     db.prepare(`INSERT INTO funnel_event(tenant_id,event_id,trace_id,run_id,report_id,topic_id,source_id,stage,event_type,attempt,pipeline_version,skip_reason_code,reason_code,occurred_at,ingested_at,schema_version,producer_version,semantic_payload_hash)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(METRICS_TENANT_ID, input.event_id, input.trace_id, input.run_id ?? null, input.report_id ?? null, input.topic_id ?? null, input.source_id ?? null, input.stage, type, attempt, input.pipeline_version, input.skip_reason_code ?? null, input.reason_code ?? null, occurred_at, ingested_at, FUNNEL_SCHEMA_VERSION, producer_version, semantic);
+    appendDashboardTraceFact(db, { fact_kind: "funnel", fact_id: input.event_id, trace_id: input.trace_id, attempt, stage: input.stage, event_type: type, pipeline_version: input.pipeline_version, reason_code: input.reason_code ?? undefined, occurred_at });
     materializeForFact(db, "funnel", input.event_id, occurred_at, ingested_at);
     return { event_id: input.event_id, replayed: false };
   })();
@@ -170,6 +183,7 @@ export function appendValidatorResult(db: DB, input: ValidatorResultInput): { re
   return db.transaction(() => {
     db.prepare(`INSERT INTO validator_result_fact(tenant_id,result_id,trace_id,stage,attempt,pipeline_version,validator,rule_version,reason_code,severity,terminal,topic_id,source_id,occurred_at,ingested_at,schema_version,producer_version,semantic_payload_hash)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(METRICS_TENANT_ID,input.result_id,input.trace_id,input.stage,attempt,input.pipeline_version,input.validator,input.rule_version,input.reason_code,input.severity,input.terminal ? 1 : 0,input.topic_id ?? null,input.source_id ?? null,occurred_at,ingested_at,"validator-result-v1",producer_version,canonicalHash(payload));
+    appendDashboardTraceFact(db, { fact_kind: "validator", fact_id: input.result_id, trace_id: input.trace_id, attempt, stage: input.stage, event_type: "validator_result", pipeline_version: input.pipeline_version, validator: input.validator, rule_version: input.rule_version, reason_code: input.reason_code, severity: input.severity, terminal: input.terminal, occurred_at });
     materializeForFact(db, "validator", input.result_id, occurred_at, ingested_at); return { result_id: input.result_id, replayed: false };
   })();
 }
@@ -303,6 +317,7 @@ export function purgeExpiredMetricFacts(db: DB, now = new Date().toISOString()):
         AND late.fact_kind=metric_late_reconciliation.fact_kind AND late.event_id=metric_late_reconciliation.event_id AND late.occurred_at<?
     )`).run(METRICS_TENANT_ID, cutoff).changes;
     for (const table of ["funnel_event", "cost_ledger", "validator_result_fact", "metric_late_event"]) details += db.prepare(`DELETE FROM ${table} WHERE tenant_id=? AND occurred_at<?`).run(METRICS_TENANT_ID,cutoff).changes;
+    details += db.prepare("DELETE FROM dashboard_trace_fact_v1 WHERE tenant_id=? AND occurred_at<?").run(METRICS_TENANT_ID,dailyCutoff).changes;
     details += db.prepare("DELETE FROM funnel_event_conflict WHERE tenant_id=? AND observed_at<?").run(METRICS_TENANT_ID,cutoff).changes;
     details += db.prepare("DELETE FROM metric_fact_conflict WHERE tenant_id=? AND observed_at<?").run(METRICS_TENANT_ID,cutoff).changes;
     const rollups = db.prepare("DELETE FROM metric_rollup WHERE tenant_id=? AND ((grain='hour' AND bucket_start<?) OR (grain='day' AND bucket_start<?))").run(METRICS_TENANT_ID,cutoff,dailyCutoff).changes;

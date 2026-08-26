@@ -67,6 +67,12 @@ received → accepted → processed → validated → published
 
 API 明细查询最大 UTC 时间窗 31 天、每页最多 100 条；聚合查询最大 400 天。每一条驾驶舱 query 必须用 `EXPLAIN QUERY PLAN` 在版本化容量 fixture 上证明命中索引，禁止扫描 JSON 或无界递归。
 
+### 3.1 长窗精确 trace 读模型（`dashboard-trace-v1`）
+
+31–400 天聚合使用版本化 `dashboard_trace_fact_v1`，而不是把每日 `COUNT(DISTINCT trace_id)` 相加。它仅保留 trace、attempt、阶段/终态、标准化 validator 原因、发生时间和版本字段，并保存 400 天；90 天的原始操作明细保留期不变。该投影由 funnel 与 terminal validator 事实在同一 SQLite 事务中幂等写入，迁移会从仍在线的既有事实回填。
+
+窗口内的漏斗分母、各成功阶段、首次终态原因和 validator 原因都以 `trace_id` 在**整个请求窗口**去重；首次终态以 `(occurred_at, fact_id)` 的最早记录确定。成本仍可按日可加汇总。SQLite 必须完成这些聚合、确定性排序与 `LIMIT`，不得在应用层读出无界 rollup 再聚合。关键索引为 `(tenant_id, projection_version, fact_kind, occurred_at, trace_id)` 与终态窗口索引；容量 fixture 同时覆盖实际长窗 SQL 和该索引。
+
 保留期是本 spec 的准入常量：原始明细 90 天在线、每日汇总 400 天、`generation_trace_request` 100 天；已发布报告及其对应 manifest 在报告可读/归档期内保留，删除后只保留 P0 redaction tombstone。
 
 每个 manifest/version 的**验证材料集合**为：不可变 anchor 的 canonical payload/签名/完整 object key 与 provider version（如有）、`manifest_hash` 与 manifest 签名、对应 content hash、签名 `key_id` 的公钥/证书/撤销历史、canonicalization 版本，以及 `integrity_check` 审计记录。集合的 `retain_until` 必须为 `max(报告可读期结束, 报告归档期结束, 该 artifact 的保留期结束, anchor 创建后 100 天)`；anchor 和每日 Merkle 汇总锚使用 Object Lock Compliance 至该时刻，验证材料的其余部分不得先于该时刻清理。法律保全优先于所有到期时间，并延长整套集合直到 hold 解除。

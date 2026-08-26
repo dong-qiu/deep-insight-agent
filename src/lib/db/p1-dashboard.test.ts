@@ -36,27 +36,38 @@ describe("P1 dashboard read model", () => {
   it("rejects windows beyond the 400-day aggregate cap and proves indexed access", () => {
     const db = dbWithP1();
     expect(() => readP1DashboardMetrics(db, { from: "2026-01-01T00:00:00.000Z", to: "2027-03-01T00:00:00.000Z" })).toThrow("dashboard_window_invalid");
-    expect(P1_METRICS_CAPACITY_FIXTURE.version).toBe("p1-metrics-capacity-v1");
-    const plans = explainP1DashboardQueries(db, P1_METRICS_CAPACITY_FIXTURE.window);
+    expect(P1_METRICS_CAPACITY_FIXTURE.version).toBe("p1-metrics-capacity-v2");
+    const plans = explainP1DashboardQueries(db, P1_METRICS_CAPACITY_FIXTURE.detail_window);
     expect(plans[0]).toContain("idx_funnel_event_tenant_occurred");
     expect(plans[1]).toContain("idx_cost_ledger_tenant_occurred_provider_model");
     expect(plans[2]).toContain("idx_validator_result_tenant_occurred");
     expect(plans[3]).toContain("idx_funnel_event_tenant_occurred");
-    expect(plans[4]).toContain("sqlite_autoindex_integrity_daily_root");
-    expect(plans[5]).toContain("idx_integrity_audit_pending");
+    expect(plans[4]).toContain("idx_funnel_event_tenant_occurred");
+    expect(plans[5]).toContain("sqlite_autoindex_integrity_daily_root");
+    expect(plans[6]).toContain("idx_integrity_audit_pending");
   });
 
-  it("serves a 400-day aggregate exclusively from the indexed daily rollup", () => {
+  it("serves an exact 400-day aggregate from the indexed trace projection", () => {
     const db = dbWithP1();
     appendFunnelEvent(db, { event_id: "long-received", trace_id: "long-trace", stage: "received", pipeline_version: "pipeline-v1", occurred_at: "2026-08-01T01:00:00.000Z", ingested_at: "2026-08-01T01:00:00.000Z" });
-    const window = { from: "2026-01-01T00:00:00.000Z", to: "2027-02-05T00:00:00.000Z" };
+    appendFunnelEvent(db, { event_id: "long-accepted", trace_id: "long-trace", stage: "accepted", pipeline_version: "pipeline-v1", occurred_at: "2026-08-15T01:00:00.000Z", ingested_at: "2026-08-15T01:00:00.000Z" });
+    appendFunnelEvent(db, { event_id: "long-failed", trace_id: "long-trace", stage: "failed", pipeline_version: "pipeline-v1", reason_code: "quote_not_in_source", occurred_at: "2026-09-01T01:00:00.000Z", ingested_at: "2026-09-01T01:00:00.000Z" });
+    appendValidatorResult(db, { result_id: "long-validator-1", trace_id: "long-trace", stage: "validated", pipeline_version: "pipeline-v1", validator: "citation", rule_version: "v1", reason_code: "quote_not_in_source", severity: "error", terminal: true, occurred_at: "2026-08-03T01:00:00.000Z", ingested_at: "2026-08-03T01:00:00.000Z" });
+    appendValidatorResult(db, { result_id: "long-validator-2", trace_id: "long-trace", stage: "validated", pipeline_version: "pipeline-v1", validator: "citation", rule_version: "v1", reason_code: "quote_not_in_source", severity: "error", terminal: true, occurred_at: "2026-08-04T01:00:00.000Z", ingested_at: "2026-08-04T01:00:00.000Z" });
+    const window = P1_METRICS_CAPACITY_FIXTURE.aggregate_window;
 
-    expect(readP1DashboardMetrics(db, window).funnel).toEqual(expect.arrayContaining([expect.objectContaining({ stage: "received", received_traces: 1 })]));
-    expect(readP1DashboardMetrics(db, window).latency).toEqual([]);
+    const dashboard = readP1DashboardMetrics(db, window);
+    expect(dashboard.funnel).toEqual(expect.arrayContaining([expect.objectContaining({ stage: "received", received_traces: 1 }), expect.objectContaining({ stage: "accepted", reached_traces: 1 })]));
+    expect(dashboard.funnel_loss_reasons).toEqual([{ reason_code: "quote_not_in_source", traces: 1 }]);
+    expect(dashboard.validator_reasons).toEqual([expect.objectContaining({ results: 2, traces: 1 })]);
+    expect(dashboard.latency).toEqual([]);
     expect(readIntegrityDashboardStatus(db, window).recent_events).toEqual([]);
 
     const plans = explainP1DashboardQueries(db, window);
-    expect(plans).toHaveLength(4);
-    expect(plans.slice(0, 3).every((plan) => plan.includes("idx_metric_rollup_tenant_grain_bucket"))).toBe(true);
+    expect(plans).toHaveLength(5);
+    expect(plans[0]).toContain("idx_dashboard_trace_fact_v1_window");
+    expect(plans[1]).toContain("idx_metric_rollup_tenant_grain_bucket");
+    expect(plans[2]).toContain("idx_dashboard_trace_fact_v1_kind_window");
+    expect(plans[3]).toContain("idx_dashboard_trace_fact_v1_window");
   });
 });

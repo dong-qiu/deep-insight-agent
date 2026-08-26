@@ -661,6 +661,35 @@ CREATE TRIGGER metric_fact_conflict_no_update BEFORE UPDATE ON metric_fact_confl
 CREATE TRIGGER metric_fact_conflict_no_delete BEFORE DELETE ON metric_fact_conflict WHEN (SELECT retention_delete FROM metric_maintenance_guard WHERE id=1) = 0 BEGIN SELECT RAISE(ABORT, 'metric_fact_conflict is append-only'); END;
 `;
 
+/**
+ * Versioned, trace-granular dashboard projection.  Daily rollups cannot be
+ * added together for a distinct-trace metric, so this projection retains the
+ * minimum controlled fields required to calculate exact 31–400 day windows.
+ */
+export const P1_DASHBOARD_TRACE_READ_MODEL_V1_SCHEMA_SQL = `
+CREATE TABLE dashboard_trace_fact_v1 (
+  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),
+  fact_kind TEXT NOT NULL CHECK(fact_kind IN ('funnel','validator')),
+  fact_id TEXT NOT NULL,
+  trace_id TEXT NOT NULL,
+  attempt INTEGER NOT NULL CHECK(attempt > 0),
+  stage TEXT NOT NULL,
+  event_type TEXT NOT NULL CHECK(event_type IN ('entered','terminal','validator_result')),
+  pipeline_version TEXT NOT NULL,
+  validator TEXT NOT NULL DEFAULT '',
+  rule_version TEXT NOT NULL DEFAULT '',
+  reason_code TEXT NOT NULL DEFAULT '',
+  severity TEXT NOT NULL DEFAULT '',
+  terminal INTEGER NOT NULL DEFAULT 0 CHECK(terminal IN (0,1)),
+  occurred_at TEXT NOT NULL,
+  projection_version TEXT NOT NULL CHECK(projection_version = 'dashboard-trace-v1'),
+  PRIMARY KEY(tenant_id,fact_kind,fact_id)
+);
+CREATE INDEX idx_dashboard_trace_fact_v1_window ON dashboard_trace_fact_v1(tenant_id,projection_version,occurred_at,trace_id);
+CREATE INDEX idx_dashboard_trace_fact_v1_kind_window ON dashboard_trace_fact_v1(tenant_id,projection_version,fact_kind,occurred_at,trace_id);
+CREATE INDEX idx_dashboard_trace_fact_v1_terminal_window ON dashboard_trace_fact_v1(tenant_id,projection_version,fact_kind,event_type,occurred_at,trace_id,fact_id);
+`;
+
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS source (
   id             TEXT PRIMARY KEY,
