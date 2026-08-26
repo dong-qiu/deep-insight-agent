@@ -45,4 +45,18 @@ describe("P1 dashboard read model", () => {
     expect(plans[4]).toContain("sqlite_autoindex_integrity_daily_root");
     expect(plans[5]).toContain("idx_integrity_audit_pending");
   });
+
+  it("serves a 400-day aggregate exclusively from the indexed daily rollup", () => {
+    const db = dbWithP1();
+    appendFunnelEvent(db, { event_id: "long-received", trace_id: "long-trace", stage: "received", pipeline_version: "pipeline-v1", occurred_at: "2026-08-01T01:00:00.000Z", ingested_at: "2026-08-01T01:00:00.000Z" });
+    const window = { from: "2026-01-01T00:00:00.000Z", to: "2027-02-05T00:00:00.000Z" };
+
+    expect(readP1DashboardMetrics(db, window).funnel).toEqual(expect.arrayContaining([expect.objectContaining({ stage: "received", received_traces: 1 })]));
+    expect(readP1DashboardMetrics(db, window).latency).toEqual([]);
+    expect(readIntegrityDashboardStatus(db, window).recent_events).toEqual([]);
+
+    const plans = explainP1DashboardQueries(db, window);
+    expect(plans).toHaveLength(4);
+    expect(plans.slice(0, 3).every((plan) => plan.includes("idx_metric_rollup_tenant_grain_bucket"))).toBe(true);
+  });
 });

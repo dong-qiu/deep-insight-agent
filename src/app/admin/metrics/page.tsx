@@ -1,7 +1,9 @@
 import Link from "next/link";
+import { randomUUID } from "node:crypto";
 import { notFound } from "next/navigation";
 import type { ReactNode } from "react";
 import { auth } from "../../../auth.js";
+import { appendAudit } from "../../../lib/db/audit.js";
 import { getDb } from "../../../lib/db/index.js";
 import { dashboardWindow, readIntegrityDashboardStatus, readP1DashboardMetrics, type IntegrityDashboardStatus, type P1DashboardMetrics } from "../../../lib/db/p1-dashboard.js";
 
@@ -17,12 +19,16 @@ function sectionUnavailable(label: string): ReactNode {
 }
 
 export default async function MetricsDashboard() {
-  if ((await auth())?.user?.role !== "admin") notFound();
+  const session = await auth();
+  if (session?.user?.role !== "admin") notFound();
+  const user = session.user as typeof session.user & { id?: string | null };
+  const db = getDb();
+  appendAudit(db, { actor: user.id ?? user.email ?? "shared-admin-unattributed", action: "dashboard_read", target: "dashboard", detail: { allowed: true, target_type: "dashboard", tenant: "default", request_id: randomUUID(), reason_code: "authorized" } });
   const window = dashboardWindow();
   let metrics: P1DashboardMetrics | null = null;
   let integrity: IntegrityDashboardStatus | null = null;
-  try { metrics = readP1DashboardMetrics(getDb(), window); } catch { /* isolated diagnostic failure */ }
-  try { integrity = readIntegrityDashboardStatus(getDb(), window); } catch { /* isolated diagnostic failure */ }
+  try { metrics = readP1DashboardMetrics(db, window); } catch { /* isolated diagnostic failure */ }
+  try { integrity = readIntegrityDashboardStatus(db, window); } catch { /* isolated diagnostic failure */ }
 
   return (
     <section>

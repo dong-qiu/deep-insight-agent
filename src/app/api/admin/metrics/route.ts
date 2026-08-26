@@ -1,5 +1,6 @@
 /** GET /api/admin/metrics — bounded, read-only P1 dashboard projection. */
 import { NextResponse } from "next/server";
+import { randomUUID } from "node:crypto";
 import { requireAdminActor } from "../../../../lib/auth-guard.js";
 import { appendAudit } from "../../../../lib/db/audit.js";
 import { getDb } from "../../../../lib/db/index.js";
@@ -14,7 +15,7 @@ export async function GET(request: Request): Promise<Response> {
   const actor = await requireAdminActor();
   if (!actor) {
     // Never include a requested range or resource identity in a denied audit.
-    try { appendAudit(getDb(), { action: "dashboard_read_denied", target: "dashboard", detail: { reason_code: "authorization_denied" } }); } catch { /* 404 is authoritative */ }
+    try { appendAudit(getDb(), { actor: "anonymous", action: "dashboard_read_denied", target: "dashboard", detail: { allowed: false, target_type: "dashboard", tenant: "default", request_id: randomUUID(), reason_code: "authorization_denied" } }); } catch { /* 404 is authoritative */ }
     return notFound();
   }
 
@@ -27,6 +28,7 @@ export async function GET(request: Request): Promise<Response> {
   }
 
   const db = getDb();
+  appendAudit(db, { actor: actor.id, action: "dashboard_read", target: "dashboard", detail: { allowed: true, target_type: "dashboard", tenant: "default", request_id: randomUUID(), reason_code: "authorized" } });
   let metrics = null;
   let integrity = null;
   const diagnostics: { metrics: "available" | "unavailable"; integrity: "available" | "unavailable" } = { metrics: "available", integrity: "available" };

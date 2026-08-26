@@ -24,6 +24,7 @@ describe("GET /api/admin/metrics", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ metrics: { funnel: [] }, integrity: null, diagnostics: { metrics: "available", integrity: "unavailable" } });
     expect(mocks.metrics).toHaveBeenCalledWith(mocks.db, { from: "2026-08-01T00:00:00.000Z", to: "2026-08-02T00:00:00.000Z" });
+    expect(mocks.audit).toHaveBeenCalledWith(mocks.db, { actor: "admin_1", action: "dashboard_read", target: "dashboard", detail: expect.objectContaining({ allowed: true, target_type: "dashboard", tenant: "default", reason_code: "authorized", request_id: expect.any(String) }) });
   });
 
   it("does not disclose the dashboard to a viewer or unauthenticated caller", async () => {
@@ -31,6 +32,6 @@ describe("GET /api/admin/metrics", () => {
     const response = await GET(new Request("http://x/api/admin/metrics?from=2026-08-01T00:00:00.000Z"));
     expect(response.status).toBe(404);
     expect(mocks.metrics).not.toHaveBeenCalled();
-    expect(mocks.audit).toHaveBeenCalledWith(mocks.db, { action: "dashboard_read_denied", target: "dashboard", detail: { reason_code: "authorization_denied" } });
+    expect(mocks.audit).toHaveBeenCalledWith(mocks.db, { actor: "anonymous", action: "dashboard_read_denied", target: "dashboard", detail: expect.objectContaining({ allowed: false, target_type: "dashboard", tenant: "default", reason_code: "authorization_denied", request_id: expect.any(String) }) });
   });
 });
