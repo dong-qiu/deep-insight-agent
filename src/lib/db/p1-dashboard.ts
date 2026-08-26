@@ -59,18 +59,20 @@ function percentile(samples: number[], p: number): number {
 }
 
 /**
- * Uses only completed trace/attempts and adjacent `entered` stages. The
- * lookback is no wider than the 31-day raw-fact window.
+ * Uses only completed trace/attempts and adjacent `entered` stages from the
+ * selected bounded projection.
  */
-function latencyFromTerminalFacts(db: DB, window: DashboardWindow): { latency: DashboardLatency[]; diagnostics: P1DashboardMetrics["latency_diagnostics"] } {
+function latencyFromTerminalFacts(db: DB, window: DashboardWindow, source: "raw" | "trace" = "raw"): { latency: DashboardLatency[]; diagnostics: P1DashboardMetrics["latency_diagnostics"] } {
+  const table = source === "raw" ? "funnel_event" : "dashboard_trace_fact_v1";
+  const sourcePredicate = source === "raw" ? "" : " AND projection_version='dashboard-trace-v1' AND fact_kind='funnel'";
   const rows = db.prepare(`WITH terminal AS (
       SELECT trace_id,attempt,occurred_at AS terminal_at
-      FROM funnel_event
-      WHERE tenant_id=? AND event_type='terminal' AND occurred_at>=? AND occurred_at<?
+      FROM ${table}
+      WHERE tenant_id=? AND event_type='terminal'${sourcePredicate} AND occurred_at>=? AND occurred_at<?
     ) SELECT e.trace_id,e.attempt,e.stage,e.event_type,e.occurred_at
-    FROM terminal t JOIN funnel_event e
+    FROM terminal t JOIN ${table} e
       ON e.tenant_id=? AND e.trace_id=t.trace_id AND e.attempt=t.attempt AND e.event_type='entered'
-        AND e.occurred_at>=? AND e.occurred_at<=t.terminal_at
+        ${sourcePredicate.replaceAll(" AND ", " AND e.")} AND e.occurred_at>=? AND e.occurred_at<=t.terminal_at
     ORDER BY e.trace_id,e.attempt,e.occurred_at ASC`)
     .all(METRICS_TENANT_ID, window.from, window.to, METRICS_TENANT_ID, window.from) as Array<{ trace_id: string; attempt: number; stage: string; event_type: "entered"; occurred_at: string }>;
 
@@ -99,14 +101,47 @@ function latencyFromTerminalFacts(db: DB, window: DashboardWindow): { latency: D
     }
   }
   const inProgress = db.prepare(`SELECT COUNT(*) AS count FROM (
-      SELECT DISTINCT f.trace_id,f.attempt FROM funnel_event f
-      WHERE f.tenant_id=? AND f.event_type='entered' AND f.occurred_at>=? AND f.occurred_at<?
-        AND NOT EXISTS (SELECT 1 FROM funnel_event terminal WHERE terminal.tenant_id=f.tenant_id AND terminal.trace_id=f.trace_id AND terminal.attempt=f.attempt AND terminal.event_type='terminal' AND terminal.occurred_at<?)
+      SELECT DISTINCT f.trace_id,f.attempt FROM ${table} f
+      WHERE f.tenant_id=? AND f.event_type='entered'${sourcePredicate.replaceAll(" AND ", " AND f.")} AND f.occurred_at>=? AND f.occurred_at<?
+        AND NOT EXISTS (SELECT 1 FROM ${table} terminal WHERE terminal.tenant_id=f.tenant_id AND terminal.trace_id=f.trace_id AND terminal.attempt=f.attempt AND terminal.event_type='terminal'${sourcePredicate.replaceAll(" AND ", " AND terminal.")} AND terminal.occurred_at<?)
     )`).get(METRICS_TENANT_ID, window.from, window.to, window.to) as { count: number };
   return { latency: [...transitions.entries()]
     .map(([transition, samples]) => ({ transition, samples: samples.length, p50_ms: percentile(samples, 0.5), p95_ms: percentile(samples, 0.95), p99_ms: percentile(samples, 0.99) }))
     .sort((a, b) => b.samples - a.samples || a.transition.localeCompare(b.transition))
     .slice(0, DISPLAY_LIMIT), diagnostics: { completed_traces: byTrace.size, in_progress_traces: numeric(inProgress.count), negative_clock_samples, missing_clock_samples } };
+}
+
+function utcDayStart(value: string): string { return `${value.slice(0, 10)}T00:00:00.000Z`; }
+function nextUtcDay(value: string): string { return new Date(Date.parse(utcDayStart(value)) + DAY_MS).toISOString(); }
+
+/** Exact arbitrary long-window cost read: detail for partial UTC days, daily rollups between them. */
+function longWindowCosts(db: DB, window: DashboardWindow): P1DashboardMetrics["costs"] {
+  const fullStart = window.from === utcDayStart(window.from) ? window.from : nextUtcDay(window.from);
+  const fullEnd = utcDayStart(window.to);
+  const parts: Array<{ sql: string; params: unknown[] }> = [];
+  const addDetailRange = (from: string, to: string) => {
+    if (Date.parse(from) >= Date.parse(to)) return;
+    parts.push({ sql: `SELECT substr(occurred_at,1,10) AS bucket_date,pipeline_version,stage,provider,model,currency,
+        COALESCE(SUM(CASE WHEN cost_status='known' THEN amount_minor ELSE 0 END),0) AS known_cost_minor,
+        COUNT(*) FILTER (WHERE cost_status='known') AS known_cost_entries,COUNT(*) FILTER (WHERE cost_status='unknown') AS unknown_cost_entries
+        FROM cost_ledger WHERE tenant_id=? AND occurred_at>=? AND occurred_at<?
+        GROUP BY bucket_date,pipeline_version,stage,provider,model,currency`, params: [METRICS_TENANT_ID, from, to] });
+  };
+  addDetailRange(window.from, fullStart);
+  if (Date.parse(fullEnd) >= Date.parse(fullStart)) addDetailRange(fullEnd, window.to);
+  if (Date.parse(fullStart) < Date.parse(fullEnd)) {
+    parts.push({ sql: `SELECT substr(bucket_start,1,10) AS bucket_date,pipeline_version,stage,provider,model,currency,
+        SUM(known_cost_minor) AS known_cost_minor,SUM(known_cost_entries) AS known_cost_entries,SUM(unknown_cost_entries) AS unknown_cost_entries
+        FROM metric_rollup WHERE tenant_id=? AND grain='day' AND metric_kind='cost' AND bucket_start>=? AND bucket_start<?
+        GROUP BY bucket_date,pipeline_version,stage,provider,model,currency`, params: [METRICS_TENANT_ID, fullStart, fullEnd] });
+  }
+  if (!parts.length) return [];
+  const costs = db.prepare(`SELECT bucket_date,pipeline_version,stage,provider,model,currency,
+      SUM(known_cost_minor) AS known_cost_minor,SUM(known_cost_entries) AS known_cost_entries,SUM(unknown_cost_entries) AS unknown_cost_entries
+      FROM (${parts.map((part) => part.sql).join(" UNION ALL ")})
+      GROUP BY bucket_date,pipeline_version,stage,provider,model,currency ORDER BY bucket_date DESC,known_cost_minor DESC LIMIT ?`)
+    .all(...parts.flatMap((part) => part.params), DISPLAY_LIMIT) as P1DashboardMetrics["costs"];
+  return costs.map((row) => ({ ...row, known_cost_minor: numeric(row.known_cost_minor), known_cost_entries: numeric(row.known_cost_entries), unknown_cost_entries: numeric(row.unknown_cost_entries) }));
 }
 
 /**
@@ -130,11 +165,7 @@ function readP1DashboardLongWindow(db: DB, window: DashboardWindow): P1Dashboard
     .all(METRICS_TENANT_ID, window.from, window.to, DISPLAY_LIMIT) as Array<{ stage: string; terminal_events: number }>;
   const funnel_loss_reasons = db.prepare(`${firstTerminals} SELECT reason_code,COUNT(*) AS traces FROM ranked WHERE ordinal=1 GROUP BY reason_code ORDER BY traces DESC,reason_code ASC LIMIT ?`)
     .all(METRICS_TENANT_ID, window.from, window.to, DISPLAY_LIMIT) as P1DashboardMetrics["funnel_loss_reasons"];
-  const costs = db.prepare(`SELECT substr(bucket_start,1,10) AS bucket_date,pipeline_version,stage,provider,model,currency,
-      SUM(known_cost_minor) AS known_cost_minor,SUM(known_cost_entries) AS known_cost_entries,SUM(unknown_cost_entries) AS unknown_cost_entries
-      FROM metric_rollup WHERE tenant_id=? AND grain='day' AND metric_kind='cost' AND bucket_start>=? AND bucket_start<?
-      GROUP BY bucket_date,pipeline_version,stage,provider,model,currency ORDER BY bucket_date DESC,known_cost_minor DESC LIMIT ?`)
-    .all(METRICS_TENANT_ID, window.from, window.to, DISPLAY_LIMIT) as P1DashboardMetrics["costs"];
+  const costs = longWindowCosts(db, window);
   const validator_reasons = db.prepare(`SELECT validator,rule_version,reason_code,severity,COUNT(*) AS results,COUNT(DISTINCT trace_id) AS traces
       FROM dashboard_trace_fact_v1 WHERE tenant_id=? AND projection_version='dashboard-trace-v1' AND fact_kind='validator' AND terminal=1 AND occurred_at>=? AND occurred_at<?
       GROUP BY validator,rule_version,reason_code,severity ORDER BY results DESC,reason_code ASC LIMIT ?`)
@@ -146,7 +177,8 @@ function readP1DashboardLongWindow(db: DB, window: DashboardWindow): P1Dashboard
     return { stage, received_traces: received, reached_traces, terminal_events: terminalByStage.get(stage) ?? 0, conversion_pct: received ? (reached_traces / received) * 100 : null };
   });
   for (const row of terminalRows) if (!STAGE_RANK.has(row.stage)) funnel.push({ stage: row.stage, received_traces: received, reached_traces: 0, terminal_events: numeric(row.terminal_events), conversion_pct: null });
-  return { window, funnel, funnel_loss_reasons: funnel_loss_reasons.map((row) => ({ ...row, traces: numeric(row.traces) })), costs: costs.map((row) => ({ ...row, known_cost_minor: numeric(row.known_cost_minor), known_cost_entries: numeric(row.known_cost_entries), unknown_cost_entries: numeric(row.unknown_cost_entries) })), validator_reasons: validator_reasons.map((row) => ({ ...row, results: numeric(row.results), traces: numeric(row.traces) })), latency: [], latency_diagnostics: { completed_traces: 0, in_progress_traces: 0, negative_clock_samples: 0, missing_clock_samples: 0 } };
+  const latency = latencyFromTerminalFacts(db, window, "trace");
+  return { window, funnel, funnel_loss_reasons: funnel_loss_reasons.map((row) => ({ ...row, traces: numeric(row.traces) })), costs, validator_reasons: validator_reasons.map((row) => ({ ...row, results: numeric(row.results), traces: numeric(row.traces) })), latency: latency.latency, latency_diagnostics: latency.diagnostics };
 }
 
 /** Aggregate read model: all SQL predicates begin with the server-injected tenant. */
@@ -221,6 +253,7 @@ export function explainP1DashboardQueries(db: DB, requested: Partial<DashboardWi
       explain("SELECT substr(bucket_start,1,10),pipeline_version,stage,provider,model,currency,SUM(known_cost_minor) FROM metric_rollup WHERE tenant_id=? AND grain='day' AND metric_kind='cost' AND bucket_start>=? AND bucket_start<? GROUP BY substr(bucket_start,1,10),pipeline_version,stage,provider,model,currency ORDER BY substr(bucket_start,1,10) DESC,SUM(known_cost_minor) DESC LIMIT ?", METRICS_TENANT_ID, window.from, window.to, DISPLAY_LIMIT),
       explain("SELECT validator,rule_version,reason_code,severity,COUNT(*),COUNT(DISTINCT trace_id) FROM dashboard_trace_fact_v1 WHERE tenant_id=? AND projection_version='dashboard-trace-v1' AND fact_kind='validator' AND terminal=1 AND occurred_at>=? AND occurred_at<? GROUP BY validator,rule_version,reason_code,severity ORDER BY COUNT(*) DESC,reason_code ASC LIMIT ?", METRICS_TENANT_ID, window.from, window.to, DISPLAY_LIMIT),
       explain("WITH ranked AS (SELECT trace_id,stage,ROW_NUMBER() OVER (PARTITION BY trace_id ORDER BY occurred_at ASC,fact_id ASC) AS ordinal FROM dashboard_trace_fact_v1 WHERE tenant_id=? AND projection_version='dashboard-trace-v1' AND fact_kind='funnel' AND event_type='terminal' AND occurred_at>=? AND occurred_at<?) SELECT stage,COUNT(*) FROM ranked WHERE ordinal=1 GROUP BY stage ORDER BY COUNT(*) DESC,stage ASC LIMIT ?", METRICS_TENANT_ID, window.from, window.to, DISPLAY_LIMIT),
+      explain("WITH terminal AS (SELECT trace_id,attempt,occurred_at AS terminal_at FROM dashboard_trace_fact_v1 WHERE tenant_id=? AND projection_version='dashboard-trace-v1' AND fact_kind='funnel' AND event_type='terminal' AND occurred_at>=? AND occurred_at<?) SELECT e.trace_id FROM terminal t JOIN dashboard_trace_fact_v1 e ON e.tenant_id=? AND e.projection_version='dashboard-trace-v1' AND e.fact_kind='funnel' AND e.trace_id=t.trace_id AND e.attempt=t.attempt AND e.event_type='entered' AND e.occurred_at>=? AND e.occurred_at<=t.terminal_at", METRICS_TENANT_ID, window.from, window.to, METRICS_TENANT_ID, window.from),
       explain("SELECT * FROM integrity_daily_root WHERE tenant_id=? ORDER BY utc_date DESC LIMIT 1", METRICS_TENANT_ID),
     ];
   }

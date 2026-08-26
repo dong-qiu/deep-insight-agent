@@ -60,14 +60,41 @@ describe("P1 dashboard read model", () => {
     expect(dashboard.funnel).toEqual(expect.arrayContaining([expect.objectContaining({ stage: "received", received_traces: 1 }), expect.objectContaining({ stage: "accepted", reached_traces: 1 })]));
     expect(dashboard.funnel_loss_reasons).toEqual([{ reason_code: "quote_not_in_source", traces: 1 }]);
     expect(dashboard.validator_reasons).toEqual([expect.objectContaining({ results: 2, traces: 1 })]);
-    expect(dashboard.latency).toEqual([]);
+    expect(dashboard.latency).toEqual(expect.arrayContaining([expect.objectContaining({ transition: "received → accepted", samples: 1, p50_ms: 1209600000 })]));
     expect(readIntegrityDashboardStatus(db, window).recent_events).toEqual([]);
 
     const plans = explainP1DashboardQueries(db, window);
-    expect(plans).toHaveLength(5);
+    expect(plans).toHaveLength(6);
     expect(plans[0]).toContain("idx_dashboard_trace_fact_v1_window");
     expect(plans[1]).toContain("idx_metric_rollup_tenant_grain_bucket");
     expect(plans[2]).toContain("idx_dashboard_trace_fact_v1_kind_window");
     expect(plans[3]).toContain("idx_dashboard_trace_fact_v1_window");
+    expect(plans[4]).toContain("idx_dashboard_trace_fact_v1_terminal_window");
+  });
+
+  it("keeps long-window latency diagnostics and partial UTC-day costs exact", () => {
+    const db = dbWithP1();
+    const window = { from: "2026-08-01T12:00:00.000Z", to: "2026-09-02T12:00:00.000Z" };
+    appendFunnelEvent(db, { event_id: "long-completed-received", trace_id: "long-completed", stage: "received", pipeline_version: "pipeline-v1", occurred_at: "2026-08-01T12:00:00.000Z", ingested_at: "2026-08-01T12:00:00.000Z" });
+    appendFunnelEvent(db, { event_id: "long-completed-accepted", trace_id: "long-completed", stage: "accepted", pipeline_version: "pipeline-v1", occurred_at: "2026-08-01T12:01:00.000Z", ingested_at: "2026-08-01T12:01:00.000Z" });
+    appendFunnelEvent(db, { event_id: "long-completed-terminal", trace_id: "long-completed", stage: "failed", pipeline_version: "pipeline-v1", reason_code: "internal_error", occurred_at: "2026-08-01T12:02:00.000Z", ingested_at: "2026-08-01T12:02:00.000Z" });
+    appendFunnelEvent(db, { event_id: "long-missing-received", trace_id: "long-missing", stage: "received", pipeline_version: "pipeline-v1", occurred_at: "2026-08-03T01:00:00.000Z", ingested_at: "2026-08-03T01:00:00.000Z" });
+    appendFunnelEvent(db, { event_id: "long-missing-terminal", trace_id: "long-missing", stage: "failed", pipeline_version: "pipeline-v1", reason_code: "internal_error", occurred_at: "2026-08-03T01:01:00.000Z", ingested_at: "2026-08-03T01:01:00.000Z" });
+    appendFunnelEvent(db, { event_id: "long-in-progress", trace_id: "long-in-progress", stage: "received", pipeline_version: "pipeline-v1", occurred_at: "2026-08-04T01:00:00.000Z", ingested_at: "2026-08-04T01:00:00.000Z" });
+    db.prepare(`INSERT INTO dashboard_trace_fact_v1(tenant_id,fact_kind,fact_id,trace_id,attempt,stage,event_type,pipeline_version,occurred_at,projection_version)
+      VALUES ('default','funnel','long-negative-received','long-negative',1,'received','entered','pipeline-v1','2026-08-05T02:00:00.000Z','dashboard-trace-v1'),
+        ('default','funnel','long-negative-accepted','long-negative',1,'accepted','entered','pipeline-v1','2026-08-05T01:00:00.000Z','dashboard-trace-v1'),
+        ('default','funnel','long-negative-terminal','long-negative',1,'failed','terminal','pipeline-v1','2026-08-05T03:00:00.000Z','dashboard-trace-v1')`).run();
+    appendCostLedger(db, { entry_id: "before-window", trace_id: "long-completed", stage: "processed", pipeline_version: "pipeline-v1", provider: "openai", model: "gpt", currency: "USD", amount_minor: 100, cost_status: "known", occurred_at: "2026-08-01T11:00:00.000Z", ingested_at: "2026-08-01T11:00:00.000Z" });
+    appendCostLedger(db, { entry_id: "first-boundary", trace_id: "long-completed", stage: "processed", pipeline_version: "pipeline-v1", provider: "openai", model: "gpt", currency: "USD", amount_minor: 7, cost_status: "known", occurred_at: "2026-08-01T13:00:00.000Z", ingested_at: "2026-08-01T13:00:00.000Z" });
+    appendCostLedger(db, { entry_id: "middle-day", trace_id: "long-completed", stage: "processed", pipeline_version: "pipeline-v1", provider: "openai", model: "gpt", currency: "USD", amount_minor: 9, cost_status: "known", occurred_at: "2026-08-02T01:00:00.000Z", ingested_at: "2026-08-02T01:00:00.000Z" });
+
+    const dashboard = readP1DashboardMetrics(db, window);
+    expect(dashboard.latency).toEqual(expect.arrayContaining([expect.objectContaining({ transition: "received → accepted", samples: 1, p50_ms: 60_000 })]));
+    expect(dashboard.latency_diagnostics).toEqual({ completed_traces: 3, in_progress_traces: 1, negative_clock_samples: 1, missing_clock_samples: 1 });
+    expect(dashboard.costs).toEqual(expect.arrayContaining([
+      expect.objectContaining({ bucket_date: "2026-08-01", known_cost_minor: 7, known_cost_entries: 1 }),
+      expect.objectContaining({ bucket_date: "2026-08-02", known_cost_minor: 9, known_cost_entries: 1 }),
+    ]));
   });
 });
