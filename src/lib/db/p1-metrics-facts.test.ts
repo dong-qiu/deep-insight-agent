@@ -116,7 +116,7 @@ describe("P1 dashboard metric facts", () => {
 
   it("rolls up topic/source and first terminal reason, with all dashboard reads using indexed plans", () => {
     const db = dbWithMetrics(); const time = "2026-08-01T01:00:00.000Z";
-    expect(P1_METRICS_CAPACITY_FIXTURE.version).toBe("p1-metrics-capacity-v2");
+    expect(P1_METRICS_CAPACITY_FIXTURE.version).toBe("p1-metrics-capacity-v3");
     appendFunnelEvent(db, { event_id: "received", trace_id: "trace_1", stage: "received", topic_id: "topic_1", source_id: "source_1", pipeline_version: "pipeline-v1", occurred_at: time, ingested_at: time });
     appendFunnelEvent(db, { event_id: "failed", trace_id: "trace_1", stage: "failed", topic_id: "topic_1", source_id: "source_1", pipeline_version: "pipeline-v1", reason_code: "quote_not_in_source", occurred_at: "2026-08-01T01:01:00.000Z", ingested_at: "2026-08-01T01:01:00.000Z" });
     appendCostLedger(db, { entry_id: "cost", trace_id: "trace_1", stage: "processed", topic_id: "topic_1", source_id: "source_1", pipeline_version: "pipeline-v1", provider: "anthropic", model: "claude", currency: "USD", amount_minor: 4, cost_status: "known", occurred_at: time, ingested_at: time });

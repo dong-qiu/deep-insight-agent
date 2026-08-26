@@ -114,8 +114,10 @@ function latencyFromTerminalFacts(db: DB, window: DashboardWindow, source: "raw"
 function utcDayStart(value: string): string { return `${value.slice(0, 10)}T00:00:00.000Z`; }
 function nextUtcDay(value: string): string { return new Date(Date.parse(utcDayStart(value)) + DAY_MS).toISOString(); }
 
-/** Exact arbitrary long-window cost read: detail for partial UTC days, daily rollups between them. */
-function longWindowCosts(db: DB, window: DashboardWindow): P1DashboardMetrics["costs"] {
+type PreparedDashboardQuery = { sql: string; params: unknown[] };
+
+/** Exact arbitrary long-window cost read: projected detail for partial UTC days, daily rollups between them. */
+function longWindowCostsQuery(window: DashboardWindow): PreparedDashboardQuery | null {
   const fullStart = window.from === utcDayStart(window.from) ? window.from : nextUtcDay(window.from);
   const fullEnd = utcDayStart(window.to);
   const parts: Array<{ sql: string; params: unknown[] }> = [];
@@ -124,7 +126,7 @@ function longWindowCosts(db: DB, window: DashboardWindow): P1DashboardMetrics["c
     parts.push({ sql: `SELECT substr(occurred_at,1,10) AS bucket_date,pipeline_version,stage,provider,model,currency,
         COALESCE(SUM(CASE WHEN cost_status='known' THEN amount_minor ELSE 0 END),0) AS known_cost_minor,
         COUNT(*) FILTER (WHERE cost_status='known') AS known_cost_entries,COUNT(*) FILTER (WHERE cost_status='unknown') AS unknown_cost_entries
-        FROM cost_ledger WHERE tenant_id=? AND occurred_at>=? AND occurred_at<?
+        FROM dashboard_cost_fact_v1 WHERE tenant_id=? AND projection_version='dashboard-cost-v1' AND occurred_at>=? AND occurred_at<?
         GROUP BY bucket_date,pipeline_version,stage,provider,model,currency`, params: [METRICS_TENANT_ID, from, to] });
   };
   addDetailRange(window.from, fullStart);
@@ -135,12 +137,17 @@ function longWindowCosts(db: DB, window: DashboardWindow): P1DashboardMetrics["c
         FROM metric_rollup WHERE tenant_id=? AND grain='day' AND metric_kind='cost' AND bucket_start>=? AND bucket_start<?
         GROUP BY bucket_date,pipeline_version,stage,provider,model,currency`, params: [METRICS_TENANT_ID, fullStart, fullEnd] });
   }
-  if (!parts.length) return [];
-  const costs = db.prepare(`SELECT bucket_date,pipeline_version,stage,provider,model,currency,
+  if (!parts.length) return null;
+  return { sql: `SELECT bucket_date,pipeline_version,stage,provider,model,currency,
       SUM(known_cost_minor) AS known_cost_minor,SUM(known_cost_entries) AS known_cost_entries,SUM(unknown_cost_entries) AS unknown_cost_entries
       FROM (${parts.map((part) => part.sql).join(" UNION ALL ")})
-      GROUP BY bucket_date,pipeline_version,stage,provider,model,currency ORDER BY bucket_date DESC,known_cost_minor DESC LIMIT ?`)
-    .all(...parts.flatMap((part) => part.params), DISPLAY_LIMIT) as P1DashboardMetrics["costs"];
+      GROUP BY bucket_date,pipeline_version,stage,provider,model,currency ORDER BY bucket_date DESC,known_cost_minor DESC LIMIT ?`, params: [...parts.flatMap((part) => part.params), DISPLAY_LIMIT] };
+}
+
+function longWindowCosts(db: DB, window: DashboardWindow): P1DashboardMetrics["costs"] {
+  const query = longWindowCostsQuery(window);
+  if (!query) return [];
+  const costs = db.prepare(query.sql).all(...query.params) as P1DashboardMetrics["costs"];
   return costs.map((row) => ({ ...row, known_cost_minor: numeric(row.known_cost_minor), known_cost_entries: numeric(row.known_cost_entries), unknown_cost_entries: numeric(row.unknown_cost_entries) }));
 }
 
@@ -248,9 +255,11 @@ export function explainP1DashboardQueries(db: DB, requested: Partial<DashboardWi
   const window = dashboardWindow(requested);
   const explain = (sql: string, ...params: unknown[]): string => (db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...params) as Array<{ detail: string }>).map((row) => row.detail).join("\n");
   if (!usesRawFacts(window)) {
+    const costQuery = longWindowCostsQuery(window);
+    if (!costQuery) throw new Error("dashboard_cost_query_empty");
     return [
       explain("WITH received AS (SELECT DISTINCT trace_id FROM dashboard_trace_fact_v1 WHERE tenant_id=? AND projection_version='dashboard-trace-v1' AND fact_kind='funnel' AND event_type='entered' AND stage='received' AND occurred_at>=? AND occurred_at<?) SELECT COUNT(*) FROM received", METRICS_TENANT_ID, window.from, window.to),
-      explain("SELECT substr(bucket_start,1,10),pipeline_version,stage,provider,model,currency,SUM(known_cost_minor) FROM metric_rollup WHERE tenant_id=? AND grain='day' AND metric_kind='cost' AND bucket_start>=? AND bucket_start<? GROUP BY substr(bucket_start,1,10),pipeline_version,stage,provider,model,currency ORDER BY substr(bucket_start,1,10) DESC,SUM(known_cost_minor) DESC LIMIT ?", METRICS_TENANT_ID, window.from, window.to, DISPLAY_LIMIT),
+      explain(costQuery.sql, ...costQuery.params),
       explain("SELECT validator,rule_version,reason_code,severity,COUNT(*),COUNT(DISTINCT trace_id) FROM dashboard_trace_fact_v1 WHERE tenant_id=? AND projection_version='dashboard-trace-v1' AND fact_kind='validator' AND terminal=1 AND occurred_at>=? AND occurred_at<? GROUP BY validator,rule_version,reason_code,severity ORDER BY COUNT(*) DESC,reason_code ASC LIMIT ?", METRICS_TENANT_ID, window.from, window.to, DISPLAY_LIMIT),
       explain("WITH ranked AS (SELECT trace_id,stage,ROW_NUMBER() OVER (PARTITION BY trace_id ORDER BY occurred_at ASC,fact_id ASC) AS ordinal FROM dashboard_trace_fact_v1 WHERE tenant_id=? AND projection_version='dashboard-trace-v1' AND fact_kind='funnel' AND event_type='terminal' AND occurred_at>=? AND occurred_at<?) SELECT stage,COUNT(*) FROM ranked WHERE ordinal=1 GROUP BY stage ORDER BY COUNT(*) DESC,stage ASC LIMIT ?", METRICS_TENANT_ID, window.from, window.to, DISPLAY_LIMIT),
       explain("WITH terminal AS (SELECT trace_id,attempt,occurred_at AS terminal_at FROM dashboard_trace_fact_v1 WHERE tenant_id=? AND projection_version='dashboard-trace-v1' AND fact_kind='funnel' AND event_type='terminal' AND occurred_at>=? AND occurred_at<?) SELECT e.trace_id FROM terminal t JOIN dashboard_trace_fact_v1 e ON e.tenant_id=? AND e.projection_version='dashboard-trace-v1' AND e.fact_kind='funnel' AND e.trace_id=t.trace_id AND e.attempt=t.attempt AND e.event_type='entered' AND e.occurred_at>=? AND e.occurred_at<=t.terminal_at", METRICS_TENANT_ID, window.from, window.to, METRICS_TENANT_ID, window.from),

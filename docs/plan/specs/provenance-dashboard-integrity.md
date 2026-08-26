@@ -69,9 +69,9 @@ API 明细查询最大 UTC 时间窗 31 天、每页最多 100 条；聚合查�
 
 ### 3.1 长窗精确 trace 读模型（`dashboard-trace-v1`）
 
-31–400 天聚合使用版本化 `dashboard_trace_fact_v1`，而不是把每日 `COUNT(DISTINCT trace_id)` 相加。它仅保留 trace、attempt、阶段/终态、标准化 validator 原因、发生时间和版本字段，并保存 400 天；90 天的原始操作明细保留期不变。该投影由 funnel 与 terminal validator 事实在同一 SQLite 事务中幂等写入，迁移会从仍在线的既有事实回填。
+31–400 天聚合使用版本化 `dashboard_trace_fact_v1`，而不是把每日 `COUNT(DISTINCT trace_id)` 相加。它仅保留 trace、attempt、阶段/终态、标准化 validator 原因、发生时间和版本字段，并保存 400 天。成本的 `dashboard_cost_fact_v1` 同样只保留 entry、归属维度、金额状态和发生时间，保存 400 天，专用于首尾非完整 UTC 日的精确聚合；90 天的原始操作明细保留期不变。两个投影均由其写模型在同一 SQLite 事务中幂等写入，迁移会从仍在线的既有事实回填。
 
-窗口内的漏斗分母、各成功阶段、首次终态原因和 validator 原因都以 `trace_id` 在**整个请求窗口**去重；首次终态以 `(occurred_at, fact_id)` 的最早记录确定。31–400 天的阶段时延同样从该投影按完成 trace/attempt 的相邻 `entered` 阶段计算，并展示 P50/P95/P99、完成/进行中 trace 数以及负/缺失时钟诊断。成本按日可加汇总，但任意 ISO UTC 窗口的首尾非完整 UTC 日必须从明细事实精确聚合；仅完整的中间 UTC 日可使用 daily rollup。SQLite 必须完成这些聚合、确定性排序与 `LIMIT`，不得在应用层读出无界 rollup 再聚合。关键索引为 `(tenant_id, projection_version, fact_kind, occurred_at, trace_id)` 与终态窗口索引；容量 fixture 同时覆盖实际长窗 SQL 和该索引。
+窗口内的漏斗分母、各成功阶段、首次终态原因和 validator 原因都以 `trace_id` 在**整个请求窗口**去重；首次终态以 `(occurred_at, fact_id)` 的最早记录确定。31–400 天的阶段时延同样从该投影按完成 trace/attempt 的相邻 `entered` 阶段计算，并展示 P50/P95/P99、完成/进行中 trace 数以及负/缺失时钟诊断。成本按日可加汇总，但任意 ISO UTC 窗口的首尾非完整 UTC 日必须从 `dashboard_cost_fact_v1` 精确聚合；仅完整的中间 UTC 日可使用 daily rollup。SQLite 必须完成这些聚合、确定性排序与 `LIMIT`，不得在应用层读出无界 rollup 再聚合。关键索引为 `(tenant_id, projection_version, fact_kind, occurred_at, trace_id)`、终态窗口索引和成本边界投影窗口索引；容量 fixture 同时覆盖实际长窗 SQL 和这些索引。
 
 保留期是本 spec 的准入常量：原始明细 90 天在线、每日汇总 400 天、`generation_trace_request` 100 天；已发布报告及其对应 manifest 在报告可读/归档期内保留，删除后只保留 P0 redaction tombstone。
 

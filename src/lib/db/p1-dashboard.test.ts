@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { openDb } from "./index.js";
-import { appendCostLedger, appendFunnelEvent, appendValidatorResult } from "./p1-metrics-facts.js";
+import { appendCostLedger, appendFunnelEvent, appendValidatorResult, purgeExpiredMetricFacts } from "./p1-metrics-facts.js";
 import { P1_METRICS_CAPACITY_FIXTURE } from "./p1-metrics-capacity-fixture.js";
 import { applyProvenanceMigrations } from "./provenance-migrations.js";
 import { explainP1DashboardQueries, readIntegrityDashboardStatus, readP1DashboardMetrics } from "./p1-dashboard.js";
@@ -36,7 +36,7 @@ describe("P1 dashboard read model", () => {
   it("rejects windows beyond the 400-day aggregate cap and proves indexed access", () => {
     const db = dbWithP1();
     expect(() => readP1DashboardMetrics(db, { from: "2026-01-01T00:00:00.000Z", to: "2027-03-01T00:00:00.000Z" })).toThrow("dashboard_window_invalid");
-    expect(P1_METRICS_CAPACITY_FIXTURE.version).toBe("p1-metrics-capacity-v2");
+    expect(P1_METRICS_CAPACITY_FIXTURE.version).toBe("p1-metrics-capacity-v3");
     const plans = explainP1DashboardQueries(db, P1_METRICS_CAPACITY_FIXTURE.detail_window);
     expect(plans[0]).toContain("idx_funnel_event_tenant_occurred");
     expect(plans[1]).toContain("idx_cost_ledger_tenant_occurred_provider_model");
@@ -63,9 +63,10 @@ describe("P1 dashboard read model", () => {
     expect(dashboard.latency).toEqual(expect.arrayContaining([expect.objectContaining({ transition: "received → accepted", samples: 1, p50_ms: 1209600000 })]));
     expect(readIntegrityDashboardStatus(db, window).recent_events).toEqual([]);
 
-    const plans = explainP1DashboardQueries(db, window);
+    const plans = explainP1DashboardQueries(db, P1_METRICS_CAPACITY_FIXTURE.aggregate_partial_window);
     expect(plans).toHaveLength(6);
     expect(plans[0]).toContain("idx_dashboard_trace_fact_v1_window");
+    expect(plans[1]).toContain("idx_dashboard_cost_fact_v1_window");
     expect(plans[1]).toContain("idx_metric_rollup_tenant_grain_bucket");
     expect(plans[2]).toContain("idx_dashboard_trace_fact_v1_kind_window");
     expect(plans[3]).toContain("idx_dashboard_trace_fact_v1_window");
@@ -95,6 +96,26 @@ describe("P1 dashboard read model", () => {
     expect(dashboard.costs).toEqual(expect.arrayContaining([
       expect.objectContaining({ bucket_date: "2026-08-01", known_cost_minor: 7, known_cost_entries: 1 }),
       expect.objectContaining({ bucket_date: "2026-08-02", known_cost_minor: 9, known_cost_entries: 1 }),
+    ]));
+  });
+
+  it("keeps 91–400-day partial cost boundaries exact after raw detail retention expires", () => {
+    const db = dbWithP1();
+    const window = { from: "2025-08-01T12:00:00.000Z", to: "2025-09-02T12:00:00.000Z" };
+    const common = { trace_id: "retained-cost", stage: "processed", pipeline_version: "pipeline-v1", provider: "openai", model: "gpt", currency: "USD", cost_status: "known" as const };
+    appendCostLedger(db, { ...common, entry_id: "retained-before", amount_minor: 100, occurred_at: "2025-08-01T11:00:00.000Z", ingested_at: "2025-08-01T11:00:00.000Z" });
+    appendCostLedger(db, { ...common, entry_id: "retained-first", amount_minor: 7, occurred_at: "2025-08-01T13:00:00.000Z", ingested_at: "2025-08-01T13:00:00.000Z" });
+    appendCostLedger(db, { ...common, entry_id: "retained-middle", amount_minor: 9, occurred_at: "2025-08-02T01:00:00.000Z", ingested_at: "2025-08-02T01:00:00.000Z" });
+    appendCostLedger(db, { ...common, entry_id: "retained-last", amount_minor: 11, occurred_at: "2025-09-02T11:00:00.000Z", ingested_at: "2025-09-02T11:00:00.000Z" });
+
+    purgeExpiredMetricFacts(db, "2026-01-01T00:00:00.000Z");
+    expect(db.prepare("SELECT COUNT(*) AS count FROM cost_ledger").get()).toEqual({ count: 0 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM dashboard_cost_fact_v1").get()).toEqual({ count: 4 });
+
+    expect(readP1DashboardMetrics(db, window).costs).toEqual(expect.arrayContaining([
+      expect.objectContaining({ bucket_date: "2025-08-01", known_cost_minor: 7, known_cost_entries: 1 }),
+      expect.objectContaining({ bucket_date: "2025-08-02", known_cost_minor: 9, known_cost_entries: 1 }),
+      expect.objectContaining({ bucket_date: "2025-09-02", known_cost_minor: 11, known_cost_entries: 1 }),
     ]));
   });
 });

@@ -70,6 +70,17 @@ function appendDashboardTraceFact(db: DB, input: {
     .run(METRICS_TENANT_ID, input.fact_kind, input.fact_id, input.trace_id, input.attempt, input.stage, input.event_type, input.pipeline_version, input.validator ?? "", input.rule_version ?? "", input.reason_code ?? "", input.severity ?? "", input.terminal ? 1 : 0, input.occurred_at, "dashboard-trace-v1");
 }
 
+/** A compact 400-day cost projection keeps partial-day dashboard reads exact without extending 90-day operational details. */
+function appendDashboardCostFact(db: DB, input: {
+  entry_id: string; trace_id: string; stage: string; pipeline_version: string; provider: string; model: string; currency: string;
+  amount_minor: number | null; cost_status: "known" | "unknown"; occurred_at: string;
+}): void {
+  if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='dashboard_cost_fact_v1'").get()) return;
+  db.prepare(`INSERT OR IGNORE INTO dashboard_cost_fact_v1(tenant_id,entry_id,trace_id,stage,pipeline_version,provider,model,currency,amount_minor,cost_status,occurred_at,projection_version)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(METRICS_TENANT_ID, input.entry_id, input.trace_id, input.stage, input.pipeline_version, input.provider, input.model, input.currency, input.amount_minor, input.cost_status, input.occurred_at, "dashboard-cost-v1");
+}
+
 function recordConflict(db: DB, input: { event_id: string; trace_id: string; stage: string; attempt: number; event_type: EventType; existing?: string; received: string; observed_at: string }): void {
   db.prepare(`INSERT INTO funnel_event_conflict(tenant_id,id,event_id,trace_id,stage,attempt,event_type,existing_semantic_payload_hash,received_semantic_payload_hash,observed_at)
     VALUES (?,?,?,?,?,?,?,?,?,?)`).run(METRICS_TENANT_ID, `fec_${randomUUID().replaceAll("-", "")}`, input.event_id, input.trace_id, input.stage, input.attempt, input.event_type, input.existing ?? null, input.received, input.observed_at);
@@ -168,6 +179,7 @@ export function appendCostLedger(db: DB, input: CostLedgerInput): { entry_id: st
   return db.transaction(() => {
     db.prepare(`INSERT INTO cost_ledger(tenant_id,entry_id,trace_id,stage,attempt,pipeline_version,provider,model,currency,topic_id,source_id,amount_minor,cost_status,input_tokens,output_tokens,occurred_at,ingested_at,schema_version,producer_version,semantic_payload_hash)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(METRICS_TENANT_ID,input.entry_id,input.trace_id,input.stage,attempt,input.pipeline_version,input.provider,input.model,input.currency,input.topic_id ?? null,input.source_id ?? null,input.amount_minor,input.cost_status,input_tokens,output_tokens,occurred_at,ingested_at,"cost-ledger-v1",producer_version,canonicalHash(payload));
+    appendDashboardCostFact(db, { entry_id: input.entry_id, trace_id: input.trace_id, stage: input.stage, pipeline_version: input.pipeline_version, provider: input.provider, model: input.model, currency: input.currency, amount_minor: input.amount_minor, cost_status: input.cost_status, occurred_at });
     materializeForFact(db, "cost", input.entry_id, occurred_at, ingested_at); return { entry_id: input.entry_id, replayed: false };
   })();
 }
@@ -318,6 +330,7 @@ export function purgeExpiredMetricFacts(db: DB, now = new Date().toISOString()):
     )`).run(METRICS_TENANT_ID, cutoff).changes;
     for (const table of ["funnel_event", "cost_ledger", "validator_result_fact", "metric_late_event"]) details += db.prepare(`DELETE FROM ${table} WHERE tenant_id=? AND occurred_at<?`).run(METRICS_TENANT_ID,cutoff).changes;
     details += db.prepare("DELETE FROM dashboard_trace_fact_v1 WHERE tenant_id=? AND occurred_at<?").run(METRICS_TENANT_ID,dailyCutoff).changes;
+    details += db.prepare("DELETE FROM dashboard_cost_fact_v1 WHERE tenant_id=? AND occurred_at<?").run(METRICS_TENANT_ID,dailyCutoff).changes;
     details += db.prepare("DELETE FROM funnel_event_conflict WHERE tenant_id=? AND observed_at<?").run(METRICS_TENANT_ID,cutoff).changes;
     details += db.prepare("DELETE FROM metric_fact_conflict WHERE tenant_id=? AND observed_at<?").run(METRICS_TENANT_ID,cutoff).changes;
     const rollups = db.prepare("DELETE FROM metric_rollup WHERE tenant_id=? AND ((grain='hour' AND bucket_start<?) OR (grain='day' AND bucket_start<?))").run(METRICS_TENANT_ID,cutoff,dailyCutoff).changes;

@@ -690,6 +690,30 @@ CREATE INDEX idx_dashboard_trace_fact_v1_kind_window ON dashboard_trace_fact_v1(
 CREATE INDEX idx_dashboard_trace_fact_v1_terminal_window ON dashboard_trace_fact_v1(tenant_id,projection_version,fact_kind,event_type,occurred_at,trace_id,fact_id);
 `;
 
+/**
+ * Versioned, cost-granular dashboard projection. Daily rollups are exact only
+ * for complete UTC days, so this retains the controlled fields necessary to
+ * aggregate either partial boundary day for a 31–400 day dashboard window.
+ */
+export const P1_DASHBOARD_COST_READ_MODEL_V1_SCHEMA_SQL = `
+CREATE TABLE dashboard_cost_fact_v1 (
+  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),
+  entry_id TEXT NOT NULL,
+  trace_id TEXT NOT NULL,
+  stage TEXT NOT NULL,
+  pipeline_version TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  model TEXT NOT NULL,
+  currency TEXT NOT NULL,
+  amount_minor INTEGER,
+  cost_status TEXT NOT NULL CHECK(cost_status IN ('known','unknown')),
+  occurred_at TEXT NOT NULL,
+  projection_version TEXT NOT NULL CHECK(projection_version = 'dashboard-cost-v1'),
+  PRIMARY KEY(tenant_id,entry_id)
+);
+CREATE INDEX idx_dashboard_cost_fact_v1_window ON dashboard_cost_fact_v1(tenant_id,projection_version,occurred_at,provider,model);
+`;
+
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS source (
   id             TEXT PRIMARY KEY,
