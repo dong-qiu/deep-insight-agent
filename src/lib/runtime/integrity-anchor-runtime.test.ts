@@ -1,4 +1,7 @@
 import { generateKeyPairSync } from "node:crypto";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { deploymentAnchorPublication, deploymentAnchorPublicationIfEnabled, integrityAnchorEnabled } from "./integrity-anchor-runtime.js";
 
@@ -19,9 +22,22 @@ describe("deployment anchor publication", () => {
 
   it("keeps an enabled deployment strict about all anchor material", () => {
     expect(() => deploymentAnchorPublicationIfEnabled({ INTEGRITY_ANCHOR_ENABLED: "true" })).toThrow("integrity_anchor_admission_required");
-    expect(() => deploymentAnchorPublicationIfEnabled({
-      INTEGRITY_ANCHOR_ENABLED: "true", INTEGRITY_ANCHOR_ADMISSION_REF: "INSI-25:evidence-123",
-    })).toThrow("integrity_anchor_not_configured");
+    const dir = mkdtempSync(join(tmpdir(), "insight-anchor-admission-"));
+    const admissionFile = join(dir, "admission");
+    try {
+      writeFileSync(admissionFile, "INSI-25:evidence-123");
+      expect(() => deploymentAnchorPublicationIfEnabled({
+        INTEGRITY_ANCHOR_ENABLED: "true", INTEGRITY_ANCHOR_ADMISSION_REF: "INSI-25:evidence-123",
+        INTEGRITY_ANCHOR_ADMISSION_FILE: admissionFile,
+      })).toThrow("integrity_anchor_not_configured");
+      writeFileSync(admissionFile, "different-evidence");
+      expect(() => deploymentAnchorPublicationIfEnabled({
+        INTEGRITY_ANCHOR_ENABLED: "true", INTEGRITY_ANCHOR_ADMISSION_REF: "INSI-25:evidence-123",
+        INTEGRITY_ANCHOR_ADMISSION_FILE: admissionFile,
+      })).toThrow("integrity_anchor_admission_mismatch");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("fails closed when the deployment-owned signer/store contract is absent", () => {

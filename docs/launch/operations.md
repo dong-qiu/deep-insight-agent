@@ -11,8 +11,10 @@
 产生或声明锚定证据。只有完成 INSI-25 的 Object Lock、KMS、最小 IAM、保留期限与 on-call
 准入后才能启用。启用不仅需要上述配置，还必须在生产 `.env.local` 写入不可变的
 `INTEGRITY_ANCHOR_ADMISSION_REF`，并让它与受保护 GitHub Production environment 的同名
-variable 完全一致；部署会在停止 writer 前拒绝缺失或不匹配的引用。该引用指向已归档的
-INSI-25 准入证据，不得使用可变的“已批准”标记替代。启用后，容器内 `ops/crontab` 每 5 分钟调用一次
+variable 完全一致；部署会在停止 writer 前拒绝缺失或不匹配的引用，并把该受保护值写入
+容器只读 Docker secret。运行时必须把 `.env.local` 的引用与该 secret 再次比对，因此单独修改
+主机环境变量并重启容器不能开启 P1。该引用指向已归档的 INSI-25 准入证据，不得使用可变的
+“已批准”标记替代。启用后，容器内 `ops/crontab` 每 5 分钟调用一次
 `/api/cron?mode=integrity`：UTC 02:00 固化前一日 Merkle root，02:15 若 root
 缺失即写入高优先级审计告警，其余执行会恢复已写入锚点的 SQLite 投影，并以最多
 两个并发 worker 对每个已发布 artifact 每 24 小时重校验一次。任何非 `pass`

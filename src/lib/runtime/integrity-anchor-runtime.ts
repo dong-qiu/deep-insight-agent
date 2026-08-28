@@ -2,6 +2,7 @@
  * back to an in-memory store: a publication is either backed by this injected
  * immutable store or is rejected before it can become reader-visible. */
 import { createPrivateKey } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { S3Client } from "@aws-sdk/client-s3";
 import { S3AnchorStore, type AnchorStore } from "../db/integrity-anchors.js";
 import type { ReportAnchorPublication } from "../db/reports.js";
@@ -32,6 +33,12 @@ export function integrityAnchorEnabled(env: AnchorEnvironment = process.env): bo
 function requiredAnchorAdmissionReference(env: AnchorEnvironment): string {
   const value = env.INTEGRITY_ANCHOR_ADMISSION_REF;
   if (!value || value !== value.trim()) throw new Error("integrity_anchor_admission_required");
+  const admissionFile = env.INTEGRITY_ANCHOR_ADMISSION_FILE ?? "/run/secrets/integrity_anchor_admission";
+  let deployedValue: string;
+  try { deployedValue = readFileSync(admissionFile, "utf8"); } catch { throw new Error("integrity_anchor_admission_unavailable"); }
+  if (!deployedValue || deployedValue !== deployedValue.trim() || deployedValue !== value) {
+    throw new Error("integrity_anchor_admission_mismatch");
+  }
   return value;
 }
 
