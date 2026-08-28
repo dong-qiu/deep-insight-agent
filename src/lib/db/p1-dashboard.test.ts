@@ -118,6 +118,19 @@ describe("P1 dashboard read model", () => {
     ]));
   });
 
+  it("does not include known or unknown costs after to in a same-UTC-day partial window", () => {
+    const db = dbWithP1();
+    const common = { trace_id: "same-day-cost", stage: "processed", pipeline_version: "pipeline-v1", provider: "openai", model: "gpt", currency: "USD" };
+    appendCostLedger(db, { ...common, entry_id: "same-day-before", amount_minor: 100, cost_status: "known", occurred_at: "2026-08-01T11:00:00.000Z", ingested_at: "2026-08-01T11:00:00.000Z" });
+    appendCostLedger(db, { ...common, entry_id: "same-day-known", amount_minor: 7, cost_status: "known", occurred_at: "2026-08-01T13:00:00.000Z", ingested_at: "2026-08-01T13:00:00.000Z" });
+    appendCostLedger(db, { ...common, entry_id: "same-day-unknown", amount_minor: null, cost_status: "unknown", occurred_at: "2026-08-01T14:00:00.000Z", ingested_at: "2026-08-01T14:00:00.000Z" });
+    appendCostLedger(db, { ...common, entry_id: "same-day-known-after", amount_minor: 11, cost_status: "known", occurred_at: "2026-08-01T19:00:00.000Z", ingested_at: "2026-08-01T19:00:00.000Z" });
+    appendCostLedger(db, { ...common, entry_id: "same-day-unknown-after", amount_minor: null, cost_status: "unknown", occurred_at: "2026-08-01T20:00:00.000Z", ingested_at: "2026-08-01T20:00:00.000Z" });
+
+    expect(readP1DashboardMetrics(db, { from: "2026-08-01T12:00:00.000Z", to: "2026-08-01T18:00:00.000Z" }).costs)
+      .toEqual([expect.objectContaining({ bucket_date: "2026-08-01", known_cost_minor: 7, known_cost_entries: 1, unknown_cost_entries: 1 })]);
+  });
+
   it("keeps 91–400-day partial cost boundaries exact after raw detail retention expires", () => {
     const db = dbWithP1();
     const window = { from: "2025-08-01T12:00:00.000Z", to: "2025-09-02T12:00:00.000Z" };

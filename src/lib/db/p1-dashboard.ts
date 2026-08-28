@@ -140,8 +140,15 @@ function longWindowCostsQuery(window: DashboardWindow): PreparedDashboardQuery |
         FROM dashboard_cost_fact_v1 WHERE tenant_id=? AND projection_version='dashboard-cost-v1' AND occurred_at>=? AND occurred_at<?
         GROUP BY bucket_date,topic_id,source_id,pipeline_version,stage,provider,model,currency`, params: [METRICS_TENANT_ID, from, to] });
   };
-  addDetailRange(window.from, fullStart);
-  if (Date.parse(fullEnd) >= Date.parse(fullStart)) addDetailRange(fullEnd, window.to);
+  // A sub-day window has neither a leading nor trailing partial day: it is
+  // one detail range. Using fullStart here would otherwise leak facts after
+  // `to` through the end of that UTC day.
+  if (Date.parse(fullEnd) < Date.parse(fullStart)) {
+    addDetailRange(window.from, window.to);
+  } else {
+    addDetailRange(window.from, fullStart);
+    addDetailRange(fullEnd, window.to);
+  }
   if (Date.parse(fullStart) < Date.parse(fullEnd)) {
     parts.push({ sql: `SELECT substr(bucket_start,1,10) AS bucket_date,topic_id,source_id,pipeline_version,stage,provider,model,currency,
         SUM(known_cost_minor) AS known_cost_minor,SUM(known_cost_entries) AS known_cost_entries,SUM(unknown_cost_entries) AS unknown_cost_entries
