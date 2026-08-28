@@ -2,7 +2,6 @@
  * back to an in-memory store: a publication is either backed by this injected
  * immutable store or is rejected before it can become reader-visible. */
 import { createPrivateKey } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { S3Client } from "@aws-sdk/client-s3";
 import { S3AnchorStore, type AnchorStore } from "../db/integrity-anchors.js";
 import type { ReportAnchorPublication } from "../db/reports.js";
@@ -25,21 +24,6 @@ export function integrityAnchorEnabled(env: AnchorEnvironment = process.env): bo
   if (value === "" || value === "0" || value === "false") return false;
   if (value === "1" || value === "true") return true;
   throw new Error("integrity_anchor_enabled_invalid");
-}
-
-/** INSI-25 admission is a deployment-time governance decision, not merely a
- * collection of host environment values. The matching protected Production
- * environment value is checked by deploy.yml before any writer is stopped. */
-function requiredAnchorAdmissionReference(env: AnchorEnvironment): string {
-  const value = env.INTEGRITY_ANCHOR_ADMISSION_REF;
-  if (!value || value !== value.trim()) throw new Error("integrity_anchor_admission_required");
-  const admissionFile = env.INTEGRITY_ANCHOR_ADMISSION_FILE ?? "/run/secrets/integrity_anchor_admission";
-  let deployedValue: string;
-  try { deployedValue = readFileSync(admissionFile, "utf8"); } catch { throw new Error("integrity_anchor_admission_unavailable"); }
-  if (!deployedValue || deployedValue !== deployedValue.trim() || deployedValue !== value) {
-    throw new Error("integrity_anchor_admission_mismatch");
-  }
-  return value;
 }
 
 function required(env: AnchorEnvironment, name: string): string {
@@ -110,6 +94,9 @@ export function deploymentAnchorPublicationIfEnabled(
   now = new Date(),
 ): ReportAnchorPublication | undefined {
   if (!integrityAnchorEnabled(env)) return undefined;
-  requiredAnchorAdmissionReference(env);
-  return deploymentAnchorPublication(env, now);
+  // INSI-25 must supply independently auditable Object Lock/KMS/IAM and
+  // retention evidence before this composition seam can be activated. Do not
+  // treat a host-controlled environment value as an admission decision.
+  void now;
+  throw new Error("integrity_anchor_admission_required");
 }
