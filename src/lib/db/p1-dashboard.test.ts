@@ -39,11 +39,15 @@ describe("P1 dashboard read model", () => {
     expect(P1_METRICS_CAPACITY_FIXTURE.version).toBe("p1-metrics-capacity-v4");
     const plans = explainP1DashboardQueries(db, P1_METRICS_CAPACITY_FIXTURE.detail_window);
     expect(plans[0]).toContain("idx_dashboard_trace_fact_v1_window");
-    expect(plans[1]).toContain("idx_metric_rollup_tenant_grain_bucket");
-    expect(plans[2]).toContain("idx_dashboard_trace_fact_v1_kind_window");
-    expect(plans[3]).toContain("idx_dashboard_trace_fact_v1_window");
-    expect(plans[4]).toContain("idx_dashboard_trace_fact_v1_terminal_window");
-    expect(plans[5]).toContain("sqlite_autoindex_integrity_daily_root");
+    expect(plans[1]).toContain("idx_dashboard_trace_fact_v1_window");
+    expect(plans[2]).toContain("idx_dashboard_trace_fact_v1_window");
+    expect(plans[3]).toContain("idx_metric_rollup_tenant_grain_bucket");
+    expect(plans[4]).toContain("idx_dashboard_trace_fact_v1_kind_window");
+    expect(plans[5]).toContain("idx_dashboard_trace_fact_v1_terminal_window");
+    expect(plans[6]).toContain("idx_dashboard_trace_fact_v1_terminal_window");
+    expect(plans[7]).toContain("idx_dashboard_trace_fact_v1_terminal_window");
+    expect(plans[8]).toContain("sqlite_autoindex_integrity_daily_root");
+    expect(plans[9]).toContain("idx_integrity_audit_pending");
   });
 
   it("keeps late funnel, cost, and validator facts out of every aggregate projection until an admin backfills them", () => {
@@ -78,13 +82,14 @@ describe("P1 dashboard read model", () => {
     expect(readIntegrityDashboardStatus(db, window).recent_events).toEqual([]);
 
     const plans = explainP1DashboardQueries(db, P1_METRICS_CAPACITY_FIXTURE.aggregate_partial_window);
-    expect(plans).toHaveLength(6);
+    expect(plans).toHaveLength(9);
     expect(plans[0]).toContain("idx_dashboard_trace_fact_v1_window");
-    expect(plans[1]).toContain("idx_dashboard_cost_fact_v1_window");
-    expect(plans[1]).toContain("idx_metric_rollup_tenant_grain_bucket");
-    expect(plans[2]).toContain("idx_dashboard_trace_fact_v1_kind_window");
-    expect(plans[3]).toContain("idx_dashboard_trace_fact_v1_window");
-    expect(plans[4]).toContain("idx_dashboard_trace_fact_v1_terminal_window");
+    expect(plans[3]).toContain("idx_dashboard_cost_fact_v1_window");
+    expect(plans[3]).toContain("idx_metric_rollup_tenant_grain_bucket");
+    expect(plans[4]).toContain("idx_dashboard_trace_fact_v1_kind_window");
+    expect(plans[5]).toContain("idx_dashboard_trace_fact_v1_terminal_window");
+    expect(plans[6]).toContain("idx_dashboard_trace_fact_v1_terminal_window");
+    expect(plans[7]).toContain("idx_dashboard_trace_fact_v1_terminal_window");
   });
 
   it("keeps long-window latency diagnostics and partial UTC-day costs exact", () => {

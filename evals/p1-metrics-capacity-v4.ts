@@ -46,7 +46,19 @@ const plans = {
   aggregate_400d: explainP1DashboardQueries(db, fixture.aggregate_window),
   aggregate_400d_partial: explainP1DashboardQueries(db, fixture.aggregate_partial_window),
 };
+const dashboardPlanNames = ["funnel", "first_terminal_stage", "first_terminal_reason", "cost", "validator", "latency_percentiles", "latency_diagnostics", "latency_in_progress", "integrity_daily_root", "integrity_recent_events"];
+const requiredDashboardIndexes = [
+  ["idx_dashboard_trace_fact_v1_window"], ["idx_dashboard_trace_fact_v1_window"], ["idx_dashboard_trace_fact_v1_window"],
+  ["idx_metric_rollup_tenant_grain_bucket", "idx_dashboard_cost_fact_v1_window"], ["idx_dashboard_trace_fact_v1_kind_window"],
+  ["idx_dashboard_trace_fact_v1_terminal_window"], ["idx_dashboard_trace_fact_v1_terminal_window"], ["idx_dashboard_trace_fact_v1_terminal_window"],
+  ["sqlite_autoindex_integrity_daily_root"], ["idx_integrity_audit_pending"],
+];
+function assertDashboardPlans(plan: string[]): boolean {
+  return plan.every((entry, index) => requiredDashboardIndexes[index]!.some((name) => entry.includes(name)) && !/SCAN (?:dashboard_trace_fact_v1|dashboard_cost_fact_v1|metric_rollup|integrity_daily_root|integrity_audit_event)(?:\s|$)/.test(entry));
+}
+const plan_evidence = Object.fromEntries(Object.entries(plans).map(([name, plan]) => [name, Object.fromEntries(plan.map((detail, index) => [dashboardPlanNames[index]!, detail]))]));
 const manifest = { version: fixture.version, generator_version: fixture.generator_version, row_counts: { funnel_event: 1200, cost_ledger: 400, validator_result_fact: 400 }, sqlite_version: String((db.prepare("select sqlite_version() as version").get() as { version: string }).version), node: process.version, dataset_sha256: createHash("sha256").update(JSON.stringify({ fixture, rows: 2000 })).digest("hex") };
-const result = { manifest, plans, timings };
+const result = { manifest, plans: plan_evidence, timings };
 console.log(JSON.stringify(result, null, 2));
-if (process.argv.includes("--enforce") && (Object.values(timings).some((value) => value.p95_ms > 2000) || Object.values(plans).some((plan) => !plan.join("\n").includes("INDEX")))) process.exitCode = 1;
+const capacityPlansPass = plans.detail_31d.join("\n").includes("idx_funnel_event_tenant_occurred") && Object.entries(plans).filter(([name]) => name !== "detail_31d").every(([, plan]) => assertDashboardPlans(plan));
+if (process.argv.includes("--enforce") && (Object.values(timings).some((value) => value.p95_ms > 2000) || !capacityPlansPass)) process.exitCode = 1;
