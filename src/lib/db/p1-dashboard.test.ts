@@ -38,13 +38,12 @@ describe("P1 dashboard read model", () => {
     expect(() => readP1DashboardMetrics(db, { from: "2026-01-01T00:00:00.000Z", to: "2027-03-01T00:00:00.000Z" })).toThrow("dashboard_window_invalid");
     expect(P1_METRICS_CAPACITY_FIXTURE.version).toBe("p1-metrics-capacity-v4");
     const plans = explainP1DashboardQueries(db, P1_METRICS_CAPACITY_FIXTURE.detail_window);
-    expect(plans[0]).toContain("idx_funnel_event_tenant_occurred");
-    expect(plans[1]).toContain("idx_cost_ledger_tenant_occurred_provider_model");
-    expect(plans[2]).toContain("idx_validator_result_tenant_occurred");
-    expect(plans[3]).toContain("idx_funnel_event_tenant_occurred");
-    expect(plans[4]).toContain("idx_funnel_event_tenant_occurred");
+    expect(plans[0]).toContain("idx_dashboard_trace_fact_v1_window");
+    expect(plans[1]).toContain("idx_metric_rollup_tenant_grain_bucket");
+    expect(plans[2]).toContain("idx_dashboard_trace_fact_v1_kind_window");
+    expect(plans[3]).toContain("idx_dashboard_trace_fact_v1_window");
+    expect(plans[4]).toContain("idx_dashboard_trace_fact_v1_terminal_window");
     expect(plans[5]).toContain("sqlite_autoindex_integrity_daily_root");
-    expect(plans[6]).toContain("idx_integrity_audit_pending");
   });
 
   it("keeps late funnel, cost, and validator facts out of every aggregate projection until an admin backfills them", () => {

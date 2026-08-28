@@ -259,7 +259,9 @@ export function readIntegrityDashboardStatus(db: DB, requested: Partial<Dashboar
 export function explainP1DashboardQueries(db: DB, requested: Partial<DashboardWindow> = {}): string[] {
   const window = dashboardWindow(requested);
   const explain = (sql: string, ...params: unknown[]): string => (db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...params) as Array<{ detail: string }>).map((row) => row.detail).join("\n");
-  if (!usesRawFacts(window)) {
+  // Aggregate reads are projection-only, including 31-day windows, so their
+  // plan evidence must never silently fall back to obsolete raw SQL.
+  if (true) {
     const costQuery = longWindowCostsQuery(window);
     if (!costQuery) throw new Error("dashboard_cost_query_empty");
     return [

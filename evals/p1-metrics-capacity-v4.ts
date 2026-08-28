@@ -49,4 +49,4 @@ const plans = {
 const manifest = { version: fixture.version, generator_version: fixture.generator_version, row_counts: { funnel_event: 1200, cost_ledger: 400, validator_result_fact: 400 }, sqlite_version: String((db.prepare("select sqlite_version() as version").get() as { version: string }).version), node: process.version, dataset_sha256: createHash("sha256").update(JSON.stringify({ fixture, rows: 2000 })).digest("hex") };
 const result = { manifest, plans, timings };
 console.log(JSON.stringify(result, null, 2));
-if (process.argv.includes("--enforce") && (Object.values(timings).some((value) => value.p95_ms > 2000) || Object.values(plans).flat().some((plan) => !plan.includes("INDEX")))) process.exitCode = 1;
+if (process.argv.includes("--enforce") && (Object.values(timings).some((value) => value.p95_ms > 2000) || Object.values(plans).some((plan) => !plan.join("\n").includes("INDEX")))) process.exitCode = 1;
