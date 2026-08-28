@@ -32,6 +32,15 @@ function required(env: AnchorEnvironment, name: string): string {
   return value;
 }
 
+/** No P1 composition root is admitted until the dedicated INSI-25 production
+ * admission implementation exists. Keeping this single guard at every
+ * externally reachable P1 seam prevents an auxiliary admin route from
+ * bypassing the report-publication gate. */
+function requireIntegrityAnchorAdmission(env: AnchorEnvironment): never {
+  void integrityAnchorEnabled(env);
+  throw new Error("integrity_anchor_admission_required");
+}
+
 function optionalInstant(env: AnchorEnvironment, name: string): string | undefined {
   const value = env[name]?.trim();
   if (!value) return undefined;
@@ -47,6 +56,7 @@ function requiredFutureInstant(env: AnchorEnvironment, name: string, now: Date):
 
 /** Verification has only Object-Store read authority; it never loads signing material. */
 export function deploymentAnchorVerificationStore(env: AnchorEnvironment = process.env): AnchorStore {
+  requireIntegrityAnchorAdmission(env);
   return new S3AnchorStore(new S3Client({}), required(env, "INTEGRITY_ANCHOR_BUCKET"));
 }
 
@@ -94,9 +104,6 @@ export function deploymentAnchorPublicationIfEnabled(
   now = new Date(),
 ): ReportAnchorPublication | undefined {
   if (!integrityAnchorEnabled(env)) return undefined;
-  // INSI-25 must supply independently auditable Object Lock/KMS/IAM and
-  // retention evidence before this composition seam can be activated. Do not
-  // treat a host-controlled environment value as an admission decision.
   void now;
-  throw new Error("integrity_anchor_admission_required");
+  return requireIntegrityAnchorAdmission(env);
 }

@@ -1,6 +1,6 @@
 import { generateKeyPairSync } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { deploymentAnchorPublication, deploymentAnchorPublicationIfEnabled, integrityAnchorEnabled } from "./integrity-anchor-runtime.js";
+import { deploymentAnchorLegalHold, deploymentAnchorPublication, deploymentAnchorPublicationIfEnabled, deploymentAnchorVerificationStore, integrityAnchorEnabled } from "./integrity-anchor-runtime.js";
 
 describe("deployment anchor publication", () => {
   it("defaults P1 anchors off and does not construct an unanchored substitute", () => {
@@ -21,6 +21,15 @@ describe("deployment anchor publication", () => {
     expect(() => deploymentAnchorPublicationIfEnabled({ INTEGRITY_ANCHOR_ENABLED: "true" })).toThrow("integrity_anchor_admission_required");
     expect(() => deploymentAnchorPublicationIfEnabled({
       INTEGRITY_ANCHOR_ENABLED: "true", INTEGRITY_ANCHOR_ADMISSION_REF: "INSI-25:evidence-123",
+    })).toThrow("integrity_anchor_admission_required");
+  });
+
+  it("blocks every externally reachable P1 composition seam until INSI-25 admission", () => {
+    expect(() => deploymentAnchorVerificationStore({ INTEGRITY_ANCHOR_BUCKET: "immutable-anchor-bucket" }))
+      .toThrow("integrity_anchor_admission_required");
+    expect(() => deploymentAnchorLegalHold({
+      INTEGRITY_ANCHOR_ENABLED: "true", INTEGRITY_ANCHOR_BUCKET: "immutable-anchor-bucket",
+      INTEGRITY_LEGAL_HOLD_RETAIN_UNTIL: "2027-01-01T00:00:00.000Z",
     })).toThrow("integrity_anchor_admission_required");
   });
 
