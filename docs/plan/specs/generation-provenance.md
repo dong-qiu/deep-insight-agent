@@ -328,7 +328,7 @@ revision registry 是封闭契约，所有 type 必须有下列 revision generat
 | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `source` / `source_config`                                                                | 脱敏来源配置 canonical hash；URL、类型、启停和选择规则，不含凭据                                                                                                                                              |
 | `topic` / `direction`                                                                     | version 或结构化规划规则 canonical hash；名称、目标、词项、约束                                                                                                                                               |
-| `content_item`                                                                            | `content-v2:${content_hash}`；URL、来源、发布时间、正文长度与正文哈希。`fetched_at` 是可变采集观测时间，不进入不可变 revision snapshot；历史 `content_hash`（v1）引用保留原样，**P0 不写 `raw_revision_ref`** |
+| `content_item`                                                                            | `content-v3:${canonical_hash(snapshot)}`；snapshot 为 URL、来源、发布时间、正文长度与正文哈希。`fetched_at` 是可变采集观测时间，不进入不可变 revision snapshot；历史 `content_hash`（v1）与 `content-v2` 引用保留原样，**P0 不写 `raw_revision_ref`** |
 | `analysis_batch` / `insight` / `citation` / `citation_check` / `validation_result`        | batch-scoped immutable key；窗口、纳入决定、verdict 和理由代码，不复制 quote / 正文                                                                                                                           |
 | `tech_lead` / `tech_lead_evidence` / `direction_map` / `opportunity` / `opportunity_lead` | 每次原地更新前的 canonical snapshot hash；状态、lane、评分输入、规则版本、人工决定                                                                                                                            |
 | `report` / `delivery` / `run` / `config`                                                  | 不可变 ID 或 canonical metadata hash；报告纳入清单、effect intent、Run 状态、运行配置版本                                                                                                                     |
@@ -585,7 +585,7 @@ P0 的图查询采用硬预算：时间线最多 100 条事件一页，因果图
   owned lease，再创建首个 `ingest` Run 并绑定 `root_run_id`。同槽重入返回原 trace；活跃来源冲突返回既有 trace，
   不得并行写入同一来源。
 - `collect` 与 `normalize` 各有 started / terminal event；Source 配置以脱敏 canonical snapshot 固化，每个新建或
-  更新的 ContentItem 在业务 upsert 同一 SQLite 事务内写入 `content-v2:${content_hash}` revision。snapshot 仅含 URL、
+  更新的 ContentItem 在业务 upsert 同一 SQLite 事务内写入 `content-v3:${canonical_hash(snapshot)}` revision。snapshot 仅含 URL、
   来源、发布时间、正文长度与 hash，禁止 `raw_ref`、原文或 raw archive 指针。
 - 失败事件只引用已提交的 Content revision，并分别给出 `committed_output_ref_count`、
   `rolled_back_output_ref_count` 和 `unknown_output_ref_count`。无法证明已提交的输出不得伪造 entity ref；所有三个计数
