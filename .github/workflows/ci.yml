@@ -100,7 +100,7 @@ jobs:
       - name: P1 provenance integrity gate
         run: |
           npx tsx evals/provenance-dashboard-integrity-v1.ts > "$RUNNER_TEMP/provenance-dashboard-integrity-v1-evidence.json"
-          node -e 'const evidence=JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")); for (const key of ["evaluation_schema_version","rule_version","checker_version","hash_key_version","executed_at_utc","dataset_sha256","expected_output","error_tolerance","execution_environment","actual_output"]) if (!(key in evidence)) throw new Error(`missing integrity evidence: ${key}`); if (evidence.actual_output.result!=="pass" || evidence.expected_output.result!=="pass") throw new Error("integrity gate did not pass")' "$RUNNER_TEMP/provenance-dashboard-integrity-v1-evidence.json"
+          node -e 'const evidence=JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")); for (const key of ["evaluation_schema_version","rule_version","checker_version","hash_key_version","executed_at_utc","dataset_sha256","expected_output","error_tolerance","execution_environment","actual_output"]) if (!(key in evidence)) throw new Error(`missing integrity evidence: ${key}`); if (JSON.stringify(evidence.actual_output)!==JSON.stringify(evidence.expected_output)) throw new Error("integrity output diverged from its fixed baseline")' "$RUNNER_TEMP/provenance-dashboard-integrity-v1-evidence.json"
       - name: upload P1 provenance integrity evidence
         uses: actions/upload-artifact@v4
         with:

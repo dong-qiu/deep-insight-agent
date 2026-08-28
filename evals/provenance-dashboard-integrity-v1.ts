@@ -137,6 +137,9 @@ assert.equal(readP1DashboardMetrics(db, { from: "2026-08-21T00:00:00.000Z", to: 
 reconcileLateMetricEvent(db, { fact_kind: "funnel", event_id: lateEventId, action: "backfilled", actor_id: "eval-admin", recorded_at: "2026-08-30T01:06:00.000Z" });
 assert.equal(readP1DashboardMetrics(db, { from: "2026-08-21T00:00:00.000Z", to: "2026-08-22T00:00:00.000Z" }).funnel.find((row) => row.stage === "received")?.received_traces, 2);
 
+const actualOutput = { result: "pass", vectors: 24, content_hash: manifest.content_hash, manifest_hash: manifestHash(manifest) };
+assert.deepEqual(actualOutput, EXPECTED_OUTPUT);
+
 console.log(JSON.stringify({
   gate: CHECKER_VERSION,
   evaluation_schema_version: EVALUATION_SCHEMA_VERSION,
@@ -148,5 +151,5 @@ console.log(JSON.stringify({
   expected_output: EXPECTED_OUTPUT,
   error_tolerance: ERROR_TOLERANCE,
   execution_environment: { node: process.version, platform: process.platform, arch: process.arch },
-  actual_output: { result: "pass", vectors: 24, content_hash: manifest.content_hash, manifest_hash: manifestHash(manifest) },
+  actual_output: actualOutput,
 }));

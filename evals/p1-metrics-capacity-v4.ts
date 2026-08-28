@@ -55,12 +55,16 @@ const plans = {
 const dashboardPlanNames = ["funnel", "first_terminal_stage", "first_terminal_reason", "cost", "validator", "latency_percentiles", "latency_diagnostics", "latency_in_progress", "integrity_daily_root", "integrity_recent_events"];
 const requiredDashboardIndexes = [
   ["idx_dashboard_trace_fact_v1_window"], ["idx_dashboard_trace_fact_v1_window"], ["idx_dashboard_trace_fact_v1_window"],
-  ["idx_metric_rollup_tenant_grain_bucket", "idx_dashboard_cost_fact_v1_window"], ["idx_dashboard_trace_fact_v1_kind_window"],
+  ["idx_metric_rollup_tenant_grain_bucket", "idx_dashboard_cost_fact_v1_window", "idx_metric_late_reconciliation_tenant_event"], ["idx_dashboard_trace_fact_v1_kind_window"],
   ["idx_dashboard_trace_fact_v1_terminal_window"], ["idx_dashboard_trace_fact_v1_terminal_window"], ["idx_dashboard_trace_fact_v1_terminal_window"],
   ["sqlite_autoindex_integrity_daily_root"], ["idx_integrity_audit_pending"],
 ];
 function assertDashboardPlans(plan: string[]): boolean {
-  return plan.every((entry, index) => requiredDashboardIndexes[index]!.some((name) => entry.includes(name)) && !/SCAN (?:dashboard_trace_fact_v1|dashboard_cost_fact_v1|metric_rollup|integrity_daily_root|integrity_audit_event)(?:\s|$)/.test(entry));
+  return plan.every((entry, index) => {
+    const required = requiredDashboardIndexes[index]!;
+    const indexed = index === 3 ? required.every((name) => entry.includes(name)) : required.some((name) => entry.includes(name));
+    return indexed && !/SCAN (?:dashboard_trace_fact_v1|dashboard_cost_fact_v1|metric_rollup|metric_late_reconciliation|integrity_daily_root|integrity_audit_event)(?:\s|$)/.test(entry);
+  });
 }
 type DetailPlanName = "detail_funnel_31d" | "detail_cost_31d" | "detail_validator_31d";
 const detailPlanIndexes: Record<DetailPlanName, string> = {
