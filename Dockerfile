@@ -52,6 +52,7 @@ RUN case "${TARGETARCH}" in \
 # ---- 运行层（slim，无 apt / 无 curl）----
 FROM ${NODE_RUNTIME_IMAGE} AS runner
 WORKDIR /app
+LABEL org.insight-agent.p1-dashboard-admission=required
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \
     PORT=3000 \

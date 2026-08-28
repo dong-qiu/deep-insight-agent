@@ -7,7 +7,11 @@ describe("p1 dashboard runtime admission", () => {
     expect(p1DashboardEnabled({ P1_DASHBOARD_ENABLED: "false" })).toBe(false);
     expect(p1DashboardEnabled({ P1_DASHBOARD_ENABLED: "1" })).toBe(true);
     expect(p1DashboardEnabled({ P1_DASHBOARD_ENABLED: "true" })).toBe(true);
-    expect(() => p1DashboardEnabled({ P1_DASHBOARD_ENABLED: "true " })).toThrow("p1_dashboard_enabled_invalid");
-    expect(() => p1DashboardEnabled({ P1_DASHBOARD_ENABLED: "yes" })).toThrow("p1_dashboard_enabled_invalid");
+    expect(p1DashboardEnabled({ P1_DASHBOARD_ENABLED: "true " })).toBe(false);
+    expect(p1DashboardEnabled({ P1_DASHBOARD_ENABLED: "yes" })).toBe(false);
+  });
+
+  it("hard-denies production even if a local environment file requests enablement", () => {
+    expect(p1DashboardEnabled({ NODE_ENV: "production", P1_DASHBOARD_ENABLED: "true" })).toBe(false);
   });
 });

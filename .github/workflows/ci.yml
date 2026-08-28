@@ -97,6 +97,16 @@ jobs:
       # 改由定时 workflow `.github/workflows/eval.yml`（每周 + 手动，用 relay secrets）运行；
       # 见 docs/plan/m3-plan.md M3-4、docs/launch/operations.md §13。
       - run: npm run test:coverage
+      - name: P1 metrics capacity gate
+        run: |
+          npx tsx evals/p1-metrics-capacity-v4.ts --enforce > "$RUNNER_TEMP/p1-metrics-capacity-v4-evidence.json"
+          node -e 'JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"))' "$RUNNER_TEMP/p1-metrics-capacity-v4-evidence.json"
+      - name: upload P1 metrics capacity evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: p1-metrics-capacity-v4-evidence
+          path: ${{ runner.temp }}/p1-metrics-capacity-v4-evidence.json
+          if-no-files-found: error
       - name: next build
         run: npm run build
         env:
@@ -135,6 +145,7 @@ jobs:
         run: |
           docker run --rm --entrypoint node deep-insight:ci --check /app/ops/generation-dispatch-worker.mjs
           docker run --rm --entrypoint node deep-insight:ci --check /app/ops/generation-dispatch-healthcheck.mjs
+          [ "$(docker image inspect --format '{{ index .Config.Labels "org.insight-agent.p1-dashboard-admission" }}' deep-insight:ci)" = required ]
       - name: e2e dispatch worker readiness
         run: |
           network="dispatch-health-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
@@ -205,6 +216,8 @@ jobs:
             if (signInResponse.status >= 400 || !cookieHeader()) throw new Error('admin credentials sign-in failed');
             const check = await fetch(base + '/api/admin/integrity-checks/artifact_1/v1', { method: 'POST', headers: { cookie: cookieHeader() } });
             if (check.status !== 409 || (await check.json())?.error !== 'integrity_check_failed') throw new Error('disabled integrity check did not fail closed');
+            const dashboard = await fetch(base + '/api/admin/metrics', { headers: { cookie: cookieHeader() } });
+            if (dashboard.status !== 404 || (await dashboard.json())?.error !== 'not_found') throw new Error('production P1 dashboard did not fail closed');
             const hold = await fetch(base + '/api/admin/reports/report_123/retention', {
               method: 'POST',
               headers: { cookie: cookieHeader(), 'content-type': 'application/json' },

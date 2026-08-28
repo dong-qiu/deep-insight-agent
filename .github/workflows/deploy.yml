@@ -134,6 +134,15 @@ jobs:
           esac
 
           docker pull "\$image"
+          p1_dashboard_admission=\$(docker image inspect --format '{{ index .Config.Labels "org.insight-agent.p1-dashboard-admission" }}' "\$image")
+          case "\$p1_dashboard_admission" in
+            "") echo "P1 dashboard admission：legacy image (not present)" ;;
+            required)
+              echo "镜像包含尚未通过 INSI-25 准入的 P1 dashboard；拒绝部署" >&2
+              exit 1
+              ;;
+            *) echo "未知 P1 dashboard admission 标签：\$p1_dashboard_admission" >&2; exit 1 ;;
+          esac
           actual_sha=\$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "\$image")
           [[ "\$actual_sha" == "\$expected_sha" ]] || { echo "镜像 revision 标签与请求提交不一致" >&2; exit 1; }
           repo_digest=\$(docker image inspect --format '{{index .RepoDigests 0}}' "\$image")

@@ -60,6 +60,9 @@ services:
     volumes:
       - insight-data:/data
     environment:
+      # Do not allow env_file to turn a production service into a development
+      # runtime and bypass the P1 admission gate.
+      NODE_ENV: production
       # 只有 migration ledger 已确认最新 provenance schema 后，Web 才可成为写者。
       PROVENANCE_SCHEMA_REQUIRED: "1"
       # Release workflow sets this to 1 only after resolving repo@sha256 and

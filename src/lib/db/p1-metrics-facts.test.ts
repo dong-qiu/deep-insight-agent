@@ -161,6 +161,9 @@ describe("P1 dashboard metric facts", () => {
     appendAnalysisMetricFacts(db, { batch, items: [item], run_id: "run_retry", costs: [{ tokens: 5, amount: 0.01 }] });
     appendValidationMetricFacts(db, { batch, validation, items: [item], run_id: "run_retry", costs: [{ tokens: 7, amount: 0.02 }] });
     expect(db.prepare("SELECT (SELECT COUNT(*) FROM funnel_event) AS funnel,(SELECT COUNT(*) FROM cost_ledger) AS cost,(SELECT COUNT(*) FROM validator_result_fact) AS validator").get()).toEqual(first);
+    const generatedIds = db.prepare("SELECT event_id AS id FROM funnel_event UNION ALL SELECT entry_id AS id FROM cost_ledger UNION ALL SELECT result_id AS id FROM validator_result_fact").all() as Array<{ id: string }>;
+    expect(generatedIds).not.toHaveLength(0);
+    for (const { id } of generatedIds) expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
     expect(db.prepare("SELECT stage,reason_code FROM funnel_event WHERE stage='failed'").get()).toEqual({ stage: "failed", reason_code: "quote_not_in_source" });
   });
 
