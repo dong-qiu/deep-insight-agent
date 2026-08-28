@@ -4,21 +4,23 @@ import { appendCostLedger, appendFunnelEvent, appendValidatorResult, purgeExpire
 import { P1_METRICS_CAPACITY_FIXTURE } from "./p1-metrics-capacity-fixture.js";
 import { applyProvenanceMigrations } from "./provenance-migrations.js";
 import { explainP1DashboardQueries, readIntegrityDashboardStatus, readP1DashboardMetrics } from "./p1-dashboard.js";
+import { deterministicUuidV5 } from "./uuid.js";
 
 function dbWithP1() {
   const db = openDb(":memory:");
   applyProvenanceMigrations(db);
   return db;
 }
+const eventId = (name: string) => deterministicUuidV5(`p1-dashboard-test:${name}`);
 
 describe("P1 dashboard read model", () => {
   it("uses only bounded tenant-prefixed projections for funnel, cost, latency, and validator reasons", () => {
     const db = dbWithP1();
     const at = "2026-08-01T01:00:00.000Z";
-    appendFunnelEvent(db, { event_id: "received", trace_id: "trace_1", stage: "received", pipeline_version: "pipeline-v1", occurred_at: at, ingested_at: at });
-    appendFunnelEvent(db, { event_id: "accepted", trace_id: "trace_1", stage: "accepted", pipeline_version: "pipeline-v1", occurred_at: "2026-08-01T01:00:01.000Z", ingested_at: "2026-08-01T01:00:01.000Z" });
-    appendFunnelEvent(db, { event_id: "failed", trace_id: "trace_1", stage: "failed", pipeline_version: "pipeline-v1", reason_code: "quote_not_in_source", occurred_at: "2026-08-01T01:00:03.000Z", ingested_at: "2026-08-01T01:00:03.000Z" });
-    appendFunnelEvent(db, { event_id: "in-progress", trace_id: "trace_2", stage: "received", pipeline_version: "pipeline-v1", occurred_at: "2026-08-01T01:00:04.000Z", ingested_at: "2026-08-01T01:00:04.000Z" });
+    appendFunnelEvent(db, { event_id: eventId("received"), trace_id: "trace_1", stage: "received", pipeline_version: "pipeline-v1", occurred_at: at, ingested_at: at });
+    appendFunnelEvent(db, { event_id: eventId("accepted"), trace_id: "trace_1", stage: "accepted", pipeline_version: "pipeline-v1", occurred_at: "2026-08-01T01:00:01.000Z", ingested_at: "2026-08-01T01:00:01.000Z" });
+    appendFunnelEvent(db, { event_id: eventId("failed"), trace_id: "trace_1", stage: "failed", pipeline_version: "pipeline-v1", reason_code: "quote_not_in_source", occurred_at: "2026-08-01T01:00:03.000Z", ingested_at: "2026-08-01T01:00:03.000Z" });
+    appendFunnelEvent(db, { event_id: eventId("in-progress"), trace_id: "trace_2", stage: "received", pipeline_version: "pipeline-v1", occurred_at: "2026-08-01T01:00:04.000Z", ingested_at: "2026-08-01T01:00:04.000Z" });
     appendCostLedger(db, { entry_id: "known", trace_id: "trace_1", stage: "processed", pipeline_version: "pipeline-v1", provider: "anthropic", model: "claude", currency: "USD", amount_minor: 9, cost_status: "known", occurred_at: at, ingested_at: at });
     appendCostLedger(db, { entry_id: "unknown", trace_id: "trace_1", stage: "processed", pipeline_version: "pipeline-v1", provider: "anthropic", model: "claude", currency: "USD", amount_minor: null, cost_status: "unknown", occurred_at: at, ingested_at: at });
     appendValidatorResult(db, { result_id: "validator", trace_id: "trace_1", stage: "validated", pipeline_version: "pipeline-v1", validator: "citation", rule_version: "v1", reason_code: "quote_not_in_source", severity: "error", terminal: true, occurred_at: at, ingested_at: at });
@@ -52,7 +54,7 @@ describe("P1 dashboard read model", () => {
 
   it("keeps late funnel, cost, and validator facts out of every aggregate projection until an admin backfills them", () => {
     const db = dbWithP1(); const occurred = "2026-08-01T01:00:00.000Z"; const late = "2026-08-10T02:00:00.001Z";
-    appendFunnelEvent(db, { event_id: "late-funnel", trace_id: "late-trace", stage: "received", pipeline_version: "pipeline-v1", occurred_at: occurred, ingested_at: late });
+    appendFunnelEvent(db, { event_id: eventId("late-funnel"), trace_id: "late-trace", stage: "received", pipeline_version: "pipeline-v1", occurred_at: occurred, ingested_at: late });
     appendCostLedger(db, { entry_id: "late-cost", trace_id: "late-trace", stage: "processed", pipeline_version: "pipeline-v1", provider: "openai", model: "gpt", currency: "USD", amount_minor: 9, cost_status: "known", occurred_at: occurred, ingested_at: late });
     appendValidatorResult(db, { result_id: "late-validator", trace_id: "late-trace", stage: "validated", pipeline_version: "pipeline-v1", validator: "citation", rule_version: "v1", reason_code: "internal_error", severity: "error", terminal: true, occurred_at: occurred, ingested_at: late });
     const window = { from: "2026-08-01T00:00:00.000Z", to: "2026-08-02T00:00:00.000Z" };
@@ -60,16 +62,16 @@ describe("P1 dashboard read model", () => {
     expect(db.prepare("SELECT COUNT(*) AS count FROM dashboard_trace_fact_v1").get()).toEqual({ count: 0 });
     reconcileLateMetricEvent(db, { fact_kind: "cost", event_id: "late-cost", action: "backfilled", actor_id: "admin_1", recorded_at: "2026-08-10T03:00:00.000Z" });
     expect(readP1DashboardMetrics(db, window).costs).toEqual([expect.objectContaining({ known_cost_minor: 9 })]);
-    reconcileLateMetricEvent(db, { fact_kind: "funnel", event_id: "late-funnel", action: "declined", actor_id: "admin_1" });
+    reconcileLateMetricEvent(db, { fact_kind: "funnel", event_id: eventId("late-funnel"), action: "declined", actor_id: "admin_1" });
     reconcileLateMetricEvent(db, { fact_kind: "validator", event_id: "late-validator", action: "declined", actor_id: "admin_1" });
     expect(db.prepare("SELECT COUNT(*) AS count FROM dashboard_trace_fact_v1").get()).toEqual({ count: 0 });
   });
 
   it("serves an exact 400-day aggregate from the indexed trace projection", () => {
     const db = dbWithP1();
-    appendFunnelEvent(db, { event_id: "long-received", trace_id: "long-trace", stage: "received", pipeline_version: "pipeline-v1", occurred_at: "2026-08-01T01:00:00.000Z", ingested_at: "2026-08-01T01:00:00.000Z" });
-    appendFunnelEvent(db, { event_id: "long-accepted", trace_id: "long-trace", stage: "accepted", pipeline_version: "pipeline-v1", occurred_at: "2026-08-15T01:00:00.000Z", ingested_at: "2026-08-15T01:00:00.000Z" });
-    appendFunnelEvent(db, { event_id: "long-failed", trace_id: "long-trace", stage: "failed", pipeline_version: "pipeline-v1", reason_code: "quote_not_in_source", occurred_at: "2026-09-01T01:00:00.000Z", ingested_at: "2026-09-01T01:00:00.000Z" });
+    appendFunnelEvent(db, { event_id: eventId("long-received"), trace_id: "long-trace", stage: "received", pipeline_version: "pipeline-v1", occurred_at: "2026-08-01T01:00:00.000Z", ingested_at: "2026-08-01T01:00:00.000Z" });
+    appendFunnelEvent(db, { event_id: eventId("long-accepted"), trace_id: "long-trace", stage: "accepted", pipeline_version: "pipeline-v1", occurred_at: "2026-08-15T01:00:00.000Z", ingested_at: "2026-08-15T01:00:00.000Z" });
+    appendFunnelEvent(db, { event_id: eventId("long-failed"), trace_id: "long-trace", stage: "failed", pipeline_version: "pipeline-v1", reason_code: "quote_not_in_source", occurred_at: "2026-09-01T01:00:00.000Z", ingested_at: "2026-09-01T01:00:00.000Z" });
     appendValidatorResult(db, { result_id: "long-validator-1", trace_id: "long-trace", stage: "validated", pipeline_version: "pipeline-v1", validator: "citation", rule_version: "v1", reason_code: "quote_not_in_source", severity: "error", terminal: true, occurred_at: "2026-08-03T01:00:00.000Z", ingested_at: "2026-08-03T01:00:00.000Z" });
     appendValidatorResult(db, { result_id: "long-validator-2", trace_id: "long-trace", stage: "validated", pipeline_version: "pipeline-v1", validator: "citation", rule_version: "v1", reason_code: "quote_not_in_source", severity: "error", terminal: true, occurred_at: "2026-08-04T01:00:00.000Z", ingested_at: "2026-08-04T01:00:00.000Z" });
     const window = P1_METRICS_CAPACITY_FIXTURE.aggregate_window;
@@ -95,12 +97,12 @@ describe("P1 dashboard read model", () => {
   it("keeps long-window latency diagnostics and partial UTC-day costs exact", () => {
     const db = dbWithP1();
     const window = { from: "2026-08-01T12:00:00.000Z", to: "2026-09-02T12:00:00.000Z" };
-    appendFunnelEvent(db, { event_id: "long-completed-received", trace_id: "long-completed", stage: "received", pipeline_version: "pipeline-v1", occurred_at: "2026-08-01T12:00:00.000Z", ingested_at: "2026-08-01T12:00:00.000Z" });
-    appendFunnelEvent(db, { event_id: "long-completed-accepted", trace_id: "long-completed", stage: "accepted", pipeline_version: "pipeline-v1", occurred_at: "2026-08-01T12:01:00.000Z", ingested_at: "2026-08-01T12:01:00.000Z" });
-    appendFunnelEvent(db, { event_id: "long-completed-terminal", trace_id: "long-completed", stage: "failed", pipeline_version: "pipeline-v1", reason_code: "internal_error", occurred_at: "2026-08-01T12:02:00.000Z", ingested_at: "2026-08-01T12:02:00.000Z" });
-    appendFunnelEvent(db, { event_id: "long-missing-received", trace_id: "long-missing", stage: "received", pipeline_version: "pipeline-v1", occurred_at: "2026-08-03T01:00:00.000Z", ingested_at: "2026-08-03T01:00:00.000Z" });
-    appendFunnelEvent(db, { event_id: "long-missing-terminal", trace_id: "long-missing", stage: "failed", pipeline_version: "pipeline-v1", reason_code: "internal_error", occurred_at: "2026-08-03T01:01:00.000Z", ingested_at: "2026-08-03T01:01:00.000Z" });
-    appendFunnelEvent(db, { event_id: "long-in-progress", trace_id: "long-in-progress", stage: "received", pipeline_version: "pipeline-v1", occurred_at: "2026-08-04T01:00:00.000Z", ingested_at: "2026-08-04T01:00:00.000Z" });
+    appendFunnelEvent(db, { event_id: eventId("long-completed-received"), trace_id: "long-completed", stage: "received", pipeline_version: "pipeline-v1", occurred_at: "2026-08-01T12:00:00.000Z", ingested_at: "2026-08-01T12:00:00.000Z" });
+    appendFunnelEvent(db, { event_id: eventId("long-completed-accepted"), trace_id: "long-completed", stage: "accepted", pipeline_version: "pipeline-v1", occurred_at: "2026-08-01T12:01:00.000Z", ingested_at: "2026-08-01T12:01:00.000Z" });
+    appendFunnelEvent(db, { event_id: eventId("long-completed-terminal"), trace_id: "long-completed", stage: "failed", pipeline_version: "pipeline-v1", reason_code: "internal_error", occurred_at: "2026-08-01T12:02:00.000Z", ingested_at: "2026-08-01T12:02:00.000Z" });
+    appendFunnelEvent(db, { event_id: eventId("long-missing-received"), trace_id: "long-missing", stage: "received", pipeline_version: "pipeline-v1", occurred_at: "2026-08-03T01:00:00.000Z", ingested_at: "2026-08-03T01:00:00.000Z" });
+    appendFunnelEvent(db, { event_id: eventId("long-missing-terminal"), trace_id: "long-missing", stage: "failed", pipeline_version: "pipeline-v1", reason_code: "internal_error", occurred_at: "2026-08-03T01:01:00.000Z", ingested_at: "2026-08-03T01:01:00.000Z" });
+    appendFunnelEvent(db, { event_id: eventId("long-in-progress"), trace_id: "long-in-progress", stage: "received", pipeline_version: "pipeline-v1", occurred_at: "2026-08-04T01:00:00.000Z", ingested_at: "2026-08-04T01:00:00.000Z" });
     db.prepare(`INSERT INTO dashboard_trace_fact_v1(tenant_id,fact_kind,fact_id,trace_id,attempt,stage,event_type,pipeline_version,occurred_at,projection_version)
       VALUES ('default','funnel','long-negative-received','long-negative',1,'received','entered','pipeline-v1','2026-08-05T02:00:00.000Z','dashboard-trace-v1'),
         ('default','funnel','long-negative-accepted','long-negative',1,'accepted','entered','pipeline-v1','2026-08-05T01:00:00.000Z','dashboard-trace-v1'),

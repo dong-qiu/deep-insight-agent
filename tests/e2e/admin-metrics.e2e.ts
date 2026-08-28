@@ -8,6 +8,7 @@ import { openDb } from "../../src/lib/db/index.js";
 import { appendFunnelEvent } from "../../src/lib/db/p1-metrics-facts.js";
 import { applyProvenanceMigrations } from "../../src/lib/db/provenance-migrations.js";
 import { upsertUser } from "../../src/lib/db/users.js";
+import { deterministicUuidV5 } from "../../src/lib/db/uuid.js";
 
 const tempRoot = mkdtempSync(join(tmpdir(), "insight-metrics-e2e-"));
 const dbPath = join(tempRoot, "insight.db");
@@ -76,7 +77,7 @@ beforeAll(async () => {
   upsertUser(db, "viewer@example.test", "viewer-password", "viewer");
   for (const [event_id, trace_id, offset] of [["event_older", "trace_older", 120_000], ["event_newer", "trace_newer", 60_000]] as const) {
     const occurred_at = new Date(now - offset).toISOString();
-    appendFunnelEvent(db, { event_id, trace_id, stage: "received", pipeline_version: "e2e-v1", occurred_at, ingested_at: new Date(now).toISOString() });
+    appendFunnelEvent(db, { event_id: deterministicUuidV5(`admin-metrics-e2e:${event_id}`), trace_id, stage: "received", pipeline_version: "e2e-v1", occurred_at, ingested_at: new Date(now).toISOString() });
   }
   db.close();
 

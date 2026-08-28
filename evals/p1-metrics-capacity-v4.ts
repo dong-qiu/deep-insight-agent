@@ -5,6 +5,7 @@ import { appendCostLedger, appendFunnelEvent, appendValidatorResult, explainMetr
 import { P1_METRICS_CAPACITY_FIXTURE as fixture } from "../src/lib/db/p1-metrics-capacity-fixture.js";
 import { explainP1DashboardQueries, readP1DashboardMetrics } from "../src/lib/db/p1-dashboard.js";
 import { applyProvenanceMigrations } from "../src/lib/db/provenance-migrations.js";
+import { deterministicUuidV5 } from "../src/lib/db/uuid.js";
 
 const DAY = 86_400_000;
 const p95 = (samples: number[]) => [...samples].sort((a, b) => a - b)[Math.ceil(samples.length * .95) - 1] ?? 0;
@@ -19,9 +20,9 @@ function seed() {
     const pipeline = fixture.dimensions.pipelines[day % fixture.dimensions.pipelines.length];
     const [provider, model] = fixture.dimensions.providers[day % fixture.dimensions.providers.length].split("/") as [string, string];
     const trace = `capacity-trace-${day}`; const base = at(day, 3600);
-    appendFunnelEvent(db, { event_id: `capacity-received-${day}`, trace_id: trace, stage: "received", topic_id: topic, source_id: source, pipeline_version: pipeline, occurred_at: base, ingested_at: base });
-    appendFunnelEvent(db, { event_id: `capacity-accepted-${day}`, trace_id: trace, stage: "accepted", topic_id: topic, source_id: source, pipeline_version: pipeline, occurred_at: at(day, 3601), ingested_at: at(day, 3601) });
-    appendFunnelEvent(db, { event_id: `capacity-failed-${day}`, trace_id: trace, stage: "failed", topic_id: topic, source_id: source, pipeline_version: pipeline, reason_code: "quote_not_in_source", occurred_at: at(day, 3602), ingested_at: at(day, 3602) });
+    appendFunnelEvent(db, { event_id: deterministicUuidV5(`p1-capacity:received:${day}`), trace_id: trace, stage: "received", topic_id: topic, source_id: source, pipeline_version: pipeline, occurred_at: base, ingested_at: base });
+    appendFunnelEvent(db, { event_id: deterministicUuidV5(`p1-capacity:accepted:${day}`), trace_id: trace, stage: "accepted", topic_id: topic, source_id: source, pipeline_version: pipeline, occurred_at: at(day, 3601), ingested_at: at(day, 3601) });
+    appendFunnelEvent(db, { event_id: deterministicUuidV5(`p1-capacity:failed:${day}`), trace_id: trace, stage: "failed", topic_id: topic, source_id: source, pipeline_version: pipeline, reason_code: "quote_not_in_source", occurred_at: at(day, 3602), ingested_at: at(day, 3602) });
     appendCostLedger(db, { entry_id: `capacity-cost-${day}`, trace_id: trace, stage: "processed", attempt: 1, topic_id: topic, source_id: source, pipeline_version: pipeline, provider, model, currency: "USD", amount_minor: day % 3 ? day + 1 : null, cost_status: day % 3 ? "known" : "unknown", occurred_at: at(day, 3603), ingested_at: at(day, 3603) });
     appendValidatorResult(db, { result_id: `capacity-validator-${day}`, trace_id: trace, stage: "validated", attempt: 1, topic_id: topic, source_id: source, pipeline_version: pipeline, validator: "citation", rule_version: "v1", reason_code: "quote_not_in_source", severity: "error", terminal: true, occurred_at: at(day, 3604), ingested_at: at(day, 3604) });
   }

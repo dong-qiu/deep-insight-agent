@@ -5,6 +5,7 @@ import { applyProvenanceMigrations } from "./provenance-migrations.js";
 import { P1_METRICS_CAPACITY_FIXTURE } from "./p1-metrics-capacity-fixture.js";
 import { appendAnalysisMetricFacts, appendCollectorMetricFact, appendValidationMetricFacts } from "./p1-metrics-pipeline.js";
 import { appendCostLedger, appendFunnelEvent, appendValidatorResult, explainMetricDetailsPageQuery, freezeDueMetricDay, freezeMetricDay, listCostLedgerDetails, listFunnelDetails, listMetricFactConflicts, listMetricDetailsPage, listValidatorResultDetails, purgeExpiredMetricFacts, queryMetricRollups, reconcileLateMetricEvent } from "./p1-metrics-facts.js";
+import { deterministicUuidV5 } from "./uuid.js";
 
 const metricAlerts = vi.hoisted(() => ({ late: vi.fn() }));
 const metricLogs = vi.hoisted(() => ({ warn: vi.fn() }));
@@ -16,18 +17,20 @@ function dbWithMetrics() {
   applyProvenanceMigrations(db);
   return db;
 }
+const eventId = (name: string) => deterministicUuidV5(`p1-metrics-facts-test:${name}`);
 
 describe("P1 dashboard metric facts", () => {
   it("keeps funnel-v1 idempotent, accepts event-time ordering, and records observable conflicts", () => {
     const db = dbWithMetrics();
     const common = { trace_id: "trace_1", pipeline_version: "pipeline-v1", ingested_at: "2026-08-01T01:00:00.000Z" };
-    expect(appendFunnelEvent(db, { ...common, event_id: "accepted", stage: "accepted", occurred_at: "2026-08-01T00:01:00.000Z" })).toEqual({ event_id: "accepted", replayed: false });
-    expect(appendFunnelEvent(db, { ...common, event_id: "received", stage: "received", occurred_at: "2026-08-01T00:00:00.000Z" })).toEqual({ event_id: "received", replayed: false });
-    expect(appendFunnelEvent(db, { ...common, event_id: "accepted", stage: "accepted", occurred_at: "2026-08-01T00:01:00.000Z" })).toEqual({ event_id: "accepted", replayed: true });
-    expect(() => appendFunnelEvent(db, { ...common, event_id: "accepted", stage: "accepted", occurred_at: "2026-08-01T00:02:00.000Z" })).toThrow("funnel_event_conflict");
+    expect(appendFunnelEvent(db, { ...common, event_id: eventId("accepted"), stage: "accepted", occurred_at: "2026-08-01T00:01:00.000Z" })).toEqual({ event_id: eventId("accepted"), replayed: false });
+    expect(appendFunnelEvent(db, { ...common, event_id: eventId("received"), stage: "received", occurred_at: "2026-08-01T00:00:00.000Z" })).toEqual({ event_id: eventId("received"), replayed: false });
+    expect(appendFunnelEvent(db, { ...common, event_id: eventId("accepted"), stage: "accepted", occurred_at: "2026-08-01T00:01:00.000Z" })).toEqual({ event_id: eventId("accepted"), replayed: true });
+    expect(() => appendFunnelEvent(db, { ...common, event_id: eventId("accepted"), stage: "accepted", occurred_at: "2026-08-01T00:02:00.000Z" })).toThrow("funnel_event_conflict");
     expect(db.prepare("SELECT COUNT(*) AS count FROM funnel_event_conflict WHERE tenant_id='default'").get()).toEqual({ count: 1 });
-    expect(() => appendFunnelEvent(db, { ...common, event_id: "bad-skip", stage: "validated", occurred_at: "2026-08-01T00:03:00.000Z" })).toThrow("funnel_skip_reason_required");
-    expect(() => appendFunnelEvent(db, { ...common, event_id: "reverse", stage: "received", attempt: 1, occurred_at: "2026-08-01T00:04:00.000Z" })).toThrow("funnel_event_conflict");
+    expect(() => appendFunnelEvent(db, { ...common, event_id: eventId("bad-skip"), stage: "validated", occurred_at: "2026-08-01T00:03:00.000Z" })).toThrow("funnel_skip_reason_required");
+    expect(() => appendFunnelEvent(db, { ...common, event_id: eventId("reverse"), stage: "received", attempt: 1, occurred_at: "2026-08-01T00:04:00.000Z" })).toThrow("funnel_event_conflict");
+    expect(() => appendFunnelEvent(db, { ...common, event_id: "not-a-uuid", stage: "received", attempt: 2, occurred_at: "2026-08-01T00:04:00.000Z" })).toThrow("funnel_event_id_invalid");
   });
 
   it("appends immutable, queryable audit facts for divergent cost and validator replays", () => {
@@ -69,7 +72,7 @@ describe("P1 dashboard metric facts", () => {
   it("materializes exact known, unknown, and validator aggregates then revises only inside the seven-day window", () => {
     const db = dbWithMetrics();
     const time = "2026-08-01T01:00:00.000Z";
-    appendFunnelEvent(db, { event_id: "received", trace_id: "trace_1", stage: "received", pipeline_version: "pipeline-v1", occurred_at: time, ingested_at: time });
+    appendFunnelEvent(db, { event_id: eventId("freeze-received"), trace_id: "trace_1", stage: "received", pipeline_version: "pipeline-v1", occurred_at: time, ingested_at: time });
     appendCostLedger(db, { entry_id: "known", trace_id: "trace_1", stage: "processed", pipeline_version: "pipeline-v1", provider: "openai", model: "gpt", currency: "USD", amount_minor: 17, cost_status: "known", occurred_at: time, ingested_at: time });
     appendCostLedger(db, { entry_id: "unknown", trace_id: "trace_1", stage: "processed", pipeline_version: "pipeline-v1", provider: "openai", model: "gpt", currency: "USD", amount_minor: null, cost_status: "unknown", occurred_at: time, ingested_at: "2026-08-02T03:00:00.000Z" });
     appendValidatorResult(db, { result_id: "validator", trace_id: "trace_1", stage: "validated", pipeline_version: "pipeline-v1", validator: "citation", rule_version: "v1", reason_code: "source_not_found", severity: "error", terminal: true, occurred_at: time, ingested_at: "2026-08-02T03:00:00.000Z" });
@@ -83,7 +86,7 @@ describe("P1 dashboard metric facts", () => {
 
   it("uses the required indexes, bounds aggregate queries, and expires only metric data", () => {
     const db = dbWithMetrics();
-    appendFunnelEvent(db, { event_id: "received", trace_id: "trace_1", stage: "received", pipeline_version: "pipeline-v1", occurred_at: "2026-08-01T01:00:00.000Z", ingested_at: "2026-08-01T01:00:00.000Z" });
+    appendFunnelEvent(db, { event_id: eventId("purge-received"), trace_id: "trace_1", stage: "received", pipeline_version: "pipeline-v1", occurred_at: "2026-08-01T01:00:00.000Z", ingested_at: "2026-08-01T01:00:00.000Z" });
     const funnelPlan = db.prepare("EXPLAIN QUERY PLAN SELECT event_id FROM funnel_event WHERE tenant_id='default' AND occurred_at>=? AND occurred_at<?").all("2026-08-01T00:00:00.000Z", "2026-08-02T00:00:00.000Z") as { detail: string }[];
     const rollupPlan = db.prepare("EXPLAIN QUERY PLAN SELECT * FROM metric_rollup WHERE tenant_id='default' AND grain='day' AND bucket_start>=? AND bucket_start<?").all("2026-08-01T00:00:00.000Z", "2026-08-02T00:00:00.000Z") as { detail: string }[];
     expect(funnelPlan.map((row) => row.detail).join("\n")).toContain("idx_funnel_event_tenant_occurred");
@@ -118,8 +121,8 @@ describe("P1 dashboard metric facts", () => {
   it("rolls up topic/source and first terminal reason, with all dashboard reads using indexed plans", () => {
     const db = dbWithMetrics(); const time = "2026-08-01T01:00:00.000Z";
     expect(P1_METRICS_CAPACITY_FIXTURE.version).toBe("p1-metrics-capacity-v4");
-    appendFunnelEvent(db, { event_id: "received", trace_id: "trace_1", stage: "received", topic_id: "topic_1", source_id: "source_1", pipeline_version: "pipeline-v1", occurred_at: time, ingested_at: time });
-    appendFunnelEvent(db, { event_id: "failed", trace_id: "trace_1", stage: "failed", topic_id: "topic_1", source_id: "source_1", pipeline_version: "pipeline-v1", reason_code: "quote_not_in_source", occurred_at: "2026-08-01T01:01:00.000Z", ingested_at: "2026-08-01T01:01:00.000Z" });
+    appendFunnelEvent(db, { event_id: eventId("details-received"), trace_id: "trace_1", stage: "received", topic_id: "topic_1", source_id: "source_1", pipeline_version: "pipeline-v1", occurred_at: time, ingested_at: time });
+    appendFunnelEvent(db, { event_id: eventId("details-failed"), trace_id: "trace_1", stage: "failed", topic_id: "topic_1", source_id: "source_1", pipeline_version: "pipeline-v1", reason_code: "quote_not_in_source", occurred_at: "2026-08-01T01:01:00.000Z", ingested_at: "2026-08-01T01:01:00.000Z" });
     appendCostLedger(db, { entry_id: "cost", trace_id: "trace_1", stage: "processed", topic_id: "topic_1", source_id: "source_1", pipeline_version: "pipeline-v1", provider: "anthropic", model: "claude", currency: "USD", amount_minor: 4, cost_status: "known", occurred_at: time, ingested_at: time });
     appendValidatorResult(db, { result_id: "validator", trace_id: "trace_1", stage: "validated", topic_id: "topic_1", source_id: "source_1", pipeline_version: "pipeline-v1", validator: "citation", rule_version: "v1", reason_code: "quote_not_in_source", severity: "error", terminal: true, occurred_at: time, ingested_at: time });
     expect(db.prepare("SELECT topic_id,source_id,reason_code,terminal_events FROM metric_rollup WHERE grain='hour' AND metric_kind='funnel' AND stage='failed'").get()).toEqual({ topic_id: "topic_1", source_id: "source_1", reason_code: "quote_not_in_source", terminal_events: 1 });

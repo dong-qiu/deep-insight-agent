@@ -97,6 +97,8 @@ jobs:
       # 改由定时 workflow `.github/workflows/eval.yml`（每周 + 手动，用 relay secrets）运行；
       # 见 docs/plan/m3-plan.md M3-4、docs/launch/operations.md §13。
       - run: npm run test:coverage
+      - name: P1 provenance integrity gate
+        run: npm run eval:provenance-integrity
       - name: P1 metrics capacity gate
         run: |
           npx tsx evals/p1-metrics-capacity-v4.ts --enforce > "$RUNNER_TEMP/p1-metrics-capacity-v4-evidence.json"

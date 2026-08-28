@@ -11,6 +11,7 @@ export const DETAIL_QUERY_MAX_DAYS = 31;
 export const ROLLUP_QUERY_MAX_DAYS = 400;
 const BACKFILL_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 const UTC_INSTANT = /^(\d{4}-\d{2}-\d{2})T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const FUNNEL_STAGES = ["received", "accepted", "processed", "validated", "published"] as const;
 const TERMINAL_STAGES = ["failed", "cancelled", "timed_out", "rejected"] as const;
 const REASON_CODES = new Set(["source_not_found", "source_unreachable", "quote_not_in_source", "out_of_context", "exaggeration", "misattribution", "uncertain", "not_evaluated", "event_conflict", "authorization_denied", "internal_error"]);
@@ -44,6 +45,9 @@ export function hasMetricFactsSchema(db: DB): boolean {
 
 function requireId(value: string, name: string): void {
   if (!/^[A-Za-z0-9._:-]{1,128}$/.test(value)) throw new Error(`${name}_invalid`);
+}
+function requireUuid(value: string, name: string): void {
+  if (!UUID.test(value)) throw new Error(`${name}_invalid`);
 }
 function epoch(value: string): number {
   const match = UTC_INSTANT.exec(value); const parsed = Date.parse(value);
@@ -114,7 +118,8 @@ function validateFunnelState(db: DB, candidate: Required<Pick<FunnelEventInput, 
 }
 
 export function appendFunnelEvent(db: DB, input: FunnelEventInput): { event_id: string; replayed: boolean } {
-  [input.event_id, input.trace_id, input.pipeline_version].forEach((value) => requireId(value, "funnel_input"));
+  requireUuid(input.event_id, "funnel_event_id");
+  [input.trace_id, input.pipeline_version].forEach((value) => requireId(value, "funnel_input"));
   if (!(FUNNEL_STAGES as readonly string[]).includes(input.stage) && !(TERMINAL_STAGES as readonly string[]).includes(input.stage)) throw new Error("funnel_stage_invalid");
   const attempt = input.attempt ?? 1; if (!Number.isSafeInteger(attempt) || attempt < 1) throw new Error("funnel_attempt_invalid");
   if (input.reason_code && !REASON_CODES.has(input.reason_code)) throw new Error("validator_reason_code_invalid");
