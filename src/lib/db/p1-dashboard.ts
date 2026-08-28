@@ -154,6 +154,16 @@ function longWindowCostsQuery(window: DashboardWindow): PreparedDashboardQuery |
         SUM(known_cost_minor) AS known_cost_minor,SUM(known_cost_entries) AS known_cost_entries,SUM(unknown_cost_entries) AS unknown_cost_entries
         FROM metric_rollup WHERE tenant_id=? AND grain='day' AND metric_kind='cost' AND bucket_start>=? AND bucket_start<?
         GROUP BY bucket_date,topic_id,source_id,pipeline_version,stage,provider,model,currency`, params: [METRICS_TENANT_ID, fullStart, fullEnd] });
+    // Frozen daily rollups are immutable.  An explicitly backfilled late fact
+    // therefore contributes from its 400-day projection rather than causing
+    // a historical rollup rewrite.
+    parts.push({ sql: `SELECT substr(fact.occurred_at,1,10) AS bucket_date,fact.topic_id,fact.source_id,fact.pipeline_version,fact.stage,fact.provider,fact.model,fact.currency,
+        COALESCE(SUM(CASE WHEN fact.cost_status='known' THEN fact.amount_minor ELSE 0 END),0) AS known_cost_minor,
+        COUNT(*) FILTER (WHERE fact.cost_status='known') AS known_cost_entries,COUNT(*) FILTER (WHERE fact.cost_status='unknown') AS unknown_cost_entries
+        FROM dashboard_cost_fact_v1 fact WHERE fact.tenant_id=? AND fact.projection_version='dashboard-cost-v1' AND fact.occurred_at>=? AND fact.occurred_at<?
+          AND EXISTS (SELECT 1 FROM metric_late_reconciliation reconciliation
+            WHERE reconciliation.tenant_id=fact.tenant_id AND reconciliation.fact_kind='cost' AND reconciliation.event_id=fact.entry_id AND reconciliation.action='backfilled')
+        GROUP BY bucket_date,fact.topic_id,fact.source_id,fact.pipeline_version,fact.stage,fact.provider,fact.model,fact.currency`, params: [METRICS_TENANT_ID, fullStart, fullEnd] });
   }
   if (!parts.length) return null;
   return { sql: `SELECT bucket_date,topic_id,source_id,pipeline_version,stage,provider,model,currency,

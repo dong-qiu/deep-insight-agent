@@ -17,6 +17,25 @@ import { appendCostLedger, appendFunnelEvent, appendValidatorResult, reconcileLa
 import { readP1DashboardMetrics } from "../src/lib/db/p1-dashboard.js";
 import { deploymentAnchorPublication } from "../src/lib/runtime/integrity-anchor-runtime.js";
 
+const EVALUATION_SCHEMA_VERSION = "provenance-dashboard-integrity-evidence-v1";
+const RULE_VERSION = "provenance-dashboard-integrity-rules-v1";
+const CHECKER_VERSION = "provenance-dashboard-integrity-v1";
+const HASH_KEY_VERSION = "sha-256-v1";
+const EXPECTED_OUTPUT = {
+  result: "pass",
+  vectors: 24,
+  content_hash: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+  manifest_hash: "85b88d5667e4e5e36dc461ff25b6f2b225354623774baddd9b3fddb6dae04907",
+};
+const ERROR_TOLERANCE = { counts: 0, amounts_minor: 0, latency_ms: 0 };
+const EVALUATION_DATASET = {
+  artifact_bytes: "abc",
+  daily_root_dates: ["2026-08-21", "2026-08-22"],
+  late_event_window: { occurred_at: "2026-08-21T01:05:00.000Z", ingested_at: "2026-08-30T01:05:00.000Z" },
+  p1_latency_transition: { from: "received", to: "accepted", duration_ms: 500 },
+};
+const DATASET_SHA256 = sha256(new TextEncoder().encode(jcs(EVALUATION_DATASET)));
+
 const backupKeys = generateKeyPairSync("ed25519");
 const backupKeyId = "eval-backup-key";
 process.env.RETENTION_BACKUP_RECEIPT_KEY_ID = backupKeyId;
@@ -118,4 +137,16 @@ assert.equal(readP1DashboardMetrics(db, { from: "2026-08-21T00:00:00.000Z", to: 
 reconcileLateMetricEvent(db, { fact_kind: "funnel", event_id: lateEventId, action: "backfilled", actor_id: "eval-admin", recorded_at: "2026-08-30T01:06:00.000Z" });
 assert.equal(readP1DashboardMetrics(db, { from: "2026-08-21T00:00:00.000Z", to: "2026-08-22T00:00:00.000Z" }).funnel.find((row) => row.stage === "received")?.received_traces, 2);
 
-console.log(JSON.stringify({ gate: "provenance-dashboard-integrity-v1", result: "pass", vectors: 24, content_hash: manifest.content_hash, manifest_hash: manifestHash(manifest) }));
+console.log(JSON.stringify({
+  gate: CHECKER_VERSION,
+  evaluation_schema_version: EVALUATION_SCHEMA_VERSION,
+  rule_version: RULE_VERSION,
+  checker_version: CHECKER_VERSION,
+  hash_key_version: HASH_KEY_VERSION,
+  executed_at_utc: new Date().toISOString(),
+  dataset_sha256: DATASET_SHA256,
+  expected_output: EXPECTED_OUTPUT,
+  error_tolerance: ERROR_TOLERANCE,
+  execution_environment: { node: process.version, platform: process.platform, arch: process.arch },
+  actual_output: { result: "pass", vectors: 24, content_hash: manifest.content_hash, manifest_hash: manifestHash(manifest) },
+}));
