@@ -10,6 +10,17 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 type AnchorEnvironment = Readonly<Record<string, string | undefined>>;
 
+/** P1c is deliberately opt-in. P0 publication keeps its citation/validator
+ * contract when this is disabled; it must never manufacture anchor evidence.
+ * Any non-boolean value fails closed rather than silently changing the
+ * deployment's evidence posture. */
+export function integrityAnchorEnabled(env: AnchorEnvironment = process.env): boolean {
+  const value = env.INTEGRITY_ANCHOR_ENABLED?.trim().toLowerCase();
+  if (value == null || value === "" || value === "0" || value === "false") return false;
+  if (value === "1" || value === "true") return true;
+  throw new Error("integrity_anchor_enabled_invalid");
+}
+
 function required(env: AnchorEnvironment, name: string): string {
   const value = env[name]?.trim();
   if (!value) throw new Error("integrity_anchor_not_configured");
@@ -68,4 +79,14 @@ export function deploymentAnchorPublication(
       requiredFutureInstant(env, "INTEGRITY_ARTIFACT_RETAIN_UNTIL", now),
     ],
   };
+}
+
+/** The only production composition seam for report publication. Keep the
+ * strict constructor above so an enabled deployment cannot degrade to an
+ * unanchored fallback because one required policy input is absent. */
+export function deploymentAnchorPublicationIfEnabled(
+  env: AnchorEnvironment = process.env,
+  now = new Date(),
+): ReportAnchorPublication | undefined {
+  return integrityAnchorEnabled(env) ? deploymentAnchorPublication(env, now) : undefined;
 }

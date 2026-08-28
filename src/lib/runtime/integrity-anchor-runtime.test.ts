@@ -1,8 +1,24 @@
 import { generateKeyPairSync } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { deploymentAnchorPublication } from "./integrity-anchor-runtime.js";
+import { deploymentAnchorPublication, deploymentAnchorPublicationIfEnabled, integrityAnchorEnabled } from "./integrity-anchor-runtime.js";
 
 describe("deployment anchor publication", () => {
+  it("defaults P1 anchors off and does not construct an unanchored substitute", () => {
+    expect(integrityAnchorEnabled({})).toBe(false);
+    expect(deploymentAnchorPublicationIfEnabled({})).toBeUndefined();
+  });
+
+  it("accepts only explicit boolean enablement", () => {
+    expect(integrityAnchorEnabled({ INTEGRITY_ANCHOR_ENABLED: "true" })).toBe(true);
+    expect(integrityAnchorEnabled({ INTEGRITY_ANCHOR_ENABLED: "1" })).toBe(true);
+    expect(integrityAnchorEnabled({ INTEGRITY_ANCHOR_ENABLED: "false" })).toBe(false);
+    expect(() => integrityAnchorEnabled({ INTEGRITY_ANCHOR_ENABLED: "yes" })).toThrow("integrity_anchor_enabled_invalid");
+  });
+
+  it("keeps an enabled deployment strict about all anchor material", () => {
+    expect(() => deploymentAnchorPublicationIfEnabled({ INTEGRITY_ANCHOR_ENABLED: "true" })).toThrow("integrity_anchor_not_configured");
+  });
+
   it("fails closed when the deployment-owned signer/store contract is absent", () => {
     expect(() => deploymentAnchorPublication({})).toThrow("integrity_anchor_not_configured");
   });

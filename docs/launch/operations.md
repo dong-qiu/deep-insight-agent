@@ -5,7 +5,11 @@
 
 ## 完整性锚定维护
 
-完整性维护不依赖报告生成调度。容器内 `ops/crontab` 每 5 分钟调用一次
+完整性维护不依赖报告生成调度，但 P1c 由 `INTEGRITY_ANCHOR_ENABLED=true` 显式启用。
+默认关闭时，容器内 `ops/crontab` 每 5 分钟调用一次
+`/api/cron?mode=integrity` 会成功记录为跳过；P0 的引用校验与报告发布照常运行，且不会
+产生或声明锚定证据。只有完成 INSI-25 的 Object Lock、KMS、最小 IAM、保留期限与 on-call
+准入后才能启用。启用后，容器内 `ops/crontab` 每 5 分钟调用一次
 `/api/cron?mode=integrity`：UTC 02:00 固化前一日 Merkle root，02:15 若 root
 缺失即写入高优先级审计告警，其余执行会恢复已写入锚点的 SQLite 投影，并以最多
 两个并发 worker 对每个已发布 artifact 每 24 小时重校验一次。任何非 `pass`

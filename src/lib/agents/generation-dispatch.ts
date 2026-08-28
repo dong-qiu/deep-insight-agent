@@ -8,7 +8,7 @@ import {
   heartbeatGenerationDispatch,
 } from "../db/provenance.js";
 import { runPipelineForTopic, runScheduledTopicPipeline, type GenerationExecutionOptions } from "./scheduler.js";
-import { deploymentAnchorPublication } from "../runtime/integrity-anchor-runtime.js";
+import { deploymentAnchorPublicationIfEnabled } from "../runtime/integrity-anchor-runtime.js";
 
 const HEARTBEAT_MS = 30_000;
 
@@ -76,9 +76,10 @@ async function executeDispatch(
   topicId: string,
   opts: GenerationExecutionOptions & { reportType: "brief" | "deep_dive" | "initial_digest"; windowHours?: number; windowEnd?: string; items?: number },
 ): Promise<unknown> {
-  // The dispatch worker is the production publication composition root. A
-  // missing deployment signer/store must never select an unanchored fallback.
-  const anchor = deploymentAnchorPublication();
+  // The dispatch worker is the production publication composition root. P1c
+  // is explicitly opt-in; once enabled, missing signer/store policy remains
+  // fail-closed and cannot degrade to an unanchored fallback.
+  const anchor = deploymentAnchorPublicationIfEnabled();
   if (opts.reportType === "deep_dive" && opts.windowHours == null) {
     return runPipelineForTopic(db, topicId, { ...opts, anchor });
   }

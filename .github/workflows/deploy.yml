@@ -138,6 +138,25 @@ jobs:
             }
           done
 
+          # P1 anchors are an explicit production admission. Keep the default
+          # off until the Object Lock/KMS/IAM/retention checklist is complete;
+          # when on, validate all material before stopping any live writer.
+          anchor_enabled=\$(sed -n -E 's/^INTEGRITY_ANCHOR_ENABLED=([^#[:space:]]*)$/\\1/p' "\$app_dir/.env.local" | tail -n 1 | tr '[:upper:]' '[:lower:]')
+          case "\$anchor_enabled" in
+            ""|0|false) echo "完整性锚定：disabled" ;;
+            1|true)
+              anchor_required=(INTEGRITY_ANCHOR_BUCKET INTEGRITY_ANCHOR_KEY_ID INTEGRITY_ANCHOR_PRIVATE_KEY_PEM INTEGRITY_REPORT_READABLE_UNTIL INTEGRITY_REPORT_ARCHIVE_UNTIL INTEGRITY_ARTIFACT_RETAIN_UNTIL)
+              for anchor_key in "\${anchor_required[@]}"; do
+                grep -Eq "^\${anchor_key}=[^[:space:]].*" "\$app_dir/.env.local" || {
+                  echo "已启用完整性锚定，但生产 .env.local 缺少非空配置：\$anchor_key" >&2
+                  exit 1
+                }
+              done
+              echo "完整性锚定：enabled（配置完整性已预检）"
+              ;;
+            *) echo "INTEGRITY_ANCHOR_ENABLED 必须为 true/false/1/0" >&2; exit 1 ;;
+          esac
+
           docker pull "\$image"
           actual_sha=\$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "\$image")
           [[ "\$actual_sha" == "\$expected_sha" ]] || { echo "镜像 revision 标签与请求提交不一致" >&2; exit 1; }
@@ -182,15 +201,25 @@ jobs:
           worker_id=\$(docker compose -f "\$compose_file" ps -q generation-dispatch-worker)
           [[ -n "\$worker_id" ]] || { echo "generation-dispatch-worker 未创建" >&2; exit 1; }
           # Worker readiness covers both the private probe and the durable
-          # dispatch queue age. Do not call a merely running worker healthy.
+          # dispatch queue age. The one explicit legacy revision predates that
+          # healthcheck; allow it only for a verified rollback target, never
+          # for an arbitrary new image that merely lacks a healthcheck.
+          legacy_worker_revision=ff8c4785a7dfa67a9d4f1b66f3ee25cf2e16a2dd
           for _ in \$(seq 1 18); do
             worker_running=\$(docker inspect --format '{{.State.Running}}' "\$worker_id")
             worker_restarts=\$(docker inspect --format '{{.RestartCount}}' "\$worker_id")
             worker_health=\$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "\$worker_id")
-            [[ "\$worker_running" == true && "\$worker_restarts" == 0 && "\$worker_health" == healthy ]] && break
+            if [[ "\$worker_running" == true && "\$worker_restarts" == 0 && "\$worker_health" == healthy ]]; then break; fi
+            if [[ "\$expected_sha" == "\$legacy_worker_revision" && "\$worker_running" == true && "\$worker_restarts" == 0 && "\$worker_health" == missing ]]; then break; fi
             sleep 10
           done
-          [[ "\$worker_running" == true && "\$worker_restarts" == 0 && "\$worker_health" == healthy ]] || {
+          worker_ready=0
+          if [[ "\$worker_running" == true && "\$worker_restarts" == 0 && "\$worker_health" == healthy ]]; then worker_ready=1; fi
+          if [[ "\$expected_sha" == "\$legacy_worker_revision" && "\$worker_running" == true && "\$worker_restarts" == 0 && "\$worker_health" == missing ]]; then
+            echo "已验证 legacy rollback worker（无 healthcheck）：仅检查 running 且零重启"
+            worker_ready=1
+          fi
+          [[ "\$worker_ready" == 1 ]] || {
             echo "generation-dispatch-worker 未就绪（running=\$worker_running, restarts=\$worker_restarts, health=\$worker_health）" >&2
             exit 1
           }

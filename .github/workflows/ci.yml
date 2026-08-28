@@ -160,6 +160,15 @@ jobs:
             docker logs "$app" >&2 || true
             exit 1
           fi
+          # Default P1 anchor mode must not make the always-scheduled integrity
+          # cron fail or block P0 reports when production admission is pending.
+          docker run --rm --network "$network" --entrypoint node deep-insight:ci --input-type=module -e "
+            const response = await fetch('http://$app:3000/api/cron?mode=integrity', {
+              method: 'POST', headers: { authorization: 'Bearer ci-cron-secret' },
+            });
+            const body = await response.json();
+            if (!response.ok || body?.summary?.reason !== 'integrity_anchor_disabled') process.exit(1);
+          "
           if ! docker run --rm --network "$network" -e APP_URL="http://$app:3000" -e DISPATCH_WORKER_SECRET=ci-dispatch-secret \
             --entrypoint node deep-insight:ci /app/ops/generation-dispatch-healthcheck.mjs; then
             echo "ready application failed dispatch-worker probe" >&2
