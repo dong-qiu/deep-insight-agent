@@ -277,7 +277,7 @@ describe("collector P0b-1 source_collect provenance", () => {
   });
 
   it("同 URL 被另一来源更新时，Content revision 记录业务表保留的来源元数据", async () => {
-    const secondSource: Source = { ...sourcePod, id: "s_second", name: "Second source", endpoint: "https://second/feed" };
+    const secondSource: Source = { ...sourcePod, id: "s_second", name: "Second source", endpoint: "https://second/feed", topic_ids: ["t_second"] };
     insertSource(db, secondSource);
     const url = "https://shared.example/article";
     const firstPublishedAt = "2026-08-26T11:00:00.000Z";
@@ -295,10 +295,10 @@ describe("collector P0b-1 source_collect provenance", () => {
     if (secondAccepted.kind !== "accepted") throw new Error("expected second source trace");
     const secondClaim = claimSourceCollectTrace(db, secondAccepted.traceId, now);
     if (!secondClaim) throw new Error("expected second source claim");
-    await collectSource(db, secondSource, { traceClaim: secondClaim });
+    const secondResult = await collectSource(db, secondSource, { traceClaim: secondClaim });
 
     const persisted = getContentItem(db, getContentByUrl(db, url)!.id)!;
-    expect(persisted).toMatchObject({ source_id: sourcePod.id, published_at: firstPublishedAt, body: "second source body with a changed revision" });
+    expect(persisted).toMatchObject({ source_id: sourcePod.id, published_at: firstPublishedAt, topic_ids: sourcePod.topic_ids, body: "second source body with a changed revision" });
     const ref = contentItemRef(persisted);
     const registered = db.prepare("SELECT snapshot FROM provenance_revision WHERE entity_type=? AND entity_key=? AND revision=?")
       .get(ref.type, entityKey(ref), ref.revision) as { snapshot: string } | undefined;
@@ -307,6 +307,9 @@ describe("collector P0b-1 source_collect provenance", () => {
       entity_type: ref.type, entity_key: entityKey(ref), revision: ref.revision,
       snapshot: contentItemRevisionSnapshot(persisted),
     })).not.toThrow();
+    expect(db.prepare("SELECT source_id,topic_id FROM funnel_event WHERE run_id=?").all(secondResult.runId)).toEqual([
+      { source_id: sourcePod.id, topic_id: sourcePod.topic_ids[0] },
+    ]);
   });
 
   it("抓取失败时留下 collect failed，并显式声明没有已提交、未知的 Content 输出", async () => {

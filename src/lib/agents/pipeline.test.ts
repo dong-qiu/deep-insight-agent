@@ -9,7 +9,7 @@ import { listTechLeadEvidence, listTechLeads } from "../db/tech-leads.js";
 import { createTopicDirection, listOpportunityLeads, listTechnologyOpportunities } from "../db/planning.js";
 import { applyProvenanceMigrations } from "../db/provenance-migrations.js";
 import { captureRevision, entityKey, type EntityRef } from "../db/provenance-facts.js";
-import { contentItemRef } from "../db/provenance-revisions.js";
+import { contentItemRef, contentItemRevision } from "../db/provenance-revisions.js";
 import type { AnalysisBatch, ContentItem, Insight, Report, ReportIndexEntry, Source, Topic, ValidationResult } from "../types.js";
 
 // vi.hoisted：vi.mock 工厂被提升到文件顶部，须用 hoisted 让 mock fns 在工厂运行时已初始化
@@ -219,6 +219,9 @@ describe("runAnalysis", () => {
     await runAnalysis(db, topic, [refetched], win, { traceId: "trace_2" });
 
     expect(analyzeMock).toHaveBeenCalledTimes(2);
+    expect(contentItemRevision(refetched)).toBe(contentItemRevision(item));
+    expect(contentItemRevision({ ...item, source_id: "s2" })).not.toBe(contentItemRevision(item));
+    expect(contentItemRevision({ ...item, published_at: "2026-06-09T00:00:00Z" })).not.toBe(contentItemRevision(item));
     expect(db.prepare("SELECT revision,snapshot FROM provenance_revision WHERE entity_type='content_item' ORDER BY revision").all()).toEqual([
       {
         revision: contentItemRef(item).revision,
