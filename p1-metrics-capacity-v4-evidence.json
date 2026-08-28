@@ -1,0 +1,195 @@
+
+> insight-agent@0.1.0 benchmark:metrics-capacity
+> tsx evals/p1-metrics-capacity-v4.ts --enforce
+
+{
+  "manifest": {
+    "version": "p1-metrics-capacity-v4",
+    "generator_version": "p1-metrics-capacity-generator-v4",
+    "row_counts": {
+      "funnel_event": 1200,
+      "cost_ledger": 400,
+      "validator_result_fact": 400
+    },
+    "sqlite_version": "3.53.2",
+    "node": "v25.9.0",
+    "dataset_sha256": "b4469f1bdb4a6d0019185dd48ffae557d9bc36fe36ec647a5cb1cdd18d3ba8d2"
+  },
+  "plans": {
+    "detail_31d": [
+      "SEARCH funnel_event USING INDEX idx_funnel_event_tenant_occurred (tenant_id=? AND occurred_at>? AND occurred_at<?)",
+      "USE TEMP B-TREE FOR LAST TERM OF ORDER BY"
+    ],
+    "aggregate_31d": [
+      "CO-ROUTINE highest\nCO-ROUTINE received\nSEARCH funnel_event USING INDEX idx_funnel_event_tenant_occurred (tenant_id=? AND occurred_at>? AND occurred_at<?)\nUSE TEMP B-TREE FOR DISTINCT\nSCAN r\nSEARCH f USING INDEX idx_funnel_event_tenant_occurred (tenant_id=? AND occurred_at>? AND occurred_at<?)\nUSE TEMP B-TREE FOR GROUP BY\nSCAN highest",
+      "SEARCH cost_ledger USING INDEX idx_cost_ledger_tenant_occurred_provider_model (tenant_id=? AND occurred_at>? AND occurred_at<?)\nUSE TEMP B-TREE FOR GROUP BY\nUSE TEMP B-TREE FOR ORDER BY",
+      "SEARCH validator_result_fact USING INDEX idx_validator_result_tenant_occurred (tenant_id=? AND occurred_at>? AND occurred_at<?)\nUSE TEMP B-TREE FOR GROUP BY",
+      "CO-ROUTINE ranked\nCO-ROUTINE (subquery-3)\nSEARCH funnel_event USING INDEX idx_funnel_event_tenant_occurred (tenant_id=? AND occurred_at>? AND occurred_at<?)\nUSE TEMP B-TREE FOR ORDER BY\nSCAN (subquery-3)\nSCAN ranked\nUSE TEMP B-TREE FOR GROUP BY\nUSE TEMP B-TREE FOR ORDER BY",
+      "SEARCH funnel_event USING INDEX idx_funnel_event_tenant_occurred (tenant_id=? AND occurred_at>? AND occurred_at<?)\nSEARCH e USING INDEX idx_funnel_event_tenant_occurred (tenant_id=? AND occurred_at>? AND occurred_at<?)",
+      "SEARCH integrity_daily_root USING INDEX sqlite_autoindex_integrity_daily_root_2 (tenant_id=?)",
+      "SEARCH integrity_audit_event USING INDEX idx_integrity_audit_pending (tenant_id=? AND event_type=? AND created_at>? AND created_at<?)\nUSE TEMP B-TREE FOR ORDER BY"
+    ],
+    "aggregate_400d": [
+      "CO-ROUTINE received\nSEARCH dashboard_trace_fact_v1 USING INDEX idx_dashboard_trace_fact_v1_window (tenant_id=? AND projection_version=? AND occurred_at>? AND occurred_at<?)\nUSE TEMP B-TREE FOR DISTINCT\nSCAN received",
+      "CO-ROUTINE (subquery-1)\nSEARCH metric_rollup USING INDEX idx_metric_rollup_tenant_grain_bucket (tenant_id=? AND grain=? AND bucket_start>? AND bucket_start<?)\nUSE TEMP B-TREE FOR GROUP BY\nSCAN (subquery-1)\nUSE TEMP B-TREE FOR GROUP BY\nUSE TEMP B-TREE FOR ORDER BY",
+      "SEARCH dashboard_trace_fact_v1 USING INDEX idx_dashboard_trace_fact_v1_kind_window (tenant_id=? AND projection_version=? AND fact_kind=? AND occurred_at>? AND occurred_at<?)\nUSE TEMP B-TREE FOR GROUP BY\nUSE TEMP B-TREE FOR count(DISTINCT)\nUSE TEMP B-TREE FOR ORDER BY",
+      "CO-ROUTINE ranked\nCO-ROUTINE (subquery-3)\nSEARCH dashboard_trace_fact_v1 USING INDEX idx_dashboard_trace_fact_v1_window (tenant_id=? AND projection_version=? AND occurred_at>? AND occurred_at<?)\nUSE TEMP B-TREE FOR ORDER BY\nSCAN (subquery-3)\nSCAN ranked\nUSE TEMP B-TREE FOR GROUP BY\nUSE TEMP B-TREE FOR ORDER BY",
+      "SEARCH dashboard_trace_fact_v1 USING INDEX idx_dashboard_trace_fact_v1_terminal_window (tenant_id=? AND projection_version=? AND fact_kind=? AND event_type=? AND occurred_at>? AND occurred_at<?)\nSEARCH e USING INDEX idx_dashboard_trace_fact_v1_terminal_window (tenant_id=? AND projection_version=? AND fact_kind=? AND event_type=? AND occurred_at>? AND occurred_at<?)",
+      "SEARCH integrity_daily_root USING INDEX sqlite_autoindex_integrity_daily_root_2 (tenant_id=?)"
+    ],
+    "aggregate_400d_partial": [
+      "CO-ROUTINE received\nSEARCH dashboard_trace_fact_v1 USING INDEX idx_dashboard_trace_fact_v1_window (tenant_id=? AND projection_version=? AND occurred_at>? AND occurred_at<?)\nUSE TEMP B-TREE FOR DISTINCT\nSCAN received",
+      "CO-ROUTINE (subquery-3)\nCOMPOUND QUERY\nLEFT-MOST SUBQUERY\nSEARCH dashboard_cost_fact_v1 USING INDEX idx_dashboard_cost_fact_v1_window (tenant_id=? AND projection_version=? AND occurred_at>? AND occurred_at<?)\nUSE TEMP B-TREE FOR GROUP BY\nUNION ALL\nSEARCH dashboard_cost_fact_v1 USING INDEX idx_dashboard_cost_fact_v1_window (tenant_id=? AND projection_version=? AND occurred_at>? AND occurred_at<?)\nUSE TEMP B-TREE FOR GROUP BY\nUNION ALL\nSEARCH metric_rollup USING INDEX idx_metric_rollup_tenant_grain_bucket (tenant_id=? AND grain=? AND bucket_start>? AND bucket_start<?)\nUSE TEMP B-TREE FOR GROUP BY\nSCAN (subquery-3)\nUSE TEMP B-TREE FOR GROUP BY\nUSE TEMP B-TREE FOR ORDER BY",
+      "SEARCH dashboard_trace_fact_v1 USING INDEX idx_dashboard_trace_fact_v1_kind_window (tenant_id=? AND projection_version=? AND fact_kind=? AND occurred_at>? AND occurred_at<?)\nUSE TEMP B-TREE FOR GROUP BY\nUSE TEMP B-TREE FOR count(DISTINCT)\nUSE TEMP B-TREE FOR ORDER BY",
+      "CO-ROUTINE ranked\nCO-ROUTINE (subquery-3)\nSEARCH dashboard_trace_fact_v1 USING INDEX idx_dashboard_trace_fact_v1_window (tenant_id=? AND projection_version=? AND occurred_at>? AND occurred_at<?)\nUSE TEMP B-TREE FOR ORDER BY\nSCAN (subquery-3)\nSCAN ranked\nUSE TEMP B-TREE FOR GROUP BY\nUSE TEMP B-TREE FOR ORDER BY",
+      "SEARCH dashboard_trace_fact_v1 USING INDEX idx_dashboard_trace_fact_v1_terminal_window (tenant_id=? AND projection_version=? AND fact_kind=? AND event_type=? AND occurred_at>? AND occurred_at<?)\nSEARCH e USING INDEX idx_dashboard_trace_fact_v1_terminal_window (tenant_id=? AND projection_version=? AND fact_kind=? AND event_type=? AND occurred_at>? AND occurred_at<?)",
+      "SEARCH integrity_daily_root USING INDEX sqlite_autoindex_integrity_daily_root_2 (tenant_id=?)"
+    ]
+  },
+  "timings": {
+    "detail_31d": {
+      "samples_ms": [
+        0.075,
+        0.052,
+        0.049,
+        0.047,
+        0.05,
+        0.043,
+        0.043,
+        0.049,
+        0.054,
+        0.047,
+        0.043,
+        0.042,
+        0.041,
+        0.041,
+        0.046,
+        0.046,
+        0.045,
+        0.042,
+        0.041,
+        0.041,
+        0.043,
+        0.046,
+        0.045,
+        0.046,
+        0.046,
+        0.045,
+        0.041,
+        0.043,
+        0.041,
+        0.041
+      ],
+      "p95_ms": 0.054,
+      "max_ms": 0.075
+    },
+    "aggregate_31d": {
+      "samples_ms": [
+        1.974,
+        1.982,
+        1.95,
+        1.966,
+        1.92,
+        1.854,
+        1.867,
+        1.854,
+        1.828,
+        1.826,
+        1.843,
+        1.824,
+        1.812,
+        1.836,
+        1.82,
+        1.832,
+        1.819,
+        1.82,
+        1.815,
+        1.829,
+        1.823,
+        1.824,
+        1.862,
+        1.82,
+        1.828,
+        1.819,
+        1.817,
+        1.826,
+        1.819,
+        1.823
+      ],
+      "p95_ms": 1.974,
+      "max_ms": 1.982
+    },
+    "aggregate_400d": {
+      "samples_ms": [
+        38.876,
+        38.671,
+        39.048,
+        39.066,
+        39.131,
+        38.852,
+        38.96,
+        40.079,
+        38.756,
+        39.166,
+        38.958,
+        39.173,
+        39.354,
+        39.93,
+        40.372,
+        40.188,
+        40.117,
+        40.105,
+        39.946,
+        39.714,
+        39.7,
+        39.708,
+        38.464,
+        38.438,
+        37.775,
+        39.049,
+        39.172,
+        39.296,
+        39.398,
+        39.455
+      ],
+      "p95_ms": 40.188,
+      "max_ms": 40.372
+    },
+    "aggregate_400d_partial": {
+      "samples_ms": [
+        39.413,
+        39.462,
+        39.155,
+        38.466,
+        38.735,
+        38.488,
+        38.25,
+        37.693,
+        37.706,
+        37.423,
+        38.756,
+        39.295,
+        39.282,
+        39.643,
+        39.728,
+        39.719,
+        39.623,
+        39.634,
+        39.633,
+        39.755,
+        39.549,
+        38.337,
+        38.424,
+        38.366,
+        38.501,
+        38.618,
+        38.936,
+        38.742,
+        38.145,
+        38.719
+      ],
+      "p95_ms": 39.728,
+      "max_ms": 39.755
+    }
+  }
+}

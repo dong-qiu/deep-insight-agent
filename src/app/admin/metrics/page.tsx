@@ -35,6 +35,7 @@ export default async function MetricsDashboard() {
       <p><Link href="/admin">← 管理看板</Link></p>
       <h2>P1 溯源驾驶舱</h2>
       <p className="muted">UTC 时间窗：{window.from.slice(0, 10)} 至 {window.to.slice(0, 10)}。仅消费追加事实与完整性投影。</p>
+      <p><Link href="/admin/metrics/details">查看受控指标明细（最多 31 天 / 100 条）</Link></p>
 
       {metrics ? <>
         <article className="card">
@@ -44,7 +45,7 @@ export default async function MetricsDashboard() {
         </article>
         <article className="card">
           <h3>成本</h3>
-          {metrics.costs.length ? <table className="stats"><thead><tr><th>UTC 日</th><th>管线/阶段</th><th>Provider / Model</th><th>币种</th><th>已知成本（minor）</th><th>已知条目</th><th>未知成本条目</th></tr></thead><tbody>{metrics.costs.map((row) => <tr key={`${row.bucket_date}:${row.pipeline_version}:${row.stage}:${row.provider}:${row.model}:${row.currency}`}><td>{row.bucket_date}</td><td>{row.pipeline_version} / {row.stage}</td><td>{row.provider} / {row.model}</td><td>{row.currency || "—"}</td><td>{row.known_cost_minor}</td><td>{row.known_cost_entries}</td><td className={row.unknown_cost_entries ? "bad" : undefined}>{row.unknown_cost_entries}</td></tr>)}</tbody></table> : <p className="muted">该时间窗没有成本事实。</p>}
+          {metrics.costs.length ? <table className="stats"><thead><tr><th>UTC 日</th><th>Topic / Source</th><th>管线/阶段</th><th>Provider / Model</th><th>币种</th><th>已知成本（minor）</th><th>已知条目</th><th>未知成本条目</th></tr></thead><tbody>{metrics.costs.map((row) => <tr key={`${row.bucket_date}:${row.topic_id}:${row.source_id}:${row.pipeline_version}:${row.stage}:${row.provider}:${row.model}:${row.currency}`}><td>{row.bucket_date}</td><td>{row.topic_id || "—"} / {row.source_id || "—"}</td><td>{row.pipeline_version} / {row.stage}</td><td>{row.provider} / {row.model}</td><td>{row.currency || "—"}</td><td>{row.known_cost_minor}</td><td>{row.known_cost_entries}</td><td className={row.unknown_cost_entries ? "bad" : undefined}>{row.unknown_cost_entries}</td></tr>)}</tbody></table> : <p className="muted">该时间窗没有成本事实。</p>}
         </article>
         <article className="card">
           <h3>阶段时延</h3>
@@ -53,7 +54,7 @@ export default async function MetricsDashboard() {
         </article>
         <article className="card">
           <h3>Validator 原因</h3>
-          {metrics.validator_reasons.length ? <table className="stats"><thead><tr><th>Validator</th><th>规则版本</th><th>原因</th><th>严重度</th><th>结果数</th><th>去重 trace</th></tr></thead><tbody>{metrics.validator_reasons.map((row) => <tr key={`${row.validator}:${row.rule_version}:${row.reason_code}:${row.severity}`}><td>{row.validator}</td><td>{row.rule_version}</td><td><code>{row.reason_code}</code></td><td>{row.severity}</td><td>{row.results}</td><td>{row.traces}</td></tr>)}</tbody></table> : <p className="muted">该时间窗没有 validator 结果。</p>}
+          {metrics.validator_reasons.length ? <table className="stats"><thead><tr><th>Topic / Source</th><th>管线</th><th>Validator</th><th>规则版本</th><th>原因</th><th>严重度</th><th>结果数</th><th>去重 trace</th></tr></thead><tbody>{metrics.validator_reasons.map((row) => <tr key={`${row.topic_id}:${row.source_id}:${row.pipeline_version}:${row.validator}:${row.rule_version}:${row.reason_code}:${row.severity}`}><td>{row.topic_id || "—"} / {row.source_id || "—"}</td><td>{row.pipeline_version}</td><td>{row.validator}</td><td>{row.rule_version}</td><td><code>{row.reason_code}</code></td><td>{row.severity}</td><td>{row.results}</td><td>{row.traces}</td></tr>)}</tbody></table> : <p className="muted">该时间窗没有 validator 结果。</p>}
         </article>
       </> : sectionUnavailable("指标")}
 

@@ -714,6 +714,16 @@ CREATE TABLE dashboard_cost_fact_v1 (
 CREATE INDEX idx_dashboard_cost_fact_v1_window ON dashboard_cost_fact_v1(tenant_id,projection_version,occurred_at,provider,model);
 `;
 
+/** Follow-up to immutable v1 projections: preserve dashboard grouping dimensions. */
+export const P1_DASHBOARD_READ_MODEL_V1_FOLLOWUP_SQL = `
+ALTER TABLE dashboard_trace_fact_v1 ADD COLUMN topic_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE dashboard_trace_fact_v1 ADD COLUMN source_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE dashboard_cost_fact_v1 ADD COLUMN topic_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE dashboard_cost_fact_v1 ADD COLUMN source_id TEXT NOT NULL DEFAULT '';
+CREATE INDEX idx_dashboard_trace_fact_v1_dimension_window ON dashboard_trace_fact_v1(tenant_id,projection_version,topic_id,source_id,pipeline_version,occurred_at,trace_id);
+CREATE INDEX idx_dashboard_cost_fact_v1_dimension_window ON dashboard_cost_fact_v1(tenant_id,projection_version,topic_id,source_id,pipeline_version,occurred_at,entry_id);
+`;
+
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS source (
   id             TEXT PRIMARY KEY,

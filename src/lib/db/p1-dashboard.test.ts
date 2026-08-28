@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { openDb } from "./index.js";
-import { appendCostLedger, appendFunnelEvent, appendValidatorResult, purgeExpiredMetricFacts } from "./p1-metrics-facts.js";
+import { appendCostLedger, appendFunnelEvent, appendValidatorResult, purgeExpiredMetricFacts, reconcileLateMetricEvent } from "./p1-metrics-facts.js";
 import { P1_METRICS_CAPACITY_FIXTURE } from "./p1-metrics-capacity-fixture.js";
 import { applyProvenanceMigrations } from "./provenance-migrations.js";
 import { explainP1DashboardQueries, readIntegrityDashboardStatus, readP1DashboardMetrics } from "./p1-dashboard.js";
@@ -25,9 +25,9 @@ describe("P1 dashboard read model", () => {
 
     const dashboard = readP1DashboardMetrics(db, { from: "2026-08-01T00:00:00.000Z", to: "2026-08-02T00:00:00.000Z" });
     expect(dashboard.funnel).toEqual(expect.arrayContaining([expect.objectContaining({ stage: "received", received_traces: 2, conversion_pct: 100 })]));
-    expect(dashboard.costs).toEqual([{ bucket_date: "2026-08-01", pipeline_version: "pipeline-v1", stage: "processed", provider: "anthropic", model: "claude", currency: "USD", known_cost_minor: 9, known_cost_entries: 1, unknown_cost_entries: 1 }]);
+    expect(dashboard.costs).toEqual([{ bucket_date: "2026-08-01", topic_id: "", source_id: "", pipeline_version: "pipeline-v1", stage: "processed", provider: "anthropic", model: "claude", currency: "USD", known_cost_minor: 9, known_cost_entries: 1, unknown_cost_entries: 1 }]);
     expect(dashboard.funnel_loss_reasons).toEqual([{ reason_code: "quote_not_in_source", traces: 1 }]);
-    expect(dashboard.validator_reasons).toEqual([{ validator: "citation", rule_version: "v1", reason_code: "quote_not_in_source", severity: "error", results: 1, traces: 1 }]);
+    expect(dashboard.validator_reasons).toEqual([{ topic_id: "", source_id: "", pipeline_version: "pipeline-v1", validator: "citation", rule_version: "v1", reason_code: "quote_not_in_source", severity: "error", results: 1, traces: 1 }]);
     expect(dashboard.latency).toEqual(expect.arrayContaining([expect.objectContaining({ transition: "received → accepted", samples: 1, p50_ms: 1000 })]));
     expect(dashboard.latency_diagnostics).toEqual(expect.objectContaining({ completed_traces: 1, in_progress_traces: 1, negative_clock_samples: 0 }));
     expect(readIntegrityDashboardStatus(db, dashboard.window)).toEqual({ latest_daily_root: null, recent_events: [] });
@@ -36,7 +36,7 @@ describe("P1 dashboard read model", () => {
   it("rejects windows beyond the 400-day aggregate cap and proves indexed access", () => {
     const db = dbWithP1();
     expect(() => readP1DashboardMetrics(db, { from: "2026-01-01T00:00:00.000Z", to: "2027-03-01T00:00:00.000Z" })).toThrow("dashboard_window_invalid");
-    expect(P1_METRICS_CAPACITY_FIXTURE.version).toBe("p1-metrics-capacity-v3");
+    expect(P1_METRICS_CAPACITY_FIXTURE.version).toBe("p1-metrics-capacity-v4");
     const plans = explainP1DashboardQueries(db, P1_METRICS_CAPACITY_FIXTURE.detail_window);
     expect(plans[0]).toContain("idx_funnel_event_tenant_occurred");
     expect(plans[1]).toContain("idx_cost_ledger_tenant_occurred_provider_model");
@@ -45,6 +45,21 @@ describe("P1 dashboard read model", () => {
     expect(plans[4]).toContain("idx_funnel_event_tenant_occurred");
     expect(plans[5]).toContain("sqlite_autoindex_integrity_daily_root");
     expect(plans[6]).toContain("idx_integrity_audit_pending");
+  });
+
+  it("keeps late funnel, cost, and validator facts out of every aggregate projection until an admin backfills them", () => {
+    const db = dbWithP1(); const occurred = "2026-08-01T01:00:00.000Z"; const late = "2026-08-10T02:00:00.001Z";
+    appendFunnelEvent(db, { event_id: "late-funnel", trace_id: "late-trace", stage: "received", pipeline_version: "pipeline-v1", occurred_at: occurred, ingested_at: late });
+    appendCostLedger(db, { entry_id: "late-cost", trace_id: "late-trace", stage: "processed", pipeline_version: "pipeline-v1", provider: "openai", model: "gpt", currency: "USD", amount_minor: 9, cost_status: "known", occurred_at: occurred, ingested_at: late });
+    appendValidatorResult(db, { result_id: "late-validator", trace_id: "late-trace", stage: "validated", pipeline_version: "pipeline-v1", validator: "citation", rule_version: "v1", reason_code: "internal_error", severity: "error", terminal: true, occurred_at: occurred, ingested_at: late });
+    const window = { from: "2026-08-01T00:00:00.000Z", to: "2026-08-02T00:00:00.000Z" };
+    expect(readP1DashboardMetrics(db, window).costs).toEqual([]);
+    expect(db.prepare("SELECT COUNT(*) AS count FROM dashboard_trace_fact_v1").get()).toEqual({ count: 0 });
+    reconcileLateMetricEvent(db, { fact_kind: "cost", event_id: "late-cost", action: "backfilled", actor_id: "admin_1", recorded_at: "2026-08-10T03:00:00.000Z" });
+    expect(readP1DashboardMetrics(db, window).costs).toEqual([expect.objectContaining({ known_cost_minor: 9 })]);
+    reconcileLateMetricEvent(db, { fact_kind: "funnel", event_id: "late-funnel", action: "declined", actor_id: "admin_1" });
+    reconcileLateMetricEvent(db, { fact_kind: "validator", event_id: "late-validator", action: "declined", actor_id: "admin_1" });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM dashboard_trace_fact_v1").get()).toEqual({ count: 0 });
   });
 
   it("serves an exact 400-day aggregate from the indexed trace projection", () => {

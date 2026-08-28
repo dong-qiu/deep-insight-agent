@@ -27,6 +27,7 @@
     "eval:opportunity-map": "tsx evals/score-opportunity-map.ts",
     "eval:build-local": "tsx evals/build-local-eval.ts",
     "benchmark:provenance-p0c": "tsx evals/provenance-p0c-benchmark.ts",
+    "benchmark:metrics-capacity": "tsx evals/p1-metrics-capacity-v4.ts --enforce",
     "pr:policy": "node ops/pr-policy.mjs",
     "review:sheet": "tsx evals/make-review-sheet.ts",
     "review:csv": "tsx evals/make-review-csv.ts",

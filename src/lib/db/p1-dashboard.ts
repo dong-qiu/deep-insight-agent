@@ -19,8 +19,8 @@ export interface P1DashboardMetrics {
   window: DashboardWindow;
   funnel: Array<{ stage: string; received_traces: number; reached_traces: number; terminal_events: number; conversion_pct: number | null }>;
   funnel_loss_reasons: Array<{ reason_code: string; traces: number }>;
-  costs: Array<{ bucket_date: string; pipeline_version: string; stage: string; provider: string; model: string; currency: string; known_cost_minor: number; known_cost_entries: number; unknown_cost_entries: number }>;
-  validator_reasons: Array<{ validator: string; rule_version: string; reason_code: string; severity: string; results: number; traces: number }>;
+  costs: Array<{ bucket_date: string; topic_id: string; source_id: string; pipeline_version: string; stage: string; provider: string; model: string; currency: string; known_cost_minor: number; known_cost_entries: number; unknown_cost_entries: number }>;
+  validator_reasons: Array<{ topic_id: string; source_id: string; pipeline_version: string; validator: string; rule_version: string; reason_code: string; severity: string; results: number; traces: number }>;
   latency: DashboardLatency[];
   latency_diagnostics: { completed_traces: number; in_progress_traces: number; negative_clock_samples: number; missing_clock_samples: number };
 }
@@ -123,25 +123,25 @@ function longWindowCostsQuery(window: DashboardWindow): PreparedDashboardQuery |
   const parts: Array<{ sql: string; params: unknown[] }> = [];
   const addDetailRange = (from: string, to: string) => {
     if (Date.parse(from) >= Date.parse(to)) return;
-    parts.push({ sql: `SELECT substr(occurred_at,1,10) AS bucket_date,pipeline_version,stage,provider,model,currency,
+    parts.push({ sql: `SELECT substr(occurred_at,1,10) AS bucket_date,topic_id,source_id,pipeline_version,stage,provider,model,currency,
         COALESCE(SUM(CASE WHEN cost_status='known' THEN amount_minor ELSE 0 END),0) AS known_cost_minor,
         COUNT(*) FILTER (WHERE cost_status='known') AS known_cost_entries,COUNT(*) FILTER (WHERE cost_status='unknown') AS unknown_cost_entries
         FROM dashboard_cost_fact_v1 WHERE tenant_id=? AND projection_version='dashboard-cost-v1' AND occurred_at>=? AND occurred_at<?
-        GROUP BY bucket_date,pipeline_version,stage,provider,model,currency`, params: [METRICS_TENANT_ID, from, to] });
+        GROUP BY bucket_date,topic_id,source_id,pipeline_version,stage,provider,model,currency`, params: [METRICS_TENANT_ID, from, to] });
   };
   addDetailRange(window.from, fullStart);
   if (Date.parse(fullEnd) >= Date.parse(fullStart)) addDetailRange(fullEnd, window.to);
   if (Date.parse(fullStart) < Date.parse(fullEnd)) {
-    parts.push({ sql: `SELECT substr(bucket_start,1,10) AS bucket_date,pipeline_version,stage,provider,model,currency,
+    parts.push({ sql: `SELECT substr(bucket_start,1,10) AS bucket_date,topic_id,source_id,pipeline_version,stage,provider,model,currency,
         SUM(known_cost_minor) AS known_cost_minor,SUM(known_cost_entries) AS known_cost_entries,SUM(unknown_cost_entries) AS unknown_cost_entries
         FROM metric_rollup WHERE tenant_id=? AND grain='day' AND metric_kind='cost' AND bucket_start>=? AND bucket_start<?
-        GROUP BY bucket_date,pipeline_version,stage,provider,model,currency`, params: [METRICS_TENANT_ID, fullStart, fullEnd] });
+        GROUP BY bucket_date,topic_id,source_id,pipeline_version,stage,provider,model,currency`, params: [METRICS_TENANT_ID, fullStart, fullEnd] });
   }
   if (!parts.length) return null;
-  return { sql: `SELECT bucket_date,pipeline_version,stage,provider,model,currency,
+  return { sql: `SELECT bucket_date,topic_id,source_id,pipeline_version,stage,provider,model,currency,
       SUM(known_cost_minor) AS known_cost_minor,SUM(known_cost_entries) AS known_cost_entries,SUM(unknown_cost_entries) AS unknown_cost_entries
       FROM (${parts.map((part) => part.sql).join(" UNION ALL ")})
-      GROUP BY bucket_date,pipeline_version,stage,provider,model,currency ORDER BY bucket_date DESC,known_cost_minor DESC LIMIT ?`, params: [...parts.flatMap((part) => part.params), DISPLAY_LIMIT] };
+      GROUP BY bucket_date,topic_id,source_id,pipeline_version,stage,provider,model,currency ORDER BY bucket_date DESC,known_cost_minor DESC LIMIT ?`, params: [...parts.flatMap((part) => part.params), DISPLAY_LIMIT] };
 }
 
 function longWindowCosts(db: DB, window: DashboardWindow): P1DashboardMetrics["costs"] {
@@ -173,9 +173,9 @@ function readP1DashboardLongWindow(db: DB, window: DashboardWindow): P1Dashboard
   const funnel_loss_reasons = db.prepare(`${firstTerminals} SELECT reason_code,COUNT(*) AS traces FROM ranked WHERE ordinal=1 GROUP BY reason_code ORDER BY traces DESC,reason_code ASC LIMIT ?`)
     .all(METRICS_TENANT_ID, window.from, window.to, DISPLAY_LIMIT) as P1DashboardMetrics["funnel_loss_reasons"];
   const costs = longWindowCosts(db, window);
-  const validator_reasons = db.prepare(`SELECT validator,rule_version,reason_code,severity,COUNT(*) AS results,COUNT(DISTINCT trace_id) AS traces
+  const validator_reasons = db.prepare(`SELECT topic_id,source_id,pipeline_version,validator,rule_version,reason_code,severity,COUNT(*) AS results,COUNT(DISTINCT trace_id) AS traces
       FROM dashboard_trace_fact_v1 WHERE tenant_id=? AND projection_version='dashboard-trace-v1' AND fact_kind='validator' AND terminal=1 AND occurred_at>=? AND occurred_at<?
-      GROUP BY validator,rule_version,reason_code,severity ORDER BY results DESC,reason_code ASC LIMIT ?`)
+      GROUP BY topic_id,source_id,pipeline_version,validator,rule_version,reason_code,severity ORDER BY results DESC,reason_code ASC LIMIT ?`)
     .all(METRICS_TENANT_ID, window.from, window.to, DISPLAY_LIMIT) as P1DashboardMetrics["validator_reasons"];
   const terminalByStage = new Map(terminalRows.map((row) => [row.stage, numeric(row.terminal_events)]));
   const received = numeric(funnelCounts.received);
@@ -191,7 +191,11 @@ function readP1DashboardLongWindow(db: DB, window: DashboardWindow): P1Dashboard
 /** Aggregate read model: all SQL predicates begin with the server-injected tenant. */
 export function readP1DashboardMetrics(db: DB, requested: Partial<DashboardWindow> = {}): P1DashboardMetrics {
   const window = dashboardWindow(requested);
-  if (!usesRawFacts(window)) return readP1DashboardLongWindow(db, window);
+  // A single admission-controlled projection is used for every aggregate
+  // window.  This prevents a newly quarantined raw fact from leaking through
+  // a <=31-day path while the 31–400-day path correctly excludes it.
+  return readP1DashboardLongWindow(db, window);
+  /* c8 ignore start -- retained as the raw-SQL explain compatibility vector. */
   const funnelCounts = db.prepare(`WITH received AS (
       SELECT DISTINCT trace_id FROM funnel_event WHERE tenant_id=? AND event_type='entered' AND stage='received' AND occurred_at>=? AND occurred_at<?
     ), highest AS (
@@ -236,6 +240,7 @@ export function readP1DashboardMetrics(db: DB, requested: Partial<DashboardWindo
     latency: latency.latency,
     latency_diagnostics: latency.diagnostics,
   };
+  /* c8 ignore stop */
 }
 
 /** Controlled integrity projection: no artifact paths, object locators, hashes, or payloads leave this read model. */
