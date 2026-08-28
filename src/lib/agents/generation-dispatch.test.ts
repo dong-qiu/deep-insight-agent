@@ -19,7 +19,10 @@ describe("generation dispatch worker", () => {
     });
   });
 
-  afterEach(() => vi.useRealTimers());
+  afterEach(() => {
+    vi.useRealTimers();
+    delete process.env.INTEGRITY_ANCHOR_ENABLED;
+  });
 
   function accept(): { traceId: string } {
     const result = createDeepDiveTraceRequest(db, {
@@ -98,7 +101,7 @@ describe("generation dispatch worker", () => {
     expect(db.prepare("SELECT state FROM generation_dispatch WHERE trace_id=?").get(accepted.traceId)).toEqual({ state: "claimed" });
   });
 
-  it("fails closed before the real scheduled dispatcher can publish when anchor deployment config is absent", async () => {
+  it("fails closed before the real scheduled dispatcher can publish when P1 is enabled but anchor deployment config is absent", async () => {
     const source: Source = {
       id: "source_a", name: "Source A", type: "rss", endpoint: "https://example.test/feed",
       topic_ids: ["topic_a"], fetch_interval: "1h", backfill: null, enabled: true,
@@ -124,6 +127,7 @@ describe("generation dispatch worker", () => {
     });
     if (accepted.kind !== "accepted") throw new Error("expected accepted request");
 
+    process.env.INTEGRITY_ANCHOR_ENABLED = "true";
     await expect(runGenerationDispatchOnce(db)).resolves.toEqual({ claimed: true, traceId: accepted.traceId, status: "failed" });
 
     expect(db.prepare("SELECT status FROM generation_trace WHERE id=?").get(accepted.traceId)).toEqual({ status: "failed" });
@@ -148,14 +152,14 @@ describe("generation dispatch worker", () => {
     expect(received).toMatchObject({ reportType: "brief", windowHours: 168, windowEnd: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/), items: 15, traceId: accepted.traceId });
   });
 
-  it("does not process an otherwise empty dispatch when anchor deployment config is absent", async () => {
+  it("allows an otherwise empty P0 dispatch when P1 anchors are disabled", async () => {
     const accepted = createScheduledTraceRequest(db, {
       topicId: "topic_a", reportType: "brief", period: "2026-08-03", windowHours: 168, items: 15,
     });
     if (accepted.kind !== "accepted") throw new Error("expected accepted request");
-    expect(await runGenerationDispatchOnce(db)).toMatchObject({ claimed: true, traceId: accepted.traceId, status: "failed" });
+    expect(await runGenerationDispatchOnce(db)).toMatchObject({ claimed: true, traceId: accepted.traceId, status: "done" });
     expect(db.prepare("SELECT stage,event_type,reason_code FROM generation_event WHERE trace_id=?").all(accepted.traceId))
-      .toEqual([]);
+      .toEqual([{ stage: "select", event_type: "skipped", reason_code: "no_content" }]);
   });
 
   it("rejects an old claim after its lease is taken over", () => {

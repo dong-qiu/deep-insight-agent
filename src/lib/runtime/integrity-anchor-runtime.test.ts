@@ -1,8 +1,38 @@
 import { generateKeyPairSync } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { deploymentAnchorPublication } from "./integrity-anchor-runtime.js";
+import { deploymentAnchorLegalHold, deploymentAnchorPublication, deploymentAnchorPublicationIfEnabled, deploymentAnchorVerificationStore, integrityAnchorEnabled } from "./integrity-anchor-runtime.js";
 
 describe("deployment anchor publication", () => {
+  it("defaults P1 anchors off and does not construct an unanchored substitute", () => {
+    expect(integrityAnchorEnabled({})).toBe(false);
+    expect(deploymentAnchorPublicationIfEnabled({})).toBeUndefined();
+  });
+
+  it("accepts only explicit boolean enablement", () => {
+    expect(integrityAnchorEnabled({ INTEGRITY_ANCHOR_ENABLED: "true" })).toBe(true);
+    expect(integrityAnchorEnabled({ INTEGRITY_ANCHOR_ENABLED: "1" })).toBe(true);
+    expect(integrityAnchorEnabled({ INTEGRITY_ANCHOR_ENABLED: "TRUE" })).toBe(true);
+    expect(integrityAnchorEnabled({ INTEGRITY_ANCHOR_ENABLED: "false" })).toBe(false);
+    expect(() => integrityAnchorEnabled({ INTEGRITY_ANCHOR_ENABLED: "yes" })).toThrow("integrity_anchor_enabled_invalid");
+    expect(() => integrityAnchorEnabled({ INTEGRITY_ANCHOR_ENABLED: "true " })).toThrow("integrity_anchor_enabled_invalid");
+  });
+
+  it("keeps an enabled deployment strict about all anchor material", () => {
+    expect(() => deploymentAnchorPublicationIfEnabled({ INTEGRITY_ANCHOR_ENABLED: "true" })).toThrow("integrity_anchor_admission_required");
+    expect(() => deploymentAnchorPublicationIfEnabled({
+      INTEGRITY_ANCHOR_ENABLED: "true", INTEGRITY_ANCHOR_ADMISSION_REF: "INSI-25:evidence-123",
+    })).toThrow("integrity_anchor_admission_required");
+  });
+
+  it("blocks every externally reachable P1 composition seam until INSI-25 admission", () => {
+    expect(() => deploymentAnchorVerificationStore({ INTEGRITY_ANCHOR_BUCKET: "immutable-anchor-bucket" }))
+      .toThrow("integrity_anchor_admission_required");
+    expect(() => deploymentAnchorLegalHold({
+      INTEGRITY_ANCHOR_ENABLED: "true", INTEGRITY_ANCHOR_BUCKET: "immutable-anchor-bucket",
+      INTEGRITY_LEGAL_HOLD_RETAIN_UNTIL: "2027-01-01T00:00:00.000Z",
+    })).toThrow("integrity_anchor_admission_required");
+  });
+
   it("fails closed when the deployment-owned signer/store contract is absent", () => {
     expect(() => deploymentAnchorPublication({})).toThrow("integrity_anchor_not_configured");
   });

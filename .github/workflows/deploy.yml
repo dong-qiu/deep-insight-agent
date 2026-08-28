@@ -76,51 +76,12 @@ jobs:
           cd "\$app_dir"
           compose_file="\$app_dir/docker-compose.yml"
 
-          rollback_compose=\$(mktemp "\$app_dir/docker-compose.yml.rollback.XXXXXX")
-          cp "\$compose_file" "\$rollback_compose"
-          old_image=\$(docker inspect --format '{{.Image}}' deep-insight-app-1 2>/dev/null || true)
-          old_digest=""
-          old_sha=""
-          if [[ -n "\$old_image" ]]; then
-            old_repo_digest=\$(docker image inspect --format '{{index .RepoDigests 0}}' "\$old_image" 2>/dev/null || true)
-            old_digest="\${old_repo_digest##*@}"
-            old_sha=\$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "\$old_image" 2>/dev/null || true)
-          fi
-          rollback_image="deep-insight:rollback-\$(date -u +%Y%m%dT%H%M%SZ)"
-          if [[ -n "\$old_image" ]]; then docker tag "\$old_image" "\$rollback_image"; fi
-          deployment_complete=0
-          rollback() {
-            status=\$?
-            trap - EXIT
-            if [[ "\$deployment_complete" != 1 ]]; then
-              echo "部署未完整通过，恢复上一版本" >&2
-              if [[ -f "\$rollback_compose" ]]; then mv "\$rollback_compose" "\$compose_file"; fi
-              if [[ -n "\$old_image" && "\$old_digest" =~ ^sha256:[a-f0-9]{64}$ && "\$old_sha" =~ ^[0-9a-f]{40}$ ]]; then
-                rollback_services=\$(docker compose -f "\$compose_file" config --services)
-                if grep -qx deployment-record <<<"\$rollback_services"; then
-                  PROVENANCE_DEPLOYMENT_REQUIRED=1 INSIGHT_IMAGE="\$rollback_image" INSIGHT_IMAGE_DIGEST="\$old_digest" GIT_SHA="\$old_sha" DEPLOY_ACTOR=github-actions-rollback \\
-                    docker compose -f "\$compose_file" run --rm --no-deps deployment-record || true
-                fi
-                restore_targets=(app cron)
-                if grep -qx generation-dispatch-worker <<<"\$rollback_services"; then
-                  restore_targets+=(generation-dispatch-worker)
-                fi
-                PROVENANCE_DEPLOYMENT_REQUIRED=1 INSIGHT_IMAGE="\$rollback_image" INSIGHT_IMAGE_DIGEST="\$old_digest" GIT_SHA="\$old_sha" \\
-                  docker compose -f "\$compose_file" up -d --no-build --no-deps --wait --wait-timeout 180 "\${restore_targets[@]}" || true
-              else
-                echo "旧镜像缺少可验证 digest 或 revision，拒绝启动未验证 rollback writer" >&2
-              fi
-            fi
-            exit "\$status"
-          }
-          trap rollback EXIT
           next_compose="\${compose_file}.next"
           curl --fail --silent --show-error --location "\$compose_url" --output "\$next_compose"
           docker compose -f "\$next_compose" config --quiet
-          mv "\$next_compose" "\$compose_file"
 
           required_services=(migrate deployment-record app cron generation-dispatch-worker)
-          available_services=\$(docker compose -f "\$compose_file" config --services)
+          available_services=\$(docker compose -f "\$next_compose" config --services)
           for required_service in "\${required_services[@]}"; do
             grep -qx "\$required_service" <<<"\$available_services" || {
               echo "发布 compose 缺少必需服务：\$required_service" >&2
@@ -137,6 +98,23 @@ jobs:
               exit 1
             }
           done
+
+          # P1 anchors are an explicit production admission. Keep the default
+          # off until the Object Lock/KMS/IAM/retention checklist is complete;
+          # when on, validate all material before stopping any live writer.
+          anchor_enabled_count=\$(grep -c '^INTEGRITY_ANCHOR_ENABLED=' "\$app_dir/.env.local" || true)
+          [[ "\$anchor_enabled_count" -le 1 ]] || { echo "INTEGRITY_ANCHOR_ENABLED 不可重复配置" >&2; exit 1; }
+          anchor_enabled_raw=\$(sed -n -E 's/^INTEGRITY_ANCHOR_ENABLED=(.*)$/\\1/p' "\$app_dir/.env.local" | tail -n 1)
+          [[ "\$anchor_enabled_raw" == "\${anchor_enabled_raw//[[:space:]]/}" ]] || { echo "INTEGRITY_ANCHOR_ENABLED 不可包含空白" >&2; exit 1; }
+          anchor_enabled=\$(printf '%s' "\$anchor_enabled_raw" | tr '[:upper:]' '[:lower:]')
+          case "\$anchor_enabled" in
+            ""|0|false) echo "完整性锚定：disabled" ;;
+            1|true)
+              echo "完整性锚定尚未通过 INSI-25 生产准入；拒绝启用" >&2
+              exit 1
+              ;;
+            *) echo "INTEGRITY_ANCHOR_ENABLED 必须为 true/false/1/0" >&2; exit 1 ;;
+          esac
 
           docker pull "\$image"
           actual_sha=\$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "\$image")
@@ -164,9 +142,53 @@ jobs:
           fi
           cleanup_probe
 
+          # The preceding image and migration rehearsal has not changed live
+          # writers. Only now snapshot live configuration and install rollback.
+          rollback_compose=\$(mktemp "\$app_dir/docker-compose.yml.rollback.XXXXXX")
+          cp "\$compose_file" "\$rollback_compose"
+          old_image=\$(docker inspect --format '{{.Image}}' deep-insight-app-1 2>/dev/null || true)
+          old_digest=""
+          old_sha=""
+          if [[ -n "\$old_image" ]]; then
+            old_repo_digest=\$(docker image inspect --format '{{index .RepoDigests 0}}' "\$old_image" 2>/dev/null || true)
+            old_digest="\${old_repo_digest##*@}"
+            old_sha=\$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "\$old_image" 2>/dev/null || true)
+          fi
+          rollback_image="deep-insight:rollback-\$(date -u +%Y%m%dT%H%M%SZ)"
+          if [[ -n "\$old_image" ]]; then docker tag "\$old_image" "\$rollback_image"; fi
+          deployment_complete=0
+          writer_stop_started=0
+          rollback() {
+            status=\$?
+            trap - EXIT
+            if [[ "\$deployment_complete" != 1 ]]; then
+              echo "部署未完整通过，恢复上一版本" >&2
+              if [[ -f "\$rollback_compose" ]]; then mv "\$rollback_compose" "\$compose_file"; fi
+              if [[ "\$writer_stop_started" == 1 && -n "\$old_image" && "\$old_digest" =~ ^sha256:[a-f0-9]{64}$ && "\$old_sha" =~ ^[0-9a-f]{40}$ ]]; then
+                rollback_services=\$(docker compose -f "\$compose_file" config --services)
+                if grep -qx deployment-record <<<"\$rollback_services"; then
+                  PROVENANCE_DEPLOYMENT_REQUIRED=1 INSIGHT_IMAGE="\$rollback_image" INSIGHT_IMAGE_DIGEST="\$old_digest" GIT_SHA="\$old_sha" DEPLOY_ACTOR=github-actions-rollback \\
+                    docker compose -f "\$compose_file" run --rm --no-deps deployment-record || true
+                fi
+                restore_targets=(app cron)
+                if grep -qx generation-dispatch-worker <<<"\$rollback_services"; then
+                  restore_targets+=(generation-dispatch-worker)
+                fi
+                PROVENANCE_DEPLOYMENT_REQUIRED=1 INSIGHT_IMAGE="\$rollback_image" INSIGHT_IMAGE_DIGEST="\$old_digest" GIT_SHA="\$old_sha" \\
+                  docker compose -f "\$compose_file" up -d --no-build --no-deps --wait --wait-timeout 180 "\${restore_targets[@]}" || true
+              else
+                echo "尚未进入 writer stop 阶段或旧镜像缺少可验证 digest/revision；不记录或重启 rollback writer" >&2
+              fi
+            fi
+            exit "\$status"
+          }
+          trap rollback EXIT
+          mv "\$next_compose" "\$compose_file"
+
           # 固定发布序列：先停止旧 writer/调度，先备份再迁移；deployment-record
           # 成功后才允许带 digest 的新 app 成为 writer，health 通过后最后恢复调度服务。
-          docker compose -f "\$compose_file" stop cron generation-dispatch-worker app || true
+          writer_stop_started=1
+          docker compose -f "\$compose_file" stop cron generation-dispatch-worker app
           INSIGHT_IMAGE="\$immutable_image" docker compose -f "\$compose_file" run --rm --no-deps --user 0 migrate sh -c 'chown -R 1001:1001 /data'
           PROVENANCE_DEPLOYMENT_REQUIRED=1 INSIGHT_IMAGE="\$immutable_image" INSIGHT_IMAGE_DIGEST="\$image_digest" GIT_SHA="\$expected_sha" \\
             docker compose -f "\$compose_file" run --rm --no-deps migrate node /app/ops/backup-db.mjs
@@ -182,15 +204,25 @@ jobs:
           worker_id=\$(docker compose -f "\$compose_file" ps -q generation-dispatch-worker)
           [[ -n "\$worker_id" ]] || { echo "generation-dispatch-worker 未创建" >&2; exit 1; }
           # Worker readiness covers both the private probe and the durable
-          # dispatch queue age. Do not call a merely running worker healthy.
+          # dispatch queue age. The one explicit legacy revision predates that
+          # healthcheck; allow it only for a verified rollback target, never
+          # for an arbitrary new image that merely lacks a healthcheck.
+          legacy_worker_revision=ff8c4785a7dfa67a9d4f1b66f3ee25cf2e16a2dd
           for _ in \$(seq 1 18); do
             worker_running=\$(docker inspect --format '{{.State.Running}}' "\$worker_id")
             worker_restarts=\$(docker inspect --format '{{.RestartCount}}' "\$worker_id")
             worker_health=\$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "\$worker_id")
-            [[ "\$worker_running" == true && "\$worker_restarts" == 0 && "\$worker_health" == healthy ]] && break
+            if [[ "\$worker_running" == true && "\$worker_restarts" == 0 && "\$worker_health" == healthy ]]; then break; fi
+            if [[ "\$expected_sha" == "\$legacy_worker_revision" && "\$worker_running" == true && "\$worker_restarts" == 0 && "\$worker_health" == missing ]]; then break; fi
             sleep 10
           done
-          [[ "\$worker_running" == true && "\$worker_restarts" == 0 && "\$worker_health" == healthy ]] || {
+          worker_ready=0
+          if [[ "\$worker_running" == true && "\$worker_restarts" == 0 && "\$worker_health" == healthy ]]; then worker_ready=1; fi
+          if [[ "\$expected_sha" == "\$legacy_worker_revision" && "\$worker_running" == true && "\$worker_restarts" == 0 && "\$worker_health" == missing ]]; then
+            echo "已验证 legacy rollback worker（无 healthcheck）：仅检查 running 且零重启"
+            worker_ready=1
+          fi
+          [[ "\$worker_ready" == 1 ]] || {
             echo "generation-dispatch-worker 未就绪（running=\$worker_running, restarts=\$worker_restarts, health=\$worker_health）" >&2
             exit 1
           }

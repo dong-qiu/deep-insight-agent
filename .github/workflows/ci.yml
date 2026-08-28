@@ -160,6 +160,51 @@ jobs:
             docker logs "$app" >&2 || true
             exit 1
           fi
+          # Default P1 anchor mode must not make the always-scheduled integrity
+          # cron fail or block P0 reports when production admission is pending.
+          docker run --rm --network "$network" --entrypoint node deep-insight:ci --input-type=module -e "
+            const response = await fetch('http://$app:3000/api/cron?mode=integrity', {
+              method: 'POST', headers: { authorization: 'Bearer ci-cron-secret' },
+            });
+            const body = await response.json();
+            if (!response.ok || body?.summary?.reason !== 'integrity_anchor_disabled') process.exit(1);
+          "
+          # Authenticate through the actual NextAuth credentials route, then
+          # reach both administrator P1 entry points over HTTP. This must stay
+          # separate from handler tests: direct imports cannot prove middleware,
+          # auth cookies, or the production standalone runtime preserve the
+          # disabled fail-closed contract.
+          docker run --rm --network "$network" --entrypoint node deep-insight:ci --input-type=module -e "
+            const base = 'http://$app:3000';
+            const cookies = new Map();
+            const absorbCookies = (response) => {
+              for (const raw of response.headers.getSetCookie?.() ?? []) {
+                const pair = raw.split(';', 1)[0];
+                const separator = pair.indexOf('=');
+                if (separator > 0) cookies.set(pair.slice(0, separator), pair.slice(separator + 1));
+              }
+            };
+            const cookieHeader = () => [...cookies].map(([name, value]) => name + '=' + value).join('; ');
+            const csrfResponse = await fetch(base + '/api/auth/csrf');
+            absorbCookies(csrfResponse);
+            const { csrfToken } = await csrfResponse.json();
+            const signInResponse = await fetch(base + '/api/auth/callback/credentials', {
+              method: 'POST',
+              headers: { 'content-type': 'application/x-www-form-urlencoded', cookie: cookieHeader() },
+              body: new URLSearchParams({ csrfToken, email: 'ci@example.test', password: 'ci-password', callbackUrl: base, json: 'true' }),
+              redirect: 'manual',
+            });
+            absorbCookies(signInResponse);
+            if (signInResponse.status >= 400 || !cookieHeader()) throw new Error('admin credentials sign-in failed');
+            const check = await fetch(base + '/api/admin/integrity-checks/artifact_1/v1', { method: 'POST', headers: { cookie: cookieHeader() } });
+            if (check.status !== 409 || (await check.json())?.error !== 'integrity_check_failed') throw new Error('disabled integrity check did not fail closed');
+            const hold = await fetch(base + '/api/admin/reports/report_123/retention', {
+              method: 'POST',
+              headers: { cookie: cookieHeader(), 'content-type': 'application/json' },
+              body: JSON.stringify({ action: 'place_hold', hold_id: 'hold_123', reason_code: 'legal_request' }),
+            });
+            if (hold.status !== 503 || (await hold.json())?.error !== 'legal_hold_unavailable') throw new Error('disabled legal hold did not fail closed');
+          "
           if ! docker run --rm --network "$network" -e APP_URL="http://$app:3000" -e DISPATCH_WORKER_SECRET=ci-dispatch-secret \
             --entrypoint node deep-insight:ci /app/ops/generation-dispatch-healthcheck.mjs; then
             echo "ready application failed dispatch-worker probe" >&2
