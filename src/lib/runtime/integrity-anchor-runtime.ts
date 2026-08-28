@@ -10,10 +10,35 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 type AnchorEnvironment = Readonly<Record<string, string | undefined>>;
 
+/** P1c is deliberately opt-in. P0 publication keeps its citation/validator
+ * contract when this is disabled; it must never manufacture anchor evidence.
+ * Any non-boolean value fails closed rather than silently changing the
+ * deployment's evidence posture. */
+export function integrityAnchorEnabled(env: AnchorEnvironment = process.env): boolean {
+  const raw = env.INTEGRITY_ANCHOR_ENABLED;
+  if (raw == null) return false;
+  // Deployment preflight applies the same grammar. Whitespace must never turn
+  // an apparently disabled .env entry into an enabled runtime configuration.
+  if (raw !== raw.trim()) throw new Error("integrity_anchor_enabled_invalid");
+  const value = raw.toLowerCase();
+  if (value === "" || value === "0" || value === "false") return false;
+  if (value === "1" || value === "true") return true;
+  throw new Error("integrity_anchor_enabled_invalid");
+}
+
 function required(env: AnchorEnvironment, name: string): string {
   const value = env[name]?.trim();
   if (!value) throw new Error("integrity_anchor_not_configured");
   return value;
+}
+
+/** No P1 composition root is admitted until the dedicated INSI-25 production
+ * admission implementation exists. Keeping this single guard at every
+ * externally reachable P1 seam prevents an auxiliary admin route from
+ * bypassing the report-publication gate. */
+function requireIntegrityAnchorAdmission(env: AnchorEnvironment): never {
+  void integrityAnchorEnabled(env);
+  throw new Error("integrity_anchor_admission_required");
 }
 
 function optionalInstant(env: AnchorEnvironment, name: string): string | undefined {
@@ -31,6 +56,7 @@ function requiredFutureInstant(env: AnchorEnvironment, name: string, now: Date):
 
 /** Verification has only Object-Store read authority; it never loads signing material. */
 export function deploymentAnchorVerificationStore(env: AnchorEnvironment = process.env): AnchorStore {
+  requireIntegrityAnchorAdmission(env);
   return new S3AnchorStore(new S3Client({}), required(env, "INTEGRITY_ANCHOR_BUCKET"));
 }
 
@@ -68,4 +94,16 @@ export function deploymentAnchorPublication(
       requiredFutureInstant(env, "INTEGRITY_ARTIFACT_RETAIN_UNTIL", now),
     ],
   };
+}
+
+/** The only production composition seam for report publication. Keep the
+ * strict constructor above so an enabled deployment cannot degrade to an
+ * unanchored fallback because one required policy input is absent. */
+export function deploymentAnchorPublicationIfEnabled(
+  env: AnchorEnvironment = process.env,
+  now = new Date(),
+): ReportAnchorPublication | undefined {
+  if (!integrityAnchorEnabled(env)) return undefined;
+  void now;
+  return requireIntegrityAnchorAdmission(env);
 }
