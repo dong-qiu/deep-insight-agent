@@ -3,7 +3,7 @@
  *  （与 analyze/validate/report-gen 一致：单调时钟耗时 + 失败捕获 + 可重试）。 */
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { getContentByUrl, insertContentItem, setRunInserted, updateContentItem } from "../db/repos.js";
+import { getContentByUrl, getContentItem, insertContentItem, setRunInserted, updateContentItem } from "../db/repos.js";
 import type { DB } from "../db/index.js";
 import {
   assertSourceCollectClaim,
@@ -175,25 +175,30 @@ export async function collectSource(
         continue;
       }
       item.raw_ref = archiveRaw(item.id, raw.raw);
-      const outputRef = trace ? contentItemRef(item, "output") : null;
-      // Content 的新不可变 snapshot 与业务 upsert 同一 SQLite 事务：任一失败都不会留下
-      // “内容已更新、但 trace 指向不存在 revision”的半事实。raw_ref 依规不进入 P0 snapshot / ref。
+      let persistedItem: typeof item | null = null;
+      let persistedOutputRef: EntityRef | null = null;
+      // Content 的业务 upsert、实际持久化行的 snapshot 与 provenance revision 在同一 SQLite
+      // 事务中提交：source_id / published_at / topic_ids 等保留字段绝不从本轮候选对象臆造。
       db.transaction(() => {
         assertWrite();
-        if (outputRef) {
-          captureRevision(db, {
-            entity_type: outputRef.type,
-            entity_key: entityKey(outputRef),
-            revision: outputRef.revision,
-            snapshot: contentItemRevisionSnapshot(item),
-          });
-        }
         if (existing) updateContentItem(db, item); // 同 URL 内容更新 → 原地更新、id 不变（AC2 ②）
         else insertContentItem(db, item); // 新 URL（AC2 ③）
+        persistedItem = getContentItem(db, existing?.id ?? item.id);
+        if (!persistedItem) throw new Error("content_item_write_not_found");
+        persistedOutputRef = trace ? contentItemRef(persistedItem, "output") : null;
+        if (persistedOutputRef) {
+          captureRevision(db, {
+            entity_type: persistedOutputRef.type,
+            entity_key: entityKey(persistedOutputRef),
+            revision: persistedOutputRef.revision,
+            snapshot: contentItemRevisionSnapshot(persistedItem),
+          });
+        }
       })();
+      if (!persistedItem) throw new Error("content_item_write_not_found");
       // P1b-2 observes the committed collector output only; it never feeds report selection or citation validation.
-      appendCollectorMetricFact(db, { run_id: ctx.runId, item });
-      if (outputRef) outputs.push(outputRef);
+      appendCollectorMetricFact(db, { run_id: ctx.runId, item: persistedItem });
+      if (persistedOutputRef) outputs.push(persistedOutputRef);
       if (existing) updated++;
       else inserted++;
     }
