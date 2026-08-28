@@ -116,6 +116,23 @@ jobs:
             *) echo "INTEGRITY_ANCHOR_ENABLED 必须为 true/false/1/0" >&2; exit 1 ;;
           esac
 
+          # P1 dashboard reads are also not production-admitted until INSI-25.
+          # The image may contain isolated development code, but production
+          # deployment must keep every external dashboard seam disabled.
+          dashboard_enabled_count=\$(grep -c '^P1_DASHBOARD_ENABLED=' "\$app_dir/.env.local" || true)
+          [[ "\$dashboard_enabled_count" -le 1 ]] || { echo "P1_DASHBOARD_ENABLED 不可重复配置" >&2; exit 1; }
+          dashboard_enabled_raw=\$(sed -n -E 's/^P1_DASHBOARD_ENABLED=(.*)$/\1/p' "\$app_dir/.env.local" | tail -n 1)
+          [[ "\$dashboard_enabled_raw" == "\${dashboard_enabled_raw//[[:space:]]/}" ]] || { echo "P1_DASHBOARD_ENABLED 不可包含空白" >&2; exit 1; }
+          dashboard_enabled=\$(printf '%s' "\$dashboard_enabled_raw" | tr '[:upper:]' '[:lower:]')
+          case "\$dashboard_enabled" in
+            ""|0|false) echo "P1 dashboard：disabled" ;;
+            1|true)
+              echo "P1 dashboard 尚未通过 INSI-25 生产准入；拒绝启用" >&2
+              exit 1
+              ;;
+            *) echo "P1_DASHBOARD_ENABLED 必须为 true/false/1/0" >&2; exit 1 ;;
+          esac
+
           docker pull "\$image"
           actual_sha=\$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "\$image")
           [[ "\$actual_sha" == "\$expected_sha" ]] || { echo "镜像 revision 标签与请求提交不一致" >&2; exit 1; }

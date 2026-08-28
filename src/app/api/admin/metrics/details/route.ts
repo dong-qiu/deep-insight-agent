@@ -6,6 +6,7 @@ import { appendAudit } from "../../../../../lib/db/audit.js";
 import { getDb } from "../../../../../lib/db/index.js";
 import { decodeMetricDetailCursor, encodeMetricDetailCursor, isMetricFactKind } from "../../../../../lib/db/metric-detail-cursor.js";
 import { listMetricDetailsPage } from "../../../../../lib/db/p1-metrics-facts.js";
+import { p1DashboardEnabled } from "../../../../../lib/runtime/p1-dashboard-runtime.js";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -16,6 +17,7 @@ export async function GET(request: Request): Promise<Response> {
     try { appendAudit(getDb(), { actor: "anonymous", action: "dashboard_detail_read_denied", target: "dashboard_detail", detail: { allowed: false, target_type: "dashboard_detail", tenant: "default", request_id: randomUUID(), reason_code: "authorization_denied" } }); } catch { /* the uniform 404 is authoritative */ }
     return notFound();
   }
+  if (!p1DashboardEnabled()) return notFound();
   const url = new URL(request.url); const rawKind = url.searchParams.get("kind"); const requestedKind = isMetricFactKind(rawKind) ? rawKind : null;
   const cursor = decodeMetricDetailCursor(url.searchParams.get("cursor"));
   const from = url.searchParams.get("from"); const to = url.searchParams.get("to");

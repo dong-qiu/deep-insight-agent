@@ -5,6 +5,7 @@ vi.mock("../../../auth.js", () => ({ auth: mocks.auth }));
 vi.mock("../../../lib/db/audit.js", () => ({ appendAudit: mocks.audit }));
 vi.mock("../../../lib/db/index.js", () => ({ getDb: () => mocks.db }));
 vi.mock("../../../lib/db/p1-dashboard.js", () => ({ dashboardWindow: mocks.dashboardWindow, readIntegrityDashboardStatus: mocks.integrity, readP1DashboardMetrics: mocks.metrics }));
+vi.mock("../../../lib/runtime/p1-dashboard-runtime.js", () => ({ p1DashboardEnabled: () => true }));
 vi.mock("next/link", () => ({ default: ({ children }: { children: unknown }) => children }));
 vi.mock("next/navigation", () => ({ notFound: mocks.notFound }));
 

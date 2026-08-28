@@ -1,7 +1,7 @@
 /** Reproducible capacity evidence for the actual P1 dashboard SQL. */
 import { createHash } from "node:crypto";
 import { openDb } from "../src/lib/db/index.js";
-import { appendCostLedger, appendFunnelEvent, appendValidatorResult, listMetricDetailsPage } from "../src/lib/db/p1-metrics-facts.js";
+import { appendCostLedger, appendFunnelEvent, appendValidatorResult, explainMetricDetailsPageQuery, listMetricDetailsPage } from "../src/lib/db/p1-metrics-facts.js";
 import { P1_METRICS_CAPACITY_FIXTURE as fixture } from "../src/lib/db/p1-metrics-capacity-fixture.js";
 import { explainP1DashboardQueries, readP1DashboardMetrics } from "../src/lib/db/p1-dashboard.js";
 import { applyProvenanceMigrations } from "../src/lib/db/provenance-migrations.js";
@@ -29,8 +29,11 @@ function seed() {
 }
 
 const db = seed();
+const detailInput = { ...fixture.detail_window, as_of: "2026-08-02T23:59:59.999Z", limit: 100 } as const;
 const queries = {
-  detail_31d: () => listMetricDetailsPage(db, { kind: "funnel", ...fixture.detail_window, as_of: "2026-08-02T23:59:59.999Z", limit: 100 }),
+  detail_funnel_31d: () => listMetricDetailsPage(db, { kind: "funnel", ...detailInput }),
+  detail_cost_31d: () => listMetricDetailsPage(db, { kind: "cost", ...detailInput }),
+  detail_validator_31d: () => listMetricDetailsPage(db, { kind: "validator", ...detailInput }),
   aggregate_31d: () => readP1DashboardMetrics(db, { from: "2026-07-02T00:00:00.000Z", to: "2026-08-02T00:00:00.000Z" }),
   aggregate_400d: () => readP1DashboardMetrics(db, fixture.aggregate_window),
   aggregate_400d_partial: () => readP1DashboardMetrics(db, fixture.aggregate_partial_window),
@@ -41,7 +44,9 @@ const timings = Object.fromEntries(Object.entries(queries).map(([id, query]) => 
   return [id, { samples_ms: samples.map((sample) => Number(sample.toFixed(3))), p95_ms: Number(p95(samples).toFixed(3)), max_ms: Number(Math.max(...samples).toFixed(3)) }];
 }));
 const plans = {
-  detail_31d: (db.prepare("EXPLAIN QUERY PLAN SELECT event_id FROM funnel_event WHERE tenant_id=? AND occurred_at>=? AND occurred_at<? ORDER BY occurred_at DESC,event_id DESC LIMIT 100").all("default", fixture.detail_window.from, fixture.detail_window.to) as Array<{ detail: string }>).map(({ detail }) => detail),
+  detail_funnel_31d: explainMetricDetailsPageQuery(db, { kind: "funnel", ...detailInput }),
+  detail_cost_31d: explainMetricDetailsPageQuery(db, { kind: "cost", ...detailInput }),
+  detail_validator_31d: explainMetricDetailsPageQuery(db, { kind: "validator", ...detailInput }),
   aggregate_31d: explainP1DashboardQueries(db, { from: "2026-07-02T00:00:00.000Z", to: "2026-08-02T00:00:00.000Z" }),
   aggregate_400d: explainP1DashboardQueries(db, fixture.aggregate_window),
   aggregate_400d_partial: explainP1DashboardQueries(db, fixture.aggregate_partial_window),
@@ -56,9 +61,21 @@ const requiredDashboardIndexes = [
 function assertDashboardPlans(plan: string[]): boolean {
   return plan.every((entry, index) => requiredDashboardIndexes[index]!.some((name) => entry.includes(name)) && !/SCAN (?:dashboard_trace_fact_v1|dashboard_cost_fact_v1|metric_rollup|integrity_daily_root|integrity_audit_event)(?:\s|$)/.test(entry));
 }
-const plan_evidence = Object.fromEntries(Object.entries(plans).map(([name, plan]) => [name, Object.fromEntries(plan.map((detail, index) => [dashboardPlanNames[index]!, detail]))]));
+type DetailPlanName = "detail_funnel_31d" | "detail_cost_31d" | "detail_validator_31d";
+const detailPlanIndexes: Record<DetailPlanName, string> = {
+  detail_funnel_31d: "idx_funnel_event_tenant_occurred",
+  detail_cost_31d: "idx_cost_ledger_tenant_occurred_provider_model",
+  detail_validator_31d: "idx_validator_result_tenant_occurred",
+};
+const detailPlanNames = Object.keys(detailPlanIndexes) as DetailPlanName[];
+const detailPlanEvidence = Object.fromEntries(detailPlanNames.map((name) => [name, { query: plans[name].join("\n") }]));
+const aggregatePlanEvidence = Object.fromEntries(Object.entries(plans)
+  .filter(([name]) => !(name in detailPlanIndexes))
+  .map(([name, plan]) => [name, Object.fromEntries(plan.map((detail, index) => [dashboardPlanNames[index]!, detail]))]));
+const plan_evidence = { ...detailPlanEvidence, ...aggregatePlanEvidence };
 const manifest = { version: fixture.version, generator_version: fixture.generator_version, row_counts: { funnel_event: 1200, cost_ledger: 400, validator_result_fact: 400 }, sqlite_version: String((db.prepare("select sqlite_version() as version").get() as { version: string }).version), node: process.version, dataset_sha256: createHash("sha256").update(JSON.stringify({ fixture, rows: 2000 })).digest("hex") };
 const result = { manifest, plans: plan_evidence, timings };
 console.log(JSON.stringify(result, null, 2));
-const capacityPlansPass = plans.detail_31d.join("\n").includes("idx_funnel_event_tenant_occurred") && Object.entries(plans).filter(([name]) => name !== "detail_31d").every(([, plan]) => assertDashboardPlans(plan));
+const capacityPlansPass = detailPlanNames.every((name) => plans[name].join("\n").includes(detailPlanIndexes[name]))
+  && Object.entries(plans).filter(([name]) => !(name in detailPlanIndexes)).every(([, plan]) => assertDashboardPlans(plan));
 if (process.argv.includes("--enforce") && (Object.values(timings).some((value) => value.p95_ms > 2000) || !capacityPlansPass)) process.exitCode = 1;

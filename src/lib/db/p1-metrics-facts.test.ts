@@ -4,7 +4,7 @@ import { openDb } from "./index.js";
 import { applyProvenanceMigrations } from "./provenance-migrations.js";
 import { P1_METRICS_CAPACITY_FIXTURE } from "./p1-metrics-capacity-fixture.js";
 import { appendAnalysisMetricFacts, appendCollectorMetricFact, appendValidationMetricFacts } from "./p1-metrics-pipeline.js";
-import { appendCostLedger, appendFunnelEvent, appendValidatorResult, freezeDueMetricDay, freezeMetricDay, listCostLedgerDetails, listFunnelDetails, listMetricFactConflicts, listValidatorResultDetails, purgeExpiredMetricFacts, queryMetricRollups, reconcileLateMetricEvent } from "./p1-metrics-facts.js";
+import { appendCostLedger, appendFunnelEvent, appendValidatorResult, explainMetricDetailsPageQuery, freezeDueMetricDay, freezeMetricDay, listCostLedgerDetails, listFunnelDetails, listMetricFactConflicts, listMetricDetailsPage, listValidatorResultDetails, purgeExpiredMetricFacts, queryMetricRollups, reconcileLateMetricEvent } from "./p1-metrics-facts.js";
 
 const metricAlerts = vi.hoisted(() => ({ late: vi.fn() }));
 const metricLogs = vi.hoisted(() => ({ warn: vi.fn() }));
@@ -110,6 +110,7 @@ describe("P1 dashboard metric facts", () => {
     expect(db.prepare("SELECT known_cost_minor FROM metric_rollup WHERE grain='day' AND metric_kind='cost'").get()).toEqual({ known_cost_minor: 5 });
     expect(reconcileLateMetricEvent(db, { fact_kind: "cost", event_id: "quarantined", action: "backfilled", actor_id: "admin_1", recorded_at: "2026-08-10T03:00:00.000Z" }).id).toMatch(/^mlr_/);
     expect(db.prepare("SELECT known_cost_minor,revised_at FROM metric_rollup WHERE grain='day' AND metric_kind='cost'").get()).toEqual({ known_cost_minor: 12, revised_at: "2026-08-10T03:00:00.000Z" });
+    expect(() => reconcileLateMetricEvent(db, { fact_kind: "cost", event_id: "quarantined", action: "declined", actor_id: "admin_2" })).toThrow("metric_late_reconciliation_already_decided");
     expect(() => db.prepare("UPDATE cost_ledger SET amount_minor=99 WHERE entry_id='on-time'").run()).toThrow("append-only");
     expect(() => db.prepare("DELETE FROM cost_ledger WHERE entry_id='on-time'").run()).toThrow("append-only");
   });
@@ -134,6 +135,17 @@ describe("P1 dashboard metric facts", () => {
     expect(plans[1]).toContain("idx_cost_ledger_tenant_occurred_provider_model");
     expect(plans[2]).toContain("idx_validator_result_tenant_occurred");
     expect(plans[3]).toContain("idx_metric_rollup_tenant_grain_bucket");
+
+    const pageInput = { from: P1_METRICS_CAPACITY_FIXTURE.window.from, to: P1_METRICS_CAPACITY_FIXTURE.window.to, as_of: "2026-08-02T23:59:59.999Z", limit: 100 };
+    const detailPlans = [
+      ["funnel", "idx_funnel_event_tenant_occurred"],
+      ["cost", "idx_cost_ledger_tenant_occurred_provider_model"],
+      ["validator", "idx_validator_result_tenant_occurred"],
+    ] as const;
+    for (const [kind, expectedIndex] of detailPlans) {
+      expect(listMetricDetailsPage(db, { kind, ...pageInput }).items.length).toBeGreaterThan(0);
+      expect(explainMetricDetailsPageQuery(db, { kind, ...pageInput }).join("\n")).toContain(expectedIndex);
+    }
   });
 
   it("writes collector, analysis, validation, cost, and terminal facts idempotently across a replay", () => {

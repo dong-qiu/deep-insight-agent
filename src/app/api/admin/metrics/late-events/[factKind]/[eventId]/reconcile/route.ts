@@ -4,17 +4,19 @@ import { requireAdminActor } from "../../../../../../../../lib/auth-guard.js";
 import { getDb } from "../../../../../../../../lib/db/index.js";
 import { reconcileLateMetricEvent } from "../../../../../../../../lib/db/p1-metrics-facts.js";
 import { notifyMetricLateReconciliation } from "../../../../../../../../lib/runtime/metric-alert.js";
+import { p1DashboardEnabled } from "../../../../../../../../lib/runtime/p1-dashboard-runtime.js";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
+const notFound = (): Response => NextResponse.json({ error: "not_found" }, { status: 404 });
 function validId(value: string): boolean { return /^[A-Za-z0-9._:-]{1,128}$/.test(value); }
 function validFactKind(value: string): value is "funnel" | "cost" | "validator" { return value === "funnel" || value === "cost" || value === "validator"; }
 function validAction(value: unknown): value is "backfilled" | "declined" { return value === "backfilled" || value === "declined"; }
 
 export async function POST(req: Request, { params }: { params: Promise<{ factKind: string; eventId: string }> }): Promise<Response> {
   const actor = await requireAdminActor();
-  if (!actor) return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  if (!actor || !p1DashboardEnabled()) return notFound();
   const { factKind, eventId } = await params;
   const body = await req.json().catch(() => null) as { action?: unknown } | null;
   if (!validFactKind(factKind) || !validId(eventId) || !validAction(body?.action)) return NextResponse.json({ error: "invalid_metric_reconciliation" }, { status: 400 });

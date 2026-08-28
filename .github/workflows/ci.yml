@@ -101,6 +101,13 @@ jobs:
         run: npm run build
         env:
           NEXT_TELEMETRY_DISABLED: "1"
+      # Route/unit tests cannot prove the real NextAuth cookie flow, middleware,
+      # or cursor pagination. Run the isolated live-app dashboard E2E after the
+      # production build on every PR that changes this surface.
+      - name: admin metrics e2e
+        run: npm run test:e2e
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
       # 供应链：整个 lockfile 的 high/critical 漏洞均阻断。开发/构建依赖同样会在 CI 与
       # 开发者机器执行，不能仅因不随生产镜像 ship 就忽略；Dependabot 负责提出升级，本门兜底。
       - name: npm audit (all deps, high+ blocking)

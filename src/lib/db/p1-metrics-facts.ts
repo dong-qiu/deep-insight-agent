@@ -294,6 +294,13 @@ export function reconcileLateMetricEvent(db: DB, input: { fact_kind: FactKind; e
   if (!late) throw new Error("metric_late_event_not_found");
   const id = `mlr_${randomUUID().replaceAll("-", "")}`;
   db.transaction(() => {
+    // A reconciliation is the immutable decision for one quarantined fact.
+    // Allowing a later reversal would leave its already-appended long-window
+    // projection and its raw-detail visibility disagreeing.
+    if (db.prepare("SELECT 1 FROM metric_late_reconciliation WHERE tenant_id=? AND fact_kind=? AND event_id=? LIMIT 1")
+      .get(METRICS_TENANT_ID, input.fact_kind, input.event_id)) {
+      throw new Error("metric_late_reconciliation_already_decided");
+    }
     db.prepare("INSERT INTO metric_late_reconciliation(tenant_id,id,fact_kind,event_id,action,actor_id,recorded_at) VALUES (?,?,?,?,?,?,?)")
       .run(METRICS_TENANT_ID, id, input.fact_kind, input.event_id, input.action, input.actor_id, recordedAt);
     if (input.action === "backfilled") {
@@ -330,10 +337,9 @@ export function listValidatorResultDetails(db: DB, input: { from: string; to: st
 
 export interface MetricDetailCursor { occurred_at: string; id: string }
 export interface MetricDetailPage { items: Array<Record<string, unknown>>; next: MetricDetailCursor | null }
+type MetricDetailPageInput = { kind: FactKind; from: string; to: string; as_of: string; limit?: number; cursor?: MetricDetailCursor | null };
 
-/** Safe detail shape: these lists intentionally omit hashes, payloads, object
- * locators, and error text.  `as_of` prevents page drift while a cursor is used. */
-export function listMetricDetailsPage(db: DB, input: { kind: FactKind; from: string; to: string; as_of: string; limit?: number; cursor?: MetricDetailCursor | null }): MetricDetailPage {
+function metricDetailPageQuery(input: MetricDetailPageInput): { sql: string; params: unknown[]; id: string; limit: number } {
   const from = instant(input.from); const to = instant(input.to); const asOf = instant(input.as_of);
   const max = DETAIL_QUERY_MAX_DAYS * 24 * 60 * 60 * 1000;
   if (epoch(to) <= epoch(from) || epoch(to) - epoch(from) > max) throw new Error("metric_detail_window_invalid");
@@ -344,15 +350,33 @@ export function listMetricDetailsPage(db: DB, input: { kind: FactKind; from: str
       ? { table: "cost_ledger", id: "entry_id", fields: "entry_id,trace_id,topic_id,source_id,stage,attempt,pipeline_version,provider,model,currency,amount_minor,cost_status,input_tokens,output_tokens,occurred_at,schema_version,producer_version", alias: "c", lateKind: "cost" }
       : { table: "validator_result_fact", id: "result_id", fields: "result_id,trace_id,topic_id,source_id,stage,attempt,pipeline_version,validator,rule_version,reason_code,severity,terminal,occurred_at,schema_version,producer_version", alias: "v", lateKind: "validator" };
   const keyset = input.cursor ? ` AND (${config.alias}.occurred_at<? OR (${config.alias}.occurred_at=? AND ${config.alias}.${config.id}<?))` : "";
-  const rows = db.prepare(`SELECT ${config.fields} FROM ${config.table} ${config.alias}
+  return {
+    id: config.id,
+    sql: `SELECT ${config.fields} FROM ${config.table} ${config.alias}
       WHERE ${config.alias}.tenant_id=? AND ${config.alias}.occurred_at>=? AND ${config.alias}.occurred_at<? AND ${config.alias}.ingested_at<=?
         AND NOT EXISTS (SELECT 1 FROM metric_late_event late WHERE late.tenant_id=${config.alias}.tenant_id AND late.fact_kind=? AND late.event_id=${config.alias}.${config.id}
           AND COALESCE((SELECT action FROM metric_late_reconciliation r WHERE r.tenant_id=late.tenant_id AND r.fact_kind=late.fact_kind AND r.event_id=late.event_id ORDER BY r.recorded_at DESC,r.id DESC LIMIT 1),'')!='backfilled')${keyset}
-      ORDER BY ${config.alias}.occurred_at DESC,${config.alias}.${config.id} DESC LIMIT ?`)
-    .all(METRICS_TENANT_ID, from, to, asOf, config.lateKind, ...(input.cursor ? [input.cursor.occurred_at, input.cursor.occurred_at, input.cursor.id] : []), limit + 1) as Array<Record<string, unknown>>;
-  const more = rows.length > limit; const items = rows.slice(0, limit);
-  const last = items.at(-1); const next = more && last ? { occurred_at: String(last.occurred_at), id: String(last[config.id]) } : null;
+      ORDER BY ${config.alias}.occurred_at DESC,${config.alias}.${config.id} DESC LIMIT ?`,
+    params: [METRICS_TENANT_ID, from, to, asOf, config.lateKind, ...(input.cursor ? [input.cursor.occurred_at, input.cursor.occurred_at, input.cursor.id] : []), limit + 1],
+    limit,
+  };
+}
+
+/** Safe detail shape: these lists intentionally omit hashes, payloads, object
+ * locators, and error text.  `as_of` prevents page drift while a cursor is used. */
+export function listMetricDetailsPage(db: DB, input: MetricDetailPageInput): MetricDetailPage {
+  const query = metricDetailPageQuery(input);
+  const rows = db.prepare(query.sql).all(...query.params) as Array<Record<string, unknown>>;
+  const more = rows.length > query.limit; const items = rows.slice(0, query.limit);
+  const last = items.at(-1); const next = more && last ? { occurred_at: String(last.occurred_at), id: String(last[query.id]) } : null;
   return { items, next };
+}
+
+/** Capacity evidence must execute the exact bounded SQL that backs each
+ * exposed detail endpoint, including the reconciliation visibility filter. */
+export function explainMetricDetailsPageQuery(db: DB, input: MetricDetailPageInput): string[] {
+  const query = metricDetailPageQuery(input);
+  return (db.prepare(`EXPLAIN QUERY PLAN ${query.sql}`).all(...query.params) as Array<{ detail: string }>).map((row) => row.detail);
 }
 
 /** Bounded audit lookup for an operator investigating a rejected divergent replay. */

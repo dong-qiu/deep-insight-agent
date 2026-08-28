@@ -84,7 +84,7 @@ beforeAll(async () => {
   baseUrl = `http://127.0.0.1:${port}`;
   app = spawn(process.execPath, ["./node_modules/next/dist/bin/next", "start", "--port", String(port)], {
     cwd: process.cwd(),
-    env: { ...process.env, DB_PATH: dbPath, AUTH_SECRET: "e2e-auth-secret", ADMIN_EMAIL: "admin@example.test", ADMIN_PASSWORD: "admin-password" },
+    env: { ...process.env, DB_PATH: dbPath, AUTH_SECRET: "e2e-auth-secret", ADMIN_EMAIL: "admin@example.test", ADMIN_PASSWORD: "admin-password", P1_DASHBOARD_ENABLED: "true" },
     stdio: "pipe",
   });
   await waitForApp();

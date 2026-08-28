@@ -6,6 +6,7 @@ import { getDb } from "../../../../lib/db/index.js";
 import { decodeMetricDetailCursor, encodeMetricDetailCursor, isMetricFactKind } from "../../../../lib/db/metric-detail-cursor.js";
 import { dashboardWindow } from "../../../../lib/db/p1-dashboard.js";
 import { listMetricDetailsPage, type FactKind } from "../../../../lib/db/p1-metrics-facts.js";
+import { p1DashboardEnabled } from "../../../../lib/runtime/p1-dashboard-runtime.js";
 import { randomUUID } from "node:crypto";
 
 export const dynamic = "force-dynamic";
@@ -16,6 +17,7 @@ function safeKind(value: string | undefined): FactKind { return isMetricFactKind
  * hashes, errors, artifact identifiers, or storage locators. */
 export default async function MetricsDetailsPage({ searchParams }: { searchParams: Promise<{ kind?: string; cursor?: string }> }) {
   const session = await auth(); if (session?.user?.role !== "admin") notFound();
+  if (!p1DashboardEnabled()) notFound();
   const params = await searchParams; const kind = safeKind(params.kind); const cursor = decodeMetricDetailCursor(params.cursor);
   if (params.cursor && (!cursor || cursor.kind !== kind)) notFound();
   const window = cursor ? { from: cursor.from, to: cursor.to } : dashboardWindow(); const as_of = cursor?.as_of ?? new Date().toISOString();

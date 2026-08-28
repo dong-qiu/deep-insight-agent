@@ -6,6 +6,7 @@ import { auth } from "../../../auth.js";
 import { appendAudit } from "../../../lib/db/audit.js";
 import { getDb } from "../../../lib/db/index.js";
 import { dashboardWindow, readIntegrityDashboardStatus, readP1DashboardMetrics, type IntegrityDashboardStatus, type P1DashboardMetrics } from "../../../lib/db/p1-dashboard.js";
+import { p1DashboardEnabled } from "../../../lib/runtime/p1-dashboard-runtime.js";
 
 export const dynamic = "force-dynamic";
 
@@ -21,6 +22,7 @@ function sectionUnavailable(label: string): ReactNode {
 export default async function MetricsDashboard() {
   const session = await auth();
   if (session?.user?.role !== "admin") notFound();
+  if (!p1DashboardEnabled()) notFound();
   const user = session.user as typeof session.user & { id?: string | null };
   const db = getDb();
   appendAudit(db, { actor: user.id ?? user.email ?? "shared-admin-unattributed", action: "dashboard_read", target: "dashboard", detail: { allowed: true, target_type: "dashboard", tenant: "default", request_id: randomUUID(), reason_code: "authorized" } });

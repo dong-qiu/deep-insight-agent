@@ -5,6 +5,7 @@ import { requireAdminActor } from "../../../../lib/auth-guard.js";
 import { appendAudit } from "../../../../lib/db/audit.js";
 import { getDb } from "../../../../lib/db/index.js";
 import { dashboardWindow, readIntegrityDashboardStatus, readP1DashboardMetrics } from "../../../../lib/db/p1-dashboard.js";
+import { p1DashboardEnabled } from "../../../../lib/runtime/p1-dashboard-runtime.js";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -18,6 +19,7 @@ export async function GET(request: Request): Promise<Response> {
     try { appendAudit(getDb(), { actor: "anonymous", action: "dashboard_read_denied", target: "dashboard", detail: { allowed: false, target_type: "dashboard", tenant: "default", request_id: randomUUID(), reason_code: "authorization_denied" } }); } catch { /* 404 is authoritative */ }
     return notFound();
   }
+  if (!p1DashboardEnabled()) return notFound();
 
   let window;
   try {
