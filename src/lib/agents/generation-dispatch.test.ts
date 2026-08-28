@@ -3,7 +3,8 @@ import { openDb, type DB } from "../db/index.js";
 import { applyProvenanceMigrations } from "../db/provenance-migrations.js";
 import { assertGenerationDispatchClaim, claimNextGenerationDispatch, createDeepDiveTraceRequest, createScheduledTraceRequest, hashIdempotencyKey } from "../db/provenance.js";
 import { finishRun, insertContentItem, insertRun, insertSource, insertTopic } from "../db/repos.js";
-import { appendGenerationEvent, captureRevision, entityKey, type EntityRef } from "../db/provenance-facts.js";
+import { appendGenerationEvent, captureRevision, entityKey } from "../db/provenance-facts.js";
+import { contentItemRef } from "../db/provenance-revisions.js";
 import type { ContentItem, Report, Source } from "../types.js";
 import { runGenerationDispatchOnce } from "./generation-dispatch.js";
 
@@ -114,7 +115,7 @@ describe("generation dispatch worker", () => {
     };
     insertSource(db, source);
     insertContentItem(db, item);
-    const ref: EntityRef = { type: "content_item", locator: { kind: "id", id: item.id }, revision: `content-v2:${item.content_hash}`, role: "input" };
+    const ref = contentItemRef(item);
     captureRevision(db, {
       entity_type: ref.type, entity_key: entityKey(ref), revision: ref.revision,
       snapshot: {

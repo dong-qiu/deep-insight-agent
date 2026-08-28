@@ -175,17 +175,22 @@ export async function collectSource(
         continue;
       }
       item.raw_ref = archiveRaw(item.id, raw.raw);
-      const outputRef = trace ? contentItemRef(item, "output") : null;
+      // updateContentItem 有意保留首次采集的 source_id / published_at。revision
+      // snapshot 必须反映事务后可读到的条目，不能把本轮候选来源写成历史事实。
+      const persistedSnapshotItem = existing
+        ? { ...item, source_id: existing.source_id, published_at: existing.published_at }
+        : item;
+      const persistedOutputRef = trace ? contentItemRef(persistedSnapshotItem, "output") : null;
       // Content 的新不可变 snapshot 与业务 upsert 同一 SQLite 事务：任一失败都不会留下
       // “内容已更新、但 trace 指向不存在 revision”的半事实。raw_ref 依规不进入 P0 snapshot / ref。
       db.transaction(() => {
         assertWrite();
-        if (outputRef) {
+        if (persistedOutputRef) {
           captureRevision(db, {
-            entity_type: outputRef.type,
-            entity_key: entityKey(outputRef),
-            revision: outputRef.revision,
-            snapshot: contentItemRevisionSnapshot(item),
+            entity_type: persistedOutputRef.type,
+            entity_key: entityKey(persistedOutputRef),
+            revision: persistedOutputRef.revision,
+            snapshot: contentItemRevisionSnapshot(persistedSnapshotItem),
           });
         }
         if (existing) updateContentItem(db, item); // 同 URL 内容更新 → 原地更新、id 不变（AC2 ②）
@@ -193,7 +198,7 @@ export async function collectSource(
       })();
       // P1b-2 observes the committed collector output only; it never feeds report selection or citation validation.
       appendCollectorMetricFact(db, { run_id: ctx.runId, item });
-      if (outputRef) outputs.push(outputRef);
+      if (persistedOutputRef) outputs.push(persistedOutputRef);
       if (existing) updated++;
       else inserted++;
     }
