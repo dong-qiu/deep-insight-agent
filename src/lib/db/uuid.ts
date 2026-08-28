@@ -1,12 +1,12 @@
 import { createHash } from "node:crypto";
 
-// RFC 4122's URL namespace is stable and public. Callers must include their
+// RFC 4122's DNS namespace is stable and public. Callers must include their
 // own domain prefix in `name` when they need separate identity spaces.
-const URL_NAMESPACE = Buffer.from("6ba7b8119dad11d180b400c04fd430c8", "hex");
+const DNS_NAMESPACE = Buffer.from("6ba7b8109dad11d180b400c04fd430c8", "hex");
 
 /** Return a deterministic RFC 4122 UUIDv5 for an application-owned name. */
 export function deterministicUuidV5(name: string): string {
-  const bytes = createHash("sha1").update(URL_NAMESPACE).update(name).digest().subarray(0, 16);
+  const bytes = createHash("sha1").update(DNS_NAMESPACE).update(name).digest().subarray(0, 16);
   bytes[6] = (bytes[6]! & 0x0f) | 0x50;
   bytes[8] = (bytes[8]! & 0x3f) | 0x80;
   const hex = bytes.toString("hex");

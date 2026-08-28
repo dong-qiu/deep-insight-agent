@@ -109,7 +109,8 @@ assert.equal(dashboard.funnel_loss_reasons[0]?.reason_code, "quote_not_in_source
 assert.equal(dashboard.costs[0]?.known_cost_minor, 3);
 assert.equal(dashboard.validator_reasons[0]?.rule_version, "eval-v1");
 assert.equal(dashboard.validator_reasons[0]?.results, 1);
-assert.equal(dashboard.latency.find((row) => row.transition === "received → accepted")?.samples, 1);
+const receivedToAccepted = dashboard.latency.find((row) => row.transition === "received → accepted");
+assert.deepEqual(receivedToAccepted, { transition: "received → accepted", samples: 1, p50_ms: 500, p95_ms: 500, p99_ms: 500 });
 assert.deepEqual(appendFunnelEvent(db, { event_id: receivedEventId, trace_id: "eval-trace", stage: "received", pipeline_version: "eval-v1", occurred_at: metricAt, ingested_at: metricAt }), { event_id: receivedEventId, replayed: true });
 const lateEventId = deterministicUuidV5("p1-integrity-eval:late-received");
 appendFunnelEvent(db, { event_id: lateEventId, trace_id: "eval-late-trace", stage: "received", pipeline_version: "eval-v1", occurred_at: "2026-08-21T01:05:00.000Z", ingested_at: "2026-08-30T01:05:00.000Z" });

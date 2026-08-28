@@ -112,7 +112,7 @@ describe("P1 dashboard metric facts", () => {
     expect(db.prepare("SELECT count(*) AS count FROM metric_late_event WHERE fact_kind='cost'").get()).toEqual({ count: 1 });
     expect(db.prepare("SELECT known_cost_minor FROM metric_rollup WHERE grain='day' AND metric_kind='cost'").get()).toEqual({ known_cost_minor: 5 });
     expect(reconcileLateMetricEvent(db, { fact_kind: "cost", event_id: "quarantined", action: "backfilled", actor_id: "admin_1", recorded_at: "2026-08-10T03:00:00.000Z" }).id).toMatch(/^mlr_/);
-    expect(db.prepare("SELECT known_cost_minor,revised_at FROM metric_rollup WHERE grain='day' AND metric_kind='cost'").get()).toEqual({ known_cost_minor: 12, revised_at: "2026-08-10T03:00:00.000Z" });
+    expect(db.prepare("SELECT known_cost_minor,revised_at FROM metric_rollup WHERE grain='day' AND metric_kind='cost'").get()).toEqual({ known_cost_minor: 5, revised_at: null });
     expect(() => reconcileLateMetricEvent(db, { fact_kind: "cost", event_id: "quarantined", action: "declined", actor_id: "admin_2" })).toThrow("metric_late_reconciliation_already_decided");
     expect(() => db.prepare("UPDATE cost_ledger SET amount_minor=99 WHERE entry_id='on-time'").run()).toThrow("append-only");
     expect(() => db.prepare("DELETE FROM cost_ledger WHERE entry_id='on-time'").run()).toThrow("append-only");

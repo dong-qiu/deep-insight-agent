@@ -290,7 +290,8 @@ function projectReconciledLateFact(db: DB, kind: FactKind, id: string): void {
   appendDashboardTraceFact(db, { fact_kind: "validator", fact_id: fact.result_id, trace_id: fact.trace_id, attempt: fact.attempt, stage: fact.stage, event_type: "validator_result", pipeline_version: fact.pipeline_version, topic_id: fact.topic_id ?? undefined, source_id: fact.source_id ?? undefined, validator: fact.validator, rule_version: fact.rule_version, reason_code: fact.reason_code, severity: fact.severity, terminal: fact.terminal === 1, occurred_at: fact.occurred_at });
 }
 
-/** Explicit administrator-only reconciliation; append-only facts stay untouched while the selected bucket is recomputed. */
+/** Explicit administrator-only reconciliation.  A backfill restores the
+ * long-window dashboard projection, but never rewrites a frozen rollup. */
 export function reconcileLateMetricEvent(db: DB, input: { fact_kind: FactKind; event_id: string; action: "backfilled" | "declined"; actor_id: string; recorded_at?: string }): { id: string } {
   [input.event_id, input.actor_id].forEach((value) => requireId(value, "metric_reconciliation"));
   const recordedAt = instant(input.recorded_at ?? new Date().toISOString());
@@ -310,9 +311,6 @@ export function reconcileLateMetricEvent(db: DB, input: { fact_kind: FactKind; e
       .run(METRICS_TENANT_ID, id, input.fact_kind, input.event_id, input.action, input.actor_id, recordedAt);
     if (input.action === "backfilled") {
       projectReconciledLateFact(db, input.fact_kind, input.event_id);
-      const day = dayAt(late.occurred_at); const cutoff = after(day, 26);
-      materializeBucket(db, "hour", hourAt(late.occurred_at), null, recordedAt);
-      materializeBucket(db, "day", day, cutoff, recordedAt);
     }
   })();
   return { id };
