@@ -11,12 +11,17 @@ describe("deployment anchor publication", () => {
   it("accepts only explicit boolean enablement", () => {
     expect(integrityAnchorEnabled({ INTEGRITY_ANCHOR_ENABLED: "true" })).toBe(true);
     expect(integrityAnchorEnabled({ INTEGRITY_ANCHOR_ENABLED: "1" })).toBe(true);
+    expect(integrityAnchorEnabled({ INTEGRITY_ANCHOR_ENABLED: "TRUE" })).toBe(true);
     expect(integrityAnchorEnabled({ INTEGRITY_ANCHOR_ENABLED: "false" })).toBe(false);
     expect(() => integrityAnchorEnabled({ INTEGRITY_ANCHOR_ENABLED: "yes" })).toThrow("integrity_anchor_enabled_invalid");
+    expect(() => integrityAnchorEnabled({ INTEGRITY_ANCHOR_ENABLED: "true " })).toThrow("integrity_anchor_enabled_invalid");
   });
 
   it("keeps an enabled deployment strict about all anchor material", () => {
-    expect(() => deploymentAnchorPublicationIfEnabled({ INTEGRITY_ANCHOR_ENABLED: "true" })).toThrow("integrity_anchor_not_configured");
+    expect(() => deploymentAnchorPublicationIfEnabled({ INTEGRITY_ANCHOR_ENABLED: "true" })).toThrow("integrity_anchor_admission_required");
+    expect(() => deploymentAnchorPublicationIfEnabled({
+      INTEGRITY_ANCHOR_ENABLED: "true", INTEGRITY_ANCHOR_ADMISSION_REF: "INSI-25:evidence-123",
+    })).toThrow("integrity_anchor_not_configured");
   });
 
   it("fails closed when the deployment-owned signer/store contract is absent", () => {

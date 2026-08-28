@@ -7,7 +7,7 @@ import { runCollectionCycle, runScheduledPipeline } from "../../../lib/agents/sc
 import { runIntegrityMaintenance } from "../../../lib/db/integrity-publication.js";
 import { getDb } from "../../../lib/db/index.js";
 import { recoverOrphanedRuns } from "../../../lib/db/repos.js";
-import { deploymentAnchorPublication, integrityAnchorEnabled } from "../../../lib/runtime/integrity-anchor-runtime.js";
+import { deploymentAnchorPublicationIfEnabled } from "../../../lib/runtime/integrity-anchor-runtime.js";
 import { runLogger } from "../../../lib/runtime/logger.js";
 
 export const dynamic = "force-dynamic";
@@ -42,11 +42,12 @@ export async function POST(req: Request): Promise<NextResponse> {
     const swept = recoverOrphanedRuns(db);
     if (swept > 0) log.info({ swept }, "周期清扫孤儿 Run");
     if (mode === "integrity") {
-      if (!integrityAnchorEnabled()) {
+      const anchor = deploymentAnchorPublicationIfEnabled();
+      if (!anchor) {
         log.info("完整性锚定未启用，跳过 P1 维护");
         return NextResponse.json({ ok: true, mode, summary: { skipped: true, reason: "integrity_anchor_disabled" } });
       }
-      const summary = await runIntegrityMaintenance(db, deploymentAnchorPublication());
+      const summary = await runIntegrityMaintenance(db, anchor);
       log.info({ skipped: summary.skipped, reconciliation: summary.reconciliation, daily: summary.daily, checks: summary.checks }, "完整性维护完成");
       return NextResponse.json({ ok: true, mode, summary });
     }

@@ -15,10 +15,24 @@ type AnchorEnvironment = Readonly<Record<string, string | undefined>>;
  * Any non-boolean value fails closed rather than silently changing the
  * deployment's evidence posture. */
 export function integrityAnchorEnabled(env: AnchorEnvironment = process.env): boolean {
-  const value = env.INTEGRITY_ANCHOR_ENABLED?.trim().toLowerCase();
-  if (value == null || value === "" || value === "0" || value === "false") return false;
+  const raw = env.INTEGRITY_ANCHOR_ENABLED;
+  if (raw == null) return false;
+  // Deployment preflight applies the same grammar. Whitespace must never turn
+  // an apparently disabled .env entry into an enabled runtime configuration.
+  if (raw !== raw.trim()) throw new Error("integrity_anchor_enabled_invalid");
+  const value = raw.toLowerCase();
+  if (value === "" || value === "0" || value === "false") return false;
   if (value === "1" || value === "true") return true;
   throw new Error("integrity_anchor_enabled_invalid");
+}
+
+/** INSI-25 admission is a deployment-time governance decision, not merely a
+ * collection of host environment values. The matching protected Production
+ * environment value is checked by deploy.yml before any writer is stopped. */
+function requiredAnchorAdmissionReference(env: AnchorEnvironment): string {
+  const value = env.INTEGRITY_ANCHOR_ADMISSION_REF;
+  if (!value || value !== value.trim()) throw new Error("integrity_anchor_admission_required");
+  return value;
 }
 
 function required(env: AnchorEnvironment, name: string): string {
@@ -88,5 +102,7 @@ export function deploymentAnchorPublicationIfEnabled(
   env: AnchorEnvironment = process.env,
   now = new Date(),
 ): ReportAnchorPublication | undefined {
-  return integrityAnchorEnabled(env) ? deploymentAnchorPublication(env, now) : undefined;
+  if (!integrityAnchorEnabled(env)) return undefined;
+  requiredAnchorAdmissionReference(env);
+  return deploymentAnchorPublication(env, now);
 }
