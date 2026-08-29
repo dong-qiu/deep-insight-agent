@@ -15,6 +15,12 @@ import { RateLimiter } from "./lib/runtime/rate-limit.js";
 // 不引入带 DB/密码校验的 auth.ts，保持每个请求的鉴权前置路径轻量、可迁回 Edge。
 const { auth } = NextAuth(authConfig);
 
+/** Operational metrics deliberately use a uniform 404 at the network boundary.
+ * Keep this narrow: the rest of the admin surface retains its documented 401/403. */
+function isHiddenMetricsApi(pathname: string): boolean {
+  return pathname === "/api/admin/metrics" || pathname.startsWith("/api/admin/metrics/");
+}
+
 // 默认每 IP 每分钟 120（与 config.rateLimit 对齐由后续接入）。每个应用进程独立计数。
 const limiter = new RateLimiter({ limit: 120, windowMs: 60_000 });
 
@@ -33,6 +39,7 @@ export default auth((req) => {
 
   if (!isPublicPath(pathname) && !trustedDispatchWorker && !req.auth?.user) {
     if (pathname.startsWith("/api")) {
+      if (isHiddenMetricsApi(pathname)) return NextResponse.json({ error: "not_found" }, { status: 404 });
       return NextResponse.json({ error: "unauthorized" }, { status: 401 });
     }
     const url = new URL("/login", req.nextUrl);
@@ -44,6 +51,7 @@ export default auth((req) => {
   // 服务端强制是分权的真闸门（UI 隐藏只是体验/纵深）；缺省最小权限（role 非 'admin' 即拦）。
   if (req.auth?.user && isAdminOnlyPath(pathname) && req.auth.user.role !== "admin") {
     if (pathname.startsWith("/api")) {
+      if (isHiddenMetricsApi(pathname)) return NextResponse.json({ error: "not_found" }, { status: 404 });
       return NextResponse.json({ error: "forbidden" }, { status: 403 });
     }
     return NextResponse.redirect(new URL("/", req.nextUrl));

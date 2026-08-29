@@ -1,17 +1,19 @@
 /** P1b-2 adapters: attach metric facts to committed writers without affecting publication decisions. */
-import { createHash } from "node:crypto";
 import type { Cost, AnalysisBatch, ContentItem, ValidationResult } from "../types.js";
 import { MODELS } from "../runtime/llm.js";
 import { runLogger } from "../runtime/logger.js";
 import { notifyMetricLateFact } from "../runtime/metric-alert.js";
 import type { DB } from "./index.js";
 import { appendCostLedger, appendFunnelEvent, appendValidatorResult, hasMetricFactsSchema, isMetricLateEvent } from "./p1-metrics-facts.js";
+import { deterministicUuidV5 } from "./uuid.js";
 
 const PIPELINE_VERSION = "p1b-2-v1";
 type FactKind = "funnel" | "cost" | "validator";
-
 function metricFactId(kind: FactKind, parts: unknown[]): string {
-  return `p1:${kind}:${createHash("sha256").update(JSON.stringify(parts)).digest("hex").slice(0, 40)}`;
+  // RFC 4122 UUIDv5: deterministic IDs preserve replay idempotency while
+  // retaining the globally unique UUID wire contract. The fact kind is part
+  // of the name, so otherwise identical payloads remain namespaced by kind.
+  return deterministicUuidV5(JSON.stringify(["p1-metric-fact", kind, ...parts]));
 }
 function metricItemTrace(item: ContentItem, topicId: string): string { return metricFactId("funnel", ["trace", item.id, item.content_hash, topicId]); }
 function metricFactExists(db: DB, kind: FactKind, id: string): boolean {

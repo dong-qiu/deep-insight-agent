@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { p1DashboardEnabled } from "../../lib/runtime/p1-dashboard-runtime.js";
 import type { Run } from "../../lib/types.js";
 import { getDb } from "../../lib/db/index.js";
 import { batchTopicMap, listRuns, listSources, listTopics, sourceContribution } from "../../lib/db/repos.js";
@@ -323,6 +324,7 @@ export default async function AdminPage({ searchParams }: { searchParams: Promis
       <p className="muted">
         近 30 天 · {recentRuns.length} 次运行 · 失败 {failed} · 估算成本 ${totalCost.toFixed(4)}
       </p>
+      {p1DashboardEnabled() ? <p className="muted"><Link href="/admin/metrics">查看 P1 溯源驾驶舱（漏斗、成本、时延、validator 与完整性状态）</Link></p> : null}
 
       <BudgetCard status={budget} />
 

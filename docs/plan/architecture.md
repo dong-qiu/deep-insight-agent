@@ -199,8 +199,8 @@ P1b-2 的指标写模型由 collector、analysis 与 validation 的已提交写�
 | `MetricLateReconciliation` | `(tenant_id,id)`；fact kind/event、`backfilled` / `declined`、actor/time | 管理员显式回填/拒绝的追加审计记录；只有 `backfilled` 才重算对应小时/日桶。 |
 
 所有明细事实有 update/delete 保护；90 天保留任务只能在 migration 创建的受控 maintenance guard 内删除过期行。
-所有驾驶舱读取强制服务端 `tenant_id=default` 与 UTC 窗口上限，并由版本化容量 fixture 以 `EXPLAIN QUERY PLAN`
-验证索引命中；当前 fixture 标识为 `p1-metrics-capacity-v1`。
+所有驾驶舱读取强制服务端 `tenant_id=default` 与 UTC 窗口上限，并由版本化 `p1-metrics-capacity-v4` 容量 fixture 以 `EXPLAIN QUERY PLAN`
+验证索引命中；当前 fixture 标识为 `p1-metrics-capacity-v4`，CI 会上传对应的纯 JSON 结果作为可复查产物。
 
 ### 主题 (Topic)
 
