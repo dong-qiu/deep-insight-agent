@@ -47,7 +47,7 @@
     "@aws-sdk/client-sts": "3.1118.0",
     "better-sqlite3": "12.11.1",
     "d3-force": "3.0.0",
-    "fast-xml-parser": "5.11.0",
+    "fast-xml-parser": "5.11.1",
     "image-size": "file:vendor/image-size",
     "next": "16.3.3",
     "next-auth": "5.0.0-beta.32",
