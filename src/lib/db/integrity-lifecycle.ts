@@ -199,6 +199,7 @@ export function requestReportDeletion(db: DB, input: { report_id: string; actor_
       .run(tenant, input.report_id, "delete_pending", input.readable_until, input.archive_until, report.body_path, now);
     // Withdraw all reader projections in the same transaction. The immutable
     // report row remains for controlled admin lifecycle operations.
+    db.prepare("UPDATE report SET status='deleted' WHERE id=?").run(input.report_id);
     db.prepare("DELETE FROM report_index WHERE report_id=?").run(input.report_id);
     db.prepare("DELETE FROM report_fts WHERE report_id=?").run(input.report_id);
     db.prepare("DELETE FROM ppt_polish_cache WHERE report_id=?").run(input.report_id);

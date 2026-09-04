@@ -117,6 +117,16 @@ jobs:
           name: p1-metrics-capacity-v4-evidence
           path: ${{ runner.temp }}/p1-metrics-capacity-v4-evidence.json
           if-no-files-found: error
+      - name: report reader P95 relative P0c gate
+        run: |
+          npx tsx evals/report-reader-p0c-benchmark.ts --enforce > "$RUNNER_TEMP/report-reader-p0c-evidence.json"
+          node -e 'const evidence=JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")); for (const key of ["benchmark_version","baseline","current","allowed_regression_ratio","dataset","execution_environment","warmup_samples","measurement_samples","operations_per_sample"]) if (!(key in evidence)) throw new Error(`missing report reader evidence: ${key}`); if (!evidence.passed) throw new Error("report reader P95 exceeds its P0c baseline by more than 5%")' "$RUNNER_TEMP/report-reader-p0c-evidence.json"
+      - name: upload report reader P95 evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: report-reader-p0c-evidence
+          path: ${{ runner.temp }}/report-reader-p0c-evidence.json
+          if-no-files-found: error
       - name: next build
         run: npm run build
         env:

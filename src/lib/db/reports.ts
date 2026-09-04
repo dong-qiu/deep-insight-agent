@@ -8,7 +8,7 @@ import type { DB } from "./index.js";
 import { appendGenerationEvent, captureRevision, entityKey, type EntityRef } from "./provenance-facts.js";
 import { anchorEnvelopeBytes, anchorMatchesManifest, manifestForArtifact, parseCanonicalAnchorEnvelope, parseCanonicalJsonBytes, type AnchorSigner, type AnchorStore, type ArtifactManifest } from "./integrity-anchors.js";
 import { assertAnchorPublicationKeyActive, commitAnchoredPublications, writePlannedAnchor } from "./integrity-publication.js";
-import { isReportReaderVisible, reportReaderVisibilitySql } from "./integrity-lifecycle.js";
+import { reportReaderVisibilitySql } from "./integrity-lifecycle.js";
 
 const j = (v: unknown): string => JSON.stringify(v);
 
@@ -512,7 +512,7 @@ export async function reconcileAnchoredReportEffects(
 
 export function getReport(db: DB, id: string): Report | null {
   const r = db.prepare("SELECT * FROM report WHERE id = ? AND status = 'done'").get(id) as any;
-  if (!r || !isReportReaderVisible(db, id)) return null;
+  if (!r) return null;
   // FS 正文兜底：DB 有行但磁盘正文缺失（写盘中断 / 卷未挂 / 手动删除）时不抛、不让阅读页崩，
   // 返回占位正文并告警，由看板/重生流程兜底。
   let body_md: string;

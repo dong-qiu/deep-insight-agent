@@ -96,6 +96,7 @@ describe("integrity retention lifecycle", () => {
     const { db } = await seeded();
     expect(requestReportDeletion(db, { report_id: "report", actor_id: "admin", readable_until: "2026-01-10T00:00:00.000Z", archive_until: "2026-01-11T00:00:00.000Z", now: "2026-01-02T00:00:00.000Z" })).toEqual({ kind: "delete_pending" });
     expect(isReportReaderVisible(db, "report")).toBe(false);
+    expect(db.prepare("SELECT status FROM report WHERE id='report'").get()).toEqual({ status: "deleted" });
     expect(getReport(db, "report")).toBeNull();
     expect(queryReportIndex(db, { topic: "topic" })).toEqual([]);
     expect(db.prepare("SELECT COUNT(*) AS n FROM artifact_manifest WHERE report_id='report'").get()).toEqual({ n: 1 });
