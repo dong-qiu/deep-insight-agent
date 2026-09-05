@@ -2,7 +2,9 @@
  * Immutable P0c reader snapshot used only by the relative reader-performance
  * gate. It is the `getReport` reader from commit
  * b0c14ef36215e2c4c344b1dc2f86631ac06d6ed9, which includes the approved
- * reader-visibility lifecycle check.
+ * reader-visibility lifecycle check. Its reader-visible dependency is the
+ * versioned `report-reader-p0c-visibility.v1` snapshot, not the current
+ * lifecycle implementation.
  *
  * Do not modify this implementation: introduce a new fixture/version when a
  * new approved baseline is needed. Keeping the reader here makes CI compare
@@ -11,13 +13,17 @@
 import { readFileSync } from "node:fs";
 import type { Report } from "../types.js";
 import type { DB } from "./index.js";
-import { isReportReaderVisible } from "./integrity-lifecycle.js";
+import { isP0cBaselineReportReaderVisible, P0C_READER_VISIBILITY_SNAPSHOT_COMMIT } from "./report-reader-p0c-visibility.v1.js";
 
 export const P0C_READER_BASELINE_COMMIT = "b0c14ef36215e2c4c344b1dc2f86631ac06d6ed9";
 
+if (P0C_READER_VISIBILITY_SNAPSHOT_COMMIT !== P0C_READER_BASELINE_COMMIT) {
+  throw new Error("p0c_reader_visibility_snapshot_commit_mismatch");
+}
+
 export function getP0cBaselineReport(db: DB, id: string): Report | null {
   const r = db.prepare("SELECT * FROM report WHERE id = ? AND status = 'done'").get(id) as any;
-  if (!r || !isReportReaderVisible(db, id)) return null;
+  if (!r || !isP0cBaselineReportReaderVisible(db, id)) return null;
   let body_md: string;
   let body_html: string;
   try {
