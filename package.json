@@ -22,6 +22,7 @@
     "db:backup": "node --no-warnings ops/backup-db.mjs",
     "branches:cleanup": "node ops/cleanup-merged-branches.mjs",
     "branches:cleanup:test": "node --test ops/cleanup-merged-branches.node-test.mjs",
+    "multica:watch": "node ops/multica-task-watch.mjs",
     "eval:a1": "tsx evals/run-a1.ts",
     "eval:provenance-integrity": "tsx evals/provenance-dashboard-integrity-v1.ts",
     "eval:opportunity-map": "tsx evals/score-opportunity-map.ts",
