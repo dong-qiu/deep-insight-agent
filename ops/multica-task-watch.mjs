@@ -1,8 +1,13 @@
 #!/usr/bin/env node
 
 import { execFileSync } from "node:child_process";
+import { pathToFileURL } from "node:url";
 
 const ACTIVE_RUN_STATUSES = new Set(["running", "queued"]);
+const WATCH_ERROR = Object.freeze({
+  QUERY_FAILED: "query failed",
+  INVALID_RESPONSE: "invalid response",
+});
 
 function usage(exitCode = 0) {
   console.log(`Usage: npm run multica:watch -- [options] <INSI-issue> [...]
@@ -20,7 +25,14 @@ Example:
   process.exit(exitCode);
 }
 
-function parseArgs(argv) {
+function normalizePrNumber(value) {
+  const raw = String(value ?? "");
+  if (!/^\d+$/.test(raw)) return undefined;
+  const number = Number(raw);
+  return Number.isSafeInteger(number) && number > 0 ? String(number) : undefined;
+}
+
+export function parseArgs(argv) {
   const issues = [];
   const prs = [];
   let intervalSeconds = 15;
@@ -39,20 +51,23 @@ function parseArgs(argv) {
       continue;
     }
     if (value === "--pr") {
-      const pr = argv[++index];
-      if (!/^\d+$/.test(pr ?? "")) throw new Error("--pr requires a PR number.");
+      const pr = normalizePrNumber(argv[++index]);
+      if (!pr) {
+        throw new Error("Invalid PR number.");
+      }
       prs.push(pr);
       continue;
     }
     if (value === "--interval") {
       const parsed = Number(argv[++index]);
       if (!Number.isFinite(parsed) || parsed < 5) {
-        throw new Error("--interval must be at least 5 seconds.");
+        throw new Error("Invalid polling interval.");
       }
       intervalSeconds = parsed;
       continue;
     }
-    if (value.startsWith("-")) throw new Error(`Unknown option: ${value}`);
+    if (value.startsWith("-")) throw new Error("Invalid option.");
+    if (!/^INSI-[1-9]\d*$/.test(value)) throw new Error("Invalid issue identifier.");
     issues.push(value);
   }
 
@@ -62,7 +77,7 @@ function parseArgs(argv) {
   return { issues, prs, intervalSeconds, once, untilIdle };
 }
 
-function commandJson(command, args) {
+export function commandJson(command, args) {
   try {
     return JSON.parse(
       execFileSync(command, args, {
@@ -72,8 +87,7 @@ function commandJson(command, args) {
       }),
     );
   } catch (error) {
-    const detail = error.stderr?.toString().trim() || error.message;
-    return { _watchError: `${command} ${args.join(" ")}: ${detail}` };
+    return { _watchError: error instanceof SyntaxError ? WATCH_ERROR.INVALID_RESPONSE : WATCH_ERROR.QUERY_FAILED };
   }
 }
 
@@ -84,7 +98,7 @@ function summarizeChecks(checks = []) {
   return `${completed}/${checks.length} complete, ${active} active, ${failed} failed`;
 }
 
-function issueSnapshot(identifier) {
+export function issueSnapshot(identifier) {
   const issue = commandJson("multica", ["issue", "get", identifier]);
   const runs = commandJson("multica", ["issue", "runs", identifier, "--output", "json"]);
   const pullRequests = commandJson("multica", ["issue", "pull-requests", identifier, "--output", "json"]);
@@ -93,23 +107,23 @@ function issueSnapshot(identifier) {
   return { identifier, issue, latestRun, pullRequests };
 }
 
-function prSnapshot(number) {
+export function prSnapshot(number) {
   const pr = commandJson("gh", ["pr", "view", number, "--json", "state,headRefOid,baseRefOid,mergeStateStatus,statusCheckRollup,url"]);
   return { number, pr };
 }
 
-function activeIssue(snapshot) {
+export function activeIssue(snapshot) {
   return (
     Boolean(snapshot.issue?._watchError || snapshot.runs?._watchError || snapshot.pullRequests?._watchError) ||
     ACTIVE_RUN_STATUSES.has(snapshot.latestRun?.status)
   );
 }
 
-function activePr(snapshot) {
+export function activePr(snapshot) {
   return Boolean(snapshot.pr?._watchError) || (snapshot.pr?.statusCheckRollup?.some((check) => check.status !== "COMPLETED") ?? false);
 }
 
-function printSnapshot({ issues, prs }, poll) {
+export function printSnapshot({ issues, prs }, poll) {
   const now = new Date().toISOString();
   console.log(`\n[${now}] poll #${poll}`);
 
@@ -122,9 +136,11 @@ function printSnapshot({ issues, prs }, poll) {
     const runText = latestRun
       ? `${latestRun.status}${latestRun.started_at ? ` since ${latestRun.started_at}` : ""}`
       : "no runs";
-    const linkedPrs = snapshot.pullRequests.pull_requests ?? [];
-    const prText = linkedPrs.length === 0 ? "" : ` · linked PR ${linkedPrs.map((pr) => `#${pr.number}`).join(", ")}`;
-    console.log(`  ${issue.identifier}: ${issue.status} · ${issue.assignee_type ?? "unassigned"}:${issue.assignee_id ?? "—"} · latest run ${runText}${prText}`);
+    const linkedPrNumbers = (snapshot.pullRequests.pull_requests ?? [])
+      .map((pr) => normalizePrNumber(pr.number))
+      .filter(Boolean);
+    const prText = linkedPrNumbers.length === 0 ? "" : ` · linked PR ${linkedPrNumbers.map((number) => `#${number}`).join(", ")}`;
+    console.log(`  ${snapshot.identifier}: ${issue.status} · ${issue.assignee_type ?? "unassigned"}:${issue.assignee_id ?? "—"} · latest run ${runText}${prText}`);
   }
 
   for (const snapshot of prs) {
@@ -137,7 +153,7 @@ function printSnapshot({ issues, prs }, poll) {
   }
 }
 
-async function main() {
+export async function main() {
   let options;
   try {
     options = parseArgs(process.argv.slice(2));
@@ -153,7 +169,8 @@ async function main() {
     const prNumbers = new Set(options.prs);
     for (const snapshot of issues) {
       for (const pullRequest of snapshot.pullRequests?.pull_requests ?? []) {
-        prNumbers.add(String(pullRequest.number));
+        const number = normalizePrNumber(pullRequest.number);
+        if (number) prNumbers.add(number);
       }
     }
     const snapshot = {
@@ -185,4 +202,6 @@ async function main() {
   }, options.intervalSeconds * 1000);
 }
 
-main();
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main();
+}

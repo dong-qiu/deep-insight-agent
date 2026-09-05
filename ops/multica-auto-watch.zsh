@@ -34,9 +34,10 @@ multica() {
   ((command_status == 0)) || return "$command_status"
 
   local issue
-  issue="$(_insight_multica_started_issue "$@")" || return 0
-  [[ -t 1 ]] || return 0
+  issue="$(_insight_multica_started_issue "$@")" || return "$command_status"
+  [[ -t 1 ]] || return "$command_status"
 
   print -r -- "\nStarting foreground observation for $issue. Press Ctrl-C to stop observing."
-  node "$_INSIGHT_MULTICA_WATCH_ROOT/ops/multica-task-watch.mjs" "$issue"
+  node "$_INSIGHT_MULTICA_WATCH_ROOT/ops/multica-task-watch.mjs" "$issue" || :
+  return "$command_status"
 }
