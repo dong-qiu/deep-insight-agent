@@ -28,6 +28,11 @@ bucket 的读取权限，不加载签名私钥。
 签发后 100 天的最大值保存验证材料；密钥与撤销记录是 append-only 历史材料，
 不得删除或覆写。
 
+INSI-25 的可执行准入步骤与可审计记录模板分别见
+`docs/launch/p1-production-admission-runbook.md` 和
+`docs/verify/p1-production-admission-evidence-template.md`。两者仅规定获明确授权后的操作与证据要求，
+不授权创建 CloudTrail、IAM 身份或任何生产资源，也不等同于 P1 启用批准。
+
 ## 1. 架构与组件
 
 | 组件 | 角色 |
