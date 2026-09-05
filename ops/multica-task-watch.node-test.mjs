@@ -95,21 +95,50 @@ esac`;
   assert.equal((result.stdout.match(/PR #293:/g) ?? []).length, 1);
 });
 
-test("zsh wrapper returns the original multica exit code", async (t) => {
+test("zsh TTY wrapper preserves Multica exit semantics for watcher success, failure, Ctrl-C, and command failure", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "insight-auto-watch-test-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
-  await makeCommand(directory, "multica", 'exit "${MULTICA_RESULT:-0}"');
-  await makeCommand(directory, "node", 'exit "${WATCHER_RESULT:-0}"');
+  await makeCommand(directory, "multica", 'echo MULTICA_CALLED; exit "${MULTICA_RESULT:-0}"');
+  await makeCommand(directory, "node", `echo WATCHER_STARTED
+case "\${WATCHER_MODE:-success}" in
+  success) exit 0 ;;
+  failure) exit 42 ;;
+  interrupt)
+    trap 'echo WATCHER_INTERRUPTED; exit 130' INT
+    while :; do sleep 1; done
+    ;;
+esac`);
   const watchedShellPath = join(directory, "run-auto-watch.zsh");
-  await writeFile(watchedShellPath, `source ${JSON.stringify(autoWatch.pathname)}\nmultica issue status INSI-96 in_progress\nprint -r -- RESULT:$?\n`, "utf8");
-  for (const expected of [0, 23]) {
-    const watcherCommand = `zsh ${JSON.stringify(watchedShellPath)}`;
-    const harness = `zmodload zsh/zpty || exit 1; zpty -b watcher ${JSON.stringify(watcherCommand)}; sleep 1; while zpty -r watcher result; do print -r -- "$result"; done`;
+  await writeFile(watchedShellPath, `source ${JSON.stringify(autoWatch.pathname)}\nmultica issue status INSI-96 in_progress\nprint -r -- RESULT:$?\nexit\n`, "utf8");
+
+  const runInTty = ({ multicaResult, watcherMode, interruptWatcher = false }) => {
+    const watcherCommand = `zsh -fi ${JSON.stringify(watchedShellPath)}`;
+    const collectOutput = interruptWatcher
+      ? "sleep 1; zpty -rt watcher; zpty -w watcher $'\\003'; sleep 1; zpty -rt watcher; zpty -d watcher"
+      : "sleep 2; zpty -rt watcher; zpty -d watcher";
+    const harness = `zmodload zsh/zpty || exit 1; zpty -b watcher ${JSON.stringify(watcherCommand)}; ${collectOutput}`;
     const result = spawnSync("zsh", ["-fc", harness], {
-      env: { ...process.env, PATH: `${directory}:${process.env.PATH}`, MULTICA_RESULT: String(expected), WATCHER_RESULT: "42" },
+      env: { ...process.env, PATH: `${directory}:${process.env.PATH}`, MULTICA_RESULT: String(multicaResult), WATCHER_MODE: watcherMode },
       encoding: "utf8",
     });
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, new RegExp(`RESULT:${expected}`));
-  }
+    return result.stdout;
+  };
+
+  const completedWatcher = runInTty({ multicaResult: 0, watcherMode: "success" });
+  assert.match(completedWatcher, /WATCHER_STARTED/);
+  assert.match(completedWatcher, /RESULT:0/);
+
+  const failedWatcher = runInTty({ multicaResult: 0, watcherMode: "failure" });
+  assert.match(failedWatcher, /WATCHER_STARTED/);
+  assert.match(failedWatcher, /RESULT:0/);
+
+  const interrupted = runInTty({ multicaResult: 0, watcherMode: "interrupt", interruptWatcher: true });
+  assert.match(interrupted, /WATCHER_STARTED/);
+  assert.match(interrupted, /WATCHER_INTERRUPTED/);
+  assert.match(interrupted, /RESULT:0/);
+
+  const failedCommand = runInTty({ multicaResult: 23, watcherMode: "success" });
+  assert.match(failedCommand, /RESULT:23/);
+  assert.doesNotMatch(failedCommand, /WATCHER_STARTED/);
 });
