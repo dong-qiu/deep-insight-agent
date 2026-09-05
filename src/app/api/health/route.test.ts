@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { StalenessResult } from "../../../lib/runtime/staleness.js";
+import type { DailyTopicStalenessResult, StalenessResult } from "../../../lib/runtime/staleness.js";
 
 vi.mock("../../../lib/db/index.js", () => ({ getDb: vi.fn() }));
 vi.mock("../../../lib/runtime/staleness.js", () => ({
   checkStaleness: vi.fn(),
+  checkDailyTopicStaleness: vi.fn(),
   maybeAlertStale: vi.fn(),
+  maybeAlertDailyTopicStaleness: vi.fn(),
 }));
 vi.mock("../../../lib/runtime/logger.js", () => ({
   runLogger: vi.fn(() => ({ error: vi.fn() })),
@@ -12,7 +14,7 @@ vi.mock("../../../lib/runtime/logger.js", () => ({
 
 import { getDb } from "../../../lib/db/index.js";
 import { runLogger } from "../../../lib/runtime/logger.js";
-import { checkStaleness, maybeAlertStale } from "../../../lib/runtime/staleness.js";
+import { checkDailyTopicStaleness, checkStaleness, maybeAlertDailyTopicStaleness, maybeAlertStale } from "../../../lib/runtime/staleness.js";
 import { GET } from "./route.js";
 
 const fresh: StalenessResult = {
@@ -24,6 +26,7 @@ const fresh: StalenessResult = {
   contentAgeHours: 0.06,
   thresholdHours: 26,
 };
+const dailyFresh: DailyTopicStalenessResult = { thresholdHours: 26, topics: [], staleTopics: [] };
 
 afterEach(() => vi.clearAllMocks());
 
@@ -32,6 +35,7 @@ describe("GET /api/health", () => {
     const get = vi.fn(() => ({ c: 3 }));
     vi.mocked(getDb).mockReturnValue({ prepare: vi.fn(() => ({ get })) } as never);
     vi.mocked(checkStaleness).mockReturnValue(fresh);
+    vi.mocked(checkDailyTopicStaleness).mockReturnValue(dailyFresh);
 
     const response = await GET();
 
@@ -46,9 +50,12 @@ describe("GET /api/health", () => {
         contentAgeHours: 0.1,
         latestReportAt: fresh.latestReportAt,
         thresholdHours: 26,
+        dailyTopicCount: 0,
+        staleDailyTopicCount: 0,
       },
     });
     expect(maybeAlertStale).toHaveBeenCalledWith(fresh);
+    expect(maybeAlertDailyTopicStaleness).toHaveBeenCalledWith(dailyFresh);
   });
 
   it("DB 查询失败 → 500；内部错误只记日志、不回显给公开探针", async () => {
@@ -62,6 +69,8 @@ describe("GET /api/health", () => {
     await expect(response.json()).resolves.toEqual({ status: "error", error: "health check failed" });
     expect(runLogger).toHaveBeenCalledWith({ stage: "health" });
     expect(checkStaleness).not.toHaveBeenCalled();
+    expect(checkDailyTopicStaleness).not.toHaveBeenCalled();
     expect(maybeAlertStale).not.toHaveBeenCalled();
+    expect(maybeAlertDailyTopicStaleness).not.toHaveBeenCalled();
   });
 });

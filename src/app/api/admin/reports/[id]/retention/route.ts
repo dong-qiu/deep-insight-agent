@@ -6,6 +6,7 @@ import { appendAudit } from "../../../../../../lib/db/audit.js";
 import { getDb } from "../../../../../../lib/db/index.js";
 import { recordLegalHold, requestReportDeletion, retentionConclusionForAdmin } from "../../../../../../lib/db/integrity-lifecycle.js";
 import { deploymentAnchorLegalHold } from "../../../../../../lib/runtime/integrity-anchor-runtime.js";
+import { p1ExternalSeamsEnabled } from "../../../../../../lib/runtime/p1-dashboard-runtime.js";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -28,6 +29,7 @@ function denied(): Response {
 }
 
 export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }): Promise<Response> {
+  if (!p1ExternalSeamsEnabled()) return notFound();
   if (!await requireAdminActor()) return denied();
   const { id } = await params;
   if (!validId(id)) return notFound();
@@ -36,6 +38,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
 }
 
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }): Promise<Response> {
+  if (!p1ExternalSeamsEnabled()) return notFound();
   const actor = await requireAdminActor();
   if (!actor) return denied();
   const { id } = await params;

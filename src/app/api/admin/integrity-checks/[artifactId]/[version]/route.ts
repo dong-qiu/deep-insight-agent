@@ -6,12 +6,14 @@ import { appendAudit } from "../../../../../../lib/db/audit.js";
 import { notifyIntegrityFailureOnce, verifyArtifactIntegrity } from "../../../../../../lib/db/integrity-checks.js";
 import { deploymentAnchorVerificationStore } from "../../../../../../lib/runtime/integrity-anchor-runtime.js";
 import { notifyIntegrityFailure } from "../../../../../../lib/runtime/integrity-alert.js";
+import { p1ExternalSeamsEnabled } from "../../../../../../lib/runtime/p1-dashboard-runtime.js";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 const validId = (value: string): boolean => /^[A-Za-z0-9._:-]{1,128}$/.test(value);
 
 export async function POST(_request: Request, { params }: { params: Promise<{ artifactId: string; version: string }> }): Promise<Response> {
+  if (!p1ExternalSeamsEnabled()) return NextResponse.json({ error: "not_found" }, { status: 404 });
   const actor = await requireAdminActor();
   if (!actor) {
     // Deliberately omit the requested identifiers: a denied check must not

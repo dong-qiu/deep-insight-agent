@@ -903,6 +903,9 @@ CREATE TABLE IF NOT EXISTS report (
 );
 CREATE INDEX IF NOT EXISTS idx_report_topic  ON report(topic_id);
 CREATE INDEX IF NOT EXISTS idx_report_status ON report(status);
+-- 主题日报陈旧检测：每 30 秒只读取该主题已完成 brief 的最大生成时间，必须避免
+-- 为每个 topic 扫描它的 deep_dive / draft / failed 报告。
+CREATE INDEX IF NOT EXISTS idx_report_daily_topic_freshness ON report(topic_id,type,status,generated_at DESC);
 
 CREATE TABLE IF NOT EXISTS report_index (
   report_id    TEXT PRIMARY KEY REFERENCES report(id),

@@ -52,10 +52,13 @@ cp .env.example .env.local        # 按 §3 填全（尤其 CRON_SECRET、中转
 # Apple Silicon / arm64 主机构建需指定（默认 amd64；supercronic 校验和按架构锁定）
 TARGETARCH=arm64 docker compose up -d --build      # x86_64 主机省略 TARGETARCH
 docker compose ps                 # app、generation-dispatch-worker 应为 healthy；cron 应为 running
-curl -fsS http://127.0.0.1:3000/api/health         # {"status":"ok","reports":N}
+curl -fsS http://127.0.0.1:3000/api/health         # {"status":"ok","reports":N,"data":{...}}
 ```
 
-`/api/health` 仅代表 Web/app 与数据库的基础存活，**不代表**生成队列已被消费。
+`/api/health` 仅代表 Web/app 与数据库的基础存活，**不代表**生成队列已被消费。其
+`data.staleDailyTopicCount` 会单独计数陈旧的启用日报主题；它不改变 HTTP 200 或 Docker
+健康状态（防止无效重启），但会经已授权的告警渠道按主题去重通知。不要只看全局最新报告：
+其他主题的新报告不能掩盖某个日报主题连续漏报。
 `generation-dispatch-worker` 的健康检查会读取内部 queue-age readiness：最老 queued 或
 过期 claimed dispatch 超过 5 分钟会发送告警，超过 15 分钟会标为 `unhealthy`。部署、扩缩容
 或手动停止 worker 时，Compose 会给予它 2 分 15 秒 drain 窗口；不要用 `kill -9` 代替正常停止。
@@ -113,7 +116,7 @@ curl -fsS -X POST http://127.0.0.1:3000/api/cron -H "authorization: Bearer $CRON
 
 ## 5. 运行与监控
 
-- **健康**：`GET /api/health` 是 app liveness（查一次库、不触发 LLM）；`generation-dispatch-worker` 另有受 secret 保护的 queue-age readiness，二者不可互相替代。`docker compose ps` 应见 app 和 worker healthy；查看 `docker compose logs -f app cron generation-dispatch-worker`。
+- **健康**：`GET /api/health` 是 app liveness（查一次库、不触发 LLM）；`data.staleDailyTopicCount > 0` 表示至少一个启用日报主题超过 `STALENESS_ALERT_HOURS`（默认 26h）未获得 `done brief`，应按主题检查 generation trace、队列、LLM、校验与 drain。新建主题在首报宽限期内显示为 pending，不告警；公开健康响应不泄露主题名称。`generation-dispatch-worker` 另有受 secret 保护的 queue-age readiness，二者不可互相替代。`docker compose ps` 应见 app 和 worker healthy；查看 `docker compose logs -f app cron generation-dispatch-worker`。
 - **生成调度队列**：在 worker 容器执行 `node --no-warnings /app/ops/generation-dispatch-healthcheck.mjs` 可复现其探针。若其失败，查 worker 日志、`generation_dispatch` / `generation_lease` 的过期记录、SQLite 锁与上游 LLM/网络；不要因 Web `/api/health` 为 200 而忽略该状态。
 - **Run 记录**：每次采集/分析/校验/报告经 Job Runner 落一条 Run（单调时钟耗时 + 失败捕获 + 成本透传）；`audit_log` 记关键动作；成本计量按模型累计。
 - **报告**：Web `/reports`（报告库）/ 今日 Brief / 看板 / `/settings`；登录 `/login`。

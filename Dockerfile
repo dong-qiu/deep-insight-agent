@@ -52,7 +52,11 @@ RUN case "${TARGETARCH}" in \
 # ---- 运行层（slim，无 apt / 无 curl）----
 FROM ${NODE_RUNTIME_IMAGE} AS runner
 WORKDIR /app
-LABEL org.insight-agent.p1-dashboard-admission=required
+# P1 dashboard source may be present so CI/local development can exercise the
+# same standalone build, but this production profile must keep every P1 HTTP
+# seam fail-closed.  The deploy workflow accepts only this explicitly
+# isolated profile before INSI-25; an enabled profile remains inadmissible.
+LABEL org.insight-agent.p1-dashboard-admission=isolated
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \
     PORT=3000 \

@@ -1,7 +1,8 @@
 /** staleness 纯判定逻辑单测（in-memory DB，无 LLM/网络）。 */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  checkStaleness, getFreshness, maybeAlertStale, resetStalenessAlertState,
+  checkDailyTopicStaleness, checkStaleness, dailyTopicStalenessNotification, getFreshness,
+  maybeAlertDailyTopicStaleness, maybeAlertStale, resetStalenessAlertState,
   stalenessNotification, stalenessThresholdHours, type StalenessResult,
 } from "./staleness.js";
 import { closeDb, openDb, type DB } from "../db/index.js";
@@ -84,6 +85,53 @@ describe("checkStaleness", () => {
   });
 });
 
+describe("checkDailyTopicStaleness", () => {
+  it("一个新鲜 topic 不得掩盖另一个连续漏报的 daily topic", () => {
+    report("fresh", hoursAgo(1));
+    insertTopic(db, {
+      id: "t2", name: "Missing", keywords: [], industry: "ai-swe", language: "zh",
+      brief_schedule: "daily", enabled: true,
+    } as never);
+    db.prepare("UPDATE topic SET created_at=? WHERE id='t2'").run(hoursAgo(30));
+
+    const result = checkDailyTopicStaleness(db, NOW, 26);
+
+    expect(result.topics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ topicId: "t1", state: "fresh" }),
+      expect.objectContaining({ topicId: "t2", state: "stale", latestReportAt: null }),
+    ]));
+    expect(result.staleTopics.map((topic) => topic.topicId)).toEqual(["t2"]);
+  });
+
+  it("新建 topic 在首报宽限期内是 pending，不触发陈旧", () => {
+    db.prepare("UPDATE topic SET created_at=? WHERE id='t1'").run(hoursAgo(2));
+    const result = checkDailyTopicStaleness(db, NOW, 26);
+    expect(result.topics).toEqual([expect.objectContaining({ topicId: "t1", state: "pending_initial_report" })]);
+    expect(result.staleTopics).toEqual([]);
+  });
+
+  it("已有日报超过阈值时，该 topic 单独进入 stale", () => {
+    report("old-daily", hoursAgo(27));
+
+    const result = checkDailyTopicStaleness(db, NOW, 26);
+
+    expect(result.staleTopics).toEqual([
+      expect.objectContaining({ topicId: "t1", latestReportAt: hoursAgo(27), state: "stale" }),
+    ]);
+  });
+
+  it("日报聚合命中 topic/type/status/generated_at 覆盖索引", () => {
+    const plan = db.prepare(`EXPLAIN QUERY PLAN
+      SELECT MAX(r.generated_at) AS latest_report_at
+      FROM topic t
+      LEFT JOIN report r ON r.topic_id=t.id AND r.type='brief' AND r.status='done'
+      WHERE t.enabled=1 AND t.brief_schedule='daily'
+      GROUP BY t.id,t.name,t.created_at
+    `).all() as Array<{ detail: string }>;
+    expect(plan.some((row) => row.detail.includes("idx_report_daily_topic_freshness"))).toBe(true);
+  });
+});
+
 describe("stalenessNotification", () => {
   it("含两类年龄 + 阈值 + 排查指引，高优", () => {
     report("r1", hoursAgo(150));
@@ -124,5 +172,33 @@ describe("maybeAlertStale 去重", () => {
     maybeAlertStale(staleResult, NOW, send);
     maybeAlertStale(staleResult, NOW + 25 * 3_600_000, send); // 25h 后（>默认 24h 窗口）
     expect(send).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("maybeAlertDailyTopicStaleness", () => {
+  const stale = {
+    thresholdHours: 26,
+    topics: [{ topicId: "t1", topicName: "T", latestReportAt: hoursAgo(30), reportAgeHours: 30, state: "stale" as const }],
+    staleTopics: [{ topicId: "t1", topicName: "T", latestReportAt: hoursAgo(30), reportAgeHours: 30, state: "stale" as const }],
+  };
+
+  beforeEach(() => resetStalenessAlertState());
+
+  it("每个 stale topic 独立告警、在窗口内去重，并在恢复后重置", () => {
+    const send = vi.fn();
+    maybeAlertDailyTopicStaleness(stale, NOW, send);
+    maybeAlertDailyTopicStaleness(stale, NOW + 60_000, send);
+    expect(send).toHaveBeenCalledTimes(1);
+
+    maybeAlertDailyTopicStaleness({ thresholdHours: 26, topics: [], staleTopics: [] }, NOW + 120_000, send);
+    maybeAlertDailyTopicStaleness(stale, NOW + 180_000, send);
+    expect(send).toHaveBeenCalledTimes(2);
+  });
+
+  it("通知包含 topic 身份和排查方向", () => {
+    const notification = dailyTopicStalenessNotification(stale.staleTopics[0]!, 26);
+    expect(notification.title).toContain("日报主题陈旧");
+    expect(notification.text).toContain("t1");
+    expect(notification.text).toContain("generation trace");
   });
 });
