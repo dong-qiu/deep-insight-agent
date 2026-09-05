@@ -117,8 +117,8 @@ jobs:
           esac
 
           # P1 dashboard reads are also not production-admitted until INSI-25.
-          # The image may contain isolated development code, but production
-          # deployment must keep every external dashboard seam disabled.
+          # An image may carry isolated implementation code only when every
+          # external dashboard seam is disabled; CI proves the HTTP contract.
           dashboard_enabled_count=\$(grep -c '^P1_DASHBOARD_ENABLED=' "\$app_dir/.env.local" || true)
           [[ "\$dashboard_enabled_count" -le 1 ]] || { echo "P1_DASHBOARD_ENABLED 不可重复配置" >&2; exit 1; }
           dashboard_enabled_raw=\$(sed -n -E 's/^P1_DASHBOARD_ENABLED=(.*)$/\1/p' "\$app_dir/.env.local" | tail -n 1)
@@ -137,8 +137,9 @@ jobs:
           p1_dashboard_admission=\$(docker image inspect --format '{{ index .Config.Labels "org.insight-agent.p1-dashboard-admission" }}' "\$image")
           case "\$p1_dashboard_admission" in
             "") echo "P1 dashboard admission：legacy image (not present)" ;;
-            required)
-              echo "镜像包含尚未通过 INSI-25 准入的 P1 dashboard；拒绝部署" >&2
+            isolated) echo "P1 dashboard admission：isolated and disabled" ;;
+            required|enabled)
+              echo "镜像包含未隔离或已启用的 P1 dashboard；拒绝部署" >&2
               exit 1
               ;;
             *) echo "未知 P1 dashboard admission 标签：\$p1_dashboard_admission" >&2; exit 1 ;;
