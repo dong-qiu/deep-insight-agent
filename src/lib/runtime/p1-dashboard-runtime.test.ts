@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { p1DashboardEnabled } from "./p1-dashboard-runtime.js";
+import { p1DashboardEnabled, p1ExternalSeamsEnabled } from "./p1-dashboard-runtime.js";
 
 describe("p1 dashboard runtime admission", () => {
   it("defaults closed and accepts only strict booleans", () => {
@@ -13,5 +13,6 @@ describe("p1 dashboard runtime admission", () => {
 
   it("hard-denies production even if a local environment file requests enablement", () => {
     expect(p1DashboardEnabled({ NODE_ENV: "production", P1_DASHBOARD_ENABLED: "true" })).toBe(false);
+    expect(p1ExternalSeamsEnabled({ NODE_ENV: "production", P1_DASHBOARD_ENABLED: "true" })).toBe(false);
   });
 });
