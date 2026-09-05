@@ -87,9 +87,10 @@ function summarizeChecks(checks = []) {
 function issueSnapshot(identifier) {
   const issue = commandJson("multica", ["issue", "get", identifier]);
   const runs = commandJson("multica", ["issue", "runs", identifier, "--output", "json"]);
-  if (issue._watchError || runs._watchError) return { identifier, issue, runs };
+  const pullRequests = commandJson("multica", ["issue", "pull-requests", identifier, "--output", "json"]);
+  if (issue._watchError || runs._watchError || pullRequests._watchError) return { identifier, issue, runs, pullRequests };
   const latestRun = Array.isArray(runs) ? runs[0] : undefined;
-  return { identifier, issue, latestRun };
+  return { identifier, issue, latestRun, pullRequests };
 }
 
 function prSnapshot(number) {
@@ -98,7 +99,10 @@ function prSnapshot(number) {
 }
 
 function activeIssue(snapshot) {
-  return Boolean(snapshot.issue?._watchError || snapshot.runs?._watchError) || ACTIVE_RUN_STATUSES.has(snapshot.latestRun?.status);
+  return (
+    Boolean(snapshot.issue?._watchError || snapshot.runs?._watchError || snapshot.pullRequests?._watchError) ||
+    ACTIVE_RUN_STATUSES.has(snapshot.latestRun?.status)
+  );
 }
 
 function activePr(snapshot) {
@@ -110,15 +114,17 @@ function printSnapshot({ issues, prs }, poll) {
   console.log(`\n[${now}] poll #${poll}`);
 
   for (const snapshot of issues) {
-    if (snapshot.issue._watchError || snapshot.runs?._watchError) {
-      console.log(`  ${snapshot.identifier}: ERROR ${snapshot.issue._watchError ?? snapshot.runs._watchError}`);
+    if (snapshot.issue._watchError || snapshot.runs?._watchError || snapshot.pullRequests?._watchError) {
+      console.log(`  ${snapshot.identifier}: ERROR ${snapshot.issue._watchError ?? snapshot.runs?._watchError ?? snapshot.pullRequests?._watchError}`);
       continue;
     }
     const { issue, latestRun } = snapshot;
     const runText = latestRun
       ? `${latestRun.status}${latestRun.started_at ? ` since ${latestRun.started_at}` : ""}`
       : "no runs";
-    console.log(`  ${issue.identifier}: ${issue.status} · ${issue.assignee_type ?? "unassigned"}:${issue.assignee_id ?? "—"} · latest run ${runText}`);
+    const linkedPrs = snapshot.pullRequests.pull_requests ?? [];
+    const prText = linkedPrs.length === 0 ? "" : ` · linked PR ${linkedPrs.map((pr) => `#${pr.number}`).join(", ")}`;
+    console.log(`  ${issue.identifier}: ${issue.status} · ${issue.assignee_type ?? "unassigned"}:${issue.assignee_id ?? "—"} · latest run ${runText}${prText}`);
   }
 
   for (const snapshot of prs) {
@@ -143,9 +149,16 @@ async function main() {
   let poll = 0;
   const pollOnce = () => {
     poll += 1;
+    const issues = options.issues.map(issueSnapshot);
+    const prNumbers = new Set(options.prs);
+    for (const snapshot of issues) {
+      for (const pullRequest of snapshot.pullRequests?.pull_requests ?? []) {
+        prNumbers.add(String(pullRequest.number));
+      }
+    }
     const snapshot = {
-      issues: options.issues.map(issueSnapshot),
-      prs: options.prs.map(prSnapshot),
+      issues,
+      prs: [...prNumbers].map(prSnapshot),
     };
     printSnapshot(snapshot, poll);
     return snapshot.issues.some(activeIssue) || snapshot.prs.some(activePr);
