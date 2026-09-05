@@ -206,7 +206,7 @@ async function saveAnchoredReportWithEffect(
     const issuedAt = anchor.issuedAt ?? new Date().toISOString();
     const retainUntil = requiredAnchorRetention(anchor, issuedAt);
     const written = await Promise.all(publications.map(({ manifest }) => writePlannedAnchor(db, anchor.store, { generation_effect_id: effectId, manifest, issued_at: issuedAt, retain_until: retainUntil }, anchor.signer)));
-    commitAnchoredPublications(db, { generation_effect_id: effectId, publications: publications.map(({ manifest }, index) => ({ manifest, provider_version_id: written[index]!.provider_version_id })), public_key: createPublicKey(anchor.signer.private_key), finalize: () => {
+    commitAnchoredPublications(db, { generation_effect_id: effectId, publications: publications.map(({ manifest }, index) => ({ manifest, provider_version_id: written[index]!.provider_version_id })), finalize: () => {
       for (const artifact of effectManifest) { const finalPath = safeTarget(root, artifact.target); if (!existsSync(finalPath) || digest(readFileSync(finalPath, "utf8")) !== artifact.sha256) throw new Error(`report artifact is incomplete: ${artifact.target}`); }
       const published = db.prepare("UPDATE report SET status='done',body_path=?,failure=NULL WHERE id=? AND status='generating'").run(resolve(join(root, report.id)), report.id);
       if (published.changes !== 1) throw new Error(`report ${report.id} is no longer generating`);
@@ -469,7 +469,7 @@ export async function reconcileAnchoredReportEffects(
         publications.push({ manifest, provider_version_id: row.anchor_provider_version_id });
       }
       commitAnchoredPublications(db, {
-        generation_effect_id: effect.effect_id, publications, public_key: createPublicKey(anchor.signer.private_key),
+        generation_effect_id: effect.effect_id, publications,
         finalize: () => {
           const published = db.prepare("UPDATE report SET status='done',body_path=?,failure=NULL WHERE id=? AND status='generating'")
             .run(resolve(join(root, report.id)), report.id);

@@ -79,7 +79,7 @@ async function executeDispatch(
   // The dispatch worker is the production publication composition root. P1c
   // is explicitly opt-in; once enabled, missing signer/store policy remains
   // fail-closed and cannot degrade to an unanchored fallback.
-  const anchor = deploymentAnchorPublicationIfEnabled();
+  const anchor = await deploymentAnchorPublicationIfEnabled();
   if (opts.reportType === "deep_dive" && opts.windowHours == null) {
     return runPipelineForTopic(db, topicId, { ...opts, anchor });
   }

@@ -22,11 +22,18 @@
 版本。该 endpoint 不返回 artifact 路径、Object Store locator 或正文；校验身份只需要
 bucket 的读取权限，不加载签名私钥。
 
-启用锚定时，除 bucket、密钥 ID 与私钥外，必须显式配置且保持为未来时间的
+启用锚定时，除 bucket、密钥 ID 与 signer 模式外，必须显式配置且保持为未来时间的
 `INTEGRITY_REPORT_READABLE_UNTIL`、`INTEGRITY_REPORT_ARCHIVE_UNTIL` 与
 `INTEGRITY_ARTIFACT_RETAIN_UNTIL`。系统以这三个期限、artifact retain 期限和
 签发后 100 天的最大值保存验证材料；密钥与撤销记录是 append-only 历史材料，
 不得删除或覆写。
+
+签名器由 `INTEGRITY_ANCHOR_SIGNER` 显式选择。受控 AWS 路径使用
+`aws-kms` 和 `INTEGRITY_ANCHOR_KEY_ID=alias/deep-insight-integrity-signing`：运行时先以
+KMS `GetPublicKey` 取得 Ed25519 的公开验证材料，再仅以 `Sign`/`EDDSA` 签署固定的
+domain-separated canonical bytes；它不读取 `INTEGRITY_ANCHOR_PRIVATE_KEY_PEM`，也不在日志中记录
+请求正文、object locator、密钥标识或签名。`pem` 仅保留给现有隔离开发 fixture 的兼容路径，且仍须
+显式满足全部保留期配置。无论 signer 模式如何，当前 INSI-25 准入闸仍会拒绝启用；本段不是生产启用指令。
 
 INSI-25 的可执行准入步骤与可审计记录模板分别见
 `docs/launch/p1-production-admission-runbook.md` 和
