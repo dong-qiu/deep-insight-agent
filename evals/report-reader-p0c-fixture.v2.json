@@ -1,0 +1,10 @@
+{
+  "version": 2,
+  "p0c_fixture": "provenance-p0c-fixture.v2.json",
+  "p0c_fixture_sha256": "63e85f2aba6bbeb3f0c51515bee6da8026af48877d97d66f02025cff173e31d9",
+  "baseline_commit": "b0c14ef36215e2c4c344b1dc2f86631ac06d6ed9",
+  "warmup_samples": 20,
+  "measurement_samples": 100,
+  "operations_per_sample": 25,
+  "report_body_bytes": 65536
+}

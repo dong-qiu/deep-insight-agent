@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import { openDb } from "../src/lib/db/index.js";
-import { P0C_READER_BASELINE_COMMIT, getP0cBaselineReport } from "../src/lib/db/report-reader-p0c-baseline.js";
+import { P0C_READER_BASELINE_COMMIT, getP0cBaselineReport } from "../src/lib/db/report-reader-p0c-baseline.v2.js";
 import { applyProvenanceMigrations } from "../src/lib/db/provenance-migrations.js";
 import { insertTopic } from "../src/lib/db/repos.js";
 import { getReport } from "../src/lib/db/reports.js";
@@ -31,7 +31,7 @@ interface Fixture {
 }
 
 const argument = process.argv.find((value) => value.startsWith("--fixture="));
-const fixturePath = argument?.slice("--fixture=".length) ?? "./report-reader-p0c-fixture.v1.json";
+const fixturePath = argument?.slice("--fixture=".length) ?? "./report-reader-p0c-fixture.v2.json";
 const fixture = JSON.parse(readFileSync(new URL(fixturePath, import.meta.url), "utf8")) as Fixture;
 const p0cPath = join(fileURLToPath(new URL(".", import.meta.url)), fixture.p0c_fixture);
 const p0cBytes = readFileSync(p0cPath);
@@ -39,7 +39,7 @@ const p0c = JSON.parse(p0cBytes.toString("utf8")) as P0cFixture;
 
 function positiveInteger(value: unknown): value is number { return typeof value === "number" && Number.isSafeInteger(value) && value > 0; }
 function validateFixture(): void {
-  if (fixture.version !== 1 || !positiveInteger(fixture.warmup_samples) || !positiveInteger(fixture.measurement_samples)
+  if (fixture.version !== 2 || !positiveInteger(fixture.warmup_samples) || !positiveInteger(fixture.measurement_samples)
     || !positiveInteger(fixture.operations_per_sample) || !positiveInteger(fixture.report_body_bytes) || !positiveInteger(p0c.traces)
     || createHash("sha256").update(p0cBytes).digest("hex") !== fixture.p0c_fixture_sha256
     || fixture.baseline_commit !== P0C_READER_BASELINE_COMMIT) throw new Error("invalid_report_reader_p0c_fixture");
@@ -103,7 +103,7 @@ try {
   const baselineP95 = percentile(baseline, 0.95);
   const currentP95 = percentile(current, 0.95);
   const result = {
-    benchmark_version: "report-reader-p0c-v1",
+    benchmark_version: "report-reader-p0c-v2",
     baseline: { commit: fixture.baseline_commit, reader: "getReport", p95_ms: baselineP95, samples_ms: baseline },
     current: { commit: process.env.GITHUB_SHA ?? process.env.CI_COMMIT_SHA ?? "local-worktree", reader: "getReport", p95_ms: currentP95, samples_ms: current },
     allowed_regression_ratio: 1.05,
