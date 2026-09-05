@@ -1,14 +1,54 @@
 /** Deployment-owned P1c anchor configuration. Application code never falls
  * back to an in-memory store: a publication is either backed by this injected
  * immutable store or is rejected before it can become reader-visible. */
-import { createPrivateKey } from "node:crypto";
+import { createPrivateKey, createPublicKey, type KeyObject } from "node:crypto";
+import { GetPublicKeyCommand, KMSClient, SignCommand } from "@aws-sdk/client-kms";
 import { S3Client } from "@aws-sdk/client-s3";
-import { S3AnchorStore, type AnchorStore } from "../db/integrity-anchors.js";
+import { S3AnchorStore, type AnchorSigner, type AnchorStore } from "../db/integrity-anchors.js";
 import type { ReportAnchorPublication } from "../db/reports.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 type AnchorEnvironment = Readonly<Record<string, string | undefined>>;
+type KmsSender = { send(command: unknown): Promise<{ PublicKey?: Uint8Array; SigningAlgorithms?: string[]; Signature?: Uint8Array }> };
+
+/** AWS KMS keeps the Ed25519 private key non-exportable.  `GetPublicKey` is
+ * used only to obtain SPKI verification material; signing sends exactly the
+ * domain-separated bytes selected by the integrity primitives. */
+export class KmsEd25519AnchorSigner implements AnchorSigner {
+  private constructor(
+    readonly key_id: string,
+    readonly public_key: KeyObject,
+    private readonly kms: KmsSender,
+  ) {}
+
+  static async create(keyId: string, kms: KmsSender = new KMSClient({})): Promise<KmsEd25519AnchorSigner> {
+    if (!keyId.trim()) throw new Error("integrity_anchor_not_configured");
+    try {
+      const response = await kms.send(new GetPublicKeyCommand({ KeyId: keyId }));
+      if (!response.PublicKey || !response.SigningAlgorithms?.includes("EDDSA")) throw new Error("invalid");
+      const publicKey = createPublicKey({ key: Buffer.from(response.PublicKey), format: "der", type: "spki" });
+      if (publicKey.asymmetricKeyType !== "ed25519") throw new Error("invalid");
+      return new KmsEd25519AnchorSigner(keyId, publicKey, kms);
+    } catch {
+      throw new Error("integrity_anchor_kms_verification_material_unavailable");
+    }
+  }
+
+  async sign(message: Uint8Array): Promise<Uint8Array> {
+    try {
+      const response = await this.kms.send(new SignCommand({
+        KeyId: this.key_id, Message: message, MessageType: "RAW", SigningAlgorithm: "EDDSA" as never,
+      }));
+      if (!response.Signature?.byteLength) throw new Error("invalid");
+      return new Uint8Array(response.Signature);
+    } catch {
+      // Preserve a stable, non-sensitive operational code. Do not expose KMS
+      // request details, key ARN, message body, or signature material.
+      throw new Error("integrity_anchor_kms_sign_failed");
+    }
+  }
+}
 
 /** P1c is deliberately opt-in. P0 publication keeps its citation/validator
  * contract when this is disabled; it must never manufacture anchor evidence.
@@ -70,21 +110,34 @@ export function deploymentAnchorLegalHold(env: AnchorEnvironment = process.env, 
 }
 
 /** Deployment-owned signer/store injection for the real dispatch path. */
-export function deploymentAnchorPublication(
+export async function deploymentAnchorPublication(
   env: AnchorEnvironment = process.env,
   now = new Date(),
-): ReportAnchorPublication {
+  dependencies: { kms?: KmsSender } = {},
+): Promise<ReportAnchorPublication> {
   const bucket = required(env, "INTEGRITY_ANCHOR_BUCKET");
   const keyId = required(env, "INTEGRITY_ANCHOR_KEY_ID");
-  const pem = required(env, "INTEGRITY_ANCHOR_PRIVATE_KEY_PEM").replace(/\\n/g, "\n");
   const artifactDays = env.INTEGRITY_ANCHOR_RETAIN_DAYS == null ? 100 : Number(env.INTEGRITY_ANCHOR_RETAIN_DAYS);
   if (artifactDays != null && (!Number.isInteger(artifactDays) || artifactDays < 1 || artifactDays > 36500)) throw new Error("integrity_anchor_retain_days_invalid");
-  let privateKey;
-  try { privateKey = createPrivateKey(pem); } catch { throw new Error("integrity_anchor_signer_invalid"); }
-  if (privateKey.asymmetricKeyType !== "ed25519") throw new Error("integrity_anchor_signer_invalid");
+  const signerMode = env.INTEGRITY_ANCHOR_SIGNER ?? "pem";
+  let signer: AnchorSigner;
+  if (signerMode === "aws-kms") {
+    // This explicit path intentionally does not consult a PEM environment
+    // variable. KMS public material is recorded for local verification while
+    // private signing material remains inside KMS.
+    signer = await KmsEd25519AnchorSigner.create(keyId, dependencies.kms);
+  } else if (signerMode === "pem") {
+    const pem = required(env, "INTEGRITY_ANCHOR_PRIVATE_KEY_PEM").replace(/\\n/g, "\n");
+    let privateKey: KeyObject;
+    try { privateKey = createPrivateKey(pem); } catch { throw new Error("integrity_anchor_signer_invalid"); }
+    if (privateKey.asymmetricKeyType !== "ed25519") throw new Error("integrity_anchor_signer_invalid");
+    signer = { key_id: keyId, private_key: privateKey };
+  } else {
+    throw new Error("integrity_anchor_signer_mode_invalid");
+  }
   return {
     store: new S3AnchorStore(new S3Client({}), bucket),
-    signer: { key_id: keyId, private_key: privateKey },
+    signer,
     // The report writer also adds `anchor issued_at + 100 days`; these are the
     // three policy horizons that must never be shortened by a deployment default.
     retainUntil: new Date(now.getTime() + artifactDays * DAY_MS).toISOString(),
@@ -99,10 +152,10 @@ export function deploymentAnchorPublication(
 /** The only production composition seam for report publication. Keep the
  * strict constructor above so an enabled deployment cannot degrade to an
  * unanchored fallback because one required policy input is absent. */
-export function deploymentAnchorPublicationIfEnabled(
+export async function deploymentAnchorPublicationIfEnabled(
   env: AnchorEnvironment = process.env,
   now = new Date(),
-): ReportAnchorPublication | undefined {
+): Promise<ReportAnchorPublication | undefined> {
   if (!integrityAnchorEnabled(env)) return undefined;
   void now;
   return requireIntegrityAnchorAdmission(env);

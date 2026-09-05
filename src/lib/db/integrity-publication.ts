@@ -1,7 +1,7 @@
 /** SQLite visibility and recovery protocol for P1c anchors. */
-import { createPublicKey, randomUUID, sign, verify, type KeyObject } from "node:crypto";
+import { createPublicKey, randomUUID, verify, type KeyObject } from "node:crypto";
 import type { DB } from "./index.js";
-import { anchorEnvelopeBytes, anchorIdempotencyKey, anchorMatchesManifest, parseCanonicalAnchorEnvelope, parseCanonicalJsonBytes, signAnchor, type AnchorSigner, type AnchorStore, type ArtifactManifest, type SignedAnchor, jcs, merkleRoot, sha256, utf8, validateManifest } from "./integrity-anchors.js";
+import { anchorEnvelopeBytes, anchorIdempotencyKey, anchorMatchesManifest, anchorSignerPublicKey, parseCanonicalAnchorEnvelope, parseCanonicalJsonBytes, signAnchor, signAnchorBytes, type AnchorSigner, type AnchorStore, type ArtifactManifest, type SignedAnchor, jcs, merkleRoot, sha256, utf8, validateManifest } from "./integrity-anchors.js";
 
 const tenant = "default";
 const now = () => new Date().toISOString();
@@ -87,7 +87,7 @@ export function assertAnchorPublicationKeyActive(db: DB, keyId: string): void {
 
 /** Rotation adds a new immutable key record; revocation never erases history. */
 export function registerAnchorSigningKey(db: DB, signer: AnchorSigner): void {
-  const publicPem = createPublicKey(signer.private_key).export({ type: "spki", format: "pem" }).toString();
+  const publicPem = anchorSignerPublicKey(signer).export({ type: "spki", format: "pem" }).toString();
   const existing = db.prepare("SELECT public_key_pem FROM integrity_signing_key WHERE tenant_id=? AND key_id=?").get(tenant, signer.key_id) as { public_key_pem: string } | undefined;
   if (existing && existing.public_key_pem !== publicPem) throw new Error("anchor_signing_key_conflict");
   if (!existing) db.prepare("INSERT INTO integrity_signing_key(tenant_id,key_id,public_key_pem,certificate_pem,created_at) VALUES (?,?,?,?,?)")
@@ -101,7 +101,7 @@ export function revokeAnchorSigningKey(db: DB, keyId: string, reason = "revoked"
 }
 
 /** Persist exact candidate bytes before calling an external store. */
-export function planAnchorPublication(db: DB, input: AnchorPublication, signer: AnchorSigner): StoredAnchorEffect {
+export async function planAnchorPublication(db: DB, input: AnchorPublication, signer: AnchorSigner): Promise<StoredAnchorEffect> {
   validateManifest(input.manifest); const manifestHash = sha256(utf8(input.manifest)); const prior = stored(db, input.generation_effect_id, input.manifest);
   const parent = db.prepare("SELECT report_id FROM generation_effect WHERE id=?").get(input.generation_effect_id) as { report_id: string } | undefined;
   if (!parent || parent.report_id !== input.manifest.report_id) throw new Error("anchor_effect_report_mismatch");
@@ -111,8 +111,10 @@ export function planAnchorPublication(db: DB, input: AnchorPublication, signer: 
   }
   // Persist the exact signed candidate before external I/O so retries can never mint a different immutable object.
   registerAnchorSigningKey(db, signer);
-  const candidate = signAnchor(input.manifest, input.issued_at, signer);
-  const created = now(); const canonical = jcs(input.manifest); const result = { id: id("anchor_effect"), generation_effect_id: input.generation_effect_id, report_id: input.manifest.report_id, artifact_id: input.manifest.artifact_id, artifact_version: input.manifest.artifact_version, manifest_hash: manifestHash, manifest_canonical: canonical, content_hash: input.manifest.content_hash, content_length: input.manifest.length, media_type: input.manifest.media_type, object_key: input.manifest.external_anchor.object_key, anchor_payload: jcs(candidate), anchor_provider_version_id: null, manifest_signature: sign(null, Buffer.concat([Buffer.from("manifest-v1\0"), Buffer.from(canonical)]), signer.private_key).toString("base64url"), manifest_key_id: signer.key_id, manifest_algorithm: "ed25519", manifest_issued_at: input.issued_at, retain_until: input.retain_until, status: "planned", retry_count: 0, created_at: created };
+  const candidate = await signAnchor(input.manifest, input.issued_at, signer);
+  const created = now(); const canonical = jcs(input.manifest);
+  const manifestSignature = await signAnchorBytes(signer, Buffer.concat([Buffer.from("manifest-v1\0"), Buffer.from(canonical)]));
+  const result = { id: id("anchor_effect"), generation_effect_id: input.generation_effect_id, report_id: input.manifest.report_id, artifact_id: input.manifest.artifact_id, artifact_version: input.manifest.artifact_version, manifest_hash: manifestHash, manifest_canonical: canonical, content_hash: input.manifest.content_hash, content_length: input.manifest.length, media_type: input.manifest.media_type, object_key: input.manifest.external_anchor.object_key, anchor_payload: jcs(candidate), anchor_provider_version_id: null, manifest_signature: Buffer.from(manifestSignature).toString("base64url"), manifest_key_id: signer.key_id, manifest_algorithm: "ed25519", manifest_issued_at: input.issued_at, retain_until: input.retain_until, status: "planned", retry_count: 0, created_at: created };
   db.prepare(`INSERT INTO generation_anchor_effect(id,generation_effect_id,tenant_id,report_id,artifact_id,artifact_version,manifest_hash,manifest_canonical,content_hash,content_length,media_type,anchor_idempotency_key,object_key,anchor_payload,anchor_provider_version_id,manifest_signature,manifest_key_id,manifest_algorithm,manifest_issued_at,retain_until,status,retry_count,error,created_at,updated_at)
     VALUES (@id,@generation_effect_id,@tenant,@report_id,@artifact_id,@artifact_version,@manifest_hash,@manifest_canonical,@content_hash,@content_length,@media_type,@anchor_idempotency_key,@object_key,@anchor_payload,NULL,@manifest_signature,@manifest_key_id,@manifest_algorithm,@manifest_issued_at,@retain_until,'planned',0,NULL,@created,@updated)`).run({ ...result, tenant, anchor_idempotency_key: anchorIdempotencyKey(input.manifest), created, updated: created });
   return result;
@@ -142,7 +144,7 @@ function verifyManifestMaterial(db: DB, row: StoredAnchorEffect): void {
  * callers must invoke commitAnchoredPublication in their final SQLite tx.
  */
 export async function writePlannedAnchor(db: DB, store: AnchorStore, input: AnchorPublication, signer: AnchorSigner): Promise<{ reused: boolean; provider_version_id: string | null }> {
-  const row = planAnchorPublication(db, input, signer); const candidate = parseCandidate(db, row);
+  const row = await planAnchorPublication(db, input, signer); const candidate = parseCandidate(db, row);
   assertAnchorPublicationKeyActive(db, candidate.key_id);
   let providerVersion: string | null = null; let reused = false;
   try {
@@ -163,7 +165,7 @@ export async function writePlannedAnchor(db: DB, store: AnchorStore, input: Anch
   return { reused, provider_version_id: providerVersion };
 }
 
-export interface CommitAnchoredPublication { manifest: ArtifactManifest; generation_effect_id: string; provider_version_id: string | null; public_key: KeyObject; finalize?: () => void }
+export interface CommitAnchoredPublication { manifest: ArtifactManifest; generation_effect_id: string; provider_version_id: string | null; /** @deprecated verification material is loaded from the ledger */ public_key?: KeyObject; finalize?: () => void }
 function insertManifestProjection(db: DB, row: StoredAnchorEffect, anchor: SignedAnchor, committedAt: string): void {
   db.prepare(`INSERT INTO artifact_manifest(tenant_id,artifact_id,artifact_version,report_id,manifest_canonical,manifest_hash,content_hash,content_length,media_type,anchor_object_key,anchor_provider_version_id,anchor_payload_hash,anchor_signature,anchor_key_id,anchor_issued_at,anchor_algorithm,manifest_signature,manifest_key_id,manifest_algorithm,manifest_issued_at,retain_until,committed_at)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(tenant, row.artifact_id, row.artifact_version, row.report_id, row.manifest_canonical, row.manifest_hash, row.content_hash, row.content_length, row.media_type, row.object_key, row.anchor_provider_version_id, anchor.anchor_payload_hash, anchor.signature, anchor.key_id, anchor.payload.issued_at, anchor.algorithm, row.manifest_signature, row.manifest_key_id, row.manifest_algorithm, row.manifest_issued_at, row.retain_until, committedAt);
@@ -193,7 +195,7 @@ export function commitAnchoredPublication(db: DB, input: CommitAnchoredPublicati
 }
 
 /** Commit several already-written artifact anchors with the report's reader projections in one SQLite transaction. */
-export function commitAnchoredPublications(db: DB, input: { generation_effect_id: string; publications: Array<{ manifest: ArtifactManifest; provider_version_id: string | null }>; public_key: KeyObject; finalize?: () => void }): void {
+export function commitAnchoredPublications(db: DB, input: { generation_effect_id: string; publications: Array<{ manifest: ArtifactManifest; provider_version_id: string | null }>; /** @deprecated verification material is loaded from the ledger */ public_key?: KeyObject; finalize?: () => void }): void {
   if (!input.publications.length) throw new Error("anchor_publications_empty");
   const records = input.publications.map(({ manifest, provider_version_id }) => {
     const row = stored(db, input.generation_effect_id, manifest);
@@ -300,7 +302,8 @@ export async function writeDailyMerkleRoot(db: DB, store: AnchorStore, utcDate: 
 
   registerAnchorSigningKey(db, signer);
   const issuedAt = now(); const bytes = utf8(payload);
-  let envelope: DailyRootEnvelope = { payload, payload_hash: sha256(bytes), signature: sign(null, Buffer.concat([Buffer.from("daily-root-v1\0"), Buffer.from(bytes)]), signer.private_key).toString("base64url"), key_id: signer.key_id, algorithm: "ed25519", issued_at: issuedAt };
+  const rootSignature = await signAnchorBytes(signer, Buffer.concat([Buffer.from("daily-root-v1\0"), Buffer.from(bytes)]));
+  let envelope: DailyRootEnvelope = { payload, payload_hash: sha256(bytes), signature: Buffer.from(rootSignature).toString("base64url"), key_id: signer.key_id, algorithm: "ed25519", issued_at: issuedAt };
   let providerVersion: string | null; let recovered = false;
   try { providerVersion = (await store.putIfAbsent(objectKey, dailyEnvelopeBytes(envelope), rootRetention)).provider_version_id; }
   catch {

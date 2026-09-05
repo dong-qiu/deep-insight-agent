@@ -3,13 +3,13 @@
  * boundary: report readers only consult `isReportReaderVisible`; they never
  * run an integrity check, read an anchor, or wait on this module's work.
  */
-import { createPublicKey, randomUUID, sign, verify } from "node:crypto";
+import { createPublicKey, randomUUID, verify } from "node:crypto";
 import { rmSync } from "node:fs";
 import { KMSClient } from "@aws-sdk/client-kms";
 import { S3Client } from "@aws-sdk/client-s3";
 import { SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import type { DB } from "./index.js";
-import { jcs, sha256, type AnchorSigner, type AnchorStore } from "./integrity-anchors.js";
+import { jcs, sha256, signAnchorBytes, type AnchorSigner, type AnchorStore } from "./integrity-anchors.js";
 import { registerAnchorSigningKey } from "./integrity-publication.js";
 import {
   registerRedaction,
@@ -412,7 +412,7 @@ export function purgeExpiredRetentionTombstones(db: DB, now = new Date().toISOSt
 
 /** Complete destruction only after report/archive, verification-material and
  * durable backup/registry retention obligations have all ended. */
-export function destroyRetainedReport(db: DB, input: { report_id: string; actor_id: string; signer: AnchorSigner; now?: string; deleteFiles?: (bodyPath: string) => void }): RetentionResult {
+export async function destroyRetainedReport(db: DB, input: { report_id: string; actor_id: string; signer: AnchorSigner; now?: string; deleteFiles?: (bodyPath: string) => void }): Promise<RetentionResult> {
   const now = input.now ?? new Date().toISOString();
   const lifecycle = lifecycleRow(db, input.report_id);
   if (!lifecycle) return db.prepare("SELECT 1 FROM report WHERE id=?").get(input.report_id) ? { kind: "retention_not_eligible" } : { kind: "not_found" };
@@ -456,18 +456,38 @@ export function destroyRetainedReport(db: DB, input: { report_id: string; actor_
     };
     const canonical = jcs(payload);
     const payloadHash = sha256(new TextEncoder().encode(canonical));
-    const signature = sign(null, Buffer.concat([Buffer.from(TOMBSTONE_DOMAIN), Buffer.from(canonical)]), input.signer.private_key).toString("base64url");
-    // A rotated tombstone signer must have public verification material retained
-    // before its signature becomes the only record of a destroyed report.
-    registerAnchorSigningKey(db, input.signer);
-    db.transaction(() => {
+    const signature = Buffer.from(await signAnchorBytes(input.signer, Buffer.concat([Buffer.from(TOMBSTONE_DOMAIN), Buffer.from(canonical)]))).toString("base64url");
+    // KMS signing yields the event loop. Re-check the governed state in the
+    // committing transaction so a legal hold placed while the signature was
+    // in flight wins before any tombstone, file, or ledger mutation.
+    const postSignState = db.transaction(() => {
+      if (activeHolds(db, input.report_id).length) {
+        audit(db, input.report_id, "deletion_blocked_legal_hold", "legal_hold_active", now, input.actor_id);
+        return "legal_hold" as const;
+      }
+      const current = lifecycleRow(db, input.report_id);
+      const currentArtifacts = artifactRows(db, input.report_id);
+      const stillEligible = current?.reader_state === "delete_pending"
+        && Date.parse(current.readable_until) <= Date.parse(now)
+        && Date.parse(current.archive_until) <= Date.parse(now)
+        && currentArtifacts.length > 0
+        && currentArtifacts.every((artifact) => artifact.retain_until != null && Date.parse(artifact.retain_until) <= Date.parse(now));
+      if (!stillEligible) {
+        audit(db, input.report_id, "retention_not_eligible", "retention_window_active", now, input.actor_id);
+        return "retention_not_eligible" as const;
+      }
+      // A rotated tombstone signer must have public verification material retained
+      // before its signature becomes the only record of a destroyed report.
+      registerAnchorSigningKey(db, input.signer);
       const written = db.prepare(`INSERT OR IGNORE INTO integrity_retention_tombstone(tenant_id,report_id,payload,payload_hash,signature,key_id,algorithm,destroyed_at,retain_until)
         VALUES (?,?,?,?,?,?,?,?,?)`).run(tenant, input.report_id, canonical, payloadHash, signature, input.signer.key_id, "ed25519", now, receipt!.redaction_expiry_at).changes === 1;
       if (!written) throw new Error("retention_tombstone_conflict");
       db.prepare("UPDATE integrity_report_lifecycle SET reader_state='purge_pending' WHERE tenant_id=? AND report_id=? AND reader_state='delete_pending'")
         .run(tenant, input.report_id);
       audit(db, input.report_id, "retention_tombstone_written", "retention_expired", now, input.actor_id);
+      return "proceed" as const;
     })();
+    if (postSignState !== "proceed") return { kind: postSignState };
   }
   if (lifecycle.artifact_body_path) {
     const remove = input.deleteFiles ?? ((bodyPath: string) => {

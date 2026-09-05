@@ -28,7 +28,15 @@ export interface AnchorPayload {
   content_hash_algorithm: "sha-256"; content_hash: string; issued_at: string; binding: AnchorBinding;
 }
 export interface SignedAnchor { payload: AnchorPayload; anchor_payload_hash: string; signature: string; key_id: string; algorithm: "ed25519" }
-export interface AnchorSigner { key_id: string; private_key: KeyObject; certificate_pem?: string }
+/** A signer may hold a local development key or delegate signing to a managed
+ * service such as KMS.  Verification material is always public. */
+export interface AnchorSigner {
+  key_id: string;
+  private_key?: KeyObject;
+  public_key?: KeyObject;
+  sign?: (message: Uint8Array) => Promise<Uint8Array>;
+  certificate_pem?: string;
+}
 export interface AnchorObject { body: Uint8Array; provider_version_id: string | null }
 export interface AnchorStore {
   /** Must be an If-None-Match:* equivalent.  Never overwrite an object. */
@@ -85,6 +93,29 @@ export function jcs(value: unknown): string {
 export const utf8 = (value: unknown): Uint8Array => encoder.encode(jcs(value));
 export const sha256 = (bytes: Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
 export const contentHash = (bytes: Uint8Array): string => sha256(bytes);
+
+/** Resolve public material without ever requiring a private key from managed
+ * signers.  The result is retained in the verification-key ledger. */
+export function anchorSignerPublicKey(signer: AnchorSigner): KeyObject {
+  if (signer.public_key) return signer.public_key;
+  if (signer.private_key) return createPublicKey(signer.private_key);
+  fail("integrity_anchor_signer_invalid");
+}
+
+export async function signAnchorBytes(signer: AnchorSigner, message: Uint8Array): Promise<Uint8Array> {
+  try {
+    const signature = signer.sign
+      ? await signer.sign(new Uint8Array(message))
+      : signer.private_key
+        ? sign(null, message, signer.private_key)
+        : fail("integrity_anchor_signer_invalid");
+    if (!(signature instanceof Uint8Array) || signature.byteLength === 0) fail("integrity_anchor_signer_invalid");
+    return new Uint8Array(signature);
+  } catch (error) {
+    if (error instanceof Error && error.message === "integrity_anchor_signer_invalid") throw error;
+    throw new Error("integrity_anchor_signing_failed");
+  }
+}
 
 function assertId(value: string, name: string): void { if (!ID_RE.test(value)) fail(`${name}_invalid`); }
 function assertHash(value: string, name: string): void { if (!HASH_RE.test(value)) fail(`${name}_invalid`); }
@@ -174,9 +205,10 @@ export function anchorPayload(manifest: ArtifactManifest, issuedAt: string): Anc
   return { anchor_schema_version: ANCHOR_SCHEMA, object_key: manifest.external_anchor.object_key, content_hash_algorithm: SHA256,
     content_hash: manifest.content_hash, issued_at: issuedAt, binding: bindingFor(manifest) };
 }
-export function signAnchor(manifest: ArtifactManifest, issuedAt: string, signer: AnchorSigner): SignedAnchor {
+export async function signAnchor(manifest: ArtifactManifest, issuedAt: string, signer: AnchorSigner): Promise<SignedAnchor> {
   const payload = anchorPayload(manifest, issuedAt); const bytes = utf8(payload);
-  return { payload, anchor_payload_hash: sha256(bytes), signature: sign(null, Buffer.concat([Buffer.from("anchor-v1\0"), Buffer.from(bytes)]), signer.private_key).toString("base64url"), key_id: signer.key_id, algorithm: "ed25519" };
+  const signature = await signAnchorBytes(signer, Buffer.concat([Buffer.from("anchor-v1\0"), Buffer.from(bytes)]));
+  return { payload, anchor_payload_hash: sha256(bytes), signature: Buffer.from(signature).toString("base64url"), key_id: signer.key_id, algorithm: "ed25519" };
 }
 export function anchorEnvelopeBytes(anchor: SignedAnchor): Uint8Array {
   validateSignedAnchor(anchor); return utf8({ payload: anchor.payload, anchor_payload_hash: anchor.anchor_payload_hash, signature: anchor.signature, key_id: anchor.key_id, algorithm: anchor.algorithm });
@@ -221,13 +253,13 @@ export function anchorMatchesManifest(anchor: SignedAnchor, manifest: ArtifactMa
 
 /** Conditional write plus exact read-back verification for 412/unknown-result retries. */
 export async function writeAnchor(store: AnchorStore, manifest: ArtifactManifest, issuedAt: string, retainUntil: string, signer: AnchorSigner): Promise<{ anchor: SignedAnchor; provider_version_id: string | null; reused: boolean }> {
-  assertInstant(retainUntil, "retain_until"); const anchor = signAnchor(manifest, issuedAt, signer); const body = anchorEnvelopeBytes(anchor);
+  assertInstant(retainUntil, "retain_until"); const anchor = await signAnchor(manifest, issuedAt, signer); const body = anchorEnvelopeBytes(anchor);
   try { const result = await store.putIfAbsent(manifest.external_anchor.object_key, body, retainUntil); return { anchor, provider_version_id: result.provider_version_id, reused: false }; }
   catch (error) {
     const existing = await store.get(manifest.external_anchor.object_key);
     if (!existing) throw error;
     let parsed: SignedAnchor;
-    try { parsed = parseCanonicalAnchorEnvelope(existing.body, createPublicKey(signer.private_key)); } catch { fail("anchor_conflict"); }
+    try { parsed = parseCanonicalAnchorEnvelope(existing.body, anchorSignerPublicKey(signer)); } catch { fail("anchor_conflict"); }
     if (anchorEnvelopeBytes(parsed).some((byte, index) => byte !== body[index]) || !anchorMatchesManifest(parsed, manifest)) fail("anchor_conflict");
     return { anchor: parsed, provider_version_id: existing.provider_version_id, reused: true };
   }
