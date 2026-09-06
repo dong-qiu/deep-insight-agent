@@ -42,7 +42,7 @@ export async function POST(req: Request): Promise<NextResponse> {
     const swept = recoverOrphanedRuns(db);
     if (swept > 0) log.info({ swept }, "周期清扫孤儿 Run");
     if (mode === "integrity") {
-      const anchor = deploymentAnchorPublicationIfEnabled();
+      const anchor = await deploymentAnchorPublicationIfEnabled();
       if (!anchor) {
         log.info("完整性锚定未启用，跳过 P1 维护");
         return NextResponse.json({ ok: true, mode, summary: { skipped: true, reason: "integrity_anchor_disabled" } });

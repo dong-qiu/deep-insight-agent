@@ -72,8 +72,8 @@ assert.deepEqual(await writeDailyMerkleRoot(db, store, "2026-08-21", "2026-08-22
 assert.equal((db.prepare("SELECT key_id FROM integrity_daily_root WHERE utc_date='2026-08-21'").get() as { key_id: string }).key_id, oldSigner.key_id);
 
 const pem = oldKeys.privateKey.export({ type: "pkcs8", format: "pem" }).toString();
-assert.throws(
-  () => deploymentAnchorPublication({ INTEGRITY_ANCHOR_BUCKET: "bucket", INTEGRITY_ANCHOR_KEY_ID: "eval-key", INTEGRITY_ANCHOR_PRIVATE_KEY_PEM: pem }, new Date("2026-08-21T00:00:00.000Z")),
+await assert.rejects(
+  deploymentAnchorPublication({ INTEGRITY_ANCHOR_BUCKET: "bucket", INTEGRITY_ANCHOR_KEY_ID: "eval-key", INTEGRITY_ANCHOR_PRIVATE_KEY_PEM: pem }, new Date("2026-08-21T00:00:00.000Z")),
   /integrity_anchor_retention_policy_required/,
 );
 
@@ -98,8 +98,8 @@ assert.deepEqual(requestReportDeletion(db, { report_id: "check-report", actor_id
 assert.equal(await recordLegalHold(db, { report_id: "check-report", hold_id: "eval-hold", action: "released", actor_id: "counsel", reason_code: "legal_released", occurred_at: "2026-08-22T01:04:00.000Z" }), true);
 assert.deepEqual(requestReportDeletion(db, { report_id: "check-report", actor_id: "admin", readable_until: "2026-08-23T00:00:00.000Z", archive_until: "2026-08-24T00:00:00.000Z", now: "2026-08-22T01:05:00.000Z" }), { kind: "delete_pending" });
 assert.equal(getReport(db, "check-report"), null);
-assert.deepEqual(destroyRetainedReport(db, { report_id: "check-report", actor_id: "admin", signer: checkSigner, now: "2026-08-25T00:00:00.000Z" }), { kind: "retention_not_eligible" });
-assert.deepEqual(destroyRetainedReport(db, { report_id: "check-report", actor_id: "admin", signer: checkSigner, now: "2027-01-02T00:00:00.000Z" }), { kind: "retention_prerequisites_unmet" });
+assert.deepEqual(await destroyRetainedReport(db, { report_id: "check-report", actor_id: "admin", signer: checkSigner, now: "2026-08-25T00:00:00.000Z" }), { kind: "retention_not_eligible" });
+assert.deepEqual(await destroyRetainedReport(db, { report_id: "check-report", actor_id: "admin", signer: checkSigner, now: "2027-01-02T00:00:00.000Z" }), { kind: "retention_prerequisites_unmet" });
 assert.equal(await completeRetentionDestruction(db, {
   report_id: "check-report",
   actor_id: "admin",
@@ -107,7 +107,7 @@ assert.equal(await completeRetentionDestruction(db, {
   backup_receipt: signedReceipt(),
   completed_at: "2027-01-02T00:00:00.000Z",
 }), true);
-assert.deepEqual(destroyRetainedReport(db, { report_id: "check-report", actor_id: "admin", signer: checkSigner, now: "2027-01-02T00:00:00.000Z" }), { kind: "destroyed" });
+assert.deepEqual(await destroyRetainedReport(db, { report_id: "check-report", actor_id: "admin", signer: checkSigner, now: "2027-01-02T00:00:00.000Z" }), { kind: "destroyed" });
 assert.equal(retentionConclusionForAdmin(db, "check-report")?.conclusion, "内容保留期已结束，原始内容不再可验证");
 assert.equal((db.prepare("SELECT COUNT(*) AS n FROM artifact_manifest WHERE report_id='check-report'").get() as { n: number }).n, 0);
 
