@@ -10,7 +10,8 @@ interface TraceGraph { nodes: GraphNode[]; edges: GraphEdge[]; truncated: boolea
 interface TraceRuntime { image_digest?: string; git_sha?: string; provenance_schema_version?: string; schema_version?: number }
 interface TracePayload { timeline: Page<TimelineEvent>; runtime?: TraceRuntime }
 const COUNT_LABEL: Record<string, string> = {
-  input_content_count: "分析输入", analysis_insight_count: "产出洞察", no_significant_event: "无重要事件",
+  candidate_content_count: "候选内容", candidate_source_count: "候选来源", selected_count: "选中内容", selected_source_count: "选中来源",
+  fresh_candidate_count: "近期候选", fresh_selected_count: "近期选中", input_content_count: "分析输入", analysis_insight_count: "产出洞察", no_significant_event: "无重要事件",
   citation_total: "校验引用", citation_pass: "通过", citation_blocked: "拦截", citation_flagged: "存疑", citation_errored: "错误",
   includable_insight_count: "可纳入洞察", releasable: "可发布", freshness_filtered_insight_count: "新鲜度过滤",
   already_published_filtered_insight_count: "已发布去重", supplemental_candidate_count: "补充候选",
@@ -30,9 +31,10 @@ function briefFunnelText(timeline: TimelineEvent[]): string | null {
   const report = [...timeline].reverse().find((event) => event.stage === "generate_report" && event.event_type === "completed");
   if (!report?.metrics || report.metrics.includable_insight_count === undefined) return null;
   const analyze = timeline.find((event) => event.stage === "analyze" && event.event_type === "completed")?.metrics;
+  const select = timeline.find((event) => event.stage === "select" && (event.event_type === "completed" || event.event_type === "skipped"))?.metrics;
   const m = report.metrics;
   const count = (value: number | undefined): string => value === undefined ? "—" : String(value);
-  return `日报选择漏斗：分析产出 ${count(analyze?.analysis_insight_count)} → 可纳入 ${count(m.includable_insight_count)} → 较早证据 ${count(m.freshness_filtered_insight_count)} → 已发布去重 ${count(m.already_published_filtered_insight_count)} → 补充发现 ${count(m.supplemental_published_insight_count)}/${count(m.supplemental_candidate_count)} → 最终发布 ${count(m.published_insight_count)}（引用 ${count(m.published_citation_count)}）`;
+  return `日报选择漏斗：候选 ${count(select?.candidate_content_count)}（${count(select?.candidate_source_count)} 源）→ 选中 ${count(select?.selected_count)}（${count(select?.selected_source_count)} 源，近期 ${count(select?.fresh_selected_count)}）→ 分析产出 ${count(analyze?.analysis_insight_count)} → 可纳入 ${count(m.includable_insight_count)} → 较早证据 ${count(m.freshness_filtered_insight_count)} → 已发布去重 ${count(m.already_published_filtered_insight_count)} → 补充发现 ${count(m.supplemental_published_insight_count)}/${count(m.supplemental_candidate_count)} → 最终发布 ${count(m.published_insight_count)}（引用 ${count(m.published_citation_count)}）`;
 }
 export function ProvenanceTimeline({ traceId, showBriefFunnel = false }: { traceId: string; showBriefFunnel?: boolean }) {
   const [trace, setTrace] = useState<TracePayload | null>(null);

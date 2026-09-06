@@ -9,8 +9,12 @@ import {
   failureToNotification,
   notifyBudget,
   notifyBriefAcceptance,
+  notifyThinBrief,
   notifyFailure,
   notifyReport,
+  resetThinBriefAlertState,
+  isThinBrief,
+  thinBriefNotification,
   reportToNotification,
   sendAlert,
   shouldPushReport,
@@ -26,6 +30,10 @@ afterEach(() => {
   delete process.env.REPORT_PUSH;
   delete process.env.PUBLIC_BASE_URL;
   delete process.env.BRIEF_ACCEPTANCE_WATCH;
+  delete process.env.BRIEF_THIN_REPORT_ALERT;
+  delete process.env.BRIEF_THIN_MIN_SELECTED;
+  delete process.env.BRIEF_THIN_MAX_PUBLISHED;
+  resetThinBriefAlertState();
 });
 
 describe("BriefAcceptance", () => {
@@ -47,6 +55,36 @@ describe("BriefAcceptance", () => {
     process.env.BRIEF_ACCEPTANCE_WATCH = "1";
     notifyBriefAcceptance(empty);
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+  });
+});
+
+describe("ThinBriefAlert", () => {
+  const thin = {
+    reportId: "rep_thin", topicId: "t_code_agents", topicName: "AI 软件工程", traceId: "trace_thin",
+    selectedCount: 15, selectedSourceCount: 5, freshSelectedCount: 6, analysisInsightCount: 24,
+    includableInsightCount: 22, freshnessFilteredInsightCount: 13, alreadyPublishedFilteredInsightCount: 20,
+    publishedInsightCount: 2, publishedCitationCount: 8,
+  };
+
+  it("只对输入充足但最终发布偏薄的日报触发，并保留诊断漏斗", () => {
+    expect(isThinBrief(thin)).toBe(true);
+    expect(isThinBrief({ ...thin, selectedCount: 9 })).toBe(false);
+    expect(isThinBrief({ ...thin, publishedInsightCount: 3 })).toBe(false);
+    const n = thinBriefNotification(thin);
+    expect(n.text).toContain("已发布去重 20");
+    expect(n.text).toContain("Trace：trace_thin");
+  });
+
+  it("同一报告最多投递一次，显式关闭时不投递", async () => {
+    process.env.ALERT_WEBHOOK = "https://ntfy.sh/my-topic";
+    const fetchMock = vi.fn(() => Promise.resolve(new Response(null, { status: 200 })));
+    vi.stubGlobal("fetch", fetchMock);
+    notifyThinBrief(thin);
+    notifyThinBrief(thin);
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+    process.env.BRIEF_THIN_REPORT_ALERT = "0";
+    notifyThinBrief({ ...thin, reportId: "rep_disabled" });
+    expect(fetchMock).toHaveBeenCalledOnce();
   });
 });
 
