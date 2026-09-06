@@ -76,6 +76,8 @@ npm run dev
 | `npm run db:snapshot` / `npm run db:restore` | 导出或恢复本地 SQLite 快照 |
 | `npm run branches:cleanup` | 只读列出可清理的已合并 PR 本地分支与 worktree |
 | `npm run branches:cleanup -- --apply` | 清理经审核的本地候选；远程分支由 GitHub 合并后自动删除 |
+| `npm run multica:watch -- INSI-91 --pr 291 --until-idle` | 前台持续显示 Multica 任务、关联 PR 与 CI 状态；关联 task run 和 CI 空闲后退出 |
+| `source ops/multica-auto-watch.zsh` | 本终端内自动观察：成功启动 `multica issue assign`、`rerun` 或 `status` 后立即显示该任务及其关联 PR/CI 状态 |
 
 修改 prompt、模型、校验逻辑、数据源或评测集前，必须运行 [`eval-gate`](.claude/skills/eval-gate/SKILL.md)，并在 PR 中附上相对基线的指标和可复查产物。
 
