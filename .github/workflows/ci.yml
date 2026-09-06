@@ -155,7 +155,7 @@ jobs:
         run: |
           docker run --rm --entrypoint node deep-insight:ci --check /app/ops/generation-dispatch-worker.mjs
           docker run --rm --entrypoint node deep-insight:ci --check /app/ops/generation-dispatch-healthcheck.mjs
-          [ "$(docker image inspect --format '{{ index .Config.Labels "org.insight-agent.p1-dashboard-admission" }}' deep-insight:ci)" = required ]
+          [ "$(docker image inspect --format '{{ index .Config.Labels "org.insight-agent.p1-dashboard-admission" }}' deep-insight:ci)" = isolated ]
       - name: e2e dispatch worker readiness
         run: |
           network="dispatch-health-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
@@ -171,13 +171,32 @@ jobs:
           docker volume create "$volume" >/dev/null
           docker run --rm --user 0 -v "$volume":/data deep-insight:ci sh -c 'chown -R app:app /data'
           docker run --rm -v "$volume":/data deep-insight:ci node /app/ops/run-provenance-migrations.mjs
+          # Seed the real DB before the standalone app starts: the public probe
+          # must count one fresh and one stale daily topic without leaking their
+          # identities. This catches route/query integration regressions that a
+          # mocked handler cannot see.
+          docker run --rm -v "$volume":/data --entrypoint node deep-insight:ci --input-type=module -e '
+            import Database from "better-sqlite3";
+            const db = new Database("/data/insight.db"); db.pragma("foreign_keys=ON");
+            const now = new Date().toISOString();
+            const old = "2020-01-01T00:00:00.000Z";
+            for (const [id, name] of [["topic_fresh", "Fresh"], ["topic_stale", "Stale"]]) {
+              db.prepare("INSERT INTO topic(id,name,keywords,language,brief_schedule,enabled,facets,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)").run(id, name, "[]", "zh", "daily", 1, "[]", old, old);
+            }
+            db.prepare("INSERT INTO report(id,type,topic_id,status,generated_at,title,citation_count,cost) VALUES (?,?,?,?,?,?,?,?)").run("report_fresh", "brief", "topic_fresh", "done", now, "Fresh", 0, "{}");
+            db.close();
+          '
           docker run -d --name "$app" --network "$network" \
             -e AUTH_SECRET=ci-auth-secret -e ADMIN_EMAIL=ci@example.test -e ADMIN_PASSWORD=ci-password \
             -e CRON_SECRET=ci-cron-secret -e DISPATCH_WORKER_SECRET=ci-dispatch-secret \
             -e PROVENANCE_SCHEMA_REQUIRED=1 -v "$volume":/data deep-insight:ci >/dev/null
           ready=0
           for _ in $(seq 1 30); do
-            if docker run --rm --network "$network" --entrypoint node deep-insight:ci -e "fetch('http://$app:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"; then
+            if docker run --rm --network "$network" --entrypoint node deep-insight:ci --input-type=module -e "
+              const response = await fetch('http://$app:3000/api/health');
+              const body = await response.json();
+              if (!response.ok || body?.data?.dailyTopicCount !== 2 || body?.data?.staleDailyTopicCount !== 1) process.exit(1);
+            "; then
               ready=1
               break
             fi
@@ -225,7 +244,7 @@ jobs:
             absorbCookies(signInResponse);
             if (signInResponse.status >= 400 || !cookieHeader()) throw new Error('admin credentials sign-in failed');
             const check = await fetch(base + '/api/admin/integrity-checks/artifact_1/v1', { method: 'POST', headers: { cookie: cookieHeader() } });
-            if (check.status !== 409 || (await check.json())?.error !== 'integrity_check_failed') throw new Error('disabled integrity check did not fail closed');
+            if (check.status !== 404 || (await check.json())?.error !== 'not_found') throw new Error('disabled integrity check did not stay hidden');
             const dashboard = await fetch(base + '/api/admin/metrics', { headers: { cookie: cookieHeader() } });
             if (dashboard.status !== 404 || (await dashboard.json())?.error !== 'not_found') throw new Error('production P1 dashboard did not fail closed');
             const hold = await fetch(base + '/api/admin/reports/report_123/retention', {
@@ -233,7 +252,7 @@ jobs:
               headers: { cookie: cookieHeader(), 'content-type': 'application/json' },
               body: JSON.stringify({ action: 'place_hold', hold_id: 'hold_123', reason_code: 'legal_request' }),
             });
-            if (hold.status !== 503 || (await hold.json())?.error !== 'legal_hold_unavailable') throw new Error('disabled legal hold did not fail closed');
+            if (hold.status !== 404 || (await hold.json())?.error !== 'not_found') throw new Error('disabled legal hold did not stay hidden');
           "
           if ! docker run --rm --network "$network" -e APP_URL="http://$app:3000" -e DISPATCH_WORKER_SECRET=ci-dispatch-secret \
             --entrypoint node deep-insight:ci /app/ops/generation-dispatch-healthcheck.mjs; then

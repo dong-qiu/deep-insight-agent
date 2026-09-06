@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({ actor: vi.fn(), db: vi.fn(), audit: vi.fn(), conclusion: vi.fn(), hold: vi.fn(), deletion: vi.fn(), external: vi.fn() }));
+const mocks = vi.hoisted(() => ({ actor: vi.fn(), db: vi.fn(), audit: vi.fn(), conclusion: vi.fn(), hold: vi.fn(), deletion: vi.fn(), external: vi.fn(), p1ExternalSeamsEnabled: vi.fn() }));
 vi.mock("../../../../../../lib/auth-guard.js", () => ({ requireAdminActor: mocks.actor }));
 vi.mock("../../../../../../lib/db/audit.js", () => ({ appendAudit: mocks.audit }));
 vi.mock("../../../../../../lib/db/index.js", () => ({ getDb: mocks.db }));
@@ -8,6 +8,7 @@ vi.mock("../../../../../../lib/db/integrity-lifecycle.js", () => ({
   retentionConclusionForAdmin: mocks.conclusion, recordLegalHold: mocks.hold, requestReportDeletion: mocks.deletion,
 }));
 vi.mock("../../../../../../lib/runtime/integrity-anchor-runtime.js", () => ({ deploymentAnchorLegalHold: mocks.external }));
+vi.mock("../../../../../../lib/runtime/p1-dashboard-runtime.js", () => ({ p1ExternalSeamsEnabled: mocks.p1ExternalSeamsEnabled }));
 
 import { GET, POST } from "./route.js";
 
@@ -22,9 +23,17 @@ beforeEach(() => {
   mocks.hold.mockReturnValue(true);
   mocks.deletion.mockReturnValue({ kind: "delete_pending" });
   mocks.external.mockReturnValue({ store: { immutable: true }, retainUntil: "2036-02-02T00:00:00.000Z" });
+  mocks.p1ExternalSeamsEnabled.mockReturnValue(true);
 });
 
 describe("report retention lifecycle handler", () => {
+  it("hides the entire P1 lifecycle seam before production admission", async () => {
+    mocks.p1ExternalSeamsEnabled.mockReturnValue(false);
+    expect((await GET(new Request("http://x"), { params })).status).toBe(404);
+    expect((await post({ action: "place_hold", hold_id: "hold_123", reason_code: "legal_request" })).status).toBe(404);
+    expect(mocks.actor).not.toHaveBeenCalled();
+  });
+
   it("gives admins only the redacted destroyed conclusion", async () => {
     const response = await GET(new Request("http://x"), { params });
     expect(response.status).toBe(200);

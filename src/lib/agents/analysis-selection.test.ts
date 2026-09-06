@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { openDb } from "../db/index.js";
 import { getTopic, insertContentItem, insertSource, insertTopic } from "../db/repos.js";
 import type { ContentItem } from "../types.js";
-import { contentObservedAt, rankAndDiversify, selectAnalysisItems } from "./analysis-selection.js";
+import { contentObservedAt, rankAndDiversify, selectAnalysisItems, selectAnalysisItemsWithDiagnostics } from "./analysis-selection.js";
 
 function ci(id: string, source_id: string, text: string): ContentItem {
   return {
@@ -123,5 +123,24 @@ describe("selectAnalysisItems · Daily Brief 新鲜度配额", () => {
     });
     const ordinary = selectAnalysisItems(db, getTopic(db, topic.id)!, { since: "2026-07-01T00:00:00Z", limit: 5 });
     expect(noFresh.map((item) => item.id)).toEqual(ordinary.map((item) => item.id)); // 无近期项 → 完全回退常规策略
+  });
+
+  it("诊断只暴露选择漏斗的计数，不改变既有选片结果", () => {
+    const db = openDb(":memory:");
+    const topic = { id: "t_diag", name: "Diagnostics", keywords: KW, language: "en" as const, brief_schedule: "daily" as const, enabled: true };
+    insertTopic(db, topic);
+    for (const source of ["s_old", "s_new", "s_new2"]) {
+      insertSource(db, { id: source, name: source, type: "rss", endpoint: `https://x/${source}`, topic_ids: [], fetch_interval: "6h", backfill: null, enabled: true });
+    }
+    for (const [id, source, at] of [["old", "s_old", "2026-07-01T00:00:00Z"], ["fresh1", "s_new", "2026-07-22T12:00:00Z"], ["fresh2", "s_new2", "2026-07-22T13:00:00Z"]] as const) {
+      const item = ci(id, source, "coding agent"); item.published_at = at;
+      insertContentItem(db, { ...item, topic_ids: [topic.id] });
+    }
+    const opts = { since: "2026-07-01T00:00:00Z", limit: 2, freshness: { since: "2026-07-21T00:00:00Z", quota: 0.5 } };
+    const result = selectAnalysisItemsWithDiagnostics(db, getTopic(db, topic.id)!, opts);
+    expect(result.items.map((item) => item.id)).toEqual(selectAnalysisItems(db, getTopic(db, topic.id)!, opts).map((item) => item.id));
+    expect(result.diagnostics).toMatchObject({ candidate_content_count: 3, candidate_source_count: 3, selected_count: 2, fresh_candidate_count: 2 });
+    expect(result.diagnostics.selected_source_count).toBeGreaterThanOrEqual(1);
+    expect(result.diagnostics.fresh_selected_count).toBeGreaterThanOrEqual(1);
   });
 });

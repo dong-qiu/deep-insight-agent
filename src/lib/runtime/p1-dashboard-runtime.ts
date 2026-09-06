@@ -17,3 +17,11 @@ export function p1DashboardEnabled(env: DashboardEnvironment = process.env): boo
   // request time the safe behavior is still an opaque disabled dashboard.
   return false;
 }
+
+/** All pre-INSI-25 P1 administrator HTTP seams share the same admission
+ * boundary. The name stays separate from the dashboard reader because
+ * lifecycle and integrity endpoints are different P1 surfaces, but neither
+ * may become externally reachable in a production `isolated` image. */
+export function p1ExternalSeamsEnabled(env: DashboardEnvironment = process.env): boolean {
+  return p1DashboardEnabled(env);
+}

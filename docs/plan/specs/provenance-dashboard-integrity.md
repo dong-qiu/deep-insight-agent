@@ -3,7 +3,7 @@
 > 状态：🟢 设计已签核；生产前置待确认。
 > 设计签核记录：2026-08-22；签核人：项目负责人 dongqiu；[签核证据](https://github.com/dong-qiu/deep-insight-agent/pull/265#issuecomment-5381671917)。规格 PR [#264](https://github.com/dong-qiu/deep-insight-agent/pull/264) 已合入，INSI-12 已完成，独立评审记录为 INSI-24。
 > 实现准入：在 INSI-27「P1-0a：实现准入与本地安全核对」完成前，不得启动 P1 实现任务。
-> 生产准入：在 INSI-25「P1-0b：生产治理与发布前置确认」完成前，不得将 P1 能力部署、启用或宣称为生产就绪。
+> 生产准入：在 INSI-25「P1-0b：生产治理与发布前置确认」完成前，不得启用 P1 能力、将其暴露为外部可达接口，或宣称为生产就绪。标准 P0 镜像可携带隔离实现，但必须由可验证的 `isolated` admission profile、生产环境 fail-closed runtime gate 和容器 HTTP 404 验证共同保证所有 P1 外部 seam 不可达。
 > 依赖：[生成溯源与全链路可观测性](generation-provenance.md) P0a–P0c 已启用。
 
 ## 签核、实施与生产准入
@@ -11,9 +11,9 @@
 本规格的设计取舍已经完成签核；这不等同于生产就绪。实施与生产使用两道不同的门，不能互相替代：
 
 - **INSI-27 实现准入门**只允许在隔离开发环境中开始 P1 代码。它确认所有实现使用 task-local SQLite 与合成/许可 fixture、不得访问生产数据或凭据、不得部署或启用 P1 能力，并继续受 feature branch、PR、CI、引用白名单和本规格的数据最小化约束。此门完成后，只有 INSI-15 可以从 `blocked` 解除；它不是 Object Lock、KMS、IAM、值班或恢复演练已经完成的证明。
-- **INSI-25 生产准入门**必须形成可审计证据，确认数据与法务保留规则、Object-Lock/KMS/IAM 最小权限、告警值班、P0c 性能基线、SQLite 迁移/备份及 orphan-anchor 恢复演练。它是任何 P1 部署、功能启用、生产验收或“生产就绪”声明的阻断门；在 INSI-18 和 INSI-21 前必须完成。
+- **INSI-25 生产准入门**必须形成可审计证据，确认数据与法务保留规则、Object-Lock/KMS/IAM 最小权限、告警值班、P0c 性能基线、SQLite 迁移/备份及 orphan-anchor 恢复演练。它是任何 P1 **启用、外部暴露**、生产验收或“生产就绪”声明的阻断门；在 INSI-18 和 INSI-21 前必须完成。隔离实现随 P0 镜像交付仅限于其 runtime gate 默认关闭、生产环境强制拒绝启用、部署验证 admission profile，且容器级 HTTP 验证所有外部 P1 seam 为 404 的情形。
 
-测试替身、mock anchor 或本地演练只能证明代码行为，不能被记作生产配置或生产恢复证据。任何实现若需要读取生产凭据、写入生产 bucket、变更生产 IAM 或部署，仍必须先完成 INSI-25。
+测试替身、mock anchor 或本地演练只能证明代码行为，不能被记作生产配置或生产恢复证据。任何 P1 **启用态**实现若需要读取生产凭据、写入生产 bucket、变更生产 IAM 或暴露外部接口，仍必须先完成 INSI-25。
 
 ## 1. 目的与边界
 

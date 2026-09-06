@@ -3,8 +3,9 @@ import { p1DashboardEnabled } from "../../lib/runtime/p1-dashboard-runtime.js";
 import type { Run } from "../../lib/types.js";
 import { getDb } from "../../lib/db/index.js";
 import { batchTopicMap, listRuns, listSources, listTopics, sourceContribution } from "../../lib/db/repos.js";
-import { listRecentReports, reportStatusCounts, type RecentReport } from "../../lib/db/reports.js";
+import { listRecentBriefSelectionDiagnostics, listRecentReports, reportStatusCounts, type BriefSelectionDiagnostic, type RecentReport } from "../../lib/db/reports.js";
 import { getBudgetStatus, type BudgetStatus } from "../../lib/runtime/cost-guard.js";
+import { briefThinAlertThresholds } from "../../lib/runtime/alert.js";
 import { aggregateByKind, aggregateDailyCost, aggregateSourceHealth, groupRunsIntoRounds, type SourceHealth } from "../../lib/runtime/run-stats.js";
 import { RetryButton } from "./_components/retry-button.js";
 
@@ -58,6 +59,44 @@ function ReportLifecycleCard({ counts, recent, topicNames }: { counts: Record<st
             );
           })}
         </tbody>
+      </table>
+    </article>
+  );
+}
+
+function count(value: number | null): string { return value == null ? "—" : String(value); }
+
+/** P0-ledger projection, intentionally separate from the admission-isolated
+ * P1 dashboard.  It answers the daily operator question: did collection,
+ * selection, validation, freshness, or event de-duplication make a brief
+ * thin? */
+function BriefSelectionCard({ diagnostics }: { diagnostics: BriefSelectionDiagnostic[] }) {
+  if (!diagnostics.length) return null;
+  const thresholds = briefThinAlertThresholds();
+  const thin = (row: BriefSelectionDiagnostic): boolean => row.selected_count != null
+    && row.published_insight_count != null && row.selected_count >= thresholds.minSelected
+    && row.published_insight_count <= thresholds.maxPublished;
+  const attention = diagnostics.filter(thin).length;
+  return (
+    <article className="card">
+      <p className="muted dash-card-head">
+        <span>日报选择漏斗 · 最近 {diagnostics.length} 份</span>
+        {attention ? <span className="dash-badge alert">⚠️ {attention} 份偏薄</span> : <span className="dash-badge ok">无偏薄日报</span>}
+      </p>
+      <p className="muted dash-note">候选/选中均为内容条数；来源为去重来源数。偏薄口径：选中 ≥ {thresholds.minSelected} 且发布 ≤ {thresholds.maxPublished}；它只提示复核，不会放宽引用、新鲜度或事件去重。</p>
+      <table className="stats dash-health">
+        <thead><tr><th>主题 / 报告</th><th>候选 → 选中</th><th>分析 → 可纳入</th><th>校验（通过/总）</th><th>过滤（鲜度/去重）</th><th>发布（洞察/引用）</th></tr></thead>
+        <tbody>{diagnostics.map((row) => {
+          const isThin = thin(row);
+          return <tr key={row.report_id}>
+            <td><a href={`/reports/${row.report_id}`}>{row.topic_name}</a><br /><span className="muted">{row.generated_at.slice(0, 10)} {row.reason_code ? `· ${row.reason_code}` : ""}</span></td>
+            <td className={isThin ? "dash-zero-contrib" : undefined}>{count(row.candidate_content_count)} / {count(row.candidate_source_count)} 源 → {count(row.selected_count)} / {count(row.selected_source_count)} 源<br /><span className="muted">近期 {count(row.fresh_selected_count)} / {count(row.fresh_candidate_count)}</span></td>
+            <td>{count(row.analysis_insight_count)} → {count(row.includable_insight_count)}</td>
+            <td>{count(row.citation_pass)} / {count(row.citation_total)}<br /><span className="muted">拦截 {count(row.citation_blocked)} · 存疑 {count(row.citation_flagged)}</span></td>
+            <td>{count(row.freshness_filtered_insight_count)} / {count(row.already_published_filtered_insight_count)}</td>
+            <td><span className={`dash-badge ${isThin ? "alert" : "ok"}`}>{count(row.published_insight_count)} / {count(row.published_citation_count)}</span></td>
+          </tr>;
+        })}</tbody>
       </table>
     </article>
   );
@@ -285,6 +324,7 @@ export default async function AdminPage({ searchParams }: { searchParams: Promis
   // 报告生命周期：全状态计数 + 近 15 份（含 draft/generating/failed 瞬态）
   const reportCounts = reportStatusCounts(db);
   const recentReports = listRecentReports(db, 15);
+  const briefSelection = listRecentBriefSelectionDiagnostics(db, 14);
   const topicNames = new Map(listTopics(db).map((t) => [t.id, t.name])); // 复用给生命周期报告名 + 运行记录 target 解析
 
   // 运行记录：浏览模式=按轮次翻页（轮次原子、不腰斩）；筛选模式=平铺按条翻页（查找）。
@@ -329,6 +369,8 @@ export default async function AdminPage({ searchParams }: { searchParams: Promis
       <BudgetCard status={budget} />
 
       <SourceHealthCard health={sourceHealth} contribution={contribution} />
+
+      <BriefSelectionCard diagnostics={briefSelection} />
 
       {stats.length === 0 ? null : (
         <article className="card">
