@@ -30,6 +30,9 @@ const CANDIDATES = [
     mode: "feed",      guesses: [] },
   { id: "src_aider",         name: "Aider",          url: "https://aider.chat/feed.xml",
     mode: "full_text", guesses: ["md-content", "post-content", "content"] },
+  // 2026-09 staged candidate: feed 内已有足够的 changelog 正文；接入前后均用本 probe 复验。
+  { id: "src_github_changelog", name: "GitHub Changelog", url: "https://github.blog/changelog/feed/",
+    mode: "feed", guesses: [] },
 ];
 
 // ── 忠实内联：extractArticleHtml（article.ts）──────────────────────────────
