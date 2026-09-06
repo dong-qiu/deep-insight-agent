@@ -59,10 +59,13 @@ cp .env.example .env.local        # 按 §3 填全（尤其 CRON_SECRET、中转
 # Apple Silicon / arm64 主机构建需指定（默认 amd64；supercronic 校验和按架构锁定）
 TARGETARCH=arm64 docker compose up -d --build      # x86_64 主机省略 TARGETARCH
 docker compose ps                 # app、generation-dispatch-worker 应为 healthy；cron 应为 running
-curl -fsS http://127.0.0.1:3000/api/health         # {"status":"ok","reports":N}
+curl -fsS http://127.0.0.1:3000/api/health         # {"status":"ok","reports":N,"data":{...}}
 ```
 
-`/api/health` 仅代表 Web/app 与数据库的基础存活，**不代表**生成队列已被消费。
+`/api/health` 仅代表 Web/app 与数据库的基础存活，**不代表**生成队列已被消费。其
+`data.staleDailyTopicCount` 会单独计数陈旧的启用日报主题；它不改变 HTTP 200 或 Docker
+健康状态（防止无效重启），但会经已授权的告警渠道按主题去重通知。不要只看全局最新报告：
+其他主题的新报告不能掩盖某个日报主题连续漏报。
 `generation-dispatch-worker` 的健康检查会读取内部 queue-age readiness：最老 queued 或
 过期 claimed dispatch 超过 5 分钟会发送告警，超过 15 分钟会标为 `unhealthy`。部署、扩缩容
 或手动停止 worker 时，Compose 会给予它 2 分 15 秒 drain 窗口；不要用 `kill -9` 代替正常停止。
@@ -104,6 +107,8 @@ curl -fsS -X POST http://127.0.0.1:3000/api/cron -H "authorization: Bearer $CRON
 | `ALERT_FEISHU_SECRET` | 否 | 飞书群机器人开了「签名校验」时设；自动加 `timestamp + sign`。不开签名则不设 |
 | `ALERT_TIMEOUT_MS` | 否 | 告警发送超时，默认 5000 |
 | `BRIEF_ACCEPTANCE_WATCH` | 否 | `1`=P0a Brief 验收观察期：每次 Brief 落库后自动核对 report output ref、非空洞察及发布引用白名单；未达标才复用 `ALERT_WEBHOOK` 告警。空刊记为待下一个非空样本，不等同于管线故障；完成验收后关闭。 |
+| `BRIEF_THIN_REPORT_ALERT` | 否 | 默认开启；设 `0` 关闭“输入充足但发布偏薄”的日报运营提醒。只复用 `ALERT_WEBHOOK` 提示复核，不改变选择、鲜度、去重或引用白名单。 |
+| `BRIEF_THIN_MIN_SELECTED` / `BRIEF_THIN_MAX_PUBLISHED` | 否 | 偏薄阈值，默认 10 / 2；仅接受非负整数（前者至少 1）。满足“选中 ≥ min 且发布 ≤ max”时提醒。 |
 | `COST_LIMIT_DAILY` | 否 | 日成本上限（**USD**）；触顶自动熔断定时管线（跳过剩余 topic）+ 告警。未设 = 不限（见 §14）|
 | `COST_LIMIT_MONTHLY` | 否 | 月成本上限（**USD**，自然月 UTC）；同上熔断 + 告警。未设 = 不限 |
 | `COST_ALERT_PCT` | 否 | 触顶前的告警阈值百分比，默认 80；任一维度达此比例发一次「接近上限」告警 |
@@ -120,7 +125,8 @@ curl -fsS -X POST http://127.0.0.1:3000/api/cron -H "authorization: Bearer $CRON
 
 ## 5. 运行与监控
 
-- **健康**：`GET /api/health` 是 app liveness（查一次库、不触发 LLM）；`generation-dispatch-worker` 另有受 secret 保护的 queue-age readiness，二者不可互相替代。`docker compose ps` 应见 app 和 worker healthy；查看 `docker compose logs -f app cron generation-dispatch-worker`。
+- **健康**：`GET /api/health` 是 app liveness（查一次库、不触发 LLM）；`data.staleDailyTopicCount > 0` 表示至少一个启用日报主题超过 `STALENESS_ALERT_HOURS`（默认 26h）未获得 `done brief`，应按主题检查 generation trace、队列、LLM、校验与 drain。新建主题在首报宽限期内显示为 pending，不告警；公开健康响应不泄露主题名称。`generation-dispatch-worker` 另有受 secret 保护的 queue-age readiness，二者不可互相替代。`docker compose ps` 应见 app 和 worker healthy；查看 `docker compose logs -f app cron generation-dispatch-worker`。
+- **日报偏薄**：管理看板的“日报选择漏斗”用 P0 Trace 显示候选→选中→分析→校验→鲜度/去重→发布。默认在“选中至少 10 条、最终发布不超过 2 条”时经 `ALERT_WEBHOOK` 提醒复核；这不是质量门失败，也不会自动放宽引用白名单或去重。可用 `BRIEF_THIN_MIN_SELECTED` / `BRIEF_THIN_MAX_PUBLISHED` 调整，或以 `BRIEF_THIN_REPORT_ALERT=0` 关闭。优先检查 Trace 中的候选来源覆盖、近期选中数和 `freshness_filtered` / `already_published_filtered`，再决定是否调整来源或选择策略。
 - **生成调度队列**：在 worker 容器执行 `node --no-warnings /app/ops/generation-dispatch-healthcheck.mjs` 可复现其探针。若其失败，查 worker 日志、`generation_dispatch` / `generation_lease` 的过期记录、SQLite 锁与上游 LLM/网络；不要因 Web `/api/health` 为 200 而忽略该状态。
 - **Run 记录**：每次采集/分析/校验/报告经 Job Runner 落一条 Run（单调时钟耗时 + 失败捕获 + 成本透传）；`audit_log` 记关键动作；成本计量按模型累计。
 - **报告**：Web `/reports`（报告库）/ 今日 Brief / 看板 / `/settings`；登录 `/login`。
@@ -280,7 +286,7 @@ docker compose run --rm --no-deps migrate \
 
 > 验证别只看 `HTTP 200`（跨服务调用里 200 ≠ 成功，如飞书回 200+错误码）；用 `docker exec deep-insight-app-1 node /app/ops/probe-alert.mjs` 看渠道 + `code=0` + 真到达。
 
-> ⚠️ **运行时配置持久化（成本熔断 / 报告推送 / 转写采集）**：`COST_LIMIT_DAILY`/`COST_LIMIT_MONTHLY`/`COST_ALERT_PCT`/`REPORT_PUSH`/`PUBLIC_BASE_URL`/`TRANSCRIPT_FETCH` 这几个常在生产手动配。
+> ⚠️ **运行时配置持久化（成本熔断 / 报告推送 / 转写采集 / 日报偏薄提醒）**：`COST_LIMIT_DAILY`/`COST_LIMIT_MONTHLY`/`COST_ALERT_PCT`/`REPORT_PUSH`/`PUBLIC_BASE_URL`/`TRANSCRIPT_FETCH`/`BRIEF_THIN_REPORT_ALERT`/`BRIEF_THIN_MIN_SELECTED`/`BRIEF_THIN_MAX_PUBLISHED` 这几个常在生产手动配。
 > - **`ops/aws/deploy.sh` 路径**：scp **全量覆盖**远程 `.env.local`（源 = 本地 `.env.local`，仅剔除 `DB_PATH`/`DATA_DIR`）。故生产值必须落进**本地** `.env.local`，否则下次 deploy 静默抹掉熔断/推送。已加两道护栏：`gen-env.sh` 重生成时**继承**旧 `.env.local` 的这些值；`deploy.sh` 投递前**体检缺失即告警**。
 > - **`deploy.yml`（CD）路径**：只下载版本化 `docker-compose.yml` 并拉取 GHCR 镜像，绝不覆盖 `.env.local`；首次仍需由 operator 在服务器配置好该文件。
 > - 仅调这几个值时：直接编辑服务器 `.env.local` 后 `docker compose up -d --force-recreate`（§7），**别重跑 `deploy.sh`/`gen-env.sh` 以免连带覆盖**；同时把值同步回本地 `.env.local` 留底。教训见 `docs/verify/mvp-gap-2026-06-07.md` §2.1。
