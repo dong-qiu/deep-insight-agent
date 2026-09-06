@@ -11,13 +11,14 @@ import {
 import { makeConsistencyCache } from "../db/consistency-cache.js";
 import { getContentItem, getSource } from "../db/repos.js";
 import { listRecentPublishedEventEvidence, saveFailedReport, saveReport, type ReportAnchorPublication } from "../db/reports.js";
-import { notifyBriefAcceptance, notifyFailure, notifyReport } from "../runtime/alert.js";
+import { notifyBriefAcceptance, notifyFailure, notifyReport, notifyThinBrief } from "../runtime/alert.js";
 import { runJob } from "../runtime/jobs.js";
 import type { AnalysisBatch, ContentItem, Cost, Report, TechLead, Topic, ValidationResult } from "../types.js";
 import { upsertTechLeads } from "../db/tech-leads.js";
 import { listTopicDirections, seedDefaultDirections, upsertTechnologyOpportunities } from "../db/planning.js";
 import { analyze, analyzerCacheVersion, type HistoricalEvent } from "./analyzer.js";
 import { buildReport, reportHighlights, summarizeBriefSelection, type BriefFreshness, type CitationDisplay } from "./report-gen.js";
+import type { AnalysisSelectionDiagnostics } from "./analysis-selection.js";
 import { consistencyCacheVersion, isValidationDegraded, validateBatch } from "./validator.js";
 import { extractLeadCandidates } from "./tech-leads.js";
 import { deriveOpportunityCandidates } from "./opportunity-planning.js";
@@ -260,6 +261,9 @@ export async function runReportGen(
     type: Report["type"];
     prevReportId?: string | null;
     briefFreshness?: BriefFreshness;
+    /** Scheduler-side count-only selection telemetry.  It is diagnostic only
+     * and must never participate in report selection or rendering. */
+    selectionDiagnostics?: AnalysisSelectionDiagnostics;
     traceId?: string;
     assertWrite?: () => void;
     anchor?: ReportAnchorPublication;
@@ -355,6 +359,20 @@ export async function runReportGen(
         expectedCitationCount: selection.summary.published_citation_count,
         reasonCode: emptyReason,
       });
+      if (opts.type === "brief" && opts.selectionDiagnostics) {
+        notifyThinBrief({
+          reportId: report.id, topicId: opts.topic.id, topicName: opts.topic.name, traceId: opts.traceId,
+          selectedCount: opts.selectionDiagnostics.selected_count,
+          selectedSourceCount: opts.selectionDiagnostics.selected_source_count,
+          freshSelectedCount: opts.selectionDiagnostics.fresh_selected_count,
+          analysisInsightCount: opts.batch.insights.length,
+          includableInsightCount: selection.summary.includable_insight_count,
+          freshnessFilteredInsightCount: selection.summary.freshness_filtered_insight_count,
+          alreadyPublishedFilteredInsightCount: selection.summary.already_published_filtered_insight_count,
+          publishedInsightCount: selection.summary.published_insight_count,
+          publishedCitationCount: selection.summary.published_citation_count,
+        });
+      }
       // 报告推送（B）：落库后主动推给用户（REPORT_PUSH=1 opt-in；空 brief 自动跳过）。
       // 非阻塞、永不抛——放 saveReport 之后，推送失败绝不影响已落库报告 / Run done。
       // 推送要点（复用报告选取/排序，与 index.highlights 同源同序）：让邮件/webhook 展示可扫读的

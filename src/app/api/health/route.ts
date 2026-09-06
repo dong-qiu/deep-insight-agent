@@ -6,7 +6,7 @@
 import { NextResponse } from "next/server";
 import { getDb } from "../../../lib/db/index.js";
 import { runLogger } from "../../../lib/runtime/logger.js";
-import { checkStaleness, maybeAlertStale } from "../../../lib/runtime/staleness.js";
+import { checkDailyTopicStaleness, checkStaleness, maybeAlertDailyTopicStaleness, maybeAlertStale } from "../../../lib/runtime/staleness.js";
 
 export const dynamic = "force-dynamic";
 
@@ -17,7 +17,9 @@ export async function GET(): Promise<NextResponse> {
     const db = getDb();
     const { c } = db.prepare("SELECT COUNT(*) AS c FROM report").get() as { c: number };
     const s = checkStaleness(db);
+    const dailyTopics = checkDailyTopicStaleness(db);
     maybeAlertStale(s); // 心跳触发的陈旧告警（去重 + fire-and-forget，不阻塞探针）
+    maybeAlertDailyTopicStaleness(dailyTopics);
     return NextResponse.json({
       status: "ok",
       reports: c,
@@ -28,6 +30,10 @@ export async function GET(): Promise<NextResponse> {
         contentAgeHours: round1(s.contentAgeHours),
         latestReportAt: s.latestReportAt,
         thresholdHours: s.thresholdHours,
+        // Public health stays low-cardinality: topic identities are sent only
+        // through the authorized alert channel, never exposed by this probe.
+        dailyTopicCount: dailyTopics.topics.length,
+        staleDailyTopicCount: dailyTopics.staleTopics.length,
       },
     });
   } catch (e) {

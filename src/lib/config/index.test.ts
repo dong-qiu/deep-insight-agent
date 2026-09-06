@@ -33,6 +33,23 @@ describe("loadStaticConfig + 播种 + 合并", () => {
     expect(cfg.defaultSources[0].backfill).toBeNull(); // 未填 → 默认 null
   });
 
+  it("将 GitHub Changelog 保持为显式启用前的 staged 候选", () => {
+    const cfg = loadStaticConfig();
+    const source = cfg.defaultSources.find((candidate) => candidate.id === "src_github_changelog");
+    expect(source).toMatchObject({
+      type: "rss",
+      endpoint: "https://github.blog/changelog/feed/",
+      topic_ids: ["t_code_agents"],
+      fetch_interval: "6h",
+      fetch_mode: "feed",
+      enabled: false,
+    });
+    seedDefaults(db, cfg);
+    expect(db.prepare("SELECT enabled FROM source WHERE id=?").get("src_github_changelog")).toEqual({
+      enabled: 0,
+    });
+  });
+
   it("seedDefaults 幂等", () => {
     const cfg = loadStaticConfig();
     const first = seedDefaults(db, cfg);

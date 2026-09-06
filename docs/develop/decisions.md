@@ -1286,3 +1286,31 @@ P1a 原先把数据/法务、Object Lock、KMS/IAM、值班、性能基线与恢
 ### 后果
 
 开发可以以可回滚、无生产副作用的方式开始 P1b-1；生产风险仍在发布前被完整治理门阻断。任务依赖改为 INSI-27 → INSI-15 → INSI-19 → INSI-22 → INSI-23，后续 dashboard 与验收链不变。若生产治理结论改变保留或权限契约，必须先更新 P1a spec 和本 ADR，再推进受影响实现。
+
+---
+
+## ADR-0024: P0 发布与未准入 P1 实现的隔离交付
+
+- **日期**: 2026-09-05
+- **状态**: Accepted
+
+### 背景
+
+P1 驾驶舱实现已在同一应用构建中受测试，但 `required` 镜像标签会拒绝所有包含它的后续 P0 修复。结果是
+一项未启用的 P1 工作反向阻断了已验证的 P0 可靠性修复，迫使发布依赖历史“无标签”镜像；这既无法持续，
+也降低了部署身份的可审计性。
+
+### 决定
+
+1. 标准生产镜像的 P1 dashboard admission profile 为 `isolated`，而不是笼统的 `required`。它仅表示镜像可带
+   经构建裁剪后的实现代码，不表示 P1 获得生产准入。
+2. INSI-25 前部署工作流只接受 legacy（迁移期）或 `isolated` profile，并继续拒绝 `required`、`enabled` 和未知值；
+   同时拒绝生产环境将 `P1_DASHBOARD_ENABLED` 或 `INTEGRITY_ANCHOR_ENABLED` 置为真。
+3. `isolated` 不是信任声明：CI 必须从实际 standalone 镜像经真实 NextAuth HTTP 流程验证 P1 dashboard、完整性与
+   保留生命周期受控入口均 fail-closed 且为 404；任何新增外部 P1 seam 必须加入该容器级验证，才能随 P0 镜像交付。
+
+### 后果
+
+P0 修复可继续使用当前 main 的不可变镜像发布，不再依赖过时镜像。P1 的实际启用、外部可达性、生产验收和
+production-ready 声明仍由 INSI-25 阻断；若 future profile 允许任一 P1 seam 返回成功，必须先取得该门的可审计
+证据，并将其标签改为 `enabled`（届时现有部署门会拒绝，直到发布流程被有意识地更新）。

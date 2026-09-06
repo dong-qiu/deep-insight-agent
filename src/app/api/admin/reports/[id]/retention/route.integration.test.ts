@@ -19,6 +19,7 @@ beforeEach(async () => {
   vi.resetModules();
   vi.stubEnv("DB_PATH", join(tempDir, "insight.db"));
   vi.stubEnv("INTEGRITY_ANCHOR_ENABLED", "false");
+  vi.stubEnv("P1_DASHBOARD_ENABLED", "true");
   auth.requireAdminActor.mockReset().mockResolvedValue({ id: "admin_1", role: "admin" });
   ({ POST } = await import("./route.js"));
   ({ getDb, closeDb } = await import("../../../../../../lib/db/index.js"));
