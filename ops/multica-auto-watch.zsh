@@ -30,10 +30,9 @@ _insight_multica_started_issue() {
         ;;
     esac
 
-    # Multica identifiers are workspace-prefix plus a numeric issue number
-    # (for example, INSI-91 or GH-242). This prevents an option value such as
-    # `--to researcher` from being mistaken for the issue ID.
-    if [[ "$candidate" =~ '^[[:alpha:]][[:alnum:]_]*-[0-9]+$' ]]; then
+    # Keep this in sync with the watcher input contract. It prevents an option
+    # value such as `--to researcher` from being mistaken for the issue ID.
+    if [[ "$candidate" =~ '^INSI-[1-9][0-9]*$' ]]; then
       print -r -- "$candidate"
       return 0
     fi
@@ -48,9 +47,10 @@ multica() {
   ((command_status == 0)) || return "$command_status"
 
   local issue
-  issue="$(_insight_multica_started_issue "$@")" || return 0
-  [[ -t 1 ]] || return 0
+  issue="$(_insight_multica_started_issue "$@")" || return "$command_status"
+  [[ -t 1 ]] || return "$command_status"
 
   print -r -- "\nStarting foreground observation for $issue. Press Ctrl-C to stop observing."
-  node "$_INSIGHT_MULTICA_WATCH_ROOT/ops/multica-task-watch.mjs" "$issue"
+  node "$_INSIGHT_MULTICA_WATCH_ROOT/ops/multica-task-watch.mjs" "$issue" || :
+  return "$command_status"
 }

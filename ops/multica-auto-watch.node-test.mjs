@@ -21,7 +21,7 @@ test("finds a normal Multica issue identifier", () => {
 
 test("does not confuse option values with the issue identifier", () => {
   assert.equal(startedIssue("issue", "assign", "--to", "researcher", "INSI-91"), "INSI-91");
-  assert.equal(startedIssue("issue", "assign", "--output", "table", "GH-242"), "GH-242");
+  assert.equal(startedIssue("issue", "assign", "--output", "table", "INSI-242"), "INSI-242");
 });
 
 test("does not watch commands that explicitly suppress task start", () => {
