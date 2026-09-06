@@ -24,6 +24,10 @@ const FETCH_TIMEOUT_MS = 12000;
 
 // Tier-1 候选（与分析结论一致）：feed URL / 预期模式 / 按源容器猜测（class|id token，试多个取最优）。
 const CANDIDATES = [
+  // 2026-09 reliability migration: legacy semianalysis.com/feed is stale; this is the current
+  // official newsletter feed. Keep it in the production-IP gate before the guarded migration.
+  { id: "src_semianalysis", name: "SemiAnalysis", url: "https://newsletter.semianalysis.com/feed",
+    mode: "feed", guesses: [] },
   { id: "src_simonwillison", name: "Simon Willison", url: "https://simonwillison.net/atom/everything/",
     mode: "full_text", guesses: ["entry", "content"] },
   { id: "src_martinfowler",  name: "Martin Fowler",  url: "https://martinfowler.com/feed.atom",

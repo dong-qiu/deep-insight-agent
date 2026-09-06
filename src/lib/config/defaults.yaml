@@ -116,8 +116,12 @@ defaultSources:
   - id: src_semianalysis
     name: SemiAnalysis
     type: rss
-    endpoint: https://www.semianalysis.com/feed
-    # 算力/基建/供应链/资本支出经济学（Dylan Patel）。全文在 feed（content:encoded）→ 无需 full_text。
+    endpoint: https://newsletter.semianalysis.com/feed
+    # 算力/基建/供应链/资本支出经济学（Dylan Patel）。旧 semianalysis.com/feed 在生产侧停在
+    # 2025-09；2026-09-06 以 InsightAgentBot 从生产出口复测此 newsletter feed：robots 放行
+    # /feed、20 条当前 RSS、首条正文约 19k 字，故迁至站方当前 newsletter 入口。全文在
+    # content:encoded → 无需 full_text。生产存量库须经 seed-semianalysis-source.sh 的精确迁移，
+    # 不能期待 defaults 自动覆盖。
     topic_ids: [t_ai_industry]
     fetch_interval: 24h
     enabled: true
@@ -156,7 +160,10 @@ defaultSources:
     endpoint: https://research.google/blog/rss/
     topic_ids: [t_code_agents]
     fetch_interval: 6h
-    enabled: true
+    # 2026-09-06 的 60 天生产复审：采 18 条、0 被引；内容主要是医学、气候、生命科学等
+    # Google Research 通用研究，和「AI 时代的软件工程」主题错配。默认停用；保留历史内容，
+    # 不删除。生产存量由 guarded disable 脚本显式停用，避免配置漂移。
+    enabled: false
     # RSS 仅给摘要(~20字)→ 按 URL 抓文章页全文(ADR-0008 决定③);正文容器 class=rich_text(生产实测)
     fetch_mode: full_text
     content_container: rich_text
