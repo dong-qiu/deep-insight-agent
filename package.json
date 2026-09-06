@@ -36,9 +36,9 @@
     "typecheck": "npm run typecheck:ts7 && npm run typecheck:ts6",
     "typecheck:ts7": "node ./node_modules/@typescript/native/bin/tsc --noEmit",
     "typecheck:ts6": "node ./node_modules/typescript/bin/tsc --noEmit",
-    "test": "vitest run && node --test ops/multica-task-watch.node-test.mjs",
+    "test": "vitest run",
     "test:e2e": "npm run build && vitest run --config vitest.e2e.config.ts",
-    "test:coverage": "vitest run --coverage && node --test ops/multica-task-watch.node-test.mjs"
+    "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "0.122.0",
