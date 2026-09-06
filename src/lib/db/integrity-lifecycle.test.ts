@@ -185,7 +185,7 @@ describe("integrity retention lifecycle", () => {
       const input = command as { input: { Message?: Uint8Array } };
       return input.input.Message
         ? { Signature: sign(null, input.input.Message, keys.privateKey) }
-        : { PublicKey: keys.publicKey.export({ type: "spki", format: "der" }), SigningAlgorithms: ["EDDSA"] };
+        : { KeyId: "arn:aws:kms:region:account:key/immutable-key", PublicKey: keys.publicKey.export({ type: "spki", format: "der" }), SigningAlgorithms: ["EDDSA"] };
     } };
     const signer = await KmsEd25519AnchorSigner.create("alias/deep-insight-integrity-signing", kms);
     expect(await destroyRetainedReport(db, { report_id: "report", actor_id: "retention-worker", signer, now: "2026-02-02T00:00:00.000Z" })).toEqual({ kind: "destroyed" });

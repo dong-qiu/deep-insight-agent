@@ -10,7 +10,7 @@ import type { ReportAnchorPublication } from "../db/reports.js";
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 type AnchorEnvironment = Readonly<Record<string, string | undefined>>;
-type KmsSender = { send(command: unknown): Promise<{ PublicKey?: Uint8Array; SigningAlgorithms?: string[]; Signature?: Uint8Array }> };
+type KmsSender = { send(command: unknown): Promise<{ KeyId?: string; PublicKey?: Uint8Array; SigningAlgorithms?: string[]; Signature?: Uint8Array }> };
 
 /** AWS KMS keeps the Ed25519 private key non-exportable.  `GetPublicKey` is
  * used only to obtain SPKI verification material; signing sends exactly the
@@ -26,10 +26,14 @@ export class KmsEd25519AnchorSigner implements AnchorSigner {
     if (!keyId.trim()) throw new Error("integrity_anchor_not_configured");
     try {
       const response = await kms.send(new GetPublicKeyCommand({ KeyId: keyId }));
-      if (!response.PublicKey || !response.SigningAlgorithms?.includes("EDDSA")) throw new Error("invalid");
+      // KMS resolves aliases to a key ARN here.  Keep that immutable ARN for
+      // both the ledger and all later Sign calls: using the original alias
+      // would let a concurrent alias rotation produce a signature whose
+      // public verification material belongs to a different key.
+      if (!response.KeyId || !response.PublicKey || !response.SigningAlgorithms?.includes("EDDSA")) throw new Error("invalid");
       const publicKey = createPublicKey({ key: Buffer.from(response.PublicKey), format: "der", type: "spki" });
       if (publicKey.asymmetricKeyType !== "ed25519") throw new Error("invalid");
-      return new KmsEd25519AnchorSigner(keyId, publicKey, kms);
+      return new KmsEd25519AnchorSigner(response.KeyId, publicKey, kms);
     } catch {
       throw new Error("integrity_anchor_kms_verification_material_unavailable");
     }

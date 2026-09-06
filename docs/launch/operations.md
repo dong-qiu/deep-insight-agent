@@ -30,7 +30,8 @@ bucket 的读取权限，不加载签名私钥。
 
 签名器由 `INTEGRITY_ANCHOR_SIGNER` 显式选择。受控 AWS 路径使用
 `aws-kms` 和 `INTEGRITY_ANCHOR_KEY_ID=alias/deep-insight-integrity-signing`：运行时先以
-KMS `GetPublicKey` 取得 Ed25519 的公开验证材料，再仅以 `Sign`/`EDDSA` 签署固定的
+KMS `GetPublicKey` 取得 Ed25519 的公开验证材料，并将 KMS 返回的不可变 key ARN 固定为
+账本和后续签名使用的 key ID，再仅以 `Sign`/`EDDSA` 签署固定的
 domain-separated canonical bytes；它不读取 `INTEGRITY_ANCHOR_PRIVATE_KEY_PEM`，也不在日志中记录
 请求正文、object locator、密钥标识或签名。`pem` 仅保留给现有隔离开发 fixture 的兼容路径，且仍须
 显式满足全部保留期配置。无论 signer 模式如何，当前 INSI-25 准入闸仍会拒绝启用；本段不是生产启用指令。

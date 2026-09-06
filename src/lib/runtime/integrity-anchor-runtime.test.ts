@@ -67,7 +67,7 @@ describe("deployment anchor publication", () => {
       calls.push(command);
       const input = command as { input: { Message?: Uint8Array } };
       if (input.input.Message) return { Signature: sign(null, input.input.Message, keys.privateKey) };
-      return { PublicKey: keys.publicKey.export({ type: "spki", format: "der" }), SigningAlgorithms: ["EDDSA"] };
+      return { KeyId: "arn:aws:kms:region:account:key/immutable-key", PublicKey: keys.publicKey.export({ type: "spki", format: "der" }), SigningAlgorithms: ["EDDSA"] };
     } };
     const publication = await deploymentAnchorPublication({
       INTEGRITY_ANCHOR_BUCKET: "immutable-anchor-bucket", INTEGRITY_ANCHOR_KEY_ID: "alias/deep-insight-integrity-signing",
@@ -77,6 +77,9 @@ describe("deployment anchor publication", () => {
     expect(publication.signer.private_key).toBeUndefined();
     await publication.signer.sign!(new Uint8Array([1, 2, 3]));
     expect(calls).toHaveLength(2);
+    expect((calls[0] as { input: { KeyId: string } }).input.KeyId).toBe("alias/deep-insight-integrity-signing");
+    expect((calls[1] as { input: { KeyId: string } }).input.KeyId).toBe("arn:aws:kms:region:account:key/immutable-key");
+    expect(publication.signer.key_id).toBe("arn:aws:kms:region:account:key/immutable-key");
   });
 
   it("fails closed when KMS cannot supply Ed25519 verification material", async () => {
@@ -93,7 +96,7 @@ describe("deployment anchor publication", () => {
     const kms = { send: async (command: unknown) => {
       const input = command as { input: { Message?: Uint8Array } };
       if (input.input.Message) throw new Error("provider request detail must not escape");
-      return { PublicKey: keys.publicKey.export({ type: "spki", format: "der" }), SigningAlgorithms: ["EDDSA"] };
+      return { KeyId: "arn:aws:kms:region:account:key/immutable-key", PublicKey: keys.publicKey.export({ type: "spki", format: "der" }), SigningAlgorithms: ["EDDSA"] };
     } };
     const publication = await deploymentAnchorPublication({
       INTEGRITY_ANCHOR_BUCKET: "immutable-anchor-bucket", INTEGRITY_ANCHOR_KEY_ID: "alias/deep-insight-integrity-signing",
