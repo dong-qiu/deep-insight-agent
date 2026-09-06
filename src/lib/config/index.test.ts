@@ -50,6 +50,34 @@ describe("loadStaticConfig + 播种 + 合并", () => {
     });
   });
 
+  it("将已复审的信息源以预期默认值播种", () => {
+    const cfg = loadStaticConfig();
+    const semianalysis = cfg.defaultSources.find((candidate) => candidate.id === "src_semianalysis");
+    const googleResearch = cfg.defaultSources.find((candidate) => candidate.id === "src_google_research");
+
+    expect(semianalysis).toMatchObject({
+      endpoint: "https://newsletter.semianalysis.com/feed",
+      topic_ids: ["t_ai_industry"],
+      fetch_mode: "feed",
+      enabled: true,
+    });
+    expect(googleResearch).toMatchObject({
+      endpoint: "https://research.google/blog/rss/",
+      topic_ids: ["t_code_agents"],
+      fetch_mode: "full_text",
+      content_container: "rich_text",
+      enabled: false,
+    });
+
+    seedDefaults(db, cfg);
+    expect(db.prepare("SELECT endpoint, enabled FROM source WHERE id=?").get("src_semianalysis")).toEqual({
+      endpoint: "https://newsletter.semianalysis.com/feed", enabled: 1,
+    });
+    expect(db.prepare("SELECT enabled FROM source WHERE id=?").get("src_google_research")).toEqual({
+      enabled: 0,
+    });
+  });
+
   it("seedDefaults 幂等", () => {
     const cfg = loadStaticConfig();
     const first = seedDefaults(db, cfg);
