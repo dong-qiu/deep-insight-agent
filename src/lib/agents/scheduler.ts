@@ -15,7 +15,7 @@ import { getBudgetStatus } from "../runtime/cost-guard.js";
 import { runLogger } from "../runtime/logger.js";
 import type { Report } from "../types.js";
 import { collectSource } from "./collector.js";
-import { briefFreshHours, briefFreshQuota, contentObservedAt, selectAnalysisItems } from "./analysis-selection.js";
+import { briefFreshHours, briefFreshQuota, contentObservedAt, selectAnalysisItems, selectAnalysisItemsWithDiagnostics } from "./analysis-selection.js";
 import { runCircuitCheck, runHalfOpenProbe, runZeroYieldWatch } from "./source-health.js";
 import { runAnalysis, runReportGen, runTechLeadExtraction, runValidation } from "./pipeline.js";
 
@@ -227,10 +227,11 @@ export async function runScheduledTopicPipeline(
   const endIso = new Date(end).toISOString();
   const since = new Date(end - input.windowHours * 3_600_000).toISOString();
   const freshnessSince = new Date(end - briefFreshHours() * 3_600_000).toISOString();
-  const items = selectAnalysisItems(db, topic, {
+  const selection = selectAnalysisItemsWithDiagnostics(db, topic, {
     since, until: endIso, limit: input.items, coldStart: input.reportType === "initial_digest",
     freshness: input.reportType === "brief" ? { since: freshnessSince, quota: briefFreshQuota() } : undefined,
   });
+  const items = selection.items;
   if (!items.length) {
     if (!input.rootRunId) throw new Error("scheduled dispatch missing root Run");
     db.transaction(() => {
@@ -239,7 +240,7 @@ export async function runScheduledTopicPipeline(
       if (input.traceId) {
         appendGenerationEvent(db, {
           trace_id: input.traceId, stage: "select", event_type: "skipped", reason_code: "no_content",
-          metrics: { selected_count: 0 },
+          metrics: { ...selection.diagnostics },
         });
       }
     })();
@@ -249,7 +250,7 @@ export async function runScheduledTopicPipeline(
     input.assertWrite?.();
     appendGenerationEvent(db, {
       trace_id: input.traceId, stage: "select", event_type: "completed",
-      metrics: { selected_count: items.length },
+      metrics: { ...selection.diagnostics },
     });
   }
   const history = input.reportType === "brief" ? listRecentBriefEvents(db, topic.id) : [];
@@ -268,6 +269,7 @@ export async function runScheduledTopicPipeline(
   return runReportGen(db, {
     topic, batch, validation, type: input.reportType, prevReportId, traceId: input.traceId, assertWrite: input.assertWrite,
     briefFreshness: freshItems.length ? { since: freshnessSince, content_item_ids: freshItems.map((item) => item.id), freshest_candidate_at: freshestCandidateAt } : undefined,
+    selectionDiagnostics: selection.diagnostics,
     anchor: input.anchor,
   });
 }

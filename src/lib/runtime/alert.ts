@@ -125,6 +125,75 @@ export function notifyBriefAcceptance(input: BriefAcceptanceInput): void {
   }
 }
 
+/** A Daily Brief can be truthful yet thin after evidence freshness and event
+ * de-duplication.  This is an operator signal, not a quality override: it
+ * never expands selection or weakens the citation whitelist. */
+export interface ThinBriefAlert {
+  reportId: string;
+  topicId: string;
+  topicName: string;
+  traceId?: string;
+  selectedCount: number;
+  selectedSourceCount: number;
+  freshSelectedCount: number;
+  analysisInsightCount: number;
+  includableInsightCount: number;
+  freshnessFilteredInsightCount: number;
+  alreadyPublishedFilteredInsightCount: number;
+  publishedInsightCount: number;
+  publishedCitationCount: number;
+}
+
+const briefThinAlertedReports = new Set<string>();
+
+/** Defaults deliberately require a substantial input slice.  A quiet day
+ * with only a few candidates is not an incident; 10 selected inputs becoming
+ * <=2 published insights merits an operator look. */
+export function briefThinAlertThresholds(): { enabled: boolean; minSelected: number; maxPublished: number } {
+  const integer = (name: string, fallback: number, min: number): number => {
+    const value = Number(process.env[name]);
+    return Number.isSafeInteger(value) && value >= min ? value : fallback;
+  };
+  return {
+    enabled: process.env.BRIEF_THIN_REPORT_ALERT !== "0",
+    minSelected: integer("BRIEF_THIN_MIN_SELECTED", 10, 1),
+    maxPublished: integer("BRIEF_THIN_MAX_PUBLISHED", 2, 0),
+  };
+}
+
+export function isThinBrief(input: Pick<ThinBriefAlert, "selectedCount" | "publishedInsightCount">): boolean {
+  const thresholds = briefThinAlertThresholds();
+  return thresholds.enabled && input.selectedCount >= thresholds.minSelected && input.publishedInsightCount <= thresholds.maxPublished;
+}
+
+export function thinBriefNotification(input: ThinBriefAlert): Notification {
+  const thresholds = briefThinAlertThresholds();
+  return {
+    title: "🟡 日报内容偏薄：请检查选择漏斗",
+    text: [
+      `主题：${input.topicName}（${input.topicId}）`,
+      `报告：${input.reportId}${input.traceId ? `\nTrace：${input.traceId}` : ""}`,
+      `选中 ${input.selectedCount}（${input.selectedSourceCount} 源；近期 ${input.freshSelectedCount}）→ 分析 ${input.analysisInsightCount} → 可纳入 ${input.includableInsightCount} → 新鲜度过滤 ${input.freshnessFilteredInsightCount} → 已发布去重 ${input.alreadyPublishedFilteredInsightCount} → 发布 ${input.publishedInsightCount}（引用 ${input.publishedCitationCount}）`,
+      `触发口径：选中 ≥${thresholds.minSelected} 且发布 ≤${thresholds.maxPublished}。这不自动放宽引用、新鲜度或去重规则；请从 Trace 判断是否需要调整来源或选择策略。`,
+    ].join("\n"),
+    priority: "default",
+    tags: ["warning", "daily-brief-thin"],
+  };
+}
+
+/** One report has one publication attempt, so in-process dedup avoids a
+ * duplicated delivery from an accidental repeated notification call. A new
+ * retried report has a new id and remains separately observable. */
+export function notifyThinBrief(input: ThinBriefAlert): void {
+  if (!isThinBrief(input) || briefThinAlertedReports.has(input.reportId)) return;
+  briefThinAlertedReports.add(input.reportId);
+  try { notify(thinBriefNotification(input)); }
+  catch (e) { runLogger({ stage: "alert" }).warn({ err: e instanceof Error ? e.message : String(e) }, "日报偏薄告警构造失败（已忽略）"); }
+}
+
+/** Test-only reset for the per-report delivery guard. */
+export function resetThinBriefAlertState(): void { briefThinAlertedReports.clear(); }
+
 const REPORT_TYPE_LABEL: Record<ReportPush["type"], string> = {
   brief: "今日 Brief",
   deep_dive: "主题深挖",

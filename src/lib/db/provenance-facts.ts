@@ -25,7 +25,8 @@ export interface GenerationEventInput {
  * 新的观测字段须先在这里登记、补回归测试，并确认其值不是 prompt、原文、凭据或用户内容。
  */
 export const GENERATION_EVENT_METRIC_KEYS = [
-  "selected_count", "input_content_count", "analysis_insight_count", "no_significant_event",
+  "selected_count", "candidate_content_count", "candidate_source_count", "selected_source_count",
+  "fresh_candidate_count", "fresh_selected_count", "input_content_count", "analysis_insight_count", "no_significant_event",
   "citation_total", "citation_pass", "citation_blocked", "citation_flagged", "citation_errored",
   "includable_insight_count", "releasable", "freshness_filtered_insight_count",
   "already_published_filtered_insight_count", "supplemental_candidate_count",
