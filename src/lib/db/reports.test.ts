@@ -6,7 +6,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { AnalysisBatch, Report, ReportIndexEntry, Topic, ValidationResult } from "../types.js";
 import { saveAnalysisBatch, saveValidationResult } from "./analysis.js";
 import { type DB, openDb } from "./index.js";
-import { chainTypesFor, distinctIndexValues, entityTrends, getReport, latestReportForTopicSince, listBlockedChecksForReport, listRecentBriefEvents, listRecentPublishedEventEvidence, listRecentReports, previousReportForTopic, queryReportIndex, reconcileAnchoredReportEffects, reconcileReportEffects, reportNeighbors, reportStatusCounts, sanitizeFtsQuery, saveFailedReport, saveReport, searchReports, SNIPPET_CLOSE, SNIPPET_OPEN, topicEvolution, topicReportStats } from "./reports.js";
+import { chainTypesFor, distinctIndexValues, entityTrends, getReport, latestReportForTopicSince, listBlockedChecksForReport, listRecentBriefEvents, listRecentPublishedEventEvidence, listRecentBriefSelectionDiagnostics, listRecentReports, previousReportForTopic, queryReportIndex, reconcileAnchoredReportEffects, reconcileReportEffects, reportNeighbors, reportStatusCounts, sanitizeFtsQuery, saveFailedReport, saveReport, searchReports, SNIPPET_CLOSE, SNIPPET_OPEN, topicEvolution, topicReportStats } from "./reports.js";
 import { applyProvenanceMigrations } from "./provenance-migrations.js";
 import { appendGenerationEvent } from "./provenance-facts.js";
 import { getTopic, insertSource, insertTopic } from "./repos.js";
@@ -57,6 +57,30 @@ it("provenance 报告 effect 成对关联创建它的 trace 与 started event", 
 
   expect(db.prepare("SELECT trace_id,event_id,status FROM generation_effect WHERE report_id=?").get(report.id))
     .toEqual({ trace_id: "trace_report", event_id: event.id, status: "committed" });
+});
+
+it("日报选择诊断从 P0 trace 聚合受控计数，legacy 报告不伪装为零", () => {
+  db.prepare(`INSERT INTO generation_trace(id,scope_kind,trigger_kind,status,completion_policy,coverage,runtime_version,summary,started_at)
+    VALUES ('trace_selection','topic_pipeline','api','running','{}','complete','{}','{}','2026-05-07T00:00:00Z')`).run();
+  const started = appendGenerationEvent(db, { trace_id: "trace_selection", stage: "generate_report", event_type: "started" });
+  saveReport(db, report, index, { dir, provenance: { traceId: "trace_selection", eventId: started.id } });
+  appendGenerationEvent(db, { trace_id: "trace_selection", stage: "select", event_type: "completed", metrics: {
+    candidate_content_count: 100, candidate_source_count: 8, selected_count: 15, selected_source_count: 5,
+    fresh_candidate_count: 80, fresh_selected_count: 6,
+  } });
+  appendGenerationEvent(db, { trace_id: "trace_selection", stage: "analyze", event_type: "completed", metrics: { analysis_insight_count: 24 } });
+  appendGenerationEvent(db, { trace_id: "trace_selection", stage: "validate", event_type: "completed", metrics: { citation_total: 88, citation_pass: 75, citation_blocked: 5, citation_flagged: 8, citation_errored: 0 } });
+  appendGenerationEvent(db, { trace_id: "trace_selection", stage: "generate_report", event_type: "completed", reason_code: "no_new_publishable_insight", metrics: {
+    includable_insight_count: 22, freshness_filtered_insight_count: 13, already_published_filtered_insight_count: 20,
+    supplemental_candidate_count: 0, supplemental_published_insight_count: 0, published_insight_count: 2, published_citation_count: 8,
+  } });
+  db.prepare(`INSERT INTO report(id,type,topic_id,status,generated_at,title,body_path,insight_ids,event_ids,prev_report_id,citation_count,cost,failure)
+    VALUES ('rep_legacy','brief','t1','done','2026-05-06T00:00:00Z','Legacy',NULL,'[]','[]',NULL,0,'{}',NULL)`).run();
+
+  expect(listRecentBriefSelectionDiagnostics(db, 2)).toEqual([
+    expect.objectContaining({ report_id: report.id, trace_id: "trace_selection", candidate_content_count: 100, selected_source_count: 5, citation_pass: 75, published_insight_count: 2, reason_code: "no_new_publishable_insight" }),
+    expect.objectContaining({ report_id: "rep_legacy", trace_id: null, candidate_content_count: null, published_insight_count: null }),
+  ]);
 });
 
 it("anchored publication makes report, index, FTS, event effect, and manifest visible in one SQLite commit", async () => {

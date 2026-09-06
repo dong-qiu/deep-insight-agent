@@ -558,6 +558,95 @@ export interface RecentReport {
   citation_count: number;
   cost: Report["cost"];
 }
+
+/** A bounded, report-level projection of the deterministic Daily Brief
+ * selection funnel.  This deliberately reads the P0 generation ledger rather
+ * than P1 metric facts: the latter may be admission-isolated in production,
+ * while an operator still needs to diagnose a thin brief. */
+export interface BriefSelectionDiagnostic {
+  report_id: string;
+  topic_id: string;
+  topic_name: string;
+  generated_at: string;
+  citation_count: number;
+  trace_id: string | null;
+  candidate_content_count: number | null;
+  candidate_source_count: number | null;
+  selected_count: number | null;
+  selected_source_count: number | null;
+  fresh_candidate_count: number | null;
+  fresh_selected_count: number | null;
+  analysis_insight_count: number | null;
+  citation_total: number | null;
+  citation_pass: number | null;
+  citation_blocked: number | null;
+  citation_flagged: number | null;
+  citation_errored: number | null;
+  includable_insight_count: number | null;
+  freshness_filtered_insight_count: number | null;
+  already_published_filtered_insight_count: number | null;
+  supplemental_candidate_count: number | null;
+  supplemental_published_insight_count: number | null;
+  published_insight_count: number | null;
+  published_citation_count: number | null;
+  reason_code: string | null;
+}
+
+const selectionMetricKeys = [
+  "candidate_content_count", "candidate_source_count", "selected_count", "selected_source_count",
+  "fresh_candidate_count", "fresh_selected_count", "analysis_insight_count", "citation_total", "citation_pass",
+  "citation_blocked", "citation_flagged", "citation_errored", "includable_insight_count",
+  "freshness_filtered_insight_count", "already_published_filtered_insight_count",
+  "supplemental_candidate_count", "supplemental_published_insight_count", "published_insight_count",
+  "published_citation_count",
+] as const;
+
+function safeSelectionMetrics(value: string | null): Record<string, number> {
+  if (!value) return {};
+  try {
+    const parsed = JSON.parse(value) as Record<string, unknown>;
+    return Object.fromEntries(selectionMetricKeys.flatMap((key) => {
+      const metric = parsed[key];
+      return typeof metric === "number" && Number.isSafeInteger(metric) && metric >= 0 ? [[key, metric]] : [];
+    }));
+  } catch { return {}; }
+}
+
+/** Most recent completed Daily Briefs with only non-sensitive count metrics.
+ * Legacy reports without a committed trace remain visible with null metrics;
+ * they must not be mistaken for a zero-input run. */
+export function listRecentBriefSelectionDiagnostics(db: DB, limit = 14): BriefSelectionDiagnostic[] {
+  if (!hasReportEffectTable(db)) return [];
+  const bounded = Math.min(Math.max(Math.floor(limit), 1), 31);
+  const rows = db.prepare(`SELECT r.id AS report_id,r.topic_id,t.name AS topic_name,r.generated_at,r.citation_count,
+      effect.trace_id,
+      (SELECT metrics FROM generation_event e WHERE e.trace_id=effect.trace_id AND e.stage='select'
+        AND e.event_type IN ('completed','skipped') ORDER BY e.sequence DESC LIMIT 1) AS select_metrics,
+      (SELECT metrics FROM generation_event e WHERE e.trace_id=effect.trace_id AND e.stage='analyze'
+        AND e.event_type='completed' ORDER BY e.sequence DESC LIMIT 1) AS analyze_metrics,
+      (SELECT metrics FROM generation_event e WHERE e.trace_id=effect.trace_id AND e.stage='validate'
+        AND e.event_type='completed' ORDER BY e.sequence DESC LIMIT 1) AS validate_metrics,
+      (SELECT metrics FROM generation_event e WHERE e.trace_id=effect.trace_id AND e.stage='generate_report'
+        AND e.event_type='completed' ORDER BY e.sequence DESC LIMIT 1) AS report_metrics,
+      (SELECT reason_code FROM generation_event e WHERE e.trace_id=effect.trace_id AND e.stage='generate_report'
+        AND e.event_type='completed' ORDER BY e.sequence DESC LIMIT 1) AS reason_code
+    FROM report r JOIN topic t ON t.id=r.topic_id
+    LEFT JOIN generation_effect effect ON effect.id=(SELECT id FROM generation_effect candidate
+      WHERE candidate.report_id=r.id AND candidate.kind='report_file' AND candidate.status='committed'
+      ORDER BY candidate.updated_at DESC,candidate.id DESC LIMIT 1)
+    WHERE r.type='brief' AND r.status='done'
+    ORDER BY r.generated_at DESC,r.id DESC LIMIT ?`).all(bounded) as Array<Record<string, string | number | null>>;
+  return rows.map((row) => {
+    const metrics = { ...safeSelectionMetrics(row.select_metrics as string | null), ...safeSelectionMetrics(row.analyze_metrics as string | null), ...safeSelectionMetrics(row.validate_metrics as string | null), ...safeSelectionMetrics(row.report_metrics as string | null) };
+    return {
+      report_id: row.report_id as string, topic_id: row.topic_id as string, topic_name: row.topic_name as string,
+      generated_at: row.generated_at as string, citation_count: row.citation_count as number, trace_id: row.trace_id as string | null,
+      ...Object.fromEntries(selectionMetricKeys.map((key) => [key, metrics[key] ?? null])),
+      reason_code: row.reason_code as string | null,
+    } as BriefSelectionDiagnostic;
+  });
+}
+
 export function listRecentReports(db: DB, limit = 15): RecentReport[] {
   const rows = db
     .prepare(

@@ -114,6 +114,34 @@ export function selectAnalysisItems(
     freshness?: { since: string; quota?: number };
   },
 ): ContentItem[] {
+  return selectAnalysisItemsWithDiagnostics(db, topic, opts).items;
+}
+
+/** Selection telemetry deliberately contains only bounded counts.  It is
+ * emitted into the generation trace so operators can distinguish "little
+ * collected" from "many candidates, few selected" without recording titles,
+ * prompts, or source URLs in a long-lived operational event. */
+export interface AnalysisSelectionDiagnostics {
+  candidate_content_count: number;
+  candidate_source_count: number;
+  selected_count: number;
+  selected_source_count: number;
+  fresh_candidate_count: number;
+  fresh_selected_count: number;
+}
+
+export function selectAnalysisItemsWithDiagnostics(
+  db: DB,
+  topic: Topic,
+  opts: {
+    since: string;
+    until?: string;
+    limit?: number;
+    candidatePool?: number;
+    coldStart?: boolean;
+    freshness?: { since: string; quota?: number };
+  },
+): { items: ContentItem[]; diagnostics: AnalysisSelectionDiagnostics } {
   const limit = opts.limit ?? 15;
   // 候选池放大到覆盖 F1 后全行业量（每源 ≤50 × 源数），避免高产源按 recency 把研究源（arXiv）
   // 挤出候选窗口、scoring 根本看不到它。打分是内存子串匹配，候选多也廉价。
@@ -125,35 +153,53 @@ export function selectAnalysisItems(
   // ADR-0010：冷启动豁免硬下限（首报用软策略）；否则按 archetype profile 取 relevanceFloor。
   const relevanceFloor = opts.coldStart ? undefined : archetypeProfile(topic.archetype).relevanceFloor;
   const rankingOpts = { relevanceFloor };
-  if (!opts.freshness || candidates.length <= limit) {
-    return rankAndDiversify(candidates, topic.keywords, limit, rankingOpts);
-  }
-
-  const fresh = candidates.filter((item) => contentObservedAt(item) >= opts.freshness!.since);
-  if (!fresh.length) return rankAndDiversify(candidates, topic.keywords, limit, rankingOpts);
-
-  // 先从近期池按同一相关度/多样性规则取保底名额，再由全池补齐。近期池只在存在时生效，
-  // 因而低频主题或源暂时无更新时仍维持原有的历史上下文覆盖。
-  const quota = opts.freshness.quota ?? DEFAULT_BRIEF_FRESH_QUOTA;
-  const freshLimit = Math.min(limit, Math.max(1, Math.ceil(limit * quota)));
-  const freshFirst = rankAndDiversify(fresh, topic.keywords, freshLimit, rankingOpts);
-  const overall = rankAndDiversify(candidates, topic.keywords, limit, rankingOpts);
-  const out = [...freshFirst];
-  const taken = new Set(out.map((item) => item.id));
-  for (const item of overall) {
-    if (out.length >= limit) break;
-    if (!taken.has(item.id)) {
-      taken.add(item.id);
-      out.push(item);
+  const freshness = opts.freshness;
+  let items: ContentItem[];
+  if (!freshness || candidates.length <= limit) {
+    items = rankAndDiversify(candidates, topic.keywords, limit, rankingOpts);
+  } else {
+    const fresh = candidates.filter((item) => contentObservedAt(item) >= freshness.since);
+    if (!fresh.length) {
+      items = rankAndDiversify(candidates, topic.keywords, limit, rankingOpts);
+    } else {
+      // 先从近期池按同一相关度/多样性规则取保底名额，再由全池补齐。近期池只在存在时生效，
+      // 因而低频主题或源暂时无更新时仍维持原有的历史上下文覆盖。
+      const quota = freshness.quota ?? DEFAULT_BRIEF_FRESH_QUOTA;
+      const freshLimit = Math.min(limit, Math.max(1, Math.ceil(limit * quota)));
+      const freshFirst = rankAndDiversify(fresh, topic.keywords, freshLimit, rankingOpts);
+      const overall = rankAndDiversify(candidates, topic.keywords, limit, rankingOpts);
+      const out = [...freshFirst];
+      const taken = new Set(out.map((item) => item.id));
+      for (const item of overall) {
+        if (out.length >= limit) break;
+        if (!taken.has(item.id)) {
+          taken.add(item.id);
+          out.push(item);
+        }
+      }
+      // overall 因来源 cap 可能未覆盖所有候选；最终兜底只补齐，不改变已保留的近期配额。
+      for (const item of candidates) {
+        if (out.length >= limit) break;
+        if (!taken.has(item.id)) {
+          taken.add(item.id);
+          out.push(item);
+        }
+      }
+      items = out;
     }
   }
-  // overall 因来源 cap 可能未覆盖所有候选；最终兜底只补齐，不改变已保留的近期配额。
-  for (const item of candidates) {
-    if (out.length >= limit) break;
-    if (!taken.has(item.id)) {
-      taken.add(item.id);
-      out.push(item);
-    }
-  }
-  return out;
+
+  const freshnessSince = opts.freshness?.since;
+  const isFresh = (item: ContentItem): boolean => freshnessSince !== undefined && contentObservedAt(item) >= freshnessSince;
+  return {
+    items,
+    diagnostics: {
+      candidate_content_count: candidates.length,
+      candidate_source_count: new Set(candidates.map((item) => item.source_id)).size,
+      selected_count: items.length,
+      selected_source_count: new Set(items.map((item) => item.source_id)).size,
+      fresh_candidate_count: candidates.filter(isFresh).length,
+      fresh_selected_count: items.filter(isFresh).length,
+    },
+  };
 }

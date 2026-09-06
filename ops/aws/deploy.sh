@@ -32,7 +32,7 @@ echo "==> 已准备容器版环境文件（剔除本地 DB_PATH/DATA_DIR；钉 C
 # 缺失，生产会静默降级——熔断失效=可能意外高成本、推送失效=用户收不到报告。仅告警不阻断
 # （未设=不限/不推 是合法选择）；本意如此可忽略，否则补进 $ROOT/.env.local 后重跑。见 operations.md §8/§14。
 MISS_RUNTIME=""
-for k in COST_LIMIT_DAILY COST_LIMIT_MONTHLY REPORT_PUSH PUBLIC_BASE_URL; do
+for k in COST_LIMIT_DAILY COST_LIMIT_MONTHLY REPORT_PUSH PUBLIC_BASE_URL BRIEF_THIN_REPORT_ALERT BRIEF_THIN_MIN_SELECTED BRIEF_THIN_MAX_PUBLISHED; do
   grep -qE "^[[:space:]]*$k=" "$TMP_ENVLOCAL" || MISS_RUNTIME="$MISS_RUNTIME $k"
 done
 [ -n "$MISS_RUNTIME" ] && {
