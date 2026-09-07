@@ -37,6 +37,15 @@ const CANDIDATES = [
   // 2026-09 staged candidate: feed 内已有足够的 changelog 正文；接入前后均用本 probe 复验。
   { id: "src_github_changelog", name: "GitHub Changelog", url: "https://github.blog/changelog/feed/",
     mode: "feed", guesses: [] },
+  // 2026-09 staged candidates: official release/changelog streams for coding-agent practice.
+  // Cursor and OpenHands carry enough content in their feeds. Codex's Atom summary is only a
+  // title, so it must pass the linked release-page full-text gate instead.
+  { id: "src_openai_codex_releases", name: "OpenAI Codex Releases", url: "https://github.com/openai/codex/releases.atom",
+    mode: "full_text", guesses: ["repository-content", "markdown-body", "release"] },
+  { id: "src_cursor_changelog", name: "Cursor Changelog", url: "https://cursor.com/changelog/rss.xml",
+    mode: "feed", guesses: [] },
+  { id: "src_openhands_releases", name: "OpenHands Releases", url: "https://github.com/OpenHands/OpenHands/releases.atom",
+    mode: "feed", guesses: [] },
 ];
 
 // ── 忠实内联：extractArticleHtml（article.ts）──────────────────────────────
@@ -160,12 +169,22 @@ function feedCarriesFullText(feed) {
       if (!out.robots_feed.allowed) { out.pass = false; out.blocked = "robots(feed)"; console.log(JSON.stringify(out)); continue; }
       const f = await get(c.url);
       out.feed = { status: f.status, bytes: f.bytes };
-      if (f.ok) {
+      if (!f.ok) {
+        out.pass = false;
+        out.blocked = "feed unavailable";
+      } else {
         const fc = feedCarriesFullText(f.body);
         out.feed.fullChars = fc.full; out.feed.summChars = fc.summ;
         const link = firstLink(f.body);
         out.feed.firstLink = link;
-        if (c.mode === "full_text" && link) {
+        if (c.mode === "feed") {
+          out.feed.pass = Math.max(fc.full, fc.summ) >= MIN_ARTICLE_CHARS;
+          out.pass = out.feed.pass;
+          if (!out.pass) out.blocked = "feed body below minimum";
+        } else if (!link) {
+          out.pass = false;
+          out.blocked = "feed has no article link";
+        } else {
           // ② 合规门：文章页 origin robots（常与 feed 不同源；生产 article.ts:95 同款，不放行则该条返 null）
           out.robots_article = await robotsCheck(link);
           if (!out.robots_article.allowed) { out.article = { blocked: "robots" }; out.pass = false; console.log(JSON.stringify(out)); continue; }
@@ -180,9 +199,11 @@ function feedCarriesFullText(feed) {
             out.article.best = trials[0];
             out.article.pass = trials[0].chars >= MIN_ARTICLE_CHARS;
           }
+          out.pass = out.article.pass === true;
+          if (!out.pass) out.blocked = "article body below minimum or unavailable";
         }
       }
-    } catch (e) { out.error = String(e && e.message || e); }
+    } catch (e) { out.pass = false; out.error = String(e && e.message || e); }
     console.log(JSON.stringify(out));
   }
 })();
