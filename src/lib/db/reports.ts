@@ -576,6 +576,10 @@ export interface BriefSelectionDiagnostic {
   selected_source_count: number | null;
   fresh_candidate_count: number | null;
   fresh_selected_count: number | null;
+  cohort_candidate_content_count: number | null;
+  cohort_candidate_source_count: number | null;
+  cohort_selected_count: number | null;
+  cohort_selected_source_count: number | null;
   analysis_insight_count: number | null;
   citation_total: number | null;
   citation_pass: number | null;
@@ -594,7 +598,8 @@ export interface BriefSelectionDiagnostic {
 
 const selectionMetricKeys = [
   "candidate_content_count", "candidate_source_count", "selected_count", "selected_source_count",
-  "fresh_candidate_count", "fresh_selected_count", "analysis_insight_count", "citation_total", "citation_pass",
+  "fresh_candidate_count", "fresh_selected_count", "cohort_candidate_content_count", "cohort_candidate_source_count",
+  "cohort_selected_count", "cohort_selected_source_count", "analysis_insight_count", "citation_total", "citation_pass",
   "citation_blocked", "citation_flagged", "citation_errored", "includable_insight_count",
   "freshness_filtered_insight_count", "already_published_filtered_insight_count",
   "supplemental_candidate_count", "supplemental_published_insight_count", "published_insight_count",

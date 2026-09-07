@@ -47,6 +47,15 @@ it("atomically inserts an unlaunched cohort and permits only an all-enabled retr
   expect(JSON.parse(first.stdout).actions).toEqual(cohort.map((id) => ({ id, action: "inserted" })));
   expect(rows().map((row) => row.enabled)).toEqual([1, 1, 1]);
 
+  // The normal production path is pre-seeded staged rows: all exact but disabled.
+  const stage = openDb(join(dir, "insight.db"));
+  stage.exec("UPDATE source SET enabled=0");
+  stage.close();
+  const enable = runPayload();
+  expect(enable.status, enable.stderr).toBe(0);
+  expect(JSON.parse(enable.stdout).actions).toEqual(cohort.map((id) => ({ id, action: "enabled" })));
+  expect(rows().map((row) => row.enabled)).toEqual([1, 1, 1]);
+
   const retry = runPayload();
   expect(retry.status, retry.stderr).toBe(0);
   expect(JSON.parse(retry.stdout).actions).toEqual(cohort.map((id) => ({ id, action: "already_enabled" })));

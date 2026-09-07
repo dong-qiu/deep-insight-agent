@@ -82,9 +82,10 @@ GitHub Changelog 和新增三源均先以 `enabled: false` 放入 `defaults.yaml
    ```
 4. “采集大于 0 且有被引”才可判定保留；“采集大于 0、被引为 0”只触发人工相关性复核，
    不自动下线；“采集为 0”先排查 feed、robots、频率和观察窗口。
-5. 新源接入后的日报选择漏斗，必须通过 #295 的 dashboard/trace 观察；若候选数明显增长而
-   `selected_count`、`fresh_selected_count` 或发布数不增长，不扩大第二阶段候选，先处理选择或
-   引用校验损失。
+5. 新源接入后的日报选择漏斗，必须通过 #295 的 dashboard/trace 观察；其中 `cohort_*` 是仅对
+   `src_openai_codex_releases`、`src_cursor_changelog` 与 `src_openhands_releases` 统计的候选/选中
+   计数，不能用全主题总数归因。本批候选数明显增长而 `cohort_selected_count` 或发布数不增长时，
+   不扩大第二阶段候选，先处理选择或引用校验损失。
 
 ## Eval-Gate 说明
 
