@@ -316,6 +316,30 @@ describe("validateBatch（A 去重 + C 校验失败分账）", () => {
     expect(system).toContain("原文与 claim 存在可判定冲突");
   });
 
+  it("单条与批量判官共享范围、条件和命名替换的负例规则", async () => {
+    vi.mocked(callStructured)
+      .mockResolvedValueOnce(judgeData("not_support", "exaggeration"))
+      .mockResolvedValueOnce(batchJudgeData([
+        { index: 1, consistency: "not_support", consistency_reason: "misattribution" },
+      ]));
+
+    await judgeConsistency(
+      "该方案整体带来了 30.6 倍的端到端加速。",
+      "30.6x applies only to the temporal-cache benchmark on cache hits.",
+    );
+    await judgeConsistencyBatch(
+      ["论文指出当前主流的防御范式是基于上下文完整性。"],
+      "The prevailing defense paradigm is data-instruction separation.",
+    );
+
+    const [single, batch] = vi.mocked(callStructured).mock.calls.map(([args]) => args);
+    for (const args of [single, batch]) {
+      expect(args.system).toContain("命名机制、主体、指标或对象");
+      expect(args.system).toContain("整体、端到端、所有场景或所有指标");
+      expect(args.system).toContain("排他或全称表述");
+    }
+  });
+
   it("来源发布时间无法解析时不插入原始值", async () => {
     vi.mocked(callStructured).mockResolvedValue(judgeData("support", "ok"));
     await judgeConsistency("C", "body", undefined, {
