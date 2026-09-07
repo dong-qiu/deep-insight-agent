@@ -58,6 +58,33 @@ npm run eval:build-local     # 从 .data 抽多源富内容 → dataset/insight-
 A1_QUALITY_FILE=evals/dataset/insight-quality-multisource.local.jsonl npm run eval:a1   # 多源重测
 ```
 
+### Staged source cohort（隔离真采集）
+
+新源不能只用既有 `.data` 抽样证明质量：它可能根本没有进入样本。对尚未启用的 source，先在**临时**
+SQLite 与原文目录中走生产 `collectSource`，再要求每个指定源实际进入生成的 A1 case：
+
+```bash
+cohort_dir="$(mktemp -d)"
+export EVAL_ISOLATED_ROOT="$cohort_dir"
+export DB_PATH="$cohort_dir/insight.db"
+export DATA_DIR="$cohort_dir/data"
+export EVAL_SOURCE_IDS="src_one,src_two,src_three"
+export EVAL_COHORT_COLLECTION_MANIFEST="$cohort_dir/collection.json"
+npm run eval:collect-source-cohort
+
+export EVAL_REQUIRED_SOURCE_IDS="$EVAL_SOURCE_IDS"
+export EVAL_MIN_BODY=400
+export EVAL_LOCAL_OUT="$cohort_dir/insight-quality.jsonl"
+export EVAL_SOURCE_COHORT_MANIFEST="$cohort_dir/dataset.json"
+npm run eval:build-local
+A1_QUALITY_FILE="$EVAL_LOCAL_OUT" npm run eval:a1
+```
+
+`collection.json` 记录实际 collector 结果；`dataset.json` 分别记录每源的 `eligible` 与 `selected` 数。
+任一指定源未进入 case，构建即失败。该 cohort 常集中于一个 topic，属于真实路径/发布安全验证，仍须另跑
+满足 5-topic、100-pair 下限的默认 A1，才能签 DCP 或更新全局 baseline。GitHub 的 **Scheduled Eval** 手动触发
+也提供 `source_ids` 输入，会在 runner 临时目录完成同一套隔离流程并上传两份 manifest。
+
 产出的多源指标写入 `baseline.json`（多源段）；内容本身不入仓、可由上述配方重建。
 
 ## 模型

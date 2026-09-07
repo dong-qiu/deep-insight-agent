@@ -32,6 +32,15 @@ on:
       consistency_limit:
         description: "限制一致性对数（0=全量）"
         default: "0"
+      source_ids:
+        description: "可选：逗号分隔的 staged source id；在隔离 SQLite 中真实采集并要求每个源进入 A1 样本"
+        required: false
+        type: string
+      cohort_min_body:
+        description: "source cohort 最小正文字符数（默认 400；须足以供 analyzer 生成可校验引文）"
+        default: "400"
+        required: false
+        type: string
 
 concurrency:
   group: eval-${{ github.ref }}
@@ -67,6 +76,32 @@ jobs:
           cache: npm
       - if: steps.guard.outputs.skip != 'true'
         run: npm ci
+      - name: 建立隔离 source cohort A1 数据集
+        id: cohort
+        if: steps.guard.outputs.skip != 'true' && github.event_name == 'workflow_dispatch' && github.event.inputs.source_ids != ''
+        env:
+          SOURCE_IDS: ${{ github.event.inputs.source_ids }}
+          COHORT_MIN_BODY: ${{ github.event.inputs.cohort_min_body || '400' }}
+        run: |
+          set -euo pipefail
+          cohort_dir="$(mktemp -d "$RUNNER_TEMP/a1-source-cohort.XXXXXX")"
+          mkdir -p "$cohort_dir/data"
+          export EVAL_ISOLATED_ROOT="$cohort_dir"
+          export DB_PATH="$cohort_dir/insight.db"
+          export DATA_DIR="$cohort_dir/data"
+          export EVAL_SOURCE_IDS="$SOURCE_IDS"
+          export EVAL_COHORT_COLLECTION_MANIFEST="$cohort_dir/collection.json"
+          npm run eval:collect-source-cohort
+
+          export EVAL_REQUIRED_SOURCE_IDS="$SOURCE_IDS"
+          export EVAL_MIN_BODY="$COHORT_MIN_BODY"
+          export EVAL_LOCAL_OUT="$cohort_dir/insight-quality.jsonl"
+          export EVAL_SOURCE_COHORT_MANIFEST="$cohort_dir/dataset.json"
+          npm run eval:build-local
+          test -s "$EVAL_LOCAL_OUT"
+          echo "A1_QUALITY_FILE=$EVAL_LOCAL_OUT" >> "$GITHUB_ENV"
+          echo "mode=source-cohort" >> "$GITHUB_OUTPUT"
+          echo "Source cohort data set: $EVAL_LOCAL_OUT"
       - name: 跑 A1 eval（阈值门 + baseline 回归对照）
         if: steps.guard.outputs.skip != 'true'
         run: npm run eval:a1
@@ -75,7 +110,9 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: a1-evidence-${{ github.run_id }}
-          path: evals/out/
+          path: |
+            evals/out/
+            ${{ runner.temp }}/a1-source-cohort/
           if-no-files-found: warn
           retention-days: 90
       - name: 回归/失败 → 推告警（复用渠道 adapter）
