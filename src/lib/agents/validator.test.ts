@@ -316,7 +316,7 @@ describe("validateBatch（A 去重 + C 校验失败分账）", () => {
     expect(system).toContain("原文与 claim 存在可判定冲突");
   });
 
-  it("单条与批量判官共享范围、条件和命名替换的负例规则", async () => {
+  it("单条与批量判官仅将同一关系的替换、范围扩大判为负例", async () => {
     vi.mocked(callStructured)
       .mockResolvedValueOnce(judgeData("not_support", "exaggeration"))
       .mockResolvedValueOnce(batchJudgeData([
@@ -334,9 +334,10 @@ describe("validateBatch（A 去重 + C 校验失败分账）", () => {
 
     const [single, batch] = vi.mocked(callStructured).mock.calls.map(([args]) => args);
     for (const args of [single, batch]) {
-      expect(args.system).toContain("命名机制、主体、指标或对象");
-      expect(args.system).toContain("整体、端到端、所有场景或所有指标");
+      expect(args.system).toContain("同一主体的同一属性、比较或身份");
+      expect(args.system).toContain("同一结果");
       expect(args.system).toContain("排他或全称表述");
+      expect(args.system).toContain("原文只谈 A、没有谈 B");
     }
   });
 
