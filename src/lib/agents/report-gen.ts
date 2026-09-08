@@ -192,12 +192,19 @@ export function summarizeBriefSelection(
   const hasNewPublishedEvidence = (x: IncludedInsight): boolean => {
     const eventId = x.insight.event_id;
     const byEvent = eventId ? evidenceByEvent.get(eventId) : undefined;
-    const previousEvidence = byEvent ?? evidenceByFingerprint.get(insightFingerprint(x.insight.type, x.insight.statement));
-    if (!previousEvidence) return true;
+    const byFingerprint = evidenceByFingerprint.get(insightFingerprint(x.insight.type, x.insight.statement));
+    // Current and legacy-split event identities may both exist for an exact
+    // statement. Their published evidence is one deny-list, never a fallback
+    // where the current event id can hide the legacy occurrence.
+    const previousEvidence = new Set<string>([...(byEvent ?? []), ...(byFingerprint ?? [])]);
+    if (!previousEvidence.size) return true;
     const hasNew = x.includableCitationIndices.some(
       (i) => !previousEvidence.has(x.insight.citations[i].content_item_id),
     );
-    if (!hasNew && !byEvent) fingerprintDuplicateFiltered += 1;
+    const fingerprintAddsEvidence = byFingerprint != null && (
+      !byEvent || [...byFingerprint].some((id) => !byEvent.has(id))
+    );
+    if (!hasNew && fingerprintAddsEvidence) fingerprintDuplicateFiltered += 1;
     return hasNew;
   };
   const dedupeCurrent = (xs: IncludedInsight[]): { kept: IncludedInsight[]; filtered: number } => {

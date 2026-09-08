@@ -45,9 +45,12 @@ describe("canonicalizeInsightEvents", () => {
     const matched = insight("a", "同一事件。", "wrong");
     canonicalizeInsightEvents([matched], [{ event_id: "old", statement: "同一事件。", type: "aggregation" }]);
     expect(matched).toMatchObject({ event_id: "old", is_followup: true });
-    const ambiguous = insight("b", "冲突事件。", "model");
-    canonicalizeInsightEvents([ambiguous], [{ event_id: "old1", statement: "冲突事件。", type: "aggregation" }, { event_id: "old2", statement: "冲突事件。", type: "aggregation" }]);
-    expect(ambiguous).toMatchObject({ event_id: "model", is_followup: false });
+    const ambiguous = [insight("b", "冲突事件。", "model-a"), insight("c", "冲突事件。", "model-b")];
+    canonicalizeInsightEvents(ambiguous, [{ event_id: "old1", statement: "冲突事件。", type: "aggregation" }, { event_id: "old2", statement: "冲突事件。", type: "aggregation" }]);
+    expect(ambiguous).toMatchObject([
+      { event_id: "model-a", is_followup: false },
+      { event_id: "model-b", is_followup: false },
+    ]);
   });
   it("历史唯一匹配优先于先到的批内新 id，且 trend 不与 aggregation 互并", () => {
     const first = insight("first", "重复。", "new_event");

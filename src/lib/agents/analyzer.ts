@@ -425,9 +425,11 @@ export function canonicalizeInsightEvents(insights: Insight[], history: Historic
   }
   const historyIds = new Set(history.map((event) => event.event_id));
   const uniqueHistoricalIds = new Map<string, string>();
+  const ambiguousHistoricalKeys = new Set<string>();
   for (const [key, events] of byFingerprint) {
     const ids = [...new Set(events.map((event) => event.event_id))];
     if (ids.length === 1) uniqueHistoricalIds.set(key, ids[0]);
+    else if (ids.length > 1) ambiguousHistoricalKeys.add(key);
   }
   const batchIds = new Map<string, string>();
   for (const insight of insights) {
@@ -435,11 +437,13 @@ export function canonicalizeInsightEvents(insights: Insight[], history: Historic
     // Unique exact history always wins over an earlier model/new batch identity.
     const historicalId = uniqueHistoricalIds.get(key);
     if (historicalId) insight.event_id = historicalId;
-    else {
+    // A conflicting historical fingerprint is deliberately not a batch
+    // canonicalization key: the model's identities remain authoritative.
+    else if (!ambiguousHistoricalKeys.has(key)) {
       const batchId = batchIds.get(key);
       if (batchId) insight.event_id = batchId;
     }
-    if (insight.event_id) batchIds.set(key, insight.event_id);
+    if (insight.event_id && !ambiguousHistoricalKeys.has(key)) batchIds.set(key, insight.event_id);
     insight.is_followup = insight.event_id != null && historyIds.has(insight.event_id);
   }
 }

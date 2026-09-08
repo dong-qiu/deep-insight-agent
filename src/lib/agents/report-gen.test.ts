@@ -187,6 +187,15 @@ describe("selectBriefInsights（Daily Brief 已发布证据去重）", () => {
     expect(selection.included).toEqual([]);
   });
 
+  it("当前 event 命中时仍合并遗留分裂 id 的严格指纹证据", () => {
+    const selection = summarizeBriefSelection(batchOf(), validation, "brief", [
+      { event_id: "e1", statement: "S1", insight_type: "aggregation", content_item_ids: ["ci2"] },
+      { event_id: "legacy", statement: "S1", insight_type: "aggregation", content_item_ids: ["ci1"] },
+    ]);
+    expect(selection.included).toEqual([]);
+    expect(selection.summary.fingerprint_duplicate_filtered_count).toBe(1);
+  });
+
   it("较早但未发布的稳定 event 以明确标注的补充发现发布，并保留主通道过滤计数", () => {
     const batch = batchOf();
     const freshness = { since: "2026-05-06T00:00:00Z", content_item_ids: ["ci_new"], freshest_candidate_at: "2026-05-07T00:00:00Z" };
