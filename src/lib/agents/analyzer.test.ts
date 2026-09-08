@@ -179,6 +179,28 @@ describe("repairQuote（M3-6 引用对齐修复）", () => {
     expect(r).toBe(body);
     expect(body.includes(r!)).toBe(true);
   });
+
+  it("起头多出限定词、但长末尾逐字相同 → 只回填 body 的字面后缀", () => {
+    const body = "We present GS-QA, an extensible geospatial QA benchmark with 2,800 question-answer pairs across 28 templates on top of OpenStreetMap and Wikipedia data.";
+    const quote = "a geospatial QA benchmark with 2,800 question-answer pairs across 28 templates on top of OpenStreetMap and Wikipedia data";
+    const r = repairQuote(body, quote);
+    expect(r).toBe("geospatial QA benchmark with 2,800 question-answer pairs across 28 templates on top of OpenStreetMap and Wikipedia data");
+    expect(body.includes(r!)).toBe(true);
+  });
+
+  it("词形漂移、但长末尾逐字相同 → 只回填 body 的字面后缀", () => {
+    const body = "We propose TIDE, a novel resource-efficient inference system that leverages the temporal stability of expert activations during the diffusion process.";
+    const quote = "leveraging the temporal stability of expert activations during the diffusion process";
+    const r = repairQuote(body, quote);
+    expect(r).toBe("the temporal stability of expert activations during the diffusion process");
+    expect(body.includes(r!)).toBe(true);
+  });
+
+  it("仅有共同短尾词或覆盖不足 → null，不能将无关文本伪装成引用", () => {
+    const body = "This unrelated sentence ends with a familiar phrase used in every system deployment.";
+    const quote = "A fabricated assertion about a completely different benchmark and its unsupported conclusion used in every system deployment";
+    expect(repairQuote(body, quote)).toBeNull();
+  });
 });
 
 describe("repairCitationSource（错误来源映射的保守修复）", () => {

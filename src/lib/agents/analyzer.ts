@@ -55,7 +55,7 @@ const SYSTEM = `你是行业洞察分析引擎。给定一个主题与一批已�
  *  纳入 analyzerCacheVersion 哈希——保证「schema/派生变但 SYSTEM 没变」也使旧缓存失效（review m3：
  *  否则切片2 会据旧逻辑产的缓存洞察错命中、喂进新版报告）。SYSTEM 文案变由 promptHash 自动覆盖，此常量只管
  *  「非 SYSTEM 的输出形态/派生」变更。 */
-export const ANALYZER_OUTPUT_VERSION = 3;
+export const ANALYZER_OUTPUT_VERSION = 4;
 
 /** 分析缓存版本（ADR-0009）：analyzer 模型 + SYSTEM prompt 哈希 + 输出契约版本——任一变 → 版本变 → 旧分析缓存
  *  自动失效（不复用陈旧 prompt/schema/派生的洞察）。镜像 validator.consistencyCacheVersion 的版本隔离口径。 */
@@ -220,7 +220,8 @@ function computeLocator(body: string, quote: string): Citation["locator"] {
  *  非连续原文 → 不可达。把 quote snap 到正文里以其起头为锚的**最长 fold-equivalent 子串**（与
  *  validator.checkReachability 同一 compareKey 规则）；返回该子串在 **body 中的原始字节**（含
  *  smart quotes / 块内空白），保 byte-verbatim 承诺，让 computeLocator(body, returnedSlice) 也能直接命中。
- *  起头都不在正文（真改写）则放弃 → 保持原 quote、仍被可达性闸门挡下，绝不造假。
+ *  若起头有一个很小的限定词/词形漂移，但末尾有覆盖原 quote ≥75% 的长连续逐字片段，才以**末尾**锚
+ *  回填该片段；短的共同尾词、真改写仍放弃 → 保持原 quote、由可达性闸门挡下，绝不造假。
  *  返回修复后的 quote（来自 body 的原始字节），或 null（无需 / 无法修复，调用方用原 quote）。 */
 export function repairQuote(body: string, quote: string, minLen = 24): string | null {
   const { key: nb, map: bodyMap } = collapseWithMap(body);
@@ -230,15 +231,36 @@ export function repairQuote(body: string, quote: string, minLen = 24): string | 
   // 返回值仍是 body 的原始子串；因此不会放宽下游的可达性判定或伪造引用。
   const foldedBody = nb.toLocaleLowerCase();
   const foldedQuote = nq.toLocaleLowerCase();
+  const rawSlice = (start: number, length: number): string =>
+    body.slice(bodyMap[start], bodyMap[start + length - 1] + 1).trimEnd();
   const at = foldedBody.indexOf(foldedQuote.slice(0, minLen)); // 以前 minLen 字符为锚定位（起头通常逐字）
-  if (at < 0) return null; // 起头都不在正文 = 真改写，放弃
-  let len = minLen;
-  while (len < nq.length && at + len < nb.length && foldedBody[at + len] === foldedQuote[len]) len++;
-  if (len < minLen) return null;
-  // F1：映射回 body 原始字节切片（保 byte-verbatim，含 smart quote/块内空白/dash 原样）。
-  // 尾部 trimEnd：match 停在 key-space 边界时 slice 末尾会带原始 ws 字符（'\n' / 多个 ' '），
-  // 视觉与下游消费者期望不符；trim 后仍是 body 的字面子串（byte-verbatim 不破）。
-  return body.slice(bodyMap[at], bodyMap[at + len - 1] + 1).trimEnd();
+  if (at >= 0) {
+    let len = minLen;
+    while (len < nq.length && at + len < nb.length && foldedBody[at + len] === foldedQuote[len]) len++;
+    return rawSlice(at, len);
+  }
+
+  // 已知模型残差：source 多了开头限定词（"an extensible ..."），或词形轻微不同
+  // （"leverages" / "leveraging"）。只在 quote 的**末尾**存在足够长、且覆盖绝大多数 quote 的
+  // 连续原文时回填；不能用短尾词搜索，否则会把无关句子的常见短语错当证据。
+  const suffixLen = Math.min(48, nq.length);
+  const quoteSuffixStart = nq.length - suffixLen;
+  const suffix = foldedQuote.slice(quoteSuffixStart);
+  let suffixAt = foldedBody.indexOf(suffix);
+  while (suffixAt >= 0) {
+    let quoteStart = quoteSuffixStart;
+    let bodyStart = suffixAt;
+    while (quoteStart > 0 && bodyStart > 0 && foldedQuote[quoteStart - 1] === foldedBody[bodyStart - 1]) {
+      quoteStart--;
+      bodyStart--;
+    }
+    const matchedLength = nq.length - quoteStart; // suffix 一直匹配到 quote 的最后一字符
+    // 回溯会跨过两个不同词之前的同一空格；去掉边界空白仍是 body 的字面连续子串，且避免把
+    // 不属于证据内容的分词空格交给下游渲染/locator。
+    if (matchedLength >= minLen && matchedLength / nq.length >= 0.75) return rawSlice(bodyStart, matchedLength).trimStart();
+    suffixAt = foldedBody.indexOf(suffix, suffixAt + 1);
+  }
+  return null;
 }
 
 function bodyContainsQuote(body: string, quote: string): boolean {
