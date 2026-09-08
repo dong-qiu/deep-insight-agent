@@ -8,6 +8,7 @@ import {
   pickEdgeWeightForBudget,
 } from "../graph/cooccurrence.js";
 import { canonKey } from "../graph/entity-normalize.js";
+import { insightFingerprint } from "../runtime/statement-fingerprint.js";
 import type { Entity, Insight } from "../types.js";
 import { type InsightRow, rowToInsight } from "./analysis.js";
 import type { DB } from "./index.js";
@@ -163,9 +164,36 @@ export interface InsightReportLink {
   date: string;
 }
 
+export interface DrillOccurrence {
+  id: string;
+  headline: string;
+  statement: string;
+  importance: number;
+  multi_source: boolean;
+  quotes: string[];
+  report_links: InsightReportLink[];
+}
+
+export interface DrillGroup {
+  id: string;
+  headline: string;
+  statement: string;
+  importance: number;
+  multi_source: boolean;
+  occurrence_count: number;
+  occurrences: DrillOccurrence[];
+}
+
 /** insight_id → 其所在已发布报告（反查 report.insight_ids）。一洞察可能在多份报告（续报），取最新。
  *  blocked/未入报告的洞察不在任何 insight_ids 里 → 无链接（drill 仍显 headline）。 */
 export function reportLinkMap(db: DB, topicId: string): Map<string, InsightReportLink> {
+  const all = reportLinksByInsight(db, topicId);
+  return new Map([...all].flatMap(([id, links]) => links.length ? [[id, links.at(-1)!] as const] : []));
+}
+
+/** Every published report link for an insight, newest last. Drill groups must
+ * retain this full provenance rather than collapsing to reportLinkMap's latest. */
+export function reportLinksByInsight(db: DB, topicId: string): Map<string, InsightReportLink[]> {
   const rows = db
     .prepare(
       `SELECT r.id AS report_id, ri.date AS date, r.insight_ids AS insight_ids
@@ -173,12 +201,37 @@ export function reportLinkMap(db: DB, topicId: string): Map<string, InsightRepor
        WHERE r.topic_id = ? AND r.status = 'done' ORDER BY ri.date ASC`,
     )
     .all(topicId) as { report_id: string; date: string; insight_ids: string }[];
-  const map = new Map<string, InsightReportLink>();
-  // date 升序遍历 + 覆盖写 → 每洞察落到最新一份包含它的报告
+  const map = new Map<string, InsightReportLink[]>();
   for (const r of rows) {
     for (const iid of JSON.parse(r.insight_ids) as string[]) {
-      map.set(iid, { report_id: r.report_id, date: r.date });
+      const links = map.get(iid) ?? [];
+      links.push({ report_id: r.report_id, date: r.date });
+      map.set(iid, links);
     }
   }
   return map;
+}
+
+/** Read-time display folding only. It neither changes raw graph membership nor
+ * claims that same wording is the same real-world event. */
+export function groupDrillInsights(insights: Insight[], links: Map<string, InsightReportLink[]>): DrillGroup[] {
+  const groups = new Map<string, DrillOccurrence[]>();
+  for (const insight of insights) {
+    const key = insightFingerprint(insight.type, insight.statement);
+    const occurrence: DrillOccurrence = {
+      id: insight.id, headline: insight.headline || insight.statement, statement: insight.statement,
+      importance: insight.importance, multi_source: insight.multi_source,
+      quotes: insight.citations.map((citation) => citation.quote).filter(Boolean), report_links: links.get(insight.id) ?? [],
+    };
+    const list = groups.get(key) ?? [];
+    list.push(occurrence);
+    groups.set(key, list);
+  }
+  const latestDate = (x: DrillOccurrence) => x.report_links.at(-1)?.date ?? "";
+  return [...groups.entries()].map(([id, occurrences]) => {
+    occurrences.sort((a, b) => latestDate(b).localeCompare(latestDate(a)) || b.importance - a.importance || a.id.localeCompare(b.id));
+    const representative = [...occurrences].sort((a, b) => b.importance - a.importance || latestDate(b).localeCompare(latestDate(a)) || a.id.localeCompare(b.id))[0];
+    return { id, headline: representative.headline, statement: representative.statement, importance: representative.importance,
+      multi_source: representative.multi_source, occurrence_count: occurrences.length, occurrences };
+  }).sort((a, b) => b.importance - a.importance || a.id.localeCompare(b.id));
 }

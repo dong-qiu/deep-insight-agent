@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { AnalysisBatch, Entity, Insight, Topic } from "../types.js";
 import { saveAnalysisBatch } from "./analysis.js";
-import { buildTopicGraph, insightsCooccurring, insightsMentioningEntity, loadTopicInsights, reportLinkMap } from "./graph.js";
+import { buildTopicGraph, groupDrillInsights, insightsCooccurring, insightsMentioningEntity, loadTopicInsights, reportLinkMap, reportLinksByInsight } from "./graph.js";
 import { type DB, openDb } from "./index.js";
 import { insertTopic } from "./repos.js";
 
@@ -124,6 +124,21 @@ describe("reportLinkMap", () => {
     saveReport("rOld", "2026-06-01", ["i1"]);
     saveReport("rNew", "2026-06-05", ["i1"]); // 续报再次包含 i1
     expect(reportLinkMap(db, "t1").get("i1")).toEqual({ report_id: "rNew", date: "2026-06-05" });
+  });
+
+  it("drill 同表述只折叠展示，展开保留每条原始 occurrence 与全部报告链接", () => {
+    saveBatch("b_group", [mkInsight("i1", [org("OpenAI")])]);
+    saveReport("rOld", "2026-06-01", ["i1"]);
+    saveReport("rNew", "2026-06-05", ["i1"]);
+    const first = loadTopicInsights(db, "t1")[0];
+    const duplicate = { ...first, id: "i_dup", statement: first.statement, headline: first.headline, type: first.type };
+    const grouped = groupDrillInsights([first, duplicate], reportLinksByInsight(db, "t1"));
+    expect(grouped).toHaveLength(1);
+    expect(grouped[0].occurrence_count).toBe(2);
+    expect(grouped[0].occurrences.map((x) => x.id).sort()).toEqual(["i1", "i_dup"]);
+    expect(grouped[0].occurrences.find((x) => x.id === "i1")?.report_links).toEqual([
+      { report_id: "rOld", date: "2026-06-01" }, { report_id: "rNew", date: "2026-06-05" },
+    ]);
   });
 
   it("只算 status='done' 的报告", () => {
