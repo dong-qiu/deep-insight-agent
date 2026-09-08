@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { createControllerRecord, type NotificationPlan, type TransitionEvent } from "./replay.js";
 import { canAcceptEvidence, ControllerStore, type DurableControllerRecord, type StoreMutation } from "./store.js";
@@ -12,6 +13,12 @@ function store(): ControllerStore {
   const directory = mkdtempSync(join(tmpdir(), "insight-controller-store-"));
   directories.push(directory);
   return new ControllerStore(join(directory, "controller.sqlite"));
+}
+function storeWithPath(): { db: ControllerStore; path: string } {
+  const directory = mkdtempSync(join(tmpdir(), "insight-controller-store-"));
+  directories.push(directory);
+  const path = join(directory, "controller.sqlite");
+  return { db: new ControllerStore(path), path };
 }
 function record(deliveryId = "delivery-1"): DurableControllerRecord {
   return { ...createControllerRecord({ delivery_id: deliveryId, state: "admitted", generation: 0 }), updated_at: "2026-09-08T00:00:00.000Z" };
@@ -42,6 +49,38 @@ describe("ControllerStore", () => {
     expect(db.compareAndAppend(first).kind).toBe("replayed");
     expect(db.compareAndAppend({ ...first, next: { ...first.next, active_task_ids: ["second-active-task"] } }).kind).toBe("semantic_conflict");
     expect(db.load("delivery-1")?.active_task_ids).toEqual(["task-1"]);
+    db.close();
+  });
+
+  it("atomically rejects incomplete or inconsistent transition envelopes", () => {
+    const db = store();
+    const original = record();
+    db.create(original);
+    const cases: StoreMutation[] = [
+      { ...mutation(original), transition: { ...mutation(original).transition!, delivery_id: "other-delivery" } },
+      { ...mutation(original), transition: { ...mutation(original).transition!, generation_after: 1 } },
+      { ...mutation(original), transition: { ...mutation(original).transition!, from_state: "intake" } },
+      { ...mutation(original), transition: { ...mutation(original).transition!, to_state: "admitted" } },
+      { ...mutation(original), transition: { ...mutation(original).transition!, precondition: "" } },
+      { ...mutation(original), transition: { ...mutation(original).transition!, from_state: "admitted", to_state: "admitted" } },
+      { ...mutation(original), transition: { ...mutation(original).transition!, to_state: "cancelled" } },
+    ];
+    for (const invalid of cases) expect(() => db.compareAndAppend(invalid)).toThrow("invalid_controller_mutation");
+    expect(db.load(original.delivery_id)).toMatchObject({ state: "admitted", generation: 0 });
+    db.close();
+  });
+
+  it("persists a snapshot-only observation as evidence without a homomorphic transition", () => {
+    const { db, path } = storeWithPath();
+    const original = record();
+    db.create(original);
+    const snapshot = { id: "snapshot-1", kind: "snapshot" as const, source: "test", immutable_ref: "snapshot", payload_hash: "hash", status: "active" as const, observed_at: "2026-09-08T00:01:00.000Z", freshness: { head_sha: "head-1", base_sha: "base-1", merge_state_status: "clean" } };
+    const next = { ...original, current_freshness: snapshot.freshness, evidence: [snapshot], updated_at: snapshot.observed_at };
+    expect(db.compareAndAppend({ expected: { generation: 0, state: "admitted" }, next, evidence: [snapshot], idempotency_key: "delivery-1:0:evidence:snapshot-1" }).kind).toBe("applied");
+    const reader = new Database(path, { readonly: true });
+    expect(reader.prepare("SELECT COUNT(*) AS count FROM controller_transition").get()).toEqual({ count: 0 });
+    expect(reader.prepare("SELECT COUNT(*) AS count FROM controller_evidence").get()).toEqual({ count: 1 });
+    reader.close();
     db.close();
   });
 

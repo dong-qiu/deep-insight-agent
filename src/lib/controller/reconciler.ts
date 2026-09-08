@@ -3,7 +3,7 @@
  * It intentionally cannot dispatch work or call a provider mutation endpoint.
  */
 import type { ControllerRecord, Evidence, Freshness, NotificationPlan, TransitionEvent } from "./replay.js";
-import type { GitHubEvidencePort, GitHubEvidenceSnapshot, RuntimeSnapshot, RuntimeSnapshotPort } from "./ports.js";
+import type { GitHubEvidencePort, GitHubEvidenceSnapshot, RuntimeReceipt, RuntimeSnapshot, RuntimeSnapshotPort, RuntimeTaskSnapshot, RuntimeTerminalReceipt } from "./ports.js";
 import { ControllerStore, type DurableControllerRecord, type StoreMutation } from "./store.js";
 
 const HEARTBEAT_MS = 90_000;
@@ -46,11 +46,15 @@ function reconcileGitHub(store: ControllerStore, record: DurableControllerRecord
   if (!source || stale(source.observed_at, now, SNAPSHOT_MS) || !isClean(source.freshness)) {
     return invalidateOrFreeze(store, record, now, "github_snapshot_missing_stale_or_unknown", source?.freshness);
   }
+  if (record.state === "freshness_invalidated") {
+    const next: DurableControllerRecord = { ...record, state: "evidence_collecting", current_freshness: { ...source.freshness }, evidence: [...record.evidence, ...toEvidence({ ...snapshot, ci: undefined, review: undefined }).filter((item) => !record.evidence.some((existing) => existing.id === item.id))], updated_at: now };
+    return commit(store, record, next, now, "freshness_refreshed", "new_generation_clean_snapshot", "evidence_collecting", next.evidence.filter((item) => !record.evidence.some((existing) => existing.id === item.id)));
+  }
   if (record.current_freshness && !sameFreshness(record.current_freshness, source.freshness)) {
     return invalidateOrFreeze(store, record, now, "github_freshness_changed", source.freshness);
   }
-  if ((record.state === "evidence_collecting" || record.state === "ready_for_human_review") && (!snapshot.ci || !snapshot.review)) {
-    return freeze(store, record, now, "github_ci_or_review_evidence_missing");
+  if ((record.state === "evidence_collecting" || record.state === "ready_for_human_review") && !hasCurrentEvidenceBundle(snapshot, source.freshness, now)) {
+    return invalidateOrFreeze(store, record, now, "github_ci_review_missing_stale_or_mismatched", source.freshness);
   }
   const evidence = toEvidence(snapshot);
   const additions = evidence.filter((item) => !record.evidence.some((existing) => existing.id === item.id));
@@ -60,7 +64,7 @@ function reconcileGitHub(store: ControllerStore, record: DurableControllerRecord
     next.state = "ready_for_human_review";
     return commit(store, record, next, now, "ready", "matching_current_clean_ci_and_review", "ready_for_human_review", additions, [plan(next, "ready", now, "github_snapshot")]);
   }
-  if (additions.length > 0 || !record.current_freshness) return commit(store, record, next, now, "evidence_observed", "read_only_github_snapshot_recorded", record.state, additions);
+  if (additions.length > 0 || !record.current_freshness) return observe(store, record, next, additions, now);
   return undefined;
 }
 
@@ -75,13 +79,22 @@ function reconcileRuntime(store: ControllerStore, record: DurableControllerRecor
     return commit(store, record, next, now, "lease_reconnected", "fresh_heartbeat_and_matching_read_only_lease_snapshot", "leased", [localEvidence(record, `runtime-lease:${active.task_id}`, now)], [plan(next, "reconnect", now, active.lease_id)]);
   }
   if (record.state === "waiting_for_runtime" && active?.state === "running") return freeze(store, record, now, "task_lease_inconsistent");
-  if (terminal && record.active_lease_id && !matchesLease(record, terminal)) {
-    store.appendAudit(record.delivery_id, "stale_event", "old_lease_or_result_fenced", now);
-    return { kind: "unchanged", record };
+  if (record.state === "leased" && active?.state === "running") {
+    if (receiptIsUsable(record, active.start_receipt, runtime.heartbeat_at, now)) {
+      const next: DurableControllerRecord = { ...record, state: "executing", last_heartbeat_at: runtime.heartbeat_at, updated_at: now };
+      return commit(store, record, next, now, "runtime_started", "matching_unexpired_fenced_start_receipt", "executing", [localEvidence(record, `runtime-start:${active.task_id}`, now)]);
+    }
+    store.appendAudit(record.delivery_id, "invalid_receipt", "start_receipt_missing_stale_or_fence_mismatch", now);
   }
-  if (terminal && matchesLease(record, terminal) && record.state === "executing") {
-    const next: DurableControllerRecord = { ...record, state: terminal.result === "failed" ? "repairing" : "evidence_collecting", attempt_count: record.attempt_count + 1, active_task_ids: [], active_lease_id: undefined, active_runtime_id: undefined, active_runtime_identity: undefined, active_lease_expires_at: undefined, active_lease_fencing_token: undefined, updated_at: now };
-    return commit(store, record, next, now, "terminal_result", "matching_fenced_terminal_result", next.state, [localEvidence(record, `runtime-result:${terminal.task_id}`, now)]);
+  if (terminal && record.active_lease_id) {
+    if (!matchesLease(record, terminal)) {
+      store.appendAudit(record.delivery_id, "stale_event", "old_lease_or_result_fenced", now);
+    } else if (record.state === "executing" && terminalReceiptIsUsable(record, terminal, runtime.heartbeat_at, now)) {
+      const next: DurableControllerRecord = { ...record, state: terminal.result === "failed" ? "repairing" : "evidence_collecting", attempt_count: record.attempt_count + 1, active_task_ids: [], active_lease_id: undefined, active_runtime_id: undefined, active_runtime_identity: undefined, active_lease_expires_at: undefined, active_lease_fencing_token: undefined, updated_at: now };
+      return commit(store, record, next, now, "terminal_result", "matching_fenced_terminal_result", next.state, [localEvidence(record, `runtime-result:${terminal.task_id}`, now)]);
+    } else {
+      store.appendAudit(record.delivery_id, "invalid_receipt", "terminal_receipt_missing_stale_or_result_mismatch", now);
+    }
   }
   const heartbeatOffline = !runtime.heartbeat_at || stale(runtime.heartbeat_at, now, HEARTBEAT_MS);
   if (heartbeatOffline && (record.state === "leased" || record.state === "executing")) {
@@ -126,6 +139,15 @@ function commit(store: ControllerStore, before: DurableControllerRecord, next: D
   return { kind: "frozen", record: result.record, reason: result.kind };
 }
 
+/** Snapshot collection is deliberately not a state transition. */
+function observe(store: ControllerStore, before: DurableControllerRecord, next: DurableControllerRecord, evidence: Evidence[], now: string): ReconcileResult {
+  const ids = evidence.map((item) => item.id).sort().join(",");
+  const mutation: StoreMutation = { expected: { generation: before.generation, state: before.state }, next, evidence, idempotency_key: `${before.delivery_id}:${before.generation}:evidence:${hash(`${ids}:${now}`)}` };
+  const result = store.compareAndAppend(mutation);
+  if (result.kind === "applied" || result.kind === "replayed") return { kind: "updated", record: result.record };
+  return { kind: "frozen", record: result.record, reason: result.kind };
+}
+
 function transitionFor(before: DurableControllerRecord, next: DurableControllerRecord, now: string, kind: string, precondition: string, toState: ControllerRecord["state"], fixedKey?: string): TransitionEvent {
   const key = fixedKey ?? `${before.delivery_id}:${before.generation}:${kind}:${hash(`${kind}:${now}:${toState}`)}`;
   return { event_id: `controller:${hash(`${before.delivery_id}:${before.generation}:${next.generation}:${before.state}:${toState}:${kind}:${key}`)}`, causal_event_id: `${kind}:${hash(`${now}:${precondition}`)}`, delivery_id: before.delivery_id, generation_before: before.generation, generation_after: next.generation, from_state: before.state, to_state: toState, writer: "controller:reconciler", occurred_at: now, idempotency_key: key, precondition, evidence_refs: [kind], recovery_action: "persist_local_state_only_and_recheck_read_only_snapshots" };
@@ -145,8 +167,13 @@ function localEvidence(record: DurableControllerRecord, id: string, observedAt: 
 
 function readyEvidence(record: DurableControllerRecord, now: string): boolean {
   if (!record.current_freshness || !isClean(record.current_freshness)) return false;
-  const matching = (kind: Evidence["kind"], conclusion: Evidence["conclusion"]) => record.evidence.some((item) => item.kind === kind && item.status === "active" && item.conclusion === conclusion && item.freshness && sameFreshness(item.freshness, record.current_freshness!) && !stale(item.observed_at, now, EVIDENCE_MS));
-  return matching("snapshot", undefined) && matching("ci", "passed") && matching("review", "approved");
+  const matching = (kind: Evidence["kind"], conclusion: Evidence["conclusion"], ttl: number) => record.evidence.some((item) => item.kind === kind && item.status === "active" && item.conclusion === conclusion && item.freshness && sameFreshness(item.freshness, record.current_freshness!) && !stale(item.observed_at, now, ttl));
+  return matching("snapshot", undefined, SNAPSHOT_MS) && matching("ci", "passed", EVIDENCE_MS) && matching("review", "approved", EVIDENCE_MS);
+}
+
+function hasCurrentEvidenceBundle(snapshot: GitHubEvidenceSnapshot, freshness: Freshness, now: string): boolean {
+  const matching = (entry: GitHubEvidenceSnapshot["snapshot"] | GitHubEvidenceSnapshot["ci"] | GitHubEvidenceSnapshot["review"] | undefined, conclusion: Evidence["conclusion"], ttl: number) => Boolean(entry && ("conclusion" in entry ? entry.conclusion : undefined) === conclusion && sameFreshness(entry.freshness, freshness) && !stale(entry.observed_at, now, ttl));
+  return matching(snapshot.snapshot, undefined, SNAPSHOT_MS) && matching(snapshot.ci, "passed", EVIDENCE_MS) && matching(snapshot.review, "approved", EVIDENCE_MS);
 }
 
 function plan(record: DurableControllerRecord, signal: NotificationPlan["signal"], now: string, cause: string): NotificationPlan {
@@ -156,6 +183,14 @@ function plan(record: DurableControllerRecord, signal: NotificationPlan["signal"
 
 function matchesLease(record: DurableControllerRecord, task: { lease_id?: string; runtime_id?: string; runtime_identity?: string; lease_fencing_token?: string; lease_expires_at?: string }): boolean {
   return Boolean(record.active_lease_id && task.lease_id === record.active_lease_id && task.runtime_id === record.active_runtime_id && task.runtime_identity === record.active_runtime_identity && task.lease_fencing_token === record.active_lease_fencing_token && task.lease_expires_at === record.active_lease_expires_at);
+}
+function receiptIsUsable(record: DurableControllerRecord, receipt: RuntimeReceipt | undefined, heartbeatAt: string | undefined, now: string): boolean {
+  return Boolean(receipt?.observed_at && heartbeatAt && !stale(heartbeatAt, now, HEARTBEAT_MS) && !stale(receipt.observed_at, now, HEARTBEAT_MS) && matchesLease(record, receipt) && record.active_lease_expires_at && time(record.active_lease_expires_at) > time(now));
+}
+function terminalReceiptIsUsable(record: DurableControllerRecord, task: RuntimeTaskSnapshot, heartbeatAt: string | undefined, now: string): boolean {
+  const expected = task.state === "completed" ? "completed" : task.state === "failed" ? "failed" : undefined;
+  const receipt: RuntimeTerminalReceipt | undefined = task.terminal_receipt;
+  return Boolean(expected && task.result === expected && receipt?.result === expected && receiptIsUsable(record, receipt, heartbeatAt, now));
 }
 function isClean(freshness: Freshness): boolean { return freshness.merge_state_status.toLowerCase() === "clean"; }
 function sameFreshness(a: Freshness, b: Freshness): boolean { return a.head_sha === b.head_sha && a.base_sha === b.base_sha && a.merge_state_status.toLowerCase() === b.merge_state_status.toLowerCase(); }

@@ -7,7 +7,7 @@
 import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import type { ControllerRecord, Evidence, NotificationPlan, TransitionEvent } from "./replay.js";
+import type { ControllerRecord, ControllerState, Evidence, NotificationPlan, TransitionEvent } from "./replay.js";
 
 export type DurableControllerRecord = ControllerRecord & {
   updated_at: string;
@@ -29,7 +29,10 @@ export interface ExpectedRecord {
 export interface StoreMutation {
   expected: ExpectedRecord;
   next: DurableControllerRecord;
-  transition: TransitionEvent;
+  /** Omitted only for append-only evidence/audit collection with no state change. */
+  transition?: TransitionEvent;
+  /** Required for a non-transition observation so replay semantics remain durable. */
+  idempotency_key?: string;
   evidence?: Evidence[];
   outbox?: NotificationPlan[];
   audit?: readonly { kind: string; reason: string; occurred_at: string }[];
@@ -81,10 +84,12 @@ export class ControllerStore {
   }
 
   compareAndAppend(mutation: StoreMutation): AppendResult {
-    const semantic = stableJson({ expected: mutation.expected, next: mutation.next, transition: mutation.transition, evidence: mutation.evidence ?? [], outbox: mutation.outbox ?? [], audit: mutation.audit ?? [] });
+    validateMutation(mutation);
+    const idempotencyKey = mutation.transition?.idempotency_key ?? mutation.idempotency_key!;
+    const semantic = stableJson({ expected: mutation.expected, next: mutation.next, transition: mutation.transition, idempotency_key: idempotencyKey, evidence: mutation.evidence ?? [], outbox: mutation.outbox ?? [], audit: mutation.audit ?? [] });
     const tx = this.db.transaction(() => {
       const prior = this.load(mutation.next.delivery_id);
-      const idem = this.db.prepare("SELECT semantic_json,effect_json FROM controller_idempotency WHERE idempotency_key=?").get(mutation.transition.idempotency_key) as { semantic_json: string; effect_json: string } | undefined;
+      const idem = this.db.prepare("SELECT semantic_json,effect_json FROM controller_idempotency WHERE idempotency_key=?").get(idempotencyKey) as { semantic_json: string; effect_json: string } | undefined;
       if (idem) {
         if (idem.semantic_json !== semantic) return { kind: "semantic_conflict", record: prior } as AppendResult;
         return { kind: "replayed", record: clone(JSON.parse(idem.effect_json) as DurableControllerRecord) } as AppendResult;
@@ -93,12 +98,14 @@ export class ControllerStore {
       if (mutation.next.delivery_id !== prior.delivery_id || mutation.next.pending_invalidation) throw new Error("invalid_controller_mutation");
       this.db.prepare("UPDATE controller_record SET generation=?,state=?,pending_invalidation=0,record_json=?,updated_at=? WHERE delivery_id=?")
         .run(mutation.next.generation, mutation.next.state, JSON.stringify(mutation.next), mutation.next.updated_at, mutation.next.delivery_id);
-      this.db.prepare("INSERT INTO controller_transition(event_id,delivery_id,generation_before,generation_after,event_json) VALUES (?,?,?,?,?)")
-        .run(mutation.transition.event_id, mutation.next.delivery_id, mutation.transition.generation_before, mutation.transition.generation_after, JSON.stringify(mutation.transition));
+      if (mutation.transition) {
+        this.db.prepare("INSERT INTO controller_transition(event_id,delivery_id,generation_before,generation_after,event_json) VALUES (?,?,?,?,?)")
+          .run(mutation.transition.event_id, mutation.next.delivery_id, mutation.transition.generation_before, mutation.transition.generation_after, JSON.stringify(mutation.transition));
+      }
       for (const evidence of mutation.evidence ?? []) this.db.prepare("INSERT OR IGNORE INTO controller_evidence(evidence_id,delivery_id,generation,evidence_json) VALUES (?,?,?,?)").run(evidence.id, mutation.next.delivery_id, mutation.next.generation, JSON.stringify(evidence));
       for (const plan of mutation.outbox ?? []) this.db.prepare("INSERT OR IGNORE INTO controller_outbox(dedupe_key,delivery_id,generation,plan_json) VALUES (?,?,?,?)").run(plan.dedupe_key, plan.delivery_id, plan.generation, JSON.stringify(plan));
       for (const item of mutation.audit ?? []) this.appendAuditUnsafe(mutation.next.delivery_id, item.kind, item.reason, item.occurred_at);
-      this.db.prepare("INSERT INTO controller_idempotency(idempotency_key,semantic_json,effect_json) VALUES (?,?,?)").run(mutation.transition.idempotency_key, semantic, JSON.stringify(mutation.next));
+      this.db.prepare("INSERT INTO controller_idempotency(idempotency_key,semantic_json,effect_json) VALUES (?,?,?)").run(idempotencyKey, semantic, JSON.stringify(mutation.next));
       return { kind: "applied", record: clone(mutation.next) } as AppendResult;
     });
     return tx();
@@ -153,6 +160,38 @@ export class ControllerStore {
   private appendAuditUnsafe(deliveryId: string, kind: string, reason: string, occurredAt: string): void {
     this.db.prepare("INSERT INTO controller_audit(delivery_id,kind,reason,occurred_at) VALUES (?,?,?,?)").run(deliveryId, kind, reason, occurredAt);
   }
+}
+
+const ALLOWED_EDGES: Readonly<Record<ControllerState, readonly ControllerState[]>> = {
+  intake: ["admitted", "awaiting_human_decision"],
+  admitted: ["waiting_for_runtime", "awaiting_human_decision"],
+  waiting_for_runtime: ["leased", "awaiting_human_decision", "freshness_invalidated"],
+  leased: ["executing", "waiting_for_runtime", "freshness_invalidated", "awaiting_human_decision"],
+  executing: ["evidence_collecting", "repairing", "waiting_for_runtime", "awaiting_human_decision", "freshness_invalidated"],
+  evidence_collecting: ["ready_for_human_review", "freshness_invalidated", "repairing", "awaiting_human_decision"],
+  freshness_invalidated: ["evidence_collecting", "repairing", "awaiting_human_decision"],
+  repairing: ["waiting_for_runtime", "evidence_collecting", "awaiting_human_decision", "freshness_invalidated"],
+  ready_for_human_review: ["freshness_invalidated", "awaiting_human_decision", "cancelled"],
+  awaiting_human_decision: [],
+  cancelled: [],
+};
+
+function validateMutation(mutation: StoreMutation): void {
+  const transition = mutation.transition;
+  if (!mutation.expected.state) throw new Error("invalid_controller_mutation:expected_state_required");
+  if (mutation.next.pending_invalidation) throw new Error("invalid_controller_mutation:pending_invalidation_not_appendable");
+  if (!transition) {
+    if (!mutation.idempotency_key || mutation.outbox?.length || (mutation.evidence?.length ?? 0) === 0) throw new Error("invalid_controller_mutation:observation_envelope_incomplete");
+    if (mutation.next.generation !== mutation.expected.generation || mutation.next.state !== mutation.expected.state) throw new Error("invalid_controller_mutation:observation_must_not_change_state_or_generation");
+    return;
+  }
+  if (mutation.idempotency_key) throw new Error("invalid_controller_mutation:duplicate_idempotency_source");
+  if (!transition.event_id || !transition.causal_event_id || !transition.writer || !transition.occurred_at || !transition.idempotency_key || !transition.precondition || !transition.recovery_action || transition.evidence_refs.length === 0) throw new Error("invalid_controller_mutation:transition_envelope_incomplete");
+  if (transition.delivery_id !== mutation.next.delivery_id) throw new Error("invalid_controller_mutation:delivery_mismatch");
+  if (transition.generation_before !== mutation.expected.generation || transition.generation_after !== mutation.next.generation) throw new Error("invalid_controller_mutation:generation_mismatch");
+  if (transition.from_state !== mutation.expected.state || transition.to_state !== mutation.next.state) throw new Error("invalid_controller_mutation:state_envelope_mismatch");
+  if (transition.from_state === transition.to_state) throw new Error("invalid_controller_mutation:homomorphic_transition_forbidden");
+  if (!ALLOWED_EDGES[transition.from_state].includes(transition.to_state)) throw new Error("invalid_controller_mutation:transition_not_allowed");
 }
 
 const SCHEMA = `

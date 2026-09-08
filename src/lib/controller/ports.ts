@@ -10,7 +10,25 @@ export interface RuntimeTaskSnapshot {
   lease_fencing_token?: string;
   lease_expires_at?: string;
   result?: "completed" | "failed";
+  /** Recorded proof that this fenced lease actually began execution. */
+  start_receipt?: RuntimeReceipt;
+  /** Recorded proof of the terminal result for this exact fenced lease. */
+  terminal_receipt?: RuntimeTerminalReceipt;
   checkpoint_ref?: string;
+}
+
+/** Read-only receipt fields must reproduce the complete active lease fence. */
+export interface RuntimeReceipt {
+  lease_id?: string;
+  runtime_id?: string;
+  runtime_identity?: string;
+  lease_fencing_token?: string;
+  lease_expires_at?: string;
+  observed_at?: string;
+}
+
+export interface RuntimeTerminalReceipt extends RuntimeReceipt {
+  result?: "completed" | "failed";
 }
 
 export interface RuntimeSnapshot {
