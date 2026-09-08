@@ -112,7 +112,10 @@ jobs:
           name: a1-evidence-${{ github.run_id }}
           path: |
             evals/out/
-            ${{ runner.temp }}/a1-source-cohort/
+            # cohort_dir 由 mktemp 创建为 a1-source-cohort.XXXXXX；只保留可审计的
+            # collection/dataset manifest，不上传隔离 SQLite 或抓取到的原文正文。
+            ${{ runner.temp }}/a1-source-cohort.*/collection.json
+            ${{ runner.temp }}/a1-source-cohort.*/dataset.json
           if-no-files-found: warn
           retention-days: 90
       - name: 回归/失败 → 推告警（复用渠道 adapter）
