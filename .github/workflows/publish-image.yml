@@ -38,6 +38,10 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Capture immutable release timestamp
+        id: release
+        run: echo "released_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"
+
       - name: Build and push immutable production image
         uses: docker/build-push-action@v7
         with:
@@ -51,6 +55,7 @@ jobs:
           build-args: |
             TARGETARCH=amd64
             GIT_SHA=${{ github.event.workflow_run.head_sha }}
+            RELEASED_AT=${{ steps.release.outputs.released_at }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           provenance: mode=max

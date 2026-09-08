@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { auth, signOut } from "../auth.js";
+import { formatReleaseTime, getReleaseInfo, shortGitSha } from "../lib/runtime/release-info.js";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -17,6 +18,9 @@ async function doSignOut(): Promise<void> {
 
 export default async function RootLayout({ children }: { children: ReactNode }) {
   const user = (await auth())?.user;
+  const release = getReleaseInfo();
+  const revision = shortGitSha(release.gitSha);
+  const releasedAt = formatReleaseTime(release.releasedAt);
   // 管理入口只对 admin 显示（viewer 受邀只读账号看不到管理看板/设置；服务端 middleware 才是真闸门）。
   const isAdmin = user?.role === "admin";
   return (
@@ -49,6 +53,10 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
           </nav>
         </header>
         <main>{children}</main>
+        <footer className="release-footer muted" aria-label="发布版本信息">
+          <span>版本 <code title={release.gitSha}>{`v${release.version}${revision ? ` · ${revision}` : ""}`}</code></span>
+          {releasedAt && release.releasedAt ? <time dateTime={release.releasedAt}>发布于 {releasedAt}</time> : <span>本地开发构建</span>}
+        </footer>
       </body>
     </html>
   );
