@@ -33,7 +33,7 @@ MVP 范围：主题聚合 + 趋势识别 + 信号去噪 + 多源交叉；**不�
 4. `Insight` 必填字段赋值规则：`time_window` 继承 `AnalysisBatch.time_window`；`language` 取 `Topic.language`（`Topic.language=mixed` 时取该洞察 `citations` 引用内容的主语言）；`source_count` = 该洞察 `citations` 经 `Citation.content_item_id` → `ContentItem.source_id` **去重后的源数**；`multi_source` = `source_count ≥ 2`。
 5. 信号去噪：按重要性评分 + 阈值过滤（阈值见 `eval-criteria.md`，默认 = 3）；评分须写入 `importance_basis`。**过滤发生在生成 `Insight` 前**，`AnalysisBatch.insights` 中不出现 `importance < 阈值` 的条目。某窗口无重要事件时输出 `no_significant_event=true` + 空 `insights`，不凑数。引用覆盖以**最小可验证事实**为单位：数字、实体之外，研究/来源数量、机制、比较对象、适用范围、时间、条件、因果与程度也须各有直接 quote；没有覆盖时必须补逐字短引、删除该限定，或拆成独立洞察。
 6. 多源交叉：`source_count ≥ 2` 置 `multi_source=true`；单源结论允许输出但 `multi_source=false` 明确标注（重要结论 `importance ≥ 4` 优先选多源印证）。
-7. 每条洞察必须挂 ≥1 条 `Citation`（含 `quote` + `locator`），无引用不输出。
+7. 每条洞察必须挂 ≥1 条 `Citation`（含 `quote` + `locator`），无引用不输出。分析端在展示级 quote 覆盖审计前必须剔除 `locator` 不可定位的 citation（标题、URL 或不在 body 的改写均不可当展示证据）；仅余下 citation 仍完整覆盖 statement 时才可输出，不能把无效 citation 留给下游 validator 才阻断。剔除后须按留下 citation 的实际 `source_id` 重算 `source_count` / `multi_source`，不得保留虚高的多源印证标签。
 8. 中性叙述：不做趋势预测、不主观臆断、不带情绪。
 9. 一致性：用低温 + 结构化输出约束、提供商支持时加固定 seed，使输出可复现（目标为 AC6 的统计稳定，非逐字节复现）。
 10. 容错：LLM 调用失败 / 超时 / 返回非法结构时按上限重试（默认 3 次）；仍失败则 `AnalysisBatch.status=failed`、`no_significant_event=false`、`insights=[]`，通过管理看板告警通道告警（与 `data-collection` 同一通道），不产出半成品。
