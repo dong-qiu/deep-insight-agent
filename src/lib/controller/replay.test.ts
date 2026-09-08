@@ -61,9 +61,16 @@ describe("controller dry-run replay", () => {
       snapshot_evidence_ref: "snapshot",
       ci_evidence_ref: "ci",
       review_evidence_ref: "review",
+      snapshot_evidence: { source: "fixture:snapshot", immutable_ref: "snapshot", payload_hash: expect.any(String) },
+      ci_evidence: { source: "fixture:ci", immutable_ref: "ci", payload_hash: expect.any(String) },
+      review_evidence: { source: "fixture:review", immutable_ref: "review", payload_hash: expect.any(String) },
     });
     const ready = result.record.notifications.filter((plan) => plan.signal === "ready");
     expect(ready).toEqual([expect.objectContaining({ dedupe_key: "delivery-ready:0:ready:ready-1" })]);
+    expect(result.record.transitions).toContainEqual(expect.objectContaining({
+      event_id: "ready-1",
+      idempotency_key: `delivery-ready:0:ready:${freshnessHash({ head_sha: "h1", base_sha: "b1", merge_state_status: "clean" })}:${result.record.ready_bundle!.hash}`,
+    }));
   });
 
   it.each([
@@ -92,6 +99,10 @@ describe("controller dry-run replay", () => {
       expect.objectContaining({ signal: "invalidation", dedupe_key: `${result.record.delivery_id}:1:invalidation:${freshnessHash({ head_sha: "h1", base_sha: "b1", merge_state_status: "clean" })}:${cause}` }),
     ]));
     expect(result.record.notifications.filter((plan) => plan.signal === "invalidation")).toHaveLength(1);
+    expect(result.record.transitions).toContainEqual(expect.objectContaining({
+      to_state: "freshness_invalidated",
+      idempotency_key: `${result.record.delivery_id}:0:invalidate:${freshnessHash({ head_sha: "h1", base_sha: "b1", merge_state_status: "clean" })}:${cause}`,
+    }));
   });
 
   it.each([
@@ -110,6 +121,28 @@ describe("controller dry-run replay", () => {
       from_state: "freshness_invalidated",
       to_state: "evidence_collecting",
       precondition: "authoritative_new_generation_snapshot",
+      idempotency_key: `${result.record.delivery_id}:1:refresh:${freshnessHash({ head_sha: "h2", base_sha: "b1", merge_state_status: "clean" })}`,
+    }));
+  });
+
+  it("invalidates a persisted ready bundle when a periodic recheck sees expired evidence", () => {
+    const accepted = fixture("ready-with-current-evidence.jsonl").record;
+    const result = replay([
+      { event_id: "ready-recheck", kind: "freshness_recheck", occurred_at: "2026-09-02T00:04:00.000Z", evidence_refs: ["recheck"], expected_generation: 0 },
+    ], {
+      kind: "fixture",
+      delivery_id: accepted.delivery_id,
+      clock: "2026-09-02T00:04:00.000Z",
+      state: accepted.state,
+      generation: accepted.generation,
+      current_freshness: accepted.current_freshness,
+      evidence: accepted.evidence,
+      ready_bundle: accepted.ready_bundle,
+    });
+    expect(result.record).toMatchObject({ state: "freshness_invalidated", generation: 1, ready_bundle: undefined });
+    expect(result.record.notifications).toContainEqual(expect.objectContaining({
+      signal: "invalidation",
+      dedupe_key: `delivery-ready:1:invalidation:${freshnessHash({ head_sha: "h1", base_sha: "b1", merge_state_status: "clean" })}:ready_evidence_expired`,
     }));
   });
 
