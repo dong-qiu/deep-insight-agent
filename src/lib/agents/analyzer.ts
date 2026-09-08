@@ -263,10 +263,34 @@ export async function repairCoverage(
 export async function filterByQuoteCoverage(
   insights: Insight[],
   onCost?: (cost: Cost) => void,
+  itemsById?: ReadonlyMap<string, ContentItem>,
 ): Promise<Insight[]> {
   const kept: Insight[] = [];
   for (const insight of insights) {
-    const evidence = insight.citations
+    // Locator 由本地 body 派生。-1 代表 quote 不在来源正文（常见于模型误引标题）；它既
+    // 不能作为展示证据，也不能留到 validator 才把整条洞察阻断。先剔除，再以剩余逐字
+    // 可定位 quotes 做覆盖审计。
+    const displayableCitations = insight.citations.filter((citation) => (
+      citation.locator.paragraph_index >= 0
+      && citation.locator.char_start >= 0
+      && citation.locator.char_end > citation.locator.char_start
+    ));
+    if (displayableCitations.length !== insight.citations.length) {
+      console.warn(`  ⚠️ 剔除不可定位引用：${insight.id || insight.statement.slice(0, 24)}`);
+      insight.citations = displayableCitations;
+      // source_count / multi_source 是 citation 的派生字段。不能因为被剔除的无效 quote 来自
+      // 第二个 source，就把单源结论伪装成多源印证。
+      if (itemsById) {
+        const sourceIds = new Set(
+          displayableCitations
+            .map((citation) => itemsById.get(citation.content_item_id)?.source_id)
+            .filter((sourceId): sourceId is string => Boolean(sourceId)),
+        );
+        insight.source_count = sourceIds.size;
+        insight.multi_source = sourceIds.size >= 2;
+      }
+    }
+    const evidence = displayableCitations
       .map((citation, i) => `[${i + 1}] ${citation.quote}`)
       .join("\n");
     if (!evidence) {
@@ -639,7 +663,7 @@ ${renderItems(items, topic.keywords)}`;
   });
   // 真正补引：对覆盖缺口经 quote 粒度 Opus 校验后补成 citation（保守、仅 support）；补不上的留残差。
   await repairCoverage(insights, byId, onCost);
-  const quoteCoveredInsights = await filterByQuoteCoverage(insights, onCost);
+  const quoteCoveredInsights = await filterByQuoteCoverage(insights, onCost, byId);
   // 残差告警（informational；report-gen 据已纳入引用外露 〔待补引〕）：补引后仍未覆盖的数字/实体，供人评跟踪。
   for (const it of quoteCoveredInsights) {
     const gaps = coverageGaps(it.statement, (it.entities ?? []).map((e) => e.name), it.citations.map((c) => c.quote));

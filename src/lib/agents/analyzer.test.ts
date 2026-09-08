@@ -432,9 +432,9 @@ describe("repairCoverage（真正补引：候选 → Opus 校验 → 仅 support
 });
 
 describe("filterByQuoteCoverage（展示 quote 覆盖门）", () => {
-  const insight = (statement: string): Insight => ({
+  const insight = (statement: string, citations: Citation[] = [{ content_item_id: "ci", claim: "原子事实", quote: "展示的直接证据", locator: { paragraph_index: 0, char_start: 0, char_end: 8 } }]): Insight => ({
     id: "i", topic_id: "t", type: "aggregation", event_id: null, statement, importance: 3, importance_basis: "x",
-    citations: [{ content_item_id: "ci", claim: "原子事实", quote: "展示的直接证据", locator: { paragraph_index: 0, char_start: 0, char_end: 8 } }],
+    citations,
     source_count: 1, multi_source: false, time_window: { start: "", end: "" }, confidence: null, language: "zh", is_followup: false,
   });
 
@@ -451,5 +451,47 @@ describe("filterByQuoteCoverage（展示 quote 覆盖门）", () => {
     vi.mocked(callStructured).mockResolvedValue({ data: { verdicts: [{ index: 1, supports: true }] } } as unknown as Awaited<ReturnType<typeof callStructured>>);
     const row = insight("被完整覆盖的结论。");
     await expect(filterByQuoteCoverage([row])).resolves.toEqual([row]);
+  });
+
+  it("不可定位的标题 quote 不得作为展示证据；剩余 quote 不足则丢弃", async () => {
+    vi.mocked(callStructured).mockResolvedValue({ data: { verdicts: [{ index: 1, supports: false }] } } as unknown as Awaited<ReturnType<typeof callStructured>>);
+    const row = insight("SynAE 的框架同时衡量有效性、保真度和多样性。", [
+      { content_item_id: "ci", claim: "框架名称", quote: "SynAE: a Framework for Measuring", locator: { paragraph_index: -1, char_start: -1, char_end: -1 } },
+      { content_item_id: "ci", claim: "有效性", quote: "validity", locator: { paragraph_index: 2, char_start: 24, char_end: 32 } },
+    ]);
+
+    await expect(filterByQuoteCoverage([row])).resolves.toEqual([]);
+    const user = vi.mocked(callStructured).mock.calls[0][0].user;
+    expect(user).toContain("validity");
+    expect(user).not.toContain("SynAE: a Framework");
+    expect(row.citations.map((citation) => citation.quote)).toEqual(["validity"]);
+  });
+
+  it("其余 quote 覆盖时仍剔除不可定位 citation，避免后续 reachability 阻断", async () => {
+    vi.mocked(callStructured).mockResolvedValue({ data: { verdicts: [{ index: 1, supports: true }] } } as unknown as Awaited<ReturnType<typeof callStructured>>);
+    const row = insight("有效性指标。", [
+      { content_item_id: "ci", claim: "无效标题", quote: "Only a title", locator: { paragraph_index: -1, char_start: -1, char_end: -1 } },
+      { content_item_id: "ci", claim: "有效性", quote: "validity metric", locator: { paragraph_index: 2, char_start: 24, char_end: 39 } },
+    ]);
+
+    await expect(filterByQuoteCoverage([row])).resolves.toEqual([row]);
+    expect(row.citations.map((citation) => citation.quote)).toEqual(["validity metric"]);
+  });
+
+  it("剔除第二个来源的无效 citation 后重算 source_count 与 multi_source", async () => {
+    vi.mocked(callStructured).mockResolvedValue({ data: { verdicts: [{ index: 1, supports: true }] } } as unknown as Awaited<ReturnType<typeof callStructured>>);
+    const row = insight("有效性指标。", [
+      { content_item_id: "ci_bad", claim: "无效标题", quote: "Only a title", locator: { paragraph_index: -1, char_start: -1, char_end: -1 } },
+      { content_item_id: "ci_good", claim: "有效性", quote: "validity metric", locator: { paragraph_index: 2, char_start: 24, char_end: 39 } },
+    ]);
+    row.source_count = 2;
+    row.multi_source = true;
+    const itemsById = new Map<string, ContentItem>([
+      ["ci_bad", { id: "ci_bad", source_id: "source_bad" } as ContentItem],
+      ["ci_good", { id: "ci_good", source_id: "source_good" } as ContentItem],
+    ]);
+
+    await expect(filterByQuoteCoverage([row], undefined, itemsById)).resolves.toEqual([row]);
+    expect(row).toMatchObject({ source_count: 1, multi_source: false });
   });
 });
