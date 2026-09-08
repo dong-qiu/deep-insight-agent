@@ -37,13 +37,53 @@ describe("controller dry-run replay", () => {
       active_runtime_id: "runtime-1",
       active_runtime_identity: "runtime-identity-1",
       active_lease_fencing_token: "fence-1",
-      last_heartbeat_at: "2026-09-01T00:00:31.000Z",
+      last_heartbeat_at: "2026-09-01T00:03:30.000Z",
     });
     expect(result.record.audit).toEqual(expect.arrayContaining([
       expect.objectContaining({ event_id: "old-heartbeat", kind: "invalid_transition", reason: "heartbeat_missing_or_older_than_90_seconds_or_lease_envelope_incomplete" }),
       expect.objectContaining({ event_id: "wrong-identity", kind: "stale_event", reason: "runtime_identity_mismatch" }),
       expect.objectContaining({ event_id: "wrong-fence", kind: "stale_event", reason: "lease_fencing_token_mismatch" }),
     ]));
+  });
+
+  it.each([
+    ["started", "leased", "2026-09-01T00:05:00.000Z", "2026-09-01T00:09:00.000Z", "2026-09-01T00:03:30.000Z", {}],
+    ["lease_expired", "executing", "2026-09-01T00:10:00.000Z", "2026-09-01T00:10:00.000Z", "2026-09-01T00:08:30.000Z", { checkpoint_ref: "checkpoint" }],
+    ["result", "executing", "2026-09-01T00:05:00.000Z", "2026-09-01T00:09:00.000Z", "2026-09-01T00:03:30.000Z", { result: "completed" }],
+  ] as const)("uses the same fixed-clock heartbeat rule for %s", (kind, state, occurred_at, clock, exactBoundary, extra) => {
+    const event = (heartbeat_at: string | undefined): ReplayInputEvent => ({
+      event_id: `${kind}:${heartbeat_at ?? "missing"}`,
+      kind,
+      occurred_at,
+      heartbeat_at,
+      evidence_refs: ["heartbeat", kind],
+      expected_generation: 0,
+      lease_id: "lease-1",
+      runtime_id: "runtime-1",
+      runtime_identity: "runtime-identity-1",
+      lease_fencing_token: "fence-1",
+      ...extra,
+    });
+    const fixture = {
+      kind: "fixture" as const,
+      delivery_id: `delivery-heartbeat-${kind}`,
+      clock,
+      state,
+      active_lease_id: "lease-1",
+      active_runtime_id: "runtime-1",
+      active_runtime_identity: "runtime-identity-1",
+      active_lease_fencing_token: "fence-1",
+      active_lease_expires_at: "2026-09-01T00:10:00.000Z",
+    };
+    const accepted = replay([event(exactBoundary)], fixture);
+    expect(accepted.record.transitions).toHaveLength(1);
+
+    for (const heartbeat of [undefined, "2026-09-01T00:00:00.000Z", "2026-09-01T00:11:00.000Z"]) {
+      const rejected = replay([event(heartbeat)], fixture);
+      expect(rejected.record.state).toBe(state);
+      expect(rejected.record.transitions).toHaveLength(0);
+      expect(rejected.record.audit).toContainEqual(expect.objectContaining({ reason: "heartbeat_missing_stale_or_reversed" }));
+    }
   });
 
   it("escalates the third consecutive lease loss without charging an attempt", () => {
@@ -59,6 +99,8 @@ describe("controller dry-run replay", () => {
       signal: "human_escalation",
       dedupe_key: "delivery-lease-loss:0:human_escalation:three_consecutive_lease_losses",
     }));
+    expect(new Set(result.record.transitions.map((event) => event.event_id)).size).toBe(result.record.transitions.length);
+    expect(result.record.transitions).toContainEqual(expect.objectContaining({ event_id: "lease-loss-3:human_escalation", causal_event_id: "lease-loss-3" }));
   });
 
   it.each([
@@ -100,6 +142,24 @@ describe("controller dry-run replay", () => {
         dedupe_key: "delivery-notification-plan:0:offline:offline-1:0",
       }),
     })]);
+  });
+
+  it("includes deterministic signal-specific audit plans without external delivery", () => {
+    const invalidation = fixture("head-changes-after-approval.jsonl").record.notifications.find((plan) => plan.signal === "invalidation")!;
+    const ready = fixture("ready-with-current-evidence.jsonl").record.notifications.find((plan) => plan.signal === "ready")!;
+    const repair = fixture("repair-exhaustion.jsonl").record.notifications.find((plan) => plan.signal === "repair_exhausted")!;
+    const escalation = fixture("consecutive-lease-loss-escalation.jsonl").record.notifications.find((plan) => plan.signal === "human_escalation")!;
+
+    expect(invalidation.audit_fields).toMatchObject({ old_freshness: "h1:b1:clean", new_freshness: "h2:b1:clean", trigger_field: "head_sha", superseded_evidence_ids: expect.stringContaining("ci-1"), snapshot_id: "snapshot-h2" });
+    expect(ready.audit_fields).toMatchObject({ freshness: "h1:b1:clean", evidence_bundle_id: expect.any(String), acceptance_result: "ready_for_human_review" });
+    expect(repair.audit_fields).toMatchObject({ repair_round: 2, cause: "terminal_failure_after_repair_budget", attempt_count: 3, evidence_refs: "failure-3", next_action: "wait_for_human_decision" });
+    expect(escalation.audit_fields).toMatchObject({ escalation_reason: "three_consecutive_lease_losses", evidence_refs: "expiry-3,heartbeat-3", acceptance_result: "human_decision_required" });
+    for (const plan of [invalidation, ready, repair, escalation]) expect(plan.retry.external_delivery).toBe(false);
+
+    const first = fixture("consecutive-lease-loss-escalation.jsonl").record.notifications;
+    const second = fixture("consecutive-lease-loss-escalation.jsonl").record.notifications;
+    expect(second).toEqual(first);
+    expect(new Set(first.map((plan) => plan.dedupe_key)).size).toBe(first.length);
   });
 
   it("escalates a persistent offline incident without consuming an attempt", () => {
@@ -370,10 +430,10 @@ describe("controller dry-run replay", () => {
 
   it("rejects matching start and result events when the fixture clock has expired their lease", () => {
     const start = replay([
-      { event_id: "late-start", kind: "started", occurred_at: "2026-09-01T00:09:00.000Z", evidence_refs: ["start"], expected_generation: 0, lease_id: "lease-1", runtime_id: "runtime-1", runtime_identity: "runtime-identity-1", lease_fencing_token: "fence-1" },
+      { event_id: "late-start", kind: "started", occurred_at: "2026-09-01T00:09:00.000Z", heartbeat_at: "2026-09-01T00:09:00.000Z", evidence_refs: ["start"], expected_generation: 0, lease_id: "lease-1", runtime_id: "runtime-1", runtime_identity: "runtime-identity-1", lease_fencing_token: "fence-1" },
     ], { kind: "fixture", delivery_id: "delivery-late-start", clock: "2026-09-01T00:11:00.000Z", state: "leased", active_lease_id: "lease-1", active_runtime_id: "runtime-1", active_runtime_identity: "runtime-identity-1", active_lease_fencing_token: "fence-1", active_lease_expires_at: "2026-09-01T00:10:00.000Z" });
     const result = replay([
-      { event_id: "late-result", kind: "result", occurred_at: "2026-09-01T00:09:00.000Z", evidence_refs: ["result"], expected_generation: 0, lease_id: "lease-1", runtime_id: "runtime-1", runtime_identity: "runtime-identity-1", lease_fencing_token: "fence-1", result: "completed" },
+      { event_id: "late-result", kind: "result", occurred_at: "2026-09-01T00:09:00.000Z", heartbeat_at: "2026-09-01T00:09:00.000Z", evidence_refs: ["result"], expected_generation: 0, lease_id: "lease-1", runtime_id: "runtime-1", runtime_identity: "runtime-identity-1", lease_fencing_token: "fence-1", result: "completed" },
     ], { kind: "fixture", delivery_id: "delivery-late-result", clock: "2026-09-01T00:11:00.000Z", state: "executing", active_lease_id: "lease-1", active_runtime_id: "runtime-1", active_runtime_identity: "runtime-identity-1", active_lease_fencing_token: "fence-1", active_lease_expires_at: "2026-09-01T00:10:00.000Z" });
 
     expect(start.record).toMatchObject({ state: "leased", started_count: 0, attempt_count: 0, active_lease_id: "lease-1", evidence: [] });
@@ -387,7 +447,7 @@ describe("controller dry-run replay", () => {
     ["at", "2026-09-01T00:10:00.000Z"],
   ])("revokes a matching lease_expired event when the fixture clock is %s its expiry", (_boundary, clock) => {
     const result = replay([
-      { event_id: "expiry", kind: "lease_expired", occurred_at: "2026-09-01T00:09:00.000Z", evidence_refs: ["expiry"], expected_generation: 0, lease_id: "lease-1", runtime_id: "runtime-1", runtime_identity: "runtime-identity-1", lease_fencing_token: "fence-1", checkpoint_ref: "checkpoint" },
+      { event_id: "expiry", kind: "lease_expired", occurred_at: "2026-09-01T00:09:00.000Z", heartbeat_at: "2026-09-01T00:09:00.000Z", evidence_refs: ["expiry"], expected_generation: 0, lease_id: "lease-1", runtime_id: "runtime-1", runtime_identity: "runtime-identity-1", lease_fencing_token: "fence-1", checkpoint_ref: "checkpoint" },
     ], { kind: "fixture", delivery_id: "delivery-expiry", clock, state: "executing", active_lease_id: "lease-1", active_runtime_id: "runtime-1", active_runtime_identity: "runtime-identity-1", active_lease_fencing_token: "fence-1", active_lease_expires_at: "2026-09-01T00:10:00.000Z" });
 
     expect(result.record).toMatchObject({ state: "waiting_for_runtime", attempt_count: 0, checkpoint_ref: "checkpoint" });
@@ -398,7 +458,7 @@ describe("controller dry-run replay", () => {
 
   it("requires an active matching unexpired snapshot rather than result correlation freshness", () => {
     const result = replay([
-      { event_id: "result", kind: "result", occurred_at: "2026-09-01T00:00:00.000Z", evidence_refs: ["result-h1"], expected_generation: 0, lease_id: "lease-1", runtime_id: "runtime-1", runtime_identity: "runtime-identity-1", lease_fencing_token: "fence-1", result: "completed", freshness: { head_sha: "h1", base_sha: "b1", merge_state_status: "clean" } },
+      { event_id: "result", kind: "result", occurred_at: "2026-09-01T00:00:00.000Z", heartbeat_at: "2026-09-01T00:00:00.000Z", evidence_refs: ["result-h1"], expected_generation: 0, lease_id: "lease-1", runtime_id: "runtime-1", runtime_identity: "runtime-identity-1", lease_fencing_token: "fence-1", result: "completed", freshness: { head_sha: "h1", base_sha: "b1", merge_state_status: "clean" } },
       { event_id: "snapshot", kind: "snapshot", occurred_at: "2026-09-01T00:00:00.000Z", evidence_refs: ["snapshot-h2"], expected_generation: 0, freshness: { head_sha: "h2", base_sha: "b1", merge_state_status: "clean" } },
       { event_id: "ci", kind: "ci", occurred_at: "2026-09-01T00:01:00.000Z", evidence_refs: ["ci-h1"], expected_generation: 0, freshness: { head_sha: "h1", base_sha: "b1", merge_state_status: "clean" }, conclusion: "passed" },
       { event_id: "review", kind: "review", occurred_at: "2026-09-01T00:02:00.000Z", evidence_refs: ["review-h1"], expected_generation: 0, freshness: { head_sha: "h1", base_sha: "b1", merge_state_status: "clean" }, conclusion: "approved" },
