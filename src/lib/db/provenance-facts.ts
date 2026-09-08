@@ -32,6 +32,7 @@ export const GENERATION_EVENT_METRIC_KEYS = [
   "includable_insight_count", "releasable", "freshness_filtered_insight_count",
   "already_published_filtered_insight_count", "supplemental_candidate_count",
   "supplemental_published_insight_count", "published_insight_count", "published_citation_count",
+  "batch_duplicate_filtered_count", "fingerprint_duplicate_filtered_count",
   "candidate_count", "opportunity_count", "fetched_count", "inserted_count", "updated_count",
   "skipped_count", "committed_output_ref_count", "rolled_back_output_ref_count",
   "unknown_output_ref_count",

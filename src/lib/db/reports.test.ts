@@ -6,7 +6,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { AnalysisBatch, Report, ReportIndexEntry, Topic, ValidationResult } from "../types.js";
 import { saveAnalysisBatch, saveValidationResult } from "./analysis.js";
 import { type DB, openDb } from "./index.js";
-import { chainTypesFor, distinctIndexValues, entityTrends, getReport, latestReportForTopicSince, listBlockedChecksForReport, listRecentBriefEvents, listRecentPublishedEventEvidence, listRecentBriefSelectionDiagnostics, listRecentReports, previousReportForTopic, queryReportIndex, reconcileAnchoredReportEffects, reconcileReportEffects, reportNeighbors, reportStatusCounts, sanitizeFtsQuery, saveFailedReport, saveReport, searchReports, SNIPPET_CLOSE, SNIPPET_OPEN, topicEvolution, topicReportStats } from "./reports.js";
+import { chainTypesFor, distinctIndexValues, entityTrends, getReport, latestReportForTopicSince, listBlockedChecksForReport, listRecentBriefEvents, listRecentPublishedEventEvidence, listRecentPublishedInsightOccurrences, listRecentBriefSelectionDiagnostics, listRecentReports, previousReportForTopic, queryReportIndex, reconcileAnchoredReportEffects, reconcileReportEffects, reportNeighbors, reportStatusCounts, sanitizeFtsQuery, saveFailedReport, saveReport, searchReports, SNIPPET_CLOSE, SNIPPET_OPEN, topicEvolution, topicReportStats } from "./reports.js";
 import { applyProvenanceMigrations } from "./provenance-migrations.js";
 import { appendGenerationEvent } from "./provenance-facts.js";
 import { getTopic, insertSource, insertTopic } from "./repos.js";
@@ -619,6 +619,14 @@ describe("listRecentBriefEvents（P1 不复报 · 喂 analyzer 的历史事件�
     // evt_alpha 取 today 的 statement，不是 yesterday 那条
     expect(events.find((e) => e.event_id === "evt_alpha")?.statement).toBe("今日 alpha 进展");
     expect(events.find((e) => e.event_id === "evt_alpha")?.date).toBe(today);
+  });
+
+  it("occurrence 查询保留同 event 的旧表述及其白名单证据，并接受冻结 asOf", () => {
+    const rows = listRecentPublishedInsightOccurrences(db, "t1", { asOf: `${today}T23:59:59.000Z` });
+    expect(rows).toEqual(expect.arrayContaining([
+      expect.objectContaining({ report_id: "rep_today_brief", insight_id: "ins_t1", event_id: "evt_alpha", statement: "今日 alpha 进展", insight_type: "aggregation", statement_fingerprint: "aggregation\u0000今日 alpha 进展" }),
+      expect.objectContaining({ insight_id: "ins_y1", event_id: "evt_alpha", statement: "昨日 alpha 较旧表述" }),
+    ]));
   });
 
   it("sinceDays 过期截断：sinceDays=0 → 仅今日 brief 内 event", () => {

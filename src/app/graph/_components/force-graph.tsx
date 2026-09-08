@@ -41,10 +41,16 @@ interface DrillItem {
   statement: string;
   importance: number;
   multi_source: boolean;
-  quotes: string[];
-  /** 该洞察所在已发布报告（blocked/未入报告则 null） */
-  report_id: string | null;
-  report_date: string | null;
+  occurrence_count: number;
+  occurrences: Array<{
+    id: string;
+    headline: string;
+    statement: string;
+    importance: number;
+    multi_source: boolean;
+    quotes: string[];
+    report_links: Array<{ report_id: string; date: string }>;
+  }>;
 }
 type Selection = { kind: "node"; a: string } | { kind: "edge"; a: string; b: string };
 
@@ -399,8 +405,8 @@ export function ForceGraph({
               <ul style={{ paddingLeft: "1rem", margin: 0 }}>
                 {items.map((it) => (
                   <li key={it.id} style={{ marginBottom: 10 }}>
-                    {it.report_id ? (
-                      <a href={`/reports/${it.report_id}`} title={it.statement}>
+                    {it.occurrences[0]?.report_links.at(-1) ? (
+                      <a href={`/reports/${it.occurrences[0].report_links.at(-1)!.report_id}`} title={it.statement}>
                         {it.headline}
                       </a>
                     ) : (
@@ -410,12 +416,27 @@ export function ForceGraph({
                       {" · 重要度 "}
                       {it.importance}
                       {it.multi_source ? " · 多源" : ""}
-                      {it.report_date ? ` · ${it.report_date}` : " · 未入报告"}
+                      {it.occurrence_count > 1 ? ` · 相同表述 ${it.occurrence_count} 条` : ""}
                     </span>
-                    {it.quotes.length > 0 ? (
+                    {it.occurrences[0]?.quotes.length > 0 ? (
                       <div className="muted" style={{ fontSize: 11, marginTop: 2, fontStyle: "italic" }}>
-                        「{it.quotes[0]}」{it.quotes.length > 1 ? ` 等 ${it.quotes.length} 处` : ""}
+                        「{it.occurrences[0].quotes[0]}」{it.occurrences[0].quotes.length > 1 ? ` 等 ${it.occurrences[0].quotes.length} 处` : ""}
                       </div>
+                    ) : null}
+                    {it.occurrence_count > 1 ? (
+                      <details style={{ marginTop: 4 }}>
+                        <summary className="muted" style={{ fontSize: 11, cursor: "pointer" }}>展开全部原始记录</summary>
+                        <ul style={{ paddingLeft: "1rem", margin: "4px 0" }}>
+                          {it.occurrences.map((occurrence) => (
+                            <li key={occurrence.id} className="muted" style={{ fontSize: 11, marginBottom: 3 }}>
+                              {occurrence.report_links.length ? occurrence.report_links.map((link, index) => (
+                                <span key={link.report_id}>{index ? " · " : ""}<a href={`/reports/${link.report_id}`} title={occurrence.statement}>{link.date}</a></span>
+                              )) : "未入报告"}
+                              {occurrence.quotes[0] ? ` · 「${occurrence.quotes[0]}」` : ""}
+                            </li>
+                          ))}
+                        </ul>
+                      </details>
                     ) : null}
                   </li>
                 ))}

@@ -9,6 +9,7 @@ import { appendGenerationEvent, captureRevision, entityKey, type EntityRef } fro
 import { anchorEnvelopeBytes, anchorMatchesManifest, manifestForArtifact, parseCanonicalAnchorEnvelope, parseCanonicalJsonBytes, type AnchorSigner, type AnchorStore, type ArtifactManifest } from "./integrity-anchors.js";
 import { assertAnchorPublicationKeyActive, commitAnchoredPublications, writePlannedAnchor } from "./integrity-publication.js";
 import { isReportReaderVisible, reportReaderVisibilitySql } from "./integrity-lifecycle.js";
+import { insightFingerprint } from "../runtime/statement-fingerprint.js";
 
 const j = (v: unknown): string => JSON.stringify(v);
 
@@ -593,6 +594,8 @@ export interface BriefSelectionDiagnostic {
   supplemental_published_insight_count: number | null;
   published_insight_count: number | null;
   published_citation_count: number | null;
+  batch_duplicate_filtered_count: number | null;
+  fingerprint_duplicate_filtered_count: number | null;
   reason_code: string | null;
 }
 
@@ -604,6 +607,7 @@ const selectionMetricKeys = [
   "freshness_filtered_insight_count", "already_published_filtered_insight_count",
   "supplemental_candidate_count", "supplemental_published_insight_count", "published_insight_count",
   "published_citation_count",
+  "batch_duplicate_filtered_count", "fingerprint_duplicate_filtered_count",
 ] as const;
 
 function safeSelectionMetrics(value: string | null): Record<string, number> {
@@ -796,58 +800,69 @@ export function listPassChecksForReport(db: DB, reportId: string): PassCheck[] {
 export interface PublishedEventEvidence {
   event_id: string;
   statement: string;
+  insight_type: "aggregation" | "trend";
   date: string;
   content_item_ids: string[];
+}
+
+/** Do not collapse this at query time: legacy duplicate event ids must remain
+ * observable to the analyzer and the deterministic report-selection fallback. */
+export interface PublishedInsightOccurrence {
+  report_id: string;
+  insight_id: string;
+  event_id: string;
+  statement: string;
+  insight_type: "aggregation" | "trend";
+  statement_fingerprint: string;
+  date: string;
+  content_item_ids: string[];
+}
+
+export function listRecentPublishedInsightOccurrences(
+  db: DB,
+  topicId: string,
+  opts: { sinceDays?: number; asOf?: string } = {},
+): PublishedInsightOccurrence[] {
+  const asOf = opts.asOf ?? new Date().toISOString();
+  const since = new Date(Date.parse(asOf) - (opts.sinceDays ?? 14) * 86_400_000).toISOString().slice(0, 10);
+  const rows = db.prepare(`
+    SELECT r.id AS report_id,i.id AS insight_id,i.event_id,i.statement,i.type AS insight_type,ri.date,c.content_item_id,cc.verdict,cc.consistency
+    FROM report r JOIN report_index ri ON ri.report_id=r.id
+    JOIN insight i ON instr(r.insight_ids, '"' || i.id || '"') > 0
+    LEFT JOIN citation c ON c.insight_id=i.id
+    LEFT JOIN citation_check cc ON cc.batch_id=i.batch_id AND cc.insight_id=c.insight_id AND cc.citation_index=c.citation_index
+    WHERE ri.topic_id=? AND ri.type IN ('brief','initial_digest') AND r.status='done' AND ri.date>=? AND i.event_id IS NOT NULL
+    ORDER BY ri.date DESC,r.generated_at DESC,r.id DESC,i.id ASC,c.citation_index ASC
+  `).all(topicId, since) as Array<{ report_id: string; insight_id: string; event_id: string; statement: string; insight_type: "aggregation" | "trend"; date: string; content_item_id: string | null; verdict: string | null; consistency: string | null }>;
+  const byInsight = new Map<string, PublishedInsightOccurrence>();
+  for (const row of rows) {
+    const occurrenceKey = `${row.report_id}\x00${row.insight_id}`;
+    let occurrence = byInsight.get(occurrenceKey);
+    if (!occurrence) {
+      occurrence = { report_id: row.report_id, insight_id: row.insight_id, event_id: row.event_id, statement: row.statement, insight_type: row.insight_type, statement_fingerprint: insightFingerprint(row.insight_type, row.statement), date: row.date, content_item_ids: [] };
+      byInsight.set(occurrenceKey, occurrence);
+    }
+    if (row.content_item_id && row.verdict === "pass" && row.consistency === "support" && !occurrence.content_item_ids.includes(row.content_item_id)) occurrence.content_item_ids.push(row.content_item_id);
+  }
+  return [...byInsight.values()];
 }
 
 export function listRecentPublishedEventEvidence(
   db: DB,
   topicId: string,
-  opts: { sinceDays?: number; limit?: number } = {},
+  opts: { sinceDays?: number; limit?: number; asOf?: string } = {},
 ): PublishedEventEvidence[] {
-  const sinceDays = opts.sinceDays ?? 14;
   const limit = Math.min(opts.limit ?? 200, 200);
-  const since = new Date(Date.now() - sinceDays * 86_400_000).toISOString().slice(0, 10);
-  const reports = db.prepare(`
-    SELECT ri.date AS date, r.insight_ids AS insight_ids
-    FROM report_index ri JOIN report r ON r.id = ri.report_id
-    WHERE ri.topic_id = ? AND ri.type IN ('brief','initial_digest') AND r.status = 'done' AND ri.date >= ?
-    ORDER BY ri.date DESC, r.generated_at DESC, r.id DESC
-  `).all(topicId, since) as Array<{ date: string; insight_ids: string }>;
+  const occurrences = listRecentPublishedInsightOccurrences(db, topicId, opts);
   const byEvent = new Map<string, PublishedEventEvidence>();
-  for (const report of reports) {
-    const ids: string[] = JSON.parse(report.insight_ids);
-    if (!ids.length) continue;
-    const placeholders = ids.map(() => "?").join(",");
-    const insightRows = db.prepare(`
-      SELECT id, event_id, statement, batch_id
-      FROM insight WHERE id IN (${placeholders}) AND event_id IS NOT NULL
-    `).all(...ids) as Array<{ id: string; event_id: string; statement: string; batch_id: string }>;
-    for (const insight of insightRows) {
-      if (byEvent.has(insight.event_id) || byEvent.size >= limit) continue;
-      byEvent.set(insight.event_id, {
-        event_id: insight.event_id, statement: insight.statement, date: report.date, content_item_ids: [],
-      });
+  for (const occurrence of occurrences) {
+    let event = byEvent.get(occurrence.event_id);
+    if (!event && byEvent.size < limit) {
+      event = { event_id: occurrence.event_id, statement: occurrence.statement, insight_type: occurrence.insight_type, date: occurrence.date, content_item_ids: [] };
+      byEvent.set(occurrence.event_id, event);
     }
-    const rows = db.prepare(`
-      SELECT i.event_id, c.content_item_id, cc.verdict, cc.consistency
-      FROM insight i
-      JOIN citation c ON c.insight_id = i.id
-      JOIN citation_check cc ON cc.batch_id = i.batch_id AND cc.insight_id = c.insight_id AND cc.citation_index = c.citation_index
-      WHERE i.id IN (${placeholders}) AND i.event_id IS NOT NULL
-    `).all(...ids) as Array<{
-      event_id: string; statement: string; content_item_id: string;
-      verdict: "pass" | "blocked" | "flagged";
-      consistency: "support" | "not_support" | "uncertain" | "not_evaluated";
-    }>;
-    for (const row of rows) {
-      const event = byEvent.get(row.event_id);
-      if (!event) continue;
-      // 与发布白名单对齐：只有明确 support 的 pass 才是可作为新增判断的成功证据。
-      if (row.verdict === "pass" && row.consistency === "support") {
-        if (!event.content_item_ids.includes(row.content_item_id)) event.content_item_ids.push(row.content_item_id);
-      }
-    }
+    if (!event) continue;
+    for (const id of occurrence.content_item_ids) if (!event.content_item_ids.includes(id)) event.content_item_ids.push(id);
   }
   return [...byEvent.values()];
 }
@@ -861,7 +876,7 @@ export interface RecentBriefEvent {
 export function listRecentBriefEvents(
   db: DB,
   topicId: string,
-  opts: { sinceDays?: number; limit?: number } = {},
+  opts: { sinceDays?: number; limit?: number; asOf?: string } = {},
 ): RecentBriefEvent[] {
   return listRecentPublishedEventEvidence(db, topicId, { ...opts, limit: opts.limit ?? 50 })
     .map(({ event_id, statement, date }) => ({ event_id, statement, date }));
