@@ -44,6 +44,11 @@ export interface EvidenceReceipt {
 }
 
 export interface TransitionEvent {
+  /**
+   * Globally unique replay audit identity, deterministically derived from the
+   * full transition envelope. This is deliberately distinct from the causal
+   * input event ID: one input can produce more than one transition.
+   */
   event_id: string;
   /** The input event that caused this (possibly derived) transition record. */
   causal_event_id: string;
@@ -324,7 +329,7 @@ function reduce(record: ControllerRecord, event: ReplayInputEvent, states: Contr
       clearActiveLease(record);
       record.checkpoint_ref = event.checkpoint_ref ?? record.checkpoint_ref;
       record.consecutive_lease_losses += 1;
-      if (record.consecutive_lease_losses >= 3 && transition(record, event, "awaiting_human_decision", states, "three_consecutive_lease_losses", "freeze_work_and_require_human_decision", false, "escalate:three_consecutive_lease_losses", `${event.event_id}:human_escalation`)) {
+      if (record.consecutive_lease_losses >= 3 && transition(record, event, "awaiting_human_decision", states, "three_consecutive_lease_losses", "freeze_work_and_require_human_decision", false, "escalate:three_consecutive_lease_losses")) {
         record.active_task_ids = [];
         notify(record, event, notificationKeys, "human_escalation", `${record.delivery_id}:${record.generation}:human_escalation:three_consecutive_lease_losses`, humanEscalationAuditFields(record, event, "three_consecutive_lease_losses"));
       }
@@ -539,17 +544,23 @@ function clearActiveLease(record: ControllerRecord): void {
   record.last_heartbeat_at = undefined;
 }
 
-function transition(record: ControllerRecord, event: ReplayInputEvent, to: ControllerState, states: ControllerState[], precondition: string, recovery: string, incrementGeneration = false, transitionKey = `transition:${event.event_id}`, transitionEventId = event.event_id): boolean {
+function transition(record: ControllerRecord, event: ReplayInputEvent, to: ControllerState, states: ControllerState[], precondition: string, recovery: string, incrementGeneration = false, transitionKey = `transition:${event.event_id}`): boolean {
   if (!allowed(record.state, to)) {
     invalid(record, event, `transition_not_allowed:${record.state}:${to}`);
     return false;
   }
   const before = record.generation;
   const from = record.state;
-  record.generation += incrementGeneration ? 1 : 0;
+  const after = before + (incrementGeneration ? 1 : 0);
+  const auditEventId = transitionAuditEventId(record.delivery_id, event.event_id, before, after, from, to, transitionKey);
+  if (record.transitions.some((transition) => transition.event_id === auditEventId)) {
+    invalid(record, event, "transition_event_id_collision");
+    return false;
+  }
+  record.generation = after;
   record.state = to;
   record.transitions.push({
-    event_id: transitionEventId,
+    event_id: auditEventId,
     causal_event_id: event.event_id,
     delivery_id: record.delivery_id,
     generation_before: before,
@@ -565,6 +576,16 @@ function transition(record: ControllerRecord, event: ReplayInputEvent, to: Contr
   });
   states.push(to);
   return true;
+}
+
+/**
+ * An injective, length-prefixed encoding makes audit IDs deterministic without
+ * trusting caller-provided IDs or an ad-hoc derived-event suffix. The causal
+ * input ID remains separately queryable as `causal_event_id`.
+ */
+function transitionAuditEventId(deliveryId: string, causalEventId: string, generationBefore: number, generationAfter: number, from: ControllerState, to: ControllerState, transitionKey: string): string {
+  const parts = [deliveryId, causalEventId, String(generationBefore), String(generationAfter), from, to, transitionKey];
+  return `transition:${parts.map((part) => `${part.length}:${part}`).join("|")}`;
 }
 
 function allowed(from: ControllerState, to: ControllerState): boolean {

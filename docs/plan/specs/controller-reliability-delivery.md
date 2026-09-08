@@ -55,7 +55,7 @@ TransitionEvent {
 }
 ```
 
-`event_id` 是审计主键；状态写入的幂等键为 `delivery_id:generation:transition:causal_event_id`。需要创建/重新投递子任务时，额外使用 `delivery_id:generation:operation:ordinal`；同键必须返回原效果或语义冲突，绝不创建第二个活跃任务。
+`event_id` 是审计主键，且必须是全局唯一、确定性的 transition-envelope 身份（至少绑定 delivery、causal event、generation before/after、from/to 和 transition kind）；它不得直接复用调用方的 `causal_event_id`，也不得以字符串后缀构造派生事件。`causal_event_id` 必须单独保留以追溯输入。状态写入的幂等键为 `delivery_id:generation:transition:causal_event_id`。需要创建/重新投递子任务时，额外使用 `delivery_id:generation:operation:ordinal`；同键必须返回原效果或语义冲突，绝不创建第二个活跃任务。
 
 lease 的条件写和 runtime 结果必须同时围栏 `delivery_id`、generation、`runtime_id`、`lease_id`、`lease_fencing_token`、未过期 `lease_expires_at` 和预期状态。旧 runtime、旧 lease 或重启前的 result 只能形成 stale 审计事件，绝不能写入当前 record。
 

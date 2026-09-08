@@ -21,7 +21,7 @@ describe("controller dry-run replay", () => {
   it("records model writer provenance without asserting external authorization", () => {
     const result = fixture("lease-heartbeat-fencing.jsonl");
     expect(result.record.transitions).toContainEqual(expect.objectContaining({
-      event_id: "queue-1",
+      causal_event_id: "queue-1",
       writer: "fixture:queue",
       precondition: expect.any(String),
       idempotency_key: expect.any(String),
@@ -100,7 +100,28 @@ describe("controller dry-run replay", () => {
       dedupe_key: "delivery-lease-loss:0:human_escalation:three_consecutive_lease_losses",
     }));
     expect(new Set(result.record.transitions.map((event) => event.event_id)).size).toBe(result.record.transitions.length);
-    expect(result.record.transitions).toContainEqual(expect.objectContaining({ event_id: "lease-loss-3:human_escalation", causal_event_id: "lease-loss-3" }));
+    expect(result.record.transitions).toContainEqual(expect.objectContaining({ causal_event_id: "lease-loss-3", to_state: "awaiting_human_decision" }));
+  });
+
+  it("assigns distinct audit IDs when an input occupies a derived-event-looking ID", () => {
+    const result = fixture("transition-event-id-collision.jsonl");
+    const transitionIds = result.record.transitions.map((event) => event.event_id);
+
+    expect(new Set(transitionIds).size).toBe(transitionIds.length);
+    expect(result.record.transitions).toContainEqual(expect.objectContaining({
+      causal_event_id: "lease-loss-3:human_escalation",
+      to_state: "waiting_for_runtime",
+    }));
+    expect(result.record.transitions).toContainEqual(expect.objectContaining({
+      causal_event_id: "lease-loss-3",
+      to_state: "awaiting_human_decision",
+      precondition: "three_consecutive_lease_losses",
+    }));
+    expect(result.record).toMatchObject({
+      state: "awaiting_human_decision",
+      attempt_count: 0,
+      consecutive_lease_losses: 3,
+    });
   });
 
   it.each([
@@ -174,7 +195,7 @@ describe("controller dry-run replay", () => {
   it("dedupes duplicate and old-generation events without duplicate plans", () => {
     const result = fixture("duplicate-and-out-of-order.jsonl");
     expect(result.record.attempt_count).toBe(1);
-    expect(result.record.transitions.filter((event) => event.event_id === "result-1")).toHaveLength(1);
+    expect(result.record.transitions.filter((event) => event.causal_event_id === "result-1")).toHaveLength(1);
     expect(result.record.notifications.filter((plan) => plan.signal === "offline")).toHaveLength(1);
     expect(result.record.audit).toEqual(expect.arrayContaining([
       expect.objectContaining({ event_id: "result-1", kind: "replayed_event" }),
@@ -214,7 +235,7 @@ describe("controller dry-run replay", () => {
     const readyKey = `delivery-ready:0:ready:${freshnessHash(freshness)}:${result.record.ready_bundle!.hash}`;
     expect(ready).toEqual([expect.objectContaining({ dedupe_key: readyKey })]);
     expect(result.record.transitions).toContainEqual(expect.objectContaining({
-      event_id: "ready-1",
+      causal_event_id: "ready-1",
       idempotency_key: readyKey,
     }));
 
@@ -399,7 +420,7 @@ describe("controller dry-run replay", () => {
   it("escalates after two repair rounds and never dispatches a third", () => {
     const result = fixture("repair-exhaustion.jsonl");
     expect(result.record).toMatchObject({ state: "awaiting_human_decision", repair_round: 2, attempt_count: 3 });
-    expect(result.record.transitions.filter((event) => event.event_id === "repair-dispatch-3")).toHaveLength(0);
+    expect(result.record.transitions.filter((event) => event.causal_event_id === "repair-dispatch-3")).toHaveLength(0);
     expect(result.record.audit).toContainEqual(expect.objectContaining({ event_id: "repair-dispatch-3", kind: "invalid_transition" }));
     expect(result.record.notifications.filter((plan) => plan.signal === "repair_exhausted")).toHaveLength(1);
   });
