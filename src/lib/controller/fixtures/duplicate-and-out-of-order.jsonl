@@ -2,7 +2,7 @@
 {"event_id":"queue-1","kind":"queue","occurred_at":"2026-09-01T00:00:00.000Z","evidence_refs":["plan"],"expected_generation":0}
 {"event_id":"offline-1","kind":"runtime_offline","occurred_at":"2026-09-01T00:01:00.000Z","evidence_refs":["heartbeat-missing"],"expected_generation":0}
 {"event_id":"offline-2","kind":"runtime_offline","occurred_at":"2026-09-01T00:02:00.000Z","evidence_refs":["heartbeat-missing"],"expected_generation":0}
-{"event_id":"lease-1","kind":"lease_confirmed","occurred_at":"2026-09-01T00:03:00.000Z","evidence_refs":["heartbeat","ack"],"expected_generation":0,"lease_id":"lease-1","runtime_id":"runtime-1","lease_expires_at":"2026-09-01T00:09:00.000Z"}
+{"event_id":"lease-1","kind":"lease_confirmed","occurred_at":"2026-09-01T00:03:00.000Z","evidence_refs":["heartbeat","ack"],"expected_generation":0,"lease_id":"lease-1","runtime_id":"runtime-1","lease_expires_at":"2026-09-01T00:11:00.000Z"}
 {"event_id":"start-1","kind":"started","occurred_at":"2026-09-01T00:04:00.000Z","evidence_refs":["start"],"expected_generation":0,"lease_id":"lease-1","runtime_id":"runtime-1"}
 {"event_id":"result-1","kind":"result","occurred_at":"2026-09-01T00:05:00.000Z","evidence_refs":["result"],"expected_generation":0,"lease_id":"lease-1","runtime_id":"runtime-1","result":"completed"}
 {"event_id":"result-1","kind":"result","occurred_at":"2026-09-01T00:05:00.000Z","evidence_refs":["result"],"expected_generation":0,"lease_id":"lease-1","runtime_id":"runtime-1","result":"completed"}

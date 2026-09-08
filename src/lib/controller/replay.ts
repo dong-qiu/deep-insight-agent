@@ -219,13 +219,13 @@ function reduce(record: ControllerRecord, event: ReplayInputEvent, states: Contr
       return notify(record, event, notificationKeys, "reconnect", `${record.delivery_id}:${record.generation}:reconnect:${event.event_id}`);
     case "started":
       if (!matchingLeaseFence(record, event)) return;
-      if (!leaseStillValidAt(record, event)) return stale(record, event, "lease_expired");
+      if (!leaseStillValidAt(record, clock)) return stale(record, event, "lease_expired");
       if (!transition(record, event, "executing", states, "matching_unexpired_fenced_start_receipt", "lease_expiry_returns_to_waiting_without_attempt")) return;
       record.started_count += 1;
       return;
     case "lease_expired":
       if (!matchingLeaseFence(record, event)) return;
-      if (!leaseExpiredAt(record, event)) return invalid(record, event, "lease_not_expired");
+      if (!leaseExpiredAt(record, clock)) return invalid(record, event, "lease_not_expired");
       if (!transition(record, event, "waiting_for_runtime", states, "matching_lease_expired_without_terminal_result", "preserve_checkpoint_and_reacquire_new_lease")) return;
       record.active_lease_id = undefined;
       record.active_runtime_id = undefined;
@@ -270,7 +270,7 @@ function reduce(record: ControllerRecord, event: ReplayInputEvent, states: Contr
 
 function applyResult(record: ControllerRecord, event: ReplayInputEvent, states: ControllerState[], notificationKeys: Set<string>, clock: number): void {
   if (!matchingLeaseFence(record, event)) return;
-  if (!leaseStillValidAt(record, event)) return stale(record, event, "lease_expired");
+  if (!leaseStillValidAt(record, clock)) return stale(record, event, "lease_expired");
   if (!event.result) return invalid(record, event, "terminal_result_required");
   const to = event.result === "completed" ? "evidence_collecting" : record.repair_round < 2 ? "repairing" : "awaiting_human_decision";
   if (!transition(record, event, to, states, "matching_fenced_terminal_result", "record_terminal_result_once_and_never_reuse_lease")) return;
@@ -412,16 +412,14 @@ function leaseExpiryValid(event: ReplayInputEvent, expiresAt: string): boolean {
   return occurredAt !== undefined && expiry !== undefined && expiry > occurredAt;
 }
 
-function leaseStillValidAt(record: ControllerRecord, event: ReplayInputEvent): boolean {
-  const occurredAt = parseTimestamp(event.occurred_at);
+function leaseStillValidAt(record: ControllerRecord, clock: number): boolean {
   const expiry = record.active_lease_expires_at ? parseTimestamp(record.active_lease_expires_at) : undefined;
-  return occurredAt !== undefined && expiry !== undefined && occurredAt <= expiry;
+  return expiry !== undefined && clock < expiry;
 }
 
-function leaseExpiredAt(record: ControllerRecord, event: ReplayInputEvent): boolean {
-  const occurredAt = parseTimestamp(event.occurred_at);
+function leaseExpiredAt(record: ControllerRecord, clock: number): boolean {
   const expiry = record.active_lease_expires_at ? parseTimestamp(record.active_lease_expires_at) : undefined;
-  return occurredAt !== undefined && expiry !== undefined && occurredAt >= expiry;
+  return expiry !== undefined && clock >= expiry;
 }
 
 function evidenceFromEvent(event: ReplayInputEvent, kind: Evidence["kind"], clock: number, freshness?: Freshness, conclusion?: Evidence["conclusion"]): Evidence {

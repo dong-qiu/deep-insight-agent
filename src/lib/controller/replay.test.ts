@@ -14,7 +14,7 @@ describe("controller dry-run replay", () => {
 
   it("does not charge an interrupted started task and requires a new lease", () => {
     const result = fixture("runtime-interrupted-after-start.jsonl");
-    expect(result.record).toMatchObject({ state: "waiting_for_runtime", attempt_count: 0, started_count: 1, checkpoint_ref: "checkpoint-redacted" });
+    expect(result.record).toMatchObject({ state: "waiting_for_runtime", attempt_count: 0, started_count: 0, checkpoint_ref: "checkpoint-redacted" });
     expect(result.record.active_lease_id).toBeUndefined();
   });
 
@@ -141,6 +141,34 @@ describe("controller dry-run replay", () => {
       expect.objectContaining({ event_id: "wrong-result", kind: "stale_event", reason: "runtime_mismatch" }),
       expect.objectContaining({ event_id: "wrong-expiry", kind: "stale_event", reason: "runtime_mismatch" }),
     ]));
+  });
+
+  it("rejects matching start and result events when the fixture clock has expired their lease", () => {
+    const start = replay([
+      { event_id: "late-start", kind: "started", occurred_at: "2026-09-01T00:09:00.000Z", evidence_refs: ["start"], expected_generation: 0, lease_id: "lease-1", runtime_id: "runtime-1" },
+    ], { kind: "fixture", delivery_id: "delivery-late-start", clock: "2026-09-01T00:11:00.000Z", state: "leased", active_lease_id: "lease-1", active_runtime_id: "runtime-1", active_lease_expires_at: "2026-09-01T00:10:00.000Z" });
+    const result = replay([
+      { event_id: "late-result", kind: "result", occurred_at: "2026-09-01T00:09:00.000Z", evidence_refs: ["result"], expected_generation: 0, lease_id: "lease-1", runtime_id: "runtime-1", result: "completed" },
+    ], { kind: "fixture", delivery_id: "delivery-late-result", clock: "2026-09-01T00:11:00.000Z", state: "executing", active_lease_id: "lease-1", active_runtime_id: "runtime-1", active_lease_expires_at: "2026-09-01T00:10:00.000Z" });
+
+    expect(start.record).toMatchObject({ state: "leased", started_count: 0, attempt_count: 0, active_lease_id: "lease-1", evidence: [] });
+    expect(result.record).toMatchObject({ state: "executing", started_count: 0, attempt_count: 0, active_lease_id: "lease-1", evidence: [] });
+    expect(start.record.audit).toContainEqual(expect.objectContaining({ event_id: "late-start", kind: "stale_event", reason: "lease_expired" }));
+    expect(result.record.audit).toContainEqual(expect.objectContaining({ event_id: "late-result", kind: "stale_event", reason: "lease_expired" }));
+  });
+
+  it.each([
+    ["after", "2026-09-01T00:11:00.000Z"],
+    ["at", "2026-09-01T00:10:00.000Z"],
+  ])("revokes a matching lease_expired event when the fixture clock is %s its expiry", (_boundary, clock) => {
+    const result = replay([
+      { event_id: "expiry", kind: "lease_expired", occurred_at: "2026-09-01T00:09:00.000Z", evidence_refs: ["expiry"], expected_generation: 0, lease_id: "lease-1", runtime_id: "runtime-1", checkpoint_ref: "checkpoint" },
+    ], { kind: "fixture", delivery_id: "delivery-expiry", clock, state: "executing", active_lease_id: "lease-1", active_runtime_id: "runtime-1", active_lease_expires_at: "2026-09-01T00:10:00.000Z" });
+
+    expect(result.record).toMatchObject({ state: "waiting_for_runtime", attempt_count: 0, checkpoint_ref: "checkpoint" });
+    expect(result.record.active_lease_id).toBeUndefined();
+    expect(result.record.active_runtime_id).toBeUndefined();
+    expect(result.record.active_lease_expires_at).toBeUndefined();
   });
 
   it("requires an active matching unexpired snapshot rather than result correlation freshness", () => {
