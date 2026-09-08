@@ -160,12 +160,19 @@ jobs:
           tags: deep-insight:ci
           build-args: |
             TARGETARCH=amd64
+            GIT_SHA=0123456789abcdef0123456789abcdef01234567
+            RELEASED_AT=2026-09-08T14:02:19Z
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - name: verify dispatch worker runtime assets
         run: |
           docker run --rm --entrypoint node deep-insight:ci --check /app/ops/generation-dispatch-worker.mjs
           docker run --rm --entrypoint node deep-insight:ci --check /app/ops/generation-dispatch-healthcheck.mjs
+          docker run --rm --entrypoint node deep-insight:ci -e '
+            const fs = require("node:fs");
+            const info = JSON.parse(fs.readFileSync("/app/build-info.json", "utf8"));
+            if (info.git_sha !== "0123456789abcdef0123456789abcdef01234567" || info.released_at !== "2026-09-08T14:02:19Z" || typeof info.version !== "string") process.exit(1);
+          '
           [ "$(docker image inspect --format '{{ index .Config.Labels "org.insight-agent.p1-dashboard-admission" }}' deep-insight:ci)" = isolated ]
       - name: e2e dispatch worker readiness
         run: |
