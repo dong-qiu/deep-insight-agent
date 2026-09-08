@@ -82,6 +82,34 @@ describe("controller dry-run replay", () => {
     ]);
   });
 
+  it("does not re-admit a recovered record with a fresh snapshot and expired CI or review evidence", () => {
+    const accepted = fixture("ready-with-current-evidence.jsonl").record;
+    const recoveredEvidence = accepted.evidence.map((evidence) => evidence.kind === "snapshot" ? {
+      ...evidence,
+      id: "snapshot-fresh",
+      immutable_ref: "snapshot-fresh",
+      payload_hash: "snapshot-fresh-hash",
+      observed_at: "2026-09-02T00:05:00.000Z",
+    } : evidence);
+    const result = replay([
+      { event_id: "ready-after-recovery", kind: "evaluate_ready", occurred_at: "2026-09-02T00:06:00.000Z", evidence_refs: ["bundle"], expected_generation: 0 },
+    ], {
+      kind: "fixture",
+      delivery_id: accepted.delivery_id,
+      clock: "2026-09-02T00:06:00.000Z",
+      state: "evidence_collecting",
+      generation: accepted.generation,
+      current_freshness: accepted.current_freshness,
+      evidence: recoveredEvidence,
+    });
+    expect(result.record).toMatchObject({ state: "evidence_collecting", ready_bundle: undefined });
+    expect(result.record.audit).toContainEqual(expect.objectContaining({
+      event_id: "ready-after-recovery",
+      kind: "invalid_transition",
+      reason: "active_unexpired_matching_snapshot_and_fresh_clean_passing_ci_and_approved_review_required",
+    }));
+  });
+
   it.each([
     ["stale", "stale-snapshot-after-ready.jsonl", "authoritative_freshness_changed_or_unknown"],
     ["expired", "expired-snapshot-after-ready.jsonl", "authoritative_snapshot_expired"],
