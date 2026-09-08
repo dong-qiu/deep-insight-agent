@@ -7,7 +7,7 @@ import type { Citation, ContentItem, Insight } from "../types.js";
 // callStructured mock 掉——repairCoverage 经 verifyCandidates 调它；无 API key、CI 可跑纯函数。
 vi.mock("../runtime/llm.js", () => ({ callStructured: vi.fn() }));
 import { callStructured } from "../runtime/llm.js";
-import { ANALYZE_BODY_CHARS, SELECT_SEPARATOR, carveQuote, chunkByChars, chunkWindows, coverageGaps, isCompleteStatement, repairCitationSource, repairCoverage, repairQuote, selectForAnalyze, specificClaims, truncateForAnalyze } from "./analyzer.js";
+import { ANALYZE_BODY_CHARS, REPAIR_QUOTE_MIN_PREFIX, SELECT_SEPARATOR, carveQuote, chunkByChars, chunkWindows, coverageGaps, isCompleteStatement, repairCitationSource, repairCoverage, repairQuote, selectForAnalyze, specificClaims, truncateForAnalyze } from "./analyzer.js";
 import { AnalyzerOutputSchema } from "../types.js";
 
 describe("AnalyzerOutputSchema 的原子 citation claim", () => {
@@ -144,6 +144,21 @@ describe("repairQuote（M3-6 引用对齐修复）", () => {
 
   it("太短 → null", () => {
     expect(repairQuote("some sufficiently long body text here", "short")).toBeNull();
+  });
+
+  it("短于 16 字符的共同前缀 → 不回切，避免把短语误当引用锚点", () => {
+    const body = "0123456789abcdeX source-only continuation";
+    const quote = "0123456789abcdeY fabricated continuation";
+    expect(quote.slice(0, 15)).toBe("0123456789abcde");
+    expect(repairQuote(body, quote)).toBeNull();
+  });
+
+  it("短于旧 24 字门槛的 GitHub release tag + 拼接状态 → 回切为正文中的真实 tag", () => {
+    const body = "Releases rust-v0.154.0-alpha.6 0.154.0-alpha.6 Pre-release 33 commits to main.";
+    const quote = "rust-v0.154.0-alpha.6 Pre-release";
+    expect("rust-v0.154.0-alpha.6").toHaveLength(21);
+    expect(REPAIR_QUOTE_MIN_PREFIX).toBeLessThanOrEqual(21);
+    expect(repairQuote(body, quote)).toBe("rust-v0.154.0-alpha.6");
   });
 
   it("F1：smart-quote body + ASCII 模型 quote 后段漂移 → 返 body 原始字节切片（含 smart quote、含原始空白）", () => {

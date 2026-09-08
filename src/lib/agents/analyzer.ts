@@ -55,7 +55,7 @@ const SYSTEM = `你是行业洞察分析引擎。给定一个主题与一批已�
  *  纳入 analyzerCacheVersion 哈希——保证「schema/派生变但 SYSTEM 没变」也使旧缓存失效（review m3：
  *  否则切片2 会据旧逻辑产的缓存洞察错命中、喂进新版报告）。SYSTEM 文案变由 promptHash 自动覆盖，此常量只管
  *  「非 SYSTEM 的输出形态/派生」变更。 */
-export const ANALYZER_OUTPUT_VERSION = 4;
+export const ANALYZER_OUTPUT_VERSION = 5;
 
 /** 分析缓存版本（ADR-0009）：analyzer 模型 + SYSTEM prompt 哈希 + 输出契约版本——任一变 → 版本变 → 旧分析缓存
  *  自动失效（不复用陈旧 prompt/schema/派生的洞察）。镜像 validator.consistencyCacheVersion 的版本隔离口径。 */
@@ -223,7 +223,15 @@ function computeLocator(body: string, quote: string): Citation["locator"] {
  *  若起头有一个很小的限定词/词形漂移，但末尾有覆盖原 quote ≥75% 的长连续逐字片段，才以**末尾**锚
  *  回填该片段；短的共同尾词、真改写仍放弃 → 保持原 quote、由可达性闸门挡下，绝不造假。
  *  返回修复后的 quote（来自 body 的原始字节），或 null（无需 / 无法修复，调用方用原 quote）。 */
-export function repairQuote(body: string, quote: string, minLen = 24): string | null {
+/**
+ * 16 characters is long enough to anchor a non-trivial literal fragment while still covering
+ * compact release tags (for example `rust-v0.154.0-alpha.6`, 21 characters).  The returned
+ * value is always a slice of `body`; the later validator still decides whether that slice
+ * supports the claim, so this does not relax citation reachability or consistency.
+ */
+export const REPAIR_QUOTE_MIN_PREFIX = 16;
+
+export function repairQuote(body: string, quote: string, minLen = REPAIR_QUOTE_MIN_PREFIX): string | null {
   const { key: nb, map: bodyMap } = collapseWithMap(body);
   const nq = compareKey(quote);
   if (nq.length < minLen || nb.includes(nq)) return null; // 太短 / 已可达 → 用原 quote
