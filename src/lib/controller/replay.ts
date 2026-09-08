@@ -293,9 +293,11 @@ function reduce(record: ControllerRecord, event: ReplayInputEvent, states: Contr
       const bundleEvidence = readyBundleEvidence(record, clock);
       if (!bundleEvidence) return invalid(record, event, "active_unexpired_matching_snapshot_and_fresh_clean_passing_ci_and_approved_review_required");
       const bundle = createReadyBundle(record, bundleEvidence, event.occurred_at);
-      if (transition(record, event, "ready_for_human_review", states, "current_freshness_and_matching_unexpired_evidence", "recheck_freshness_before_any_human_acceptance", false, `ready:${freshnessHash(record.current_freshness!)}:${bundle.hash}`)) {
+      const freshness = record.current_freshness!;
+      const readyKey = `${record.delivery_id}:${record.generation}:ready:${freshnessHash(freshness)}:${bundle.hash}`;
+      if (transition(record, event, "ready_for_human_review", states, "current_freshness_and_matching_unexpired_evidence", "recheck_freshness_before_any_human_acceptance", false, `ready:${freshnessHash(freshness)}:${bundle.hash}`)) {
         record.ready_bundle = bundle;
-        notify(record, event, notificationKeys, "ready", `${record.delivery_id}:${record.generation}:ready:${event.event_id}`);
+        notify(record, event, notificationKeys, "ready", readyKey);
       }
       return;
     }
