@@ -55,10 +55,25 @@ export function verdictFor(
   return "flagged"; // uncertain
 }
 
+/**
+ * 三分类的边界表同时供单条与批量 judge 使用。
+ *
+ * 不要把「原文没有提到」和「引用把已有的限定事实改写成另一件事」混为一谈：后者会使
+ * 发布层错误放行，必须是 not_support。它来自 2026-09 A1 错例审计，且与
+ * citation-validation spec 的范围/条件扩大规则保持一致。
+ */
+export const CONSISTENCY_LABEL_DECISION_TABLE = `
+判定边界（按此优先级）：
+1. 只有原文直接覆盖 claim 的关键主体、数值、比较、范围和条件时才判 support；claim 省略不改变该事实的辅助步骤，不单独构成冲突。
+2. 判 not_support：原文已有明确事实却被 claim 改写为相反主体/数值/比较，或把**已有的限定范围或条件**扩大、替换为不相容范围/条件或全称断言。即使原文没有另行写出“该扩大后的说法为假”，这种改写仍是夸大或断章取义。例如：原文只说“多步任务”却 claim “单步任务也成立”；原文只说“评测中的群聊注入”却 claim “所有输入面、所有模型”；原文只说“分类性能”却 claim “所有指标”。原文点名 A，claim 把同一已陈述事实归给不相同的 B，也判 not_support。
+3. 判 uncertain：原文只是完全没有提及 claim 的基准、产品、领域、主体或属性，且没有可判定的相反事实；不得用外部常识补全或反驳。仅仅“没有提到”不是 not_support。
+`;
+
 const CONSISTENCY_DECISION_RULES = `
 - support：原文明确支持 claim；若提供了定位引用，引用本身（可结合紧邻上下文）也必须直接支撑 claim，不能只在正文其他位置找到无关证据。
 - not_support：原文与 claim 存在可判定冲突，或 quote 把原文已有事实张冠李戴、扩大数值/范围/条件。reason 取 out_of_context（脱离原有上下文而改变含义）/ exaggeration（夸大）/ misattribution（张冠李戴）。
 - uncertain：原文对 claim 的关键主体、数值、比较、适用范围或条件**没有足够信息，既不能证实也不能反驳**。仅仅“没有提到”不是 not_support；此时判 uncertain，交人工核实并标待核实。
+${CONSISTENCY_LABEL_DECISION_TABLE}
 
 下列情况是已有事实与 claim 的**可判定不一致**，不可仅因“原文没有逐字否定”而降为 uncertain：
 - 原文把**同一主体的同一属性、比较或身份**明确归给 A，claim 则把该属性明确归给不相同的 B；

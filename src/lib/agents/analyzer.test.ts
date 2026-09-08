@@ -7,7 +7,7 @@ import type { Citation, ContentItem, Insight } from "../types.js";
 // callStructured mock 掉——repairCoverage 经 verifyCandidates 调它；无 API key、CI 可跑纯函数。
 vi.mock("../runtime/llm.js", () => ({ callStructured: vi.fn() }));
 import { callStructured } from "../runtime/llm.js";
-import { ANALYZE_BODY_CHARS, REPAIR_QUOTE_MIN_PREFIX, SELECT_SEPARATOR, canonicalizeInsightEvents, carveQuote, chunkByChars, chunkWindows, coverageGaps, isCompleteStatement, repairCitationSource, repairCoverage, repairQuote, selectForAnalyze, specificClaims, truncateForAnalyze } from "./analyzer.js";
+import { ANALYZE_BODY_CHARS, ANALYZER_SYSTEM, CITATION_CLAUSE_AUDIT, REPAIR_QUOTE_MIN_PREFIX, SELECT_SEPARATOR, canonicalizeInsightEvents, carveQuote, chunkByChars, chunkWindows, coverageGaps, filterByQuoteCoverage, isCompleteStatement, repairCitationSource, repairCoverage, repairQuote, selectForAnalyze, specificClaims, truncateForAnalyze } from "./analyzer.js";
 import { AnalyzerOutputSchema } from "../types.js";
 
 describe("AnalyzerOutputSchema 的原子 citation claim", () => {
@@ -60,6 +60,15 @@ describe("canonicalizeInsightEvents", () => {
     const trend = { ...insight("trend", "重复。", "trend_event"), type: "trend" as const };
     canonicalizeInsightEvents([trend], [{ event_id: "old_event", statement: "重复。", type: "aggregation" }]);
     expect(trend.event_id).toBe("trend_event");
+  });
+});
+
+describe("逐子句引用审计（review queue 覆盖修复）", () => {
+  it("将语义限定与数字/实体同等视为必须直接引用的事实", () => {
+    expect(CITATION_CLAUSE_AUDIT).toContain("研究/来源数量、机制、比较对象、适用范围、时间、条件、因果和程度");
+    expect(CITATION_CLAUSE_AUDIT).toContain("同一数字或实体就视为已覆盖");
+    expect(CITATION_CLAUSE_AUDIT).toContain("两条来源写成“三项研究”");
+    expect(ANALYZER_SYSTEM).toContain(CITATION_CLAUSE_AUDIT);
   });
 });
 
@@ -368,6 +377,7 @@ describe("repairCoverage（真正补引：候选 → Opus 校验 → 仅 support
     const added = ins.citations[1];
     expect(it1.body.includes(added.quote)).toBe(true); // 逐字可达
     expect(added.quote.includes("900")).toBe(true);
+    expect(added.claim).toBe(added.quote); // 补引不再产生 claim=null 的契约破口
   });
 
   it("候选校验 not support（同形不同义）→ 不补、留残差", async () => {
@@ -418,5 +428,28 @@ describe("repairCoverage（真正补引：候选 → Opus 校验 → 仅 support
     expect(ins.citations.length).toBe(2); // 只补了 1 条
     expect(ins.citations[1].quote.includes("900")).toBe(true); // 补的是候选1（900）
     expect(coverageGaps(ins.statement, [], ins.citations.map((c) => c.quote))).toEqual(["1507"]); // 1507 仍残差
+  });
+});
+
+describe("filterByQuoteCoverage（展示 quote 覆盖门）", () => {
+  const insight = (statement: string): Insight => ({
+    id: "i", topic_id: "t", type: "aggregation", event_id: null, statement, importance: 3, importance_basis: "x",
+    citations: [{ content_item_id: "ci", claim: "原子事实", quote: "展示的直接证据", locator: { paragraph_index: 0, char_start: 0, char_end: 8 } }],
+    source_count: 1, multi_source: false, time_window: { start: "", end: "" }, confidence: null, language: "zh", is_followup: false,
+  });
+
+  beforeEach(() => vi.mocked(callStructured).mockReset());
+
+  it("联合 quotes 不能完整覆盖 statement 时保守丢弃", async () => {
+    vi.mocked(callStructured).mockResolvedValue({ data: { verdicts: [{ index: 1, supports: false }] } } as unknown as Awaited<ReturnType<typeof callStructured>>);
+    await expect(filterByQuoteCoverage([insight("含未引条件的结论。")])).resolves.toEqual([]);
+    expect(vi.mocked(callStructured).mock.calls[0][0].system).toContain("不得假设原始全文还有其他证据");
+    expect(vi.mocked(callStructured).mock.calls[0][0].system).toContain("每一个");
+  });
+
+  it("联合 quotes 直接覆盖 statement 时保留", async () => {
+    vi.mocked(callStructured).mockResolvedValue({ data: { verdicts: [{ index: 1, supports: true }] } } as unknown as Awaited<ReturnType<typeof callStructured>>);
+    const row = insight("被完整覆盖的结论。");
+    await expect(filterByQuoteCoverage([row])).resolves.toEqual([row]);
   });
 });

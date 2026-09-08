@@ -11,7 +11,7 @@ vi.mock("../runtime/llm.js", () => ({
 }));
 
 import { callStructured } from "../runtime/llm.js";
-import { buildWindowByItem, checkReachability, consistencyCacheVersion, insightInclusion, isValidationDegraded, judgeConsistency, judgeConsistencyBatch, summarize, validateBatch, verdictFor } from "./validator.js";
+import { buildWindowByItem, checkReachability, CONSISTENCY_LABEL_DECISION_TABLE, consistencyCacheVersion, insightInclusion, isValidationDegraded, judgeConsistency, judgeConsistencyBatch, summarize, validateBatch, verdictFor } from "./validator.js";
 import type { CitationCheck, ContentItem, Insight } from "../types.js";
 
 describe("buildWindowByItem（决定⑤ · transcript citation-locator 窗口）", () => {
@@ -338,6 +338,21 @@ describe("validateBatch（A 去重 + C 校验失败分账）", () => {
       expect(args.system).toContain("同一结果");
       expect(args.system).toContain("排他或全称表述");
       expect(args.system).toContain("原文只谈 A、没有谈 B");
+    }
+  });
+
+  it("单条与批量 judge 共享范围扩大/纯粹沉默的边界表", async () => {
+    vi.mocked(callStructured)
+      .mockResolvedValueOnce(judgeData("not_support", "out_of_context"))
+      .mockResolvedValueOnce(batchJudgeData([{ index: 1, consistency: "uncertain", consistency_reason: "uncertain" }]));
+
+    await judgeConsistency("单步任务也成立", "原文仅说多步任务中成立。");
+    await judgeConsistencyBatch(["未提及的基准也成立"], "原文只陈述了另一个事实。");
+
+    expect(CONSISTENCY_LABEL_DECISION_TABLE).toContain("已有的限定范围或条件");
+    expect(CONSISTENCY_LABEL_DECISION_TABLE).toContain("完全没有提及");
+    for (const [args] of vi.mocked(callStructured).mock.calls) {
+      expect(args.system).toContain(CONSISTENCY_LABEL_DECISION_TABLE);
     }
   });
 
