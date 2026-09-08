@@ -19,12 +19,19 @@ export interface RuntimeTaskSnapshot {
 
 /** Read-only receipt fields must reproduce the complete active lease fence. */
 export interface RuntimeReceipt {
+  /** Immutable receipt identity from the recorded runtime read model. */
+  receipt_id?: string;
+  delivery_id?: string;
+  generation?: number;
+  task_id?: string;
   lease_id?: string;
   runtime_id?: string;
   runtime_identity?: string;
   lease_fencing_token?: string;
   lease_expires_at?: string;
   observed_at?: string;
+  /** The observed task state the receipt attests. */
+  expected_state?: "running" | "completed" | "failed";
 }
 
 export interface RuntimeTerminalReceipt extends RuntimeReceipt {

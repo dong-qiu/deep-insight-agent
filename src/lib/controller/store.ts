@@ -5,9 +5,9 @@
  * and therefore cannot accidentally attach to the application's live database.
  */
 import Database from "better-sqlite3";
-import { mkdirSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import type { ControllerRecord, ControllerState, Evidence, NotificationPlan, TransitionEvent } from "./replay.js";
+import { mkdirSync, realpathSync } from "node:fs";
+import { basename, resolve, sep } from "node:path";
+import { readyBundleHash, type ControllerRecord, type ControllerState, type Evidence, type NotificationPlan, type TransitionEvent } from "./replay.js";
 
 export type DurableControllerRecord = ControllerRecord & {
   updated_at: string;
@@ -49,6 +49,12 @@ export interface NotificationClaim {
   plan?: NotificationPlan;
 }
 
+/** The store never accepts an application DB path: callers supply a dedicated root. */
+export interface ControllerStoreLocation {
+  root_dir: string;
+  file_name?: string;
+}
+
 /** The acceptance predicate is intentionally available to every reader. */
 export function canAcceptEvidence(record: DurableControllerRecord): boolean {
   return !record.pending_invalidation && record.state !== "freshness_invalidated" && record.state !== "awaiting_human_decision";
@@ -57,10 +63,19 @@ export function canAcceptEvidence(record: DurableControllerRecord): boolean {
 export class ControllerStore {
   private readonly db: Database.Database;
 
-  constructor(path: string) {
-    if (!path || path === ":memory:") throw new Error("controller_store_requires_explicit_isolated_file_path");
-    const absolutePath = resolve(path);
-    mkdirSync(dirname(absolutePath), { recursive: true });
+  constructor(location: ControllerStoreLocation) {
+    if (!location?.root_dir) throw new Error("controller_store_requires_explicit_isolated_root");
+    const root = resolve(location.root_dir);
+    const fileName = location.file_name ?? "controller.sqlite";
+    if (fileName !== basename(fileName) || fileName === ":memory:") throw new Error("controller_store_rejects_escape_file_name");
+    // These names deliberately make mounting a live/shared app directory a hard error.
+    if (root.split(sep).some((part) => ["live", "shared", ".data", "production", "prod"].includes(part.toLowerCase()))) {
+      throw new Error("controller_store_rejects_live_or_shared_root");
+    }
+    mkdirSync(root, { recursive: true });
+    const isolatedRoot = realpathSync(root);
+    const absolutePath = resolve(isolatedRoot, fileName);
+    if (!absolutePath.startsWith(`${isolatedRoot}${sep}`)) throw new Error("controller_store_rejects_escape_path");
     this.db = new Database(absolutePath);
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("foreign_keys = ON");
@@ -96,13 +111,15 @@ export class ControllerStore {
       }
       if (!prior || prior.generation !== mutation.expected.generation || (mutation.expected.state && prior.state !== mutation.expected.state)) return { kind: "cas_conflict", record: prior } as AppendResult;
       if (mutation.next.delivery_id !== prior.delivery_id || mutation.next.pending_invalidation) throw new Error("invalid_controller_mutation");
-      this.db.prepare("UPDATE controller_record SET generation=?,state=?,pending_invalidation=0,record_json=?,updated_at=? WHERE delivery_id=?")
-        .run(mutation.next.generation, mutation.next.state, JSON.stringify(mutation.next), mutation.next.updated_at, mutation.next.delivery_id);
+      const update = this.db.prepare("UPDATE controller_record SET generation=?,state=?,pending_invalidation=0,record_json=?,updated_at=? WHERE delivery_id=? AND generation=? AND state=?")
+        .run(mutation.next.generation, mutation.next.state, JSON.stringify(mutation.next), mutation.next.updated_at, mutation.next.delivery_id, mutation.expected.generation, mutation.expected.state);
+      if (update.changes !== 1) return { kind: "cas_conflict", record: this.load(mutation.next.delivery_id) } as AppendResult;
       if (mutation.transition) {
         this.db.prepare("INSERT INTO controller_transition(event_id,delivery_id,generation_before,generation_after,event_json) VALUES (?,?,?,?,?)")
           .run(mutation.transition.event_id, mutation.next.delivery_id, mutation.transition.generation_before, mutation.transition.generation_after, JSON.stringify(mutation.transition));
       }
-      for (const evidence of mutation.evidence ?? []) this.db.prepare("INSERT OR IGNORE INTO controller_evidence(evidence_id,delivery_id,generation,evidence_json) VALUES (?,?,?,?)").run(evidence.id, mutation.next.delivery_id, mutation.next.generation, JSON.stringify(evidence));
+      for (const evidence of mutation.evidence ?? []) this.insertEvidenceUnsafe(mutation.next.delivery_id, mutation.next.generation, evidence);
+      this.validateEvidenceRefsUnsafe(mutation.next, mutation.transition, mutation.evidence ?? []);
       for (const plan of mutation.outbox ?? []) this.db.prepare("INSERT OR IGNORE INTO controller_outbox(dedupe_key,delivery_id,generation,plan_json) VALUES (?,?,?,?)").run(plan.dedupe_key, plan.delivery_id, plan.generation, JSON.stringify(plan));
       for (const item of mutation.audit ?? []) this.appendAuditUnsafe(mutation.next.delivery_id, item.kind, item.reason, item.occurred_at);
       this.db.prepare("INSERT INTO controller_idempotency(idempotency_key,semantic_json,effect_json) VALUES (?,?,?)").run(idempotencyKey, semantic, JSON.stringify(mutation.next));
@@ -122,7 +139,8 @@ export class ControllerStore {
           : { kind: "semantic_conflict", record: prior } as AppendResult;
       }
       const next = { ...prior, pending_invalidation: pending, updated_at: pending.fenced_at };
-      this.db.prepare("UPDATE controller_record SET pending_invalidation=1,record_json=?,updated_at=? WHERE delivery_id=?").run(JSON.stringify(next), next.updated_at, deliveryId);
+      const update = this.db.prepare("UPDATE controller_record SET pending_invalidation=1,record_json=?,updated_at=? WHERE delivery_id=? AND generation=? AND state=? AND pending_invalidation=0").run(JSON.stringify(next), next.updated_at, deliveryId, expected.generation, expected.state);
+      if (update.changes !== 1) return { kind: "cas_conflict", record: this.load(deliveryId) } as AppendResult;
       this.appendAuditUnsafe(deliveryId, "pending_invalidation", pending.reason, pending.fenced_at);
       return { kind: "applied", record: next } as AppendResult;
     });
@@ -151,14 +169,44 @@ export class ControllerStore {
       const row = this.db.prepare("SELECT plan_json,claim_token FROM controller_outbox WHERE dedupe_key=?").get(dedupeKey) as { plan_json: string; claim_token: string | null } | undefined;
       if (!row) return { kind: "missing" } as NotificationClaim;
       if (row.claim_token) return { kind: "already_claimed", plan: JSON.parse(row.plan_json) as NotificationPlan } as NotificationClaim;
-      this.db.prepare("UPDATE controller_outbox SET claim_token=?,claimed_at=? WHERE dedupe_key=? AND claim_token IS NULL").run(claimToken, claimedAt, dedupeKey);
-      return { kind: "claimed", plan: JSON.parse(row.plan_json) as NotificationPlan } as NotificationClaim;
+      const update = this.db.prepare("UPDATE controller_outbox SET claim_token=?,claimed_at=? WHERE dedupe_key=? AND claim_token IS NULL").run(claimToken, claimedAt, dedupeKey);
+      const reread = this.db.prepare("SELECT plan_json,claim_token FROM controller_outbox WHERE dedupe_key=?").get(dedupeKey) as { plan_json: string; claim_token: string | null } | undefined;
+      if (!reread) return { kind: "missing" } as NotificationClaim;
+      return update.changes === 1 && reread.claim_token === claimToken
+        ? { kind: "claimed", plan: JSON.parse(reread.plan_json) as NotificationPlan } as NotificationClaim
+        : { kind: "already_claimed", plan: JSON.parse(reread.plan_json) as NotificationPlan } as NotificationClaim;
     });
     return tx();
   }
 
   private appendAuditUnsafe(deliveryId: string, kind: string, reason: string, occurredAt: string): void {
     this.db.prepare("INSERT INTO controller_audit(delivery_id,kind,reason,occurred_at) VALUES (?,?,?,?)").run(deliveryId, kind, reason, occurredAt);
+  }
+
+  private insertEvidenceUnsafe(deliveryId: string, generation: number, evidence: Evidence): void {
+    const existing = this.db.prepare("SELECT delivery_id,generation,evidence_json FROM controller_evidence WHERE evidence_id=?").get(evidence.id) as { delivery_id: string; generation: number; evidence_json: string } | undefined;
+    if (existing) {
+      if (existing.delivery_id !== deliveryId || existing.generation !== generation || existing.evidence_json !== JSON.stringify(evidence)) throw new Error("controller_evidence_identity_conflict");
+      return;
+    }
+    this.db.prepare("INSERT INTO controller_evidence(evidence_id,delivery_id,generation,evidence_json) VALUES (?,?,?,?)").run(evidence.id, deliveryId, generation, JSON.stringify(evidence));
+  }
+
+  private validateEvidenceRefsUnsafe(next: DurableControllerRecord, transition: TransitionEvent | undefined, supplied: Evidence[]): void {
+    if (!transition) return;
+    for (const ref of transition.evidence_refs) {
+      const suppliedMatch = supplied.some((evidence) => evidence.id === ref);
+      const ledgerMatch = this.db.prepare("SELECT 1 FROM controller_evidence WHERE evidence_id=? AND delivery_id=? AND generation=?").get(ref, next.delivery_id, next.generation);
+      if (!suppliedMatch && !ledgerMatch) throw new Error("controller_transition_evidence_ref_unresolvable");
+    }
+    if (next.ready_bundle) {
+      const bundle = next.ready_bundle;
+      if (bundle.hash !== readyBundleHash(bundle) || bundle.delivery_id !== next.delivery_id || bundle.generation !== next.generation || !next.current_freshness || JSON.stringify(bundle.freshness) !== JSON.stringify(next.current_freshness)) throw new Error("controller_ready_bundle_invalid");
+      for (const [ref, receipt, kind, conclusion] of [[bundle.snapshot_evidence_ref, bundle.snapshot_evidence, "snapshot", undefined], [bundle.ci_evidence_ref, bundle.ci_evidence, "ci", "passed"], [bundle.review_evidence_ref, bundle.review_evidence, "review", "approved"]] as const) {
+        const evidence = next.evidence.find((candidate) => candidate.id === ref && candidate.status === "active");
+        if (!evidence || evidence.kind !== kind || evidence.source !== receipt.source || evidence.immutable_ref !== receipt.immutable_ref || evidence.payload_hash !== receipt.payload_hash || evidence.observed_at !== receipt.observed_at || evidence.conclusion !== conclusion || JSON.stringify(evidence.freshness) !== JSON.stringify(bundle.freshness)) throw new Error("controller_ready_bundle_evidence_missing");
+      }
+    }
   }
 }
 

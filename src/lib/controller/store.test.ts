@@ -1,6 +1,6 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { createControllerRecord, type NotificationPlan, type TransitionEvent } from "./replay.js";
@@ -12,13 +12,13 @@ afterEach(() => { for (const directory of directories.splice(0)) rmSync(director
 function store(): ControllerStore {
   const directory = mkdtempSync(join(tmpdir(), "insight-controller-store-"));
   directories.push(directory);
-  return new ControllerStore(join(directory, "controller.sqlite"));
+  return new ControllerStore({ root_dir: directory });
 }
 function storeWithPath(): { db: ControllerStore; path: string } {
   const directory = mkdtempSync(join(tmpdir(), "insight-controller-store-"));
   directories.push(directory);
   const path = join(directory, "controller.sqlite");
-  return { db: new ControllerStore(path), path };
+  return { db: new ControllerStore({ root_dir: directory }), path };
 }
 function record(deliveryId = "delivery-1"): DurableControllerRecord {
   return { ...createControllerRecord({ delivery_id: deliveryId, state: "admitted", generation: 0 }), updated_at: "2026-09-08T00:00:00.000Z" };
@@ -26,15 +26,18 @@ function record(deliveryId = "delivery-1"): DurableControllerRecord {
 function mutation(before: DurableControllerRecord, key = "delivery-1:0:queue:one"): StoreMutation {
   const next = { ...before, state: "waiting_for_runtime" as const, active_task_ids: ["task-1"], updated_at: "2026-09-08T00:01:00.000Z" };
   const transition: TransitionEvent = { event_id: "transition-1", causal_event_id: "queue-1", delivery_id: before.delivery_id, generation_before: 0, generation_after: 0, from_state: "admitted", to_state: "waiting_for_runtime", writer: "test", occurred_at: next.updated_at, idempotency_key: key, precondition: "test", evidence_refs: ["plan"], recovery_action: "none" };
-  return { expected: { generation: 0, state: "admitted" }, next, transition };
+  const evidence = { id: "plan", kind: "result" as const, source: "test", immutable_ref: "plan", payload_hash: "plan-hash", status: "active" as const, observed_at: next.updated_at };
+  return { expected: { generation: 0, state: "admitted" }, next, transition, evidence: [evidence] };
 }
 function plan(): NotificationPlan {
   return { dedupe_key: "delivery-1:0:offline:one", signal: "offline", occurred_at: "2026-09-08T00:01:00.000Z", causal_event_id: "offline-1", delivery_id: "delivery-1", generation: 0, retry: { idempotency_key: "notify-1", backoff_minutes: [5, 15], max_attempts: 3, external_delivery: false }, audit_fields: {} };
 }
 
 describe("ControllerStore", () => {
-  it("uses an explicitly injected isolated file and rejects any implicit memory/default path", () => {
-    expect(() => new ControllerStore(":memory:")).toThrow("explicit_isolated_file_path");
+  it("uses an explicitly injected isolated root and rejects live/shared/escape paths", () => {
+    expect(() => new ControllerStore({ root_dir: "" })).toThrow("explicit_isolated_root");
+    expect(() => new ControllerStore({ root_dir: join(tmpdir(), "shared", "controller") })).toThrow("live_or_shared_root");
+    expect(() => new ControllerStore({ root_dir: tmpdir(), file_name: "../app.sqlite" })).toThrow("escape_file_name");
     const db = store();
     expect(db.create(record()).kind).toBe("applied");
     db.close();
@@ -50,6 +53,22 @@ describe("ControllerStore", () => {
     expect(db.compareAndAppend({ ...first, next: { ...first.next, active_task_ids: ["second-active-task"] } }).kind).toBe("semantic_conflict");
     expect(db.load("delivery-1")?.active_task_ids).toEqual(["task-1"]);
     db.close();
+  });
+
+  it("fences two SQLite connections with conditional CAS, idempotency, and an atomic outbox claim", () => {
+    const { db: first, path } = storeWithPath();
+    const second = new ControllerStore({ root_dir: dirname(path) });
+    const original = record();
+    first.create(original);
+    const applied = mutation(original, "delivery-1:0:queue:one");
+    applied.outbox = [plan(), plan()];
+    expect(first.compareAndAppend(applied).kind).toBe("applied");
+    expect(second.compareAndAppend({ ...mutation(original, "delivery-1:0:queue:other"), outbox: [plan()] }).kind).toBe("cas_conflict");
+    expect(second.compareAndAppend(applied).kind).toBe("replayed");
+    expect(first.claimNotification(plan().dedupe_key, "first", "2026-09-08T00:02:00.000Z").kind).toBe("claimed");
+    expect(second.claimNotification(plan().dedupe_key, "second", "2026-09-08T00:02:00.000Z").kind).toBe("already_claimed");
+    second.close();
+    first.close();
   });
 
   it("atomically rejects incomplete or inconsistent transition envelopes", () => {
@@ -81,6 +100,16 @@ describe("ControllerStore", () => {
     expect(reader.prepare("SELECT COUNT(*) AS count FROM controller_transition").get()).toEqual({ count: 0 });
     expect(reader.prepare("SELECT COUNT(*) AS count FROM controller_evidence").get()).toEqual({ count: 1 });
     reader.close();
+    db.close();
+  });
+
+  it("requires transition evidence references to resolve within the same delivery and generation ledger", () => {
+    const db = store();
+    const original = record();
+    db.create(original);
+    expect(() => db.compareAndAppend({ ...mutation(original), evidence: [] })).toThrow("evidence_ref_unresolvable");
+    const foreign = { ...mutation(original), evidence: [{ id: "plan", kind: "result" as const, source: "test", immutable_ref: "other", payload_hash: "other", status: "active" as const, observed_at: "2026-09-08T00:01:00.000Z" }] };
+    expect(db.compareAndAppend(foreign).kind).toBe("applied");
     db.close();
   });
 

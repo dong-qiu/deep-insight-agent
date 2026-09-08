@@ -15,12 +15,12 @@ const freshness = { head_sha: "head-1", base_sha: "base-1", merge_state_status: 
 
 function setup(record: DurableControllerRecord): ControllerStore {
   const directory = mkdtempSync(join(tmpdir(), "insight-controller-reconciler-")); directories.push(directory);
-  const db = new ControllerStore(join(directory, "controller.sqlite")); db.create(record); return db;
+  const db = new ControllerStore({ root_dir: directory }); db.create(record); return db;
 }
 function setupWithPath(record: DurableControllerRecord): { db: ControllerStore; path: string } {
   const directory = mkdtempSync(join(tmpdir(), "insight-controller-reconciler-")); directories.push(directory);
   const path = join(directory, "controller.sqlite");
-  const db = new ControllerStore(path); db.create(record); return { db, path };
+  const db = new ControllerStore({ root_dir: directory }); db.create(record); return { db, path };
 }
 function github(snapshot = freshness): GitHubEvidencePort {
   return { async readGitHubEvidenceSnapshot() { return { observed_at: now, snapshot: { id: `snapshot-${snapshot.head_sha}`, immutable_ref: "https://example.invalid/pr/1", payload_hash: "snapshot-hash", freshness: snapshot, observed_at: now } }; } };
@@ -58,9 +58,9 @@ describe("read-only controller reconciliation", () => {
     const db = setup(waiting);
     const lease = { task_id: "task-1", state: "leased" as const, lease_id: "lease-2", runtime_id: "runtime-2", runtime_identity: "identity-2", lease_fencing_token: "fence-2", lease_expires_at: "2026-09-08T00:20:00.000Z" };
     expect((await reconcileController(db, "delivery-1", { runtime: runtime({ observed_at: now, heartbeat_at: now, tasks: [lease] }), github: github() }, now)).record).toMatchObject({ state: "leased", attempt_count: 0 });
-    const receipt = { lease_id: lease.lease_id, runtime_id: lease.runtime_id, runtime_identity: lease.runtime_identity, lease_fencing_token: lease.lease_fencing_token, lease_expires_at: lease.lease_expires_at, observed_at: now };
+    const receipt = { receipt_id: "receipt-start-1", delivery_id: "delivery-1", generation: 0, task_id: lease.task_id, lease_id: lease.lease_id, runtime_id: lease.runtime_id, runtime_identity: lease.runtime_identity, lease_fencing_token: lease.lease_fencing_token, lease_expires_at: lease.lease_expires_at, observed_at: now, expected_state: "running" as const };
     expect((await reconcileController(db, "delivery-1", { runtime: runtime({ observed_at: now, heartbeat_at: now, tasks: [{ ...lease, state: "running", start_receipt: receipt }] }), github: github() }, now)).record).toMatchObject({ state: "executing", attempt_count: 0 });
-    expect((await reconcileController(db, "delivery-1", { runtime: runtime({ observed_at: now, heartbeat_at: now, tasks: [{ ...lease, state: "completed", result: "completed", terminal_receipt: { ...receipt, result: "completed" } }] }), github: github() }, now)).record).toMatchObject({ state: "evidence_collecting", attempt_count: 1 });
+    expect((await reconcileController(db, "delivery-1", { runtime: runtime({ observed_at: now, heartbeat_at: now, tasks: [{ ...lease, state: "completed", result: "completed", terminal_receipt: { ...receipt, receipt_id: "receipt-terminal-1", expected_state: "completed", result: "completed" } }] }), github: github() }, now)).record).toMatchObject({ state: "evidence_collecting", attempt_count: 1 });
     db.close();
   });
 
@@ -79,6 +79,19 @@ describe("read-only controller reconciliation", () => {
       expect(result.record?.state).not.toBe("evidence_collecting");
       db.close();
     }
+  });
+
+  it.each([
+    { name: "old-delivery", task_id: "task-1", delivery_id: "delivery-old", heartbeat_at: now, observed_at: now },
+    { name: "same-lease-different-task", task_id: "task-2", delivery_id: "delivery-1", heartbeat_at: now, observed_at: now },
+    { name: "future-receipt", task_id: "task-1", delivery_id: "delivery-1", heartbeat_at: now, observed_at: "2026-09-08T00:11:00.000Z" },
+    { name: "reversed-receipt", task_id: "task-1", delivery_id: "delivery-1", heartbeat_at: now, observed_at: "2026-09-08T00:09:00.000Z" },
+  ])("audits %s receipt fencing without advancing or charging an attempt", async (scenario) => {
+    const db = setup(base());
+    const task = { task_id: scenario.task_id, state: "completed" as const, lease_id: "lease-1", runtime_id: "runtime-1", runtime_identity: "identity-1", lease_fencing_token: "fence-1", lease_expires_at: "2026-09-08T00:20:00.000Z", result: "completed" as const, terminal_receipt: { receipt_id: `receipt-${scenario.name}`, delivery_id: scenario.delivery_id, generation: 0, task_id: scenario.task_id, lease_id: "lease-1", runtime_id: "runtime-1", runtime_identity: "identity-1", lease_fencing_token: "fence-1", lease_expires_at: "2026-09-08T00:20:00.000Z", expected_state: "completed" as const, result: "completed" as const, observed_at: scenario.observed_at } };
+    const result = await reconcileController(db, "delivery-1", { runtime: runtime({ observed_at: now, heartbeat_at: scenario.heartbeat_at, tasks: [task] }), github: github() }, now);
+    expect(result.record).toMatchObject({ state: "executing", attempt_count: 0 });
+    db.close();
   });
 
   it("fences an old terminal result and permits expiry recovery", async () => {
@@ -134,7 +147,7 @@ describe("read-only controller reconciliation", () => {
     expect(invalidated.record).toMatchObject({ state: "freshness_invalidated", generation: 1 });
     const fresh = { head_sha: "head-3", base_sha: "base-3", merge_state_status: "clean" };
     expect((await reconcileController(db, "delivery-1", { runtime: ports.runtime, github: githubWithEvidence(fresh) }, now)).record).toMatchObject({ state: "evidence_collecting", generation: 1 });
-    expect((await reconcileController(db, "delivery-1", { runtime: ports.runtime, github: githubWithEvidence(fresh) }, now)).record).toMatchObject({ state: "ready_for_human_review", generation: 1 });
+    expect((await reconcileController(db, "delivery-1", { runtime: ports.runtime, github: githubWithEvidence(fresh) }, now)).record).toMatchObject({ state: "ready_for_human_review", generation: 1, ready_bundle: expect.objectContaining({ generation: 1, freshness: fresh }) });
     db.close();
   });
 
