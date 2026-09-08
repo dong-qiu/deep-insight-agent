@@ -82,7 +82,8 @@ export interface ReplayInputEvent {
   kind: ReplayEventKind;
   occurred_at: string;
   evidence_refs: string[];
-  expected_generation?: number;
+  /** Required fencing token; events without it are stale rather than actionable. */
+  expected_generation: number;
   lease_id?: string;
   task_id?: string;
   checkpoint_ref?: string;
@@ -144,7 +145,11 @@ export function replay(events: ReplayInputEvent[], fixture: ReplayFixture): Repl
       record.audit.push({ event_id: event.event_id, kind: "stale_event", reason: "delivery_id_mismatch" });
       continue;
     }
-    if (event.expected_generation !== undefined && event.expected_generation !== record.generation) {
+    if (event.expected_generation === undefined) {
+      record.audit.push({ event_id: event.event_id, kind: "stale_event", reason: "generation_missing" });
+      continue;
+    }
+    if (event.expected_generation !== record.generation) {
       record.audit.push({ event_id: event.event_id, kind: "stale_event", reason: "generation_mismatch" });
       continue;
     }

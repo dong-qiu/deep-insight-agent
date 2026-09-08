@@ -7,6 +7,6 @@ Run the local evidence suite:
 npx vitest run src/lib/controller/replay.test.ts
 ```
 
-Fixtures live in `src/lib/controller/fixtures/`. Their first JSONL record fixes the delivery id, initial state, generation, and clock; later records are events. The included scenarios cover unconfirmed offline work, interrupted work, duplicate/out-of-order delivery, head/base/merge freshness changes, clean matching ready evidence, and two-round repair exhaustion.
+Fixtures live in `src/lib/controller/fixtures/`. Their first JSONL record fixes the delivery id, initial state, generation, and clock; every later event carries the generation fencing token it expects. A missing or mismatched token is audited as stale and cannot change state. The included scenarios cover unconfirmed offline work, interrupted work, duplicate/out-of-order delivery, head/base/merge freshness changes, clean matching ready evidence, and two-round repair exhaustion.
 
 This is model-level replay evidence only. It proves reducer, idempotency, freshness invalidation, task-cardinality checks, and notification-plan deduplication for the supplied inputs. It does **not** prove actual Multica or GitHub integration, conditional storage writes, webhook delivery, external notification delivery, or real runtime lease behavior. Those need an explicitly authorized integration stage.
