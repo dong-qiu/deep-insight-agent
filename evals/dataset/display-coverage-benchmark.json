@@ -1,0 +1,66 @@
+{
+  "version": "display-coverage-v1",
+  "cases": [
+    {
+      "id": "controlled-poc-to-blackbox",
+      "expected": "reject",
+      "statement": "A controlled PoC proves privacy leakage in black-box chatbots.",
+      "citations": [{ "claim": "The PoC was validated in a controlled setting", "quote": "We validate the PoC in a controlled setting." }]
+    },
+    {
+      "id": "specbench-task-scope-to-universal",
+      "expected": "reject",
+      "statement": "Long-horizon coding agents universally reward-hack.",
+      "citations": [{ "claim": "SpecBench has 30 systems-level programming tasks", "quote": "SpecBench contains 30 systems-level programming tasks." }]
+    },
+    {
+      "id": "kv-certification-to-not-merely-empirical",
+      "expected": "reject",
+      "statement": "The KV mechanism is not merely empirically validated.",
+      "citations": [{ "claim": "The method provides local certification", "quote": "Our method provides local certification." }]
+    },
+    {
+      "id": "llamaweb-combinations-to-edge-portability",
+      "expected": "reject",
+      "statement": "LlamaWeb provides portable edge performance for browser inference.",
+      "citations": [{ "claim": "The evaluation spans device, browser, and operating-system combinations", "quote": "We evaluate several combinations of device, browser, and operating system." }]
+    },
+    {
+      "id": "chinese-production-bypass",
+      "expected": "reject",
+      "statement": "该方法已在生产 RAG 系统上线。",
+      "citations": [{ "claim": "该方法在受控评测中优于基线", "quote": "该方法在受控评测中优于基线。" }]
+    },
+    {
+      "id": "composite-evidence-stitching",
+      "expected": "reject",
+      "statement": "The system improves throughput without retraining for mixture-of-experts models.",
+      "citations": [
+        { "claim": "The system improves throughput", "quote": "The system improves throughput." },
+        { "claim": "The approach does not require retraining", "quote": "The approach does not require retraining." }
+      ]
+    },
+    {
+      "id": "direct-factual-positive",
+      "expected": "accept",
+      "statement": "SpecBench contains 30 systems-level programming tasks.",
+      "citations": [{ "claim": "SpecBench contains 30 systems-level programming tasks", "quote": "SpecBench contains 30 systems-level programming tasks." }]
+    },
+    {
+      "id": "controlled-evaluation-positive",
+      "expected": "accept",
+      "statement": "The method provides local certification.",
+      "importance_reason": "research_tracking",
+      "importance_reason_claim_indexes": [1],
+      "citations": [{ "claim": "The method provides local certification", "quote": "The method provides local certification." }]
+    },
+    {
+      "id": "bad-evaluation-anchor",
+      "expected": "reject",
+      "statement": "The method provides local certification.",
+      "importance_reason": "research_tracking",
+      "importance_reason_claim_indexes": [2],
+      "citations": [{ "claim": "The method provides local certification", "quote": "The method provides local certification." }]
+    }
+  ]
+}

@@ -14,7 +14,8 @@ if (!existsSync(inPath)) {
   console.error(`找不到 ${inPath}，请先跑 npm run eval:a1`);
   process.exit(1);
 }
-const insights = (JSON.parse(readFileSync(inPath, "utf8")) as { insights: Insight[] }).insights;
+const queue = JSON.parse(readFileSync(inPath, "utf8")) as { run_id?: string; generated_at: string; insights: Insight[] };
+const insights = queue.insights;
 
 // 可选：AI 预评 JSON（argv[4]，id → {non_obvious, hallucination, note}），合并成「AI预评」列作人评起点
 interface Prejudge {
@@ -37,7 +38,7 @@ const esc = (v: string | number): string =>
 
 const aiCols = prejudge ? ["AI预评·非显然", "AI预评·幻觉", "AI预评·理由"] : [];
 const headers = [
-  "序号", "id", "主题", "类型", "重要性", "结论", "引用",
+  "run_id", "queue_generated_at", "序号", "id", "主题", "类型", "重要性", "结论", "引用",
   "可定位", "截断",
   ...aiCols,
   "非显然(是/否)", "幻觉(有/无)", "importance合理(是/否)", "备注",
@@ -52,7 +53,7 @@ insights.forEach((it, i) => {
   const aiCells = prejudge ? [j?.non_obvious ?? "", j?.hallucination ?? "", j?.note ?? ""] : [];
   rows.push(
     [
-      i + 1, it.id, it.topic_id, it.type, it.importance,
+      queue.run_id ?? "legacy", queue.generated_at, i + 1, it.id, it.topic_id, it.type, it.importance,
       it.statement, quotes, locatable, truncated,
       ...aiCells,
       "", "", "", "",

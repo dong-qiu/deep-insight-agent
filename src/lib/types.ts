@@ -91,6 +91,19 @@ export interface Entity {
   type: EntityType;
 }
 
+/**
+ * 重要性说明不是另一个可自由发挥的事实展示面。P0 只允许使用这四种受控的、
+ * 不声称来源事实的系统判断；任何诸如「已上线」「适用于 RAG」的内容必须回到
+ * statement / headline / importance_facts，并走 quote 覆盖审计。
+ */
+export const IMPORTANCE_REASONS = [
+  "engineering_decision",
+  "security_review",
+  "evaluation_interpretation",
+  "research_tracking",
+] as const;
+export type ImportanceReason = (typeof IMPORTANCE_REASONS)[number];
+
 /** 洞察对象（architecture 数据模型 · Insight） */
 export interface Insight {
   id: string;
@@ -102,6 +115,13 @@ export interface Insight {
    *  analyzer 产出；缺省 ""（旧库 migration 默认 ''，渲染端回退到 statement）。 */
   headline?: string;
   importance: number; // 1–5
+  /** 已展示的来源事实；每项与 statement/headline 一样必须通过 quote 覆盖门。
+   *  仅在 analyzer 运行期保留，持久化展示仍由 importance_basis 承载。 */
+  importance_facts?: string[];
+  /** 受控的系统重要性判断，不能是自由文本。 */
+  importance_reason?: ImportanceReason;
+  /** 1-based，指向 statement/headline 的已通过原子 claim；不能指向 importance_facts。 */
+  importance_reason_claim_indexes?: number[];
   importance_basis: string;
   citations: Citation[];
   source_count: number;
@@ -409,7 +429,9 @@ export const LlmInsightSchema = z.object({
     ),
   type: z.enum(["aggregation", "trend"]).describe("aggregation=主题聚合 / trend=趋势识别"),
   importance: z.number().int().min(1).max(5).describe("重要性 1–5"),
-  importance_basis: z.string().describe("评分依据，须可追溯到证据或规则"),
+  importance_facts: z.array(z.string()).default([]).describe("可选的来源事实，若展示在重要性说明中，每一项都必须由 citation quote 直接覆盖；不要把系统评价或未引证的范围/部署/影响事实写在这里"),
+  importance_reason: z.enum(IMPORTANCE_REASONS).describe("只能选择受控系统重要性判断：engineering_decision=工程选型参考，security_review=安全审查参考，evaluation_interpretation=评测解读参考，research_tracking=研究跟踪参考；不得输出自由文本"),
+  importance_reason_claim_indexes: z.array(z.number().int().positive()).min(1).describe("从 1 开始，指向本条 statement 的原子实质 claim，随后才是 headline 的原子实质 claim；每个被引用 claim 必须支撑系统重要性判断，不能指向 importance_facts"),
   confidence: z
     .enum(["high", "medium", "low"])
     .nullable()
@@ -497,6 +519,32 @@ export const CoverageRepairSchema = z.object({
     .describe("对每个候选 quote 各输出一项；宁缺毋滥，同形不同义/语境不符判 false"),
 });
 export type CoverageRepair = z.infer<typeof CoverageRepairSchema>;
+
+/** 展示级 quote 覆盖门的逐事实 claim 判定。每个 supports=true 的事实必须明确指向至少一条
+ * 已展示的 citation；不能只给一个总体布尔值，让代码在缺失映射时默认放行。
+ *
+ * 注意 span 只是 quote 内的位置审计锚点，不是语义证明本身；support 仍由独立 judge 给出。 */
+export const QuoteCoverageSchema = z.object({
+  verdicts: z
+    .array(
+      z.object({
+        index: z.number().int().describe("展示 claim 的序号（从 1 起，与 atomic_claims 一一对应）"),
+        kind: z.literal("factual").describe("本 schema 只接收须由来源 quote 覆盖的事实；受控系统评价由代码以已通过 statement/headline anchors 审计"),
+        supports: z.boolean().describe("指定的 citation claim/quote 是否完整、直接支持该展示 claim；不确定→false"),
+        citation_indexes: z
+          .array(z.number().int().positive())
+          .describe("supports=true 时，直接覆盖该展示事实的 displayed citation 序号；不支持时置空数组"),
+        evidence_spans: z.array(z.object({
+          citation_index: z.number().int().positive(),
+          quote_start: z.number().int().nonnegative().describe("evidence_excerpt 在 displayed_quote 中的 0-based 起始偏移"),
+          quote_end: z.number().int().positive().describe("evidence_excerpt 在 displayed_quote 中的终止偏移（exclusive）"),
+          evidence_excerpt: z.string().min(1).describe("displayed_quote.slice(quote_start, quote_end) 的逐字内容，用于证明该 claim 的主体、范围、条件、比较或程度"),
+        })).describe("supports=true 时，每个引用至少一项带 offsets 的逐字证据；supports=false 时置空数组"),
+      }),
+    )
+    .describe("每个事实 claim 各一项；不得遗漏、合并或臆增；supports=true 必须给出 citation_indexes 和可在 quote 中定位的 evidence_spans"),
+});
+export type QuoteCoverage = z.infer<typeof QuoteCoverageSchema>;
 
 /** 跨批/跨run 一致性判定缓存的共享契约（DB 实现见 db/consistency-cache.ts，消费方 validator.validateBatch）。
  *  放共享 types 而非 validator——避免 db 层反向依赖 agents 层。
