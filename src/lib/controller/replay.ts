@@ -519,20 +519,22 @@ function createReadyBundle(record: ControllerRecord, evidence: ReadyBundleEviden
     snapshot_evidence: evidenceReceipt(evidence.snapshot),
     ci_evidence: evidenceReceipt(evidence.ci),
     review_evidence: evidenceReceipt(evidence.review),
+    admitted_at: admittedAt,
   };
-  return { ...fields, hash: fnv1a(JSON.stringify(fields)), admitted_at: admittedAt };
+  return { ...fields, hash: fnv1a(JSON.stringify(fields)) };
 }
 
 function readyBundleVerifiable(record: ControllerRecord, bundle: ReadyBundle): boolean {
   if (bundle.hash !== readyBundleHash(bundle)) return false;
   if (bundle.delivery_id !== record.delivery_id || bundle.generation !== record.generation || !sameFreshness(bundle.freshness, record.current_freshness)) return false;
+  if (bundle.snapshot_evidence_ref !== bundle.snapshot_evidence.id || bundle.ci_evidence_ref !== bundle.ci_evidence.id || bundle.review_evidence_ref !== bundle.review_evidence.id) return false;
   return receiptMatchesActiveEvidence(record, bundle.snapshot_evidence, "snapshot", bundle.freshness, undefined)
     && receiptMatchesActiveEvidence(record, bundle.ci_evidence, "ci", bundle.freshness, "passed")
     && receiptMatchesActiveEvidence(record, bundle.review_evidence, "review", bundle.freshness, "approved");
 }
 
-function readyBundleHash(bundle: ReadyBundle): string {
-  const { hash: _hash, admitted_at: _admittedAt, ...fields } = bundle;
+export function readyBundleHash(bundle: ReadyBundle): string {
+  const { hash: _hash, ...fields } = bundle;
   return fnv1a(JSON.stringify(fields));
 }
 

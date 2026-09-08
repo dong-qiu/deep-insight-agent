@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { createControllerRecord, freshnessHash, replay, replayJsonl, type ReplayInputEvent } from "./replay.js";
+import { createControllerRecord, freshnessHash, readyBundleHash, replay, replayJsonl, type ReplayInputEvent } from "./replay.js";
 
 const fixture = (name: string) => replayJsonl(readFileSync(new URL(`./fixtures/${name}`, import.meta.url), "utf8"));
 
@@ -164,6 +164,29 @@ describe("controller dry-run replay", () => {
     expect(result.record).toMatchObject({ state: "freshness_invalidated", generation: 1, ready_bundle: undefined });
     expect(result.record.transitions).toContainEqual(expect.objectContaining({
       idempotency_key: `delivery-ready:0:invalidate:${freshnessHash({ head_sha: "h1", base_sha: "b1", merge_state_status: "clean" })}:ready_bundle_unverifiable`,
+    }));
+  });
+
+  it("fails closed when a recovered bundle's public evidence ref is changed with a recomputed hash", () => {
+    const accepted = fixture("ready-with-current-evidence.jsonl").record;
+    const changedRef = { ...accepted.ready_bundle!, ci_evidence_ref: "ci-other", hash: "" };
+    const tampered = { ...changedRef, hash: readyBundleHash(changedRef) };
+    const result = replay([
+      { event_id: "ready-recheck", kind: "freshness_recheck", occurred_at: "2026-09-01T00:04:00.000Z", evidence_refs: ["recheck"], expected_generation: 0 },
+    ], {
+      kind: "fixture",
+      delivery_id: accepted.delivery_id,
+      clock: "2026-09-01T00:06:00.000Z",
+      state: accepted.state,
+      generation: accepted.generation,
+      current_freshness: accepted.current_freshness,
+      evidence: accepted.evidence,
+      ready_bundle: tampered,
+    });
+    expect(result.record.audit).toContainEqual(expect.objectContaining({
+      event_id: "ready-recheck",
+      kind: "ready_bundle_invalidated",
+      reason: expect.stringContaining("ready_bundle_unverifiable"),
     }));
   });
 
