@@ -310,7 +310,7 @@ function reduce(record: ControllerRecord, event: ReplayInputEvent, states: Contr
       record.active_lease_expires_at = event.lease_expires_at;
       record.active_lease_fencing_token = event.lease_fencing_token;
       record.last_heartbeat_at = event.heartbeat_at;
-      notify(record, event, notificationKeys, "reconnect", `${record.delivery_id}:${record.generation}:reconnect:${event.event_id}`, {}, leaseTransition);
+      notify(record, event, notificationKeys, "reconnect", `${record.delivery_id}:${record.generation}:reconnect:${leaseTransition.event_id}`, {}, leaseTransition);
       record.offline_incident_id = undefined;
       record.offline_started_at = undefined;
       return;
@@ -335,7 +335,7 @@ function reduce(record: ControllerRecord, event: ReplayInputEvent, states: Contr
         : undefined;
       if (escalationTransition) {
         record.active_task_ids = [];
-        notify(record, event, notificationKeys, "human_escalation", `${record.delivery_id}:${record.generation}:human_escalation:three_consecutive_lease_losses`, humanEscalationAuditFields(record, event, "three_consecutive_lease_losses"), escalationTransition);
+        notify(record, event, notificationKeys, "human_escalation", `${record.delivery_id}:${record.generation}:human_escalation:${event.event_id}`, humanEscalationAuditFields(record, event, "three_consecutive_lease_losses"), escalationTransition);
       }
       return;
     case "result":
@@ -537,7 +537,7 @@ function applyHumanBoundary(record: ControllerRecord, event: ReplayInputEvent, s
   if (!boundaryTransition) return;
   record.active_task_ids = [];
   clearActiveLease(record);
-  notify(record, event, notificationKeys, "human_escalation", `${record.delivery_id}:${record.generation}:human_escalation:${event.boundary}`, humanEscalationAuditFields(record, event, event.boundary), boundaryTransition);
+  notify(record, event, notificationKeys, "human_escalation", `${record.delivery_id}:${record.generation}:human_escalation:${event.event_id}`, humanEscalationAuditFields(record, event, event.boundary), boundaryTransition);
 }
 
 function isHumanBoundary(value: string | undefined): value is HumanBoundary {

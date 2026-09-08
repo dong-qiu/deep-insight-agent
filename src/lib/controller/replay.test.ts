@@ -97,7 +97,7 @@ describe("controller dry-run replay", () => {
     expect(result.state_sequence).toEqual(["executing", "waiting_for_runtime", "awaiting_human_decision"]);
     expect(result.record.notifications).toContainEqual(expect.objectContaining({
       signal: "human_escalation",
-      dedupe_key: "delivery-lease-loss:0:human_escalation:three_consecutive_lease_losses",
+      dedupe_key: "delivery-lease-loss:0:human_escalation:lease-loss-3",
     }));
     expect(new Set(result.record.transitions.map((event) => event.event_id)).size).toBe(result.record.transitions.length);
     expect(result.record.transitions).toContainEqual(expect.objectContaining({ causal_event_id: "lease-loss-3", to_state: "awaiting_human_decision" }));
@@ -135,8 +135,16 @@ describe("controller dry-run replay", () => {
       human_escalation: result.record.transitions.find((transition) => transition.causal_event_id === "lease-loss-3" && transition.to_state === "awaiting_human_decision")!,
     };
     for (const notification of result.record.notifications) {
-      expect(notification.audit_fields.causal_event_id).toBe(notification.causal_event_id);
-      expect(notification.audit_fields.transition_event_id).toBe(transitionByNotification[notification.signal as keyof typeof transitionByNotification].event_id);
+      const transition = transitionByNotification[notification.signal as keyof typeof transitionByNotification];
+      expect(notification.audit_fields).toMatchObject({
+        causal_event_id: notification.causal_event_id,
+        transition_event_id: transition.event_id,
+      });
+      expect(notification.dedupe_key).toBe(
+        notification.signal === "reconnect"
+          ? `${notification.delivery_id}:${notification.generation}:reconnect:${transition.event_id}`
+          : `${notification.delivery_id}:${notification.generation}:human_escalation:${notification.causal_event_id}`,
+      );
     }
   });
 
@@ -158,6 +166,9 @@ describe("controller dry-run replay", () => {
       causal_event_id: escalation.causal_event_id,
       transition_event_id: escalationTransition.event_id,
     });
+    expect(escalation.dedupe_key).toBe(
+      `${escalation.delivery_id}:${escalation.generation}:human_escalation:${escalation.causal_event_id}`,
+    );
     if (name === "boundary-conflict.jsonl") {
       expect(result.record.audit).toContainEqual(expect.objectContaining({ event_id: "boundary-missing", kind: "invalid_transition", reason: "human_boundary_kind_required" }));
     }
