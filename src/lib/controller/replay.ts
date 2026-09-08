@@ -21,7 +21,9 @@ export interface Evidence {
   freshness?: Freshness;
   status: "active" | "superseded";
   conclusion?: "passed" | "failed" | "approved";
+  /** Derived solely from the fixture replay clock, never supplied by an event. */
   expired?: boolean;
+  observed_at: string;
 }
 
 export interface TransitionEvent {
@@ -60,6 +62,8 @@ export interface ControllerRecord {
   repair_round: number;
   active_task_ids: string[];
   active_lease_id?: string;
+  active_runtime_id?: string;
+  active_lease_expires_at?: string;
   offline_incident_id?: string;
   offline_started_at?: string;
   checkpoint_ref?: string;
@@ -85,6 +89,8 @@ export interface ReplayInputEvent {
   /** Required fencing token; events without it are stale rather than actionable. */
   expected_generation: number;
   lease_id?: string;
+  runtime_id?: string;
+  lease_expires_at?: string;
   task_id?: string;
   checkpoint_ref?: string;
   result?: "completed" | "failed";
@@ -101,6 +107,8 @@ export interface ReplayFixture {
   state?: ControllerState;
   generation?: number;
   active_lease_id?: string;
+  active_runtime_id?: string;
+  active_lease_expires_at?: string;
 }
 
 export interface ReplayResult {
@@ -111,8 +119,10 @@ export interface ReplayResult {
 }
 
 const ACTIVE_STATES = new Set<ControllerState>(["waiting_for_runtime", "leased", "executing", "evidence_collecting", "freshness_invalidated", "repairing"]);
+const EVIDENCE_TTL_MS = 24 * 60 * 60 * 1000;
+const SNAPSHOT_TTL_MS = 10 * 60 * 1000;
 
-export function createControllerRecord(input: Pick<ReplayFixture, "delivery_id" | "state" | "generation" | "active_lease_id">): ControllerRecord {
+export function createControllerRecord(input: Pick<ReplayFixture, "delivery_id" | "state" | "generation" | "active_lease_id" | "active_runtime_id" | "active_lease_expires_at">): ControllerRecord {
   return {
     delivery_id: input.delivery_id,
     state: input.state ?? "intake",
@@ -122,6 +132,8 @@ export function createControllerRecord(input: Pick<ReplayFixture, "delivery_id" 
     repair_round: 0,
     active_task_ids: [],
     active_lease_id: input.active_lease_id,
+    active_runtime_id: input.active_runtime_id,
+    active_lease_expires_at: input.active_lease_expires_at,
     evidence: [],
     transitions: [],
     notifications: [],
@@ -134,6 +146,7 @@ export function replay(events: ReplayInputEvent[], fixture: ReplayFixture): Repl
   const seen = new Set<string>();
   const notificationKeys = new Set<string>();
   const states = [record.state];
+  const clock = parseTimestamp(fixture.clock);
 
   for (const event of events) {
     if (seen.has(event.event_id)) {
@@ -141,6 +154,19 @@ export function replay(events: ReplayInputEvent[], fixture: ReplayFixture): Repl
       continue;
     }
     seen.add(event.event_id);
+    if (clock === undefined) {
+      invalid(record, event, "fixture_clock_invalid");
+      continue;
+    }
+    const occurredAt = parseTimestamp(event.occurred_at);
+    if (occurredAt === undefined) {
+      invalid(record, event, "event_timestamp_invalid");
+      continue;
+    }
+    if (occurredAt > clock) {
+      invalid(record, event, "event_timestamp_after_fixture_clock");
+      continue;
+    }
     if (event.delivery_id && event.delivery_id !== record.delivery_id) {
       record.audit.push({ event_id: event.event_id, kind: "stale_event", reason: "delivery_id_mismatch" });
       continue;
@@ -153,7 +179,7 @@ export function replay(events: ReplayInputEvent[], fixture: ReplayFixture): Repl
       record.audit.push({ event_id: event.event_id, kind: "stale_event", reason: "generation_mismatch" });
       continue;
     }
-    reduce(record, event, states, notificationKeys);
+    reduce(record, event, states, notificationKeys, clock);
   }
 
   const failures: string[] = [];
@@ -171,7 +197,7 @@ export function replay(events: ReplayInputEvent[], fixture: ReplayFixture): Repl
   };
 }
 
-function reduce(record: ControllerRecord, event: ReplayInputEvent, states: ControllerState[], notificationKeys: Set<string>): void {
+function reduce(record: ControllerRecord, event: ReplayInputEvent, states: ControllerState[], notificationKeys: Set<string>, clock: number): void {
   if (event.evidence_refs.length === 0) return invalid(record, event, "missing_evidence");
   switch (event.kind) {
     case "admit":
@@ -182,33 +208,40 @@ function reduce(record: ControllerRecord, event: ReplayInputEvent, states: Contr
       record.active_task_ids = [event.task_id ?? `work:${record.generation}`];
       return;
     case "lease_confirmed":
-      if (record.active_task_ids.length !== 1 || !event.lease_id) return invalid(record, event, "lease_requires_exactly_one_task_and_lease_id");
+      if (record.active_task_ids.length !== 1 || !event.lease_id || !event.runtime_id || !event.lease_expires_at) return invalid(record, event, "lease_requires_exactly_one_task_runtime_and_expiry");
+      if (!leaseExpiryValid(event, event.lease_expires_at)) return invalid(record, event, "lease_expiry_invalid_or_not_after_confirmation");
       if (!transition(record, event, "leased", states, "fresh_heartbeat_and_confirmed_fenced_lease", "new_lease_required_after_expiry")) return;
       record.active_lease_id = event.lease_id;
+      record.active_runtime_id = event.runtime_id;
+      record.active_lease_expires_at = event.lease_expires_at;
       record.offline_incident_id = undefined;
       record.offline_started_at = undefined;
       return notify(record, event, notificationKeys, "reconnect", `${record.delivery_id}:${record.generation}:reconnect:${event.event_id}`);
     case "started":
-      if (event.lease_id !== record.active_lease_id) return stale(record, event, "lease_mismatch");
+      if (!matchingLeaseFence(record, event)) return;
+      if (!leaseStillValidAt(record, clock)) return stale(record, event, "lease_expired");
       if (!transition(record, event, "executing", states, "matching_unexpired_fenced_start_receipt", "lease_expiry_returns_to_waiting_without_attempt")) return;
       record.started_count += 1;
       return;
     case "lease_expired":
-      if (event.lease_id !== record.active_lease_id) return stale(record, event, "lease_mismatch");
+      if (!matchingLeaseFence(record, event)) return;
+      if (!leaseExpiredAt(record, clock)) return invalid(record, event, "lease_not_expired");
       if (!transition(record, event, "waiting_for_runtime", states, "matching_lease_expired_without_terminal_result", "preserve_checkpoint_and_reacquire_new_lease")) return;
       record.active_lease_id = undefined;
+      record.active_runtime_id = undefined;
+      record.active_lease_expires_at = undefined;
       record.checkpoint_ref = event.checkpoint_ref ?? record.checkpoint_ref;
       return;
     case "result":
-      return applyResult(record, event, states, notificationKeys);
+      return applyResult(record, event, states, notificationKeys, clock);
     case "snapshot":
-      return applySnapshot(record, event, states, notificationKeys);
+      return applySnapshot(record, event, states, notificationKeys, clock);
     case "ci":
-      return addFreshEvidence(record, event, "ci");
+      return addFreshEvidence(record, event, "ci", clock);
     case "review":
-      return addFreshEvidence(record, event, "review");
+      return addFreshEvidence(record, event, "review", clock);
     case "evaluate_ready":
-      if (!readyEvidence(record)) return invalid(record, event, "fresh_clean_passing_ci_and_approved_review_required");
+      if (!readyEvidence(record, clock)) return invalid(record, event, "active_unexpired_matching_snapshot_and_fresh_clean_passing_ci_and_approved_review_required");
       if (transition(record, event, "ready_for_human_review", states, "current_freshness_and_matching_unexpired_evidence", "recheck_freshness_before_any_human_acceptance")) {
         notify(record, event, notificationKeys, "ready", `${record.delivery_id}:${record.generation}:ready:${event.event_id}`);
       }
@@ -235,25 +268,35 @@ function reduce(record: ControllerRecord, event: ReplayInputEvent, states: Contr
   }
 }
 
-function applyResult(record: ControllerRecord, event: ReplayInputEvent, states: ControllerState[], notificationKeys: Set<string>): void {
-  if (event.lease_id !== record.active_lease_id) return stale(record, event, "lease_mismatch");
+function applyResult(record: ControllerRecord, event: ReplayInputEvent, states: ControllerState[], notificationKeys: Set<string>, clock: number): void {
+  if (!matchingLeaseFence(record, event)) return;
+  if (!leaseStillValidAt(record, clock)) return stale(record, event, "lease_expired");
   if (!event.result) return invalid(record, event, "terminal_result_required");
   const to = event.result === "completed" ? "evidence_collecting" : record.repair_round < 2 ? "repairing" : "awaiting_human_decision";
   if (!transition(record, event, to, states, "matching_fenced_terminal_result", "record_terminal_result_once_and_never_reuse_lease")) return;
   record.attempt_count += 1;
   record.active_lease_id = undefined;
+  record.active_runtime_id = undefined;
+  record.active_lease_expires_at = undefined;
   record.active_task_ids = [];
-  record.evidence.push({ id: event.evidence_refs[0], kind: "result", freshness: event.freshness, status: "active", conclusion: event.result === "completed" ? "passed" : "failed" });
-  if (event.freshness) record.current_freshness = normalizeFreshness(event.freshness);
+  // Result freshness is correlation evidence only. An authoritative snapshot is
+  // the sole source allowed to establish current_freshness.
+  record.evidence.push(evidenceFromEvent(event, "result", clock, event.freshness, event.result === "completed" ? "passed" : "failed"));
   if (to === "awaiting_human_decision") notify(record, event, notificationKeys, "repair_exhausted", `${record.delivery_id}:${record.generation}:repair_exhausted:${event.event_id}`);
 }
 
-function applySnapshot(record: ControllerRecord, event: ReplayInputEvent, states: ControllerState[], notificationKeys: Set<string>): void {
+function applySnapshot(record: ControllerRecord, event: ReplayInputEvent, states: ControllerState[], notificationKeys: Set<string>, clock: number): void {
   if (!event.freshness) return invalid(record, event, "freshness_required");
   const freshness = normalizeFreshness(event.freshness);
+  if (evidenceExpired(event, clock, "snapshot")) {
+    // Keep the supplied snapshot reference as rejected evidence so the
+    // fail-closed decision remains independently auditable.
+    record.evidence.push(evidenceFromEvent(event, "snapshot", clock, freshness));
+    return invalid(record, event, "authoritative_snapshot_expired");
+  }
   if (!record.current_freshness) {
     record.current_freshness = freshness;
-    record.evidence.push({ id: event.evidence_refs[0], kind: "snapshot", freshness, status: "active" });
+    record.evidence.push(evidenceFromEvent(event, "snapshot", clock, freshness));
     return;
   }
   if (sameFreshness(record.current_freshness, freshness)) {
@@ -268,19 +311,21 @@ function applySnapshot(record: ControllerRecord, event: ReplayInputEvent, states
   record.evidence.forEach((evidence) => { if (evidence.freshness && sameFreshness(evidence.freshness, record.current_freshness!)) evidence.status = "superseded"; });
   record.current_freshness = freshness;
   record.active_lease_id = undefined;
+  record.active_runtime_id = undefined;
+  record.active_lease_expires_at = undefined;
   record.active_task_ids = [];
-  record.evidence.push({ id: event.evidence_refs[0], kind: "snapshot", freshness, status: "active" });
+  record.evidence.push(evidenceFromEvent(event, "snapshot", clock, freshness));
   notify(record, event, notificationKeys, "invalidation", `${record.delivery_id}:${record.generation}:invalidation:${oldHash}:${event.event_id}`);
 }
 
-function addFreshEvidence(record: ControllerRecord, event: ReplayInputEvent, kind: "ci" | "review"): void {
+function addFreshEvidence(record: ControllerRecord, event: ReplayInputEvent, kind: "ci" | "review", clock: number): void {
   if (record.state !== "evidence_collecting") return invalid(record, event, "evidence_only_while_collecting");
   if (!event.freshness || !record.current_freshness || !sameFreshness(normalizeFreshness(event.freshness), record.current_freshness)) {
     return stale(record, event, "evidence_freshness_mismatch");
   }
   if (kind === "ci" && event.conclusion !== "passed" && event.conclusion !== "failed") return invalid(record, event, "ci_conclusion_required");
   if (kind === "review" && event.conclusion !== "approved") return invalid(record, event, "approved_review_required");
-  record.evidence.push({ id: event.evidence_refs[0], kind, freshness: normalizeFreshness(event.freshness), status: "active", conclusion: event.conclusion, expired: event.expired });
+  record.evidence.push(evidenceFromEvent(event, kind, clock, normalizeFreshness(event.freshness), event.conclusion));
 }
 
 function applyOffline(record: ControllerRecord, event: ReplayInputEvent, states: ControllerState[], notificationKeys: Set<string>): void {
@@ -337,11 +382,70 @@ function allowed(from: ControllerState, to: ControllerState): boolean {
   return edges[from]?.includes(to) ?? false;
 }
 
-function readyEvidence(record: ControllerRecord): boolean {
+function readyEvidence(record: ControllerRecord, clock: number): boolean {
   const freshness = record.current_freshness;
   return Boolean(freshness && freshness.merge_state_status === "clean"
+    && record.evidence.some((e) => e.kind === "snapshot" && e.status === "active" && !e.expired && isTimestampWithinTtl(e.observed_at, clock, SNAPSHOT_TTL_MS) && sameFreshness(e.freshness, freshness))
     && record.evidence.some((e) => e.kind === "ci" && e.status === "active" && e.conclusion === "passed" && !e.expired && sameFreshness(e.freshness, freshness))
     && record.evidence.some((e) => e.kind === "review" && e.status === "active" && e.conclusion === "approved" && !e.expired && sameFreshness(e.freshness, freshness)));
+}
+
+function matchingLeaseFence(record: ControllerRecord, event: ReplayInputEvent): boolean {
+  if (!event.runtime_id) {
+    stale(record, event, "runtime_missing");
+    return false;
+  }
+  if (event.runtime_id !== record.active_runtime_id) {
+    stale(record, event, "runtime_mismatch");
+    return false;
+  }
+  if (!event.lease_id || event.lease_id !== record.active_lease_id) {
+    stale(record, event, "lease_mismatch");
+    return false;
+  }
+  return true;
+}
+
+function leaseExpiryValid(event: ReplayInputEvent, expiresAt: string): boolean {
+  const occurredAt = parseTimestamp(event.occurred_at);
+  const expiry = parseTimestamp(expiresAt);
+  return occurredAt !== undefined && expiry !== undefined && expiry > occurredAt;
+}
+
+function leaseStillValidAt(record: ControllerRecord, clock: number): boolean {
+  const expiry = record.active_lease_expires_at ? parseTimestamp(record.active_lease_expires_at) : undefined;
+  return expiry !== undefined && clock < expiry;
+}
+
+function leaseExpiredAt(record: ControllerRecord, clock: number): boolean {
+  const expiry = record.active_lease_expires_at ? parseTimestamp(record.active_lease_expires_at) : undefined;
+  return expiry !== undefined && clock >= expiry;
+}
+
+function evidenceFromEvent(event: ReplayInputEvent, kind: Evidence["kind"], clock: number, freshness?: Freshness, conclusion?: Evidence["conclusion"]): Evidence {
+  return {
+    id: event.evidence_refs[0],
+    kind,
+    freshness,
+    status: "active",
+    conclusion,
+    expired: evidenceExpired(event, clock, kind),
+    observed_at: event.occurred_at,
+  };
+}
+
+function evidenceExpired(event: ReplayInputEvent, clock: number, kind: Evidence["kind"]): boolean {
+  return !isTimestampWithinTtl(event.occurred_at, clock, kind === "snapshot" ? SNAPSHOT_TTL_MS : EVIDENCE_TTL_MS);
+}
+
+function isTimestampWithinTtl(timestamp: string, clock: number, ttl: number): boolean {
+  const value = parseTimestamp(timestamp);
+  return value !== undefined && value <= clock && clock - value <= ttl;
+}
+
+function parseTimestamp(value: string): number | undefined {
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 function notify(record: ControllerRecord, event: ReplayInputEvent, keys: Set<string>, signal: NotificationPlan["signal"], key: string): void {

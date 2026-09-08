@@ -14,7 +14,7 @@ describe("controller dry-run replay", () => {
 
   it("does not charge an interrupted started task and requires a new lease", () => {
     const result = fixture("runtime-interrupted-after-start.jsonl");
-    expect(result.record).toMatchObject({ state: "waiting_for_runtime", attempt_count: 0, started_count: 1, checkpoint_ref: "checkpoint-redacted" });
+    expect(result.record).toMatchObject({ state: "waiting_for_runtime", attempt_count: 0, started_count: 0, checkpoint_ref: "checkpoint-redacted" });
     expect(result.record.active_lease_id).toBeUndefined();
   });
 
@@ -22,7 +22,7 @@ describe("controller dry-run replay", () => {
     const result = replay([
       { event_id: "offline-1", kind: "runtime_offline", occurred_at: "2026-09-01T00:00:00.000Z", evidence_refs: ["heartbeat-missing"], expected_generation: 0 },
       { event_id: "offline-2", kind: "runtime_offline", occurred_at: "2026-09-01T00:30:00.000Z", evidence_refs: ["heartbeat-missing"], expected_generation: 0 },
-    ], { kind: "fixture", delivery_id: "delivery-offline-escalation", clock: "2026-09-01T00:00:00.000Z", state: "waiting_for_runtime" });
+    ], { kind: "fixture", delivery_id: "delivery-offline-escalation", clock: "2026-09-01T00:31:00.000Z", state: "waiting_for_runtime" });
     expect(result.record).toMatchObject({ state: "awaiting_human_decision", attempt_count: 0 });
     expect(result.record.notifications.filter((plan) => plan.signal === "offline")).toHaveLength(2);
   });
@@ -58,14 +58,14 @@ describe("controller dry-run replay", () => {
     expect(result.record.notifications.filter((plan) => plan.signal === "ready")).toHaveLength(1);
   });
 
-  it("fails closed for expired evidence and an event from a different delivery", () => {
+  it("derives evidence expiry from the fixture clock and rejects foreign events", () => {
     const result = replay([
-      { event_id: "current", kind: "snapshot", occurred_at: "2026-09-01T00:00:00.000Z", evidence_refs: ["current"], expected_generation: 0, freshness: { head_sha: "h1", base_sha: "b1", merge_state_status: "clean" } },
-      { event_id: "foreign", delivery_id: "other-delivery", kind: "snapshot", occurred_at: "2026-09-01T00:00:00.000Z", evidence_refs: ["foreign"], expected_generation: 0, freshness: { head_sha: "h2", base_sha: "b1", merge_state_status: "clean" } },
-      { event_id: "ci", kind: "ci", occurred_at: "2026-09-01T00:01:00.000Z", evidence_refs: ["ci"], expected_generation: 0, freshness: { head_sha: "h1", base_sha: "b1", merge_state_status: "clean" }, conclusion: "passed", expired: true },
-      { event_id: "review", kind: "review", occurred_at: "2026-09-01T00:02:00.000Z", evidence_refs: ["review"], expected_generation: 0, freshness: { head_sha: "h1", base_sha: "b1", merge_state_status: "clean" }, conclusion: "approved" },
-      { event_id: "ready", kind: "evaluate_ready", occurred_at: "2026-09-01T00:03:00.000Z", evidence_refs: ["bundle"], expected_generation: 0 },
-    ], { kind: "fixture", delivery_id: "delivery-current", clock: "2026-09-01T00:00:00.000Z", state: "evidence_collecting", active_lease_id: "unused" });
+      { event_id: "current", kind: "snapshot", occurred_at: "2026-09-01T23:55:00.000Z", evidence_refs: ["current"], expected_generation: 0, freshness: { head_sha: "h1", base_sha: "b1", merge_state_status: "clean" } },
+      { event_id: "foreign", delivery_id: "other-delivery", kind: "snapshot", occurred_at: "2026-09-01T23:55:00.000Z", evidence_refs: ["foreign"], expected_generation: 0, freshness: { head_sha: "h2", base_sha: "b1", merge_state_status: "clean" } },
+      { event_id: "ci", kind: "ci", occurred_at: "2026-08-31T23:59:00.000Z", evidence_refs: ["ci"], expected_generation: 0, freshness: { head_sha: "h1", base_sha: "b1", merge_state_status: "clean" }, conclusion: "passed", expired: false },
+      { event_id: "review", kind: "review", occurred_at: "2026-09-01T23:56:00.000Z", evidence_refs: ["review"], expected_generation: 0, freshness: { head_sha: "h1", base_sha: "b1", merge_state_status: "clean" }, conclusion: "approved" },
+      { event_id: "ready", kind: "evaluate_ready", occurred_at: "2026-09-01T23:57:00.000Z", evidence_refs: ["bundle"], expected_generation: 0 },
+    ], { kind: "fixture", delivery_id: "delivery-current", clock: "2026-09-02T00:00:00.000Z", state: "evidence_collecting", active_lease_id: "unused" });
     expect(result.record.state).toBe("evidence_collecting");
     expect(result.record.audit).toEqual(expect.arrayContaining([
       expect.objectContaining({ event_id: "foreign", kind: "stale_event", reason: "delivery_id_mismatch" }),
@@ -75,10 +75,11 @@ describe("controller dry-run replay", () => {
 
   it("returns to evidence collection only after a new authoritative snapshot", () => {
     const result = replay([
-      { event_id: "result", kind: "result", occurred_at: "2026-09-01T00:00:00.000Z", evidence_refs: ["result"], expected_generation: 0, lease_id: "l1", result: "completed", freshness: { head_sha: "h1", base_sha: "b1", merge_state_status: "clean" } },
+      { event_id: "result", kind: "result", occurred_at: "2026-09-01T00:00:00.000Z", evidence_refs: ["result"], expected_generation: 0, lease_id: "l1", runtime_id: "runtime-1", result: "completed", freshness: { head_sha: "h1", base_sha: "b1", merge_state_status: "clean" } },
+      { event_id: "initial", kind: "snapshot", occurred_at: "2026-09-01T00:00:00.000Z", evidence_refs: ["s1"], expected_generation: 0, freshness: { head_sha: "h1", base_sha: "b1", merge_state_status: "clean" } },
       { event_id: "changed", kind: "snapshot", occurred_at: "2026-09-01T00:01:00.000Z", evidence_refs: ["s2"], expected_generation: 0, freshness: { head_sha: "h2", base_sha: "b1", merge_state_status: "clean" } },
       { event_id: "confirmed", kind: "snapshot", occurred_at: "2026-09-01T00:02:00.000Z", evidence_refs: ["s2-confirmed"], expected_generation: 1, freshness: { head_sha: "h2", base_sha: "b1", merge_state_status: "clean" } },
-    ], { kind: "fixture", delivery_id: "delivery-refresh", clock: "2026-09-01T00:00:00.000Z", state: "executing", active_lease_id: "l1" });
+    ], { kind: "fixture", delivery_id: "delivery-refresh", clock: "2026-09-01T00:03:00.000Z", state: "executing", active_lease_id: "l1", active_runtime_id: "runtime-1", active_lease_expires_at: "2026-09-01T00:10:00.000Z" });
     expect(result.record).toMatchObject({ state: "evidence_collecting", generation: 1 });
   });
 
@@ -96,7 +97,7 @@ describe("controller dry-run replay", () => {
       { event_id: "missing", kind: "lease_confirmed", occurred_at: "2026-09-01T00:00:00.000Z", evidence_refs: [], expected_generation: 0, lease_id: "l1" },
       { event_id: "multiple", kind: "task_inventory", occurred_at: "2026-09-01T00:01:00.000Z", evidence_refs: ["inventory"], expected_generation: 0, active_task_ids: ["a", "b"] },
     ];
-    const result = replay(events, { kind: "fixture", delivery_id: record.delivery_id, clock: "2026-09-01T00:00:00.000Z", state: record.state });
+    const result = replay(events, { kind: "fixture", delivery_id: record.delivery_id, clock: "2026-09-01T00:02:00.000Z", state: record.state });
     expect(result.record.state).toBe("awaiting_human_decision");
     expect(result.record.audit).toContainEqual(expect.objectContaining({ event_id: "missing", kind: "invalid_transition" }));
     expect(result.invariants).toMatchObject({ ok: false, failures: ["multiple_active_tasks"] });
@@ -105,8 +106,98 @@ describe("controller dry-run replay", () => {
   it("fails closed when an event omits its generation fencing token", () => {
     const result = replay([
       { event_id: "unfenced", kind: "snapshot", occurred_at: "2026-09-01T00:00:00.000Z", evidence_refs: ["snapshot"], freshness: { head_sha: "h1", base_sha: "b1", merge_state_status: "clean" } } as unknown as ReplayInputEvent,
-    ], { kind: "fixture", delivery_id: "delivery-unfenced", clock: "2026-09-01T00:00:00.000Z", state: "evidence_collecting" });
+    ], { kind: "fixture", delivery_id: "delivery-unfenced", clock: "2026-09-01T00:01:00.000Z", state: "evidence_collecting" });
     expect(result.record.current_freshness).toBeUndefined();
     expect(result.record.audit).toContainEqual(expect.objectContaining({ event_id: "unfenced", kind: "stale_event", reason: "generation_missing" }));
+  });
+
+  it("fails closed for invalid, future, and expired authoritative snapshot times", () => {
+    const result = replay([
+      { event_id: "invalid", kind: "snapshot", occurred_at: "not-a-time", evidence_refs: ["invalid"], expected_generation: 0, freshness: { head_sha: "h1", base_sha: "b1", merge_state_status: "clean" } },
+      { event_id: "future", kind: "snapshot", occurred_at: "2026-09-01T00:21:00.000Z", evidence_refs: ["future"], expected_generation: 0, freshness: { head_sha: "h1", base_sha: "b1", merge_state_status: "clean" } },
+      { event_id: "expired", kind: "snapshot", occurred_at: "2026-09-01T00:00:00.000Z", evidence_refs: ["expired"], expected_generation: 0, freshness: { head_sha: "h1", base_sha: "b1", merge_state_status: "clean" } },
+    ], { kind: "fixture", delivery_id: "delivery-clock", clock: "2026-09-01T00:20:00.000Z", state: "evidence_collecting" });
+    expect(result.record).toMatchObject({ state: "evidence_collecting" });
+    expect(result.record.current_freshness).toBeUndefined();
+    expect(result.record.evidence).toEqual([expect.objectContaining({ id: "expired", kind: "snapshot", expired: true })]);
+    expect(result.record.audit).toEqual(expect.arrayContaining([
+      expect.objectContaining({ event_id: "invalid", reason: "event_timestamp_invalid" }),
+      expect.objectContaining({ event_id: "future", reason: "event_timestamp_after_fixture_clock" }),
+      expect.objectContaining({ event_id: "expired", reason: "authoritative_snapshot_expired" }),
+    ]));
+  });
+
+  it("rejects missing or mismatched runtime fences without mutating execution", () => {
+    const result = replay([
+      { event_id: "wrong-start", kind: "started", occurred_at: "2026-09-01T00:01:00.000Z", evidence_refs: ["start"], expected_generation: 0, lease_id: "lease-1", runtime_id: "runtime-other" },
+      { event_id: "missing-result-runtime", kind: "result", occurred_at: "2026-09-01T00:02:00.000Z", evidence_refs: ["result"], expected_generation: 0, lease_id: "lease-1", result: "completed" },
+      { event_id: "wrong-result", kind: "result", occurred_at: "2026-09-01T00:03:00.000Z", evidence_refs: ["result"], expected_generation: 0, lease_id: "lease-1", runtime_id: "runtime-other", result: "completed" },
+      { event_id: "wrong-expiry", kind: "lease_expired", occurred_at: "2026-09-01T00:10:00.000Z", evidence_refs: ["expiry"], expected_generation: 0, lease_id: "lease-1", runtime_id: "runtime-other" },
+    ], { kind: "fixture", delivery_id: "delivery-runtime-fence", clock: "2026-09-01T00:11:00.000Z", state: "executing", active_lease_id: "lease-1", active_runtime_id: "runtime-1", active_lease_expires_at: "2026-09-01T00:10:00.000Z" });
+    expect(result.record).toMatchObject({ state: "executing", started_count: 0, attempt_count: 0, active_lease_id: "lease-1", active_runtime_id: "runtime-1", evidence: [] });
+    expect(result.record.audit).toEqual(expect.arrayContaining([
+      expect.objectContaining({ event_id: "wrong-start", kind: "stale_event", reason: "runtime_mismatch" }),
+      expect.objectContaining({ event_id: "missing-result-runtime", kind: "stale_event", reason: "runtime_missing" }),
+      expect.objectContaining({ event_id: "wrong-result", kind: "stale_event", reason: "runtime_mismatch" }),
+      expect.objectContaining({ event_id: "wrong-expiry", kind: "stale_event", reason: "runtime_mismatch" }),
+    ]));
+  });
+
+  it("rejects matching start and result events when the fixture clock has expired their lease", () => {
+    const start = replay([
+      { event_id: "late-start", kind: "started", occurred_at: "2026-09-01T00:09:00.000Z", evidence_refs: ["start"], expected_generation: 0, lease_id: "lease-1", runtime_id: "runtime-1" },
+    ], { kind: "fixture", delivery_id: "delivery-late-start", clock: "2026-09-01T00:11:00.000Z", state: "leased", active_lease_id: "lease-1", active_runtime_id: "runtime-1", active_lease_expires_at: "2026-09-01T00:10:00.000Z" });
+    const result = replay([
+      { event_id: "late-result", kind: "result", occurred_at: "2026-09-01T00:09:00.000Z", evidence_refs: ["result"], expected_generation: 0, lease_id: "lease-1", runtime_id: "runtime-1", result: "completed" },
+    ], { kind: "fixture", delivery_id: "delivery-late-result", clock: "2026-09-01T00:11:00.000Z", state: "executing", active_lease_id: "lease-1", active_runtime_id: "runtime-1", active_lease_expires_at: "2026-09-01T00:10:00.000Z" });
+
+    expect(start.record).toMatchObject({ state: "leased", started_count: 0, attempt_count: 0, active_lease_id: "lease-1", evidence: [] });
+    expect(result.record).toMatchObject({ state: "executing", started_count: 0, attempt_count: 0, active_lease_id: "lease-1", evidence: [] });
+    expect(start.record.audit).toContainEqual(expect.objectContaining({ event_id: "late-start", kind: "stale_event", reason: "lease_expired" }));
+    expect(result.record.audit).toContainEqual(expect.objectContaining({ event_id: "late-result", kind: "stale_event", reason: "lease_expired" }));
+  });
+
+  it.each([
+    ["after", "2026-09-01T00:11:00.000Z"],
+    ["at", "2026-09-01T00:10:00.000Z"],
+  ])("revokes a matching lease_expired event when the fixture clock is %s its expiry", (_boundary, clock) => {
+    const result = replay([
+      { event_id: "expiry", kind: "lease_expired", occurred_at: "2026-09-01T00:09:00.000Z", evidence_refs: ["expiry"], expected_generation: 0, lease_id: "lease-1", runtime_id: "runtime-1", checkpoint_ref: "checkpoint" },
+    ], { kind: "fixture", delivery_id: "delivery-expiry", clock, state: "executing", active_lease_id: "lease-1", active_runtime_id: "runtime-1", active_lease_expires_at: "2026-09-01T00:10:00.000Z" });
+
+    expect(result.record).toMatchObject({ state: "waiting_for_runtime", attempt_count: 0, checkpoint_ref: "checkpoint" });
+    expect(result.record.active_lease_id).toBeUndefined();
+    expect(result.record.active_runtime_id).toBeUndefined();
+    expect(result.record.active_lease_expires_at).toBeUndefined();
+  });
+
+  it("requires an active matching unexpired snapshot rather than result correlation freshness", () => {
+    const result = replay([
+      { event_id: "result", kind: "result", occurred_at: "2026-09-01T00:00:00.000Z", evidence_refs: ["result-h1"], expected_generation: 0, lease_id: "lease-1", runtime_id: "runtime-1", result: "completed", freshness: { head_sha: "h1", base_sha: "b1", merge_state_status: "clean" } },
+      { event_id: "snapshot", kind: "snapshot", occurred_at: "2026-09-01T00:00:00.000Z", evidence_refs: ["snapshot-h2"], expected_generation: 0, freshness: { head_sha: "h2", base_sha: "b1", merge_state_status: "clean" } },
+      { event_id: "ci", kind: "ci", occurred_at: "2026-09-01T00:01:00.000Z", evidence_refs: ["ci-h1"], expected_generation: 0, freshness: { head_sha: "h1", base_sha: "b1", merge_state_status: "clean" }, conclusion: "passed" },
+      { event_id: "review", kind: "review", occurred_at: "2026-09-01T00:02:00.000Z", evidence_refs: ["review-h1"], expected_generation: 0, freshness: { head_sha: "h1", base_sha: "b1", merge_state_status: "clean" }, conclusion: "approved" },
+      { event_id: "ready", kind: "evaluate_ready", occurred_at: "2026-09-01T00:03:00.000Z", evidence_refs: ["bundle"], expected_generation: 0 },
+    ], { kind: "fixture", delivery_id: "delivery-snapshot-mismatch", clock: "2026-09-01T00:04:00.000Z", state: "executing", active_lease_id: "lease-1", active_runtime_id: "runtime-1", active_lease_expires_at: "2026-09-01T00:10:00.000Z" });
+    expect(result.record.state).toBe("evidence_collecting");
+    expect(result.record.audit).toEqual(expect.arrayContaining([
+      expect.objectContaining({ event_id: "ci", kind: "stale_event", reason: "evidence_freshness_mismatch" }),
+      expect.objectContaining({ event_id: "review", kind: "stale_event", reason: "evidence_freshness_mismatch" }),
+      expect.objectContaining({ event_id: "ready", kind: "invalid_transition" }),
+    ]));
+  });
+
+  it("does not form a ready bundle when its authoritative snapshot is missing", () => {
+    const result = replay([
+      { event_id: "ci", kind: "ci", occurred_at: "2026-09-01T00:01:00.000Z", evidence_refs: ["ci"], expected_generation: 0, freshness: { head_sha: "h1", base_sha: "b1", merge_state_status: "clean" }, conclusion: "passed" },
+      { event_id: "review", kind: "review", occurred_at: "2026-09-01T00:02:00.000Z", evidence_refs: ["review"], expected_generation: 0, freshness: { head_sha: "h1", base_sha: "b1", merge_state_status: "clean" }, conclusion: "approved" },
+      { event_id: "ready", kind: "evaluate_ready", occurred_at: "2026-09-01T00:03:00.000Z", evidence_refs: ["bundle"], expected_generation: 0 },
+    ], { kind: "fixture", delivery_id: "delivery-snapshot-missing", clock: "2026-09-01T00:04:00.000Z", state: "evidence_collecting" });
+    expect(result.record).toMatchObject({ state: "evidence_collecting", evidence: [] });
+    expect(result.record.audit).toEqual(expect.arrayContaining([
+      expect.objectContaining({ event_id: "ci", kind: "stale_event", reason: "evidence_freshness_mismatch" }),
+      expect.objectContaining({ event_id: "review", kind: "stale_event", reason: "evidence_freshness_mismatch" }),
+      expect.objectContaining({ event_id: "ready", kind: "invalid_transition" }),
+    ]));
   });
 });

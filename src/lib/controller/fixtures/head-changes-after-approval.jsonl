@@ -1,5 +1,6 @@
-{"kind":"fixture","delivery_id":"delivery-head","clock":"2026-09-01T00:00:00.000Z","state":"executing","active_lease_id":"lease-0"}
-{"event_id":"result-1","kind":"result","occurred_at":"2026-09-01T00:00:00.000Z","evidence_refs":["result"],"expected_generation":0,"lease_id":"lease-0","result":"completed","freshness":{"head_sha":"h1","base_sha":"b1","merge_state_status":"CLEAN"}}
+{"kind":"fixture","delivery_id":"delivery-head","clock":"2026-09-01T00:06:00.000Z","state":"executing","active_lease_id":"lease-0","active_runtime_id":"runtime-0","active_lease_expires_at":"2026-09-01T00:10:00.000Z"}
+{"event_id":"result-1","kind":"result","occurred_at":"2026-09-01T00:00:00.000Z","evidence_refs":["result"],"expected_generation":0,"lease_id":"lease-0","runtime_id":"runtime-0","result":"completed","freshness":{"head_sha":"h1","base_sha":"b1","merge_state_status":"CLEAN"}}
+{"event_id":"snapshot-1","kind":"snapshot","occurred_at":"2026-09-01T00:00:00.000Z","evidence_refs":["snapshot-h1"],"expected_generation":0,"freshness":{"head_sha":"h1","base_sha":"b1","merge_state_status":"CLEAN"}}
 {"event_id":"ci-1","kind":"ci","occurred_at":"2026-09-01T00:01:00.000Z","evidence_refs":["ci-1"],"expected_generation":0,"freshness":{"head_sha":"h1","base_sha":"b1","merge_state_status":"CLEAN"},"conclusion":"passed"}
 {"event_id":"review-1","kind":"review","occurred_at":"2026-09-01T00:02:00.000Z","evidence_refs":["review-1"],"expected_generation":0,"freshness":{"head_sha":"h1","base_sha":"b1","merge_state_status":"CLEAN"},"conclusion":"approved"}
 {"event_id":"head-2","kind":"snapshot","occurred_at":"2026-09-01T00:03:00.000Z","evidence_refs":["snapshot-h2"],"expected_generation":0,"freshness":{"head_sha":"h2","base_sha":"b1","merge_state_status":"CLEAN"}}
