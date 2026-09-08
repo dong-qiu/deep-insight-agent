@@ -534,3 +534,7 @@ agent 执行单元的状态追踪；由 Job Runner 写入 SQLite，支撑管理�
 | 系统 cron → 任务队列 | 并发跑 > 5 / 时延抖动大 / 复杂 DAG 需求 | Inngest / Trigger.dev / BullMQ |
 | SQLite FTS5 → 专门检索 | 报告 > 10 万 / 高级搜索（语义 / 同义）需求 | Meilisearch / Typesense |
 | 单实例 → 多实例 | 用户 > 50 / 单实例 CPU 长期 > 70% | 配合 PostgreSQL 迁移 |
+
+### Controller 本地恢复存储（INSI-155）
+
+交付 Controller 的恢复状态不属于应用 live DB：`src/lib/controller/store.ts` 使用由调用者传入的独立本地 SQLite 文件，不读取 `DB_PATH`，也不允许 worktree 间共享。该文件采用 WAL、条件 compare-and-append、append-only transition/evidence/outbox audit 与 pending-invalidation fence。它目前仅由注入式只读 runtime/GitHub snapshot ports 的 reconciler 使用；outbox 只持久化 deterministic plan/claim，未连接通知渠道。真实平台 adapter、webhook、token 和生产持久化策略须另行授权与设计。

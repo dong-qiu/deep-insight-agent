@@ -183,6 +183,12 @@ dry-run 只运行同一 reducer、幂等、invalidation 和通知去重逻辑，
 
 通知输出扩展为确定性、无 recipient/channel 的 plan，保留 signal-specific dedupe key、审计字段与 5/15 分钟 retry policy；`external_delivery: false` 是模型的显式边界，而非 provider receipt。该补偿不验证真实 Multica/GitHub webhook、条件持久化、子任务 exactly-once、通知投递或 AC9 integration proof。
 
+### INSI-155 本地持久化补偿边界
+
+本地 `ControllerStore` 以**调用方显式注入的隔离 SQLite 文件路径**保存 Controller record、CAS/idempotency effect、append-only transition/evidence/outbox audit 和 notification claim。它不读取应用的 `DB_PATH`，测试使用临时独立文件；`pending_invalidation` 会在跨事务中断时先使 acceptance fail closed，重启后冻结到人工决策。reconciler 仅可读取注入的 runtime/GitHub snapshot ports；adapter error、多个 active task、旧 lease/result、缺失或 stale/unknown evidence 均不允许自动推进。
+
+此实现只提供 fake/recorded transport 的本地证据和持久 outbox plan/claim，**不**创建、取消或撤销 Multica task/lease，**不**配置或发送通知，且**不**配置 GitHub webhook、token/credential、CI/review/PR mutation、merge、deploy 或 IAM。它不是实际平台、webhook 或 notification-delivery 的验收证据。
+
 ## 明确禁止项与阶段 2 交付边界
 
 Controller 及其自动修复**不得**：自动合入 PR、修改分支保护、触发或执行部署、访问生产系统/数据、创建或修改 AWS 资源、修改 IAM/权限、读取或写入凭据，或以任何方式绕过 CI、Reviewer 或人工授权。
