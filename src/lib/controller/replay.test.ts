@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { createControllerRecord, replay, replayJsonl, type ReplayInputEvent } from "./replay.js";
+import { createControllerRecord, freshnessHash, replay, replayJsonl, type ReplayInputEvent } from "./replay.js";
 
 const fixture = (name: string) => replayJsonl(readFileSync(new URL(`./fixtures/${name}`, import.meta.url), "utf8"));
 
@@ -55,7 +55,42 @@ describe("controller dry-run replay", () => {
   it("accepts ready only for matching clean CI and review evidence", () => {
     const result = fixture("ready-with-current-evidence.jsonl");
     expect(result.record.state).toBe("ready_for_human_review");
-    expect(result.record.notifications.filter((plan) => plan.signal === "ready")).toHaveLength(1);
+    expect(result.record.ready_bundle).toMatchObject({
+      generation: 0,
+      freshness: { head_sha: "h1", base_sha: "b1", merge_state_status: "clean" },
+      snapshot_evidence_ref: "snapshot",
+      ci_evidence_ref: "ci",
+      review_evidence_ref: "review",
+    });
+    const ready = result.record.notifications.filter((plan) => plan.signal === "ready");
+    expect(ready).toEqual([expect.objectContaining({ dedupe_key: `delivery-ready:0:ready:${result.record.ready_bundle!.hash}` })]);
+  });
+
+  it.each([
+    ["stale", "stale-snapshot-after-ready.jsonl", "freshness_unknown"],
+    ["expired", "expired-snapshot-after-ready.jsonl", "freshness_unknown"],
+    ["unknown", "unknown-snapshot-after-ready.jsonl", freshnessHash({ head_sha: "h1", base_sha: "b1", merge_state_status: "unknown" })],
+  ])("invalidates an already-ready immutable bundle for a %s authoritative snapshot", (_case, name, nextFreshnessHash) => {
+    const result = fixture(name);
+    const [bundle] = result.record.superseded_ready_bundles;
+    expect(result.record).toMatchObject({ state: "freshness_invalidated", generation: 1, ready_bundle: undefined });
+    expect(bundle).toMatchObject({
+      generation: 0,
+      freshness: { head_sha: "h1", base_sha: "b1", merge_state_status: "clean" },
+      snapshot_evidence_ref: "snapshot-clean",
+      ci_evidence_ref: "ci-clean",
+      review_evidence_ref: "review-clean",
+    });
+    expect(result.record.evidence.filter((evidence) => evidence.kind === "ci" || evidence.kind === "review").every((evidence) => evidence.status === "superseded")).toBe(true);
+    expect(result.record.audit).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "ready_bundle_invalidated", reason: expect.stringContaining(bundle.hash) }),
+      expect.objectContaining({ kind: "replayed_event" }),
+    ]));
+    expect(result.record.notifications).toEqual(expect.arrayContaining([
+      expect.objectContaining({ signal: "ready", dedupe_key: `${result.record.delivery_id}:0:ready:${bundle.hash}` }),
+      expect.objectContaining({ signal: "invalidation", dedupe_key: `${result.record.delivery_id}:1:invalidation:${bundle.hash}:${nextFreshnessHash}` }),
+    ]));
+    expect(result.record.notifications.filter((plan) => plan.signal === "invalidation")).toHaveLength(1);
   });
 
   it("derives evidence expiry from the fixture clock and rejects foreign events", () => {
