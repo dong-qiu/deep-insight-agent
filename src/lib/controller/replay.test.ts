@@ -1,0 +1,103 @@
+import { readFileSync } from "node:fs";
+import { describe, expect, it } from "vitest";
+import { createControllerRecord, replay, replayJsonl, type ReplayInputEvent } from "./replay.js";
+
+const fixture = (name: string) => replayJsonl(readFileSync(new URL(`./fixtures/${name}`, import.meta.url), "utf8"));
+
+describe("controller dry-run replay", () => {
+  it("keeps unconfirmed offline scheduling at zero attempts", () => {
+    const result = fixture("runtime-offline-before-lease.jsonl");
+    expect(result.record).toMatchObject({ state: "waiting_for_runtime", attempt_count: 0, started_count: 0 });
+    expect(result.record.notifications).toHaveLength(1);
+    expect(result.invariants).toEqual({ ok: true, failures: [], external_effects: false });
+  });
+
+  it("does not charge an interrupted started task and requires a new lease", () => {
+    const result = fixture("runtime-interrupted-after-start.jsonl");
+    expect(result.record).toMatchObject({ state: "waiting_for_runtime", attempt_count: 0, started_count: 1, checkpoint_ref: "checkpoint-redacted" });
+    expect(result.record.active_lease_id).toBeUndefined();
+  });
+
+  it("escalates a persistent offline incident without consuming an attempt", () => {
+    const result = replay([
+      { event_id: "offline-1", kind: "runtime_offline", occurred_at: "2026-09-01T00:00:00.000Z", evidence_refs: ["heartbeat-missing"] },
+      { event_id: "offline-2", kind: "runtime_offline", occurred_at: "2026-09-01T00:30:00.000Z", evidence_refs: ["heartbeat-missing"] },
+    ], { kind: "fixture", delivery_id: "delivery-offline-escalation", clock: "2026-09-01T00:00:00.000Z", state: "waiting_for_runtime" });
+    expect(result.record).toMatchObject({ state: "awaiting_human_decision", attempt_count: 0 });
+    expect(result.record.notifications.filter((plan) => plan.signal === "offline")).toHaveLength(2);
+  });
+
+  it("dedupes duplicate and old-generation events without duplicate plans", () => {
+    const result = fixture("duplicate-and-out-of-order.jsonl");
+    expect(result.record.attempt_count).toBe(1);
+    expect(result.record.transitions.filter((event) => event.event_id === "result-1")).toHaveLength(1);
+    expect(result.record.notifications.filter((plan) => plan.signal === "offline")).toHaveLength(1);
+    expect(result.record.audit).toEqual(expect.arrayContaining([
+      expect.objectContaining({ event_id: "result-1", kind: "replayed_event" }),
+      expect.objectContaining({ event_id: "old-result", kind: "stale_event" }),
+    ]));
+  });
+
+  it.each([
+    "base-changes-after-approval.jsonl",
+    "head-changes-after-approval.jsonl",
+    "merge-state-changes-after-approval.jsonl",
+  ])("invalidates all approval evidence when freshness changes: %s", (name) => {
+    const result = fixture(name);
+    expect(result.record.generation).toBe(1);
+    expect(result.record.state).toBe("freshness_invalidated");
+    expect(result.record.evidence.filter((evidence) => evidence.kind === "ci" || evidence.kind === "review").every((evidence) => evidence.status === "superseded")).toBe(true);
+    expect(result.record.notifications.filter((plan) => plan.signal === "invalidation")).toHaveLength(1);
+    expect(result.record.transitions.some((event) => event.to_state === "ready_for_human_review")).toBe(false);
+  });
+
+  it("accepts ready only for matching clean CI and review evidence", () => {
+    const result = fixture("ready-with-current-evidence.jsonl");
+    expect(result.record.state).toBe("ready_for_human_review");
+    expect(result.record.notifications.filter((plan) => plan.signal === "ready")).toHaveLength(1);
+  });
+
+  it("fails closed for expired evidence and an event from a different delivery", () => {
+    const result = replay([
+      { event_id: "current", kind: "snapshot", occurred_at: "2026-09-01T00:00:00.000Z", evidence_refs: ["current"], freshness: { head_sha: "h1", base_sha: "b1", merge_state_status: "clean" } },
+      { event_id: "foreign", delivery_id: "other-delivery", kind: "snapshot", occurred_at: "2026-09-01T00:00:00.000Z", evidence_refs: ["foreign"], freshness: { head_sha: "h2", base_sha: "b1", merge_state_status: "clean" } },
+      { event_id: "ci", kind: "ci", occurred_at: "2026-09-01T00:01:00.000Z", evidence_refs: ["ci"], freshness: { head_sha: "h1", base_sha: "b1", merge_state_status: "clean" }, conclusion: "passed", expired: true },
+      { event_id: "review", kind: "review", occurred_at: "2026-09-01T00:02:00.000Z", evidence_refs: ["review"], freshness: { head_sha: "h1", base_sha: "b1", merge_state_status: "clean" }, conclusion: "approved" },
+      { event_id: "ready", kind: "evaluate_ready", occurred_at: "2026-09-01T00:03:00.000Z", evidence_refs: ["bundle"] },
+    ], { kind: "fixture", delivery_id: "delivery-current", clock: "2026-09-01T00:00:00.000Z", state: "evidence_collecting", active_lease_id: "unused" });
+    expect(result.record.state).toBe("evidence_collecting");
+    expect(result.record.audit).toEqual(expect.arrayContaining([
+      expect.objectContaining({ event_id: "foreign", kind: "stale_event", reason: "delivery_id_mismatch" }),
+      expect.objectContaining({ event_id: "ready", kind: "invalid_transition" }),
+    ]));
+  });
+
+  it("returns to evidence collection only after a new authoritative snapshot", () => {
+    const result = replay([
+      { event_id: "result", kind: "result", occurred_at: "2026-09-01T00:00:00.000Z", evidence_refs: ["result"], lease_id: "l1", result: "completed", freshness: { head_sha: "h1", base_sha: "b1", merge_state_status: "clean" } },
+      { event_id: "changed", kind: "snapshot", occurred_at: "2026-09-01T00:01:00.000Z", evidence_refs: ["s2"], freshness: { head_sha: "h2", base_sha: "b1", merge_state_status: "clean" } },
+      { event_id: "confirmed", kind: "snapshot", occurred_at: "2026-09-01T00:02:00.000Z", evidence_refs: ["s2-confirmed"], freshness: { head_sha: "h2", base_sha: "b1", merge_state_status: "clean" } },
+    ], { kind: "fixture", delivery_id: "delivery-refresh", clock: "2026-09-01T00:00:00.000Z", state: "executing", active_lease_id: "l1" });
+    expect(result.record).toMatchObject({ state: "evidence_collecting", generation: 1 });
+  });
+
+  it("escalates after two repair rounds and never dispatches a third", () => {
+    const result = fixture("repair-exhaustion.jsonl");
+    expect(result.record).toMatchObject({ state: "awaiting_human_decision", repair_round: 2, attempt_count: 3 });
+    expect(result.record.transitions.filter((event) => event.event_id === "repair-dispatch-3")).toHaveLength(0);
+    expect(result.record.audit).toContainEqual(expect.objectContaining({ event_id: "repair-dispatch-3", kind: "invalid_transition" }));
+    expect(result.record.notifications.filter((plan) => plan.signal === "repair_exhausted")).toHaveLength(1);
+  });
+
+  it("fails closed on missing evidence, invalid edges, and multiple active tasks", () => {
+    const record = createControllerRecord({ delivery_id: "delivery-test", state: "waiting_for_runtime" });
+    const events: ReplayInputEvent[] = [
+      { event_id: "missing", kind: "lease_confirmed", occurred_at: "2026-09-01T00:00:00.000Z", evidence_refs: [], lease_id: "l1" },
+      { event_id: "multiple", kind: "task_inventory", occurred_at: "2026-09-01T00:01:00.000Z", evidence_refs: ["inventory"], active_task_ids: ["a", "b"] },
+    ];
+    const result = replay(events, { kind: "fixture", delivery_id: record.delivery_id, clock: "2026-09-01T00:00:00.000Z", state: record.state });
+    expect(result.record.state).toBe("awaiting_human_decision");
+    expect(result.record.audit).toContainEqual(expect.objectContaining({ event_id: "missing", kind: "invalid_transition" }));
+    expect(result.invariants).toMatchObject({ ok: false, failures: ["multiple_active_tasks"] });
+  });
+});
