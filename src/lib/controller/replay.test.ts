@@ -66,11 +66,20 @@ describe("controller dry-run replay", () => {
       review_evidence: { source: "fixture:review", immutable_ref: "review", payload_hash: expect.any(String) },
     });
     const ready = result.record.notifications.filter((plan) => plan.signal === "ready");
-    expect(ready).toEqual([expect.objectContaining({ dedupe_key: "delivery-ready:0:ready:ready-1" })]);
+    const freshness = { head_sha: "h1", base_sha: "b1", merge_state_status: "clean" };
+    const readyKey = `delivery-ready:0:ready:${freshnessHash(freshness)}:${result.record.ready_bundle!.hash}`;
+    expect(ready).toEqual([expect.objectContaining({ dedupe_key: readyKey })]);
     expect(result.record.transitions).toContainEqual(expect.objectContaining({
       event_id: "ready-1",
-      idempotency_key: `delivery-ready:0:ready:${freshnessHash({ head_sha: "h1", base_sha: "b1", merge_state_status: "clean" })}:${result.record.ready_bundle!.hash}`,
+      idempotency_key: readyKey,
     }));
+
+    const jsonl = readFileSync(new URL("./fixtures/ready-with-current-evidence.jsonl", import.meta.url), "utf8").trim();
+    const duplicateReadyEvent = jsonl.split("\n").at(-1)!;
+    const replayed = replayJsonl(`${jsonl}\n${duplicateReadyEvent}`);
+    expect(replayed.record.notifications.filter((plan) => plan.signal === "ready")).toEqual([
+      expect.objectContaining({ dedupe_key: readyKey }),
+    ]);
   });
 
   it.each([
@@ -95,7 +104,7 @@ describe("controller dry-run replay", () => {
       expect.objectContaining({ kind: "replayed_event" }),
     ]));
     expect(result.record.notifications).toEqual(expect.arrayContaining([
-      expect.objectContaining({ signal: "ready", dedupe_key: `${result.record.delivery_id}:0:ready:ready-1` }),
+      expect.objectContaining({ signal: "ready", dedupe_key: `${result.record.delivery_id}:0:ready:${freshnessHash(bundle.freshness)}:${bundle.hash}` }),
       expect.objectContaining({ signal: "invalidation", dedupe_key: `${result.record.delivery_id}:1:invalidation:${freshnessHash({ head_sha: "h1", base_sha: "b1", merge_state_status: "clean" })}:${cause}` }),
     ]));
     expect(result.record.notifications.filter((plan) => plan.signal === "invalidation")).toHaveLength(1);
