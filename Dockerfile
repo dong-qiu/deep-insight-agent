@@ -21,11 +21,12 @@ RUN npm ci --no-audit
 FROM ${NODE_BUILD_IMAGE} AS builder
 WORKDIR /app
 ARG GIT_SHA=unknown
+ARG RELEASED_AT=unknown
 ENV NEXT_TELEMETRY_DISABLED=1
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 # 构建时固定 Git SHA；镜像 digest 由 push 后部署器以 INSIGHT_IMAGE_DIGEST 注入，二者不得由 tag 推测。
-RUN printf '{"git_sha":"%s"}\n' "$GIT_SHA" > /app/build-info.json
+RUN node -e 'const fs=require("node:fs"); fs.writeFileSync("/app/build-info.json", JSON.stringify({version:require("/app/package.json").version, git_sha:process.env.GIT_SHA, released_at:process.env.RELEASED_AT})+"\\n")'
 # P0a 的 migration runner 必须进入同一发布镜像；运行层刻意不携带 tsx/源码，故在构建层
 # bundle 为纯 Node ESM。better-sqlite3 保持 external，并在运行层显式复制其原生模块。
 RUN ./node_modules/.bin/esbuild ops/run-provenance-migrations.ts --bundle --platform=node --format=esm --packages=external --outfile=/tmp/run-provenance-migrations.mjs
