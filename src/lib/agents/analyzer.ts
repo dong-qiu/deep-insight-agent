@@ -8,7 +8,7 @@
  */
 import { createHash, randomUUID } from "node:crypto";
 import { isTransientApiError } from "../runtime/errors.js";
-import { coverageBackfillOff, validatorThinking } from "../runtime/env.js";
+import { coverageBackfillOff, validatorBackoffMs, validatorRetries, validatorThinking } from "../runtime/env.js";
 import { MODELS, callStructured } from "../runtime/llm.js";
 import { collapseWithMap, compareKey } from "../runtime/text-normalize.js";
 import { insightFingerprint } from "../runtime/statement-fingerprint.js";
@@ -32,6 +32,32 @@ export const CITATION_CLAUSE_AUDIT = `
 - quote 没有直接覆盖某个限定时，只能：① 从同一来源补一条包含该限定的连续短 quote；② 将该限定删掉；或③ 将它拆成另一条有独立 quote 的洞察。
 - 跨源洞察只陈述各来源明确给出的事实及克制的并列对照；不得把两条来源写成“三项研究”、共同验证、共同因果或同一部署环境，除非每一项关系都有直接 quote。
 `;
+
+/** XML-like prompt 边界内的模型输出和第三方正文都必须编码，不能让闭合标签逃出不可信区。 */
+function escapePromptData(value: string): string {
+  return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** 覆盖审计不可用不是“没有重要事件”；抛给管线失败路径并触发既有告警。 */
+export class QuoteCoverageAuditError extends Error {
+  constructor(cause: unknown) {
+    super(`展示引用覆盖审计失败：${cause instanceof Error ? cause.message : String(cause)}`);
+    this.name = "QuoteCoverageAuditError";
+  }
+}
+
+/** 候选洞察全部缺少可展示证据时，必须失败并留下 Run/trace，而非产出空成功报告。 */
+export class QuoteCoverageRejectedError extends Error {
+  constructor(rejected: number) {
+    super(`展示引用覆盖门拒绝了全部 ${rejected} 条候选洞察`);
+    this.name = "QuoteCoverageRejectedError";
+  }
+}
+
+/** 受控并发避免每条洞察串行拉长分析时延，也避免无上限并发冲击 validator。 */
+export const QUOTE_COVERAGE_CONCURRENCY = 3;
 
 export const ANALYZER_SYSTEM = `你是行业洞察分析引擎。给定一个主题与一批已采集的多源内容，提炼围绕该主题的结构化洞察。
 
@@ -67,10 +93,10 @@ ${CITATION_CLAUSE_AUDIT}
  *  纳入 analyzerCacheVersion 哈希——保证「schema/派生变但 SYSTEM 没变」也使旧缓存失效（review m3：
  *  否则切片2 会据旧逻辑产的缓存洞察错命中、喂进新版报告）。SYSTEM 文案变由 promptHash 自动覆盖，此常量只管
  *  「非 SYSTEM 的输出形态/派生」变更。 */
-// v5 is the current mainline contract. Strict event identity and the
-// displayed-quote coverage filter both change derived output eligibility, so
-// cached v5 analyses cannot be reused.
-export const ANALYZER_OUTPUT_VERSION = 6;
+// v6 introduced strict event identity and the displayed-quote coverage filter.
+// v7 could cache a full coverage rejection as a normal empty result; v8 must
+// reanalyze those rows.
+export const ANALYZER_OUTPUT_VERSION = 8;
 
 /** 分析缓存版本（ADR-0009）：analyzer 模型 + SYSTEM prompt 哈希 + 输出契约版本——任一变 → 版本变 → 旧分析缓存
  *  自动失效（不复用陈旧 prompt/schema/派生的洞察）。镜像 validator.consistencyCacheVersion 的版本隔离口径。 */
@@ -173,11 +199,11 @@ async function verifyCandidates(
   candidates: Array<{ token: string; quote: string }>,
   onCost?: (cost: Cost) => void,
 ): Promise<boolean[]> {
-  const user = `待覆盖结论：${statement}
+  const user = `待覆盖结论：${escapePromptData(statement)}
 
 候选引用（逐条判断是否支撑结论里关于「目标」的具体声明）：
 <untrusted_source>
-${candidates.map((c, i) => `${i + 1}. 目标=「${c.token}」　引用「${c.quote}」`).join("\n")}
+${candidates.map((c, i) => `${i + 1}. 目标=「${escapePromptData(c.token)}」　引用「${escapePromptData(c.quote)}」`).join("\n")}
 </untrusted_source>`;
   const { data } = await callStructured({
     role: "validator",
@@ -197,16 +223,26 @@ async function verifyStatementQuoteCoverage(
   quotes: string,
   onCost?: (cost: Cost) => void,
 ): Promise<boolean> {
-  const { data } = await callStructured({
-    role: "validator",
-    system: QUOTE_COVERAGE_SYSTEM,
-    user: `statement：${statement}\n\n<displayed_quotes>\n${quotes}\n</displayed_quotes>`,
-    schema: CoverageRepairSchema,
-    thinking: validatorThinking(),
-    maxTokens: 2048,
-    onCost,
-  });
-  return data.verdicts.find((v) => v.index === 1)?.supports === true;
+  let lastError: unknown;
+  const retries = validatorRetries();
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const { data } = await callStructured({
+        role: "validator",
+        system: QUOTE_COVERAGE_SYSTEM,
+        user: `statement：${escapePromptData(statement)}\n\n<displayed_quotes>\n${escapePromptData(quotes)}\n</displayed_quotes>`,
+        schema: CoverageRepairSchema,
+        thinking: validatorThinking(),
+        maxTokens: 2048,
+        onCost,
+      });
+      return data.verdicts.find((v) => v.index === 1)?.supports === true;
+    } catch (error) {
+      lastError = error;
+      if (attempt < retries) await sleep(validatorBackoffMs() * 2 ** attempt);
+    }
+  }
+  throw new QuoteCoverageAuditError(lastError);
 }
 
 /** 真正补引：对每条洞察的覆盖缺口，从**已引** body 切候选逐字短句 → 经 verifyCandidates（Opus，quote 粒度）
@@ -260,13 +296,15 @@ export async function repairCoverage(
  * 将一条洞察的全部 quote 作为联合证据，复用保守的 quote 粒度 judge；无法证明每个关键断言
  * 都被展示证据覆盖时直接丢弃该洞察，避免把“原文某处也许支持”误当作可溯源。
  */
+type QuoteCoverageStats = { rejected: number };
+
 export async function filterByQuoteCoverage(
   insights: Insight[],
   onCost?: (cost: Cost) => void,
   itemsById?: ReadonlyMap<string, ContentItem>,
+  stats?: QuoteCoverageStats,
 ): Promise<Insight[]> {
-  const kept: Insight[] = [];
-  for (const insight of insights) {
+  const auditOne = async (insight: Insight): Promise<Insight | null> => {
     // Locator 由本地 body 派生。-1 代表 quote 不在来源正文（常见于模型误引标题）；它既
     // 不能作为展示证据，也不能留到 validator 才把整条洞察阻断。先剔除，再以剩余逐字
     // 可定位 quotes 做覆盖审计。
@@ -295,18 +333,21 @@ export async function filterByQuoteCoverage(
       .join("\n");
     if (!evidence) {
       console.warn(`  ⚠️ 丢弃无引用洞察：${insight.id || insight.statement.slice(0, 24)}`);
-      continue;
+      if (stats) stats.rejected++;
+      return null;
     }
-    try {
-      const covered = await verifyStatementQuoteCoverage(insight.statement, evidence, onCost);
-      if (covered) kept.push(insight);
-      else console.warn(`  ⚠️ 丢弃 quote 未完整覆盖的洞察：${insight.statement.slice(0, 36)}…`);
-    } catch (e) {
-      // 覆盖门无法得出结论时宁可不刊，不能把基础设施抖动降级为“已覆盖”。
-      console.warn(`  ⚠️ 丢弃 quote 覆盖校验失败的洞察：${(e as Error).message.slice(0, 40)}`);
-    }
+    const covered = await verifyStatementQuoteCoverage(insight.statement, evidence, onCost);
+    if (covered) return insight;
+    if (stats) stats.rejected++;
+    console.warn(`  ⚠️ 丢弃 quote 未完整覆盖的洞察：${insight.statement.slice(0, 36)}…`);
+    return null;
+  };
+
+  const checked: Array<Insight | null> = [];
+  for (let start = 0; start < insights.length; start += QUOTE_COVERAGE_CONCURRENCY) {
+    checked.push(...await Promise.all(insights.slice(start, start + QUOTE_COVERAGE_CONCURRENCY).map(auditOne)));
   }
-  return kept;
+  return checked.filter((insight): insight is Insight => insight !== null);
 }
 
 function computeLocator(body: string, quote: string): Citation["locator"] {
@@ -581,6 +622,12 @@ export function chunkByChars(items: ContentItem[], budget: number = ANALYZE_BATC
   return chunks;
 }
 
+interface AnalyzeChunkResult {
+  insights: Insight[];
+  /** 模型曾产出候选但展示证据门拒绝的数量；不可伪装成“无重要事件”。 */
+  quoteCoverageRejected: number;
+}
+
 /** 分析单批 → Insight[]（含产出守卫；id 占位 ""，由 analyze 末尾统一分配）。
  *  拒答/解析失败抛出，交由 analyzeWithSplit 二分拆批兜底。 */
 async function analyzeChunk(
@@ -589,7 +636,7 @@ async function analyzeChunk(
   timeWindow: TimeWindow,
   history: HistoricalEvent[],
   onCost?: (cost: Cost) => void,
-): Promise<Insight[]> {
+): Promise<AnalyzeChunkResult> {
   const user = `主题：${topic.name}（关键词：${topic.keywords.join("、")}）
 时间窗：${timeWindow.start} ~ ${timeWindow.end}
 
@@ -608,7 +655,7 @@ ${renderItems(items, topic.keywords)}`;
     maxTokens: 12000,
     onCost,
   });
-  if (data.no_significant_event) return [];
+  if (data.no_significant_event) return { insights: [], quoteCoverageRejected: 0 };
 
   const byId = new Map(items.map((i) => [i.id, i]));
   const built: Insight[] = data.insights.map((li) => {
@@ -663,7 +710,8 @@ ${renderItems(items, topic.keywords)}`;
   });
   // 真正补引：对覆盖缺口经 quote 粒度 Opus 校验后补成 citation（保守、仅 support）；补不上的留残差。
   await repairCoverage(insights, byId, onCost);
-  const quoteCoveredInsights = await filterByQuoteCoverage(insights, onCost, byId);
+  const quoteCoverage = { rejected: 0 };
+  const quoteCoveredInsights = await filterByQuoteCoverage(insights, onCost, byId, quoteCoverage);
   // 残差告警（informational；report-gen 据已纳入引用外露 〔待补引〕）：补引后仍未覆盖的数字/实体，供人评跟踪。
   for (const it of quoteCoveredInsights) {
     const gaps = coverageGaps(it.statement, (it.entities ?? []).map((e) => e.name), it.citations.map((c) => c.quote));
@@ -671,7 +719,7 @@ ${renderItems(items, topic.keywords)}`;
       console.warn(`  ⚠️ 覆盖残差（补引未果，外露 〔待补引〕）：${gaps.join("、")} ——「${it.statement.slice(0, 24)}…」`);
     }
   }
-  return quoteCoveredInsights;
+  return { insights: quoteCoveredInsights, quoteCoverageRejected: quoteCoverage.rejected };
 }
 
 /** 拒答/解析失败时二分拆批重试（攻 security 拒答）：把干净内容从触发拒答的内容里捞出来，
@@ -686,21 +734,24 @@ async function analyzeWithSplit(
   timeWindow: TimeWindow,
   history: HistoricalEvent[],
   onCost?: (cost: Cost) => void,
-): Promise<Insight[]> {
-  if (!items.length) return [];
+): Promise<AnalyzeChunkResult> {
+  if (!items.length) return { insights: [], quoteCoverageRejected: 0 };
   try {
     return await analyzeChunk(topic, items, timeWindow, history, onCost);
   } catch (e) {
-    if (isTransientApiError(e)) throw e; // 中转站抽风：抛上而非拆批丢内容
+    if (isTransientApiError(e) || e instanceof QuoteCoverageAuditError) throw e; // 审计/中转站不可用：抛上而非拆批丢内容
     if (items.length <= 1) {
       console.warn(`  ⚠️ 丢弃 1 条（模型拒答/解析失败）：${(e as Error).message.slice(0, 40)}`);
-      return [];
+      return { insights: [], quoteCoverageRejected: 0 };
     }
     const mid = Math.ceil(items.length / 2);
     console.warn(`  ⚠️ 拆批重试（${items.length} → ${mid}+${items.length - mid}，疑拒答/失败）`);
     const left = await analyzeWithSplit(topic, items.slice(0, mid), timeWindow, history, onCost);
     const right = await analyzeWithSplit(topic, items.slice(mid), timeWindow, history, onCost);
-    return [...left, ...right];
+    return {
+      insights: [...left.insights, ...right.insights],
+      quoteCoverageRejected: left.quoteCoverageRejected + right.quoteCoverageRejected,
+    };
   }
 }
 
@@ -718,14 +769,20 @@ export async function analyze(
   const batchId = `batch_${randomUUID().slice(0, 8)}`;
   const history = opts.history ?? [];
   const insights: Insight[] = [];
+  let quoteCoverageRejected = 0;
   for (const chunk of chunkByChars(items)) {
-    insights.push(...(await analyzeWithSplit(topic, chunk, timeWindow, history, onCost)));
+    const result = await analyzeWithSplit(topic, chunk, timeWindow, history, onCost);
+    insights.push(...result.insights);
+    quoteCoverageRejected += result.quoteCoverageRejected;
   }
   insights.forEach((it, i) => {
     it.id = `ins_${batchId}_${i}`;
     // 新事件分配 event_id：本批内未复用历史 id 的洞察各得一个新 id，便于后续日参考
     if (!it.event_id) it.event_id = `evt_${batchId}_${i}`;
   });
+  if (insights.length === 0 && quoteCoverageRejected > 0) {
+    throw new QuoteCoverageRejectedError(quoteCoverageRejected);
+  }
   return {
     id: batchId,
     topic_id: topic.id,
