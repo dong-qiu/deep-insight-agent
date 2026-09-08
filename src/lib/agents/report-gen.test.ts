@@ -161,6 +161,32 @@ describe("selectBriefInsights（Daily Brief 已发布证据去重）", () => {
     expect(reportHighlights(batchOf(), validation, { publishedEventEvidence: published }).map((x) => x.text)).toEqual([]);
   });
 
+  it("同批同 event 的重复只发布确定性代表项，且不合并 citations", () => {
+    const batch = batchOf();
+    batch.insights.push({ ...batch.insights[0], id: "i_dup", importance: 5, citations: [{ ...batch.insights[0].citations[0], content_item_id: "ci_new" }] });
+    const checks: ValidationResult = {
+      ...validation,
+      checks: [...validation.checks, { insight_id: "i_dup", citation_index: 0, reachability: "pass", reachability_reason: "ok", consistency: "support", consistency_reason: "ok", verdict: "pass" }],
+    };
+    const selected = summarizeBriefSelection(batch, checks, "brief", []).included;
+    expect(selected.map((x) => x.insight.id)).toEqual(["i_dup"]);
+    expect(selected[0].citationIndices).toEqual([0]);
+  });
+
+  it("遗留分裂 event 的相同表述+相同成功证据由 fingerprint 兜底拦截", () => {
+    const selection = summarizeBriefSelection(batchOf(), validation, "brief", [{ event_id: "legacy", statement: "S1", insight_type: "aggregation", content_item_ids: ["ci1"] }]);
+    expect(selection.included).toEqual([]);
+    expect(selection.summary.fingerprint_duplicate_filtered_count).toBe(1);
+  });
+
+  it("同一历史 event 的多个 occurrence 合并成功证据，不能把较早引用误判为新增", () => {
+    const selection = summarizeBriefSelection(batchOf(), validation, "brief", [
+      { event_id: "e1", content_item_ids: ["ci1"] },
+      { event_id: "e1", content_item_ids: ["ci2"] },
+    ]);
+    expect(selection.included).toEqual([]);
+  });
+
   it("较早但未发布的稳定 event 以明确标注的补充发现发布，并保留主通道过滤计数", () => {
     const batch = batchOf();
     const freshness = { since: "2026-05-06T00:00:00Z", content_item_ids: ["ci_new"], freshest_candidate_at: "2026-05-07T00:00:00Z" };
@@ -212,6 +238,18 @@ describe("selectBriefInsights（Daily Brief 已发布证据去重）", () => {
       }],
     };
     expect(summarizeBriefSelection(duplicateEvent, duplicateChecks, "brief", [], freshness).included).toHaveLength(1);
+  });
+
+  it("遗留分裂 event 的旧 occurrence 不能通过补充发现路径绕过指纹闸门", () => {
+    const freshness = { since: "2026-05-06T00:00:00Z", content_item_ids: ["ci_new"], freshest_candidate_at: "2026-05-07T00:00:00Z" };
+    const selection = summarizeBriefSelection(batchOf(), validation, "brief", [
+      { event_id: "legacy", statement: "S1", insight_type: "aggregation", content_item_ids: ["ci1"] },
+    ], freshness);
+    expect(selection.included).toEqual([]);
+    expect(selection.summary).toMatchObject({
+      supplemental_candidate_count: 0, supplemental_published_insight_count: 0,
+      fingerprint_duplicate_filtered_count: 1,
+    });
   });
 
   it("补充发现有固定上限，近期主通道不受该上限影响", () => {

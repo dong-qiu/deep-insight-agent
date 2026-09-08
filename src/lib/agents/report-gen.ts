@@ -7,12 +7,16 @@ import type {
 } from "../types.js";
 import { facetLabel } from "../topics/facets.js";
 import { flagLabel, isIncludableCheck } from "../utils/citation-verdict.js";
+import { insightFingerprint } from "../runtime/statement-fingerprint.js";
 import { coverageGaps, specificClaims } from "./analyzer.js";
 
 /** 每日节奏中已发布 event 的成功校验证据；由 DB 层读取、作为纯函数输入传入。 */
 export interface PublishedEventEvidence {
   event_id: string;
   content_item_ids: string[];
+  /** Latest rendered statement for strict legacy-event fingerprint fallback. */
+  statement?: string;
+  insight_type?: Insight["type"];
 }
 
 /** Brief 的近期证据发布闸门。只有选择阶段实际选到近期候选才启用，避免无新源时硬造空窗。 */
@@ -34,6 +38,10 @@ export interface BriefSelectionSummary {
   supplemental_published_insight_count: number;
   published_insight_count: number;
   published_citation_count: number;
+  /** Exact repetitions removed from the current batch after the citation whitelist. */
+  batch_duplicate_filtered_count: number;
+  /** Legacy split event ids blocked by an identical published statement fingerprint. */
+  fingerprint_duplicate_filtered_count: number;
 }
 
 /** 覆盖度外露（诚实兜底）：结论里未被**已渲染引用**（剔除 blocked 后）直接覆盖的具体数字/实体。
@@ -151,6 +159,7 @@ export function summarizeBriefSelection(
       already_published_filtered_insight_count: 0, supplemental_candidate_count: 0,
       supplemental_published_insight_count: 0, published_insight_count: included.length,
       published_citation_count: included.reduce((total, x) => total + x.citationIndices.length, 0),
+      batch_duplicate_filtered_count: 0, fingerprint_duplicate_filtered_count: 0,
     },
   };
   // 有近期候选时，带近期成功校验证据的洞察走主通道。较早证据只可作为明确标注的、
@@ -162,35 +171,79 @@ export function summarizeBriefSelection(
     : included;
   const olderIncluded = hasFreshnessGate ? included.filter((x) => !freshIncluded.includes(x)) : [];
   const freshnessFiltered = olderIncluded.length;
-  const evidenceByEvent = new Map(
-    publishedEventEvidence.map((event) => [event.event_id, new Set(event.content_item_ids)]),
-  );
+  // The DB returns occurrences, not a pre-collapsed event row. Union all
+  // pass/support evidence for an event; otherwise a later occurrence could
+  // overwrite earlier published evidence and make an old citation look new.
+  const evidenceByEvent = new Map<string, Set<string>>();
+  for (const event of publishedEventEvidence) {
+    const ids = evidenceByEvent.get(event.event_id) ?? new Set<string>();
+    for (const id of event.content_item_ids) ids.add(id);
+    evidenceByEvent.set(event.event_id, ids);
+  }
+  const evidenceByFingerprint = new Map<string, Set<string>>();
+  for (const event of publishedEventEvidence) {
+    if (!event.statement) continue; // legacy caller DTOs had evidence but no statement identity
+    const key = insightFingerprint(event.insight_type, event.statement);
+    const ids = evidenceByFingerprint.get(key) ?? new Set<string>();
+    for (const id of event.content_item_ids) ids.add(id);
+    evidenceByFingerprint.set(key, ids);
+  }
+  let fingerprintDuplicateFiltered = 0;
   const hasNewPublishedEvidence = (x: IncludedInsight): boolean => {
     const eventId = x.insight.event_id;
-    const previousEvidence = eventId ? evidenceByEvent.get(eventId) : undefined;
+    const byEvent = eventId ? evidenceByEvent.get(eventId) : undefined;
+    const previousEvidence = byEvent ?? evidenceByFingerprint.get(insightFingerprint(x.insight.type, x.insight.statement));
     if (!previousEvidence) return true;
-    return x.includableCitationIndices.some(
+    const hasNew = x.includableCitationIndices.some(
       (i) => !previousEvidence.has(x.insight.citations[i].content_item_id),
     );
+    if (!hasNew && !byEvent) fingerprintDuplicateFiltered += 1;
+    return hasNew;
   };
-  const freshSelected = freshIncluded.filter(hasNewPublishedEvidence);
+  const dedupeCurrent = (xs: IncludedInsight[]): { kept: IncludedInsight[]; filtered: number } => {
+    const ordered = [...xs].sort((a, b) => b.insight.importance - a.insight.importance || b.includableCitationIndices.length - a.includableCitationIndices.length || a.insight.id.localeCompare(b.insight.id));
+    const seen = new Set<string>();
+    const kept = ordered.filter((x) => {
+      const key = x.insight.event_id ? `event:${x.insight.event_id}` : `statement:${insightFingerprint(x.insight.type, x.insight.statement)}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    return { kept, filtered: xs.length - kept.length };
+  };
+  const freshCandidates: IncludedInsight[] = [];
+  let freshAlreadyPublished = 0;
+  for (const item of freshIncluded) {
+    if (hasNewPublishedEvidence(item)) freshCandidates.push(item);
+    else freshAlreadyPublished += 1;
+  }
+  const freshDedupe = dedupeCurrent(freshCandidates);
+  const freshSelected = freshDedupe.kept;
   // “补充发现”必须是还没被发布过的稳定 event。即使旧 event 本轮有新增证据，也只允许在
   // 主通道（带近期证据）更新，避免把旧事件以不同材料重复推送。
   const seenSupplementalEvents = new Set<string>();
+  let supplementalAlreadyPublished = 0;
   const supplementalCandidates = olderIncluded.filter((x) => {
     const eventId = x.insight.event_id;
-    if (!eventId || evidenceByEvent.has(eventId) || seenSupplementalEvents.has(eventId)) return false;
+    const byEvent = eventId ? evidenceByEvent.get(eventId) : undefined;
+    const byFingerprint = evidenceByFingerprint.get(insightFingerprint(x.insight.type, x.insight.statement));
+    if (!eventId || byEvent || byFingerprint || seenSupplementalEvents.has(eventId)) {
+      if (eventId && (byEvent || byFingerprint)) {
+        supplementalAlreadyPublished += 1;
+        if (!byEvent && byFingerprint) fingerprintDuplicateFiltered += 1;
+      }
+      return false;
+    }
     seenSupplementalEvents.add(eventId);
     return true;
   });
   const supplementalSelected = supplementalCandidates
-    .sort((a, b) => b.insight.importance - a.insight.importance || a.insight.id.localeCompare(b.insight.id))
+    .sort((a, b) => b.insight.importance - a.insight.importance || b.includableCitationIndices.length - a.includableCitationIndices.length || a.insight.id.localeCompare(b.insight.id))
     .slice(0, BRIEF_SUPPLEMENTAL_MAX)
     .map((x) => ({ ...x, brief_inclusion: "supplemental" as const }));
-  const alreadyPublishedFiltered =
-    freshIncluded.filter((x) => !hasNewPublishedEvidence(x)).length +
-    olderIncluded.filter((x) => Boolean(x.insight.event_id) && evidenceByEvent.has(x.insight.event_id!)).length;
-  const selected = [...freshSelected, ...supplementalSelected];
+  const alreadyPublishedFiltered = freshAlreadyPublished + supplementalAlreadyPublished;
+  const selectedDedupe = dedupeCurrent([...freshSelected, ...supplementalSelected]);
+  const selected = selectedDedupe.kept;
   return {
     included: selected,
     summary: {
@@ -200,6 +253,8 @@ export function summarizeBriefSelection(
       supplemental_published_insight_count: supplementalSelected.length,
       published_insight_count: selected.length,
       published_citation_count: selected.reduce((total, x) => total + x.citationIndices.length, 0),
+      batch_duplicate_filtered_count: freshDedupe.filtered + selectedDedupe.filtered,
+      fingerprint_duplicate_filtered_count: fingerprintDuplicateFiltered,
     },
   };
 }
@@ -240,10 +295,10 @@ export interface ReportHighlight {
 export function reportHighlights(
   batch: AnalysisBatch,
   validation: ValidationResult,
-  opts: { type?: Report["type"]; publishedEventEvidence?: PublishedEventEvidence[]; freshness?: BriefFreshness } = {},
+  opts: { type?: Report["type"]; publishedEventEvidence?: PublishedEventEvidence[]; freshness?: BriefFreshness; included?: IncludedInsight[] } = {},
 ): ReportHighlight[] {
   return pickHighlightInsights(
-    selectBriefInsights(batch, validation, opts.type ?? "brief", opts.publishedEventEvidence, opts.freshness),
+    opts.included ?? selectBriefInsights(batch, validation, opts.type ?? "brief", opts.publishedEventEvidence, opts.freshness),
   ).map((x) => ({
     text: headlineText(x),
     importance: x.insight.importance,
@@ -283,12 +338,12 @@ export interface BuildReportInput {
   briefFreshness?: BriefFreshness;
   prevReportId?: string | null;
   now?: string; // 注入时间便于测试
+  /** runReportGen computes selection once; rendering must consume that same result. */
+  included?: IncludedInsight[];
 }
 
 export function buildReport(input: BuildReportInput): { report: Report; index: ReportIndexEntry } {
-  const included = selectBriefInsights(
-    input.batch, input.validation, input.type, input.publishedEventEvidence, input.briefFreshness,
-  );
+  const included = input.included ?? selectBriefInsights(input.batch, input.validation, input.type, input.publishedEventEvidence, input.briefFreshness);
   const id = `rep_${randomUUID().slice(0, 8)}`;
   const now = input.now ?? new Date().toISOString();
   const date = now.slice(0, 10);

@@ -23,6 +23,7 @@ MVP 端到端管线的输出段。把校验后的洞察组织成用户可读、�
 ## 行为规约
 
 1. brief：按 `Topic` 输出周期概览；通过 `Insight.event_id` 判重 —— 不复报已在**历史 `brief` 或 `initial_digest`**（合并构成「不复报基线」）出现过的事件；同 `event_id` 的后续进展作为「更新」再现，`Report.prev_report_id` 指向最近一篇含该事件的报告。若选择阶段存在 48 小时内的候选，则每条发布洞察必须至少含一条来自该候选集、且已成功校验的引用；不满足时诚实输出「无重要事件」，不得把旧证据包装为今日动态。
+   - 发布前在 `pass/support` 白名单之后按当前批次和最近 14 天历史 occurrence 去重；历史遗留的分裂 event_id 可由严格相同 statement 指纹兜底。代表项不得拼接其他 Insight 的 citations，且“新增证据”只认该代表项自身的白名单引用。
 2. 首份 brief 为 `type=initial_digest`：对回填的历史内容做信号去噪后输出重点（**受第 7 项规模上限约束，非全量摊开**），并把覆盖的 `event_ids` 写入「不复报」基线；之后的 brief 为 `type=brief`。
 3. 深挖：用户提交深挖请求时**同步触发一次** `insight-analysis`（时间窗 = 该 `Topic` 最近 90 天，可配置）+ `citation-validation`；以产出的 `AnalysisBatch` + `ValidationResult` 为输入，围绕单一 `Topic` 输出 `type=deep_dive` 的完整结构化报告。
 4. 无重要事件（输入 `AnalysisBatch.no_significant_event=true`、`releasable=true`）时，brief 诚实输出「无重要事件」，**`Report.status=done`，不置 failed**；批次失败（`status=failed`）或不可放行（`releasable=false`）时报告置 `failed`。
@@ -49,6 +50,7 @@ MVP 端到端管线的输出段。把校验后的洞察组织成用户可读、�
 - [ ] AC10: 报告状态正确流转 —— 生成成功置 `done`、失败置不可公开的 `failed`，重跑新建 Report 并保留 `retry_of` 链、归档置
   `archived`，与管理看板一致。
 - [ ] AC11: 当本期选中近期候选时，Brief 中每条可见洞察均含该候选集的一条成功校验引用；若没有符合项，产出 done 状态的空 Brief，并记录新鲜度审计字段。
+- [ ] **AC12（严格去重而不丢失证据）**: 在 `pass/support` 白名单之后，Brief 对当前批次重复事件及最近 14 天遗留分裂 event_id 的严格 statement 指纹去重；只发布确定性代表项及其自身成功引用，记录过滤计数，且不修改原始 occurrence（详见 `insight-identity-deduplication.md`）。
 
 ## 非功能要求
 

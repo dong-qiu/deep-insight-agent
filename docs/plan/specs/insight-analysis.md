@@ -29,8 +29,9 @@ MVP 范围：主题聚合 + 趋势识别 + 信号去噪 + 多源交叉；**不�
 1. 主题聚合：跨源、跨语言整合同主题信息，归并近义说法。MVP 仅整合不翻译，输出语言跟随 `Topic.language`。Daily Brief 的输入选择在存在近期（默认 48 小时）候选时，保留至少 40% 的近期项；其余名额仍按相关性与来源多样性填充，避免只追逐新而丢失必要上下文。
 2. 趋势识别：基于时间维度的热度变化、新兴主题、关联事件聚合；**仅描述已发生的变化，不输出方向性预测**。数据量不足时产出 `type=trend` + `confidence=low` 且 `statement` 标注「积累中」，不编造趋势。
 3. 关联事件聚合：把指向同一现实事件的洞察赋同一 `event_id`。赋值时与「历史 `event_id` 池」比对 —— **判定准则**：① 该洞察 citations 与某历史 event 的 citations 有共享 `content_item_id`，或 ② `statement` 语义高度相似（LLM 评判）→ 复用既有 `event_id`；否则分配新 ID。这是下游「不复报 / 同事件更新」的前提。
+   - 实现防线：仅当 statement 经排版/空白归一后**严格相同**且唯一命中历史 event 时，代码可确定性回退 event_id；共享 `content_item_id` 只作模型判定的候选，不得单独强制合并。所有 chunk 与缓存命中洞察合并后再做该归一，保留每条 Insight 与 Citation occurrence。
 4. `Insight` 必填字段赋值规则：`time_window` 继承 `AnalysisBatch.time_window`；`language` 取 `Topic.language`（`Topic.language=mixed` 时取该洞察 `citations` 引用内容的主语言）；`source_count` = 该洞察 `citations` 经 `Citation.content_item_id` → `ContentItem.source_id` **去重后的源数**；`multi_source` = `source_count ≥ 2`。
-5. 信号去噪：按重要性评分 + 阈值过滤（阈值见 `eval-criteria.md`，默认 = 3）；评分须写入 `importance_basis`。**过滤发生在生成 `Insight` 前**，`AnalysisBatch.insights` 中不出现 `importance < 阈值` 的条目。某窗口无重要事件时输出 `no_significant_event=true` + 空 `insights`，不凑数。
+5. 信号去噪：按重要性评分 + 阈值过滤（阈值见 `eval-criteria.md`，默认 = 3）；评分须写入 `importance_basis`。**过滤发生在生成 `Insight` 前**，`AnalysisBatch.insights` 中不出现 `importance < 阈值` 的条目。某窗口无重要事件时输出 `no_significant_event=true` + 空 `insights`，不凑数。引用覆盖以**最小可验证事实**为单位：数字、实体之外，研究/来源数量、机制、比较对象、适用范围、时间、条件、因果与程度也须各有直接 quote；没有覆盖时必须补逐字短引、删除该限定，或拆成独立洞察。
 6. 多源交叉：`source_count ≥ 2` 置 `multi_source=true`；单源结论允许输出但 `multi_source=false` 明确标注（重要结论 `importance ≥ 4` 优先选多源印证）。
 7. 每条洞察必须挂 ≥1 条 `Citation`（含 `quote` + `locator`），无引用不输出。
 8. 中性叙述：不做趋势预测、不主观臆断、不带情绪。
@@ -48,6 +49,7 @@ MVP 范围：主题聚合 + 趋势识别 + 信号去噪 + 多源交叉；**不�
 - [ ] AC6: 同一输入连续运行 N 次，重要性 Top-K 集合重合度 ≥ X%、引用的 `content_item_id` 集合稳定（N / K / X 见 `eval-criteria.md`）。
 - [ ] AC7: 输出 100% 符合 `architecture.md`「数据模型」的 `AnalysisBatch` / `Insight` schema。
 - [ ] **AC8（event_id 跨批次对齐）**: 在 `eval-criteria.md` 规定的「事件对齐集」上，event_id 对齐准确率 ≥ 阈值（同一现实事件在相邻时间窗批次中被赋相同 `event_id`，新事件分配新 ID）。
+- [ ] **AC8a（严格身份兜底）**: 缓存命中与新分析合并后，同类型且经允许的排版/空白归一后严格相同的 statement 可复用唯一历史或批内 `event_id`；歧义匹配和跨类型不得自动合并，且所有 occurrence 与 Citation 均保留（详见 `insight-identity-deduplication.md`）。
 - [ ] AC9: 注入持续失败的 LLM 调用，重试耗尽后 `AnalysisBatch.status=failed`、`no_significant_event=false`、`insights=[]`，并通过管理看板告警通道告警。
 - [ ] **AC10（A1 验证 · DCP-1 硬门槛）**: 在 `eval-criteria.md` 规定的真实数据评测集上，引用一致性合格率、非显然洞察占比、幻觉率达到 `eval-criteria.md` 上线门槛。
 - [ ] AC11: 给定近期候选与更高相关度的历史候选，Daily Brief 输入选择仍保留配置配额的近期项；无近期候选时选择行为与常规相关性/多样性策略一致。

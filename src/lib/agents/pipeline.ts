@@ -10,13 +10,13 @@ import {
 } from "../db/analysis-cache.js";
 import { makeConsistencyCache } from "../db/consistency-cache.js";
 import { getContentItem, getSource } from "../db/repos.js";
-import { listRecentPublishedEventEvidence, saveFailedReport, saveReport, type ReportAnchorPublication } from "../db/reports.js";
+import { listRecentPublishedInsightOccurrences, saveFailedReport, saveReport, type ReportAnchorPublication } from "../db/reports.js";
 import { notifyBriefAcceptance, notifyFailure, notifyReport, notifyThinBrief } from "../runtime/alert.js";
 import { runJob } from "../runtime/jobs.js";
 import type { AnalysisBatch, ContentItem, Cost, Report, TechLead, Topic, ValidationResult } from "../types.js";
 import { upsertTechLeads } from "../db/tech-leads.js";
 import { listTopicDirections, seedDefaultDirections, upsertTechnologyOpportunities } from "../db/planning.js";
-import { analyze, analyzerCacheVersion, type HistoricalEvent } from "./analyzer.js";
+import { analyze, analyzerCacheVersion, canonicalizeInsightEvents, type HistoricalEvent } from "./analyzer.js";
 import { buildReport, reportHighlights, summarizeBriefSelection, type BriefFreshness, type CitationDisplay } from "./report-gen.js";
 import type { AnalysisSelectionDiagnostics } from "./analysis-selection.js";
 import { consistencyCacheVersion, isValidationDegraded, validateBatch } from "./validator.js";
@@ -96,6 +96,9 @@ export async function runAnalysis(
       batch = await analyze(topic, items, window, recordCost, { history });
       newInsightsForCache = batch.insights;
     }
+    // Must run after cache hits are appended. It preserves all occurrence/citation
+    // rows while making exact repetitions share a stable event identity.
+    canonicalizeInsightEvents(batch.insights, history);
     if (opts.traceId) {
       const ref: EntityRef = { type: "analysis_batch", locator: { kind: "id", id: batch.id }, revision: batch.id, role: "output" };
       saveAnalysisBatch(db, batch, () => {
@@ -261,6 +264,8 @@ export async function runReportGen(
     type: Report["type"];
     prevReportId?: string | null;
     briefFreshness?: BriefFreshness;
+    /** Frozen scheduled window end; keeps analyzer/report 14-day baselines identical. */
+    asOf?: string;
     /** Scheduler-side count-only selection telemetry.  It is diagnostic only
      * and must never participate in report selection or rendering. */
     selectionDiagnostics?: AnalysisSelectionDiagnostics;
@@ -318,7 +323,9 @@ export async function runReportGen(
       // 只对 Daily Brief 读取已发布基线：缓存命中洞察仍会重校验，
       // 但同 event 无新增成功证据时不得再次进入用户可见报告。
       const publishedEventEvidence = opts.type === "brief"
-        ? listRecentPublishedEventEvidence(db, opts.topic.id)
+        ? listRecentPublishedInsightOccurrences(db, opts.topic.id, { asOf: opts.asOf }).map((x) => ({
+          event_id: x.event_id, statement: x.statement, insight_type: x.insight_type, content_item_ids: x.content_item_ids,
+        }))
         : [];
       const selection = summarizeBriefSelection(
         opts.batch, opts.validation, opts.type, publishedEventEvidence, opts.briefFreshness,
@@ -332,6 +339,7 @@ export async function runReportGen(
         publishedEventEvidence,
         briefFreshness: opts.briefFreshness,
         prevReportId: opts.prevReportId,
+        included: selection.included,
       });
       let traceOutputCaptured = false;
       const emptyReason = report.insight_ids.length === 0
@@ -378,7 +386,7 @@ export async function runReportGen(
       // 推送要点（复用报告选取/排序，与 index.highlights 同源同序）：让邮件/webhook 展示可扫读的
       // 分级要点，取代扁平 summary。只取 text/key（渲染够用），importance 排序已在 reportHighlights 内完成。
       const highlights = reportHighlights(opts.batch, opts.validation, {
-        type: opts.type, publishedEventEvidence, freshness: opts.briefFreshness,
+        type: opts.type, publishedEventEvidence, freshness: opts.briefFreshness, included: selection.included,
       }).map(({ text, key }) => ({ text, key }));
       notifyReport({
         id: report.id,

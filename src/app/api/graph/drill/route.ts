@@ -4,7 +4,7 @@
  *  - 给 a+b（点边）→ 两实体同条共现的洞察。
  *  每条洞察附其所在已发布报告链接（report.insight_ids 反查；blocked 洞察无链接）。不触发 LLM。 */
 import { type NextRequest, NextResponse } from "next/server";
-import { insightsCooccurring, insightsMentioningEntity, reportLinkMap } from "../../../../lib/db/graph.js";
+import { groupDrillInsights, insightsCooccurring, insightsMentioningEntity, reportLinksByInsight } from "../../../../lib/db/graph.js";
 import { getDb } from "../../../../lib/db/index.js";
 
 export const dynamic = "force-dynamic";
@@ -22,21 +22,6 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   const insights = b
     ? insightsCooccurring(db, topic, a, b, since)
     : insightsMentioningEntity(db, topic, a, since);
-  const links = reportLinkMap(db, topic);
-  const items = insights
-    .sort((x, y) => y.importance - x.importance)
-    .map((i) => {
-      const rep = links.get(i.id);
-      return {
-        id: i.id,
-        headline: i.headline || i.statement,
-        statement: i.statement,
-        importance: i.importance,
-        multi_source: i.multi_source,
-        quotes: i.citations.map((c) => c.quote).filter(Boolean),
-        report_id: rep?.report_id ?? null,
-        report_date: rep?.date ?? null,
-      };
-    });
+  const items = groupDrillInsights(insights, reportLinksByInsight(db, topic));
   return NextResponse.json({ items });
 }
