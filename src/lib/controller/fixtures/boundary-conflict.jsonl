@@ -1,0 +1,3 @@
+{"kind":"fixture","delivery_id":"delivery-boundary-conflict","clock":"2026-09-01T00:01:00.000Z","state":"evidence_collecting"}
+{"event_id":"boundary-missing","kind":"human_boundary","occurred_at":"2026-09-01T00:00:00.000Z","evidence_refs":["boundary-missing"],"expected_generation":0,"writer":"fixture:policy"}
+{"event_id":"conflict-1","kind":"human_boundary","boundary":"conflict","occurred_at":"2026-09-01T00:00:00.000Z","evidence_refs":["conflict-record"],"expected_generation":0,"writer":"fixture:policy"}

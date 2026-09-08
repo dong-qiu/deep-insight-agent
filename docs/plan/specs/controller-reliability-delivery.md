@@ -177,6 +177,12 @@ dry-run 只运行同一 reducer、幂等、invalidation 和通知去重逻辑，
 | AC8 | 通知与审计 | 频率、dedupe key、审计字段符合表；dry-run 不发送实际通知。 |
 | AC9 | 禁止操作 | 集成测试证明 Controller 不调用自动合入、部署、生产访问、权限或凭据变更路径。 |
 
+### INSI-141 模型级补偿证据
+
+`src/lib/controller/replay.ts` 仅在固定时钟 JSONL replay 中补齐以下纯模型证据：每条接受的转换包含 `writer`、前置条件、幂等键、evidence 与 recovery（`writer` 只是 fixture/model provenance，不能解释为真实授权已执行）；lease confirmation、start、expiry 与 result 要求 heartbeat age ≤90 秒、runtime identity 与 `lease_fencing_token` 全部匹配；连续第 3 次丢 lease 进入人工决策且不增加 attempt。`conflict`、`permission_or_credential` 和 `production_request` 均只形成 fail-closed 的人工边界记录，绝不执行外部操作。
+
+通知输出扩展为确定性、无 recipient/channel 的 plan，保留 signal-specific dedupe key、审计字段与 5/15 分钟 retry policy；`external_delivery: false` 是模型的显式边界，而非 provider receipt。该补偿不验证真实 Multica/GitHub webhook、条件持久化、子任务 exactly-once、通知投递或 AC9 integration proof。
+
 ## 明确禁止项与阶段 2 交付边界
 
 Controller 及其自动修复**不得**：自动合入 PR、修改分支保护、触发或执行部署、访问生产系统/数据、创建或修改 AWS 资源、修改 IAM/权限、读取或写入凭据，或以任何方式绕过 CI、Reviewer 或人工授权。
