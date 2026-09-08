@@ -586,8 +586,8 @@ function readyBundleEvidence(record: ControllerRecord, clock: number): ReadyBund
   const freshness = record.current_freshness;
   if (!freshness || freshness.merge_state_status !== "clean") return undefined;
   const snapshot = record.evidence.find((e) => e.kind === "snapshot" && e.status === "active" && !e.expired && isTimestampWithinTtl(e.observed_at, clock, SNAPSHOT_TTL_MS) && sameFreshness(e.freshness, freshness));
-  const ci = record.evidence.find((e) => e.kind === "ci" && e.status === "active" && e.conclusion === "passed" && !e.expired && sameFreshness(e.freshness, freshness));
-  const review = record.evidence.find((e) => e.kind === "review" && e.status === "active" && e.conclusion === "approved" && !e.expired && sameFreshness(e.freshness, freshness));
+  const ci = record.evidence.find((e) => e.kind === "ci" && e.status === "active" && e.conclusion === "passed" && !e.expired && isTimestampWithinTtl(e.observed_at, clock, EVIDENCE_TTL_MS) && sameFreshness(e.freshness, freshness));
+  const review = record.evidence.find((e) => e.kind === "review" && e.status === "active" && e.conclusion === "approved" && !e.expired && isTimestampWithinTtl(e.observed_at, clock, EVIDENCE_TTL_MS) && sameFreshness(e.freshness, freshness));
   return snapshot && ci && review ? { snapshot, ci, review } : undefined;
 }
 
