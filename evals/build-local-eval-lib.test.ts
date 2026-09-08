@@ -20,7 +20,7 @@ describe("buildLocalEvalCases", () => {
       [topic],
       () => [item("ordinary"), item("src_a"), item("src_b"), item("src_c")],
       window,
-      { minBody: 400, perSource: 1, maxItems: 4, requiredSourceIds: ["src_a", "src_b", "src_c"] },
+      { minBody: 400, perSource: 1, maxItems: 4, minimumSources: 2, requiredSourceIds: ["src_a", "src_b", "src_c"] },
     );
 
     expect(result.cases).toHaveLength(1);
@@ -34,9 +34,22 @@ describe("buildLocalEvalCases", () => {
       [topic],
       () => [item("src_a"), item("src_b"), item("src_c", "too short")],
       window,
-      { minBody: 400, perSource: 1, maxItems: 4, requiredSourceIds: ["src_a", "src_b", "src_c"] },
+      { minBody: 400, perSource: 1, maxItems: 4, minimumSources: 2, requiredSourceIds: ["src_a", "src_b", "src_c"] },
     );
 
     expect(missingRequiredSources(result)).toEqual(["src_c"]);
+  });
+
+  it("单一 staged source 可用两条同源内容构成隔离发布安全 case", () => {
+    const result = buildLocalEvalCases(
+      [topic],
+      () => [item("src_staged"), { ...item("src_staged"), id: "item-src-staged-2", url: "https://example.test/src-staged-2" }],
+      window,
+      { minBody: 400, perSource: 2, maxItems: 4, minimumSources: 1, requiredSourceIds: ["src_staged"] },
+    );
+
+    expect(result.cases).toHaveLength(1);
+    expect(result.cases[0].items).toHaveLength(2);
+    expect(missingRequiredSources(result)).toEqual([]);
   });
 });

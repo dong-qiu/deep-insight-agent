@@ -5,6 +5,7 @@ export interface LocalEvalBuildOptions {
   perSource: number;
   maxItems: number;
   requiredSourceIds: string[];
+  minimumSources: number;
 }
 
 export interface LocalEvalCase {
@@ -78,7 +79,7 @@ export function buildLocalEvalCases(
     }
     for (const item of pool) add(item);
 
-    if (items.length < 2 || perSource.size < 2) {
+    if (items.length < 2 || perSource.size < options.minimumSources) {
       skipped.push({ topicId: topic.id, items: items.length, sources: perSource.size });
       continue;
     }

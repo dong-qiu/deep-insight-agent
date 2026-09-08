@@ -26,6 +26,8 @@ const requiredSourceIds = parseSourceIds(process.env.EVAL_REQUIRED_SOURCE_IDS, "
 const minBody = parsePositiveInt(process.env.EVAL_MIN_BODY, 800, "EVAL_MIN_BODY");
 const perSource = parsePositiveInt(process.env.EVAL_PER_SOURCE, 2, "EVAL_PER_SOURCE");
 const maxItems = parsePositiveInt(process.env.EVAL_MAX_ITEMS, 8, "EVAL_MAX_ITEMS");
+// 默认 A1 仍须多源；单一 staged source 的隔离验证可用同源两条内容验证真实采集→引文链路。
+const minimumSources = requiredSourceIds.length === 1 ? 1 : 2;
 
 const db = getDb();
 const now = Date.now();
@@ -34,13 +36,13 @@ const result = buildLocalEvalCases(
   listTopics(db, { enabledOnly: true }),
   (topicId) => listContentForTopic(db, topicId, { limit: 2000 }),
   window,
-  { minBody, perSource, maxItems, requiredSourceIds },
+  { minBody, perSource, maxItems, requiredSourceIds, minimumSources },
 );
 
 mkdirSync(dirname(out), { recursive: true });
 writeFileSync(out, result.cases.length ? `${result.cases.map((entry) => JSON.stringify(entry)).join("\n")}\n` : "");
 for (const skipped of result.skipped) {
-  console.log(`  ⚠️ ${skipped.topicId}：多源富内容不足（${skipped.items} 条 / ${skipped.sources} 源），跳过`);
+  console.log(`  ⚠️ ${skipped.topicId}：富内容不足（${skipped.items} 条 / ${skipped.sources} 源），跳过`);
 }
 for (const entry of result.cases) {
   const sourceIds = [...new Set(entry.items.map((item) => item.source_id))];
@@ -50,7 +52,7 @@ for (const entry of result.cases) {
 const manifest = {
   generated_at: new Date().toISOString(),
   output: out,
-  options: { min_body: minBody, per_source: perSource, max_items: maxItems, required_source_ids: requiredSourceIds },
+  options: { min_body: minBody, per_source: perSource, max_items: maxItems, minimum_sources: minimumSources, required_source_ids: requiredSourceIds },
   topics: result.cases.map((entry) => ({ topic_id: entry.topic.id, source_ids: [...new Set(entry.items.map((item) => item.source_id))], item_count: entry.items.length })),
   cohort: result.cohort,
 };

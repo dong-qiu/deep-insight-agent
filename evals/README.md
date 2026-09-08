@@ -81,7 +81,8 @@ A1_QUALITY_FILE="$EVAL_LOCAL_OUT" npm run eval:a1
 ```
 
 `collection.json` 记录实际 collector 结果；`dataset.json` 分别记录每源的 `eligible` 与 `selected` 数。
-任一指定源未进入 case，构建即失败。该 cohort 常集中于一个 topic，属于真实路径/发布安全验证，仍须另跑
+任一指定源未进入 case，构建即失败。默认 A1 仍要求至少两个不同源；仅当 cohort **恰好指定一个** staged
+source 时，允许该源的至少两条内容组成一条隔离发布安全 case。该 cohort 常集中于一个 topic，仍须另跑
 满足 5-topic、100-pair 下限的默认 A1，才能签 DCP 或更新全局 baseline。GitHub 的 **Scheduled Eval** 手动触发
 也提供 `source_ids` 输入，会在 runner 临时目录完成同一套隔离流程并上传两份 manifest。
 
