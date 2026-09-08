@@ -94,10 +94,10 @@ function mkValidation(insightId = "i1"): ValidationResult {
 
 /** 落一份真实的 initial_digest + validation，确保 runReportGen 从 DB 读取历史成功证据，
  * 而不是仅依赖 buildReport 纯函数调用方手工传参。正文不在本测试路径读取，故 body_path 可为占位。 */
-function seedPublishedInitialDigest(eventId: string, contentItemId: string): void {
+function seedPublishedInitialDigest(eventId: string, contentItemId: string, statement?: string): void {
   const date = new Date().toISOString().slice(0, 10);
   const insight = {
-    ...mkInsight("i_history"), event_id: eventId,
+    ...mkInsight("i_history"), event_id: eventId, ...(statement ? { statement } : {}),
     citations: [{ content_item_id: contentItemId, quote: "published evidence", locator: { paragraph_index: 0, char_start: 0, char_end: 1 } }],
   };
   const batch: AnalysisBatch = {
@@ -247,6 +247,16 @@ describe("runAnalysis", () => {
     expect(run.cost?.amount).toBe(0.05); // ctx.recordCost → Run.cost
   });
 
+  it("落库前对完整 batch 做严格表述 event 归一，但保留所有 insight occurrence", async () => {
+    const first = { ...mkInsight("i_first"), event_id: "evt_first", statement: "同一条洞察。" };
+    const second = { ...mkInsight("i_second"), event_id: null, statement: "同一条洞察。", citations: [{ ...mkInsight("i_second").citations[0], content_item_id: "ci_second" }] };
+    analyzeMock.mockResolvedValue({ ...mkBatch(), insights: [first, second] });
+    const batch = await runAnalysis(db, topic, [], win);
+    expect(batch.insights).toHaveLength(2);
+    expect(batch.insights.map((x) => x.event_id)).toEqual(["evt_first", "evt_first"]);
+    expect(batch.insights[1].citations[0].content_item_id).toBe("ci_second");
+  });
+
   it("analyze 抛错 → runAnalysis reject + analyze Run 标 failed（失败传播）", async () => {
     analyzeMock.mockRejectedValue(new Error("boom"));
     await expect(runAnalysis(db, topic, [], win)).rejects.toThrow("boom");
@@ -363,6 +373,24 @@ describe("runReportGen", () => {
         event_id: "evt_cached", content_item_ids: ["ci1"],
       })],
     }));
+  });
+
+  it("runReportGen 经 DB 历史 occurrence 将遗留分裂 event 的严格重复传入真实 buildReport 后拦截", async () => {
+    seedPublishedInitialDigest("evt_legacy", "ci1", "S-i1");
+    const actual = await vi.importActual<typeof import("./report-gen.js")>("./report-gen.js");
+    buildReportMock.mockImplementation(actual.buildReport);
+    const batch = mkBatch();
+    batch.insights[0].event_id = "evt_current";
+
+    const report = await runReportGen(db, { topic, batch, validation: mkValidation(), type: "brief" });
+
+    expect(buildReportMock).toHaveBeenCalledWith(expect.objectContaining({
+      publishedEventEvidence: [expect.objectContaining({
+        event_id: "evt_legacy", statement: "S-i1", content_item_ids: ["ci1"],
+      })],
+      included: [],
+    }));
+    expect(report.insight_ids).toEqual([]);
   });
 
   it("trace 记录日报选择漏斗，较早未发布 event 的补充发现与主通道过滤可审计", async () => {

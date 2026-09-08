@@ -9,7 +9,7 @@ import { finishRun, getTopic, listTopics } from "../db/repos.js";
 import { freezeDueMetricDay } from "../db/p1-metrics-facts.js";
 import { claimSourceCollectTrace, createScheduledSourceCollectTrace, createScheduledTraceRequest, sourceCollectTracingAvailable } from "../db/provenance.js";
 import { appendGenerationEvent } from "../db/provenance-facts.js";
-import { listRecentBriefEvents, previousReportForTopic, topicHasReport, type ReportAnchorPublication } from "../db/reports.js";
+import { listRecentPublishedInsightOccurrences, previousReportForTopic, topicHasReport, type ReportAnchorPublication } from "../db/reports.js";
 import { notifyBudget } from "../runtime/alert.js";
 import { getBudgetStatus } from "../runtime/cost-guard.js";
 import { runLogger } from "../runtime/logger.js";
@@ -253,7 +253,12 @@ export async function runScheduledTopicPipeline(
       metrics: { ...selection.diagnostics },
     });
   }
-  const history = input.reportType === "brief" ? listRecentBriefEvents(db, topic.id) : [];
+  const history = input.reportType === "brief"
+    ? listRecentPublishedInsightOccurrences(db, topic.id, { asOf: endIso }).map((x) => ({
+      event_id: x.event_id, statement: x.statement, statement_fingerprint: x.statement_fingerprint,
+      content_item_ids: x.content_item_ids, type: x.insight_type, date: x.date,
+    }))
+    : [];
   const batch = await runAnalysis(db, topic, items, { start: since, end: endIso }, {
     history, traceId: input.traceId, rootRunId: input.rootRunId, assertWrite: input.assertWrite,
   });
@@ -270,6 +275,7 @@ export async function runScheduledTopicPipeline(
     topic, batch, validation, type: input.reportType, prevReportId, traceId: input.traceId, assertWrite: input.assertWrite,
     briefFreshness: freshItems.length ? { since: freshnessSince, content_item_ids: freshItems.map((item) => item.id), freshest_candidate_at: freshestCandidateAt } : undefined,
     selectionDiagnostics: selection.diagnostics,
+    asOf: endIso,
     anchor: input.anchor,
   });
 }

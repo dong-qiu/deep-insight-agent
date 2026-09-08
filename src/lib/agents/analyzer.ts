@@ -11,6 +11,7 @@ import { isTransientApiError } from "../runtime/errors.js";
 import { coverageBackfillOff, validatorThinking } from "../runtime/env.js";
 import { MODELS, callStructured } from "../runtime/llm.js";
 import { collapseWithMap, compareKey } from "../runtime/text-normalize.js";
+import { insightFingerprint } from "../runtime/statement-fingerprint.js";
 import {
   AnalyzerOutputSchema,
   CoverageRepairSchema,
@@ -55,7 +56,9 @@ const SYSTEM = `你是行业洞察分析引擎。给定一个主题与一批已�
  *  纳入 analyzerCacheVersion 哈希——保证「schema/派生变但 SYSTEM 没变」也使旧缓存失效（review m3：
  *  否则切片2 会据旧逻辑产的缓存洞察错命中、喂进新版报告）。SYSTEM 文案变由 promptHash 自动覆盖，此常量只管
  *  「非 SYSTEM 的输出形态/派生」变更。 */
-export const ANALYZER_OUTPUT_VERSION = 5;
+// v5 is the current mainline contract. Strict event identity is an additional
+// derived-field change, so it must invalidate every cache populated by v5 too.
+export const ANALYZER_OUTPUT_VERSION = 6;
 
 /** 分析缓存版本（ADR-0009）：analyzer 模型 + SYSTEM prompt 哈希 + 输出契约版本——任一变 → 版本变 → 旧分析缓存
  *  自动失效（不复用陈旧 prompt/schema/派生的洞察）。镜像 validator.consistencyCacheVersion 的版本隔离口径。 */
@@ -402,8 +405,47 @@ function renderItems(items: ContentItem[], keywords: string[]): string {
 export interface HistoricalEvent {
   event_id: string;
   statement: string;
+  statement_fingerprint?: string;
+  type?: Insight["type"];
+  content_item_ids?: string[];
   /** 报告日期 YYYY-MM-DD（可空），供 LLM 判同事件时参考时间脉络。 */
   date?: string;
+}
+
+/** Exact fallback after all analysis/cache insights have been assembled.
+ * It preserves every occurrence and citation; only identity metadata changes. */
+export function canonicalizeInsightEvents(insights: Insight[], history: HistoricalEvent[]): void {
+  const byFingerprint = new Map<string, HistoricalEvent[]>();
+  for (const event of history) {
+    const key = event.statement_fingerprint ?? insightFingerprint(event.type, event.statement);
+    if (!key) continue;
+    const events = byFingerprint.get(key) ?? [];
+    events.push(event);
+    byFingerprint.set(key, events);
+  }
+  const historyIds = new Set(history.map((event) => event.event_id));
+  const uniqueHistoricalIds = new Map<string, string>();
+  const ambiguousHistoricalKeys = new Set<string>();
+  for (const [key, events] of byFingerprint) {
+    const ids = [...new Set(events.map((event) => event.event_id))];
+    if (ids.length === 1) uniqueHistoricalIds.set(key, ids[0]);
+    else if (ids.length > 1) ambiguousHistoricalKeys.add(key);
+  }
+  const batchIds = new Map<string, string>();
+  for (const insight of insights) {
+    const key = insightFingerprint(insight.type, insight.statement);
+    // Unique exact history always wins over an earlier model/new batch identity.
+    const historicalId = uniqueHistoricalIds.get(key);
+    if (historicalId) insight.event_id = historicalId;
+    // A conflicting historical fingerprint is deliberately not a batch
+    // canonicalization key: the model's identities remain authoritative.
+    else if (!ambiguousHistoricalKeys.has(key)) {
+      const batchId = batchIds.get(key);
+      if (batchId) insight.event_id = batchId;
+    }
+    if (insight.event_id && !ambiguousHistoricalKeys.has(key)) batchIds.set(key, insight.event_id);
+    insight.is_followup = insight.event_id != null && historyIds.has(insight.event_id);
+  }
 }
 
 function renderHistory(events: HistoricalEvent[]): string {

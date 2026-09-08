@@ -7,7 +7,7 @@ import type { Citation, ContentItem, Insight } from "../types.js";
 // callStructured mock 掉——repairCoverage 经 verifyCandidates 调它；无 API key、CI 可跑纯函数。
 vi.mock("../runtime/llm.js", () => ({ callStructured: vi.fn() }));
 import { callStructured } from "../runtime/llm.js";
-import { ANALYZE_BODY_CHARS, REPAIR_QUOTE_MIN_PREFIX, SELECT_SEPARATOR, carveQuote, chunkByChars, chunkWindows, coverageGaps, isCompleteStatement, repairCitationSource, repairCoverage, repairQuote, selectForAnalyze, specificClaims, truncateForAnalyze } from "./analyzer.js";
+import { ANALYZE_BODY_CHARS, REPAIR_QUOTE_MIN_PREFIX, SELECT_SEPARATOR, canonicalizeInsightEvents, carveQuote, chunkByChars, chunkWindows, coverageGaps, isCompleteStatement, repairCitationSource, repairCoverage, repairQuote, selectForAnalyze, specificClaims, truncateForAnalyze } from "./analyzer.js";
 import { AnalyzerOutputSchema } from "../types.js";
 
 describe("AnalyzerOutputSchema 的原子 citation claim", () => {
@@ -25,6 +25,41 @@ describe("AnalyzerOutputSchema 的原子 citation claim", () => {
     const withoutClaim = structuredClone(base);
     delete (withoutClaim.insights[0].citations[0] as { claim?: string }).claim;
     expect(AnalyzerOutputSchema.safeParse(withoutClaim).success).toBe(false);
+  });
+});
+
+describe("canonicalizeInsightEvents", () => {
+  const insight = (id: string, statement: string, event_id: string | null = null): Insight => ({
+    id, topic_id: "t", type: "aggregation", event_id, statement, importance: 4, importance_basis: "x",
+    citations: [{ content_item_id: id, quote: "q", locator: { paragraph_index: 0, char_start: 0, char_end: 1 } }],
+    source_count: 1, multi_source: false, time_window: { start: "", end: "" }, confidence: null, language: "zh", is_followup: false,
+  });
+  it("合并同批严格相同表述，保留每条 occurrence 与 citation", () => {
+    const rows = [insight("a", "OpenAI 发布了产品。", "evt_a"), insight("b", "OpenAI   发布了产品。")];
+    const citations = rows.map((x) => x.citations);
+    canonicalizeInsightEvents(rows, []);
+    expect(rows.map((x) => x.event_id)).toEqual(["evt_a", "evt_a"]);
+    expect(rows.map((x) => x.citations)).toEqual(citations);
+  });
+  it("唯一严格历史匹配覆盖模型 id 并标记 followup；多历史 id 冲突则 fail closed", () => {
+    const matched = insight("a", "同一事件。", "wrong");
+    canonicalizeInsightEvents([matched], [{ event_id: "old", statement: "同一事件。", type: "aggregation" }]);
+    expect(matched).toMatchObject({ event_id: "old", is_followup: true });
+    const ambiguous = [insight("b", "冲突事件。", "model-a"), insight("c", "冲突事件。", "model-b")];
+    canonicalizeInsightEvents(ambiguous, [{ event_id: "old1", statement: "冲突事件。", type: "aggregation" }, { event_id: "old2", statement: "冲突事件。", type: "aggregation" }]);
+    expect(ambiguous).toMatchObject([
+      { event_id: "model-a", is_followup: false },
+      { event_id: "model-b", is_followup: false },
+    ]);
+  });
+  it("历史唯一匹配优先于先到的批内新 id，且 trend 不与 aggregation 互并", () => {
+    const first = insight("first", "重复。", "new_event");
+    const historical = insight("second", "重复。", null);
+    canonicalizeInsightEvents([first, historical], [{ event_id: "old_event", statement: "重复。", type: "aggregation" }]);
+    expect([first.event_id, historical.event_id]).toEqual(["old_event", "old_event"]);
+    const trend = { ...insight("trend", "重复。", "trend_event"), type: "trend" as const };
+    canonicalizeInsightEvents([trend], [{ event_id: "old_event", statement: "重复。", type: "aggregation" }]);
+    expect(trend.event_id).toBe("trend_event");
   });
 });
 
