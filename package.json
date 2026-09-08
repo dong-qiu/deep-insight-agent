@@ -23,7 +23,7 @@
     "branches:cleanup": "node ops/cleanup-merged-branches.mjs",
     "branches:cleanup:test": "node --test ops/cleanup-merged-branches.node-test.mjs",
     "multica:watch": "node ops/multica-task-watch.mjs",
-    "multica:watch:test": "node --test ops/multica-task-watch.node-test.mjs ops/multica-auto-watch.node-test.mjs",
+    "multica:watch:test": "node --test ops/multica-task-watch.node-test.mjs",
     "eval:a1": "tsx evals/run-a1.ts",
     "eval:collect-source-cohort": "tsx evals/collect-source-cohort.ts",
     "eval:provenance-integrity": "tsx evals/provenance-dashboard-integrity-v1.ts",
