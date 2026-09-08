@@ -1,0 +1,2 @@
+{"kind":"fixture","delivery_id":"delivery-boundary-production","clock":"2026-09-01T00:01:00.000Z","state":"waiting_for_runtime"}
+{"event_id":"production-1","kind":"human_boundary","boundary":"production_request","occurred_at":"2026-09-01T00:00:00.000Z","evidence_refs":["production-request"],"expected_generation":0,"writer":"fixture:policy"}

@@ -18,6 +18,227 @@ describe("controller dry-run replay", () => {
     expect(result.record.active_lease_id).toBeUndefined();
   });
 
+  it("records model writer provenance without asserting external authorization", () => {
+    const result = fixture("lease-heartbeat-fencing.jsonl");
+    expect(result.record.transitions).toContainEqual(expect.objectContaining({
+      causal_event_id: "queue-1",
+      writer: "fixture:queue",
+      precondition: expect.any(String),
+      idempotency_key: expect.any(String),
+      evidence_refs: ["plan"],
+      recovery_action: expect.any(String),
+    }));
+  });
+
+  it("requires a <=90 second heartbeat plus matching runtime identity and lease fence when the envelope is present", () => {
+    const result = fixture("lease-heartbeat-fencing.jsonl");
+    expect(result.record).toMatchObject({
+      state: "executing",
+      active_runtime_id: "runtime-1",
+      active_runtime_identity: "runtime-identity-1",
+      active_lease_fencing_token: "fence-1",
+      last_heartbeat_at: "2026-09-01T00:03:30.000Z",
+    });
+    expect(result.record.audit).toEqual(expect.arrayContaining([
+      expect.objectContaining({ event_id: "old-heartbeat", kind: "invalid_transition", reason: "heartbeat_missing_or_older_than_90_seconds_or_lease_envelope_incomplete" }),
+      expect.objectContaining({ event_id: "wrong-identity", kind: "stale_event", reason: "runtime_identity_mismatch" }),
+      expect.objectContaining({ event_id: "wrong-fence", kind: "stale_event", reason: "lease_fencing_token_mismatch" }),
+    ]));
+  });
+
+  it.each([
+    ["started", "leased", "2026-09-01T00:05:00.000Z", "2026-09-01T00:09:00.000Z", "2026-09-01T00:03:30.000Z", {}],
+    ["lease_expired", "executing", "2026-09-01T00:10:00.000Z", "2026-09-01T00:10:00.000Z", "2026-09-01T00:08:30.000Z", { checkpoint_ref: "checkpoint" }],
+    ["result", "executing", "2026-09-01T00:05:00.000Z", "2026-09-01T00:09:00.000Z", "2026-09-01T00:03:30.000Z", { result: "completed" }],
+  ] as const)("uses the same fixed-clock heartbeat rule for %s", (kind, state, occurred_at, clock, exactBoundary, extra) => {
+    const event = (heartbeat_at: string | undefined): ReplayInputEvent => ({
+      event_id: `${kind}:${heartbeat_at ?? "missing"}`,
+      kind,
+      occurred_at,
+      heartbeat_at,
+      evidence_refs: ["heartbeat", kind],
+      expected_generation: 0,
+      lease_id: "lease-1",
+      runtime_id: "runtime-1",
+      runtime_identity: "runtime-identity-1",
+      lease_fencing_token: "fence-1",
+      ...extra,
+    });
+    const fixture = {
+      kind: "fixture" as const,
+      delivery_id: `delivery-heartbeat-${kind}`,
+      clock,
+      state,
+      active_lease_id: "lease-1",
+      active_runtime_id: "runtime-1",
+      active_runtime_identity: "runtime-identity-1",
+      active_lease_fencing_token: "fence-1",
+      active_lease_expires_at: "2026-09-01T00:10:00.000Z",
+    };
+    const accepted = replay([event(exactBoundary)], fixture);
+    expect(accepted.record.transitions).toHaveLength(1);
+
+    for (const heartbeat of [undefined, "2026-09-01T00:00:00.000Z", "2026-09-01T00:11:00.000Z"]) {
+      const rejected = replay([event(heartbeat)], fixture);
+      expect(rejected.record.state).toBe(state);
+      expect(rejected.record.transitions).toHaveLength(0);
+      expect(rejected.record.audit).toContainEqual(expect.objectContaining({ reason: "heartbeat_missing_stale_or_reversed" }));
+    }
+  });
+
+  it("escalates the third consecutive lease loss without charging an attempt", () => {
+    const result = fixture("consecutive-lease-loss-escalation.jsonl");
+    expect(result.record).toMatchObject({
+      state: "awaiting_human_decision",
+      attempt_count: 0,
+      consecutive_lease_losses: 3,
+      active_lease_id: undefined,
+    });
+    expect(result.state_sequence).toEqual(["executing", "waiting_for_runtime", "awaiting_human_decision"]);
+    expect(result.record.notifications).toContainEqual(expect.objectContaining({
+      signal: "human_escalation",
+      dedupe_key: "delivery-lease-loss:0:human_escalation:lease-loss-3",
+    }));
+    expect(new Set(result.record.transitions.map((event) => event.event_id)).size).toBe(result.record.transitions.length);
+    expect(result.record.transitions).toContainEqual(expect.objectContaining({ causal_event_id: "lease-loss-3", to_state: "awaiting_human_decision" }));
+
+    const escalation = result.record.notifications.find((plan) => plan.signal === "human_escalation")!;
+    const escalationTransition = result.record.transitions.find((transition) => transition.causal_event_id === escalation.causal_event_id && transition.to_state === "awaiting_human_decision")!;
+    expect(escalation.audit_fields).toMatchObject({
+      causal_event_id: "lease-loss-3",
+      transition_event_id: escalationTransition.event_id,
+    });
+  });
+
+  it("assigns distinct audit IDs when an input occupies a derived-event-looking ID", () => {
+    const result = fixture("transition-event-id-collision.jsonl");
+    const transitionIds = result.record.transitions.map((event) => event.event_id);
+
+    expect(new Set(transitionIds).size).toBe(transitionIds.length);
+    expect(result.record.transitions).toContainEqual(expect.objectContaining({
+      causal_event_id: "lease-loss-3:human_escalation",
+      to_state: "waiting_for_runtime",
+    }));
+    expect(result.record.transitions).toContainEqual(expect.objectContaining({
+      causal_event_id: "lease-loss-3",
+      to_state: "awaiting_human_decision",
+      precondition: "three_consecutive_lease_losses",
+    }));
+    expect(result.record).toMatchObject({
+      state: "awaiting_human_decision",
+      attempt_count: 0,
+      consecutive_lease_losses: 3,
+    });
+
+    const transitionByNotification = {
+      reconnect: result.record.transitions.find((transition) => transition.causal_event_id === "lease-confirm-3" && transition.to_state === "leased")!,
+      human_escalation: result.record.transitions.find((transition) => transition.causal_event_id === "lease-loss-3" && transition.to_state === "awaiting_human_decision")!,
+    };
+    for (const notification of result.record.notifications) {
+      const transition = transitionByNotification[notification.signal as keyof typeof transitionByNotification];
+      expect(notification.audit_fields).toMatchObject({
+        causal_event_id: notification.causal_event_id,
+        transition_event_id: transition.event_id,
+      });
+      expect(notification.dedupe_key).toBe(
+        notification.signal === "reconnect"
+          ? `${notification.delivery_id}:${notification.generation}:reconnect:${transition.event_id}`
+          : `${notification.delivery_id}:${notification.generation}:human_escalation:${notification.causal_event_id}`,
+      );
+    }
+  });
+
+  it.each([
+    ["boundary-conflict.jsonl", "conflict"],
+    ["boundary-permission-credential.jsonl", "permission_or_credential"],
+    ["boundary-production-request.jsonl", "production_request"],
+  ])("fails closed for %s without modelling an external operation", (name, boundary) => {
+    const result = fixture(name);
+    expect(result.record).toMatchObject({ state: "awaiting_human_decision", active_task_ids: [] });
+    expect(result.record.transitions).toContainEqual(expect.objectContaining({
+      to_state: "awaiting_human_decision",
+      precondition: `fail_closed_${boundary}`,
+      recovery_action: "perform_no_external_operation_and_wait_for_human",
+    }));
+    const escalation = result.record.notifications.find((plan) => plan.signal === "human_escalation")!;
+    const escalationTransition = result.record.transitions.find((transition) => transition.causal_event_id === escalation.causal_event_id && transition.to_state === "awaiting_human_decision")!;
+    expect(escalation.audit_fields).toMatchObject({
+      causal_event_id: escalation.causal_event_id,
+      transition_event_id: escalationTransition.event_id,
+    });
+    expect(escalation.dedupe_key).toBe(
+      `${escalation.delivery_id}:${escalation.generation}:human_escalation:${escalation.causal_event_id}`,
+    );
+    if (name === "boundary-conflict.jsonl") {
+      expect(result.record.audit).toContainEqual(expect.objectContaining({ event_id: "boundary-missing", kind: "invalid_transition", reason: "human_boundary_kind_required" }));
+    }
+    expect(result.invariants.external_effects).toBe(false);
+  });
+
+  it("creates deterministic, deduped notification retry and audit plans only", () => {
+    const result = fixture("notification-plan-dedupe.jsonl");
+    expect(result.record.notifications).toEqual([expect.objectContaining({
+      signal: "offline",
+      dedupe_key: "delivery-notification-plan:0:offline:offline-1:0",
+      delivery_id: "delivery-notification-plan",
+      generation: 0,
+      retry: {
+        idempotency_key: "delivery-notification-plan:0:offline:offline-1:0:retry",
+        backoff_minutes: [5, 15],
+        max_attempts: 3,
+        external_delivery: false,
+      },
+      audit_fields: expect.objectContaining({
+        delivery_id: "delivery-notification-plan",
+        causal_event_id: "offline-1",
+        heartbeat_age_seconds: -1,
+        offline_incident_id: "offline-1",
+        dedupe_key: "delivery-notification-plan:0:offline:offline-1:0",
+      }),
+    })]);
+    expect(result.record.notifications[0]!.audit_fields).not.toHaveProperty("transition_event_id");
+  });
+
+  it("includes deterministic signal-specific audit plans without external delivery", () => {
+    const invalidation = fixture("head-changes-after-approval.jsonl").record.notifications.find((plan) => plan.signal === "invalidation")!;
+    const ready = fixture("ready-with-current-evidence.jsonl").record.notifications.find((plan) => plan.signal === "ready")!;
+    const repair = fixture("repair-exhaustion.jsonl").record.notifications.find((plan) => plan.signal === "repair_exhausted")!;
+    const escalation = fixture("consecutive-lease-loss-escalation.jsonl").record.notifications.find((plan) => plan.signal === "human_escalation")!;
+
+    expect(invalidation.audit_fields).toMatchObject({ old_freshness: "h1:b1:clean", new_freshness: "h2:b1:clean", trigger_field: "head_sha", superseded_evidence_ids: expect.stringContaining("ci-1"), snapshot_id: "snapshot-h2" });
+    expect(ready.audit_fields).toMatchObject({ freshness: "h1:b1:clean", evidence_bundle_id: expect.any(String), acceptance_result: "ready_for_human_review" });
+    expect(repair.audit_fields).toMatchObject({ repair_round: 2, cause: "terminal_failure_after_repair_budget", attempt_count: 3, evidence_refs: "failure-3", next_action: "wait_for_human_decision" });
+    expect(escalation.audit_fields).toMatchObject({ escalation_reason: "three_consecutive_lease_losses", evidence_refs: "expiry-3,heartbeat-3", acceptance_result: "human_decision_required" });
+    const transitionByPlan = (result: ReturnType<typeof fixture>, plan: typeof invalidation) => {
+      const toStateBySignal = {
+        offline: "waiting_for_runtime",
+        reconnect: "leased",
+        invalidation: "freshness_invalidated",
+        ready: "ready_for_human_review",
+        repair_exhausted: "awaiting_human_decision",
+        human_escalation: "awaiting_human_decision",
+      } as const;
+      return result.record.transitions.find((transition) => transition.causal_event_id === plan.causal_event_id && transition.to_state === toStateBySignal[plan.signal])!;
+    };
+    for (const [result, plan] of [
+      [fixture("head-changes-after-approval.jsonl"), invalidation],
+      [fixture("ready-with-current-evidence.jsonl"), ready],
+      [fixture("repair-exhaustion.jsonl"), repair],
+      [fixture("consecutive-lease-loss-escalation.jsonl"), escalation],
+    ] as const) {
+      expect(plan.retry.external_delivery).toBe(false);
+      expect(plan.audit_fields).toMatchObject({
+        causal_event_id: plan.causal_event_id,
+        transition_event_id: transitionByPlan(result, plan).event_id,
+      });
+    }
+
+    const first = fixture("consecutive-lease-loss-escalation.jsonl").record.notifications;
+    const second = fixture("consecutive-lease-loss-escalation.jsonl").record.notifications;
+    expect(second).toEqual(first);
+    expect(new Set(first.map((plan) => plan.dedupe_key)).size).toBe(first.length);
+  });
+
   it("escalates a persistent offline incident without consuming an attempt", () => {
     const result = replay([
       { event_id: "offline-1", kind: "runtime_offline", occurred_at: "2026-09-01T00:00:00.000Z", evidence_refs: ["heartbeat-missing"], expected_generation: 0 },
@@ -30,7 +251,7 @@ describe("controller dry-run replay", () => {
   it("dedupes duplicate and old-generation events without duplicate plans", () => {
     const result = fixture("duplicate-and-out-of-order.jsonl");
     expect(result.record.attempt_count).toBe(1);
-    expect(result.record.transitions.filter((event) => event.event_id === "result-1")).toHaveLength(1);
+    expect(result.record.transitions.filter((event) => event.causal_event_id === "result-1")).toHaveLength(1);
     expect(result.record.notifications.filter((plan) => plan.signal === "offline")).toHaveLength(1);
     expect(result.record.audit).toEqual(expect.arrayContaining([
       expect.objectContaining({ event_id: "result-1", kind: "replayed_event" }),
@@ -70,7 +291,7 @@ describe("controller dry-run replay", () => {
     const readyKey = `delivery-ready:0:ready:${freshnessHash(freshness)}:${result.record.ready_bundle!.hash}`;
     expect(ready).toEqual([expect.objectContaining({ dedupe_key: readyKey })]);
     expect(result.record.transitions).toContainEqual(expect.objectContaining({
-      event_id: "ready-1",
+      causal_event_id: "ready-1",
       idempotency_key: readyKey,
     }));
 
@@ -244,18 +465,18 @@ describe("controller dry-run replay", () => {
 
   it("returns to evidence collection only after a new authoritative snapshot", () => {
     const result = replay([
-      { event_id: "result", kind: "result", occurred_at: "2026-09-01T00:00:00.000Z", evidence_refs: ["result"], expected_generation: 0, lease_id: "l1", runtime_id: "runtime-1", result: "completed", freshness: { head_sha: "h1", base_sha: "b1", merge_state_status: "clean" } },
+      { event_id: "result", kind: "result", occurred_at: "2026-09-01T00:00:00.000Z", evidence_refs: ["result"], expected_generation: 0, lease_id: "l1", runtime_id: "runtime-1", runtime_identity: "runtime-identity-1", lease_fencing_token: "fence-1", result: "completed", freshness: { head_sha: "h1", base_sha: "b1", merge_state_status: "clean" } },
       { event_id: "initial", kind: "snapshot", occurred_at: "2026-09-01T00:00:00.000Z", evidence_refs: ["s1"], expected_generation: 0, freshness: { head_sha: "h1", base_sha: "b1", merge_state_status: "clean" } },
       { event_id: "changed", kind: "snapshot", occurred_at: "2026-09-01T00:01:00.000Z", evidence_refs: ["s2"], expected_generation: 0, freshness: { head_sha: "h2", base_sha: "b1", merge_state_status: "clean" } },
       { event_id: "confirmed", kind: "snapshot", occurred_at: "2026-09-01T00:02:00.000Z", evidence_refs: ["s2-confirmed"], expected_generation: 1, freshness: { head_sha: "h2", base_sha: "b1", merge_state_status: "clean" } },
-    ], { kind: "fixture", delivery_id: "delivery-refresh", clock: "2026-09-01T00:03:00.000Z", state: "executing", active_lease_id: "l1", active_runtime_id: "runtime-1", active_lease_expires_at: "2026-09-01T00:10:00.000Z" });
+    ], { kind: "fixture", delivery_id: "delivery-refresh", clock: "2026-09-01T00:03:00.000Z", state: "executing", active_lease_id: "l1", active_runtime_id: "runtime-1", active_runtime_identity: "runtime-identity-1", active_lease_fencing_token: "fence-1", active_lease_expires_at: "2026-09-01T00:10:00.000Z" });
     expect(result.record).toMatchObject({ state: "evidence_collecting", generation: 1 });
   });
 
   it("escalates after two repair rounds and never dispatches a third", () => {
     const result = fixture("repair-exhaustion.jsonl");
     expect(result.record).toMatchObject({ state: "awaiting_human_decision", repair_round: 2, attempt_count: 3 });
-    expect(result.record.transitions.filter((event) => event.event_id === "repair-dispatch-3")).toHaveLength(0);
+    expect(result.record.transitions.filter((event) => event.causal_event_id === "repair-dispatch-3")).toHaveLength(0);
     expect(result.record.audit).toContainEqual(expect.objectContaining({ event_id: "repair-dispatch-3", kind: "invalid_transition" }));
     expect(result.record.notifications.filter((plan) => plan.signal === "repair_exhausted")).toHaveLength(1);
   });
@@ -314,11 +535,11 @@ describe("controller dry-run replay", () => {
 
   it("rejects matching start and result events when the fixture clock has expired their lease", () => {
     const start = replay([
-      { event_id: "late-start", kind: "started", occurred_at: "2026-09-01T00:09:00.000Z", evidence_refs: ["start"], expected_generation: 0, lease_id: "lease-1", runtime_id: "runtime-1" },
-    ], { kind: "fixture", delivery_id: "delivery-late-start", clock: "2026-09-01T00:11:00.000Z", state: "leased", active_lease_id: "lease-1", active_runtime_id: "runtime-1", active_lease_expires_at: "2026-09-01T00:10:00.000Z" });
+      { event_id: "late-start", kind: "started", occurred_at: "2026-09-01T00:09:00.000Z", heartbeat_at: "2026-09-01T00:09:00.000Z", evidence_refs: ["start"], expected_generation: 0, lease_id: "lease-1", runtime_id: "runtime-1", runtime_identity: "runtime-identity-1", lease_fencing_token: "fence-1" },
+    ], { kind: "fixture", delivery_id: "delivery-late-start", clock: "2026-09-01T00:11:00.000Z", state: "leased", active_lease_id: "lease-1", active_runtime_id: "runtime-1", active_runtime_identity: "runtime-identity-1", active_lease_fencing_token: "fence-1", active_lease_expires_at: "2026-09-01T00:10:00.000Z" });
     const result = replay([
-      { event_id: "late-result", kind: "result", occurred_at: "2026-09-01T00:09:00.000Z", evidence_refs: ["result"], expected_generation: 0, lease_id: "lease-1", runtime_id: "runtime-1", result: "completed" },
-    ], { kind: "fixture", delivery_id: "delivery-late-result", clock: "2026-09-01T00:11:00.000Z", state: "executing", active_lease_id: "lease-1", active_runtime_id: "runtime-1", active_lease_expires_at: "2026-09-01T00:10:00.000Z" });
+      { event_id: "late-result", kind: "result", occurred_at: "2026-09-01T00:09:00.000Z", heartbeat_at: "2026-09-01T00:09:00.000Z", evidence_refs: ["result"], expected_generation: 0, lease_id: "lease-1", runtime_id: "runtime-1", runtime_identity: "runtime-identity-1", lease_fencing_token: "fence-1", result: "completed" },
+    ], { kind: "fixture", delivery_id: "delivery-late-result", clock: "2026-09-01T00:11:00.000Z", state: "executing", active_lease_id: "lease-1", active_runtime_id: "runtime-1", active_runtime_identity: "runtime-identity-1", active_lease_fencing_token: "fence-1", active_lease_expires_at: "2026-09-01T00:10:00.000Z" });
 
     expect(start.record).toMatchObject({ state: "leased", started_count: 0, attempt_count: 0, active_lease_id: "lease-1", evidence: [] });
     expect(result.record).toMatchObject({ state: "executing", started_count: 0, attempt_count: 0, active_lease_id: "lease-1", evidence: [] });
@@ -331,8 +552,8 @@ describe("controller dry-run replay", () => {
     ["at", "2026-09-01T00:10:00.000Z"],
   ])("revokes a matching lease_expired event when the fixture clock is %s its expiry", (_boundary, clock) => {
     const result = replay([
-      { event_id: "expiry", kind: "lease_expired", occurred_at: "2026-09-01T00:09:00.000Z", evidence_refs: ["expiry"], expected_generation: 0, lease_id: "lease-1", runtime_id: "runtime-1", checkpoint_ref: "checkpoint" },
-    ], { kind: "fixture", delivery_id: "delivery-expiry", clock, state: "executing", active_lease_id: "lease-1", active_runtime_id: "runtime-1", active_lease_expires_at: "2026-09-01T00:10:00.000Z" });
+      { event_id: "expiry", kind: "lease_expired", occurred_at: "2026-09-01T00:09:00.000Z", heartbeat_at: "2026-09-01T00:09:00.000Z", evidence_refs: ["expiry"], expected_generation: 0, lease_id: "lease-1", runtime_id: "runtime-1", runtime_identity: "runtime-identity-1", lease_fencing_token: "fence-1", checkpoint_ref: "checkpoint" },
+    ], { kind: "fixture", delivery_id: "delivery-expiry", clock, state: "executing", active_lease_id: "lease-1", active_runtime_id: "runtime-1", active_runtime_identity: "runtime-identity-1", active_lease_fencing_token: "fence-1", active_lease_expires_at: "2026-09-01T00:10:00.000Z" });
 
     expect(result.record).toMatchObject({ state: "waiting_for_runtime", attempt_count: 0, checkpoint_ref: "checkpoint" });
     expect(result.record.active_lease_id).toBeUndefined();
@@ -342,12 +563,12 @@ describe("controller dry-run replay", () => {
 
   it("requires an active matching unexpired snapshot rather than result correlation freshness", () => {
     const result = replay([
-      { event_id: "result", kind: "result", occurred_at: "2026-09-01T00:00:00.000Z", evidence_refs: ["result-h1"], expected_generation: 0, lease_id: "lease-1", runtime_id: "runtime-1", result: "completed", freshness: { head_sha: "h1", base_sha: "b1", merge_state_status: "clean" } },
+      { event_id: "result", kind: "result", occurred_at: "2026-09-01T00:00:00.000Z", heartbeat_at: "2026-09-01T00:00:00.000Z", evidence_refs: ["result-h1"], expected_generation: 0, lease_id: "lease-1", runtime_id: "runtime-1", runtime_identity: "runtime-identity-1", lease_fencing_token: "fence-1", result: "completed", freshness: { head_sha: "h1", base_sha: "b1", merge_state_status: "clean" } },
       { event_id: "snapshot", kind: "snapshot", occurred_at: "2026-09-01T00:00:00.000Z", evidence_refs: ["snapshot-h2"], expected_generation: 0, freshness: { head_sha: "h2", base_sha: "b1", merge_state_status: "clean" } },
       { event_id: "ci", kind: "ci", occurred_at: "2026-09-01T00:01:00.000Z", evidence_refs: ["ci-h1"], expected_generation: 0, freshness: { head_sha: "h1", base_sha: "b1", merge_state_status: "clean" }, conclusion: "passed" },
       { event_id: "review", kind: "review", occurred_at: "2026-09-01T00:02:00.000Z", evidence_refs: ["review-h1"], expected_generation: 0, freshness: { head_sha: "h1", base_sha: "b1", merge_state_status: "clean" }, conclusion: "approved" },
       { event_id: "ready", kind: "evaluate_ready", occurred_at: "2026-09-01T00:03:00.000Z", evidence_refs: ["bundle"], expected_generation: 0 },
-    ], { kind: "fixture", delivery_id: "delivery-snapshot-mismatch", clock: "2026-09-01T00:04:00.000Z", state: "executing", active_lease_id: "lease-1", active_runtime_id: "runtime-1", active_lease_expires_at: "2026-09-01T00:10:00.000Z" });
+    ], { kind: "fixture", delivery_id: "delivery-snapshot-mismatch", clock: "2026-09-01T00:04:00.000Z", state: "executing", active_lease_id: "lease-1", active_runtime_id: "runtime-1", active_runtime_identity: "runtime-identity-1", active_lease_fencing_token: "fence-1", active_lease_expires_at: "2026-09-01T00:10:00.000Z" });
     expect(result.record.state).toBe("evidence_collecting");
     expect(result.record.audit).toEqual(expect.arrayContaining([
       expect.objectContaining({ event_id: "ci", kind: "stale_event", reason: "evidence_freshness_mismatch" }),

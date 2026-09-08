@@ -55,7 +55,7 @@ TransitionEvent {
 }
 ```
 
-`event_id` 是审计主键；状态写入的幂等键为 `delivery_id:generation:transition:causal_event_id`。需要创建/重新投递子任务时，额外使用 `delivery_id:generation:operation:ordinal`；同键必须返回原效果或语义冲突，绝不创建第二个活跃任务。
+`event_id` 是审计主键，且必须是全局唯一、确定性的 transition-envelope 身份（至少绑定 delivery、causal event、generation before/after、from/to 和 transition kind）；它不得直接复用调用方的 `causal_event_id`，也不得以字符串后缀构造派生事件。`causal_event_id` 必须单独保留以追溯输入。状态写入的幂等键为 `delivery_id:generation:transition:causal_event_id`。需要创建/重新投递子任务时，额外使用 `delivery_id:generation:operation:ordinal`；同键必须返回原效果或语义冲突，绝不创建第二个活跃任务。
 
 lease 的条件写和 runtime 结果必须同时围栏 `delivery_id`、generation、`runtime_id`、`lease_id`、`lease_fencing_token`、未过期 `lease_expires_at` 和预期状态。旧 runtime、旧 lease 或重启前的 result 只能形成 stale 审计事件，绝不能写入当前 record。
 
@@ -151,7 +151,7 @@ Reconciler 每次扫描时修正孤儿关系：同 generation 两个活跃子任
 | repair attempt / exhausted | 交付所有者；耗尽时人工决策者 | 每轮一次；exhausted 永久一次 | round、cause、attempt count、evidence refs、next action。 |
 | ready for review / human escalation | 人工审阅者 | 每个 generation 一次 | F、evidence bundle ID、验收结果、escalation reason。 |
 
-通知使用按信号定义的幂等键，而非一把通用键：offline 为 `delivery_id:generation:offline:<incident_id>:<30m_bucket>`（首桶立即）；reconnect 为 `delivery_id:generation:reconnect:<transition_event_id>`；invalidation 为 `delivery_id:generation:invalidation:<old_F_hash>:<cause>`；其余信号为 `delivery_id:generation:<signal>:<causal_event_id>`。`offline_incident_id`、`offline_started_at`、最后一个已发送 bucket、发送/确认结果与 retry receipt 都要持久化。发送结果、channel、模板版本、recipient、timestamp 和 `TransitionEvent.event_id` 必须审计；失败可重试，但不得产生额外逻辑状态变化。
+通知使用按信号定义的幂等键，而非一把通用键：offline 为 `delivery_id:generation:offline:<incident_id>:<30m_bucket>`（首桶立即）；reconnect 为 `delivery_id:generation:reconnect:<transition_event_id>`；invalidation 为 `delivery_id:generation:invalidation:<old_F_hash>:<cause>`；其余信号为 `delivery_id:generation:<signal>:<causal_event_id>`。`offline_incident_id`、`offline_started_at`、最后一个已发送 bucket、发送/确认结果与 retry receipt 都要持久化。由状态迁移触发的通知必须审计实际生成的 `TransitionEvent.event_id`；没有状态迁移的通知则审计独立的 `causal_event_id`，不得把输入事件 ID 标记为 transition ID。发送结果、channel、模板版本、recipient、timestamp 和适用的上述关联 ID 必须审计；失败可重试，但不得产生额外逻辑状态变化。
 
 ## Dry-run、回放与验收矩阵
 
@@ -176,6 +176,12 @@ dry-run 只运行同一 reducer、幂等、invalidation 和通知去重逻辑，
 | AC7 | 修复与人工边界 | 最多 2 轮机械修复；耗尽、冲突、权限/生产相关操作都进入人工决策。 |
 | AC8 | 通知与审计 | 频率、dedupe key、审计字段符合表；dry-run 不发送实际通知。 |
 | AC9 | 禁止操作 | 集成测试证明 Controller 不调用自动合入、部署、生产访问、权限或凭据变更路径。 |
+
+### INSI-141 模型级补偿证据
+
+`src/lib/controller/replay.ts` 仅在固定时钟 JSONL replay 中补齐以下纯模型证据：每条接受的转换包含 `writer`、前置条件、幂等键、evidence 与 recovery（`writer` 只是 fixture/model provenance，不能解释为真实授权已执行）；lease confirmation、start、expiry 与 result 要求 heartbeat age ≤90 秒、runtime identity 与 `lease_fencing_token` 全部匹配；连续第 3 次丢 lease 进入人工决策且不增加 attempt。`conflict`、`permission_or_credential` 和 `production_request` 均只形成 fail-closed 的人工边界记录，绝不执行外部操作。
+
+通知输出扩展为确定性、无 recipient/channel 的 plan，保留 signal-specific dedupe key、审计字段与 5/15 分钟 retry policy；`external_delivery: false` 是模型的显式边界，而非 provider receipt。该补偿不验证真实 Multica/GitHub webhook、条件持久化、子任务 exactly-once、通知投递或 AC9 integration proof。
 
 ## 明确禁止项与阶段 2 交付边界
 
