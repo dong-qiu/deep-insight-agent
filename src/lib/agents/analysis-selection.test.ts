@@ -142,5 +142,23 @@ describe("selectAnalysisItems · Daily Brief 新鲜度配额", () => {
     expect(result.diagnostics).toMatchObject({ candidate_content_count: 3, candidate_source_count: 3, selected_count: 2, fresh_candidate_count: 2 });
     expect(result.diagnostics.selected_source_count).toBeGreaterThanOrEqual(1);
     expect(result.diagnostics.fresh_selected_count).toBeGreaterThanOrEqual(1);
+    expect(result.diagnostics).toMatchObject({ cohort_candidate_content_count: 0, cohort_selected_count: 0 });
+  });
+
+  it("观察批计数只标注 AI-SWE cohort，不改变原有选片", () => {
+    const db = openDb(":memory:");
+    const topic = { id: "t_cohort", name: "Cohort", keywords: KW, language: "en" as const, brief_schedule: "daily" as const, enabled: true };
+    insertTopic(db, topic);
+    for (const source of ["src_cursor_changelog", "src_openhands_releases", "src_unrelated"]) {
+      insertSource(db, { id: source, name: source, type: "rss", endpoint: `https://x/${source}`, topic_ids: [], fetch_interval: "6h", backfill: null, enabled: true });
+      insertContentItem(db, { ...ci(`item_${source}`, source, "coding agent"), topic_ids: [topic.id] });
+    }
+    const result = selectAnalysisItemsWithDiagnostics(db, getTopic(db, topic.id)!, { since: "2026-05-01T00:00:00Z", limit: 3 });
+    expect(result.items).toHaveLength(3);
+    expect(result.diagnostics).toMatchObject({
+      candidate_content_count: 3, selected_count: 3,
+      cohort_candidate_content_count: 2, cohort_candidate_source_count: 2,
+      cohort_selected_count: 2, cohort_selected_source_count: 2,
+    });
   });
 });

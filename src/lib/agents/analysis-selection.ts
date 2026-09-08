@@ -10,6 +10,11 @@ import { archetypeProfile } from "../topics/archetype.js";
  * "有近两天信号时，至少四成分析输入来自近两天"；不影响用户手动 deep_dive。 */
 export const DEFAULT_BRIEF_FRESH_HOURS = 48;
 export const DEFAULT_BRIEF_FRESH_QUOTA = 0.4;
+/** Count-only observability cohort for the 2026-09 AI-SWE staged rollout.
+ * It never changes ranking, quotas, analyzer input, or report rendering. */
+export const AI_SWE_ROLLOUT_SOURCE_IDS = new Set([
+  "src_openai_codex_releases", "src_cursor_changelog", "src_openhands_releases",
+]);
 
 export function briefFreshHours(): number {
   const value = Number(process.env.BRIEF_FRESH_HOURS);
@@ -128,6 +133,10 @@ export interface AnalysisSelectionDiagnostics {
   selected_source_count: number;
   fresh_candidate_count: number;
   fresh_selected_count: number;
+  cohort_candidate_content_count: number;
+  cohort_candidate_source_count: number;
+  cohort_selected_count: number;
+  cohort_selected_source_count: number;
 }
 
 export function selectAnalysisItemsWithDiagnostics(
@@ -191,6 +200,8 @@ export function selectAnalysisItemsWithDiagnostics(
 
   const freshnessSince = opts.freshness?.since;
   const isFresh = (item: ContentItem): boolean => freshnessSince !== undefined && contentObservedAt(item) >= freshnessSince;
+  const cohortCandidates = candidates.filter((item) => AI_SWE_ROLLOUT_SOURCE_IDS.has(item.source_id));
+  const cohortSelected = items.filter((item) => AI_SWE_ROLLOUT_SOURCE_IDS.has(item.source_id));
   return {
     items,
     diagnostics: {
@@ -200,6 +211,10 @@ export function selectAnalysisItemsWithDiagnostics(
       selected_source_count: new Set(items.map((item) => item.source_id)).size,
       fresh_candidate_count: candidates.filter(isFresh).length,
       fresh_selected_count: items.filter(isFresh).length,
+      cohort_candidate_content_count: cohortCandidates.length,
+      cohort_candidate_source_count: new Set(cohortCandidates.map((item) => item.source_id)).size,
+      cohort_selected_count: cohortSelected.length,
+      cohort_selected_source_count: new Set(cohortSelected.map((item) => item.source_id)).size,
     },
   };
 }

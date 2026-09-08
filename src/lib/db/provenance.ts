@@ -803,7 +803,8 @@ export interface TraceEntityRef {
 
 const TIMELINE_METRIC_KEYS = new Set([
   "selected_count", "candidate_content_count", "candidate_source_count", "selected_source_count",
-  "fresh_candidate_count", "fresh_selected_count", "input_content_count", "analysis_insight_count", "no_significant_event", "citation_total", "citation_pass", "citation_blocked",
+  "fresh_candidate_count", "fresh_selected_count", "cohort_candidate_content_count", "cohort_candidate_source_count",
+  "cohort_selected_count", "cohort_selected_source_count", "input_content_count", "analysis_insight_count", "no_significant_event", "citation_total", "citation_pass", "citation_blocked",
   "citation_flagged", "citation_errored", "includable_insight_count", "releasable", "freshness_filtered_insight_count",
   "already_published_filtered_insight_count", "supplemental_candidate_count", "supplemental_published_insight_count",
   "published_insight_count", "published_citation_count", "candidate_count", "opportunity_count",

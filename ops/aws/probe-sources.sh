@@ -37,6 +37,15 @@ const CANDIDATES = [
   // 2026-09 staged candidate: feed 内已有足够的 changelog 正文；接入前后均用本 probe 复验。
   { id: "src_github_changelog", name: "GitHub Changelog", url: "https://github.blog/changelog/feed/",
     mode: "feed", guesses: [] },
+  // 2026-09 staged candidates: official release/changelog streams for coding-agent practice.
+  // Cursor and OpenHands carry enough content in their feeds. Codex's Atom summary is only a
+  // title, so it must pass the linked release-page full-text gate instead.
+  { id: "src_openai_codex_releases", name: "OpenAI Codex Releases", url: "https://github.com/openai/codex/releases.atom",
+    mode: "full_text", guesses: ["repository-content", "markdown-body", "release"] },
+  { id: "src_cursor_changelog", name: "Cursor Changelog", url: "https://cursor.com/changelog/rss.xml",
+    mode: "feed", guesses: [] },
+  { id: "src_openhands_releases", name: "OpenHands Releases", url: "https://github.com/OpenHands/OpenHands/releases.atom",
+    mode: "feed", guesses: [] },
 ];
 
 // ── 忠实内联：extractArticleHtml（article.ts）──────────────────────────────
@@ -146,29 +155,44 @@ function feedCarriesFullText(feed) {
   let m = scope.match(/<content:encoded[^>]*>([\s\S]*?)<\/content:encoded>/i)
        || scope.match(/<content\b[^>]*>([\s\S]*?)<\/content>/i);
   const full = m ? stripText(m[1].replace(/<!\[CDATA\[|\]\]>/g, "")).length : 0;
+  const hasFull = Boolean(m);
   m = scope.match(/<(?:summary|description)\b[^>]*>([\s\S]*?)<\/(?:summary|description)>/i);
   const summ = m ? stripText(m[1].replace(/<!\[CDATA\[|\]\]>/g, "")).length : 0;
-  return { full, summ };
+  // Keep the same nullish fallback as rss.ts: an explicitly present but empty
+  // content field is still selected by the adapter and must therefore fail.
+  return { full, summ, selected: hasFull ? full : summ };
 }
 
 (async () => {
+  let failed = false;
+  const emit = (out) => { if (out.pass !== true) failed = true; console.log(JSON.stringify(out)); };
   for (const c of CANDIDATES) {
     const out = { id: c.id, name: c.name, mode: c.mode };
     try {
       // ① 合规门：feed origin robots（生产 rss.ts:109 同款；不放行则生产 ingest 直接抛错——Changelog 即此）
       out.robots_feed = await robotsCheck(c.url);
-      if (!out.robots_feed.allowed) { out.pass = false; out.blocked = "robots(feed)"; console.log(JSON.stringify(out)); continue; }
+      if (!out.robots_feed.allowed) { out.pass = false; out.blocked = "robots(feed)"; emit(out); continue; }
       const f = await get(c.url);
       out.feed = { status: f.status, bytes: f.bytes };
-      if (f.ok) {
+      if (!f.ok) {
+        out.pass = false;
+        out.blocked = "feed unavailable";
+      } else {
         const fc = feedCarriesFullText(f.body);
-        out.feed.fullChars = fc.full; out.feed.summChars = fc.summ;
+        out.feed.fullChars = fc.full; out.feed.summChars = fc.summ; out.feed.selectedChars = fc.selected;
         const link = firstLink(f.body);
         out.feed.firstLink = link;
-        if (c.mode === "full_text" && link) {
+        if (c.mode === "feed") {
+          out.feed.pass = fc.selected >= MIN_ARTICLE_CHARS;
+          out.pass = out.feed.pass;
+          if (!out.pass) out.blocked = "feed body below minimum";
+        } else if (!link) {
+          out.pass = false;
+          out.blocked = "feed has no article link";
+        } else {
           // ② 合规门：文章页 origin robots（常与 feed 不同源；生产 article.ts:95 同款，不放行则该条返 null）
           out.robots_article = await robotsCheck(link);
-          if (!out.robots_article.allowed) { out.article = { blocked: "robots" }; out.pass = false; console.log(JSON.stringify(out)); continue; }
+          if (!out.robots_article.allowed) { out.article = { blocked: "robots" }; out.pass = false; emit(out); continue; }
           const a = await get(link);
           out.article = { status: a.status, bytes: a.bytes, ctype: a.ctype.split(";")[0] };
           if (a.ok && /html/i.test(a.ctype)) {
@@ -180,11 +204,14 @@ function feedCarriesFullText(feed) {
             out.article.best = trials[0];
             out.article.pass = trials[0].chars >= MIN_ARTICLE_CHARS;
           }
+          out.pass = out.article.pass === true;
+          if (!out.pass) out.blocked = "article body below minimum or unavailable";
         }
       }
-    } catch (e) { out.error = String(e && e.message || e); }
-    console.log(JSON.stringify(out));
+    } catch (e) { out.pass = false; out.error = String(e && e.message || e); }
+    emit(out);
   }
+  if (failed) process.exitCode = 1;
 })();
 JS
 
@@ -211,3 +238,4 @@ echo "======================================================"
 aws ssm get-command-invocation --region "$RGN" --command-id "$CMD" --instance-id "$IID" --query StandardOutputContent --output text
 ERR=$(aws ssm get-command-invocation --region "$RGN" --command-id "$CMD" --instance-id "$IID" --query StandardErrorContent --output text)
 [ -n "$ERR" ] && { echo "--- stderr ---"; echo "$ERR" | head -8; } || true
+[[ "$ST" == "Success" ]]

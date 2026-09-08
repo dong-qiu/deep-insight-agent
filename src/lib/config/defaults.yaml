@@ -191,6 +191,39 @@ defaultSources:
     fetch_interval: 6h
     enabled: false
     fetch_mode: feed
+  # 2026-09 AI-SWE expansion: these remain staged until guarded cohort enablement and a 14-day
+  # contribution/funnel review. Do not enable them merely by redeploying.
+  - id: src_openai_codex_releases
+    name: OpenAI Codex Releases
+    type: rss
+    endpoint: https://github.com/openai/codex/releases.atom
+    topic_ids: [t_code_agents]
+    fetch_interval: 12h
+    enabled: false
+    # GitHub's Atom entry only has a short title; the release page passed the production
+    # full-text/robots gate (repository-content: 662 chars, 2026-09-07).
+    fetch_mode: full_text
+    content_container: repository-content
+  - id: src_cursor_changelog
+    name: Cursor Changelog
+    type: rss
+    endpoint: https://cursor.com/changelog/rss.xml
+    topic_ids: [t_code_agents]
+    fetch_interval: 12h
+    enabled: false
+    # The official RSS already carries about 2.1k chars in its current entries; fetching the
+    # article page would reduce usable text and add avoidable access risk.
+    fetch_mode: feed
+  - id: src_openhands_releases
+    name: OpenHands Releases
+    type: rss
+    endpoint: https://github.com/OpenHands/OpenHands/releases.atom
+    topic_ids: [t_code_agents]
+    fetch_interval: 24h
+    enabled: false
+    # The official release Atom currently carries full release notes (~40k chars in the first
+    # entry); retain the feed body for source-to-citation traceability.
+    fetch_mode: feed
   - id: src_latent_space
     name: Latent Space
     type: rss

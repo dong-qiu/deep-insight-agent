@@ -8,7 +8,7 @@
 # 关联：citation.content_item_id → content_item.source_id（来源）；citation.insight_id →
 #       insight.topic_id（主题）。走 SSM 查容器 deep-insight-app-1 的 /data/insight.db（readonly）。
 # 前置：本机 AWS 凭据 + 代理已开（Clash 127.0.0.1:7890）。
-# 用法：[TOPIC=t_prompt_injection] [NEW_DAYS=14] ./source-contribution.sh [天数，默认 7]
+# 用法：[TOPIC=t_prompt_injection] [NEW_DAYS=14] [SOURCE_IDS=id1,id2] ./source-contribution.sh [天数，默认 7]
 #   TOPIC 默认 t_code_agents（向后兼容无参旧调用）；NEW_DAYS=判定「新接入、曝光不足」的阈值。
 set -euo pipefail
 RGN=ap-southeast-1
@@ -16,15 +16,19 @@ IID=i-061dc19d7f7ff81ad
 DAYS="${1:-7}"
 TOPIC="${TOPIC:-t_code_agents}"
 NEW_DAYS="${NEW_DAYS:-14}"
+SOURCE_IDS="${SOURCE_IDS:-}"
 [[ "$DAYS" =~ ^[0-9]+$ ]] || { echo "✗ 天数须为整数（拼进远程命令，严格校验）"; exit 1; }
 [[ "$NEW_DAYS" =~ ^[0-9]+$ ]] || { echo "✗ NEW_DAYS 须为整数"; exit 1; }
 [[ "$TOPIC" =~ ^[a-z0-9_]+$ ]] || { echo "✗ TOPIC 须为 [a-z0-9_]（拼进远程命令，严格校验）"; exit 1; }
+[[ -z "$SOURCE_IDS" || "$SOURCE_IDS" =~ ^[a-z0-9_]+(,[a-z0-9_]+)*$ ]] || { echo "✗ SOURCE_IDS 须为逗号分隔的 source id"; exit 1; }
 
 read -r -d '' QUERY <<'JS' || true
 const db = new (require('better-sqlite3'))('/data/insight.db', { readonly: true });
 const DAYS = parseInt(process.argv[2] || '7', 10);
 const T = process.argv[3] || 't_code_agents';
 const NEW_DAYS = parseInt(process.argv[4] || '14', 10);
+const SOURCE_IDS = (process.argv[5] || '').split(',').filter(Boolean);
+const selected = SOURCE_IDS.length ? new Set(SOURCE_IDS) : null;
 const since = new Date(Date.now() - DAYS * 864e5).toISOString();
 const newSince = new Date(Date.now() - NEW_DAYS * 864e5).toISOString();
 
@@ -33,7 +37,7 @@ const collected = new Map();
 for (const r of db.prepare(
   `SELECT source_id, COUNT(*) n, MAX(fetched_at) last FROM content_item
     WHERE topic_ids LIKE '%'||?||'%' AND fetched_at >= ? GROUP BY source_id`).all(T, since))
-  collected.set(r.source_id, r);
+  if (!selected || selected.has(r.source_id)) collected.set(r.source_id, r);
 
 // 被引（口径对齐 repos.ts sourceContribution / ADR-0008 切片4）：只数**已上报报告(status=done)**里
 // 被引的洞察——否则 blocked/未发布洞察的引用会把真·0 贡献源误判成"保留"。
@@ -47,18 +51,20 @@ for (const r of db.prepare(
      JOIN content_item ci ON ci.id = c.content_item_id
     WHERE r.topic_id = ? AND r.status = 'done' AND r.generated_at >= ?
     GROUP BY ci.source_id`).all(T, since))
-  cited.set(r.sid, r);
+  if (!selected || selected.has(r.sid)) cited.set(r.sid, r);
 
-// 全量本主题源（含 0 采集的，便于看全貌）+ created_at（自动识别新接入源，替代写死清单）
+// 本主题源（可选地限 cohort；含 0 采集）+ updated_at（启用操作会写入，识别观察窗口）。
 const srcs = db.prepare(
-  "SELECT id,name,enabled,created_at FROM source WHERE topic_ids LIKE '%'||?||'%' ORDER BY enabled DESC, id").all(T);
+  "SELECT id,name,enabled,created_at,updated_at FROM source WHERE topic_ids LIKE '%'||?||'%' ORDER BY enabled DESC, id")
+  .all(T).filter((source) => !selected || selected.has(source.id));
 // 按日期粒度比（created_at 是 "YYYY-MM-DD HH:MM:SS" 空格分隔，newSince 是 ISO 'T' 分隔，
 // 直接字符串比在阈值当天会因第 10 位 空格<T 误判；切到日期前缀规避，也对未来改 ISO 写入鲁棒）。
-const isNew = (s) => (s.created_at || '').slice(0, 10) >= newSince.slice(0, 10);
+const isNew = (s) => (s.updated_at || s.created_at || '').slice(0, 10) >= newSince.slice(0, 10);
 const nrep = db.prepare(
   "SELECT COUNT(*) n FROM report WHERE topic_id=? AND status='done' AND generated_at>=?").get(T, since).n;
 
-console.log(`窗口：近 ${DAYS} 天（since ${since.slice(0, 10)}）  主题：${T}  已上报报告：${nrep}  ▶=近 ${NEW_DAYS} 天新接入`);
+console.log(`窗口：近 ${DAYS} 天（since ${since.slice(0, 10)}）  主题：${T}  已上报报告：${nrep}  ▶=近 ${NEW_DAYS} 天新接入/启用`);
+if (selected) console.log(`Cohort: ${SOURCE_IDS.join(',')}`);
 console.log('源'.padEnd(26) + '采集'.padStart(6) + '被引'.padStart(6) + '洞察'.padStart(6) + '  最近采集');
 console.log('-'.repeat(70));
 for (const s of srcs) {
@@ -88,10 +94,10 @@ B64=$(printf %s "$QUERY" | base64 | tr -d '\n')
 PARAMS="$(mktemp)"
 trap 'rm -f "$PARAMS"' EXIT
 cat > "$PARAMS" <<EOF
-{"commands":["docker exec -w /app deep-insight-app-1 sh -c 'printf %s $B64 | base64 -d > /tmp/sc.js && NODE_PATH=/app/node_modules node /tmp/sc.js $DAYS $TOPIC $NEW_DAYS'"]}
+{"commands":["docker exec -w /app deep-insight-app-1 sh -c 'printf %s $B64 | base64 -d > /tmp/sc.js && NODE_PATH=/app/node_modules node /tmp/sc.js $DAYS $TOPIC $NEW_DAYS $SOURCE_IDS'"]}
 EOF
 
-echo "下发 SSM 查询（TOPIC=${TOPIC} DAYS=${DAYS} NEW_DAYS=${NEW_DAYS}；需本机 AWS 凭据 + 代理已开）..."
+echo "下发 SSM 查询（TOPIC=${TOPIC} DAYS=${DAYS} NEW_DAYS=${NEW_DAYS} SOURCE_IDS=${SOURCE_IDS:-all}；需本机 AWS 凭据 + 代理已开）..."
 CMD=$(aws ssm send-command --region "$RGN" --instance-ids "$IID" --document-name AWS-RunShellScript \
   --parameters "file://$PARAMS" --query Command.CommandId --output text)
 echo "CommandId=$CMD"

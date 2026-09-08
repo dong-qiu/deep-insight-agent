@@ -90,7 +90,7 @@ function BriefSelectionCard({ diagnostics }: { diagnostics: BriefSelectionDiagno
           const isThin = thin(row);
           return <tr key={row.report_id}>
             <td><a href={`/reports/${row.report_id}`}>{row.topic_name}</a><br /><span className="muted">{row.generated_at.slice(0, 10)} {row.reason_code ? `· ${row.reason_code}` : ""}</span></td>
-            <td className={isThin ? "dash-zero-contrib" : undefined}>{count(row.candidate_content_count)} / {count(row.candidate_source_count)} 源 → {count(row.selected_count)} / {count(row.selected_source_count)} 源<br /><span className="muted">近期 {count(row.fresh_selected_count)} / {count(row.fresh_candidate_count)}</span></td>
+            <td className={isThin ? "dash-zero-contrib" : undefined}>{count(row.candidate_content_count)} / {count(row.candidate_source_count)} 源 → {count(row.selected_count)} / {count(row.selected_source_count)} 源<br /><span className="muted">近期 {count(row.fresh_selected_count)} / {count(row.fresh_candidate_count)} · 观察批 {count(row.cohort_candidate_content_count)} / {count(row.cohort_candidate_source_count)} 源 → {count(row.cohort_selected_count)} / {count(row.cohort_selected_source_count)} 源</span></td>
             <td>{count(row.analysis_insight_count)} → {count(row.includable_insight_count)}</td>
             <td>{count(row.citation_pass)} / {count(row.citation_total)}<br /><span className="muted">拦截 {count(row.citation_blocked)} · 存疑 {count(row.citation_flagged)}</span></td>
             <td>{count(row.freshness_filtered_insight_count)} / {count(row.already_published_filtered_insight_count)}</td>

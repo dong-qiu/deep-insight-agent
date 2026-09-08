@@ -50,6 +50,35 @@ describe("loadStaticConfig + 播种 + 合并", () => {
     });
   });
 
+  it("将新增的 AI-SWE 官方来源保持为逐源启用前的 staged 候选", () => {
+    const cfg = loadStaticConfig();
+    const expected = [
+      {
+        id: "src_openai_codex_releases", endpoint: "https://github.com/openai/codex/releases.atom",
+        fetch_interval: "12h", fetch_mode: "full_text", content_container: "repository-content",
+      },
+      {
+        id: "src_cursor_changelog", endpoint: "https://cursor.com/changelog/rss.xml",
+        fetch_interval: "12h", fetch_mode: "feed", content_container: null,
+      },
+      {
+        id: "src_openhands_releases", endpoint: "https://github.com/OpenHands/OpenHands/releases.atom",
+        fetch_interval: "24h", fetch_mode: "feed", content_container: null,
+      },
+    ];
+
+    for (const candidate of expected) {
+      expect(cfg.defaultSources.find((source) => source.id === candidate.id)).toMatchObject({
+        ...candidate, type: "rss", topic_ids: ["t_code_agents"], enabled: false,
+      });
+    }
+
+    seedDefaults(db, cfg);
+    for (const candidate of expected) {
+      expect(db.prepare("SELECT enabled FROM source WHERE id=?").get(candidate.id)).toEqual({ enabled: 0 });
+    }
+  });
+
   it("将已复审的信息源以预期默认值播种", () => {
     const cfg = loadStaticConfig();
     const semianalysis = cfg.defaultSources.find((candidate) => candidate.id === "src_semianalysis");
