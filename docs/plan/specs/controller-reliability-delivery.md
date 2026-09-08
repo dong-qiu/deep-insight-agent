@@ -151,7 +151,7 @@ Reconciler 每次扫描时修正孤儿关系：同 generation 两个活跃子任
 | repair attempt / exhausted | 交付所有者；耗尽时人工决策者 | 每轮一次；exhausted 永久一次 | round、cause、attempt count、evidence refs、next action。 |
 | ready for review / human escalation | 人工审阅者 | 每个 generation 一次 | F、evidence bundle ID、验收结果、escalation reason。 |
 
-通知使用按信号定义的幂等键，而非一把通用键：offline 为 `delivery_id:generation:offline:<incident_id>:<30m_bucket>`（首桶立即）；reconnect 为 `delivery_id:generation:reconnect:<transition_event_id>`；invalidation 为 `delivery_id:generation:invalidation:<old_F_hash>:<cause>`；其余信号为 `delivery_id:generation:<signal>:<causal_event_id>`。`offline_incident_id`、`offline_started_at`、最后一个已发送 bucket、发送/确认结果与 retry receipt 都要持久化。发送结果、channel、模板版本、recipient、timestamp 和 `TransitionEvent.event_id` 必须审计；失败可重试，但不得产生额外逻辑状态变化。
+通知使用按信号定义的幂等键，而非一把通用键：offline 为 `delivery_id:generation:offline:<incident_id>:<30m_bucket>`（首桶立即）；reconnect 为 `delivery_id:generation:reconnect:<transition_event_id>`；invalidation 为 `delivery_id:generation:invalidation:<old_F_hash>:<cause>`；其余信号为 `delivery_id:generation:<signal>:<causal_event_id>`。`offline_incident_id`、`offline_started_at`、最后一个已发送 bucket、发送/确认结果与 retry receipt 都要持久化。由状态迁移触发的通知必须审计实际生成的 `TransitionEvent.event_id`；没有状态迁移的通知则审计独立的 `causal_event_id`，不得把输入事件 ID 标记为 transition ID。发送结果、channel、模板版本、recipient、timestamp 和适用的上述关联 ID 必须审计；失败可重试，但不得产生额外逻辑状态变化。
 
 ## Dry-run、回放与验收矩阵
 

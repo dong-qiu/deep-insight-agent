@@ -302,14 +302,15 @@ function reduce(record: ControllerRecord, event: ReplayInputEvent, states: Contr
       if (record.active_task_ids.length !== 1 || !event.lease_id || !event.runtime_id || !event.lease_expires_at) return invalid(record, event, "lease_requires_exactly_one_task_runtime_and_expiry");
       if (!leaseExpiryValid(event, event.lease_expires_at)) return invalid(record, event, "lease_expiry_invalid_or_not_after_confirmation");
       if (!event.runtime_identity || !event.lease_fencing_token || !heartbeatFreshAt(event)) return invalid(record, event, "heartbeat_missing_or_older_than_90_seconds_or_lease_envelope_incomplete");
-      if (!transition(record, event, "leased", states, "fresh_heartbeat_and_confirmed_fenced_lease", "new_lease_required_after_expiry")) return;
+      const leaseTransition = transition(record, event, "leased", states, "fresh_heartbeat_and_confirmed_fenced_lease", "new_lease_required_after_expiry");
+      if (!leaseTransition) return;
       record.active_lease_id = event.lease_id;
       record.active_runtime_id = event.runtime_id;
       record.active_runtime_identity = event.runtime_identity;
       record.active_lease_expires_at = event.lease_expires_at;
       record.active_lease_fencing_token = event.lease_fencing_token;
       record.last_heartbeat_at = event.heartbeat_at;
-      notify(record, event, notificationKeys, "reconnect", `${record.delivery_id}:${record.generation}:reconnect:${event.event_id}`);
+      notify(record, event, notificationKeys, "reconnect", `${record.delivery_id}:${record.generation}:reconnect:${event.event_id}`, {}, leaseTransition);
       record.offline_incident_id = undefined;
       record.offline_started_at = undefined;
       return;
@@ -329,9 +330,12 @@ function reduce(record: ControllerRecord, event: ReplayInputEvent, states: Contr
       clearActiveLease(record);
       record.checkpoint_ref = event.checkpoint_ref ?? record.checkpoint_ref;
       record.consecutive_lease_losses += 1;
-      if (record.consecutive_lease_losses >= 3 && transition(record, event, "awaiting_human_decision", states, "three_consecutive_lease_losses", "freeze_work_and_require_human_decision", false, "escalate:three_consecutive_lease_losses")) {
+      const escalationTransition = record.consecutive_lease_losses >= 3
+        ? transition(record, event, "awaiting_human_decision", states, "three_consecutive_lease_losses", "freeze_work_and_require_human_decision", false, "escalate:three_consecutive_lease_losses")
+        : undefined;
+      if (escalationTransition) {
         record.active_task_ids = [];
-        notify(record, event, notificationKeys, "human_escalation", `${record.delivery_id}:${record.generation}:human_escalation:three_consecutive_lease_losses`, humanEscalationAuditFields(record, event, "three_consecutive_lease_losses"));
+        notify(record, event, notificationKeys, "human_escalation", `${record.delivery_id}:${record.generation}:human_escalation:three_consecutive_lease_losses`, humanEscalationAuditFields(record, event, "three_consecutive_lease_losses"), escalationTransition);
       }
       return;
     case "result":
@@ -348,20 +352,22 @@ function reduce(record: ControllerRecord, event: ReplayInputEvent, states: Contr
       const bundle = createReadyBundle(record, bundleEvidence, event.occurred_at);
       const freshness = record.current_freshness!;
       const readyKey = `${record.delivery_id}:${record.generation}:ready:${freshnessHash(freshness)}:${bundle.hash}`;
-      if (transition(record, event, "ready_for_human_review", states, "current_freshness_and_matching_unexpired_evidence", "recheck_freshness_before_any_human_acceptance", false, `ready:${freshnessHash(freshness)}:${bundle.hash}`)) {
+      const readyTransition = transition(record, event, "ready_for_human_review", states, "current_freshness_and_matching_unexpired_evidence", "recheck_freshness_before_any_human_acceptance", false, `ready:${freshnessHash(freshness)}:${bundle.hash}`);
+      if (readyTransition) {
         record.ready_bundle = bundle;
         notify(record, event, notificationKeys, "ready", readyKey, {
           freshness: freshnessAuditValue(freshness),
           evidence_bundle_id: bundle.hash,
           acceptance_result: "ready_for_human_review",
-        });
+        }, readyTransition);
       }
       return;
     }
     case "repair_dispatch":
       if (record.repair_round >= 2) {
-        if (transition(record, event, "awaiting_human_decision", states, "repair_budget_exhausted", "stop_automation_and_wait_for_human")) {
-          notify(record, event, notificationKeys, "repair_exhausted", `${record.delivery_id}:${record.generation}:repair_exhausted:${event.event_id}`, repairAuditFields(record, event, "repair_budget_exhausted", "wait_for_human_decision"));
+        const exhaustionTransition = transition(record, event, "awaiting_human_decision", states, "repair_budget_exhausted", "stop_automation_and_wait_for_human");
+        if (exhaustionTransition) {
+          notify(record, event, notificationKeys, "repair_exhausted", `${record.delivery_id}:${record.generation}:repair_exhausted:${event.event_id}`, repairAuditFields(record, event, "repair_budget_exhausted", "wait_for_human_decision"), exhaustionTransition);
         }
         return;
       }
@@ -391,7 +397,8 @@ function applyResult(record: ControllerRecord, event: ReplayInputEvent, states: 
   if (!leaseStillValidAt(record, clock)) return stale(record, event, "lease_expired");
   if (!event.result) return invalid(record, event, "terminal_result_required");
   const to = event.result === "completed" ? "evidence_collecting" : record.repair_round < 2 ? "repairing" : "awaiting_human_decision";
-  if (!transition(record, event, to, states, "matching_fenced_terminal_result", "record_terminal_result_once_and_never_reuse_lease")) return;
+  const resultTransition = transition(record, event, to, states, "matching_fenced_terminal_result", "record_terminal_result_once_and_never_reuse_lease");
+  if (!resultTransition) return;
   record.attempt_count += 1;
   record.last_heartbeat_at = heartbeatSource(record, event);
   clearActiveLease(record);
@@ -400,7 +407,7 @@ function applyResult(record: ControllerRecord, event: ReplayInputEvent, states: 
   // Result freshness is correlation evidence only. An authoritative snapshot is
   // the sole source allowed to establish current_freshness.
   record.evidence.push(evidenceFromEvent(event, "result", clock, event.freshness ? normalizeFreshness(event.freshness) : undefined, event.result === "completed" ? "passed" : "failed"));
-  if (to === "awaiting_human_decision") notify(record, event, notificationKeys, "repair_exhausted", `${record.delivery_id}:${record.generation}:repair_exhausted:${event.event_id}`, repairAuditFields(record, event, "terminal_failure_after_repair_budget", "wait_for_human_decision"));
+  if (to === "awaiting_human_decision") notify(record, event, notificationKeys, "repair_exhausted", `${record.delivery_id}:${record.generation}:repair_exhausted:${event.event_id}`, repairAuditFields(record, event, "terminal_failure_after_repair_budget", "wait_for_human_decision"), resultTransition);
 }
 
 function applySnapshot(record: ControllerRecord, event: ReplayInputEvent, states: ControllerState[], notificationKeys: Set<string>, clock: number): void {
@@ -461,7 +468,8 @@ function invalidateFreshness(record: ControllerRecord, event: ReplayInputEvent, 
   const oldFreshness = record.current_freshness;
   const oldHash = oldFreshness ? freshnessHash(oldFreshness) : "freshness_unknown";
   const oldBundle = record.ready_bundle;
-  if (!transition(record, event, "freshness_invalidated", states, reason, "supersede_old_evidence_and_collect_new_generation", true, `invalidate:${oldHash}:${reason}`)) return;
+  const invalidationTransition = transition(record, event, "freshness_invalidated", states, reason, "supersede_old_evidence_and_collect_new_generation", true, `invalidate:${oldHash}:${reason}`);
+  if (!invalidationTransition) return;
   record.evidence.forEach((evidence) => {
     if (evidence.freshness && (!oldFreshness || sameFreshness(evidence.freshness, oldFreshness))) evidence.status = "superseded";
   });
@@ -480,7 +488,7 @@ function invalidateFreshness(record: ControllerRecord, event: ReplayInputEvent, 
     trigger_field: invalidationTrigger(oldFreshness, freshness, reason),
     superseded_evidence_ids: record.evidence.filter((evidence) => evidence.status === "superseded").map((evidence) => evidence.id).join(",") || "none",
     snapshot_id: event.evidence_refs[0] ?? "none",
-  });
+  }, invalidationTransition);
 }
 
 function recheckReadyEvidence(record: ControllerRecord, event: ReplayInputEvent, states: ControllerState[], notificationKeys: Set<string>, clock: number): void {
@@ -525,10 +533,11 @@ function applyOffline(record: ControllerRecord, event: ReplayInputEvent, states:
 
 function applyHumanBoundary(record: ControllerRecord, event: ReplayInputEvent, states: ControllerState[], notificationKeys: Set<string>): void {
   if (!isHumanBoundary(event.boundary)) return invalid(record, event, "human_boundary_kind_required");
-  if (!transition(record, event, "awaiting_human_decision", states, `fail_closed_${event.boundary}`, "perform_no_external_operation_and_wait_for_human", false, `escalate:${event.boundary}`)) return;
+  const boundaryTransition = transition(record, event, "awaiting_human_decision", states, `fail_closed_${event.boundary}`, "perform_no_external_operation_and_wait_for_human", false, `escalate:${event.boundary}`);
+  if (!boundaryTransition) return;
   record.active_task_ids = [];
   clearActiveLease(record);
-  notify(record, event, notificationKeys, "human_escalation", `${record.delivery_id}:${record.generation}:human_escalation:${event.boundary}`, humanEscalationAuditFields(record, event, event.boundary));
+  notify(record, event, notificationKeys, "human_escalation", `${record.delivery_id}:${record.generation}:human_escalation:${event.boundary}`, humanEscalationAuditFields(record, event, event.boundary), boundaryTransition);
 }
 
 function isHumanBoundary(value: string | undefined): value is HumanBoundary {
@@ -544,10 +553,10 @@ function clearActiveLease(record: ControllerRecord): void {
   record.last_heartbeat_at = undefined;
 }
 
-function transition(record: ControllerRecord, event: ReplayInputEvent, to: ControllerState, states: ControllerState[], precondition: string, recovery: string, incrementGeneration = false, transitionKey = `transition:${event.event_id}`): boolean {
+function transition(record: ControllerRecord, event: ReplayInputEvent, to: ControllerState, states: ControllerState[], precondition: string, recovery: string, incrementGeneration = false, transitionKey = `transition:${event.event_id}`): TransitionEvent | undefined {
   if (!allowed(record.state, to)) {
     invalid(record, event, `transition_not_allowed:${record.state}:${to}`);
-    return false;
+    return undefined;
   }
   const before = record.generation;
   const from = record.state;
@@ -555,11 +564,11 @@ function transition(record: ControllerRecord, event: ReplayInputEvent, to: Contr
   const auditEventId = transitionAuditEventId(record.delivery_id, event.event_id, before, after, from, to, transitionKey);
   if (record.transitions.some((transition) => transition.event_id === auditEventId)) {
     invalid(record, event, "transition_event_id_collision");
-    return false;
+    return undefined;
   }
   record.generation = after;
   record.state = to;
-  record.transitions.push({
+  const transitionEvent: TransitionEvent = {
     event_id: auditEventId,
     causal_event_id: event.event_id,
     delivery_id: record.delivery_id,
@@ -573,9 +582,10 @@ function transition(record: ControllerRecord, event: ReplayInputEvent, to: Contr
     precondition,
     evidence_refs: [...event.evidence_refs],
     recovery_action: recovery,
-  });
+  };
+  record.transitions.push(transitionEvent);
   states.push(to);
-  return true;
+  return transitionEvent;
 }
 
 /**
@@ -780,7 +790,7 @@ function parseTimestamp(value: string): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
-function notify(record: ControllerRecord, event: ReplayInputEvent, keys: Set<string>, signal: NotificationPlan["signal"], key: string, signalAuditFields: Readonly<Record<string, string | number>> = {}): void {
+function notify(record: ControllerRecord, event: ReplayInputEvent, keys: Set<string>, signal: NotificationPlan["signal"], key: string, signalAuditFields: Readonly<Record<string, string | number>> = {}, transition?: TransitionEvent): void {
   if (keys.has(key)) return;
   keys.add(key);
   record.notifications.push({
@@ -801,8 +811,9 @@ function notify(record: ControllerRecord, event: ReplayInputEvent, keys: Set<str
       offline_incident_id: record.offline_incident_id ?? "none",
       dedupe_key: key,
       heartbeat_age_seconds: heartbeatAgeSeconds(record, event.occurred_at),
-      transition_event_id: event.event_id,
       ...signalAuditFields,
+      causal_event_id: event.event_id,
+      ...(transition ? { transition_event_id: transition.event_id } : {}),
     },
   });
 }

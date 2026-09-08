@@ -101,6 +101,13 @@ describe("controller dry-run replay", () => {
     }));
     expect(new Set(result.record.transitions.map((event) => event.event_id)).size).toBe(result.record.transitions.length);
     expect(result.record.transitions).toContainEqual(expect.objectContaining({ causal_event_id: "lease-loss-3", to_state: "awaiting_human_decision" }));
+
+    const escalation = result.record.notifications.find((plan) => plan.signal === "human_escalation")!;
+    const escalationTransition = result.record.transitions.find((transition) => transition.causal_event_id === escalation.causal_event_id && transition.to_state === "awaiting_human_decision")!;
+    expect(escalation.audit_fields).toMatchObject({
+      causal_event_id: "lease-loss-3",
+      transition_event_id: escalationTransition.event_id,
+    });
   });
 
   it("assigns distinct audit IDs when an input occupies a derived-event-looking ID", () => {
@@ -122,6 +129,15 @@ describe("controller dry-run replay", () => {
       attempt_count: 0,
       consecutive_lease_losses: 3,
     });
+
+    const transitionByNotification = {
+      reconnect: result.record.transitions.find((transition) => transition.causal_event_id === "lease-confirm-3" && transition.to_state === "leased")!,
+      human_escalation: result.record.transitions.find((transition) => transition.causal_event_id === "lease-loss-3" && transition.to_state === "awaiting_human_decision")!,
+    };
+    for (const notification of result.record.notifications) {
+      expect(notification.audit_fields.causal_event_id).toBe(notification.causal_event_id);
+      expect(notification.audit_fields.transition_event_id).toBe(transitionByNotification[notification.signal as keyof typeof transitionByNotification].event_id);
+    }
   });
 
   it.each([
@@ -136,6 +152,12 @@ describe("controller dry-run replay", () => {
       precondition: `fail_closed_${boundary}`,
       recovery_action: "perform_no_external_operation_and_wait_for_human",
     }));
+    const escalation = result.record.notifications.find((plan) => plan.signal === "human_escalation")!;
+    const escalationTransition = result.record.transitions.find((transition) => transition.causal_event_id === escalation.causal_event_id && transition.to_state === "awaiting_human_decision")!;
+    expect(escalation.audit_fields).toMatchObject({
+      causal_event_id: escalation.causal_event_id,
+      transition_event_id: escalationTransition.event_id,
+    });
     if (name === "boundary-conflict.jsonl") {
       expect(result.record.audit).toContainEqual(expect.objectContaining({ event_id: "boundary-missing", kind: "invalid_transition", reason: "human_boundary_kind_required" }));
     }
@@ -157,12 +179,13 @@ describe("controller dry-run replay", () => {
       },
       audit_fields: expect.objectContaining({
         delivery_id: "delivery-notification-plan",
-        transition_event_id: "offline-1",
+        causal_event_id: "offline-1",
         heartbeat_age_seconds: -1,
         offline_incident_id: "offline-1",
         dedupe_key: "delivery-notification-plan:0:offline:offline-1:0",
       }),
     })]);
+    expect(result.record.notifications[0]!.audit_fields).not.toHaveProperty("transition_event_id");
   });
 
   it("includes deterministic signal-specific audit plans without external delivery", () => {
@@ -175,7 +198,29 @@ describe("controller dry-run replay", () => {
     expect(ready.audit_fields).toMatchObject({ freshness: "h1:b1:clean", evidence_bundle_id: expect.any(String), acceptance_result: "ready_for_human_review" });
     expect(repair.audit_fields).toMatchObject({ repair_round: 2, cause: "terminal_failure_after_repair_budget", attempt_count: 3, evidence_refs: "failure-3", next_action: "wait_for_human_decision" });
     expect(escalation.audit_fields).toMatchObject({ escalation_reason: "three_consecutive_lease_losses", evidence_refs: "expiry-3,heartbeat-3", acceptance_result: "human_decision_required" });
-    for (const plan of [invalidation, ready, repair, escalation]) expect(plan.retry.external_delivery).toBe(false);
+    const transitionByPlan = (result: ReturnType<typeof fixture>, plan: typeof invalidation) => {
+      const toStateBySignal = {
+        offline: "waiting_for_runtime",
+        reconnect: "leased",
+        invalidation: "freshness_invalidated",
+        ready: "ready_for_human_review",
+        repair_exhausted: "awaiting_human_decision",
+        human_escalation: "awaiting_human_decision",
+      } as const;
+      return result.record.transitions.find((transition) => transition.causal_event_id === plan.causal_event_id && transition.to_state === toStateBySignal[plan.signal])!;
+    };
+    for (const [result, plan] of [
+      [fixture("head-changes-after-approval.jsonl"), invalidation],
+      [fixture("ready-with-current-evidence.jsonl"), ready],
+      [fixture("repair-exhaustion.jsonl"), repair],
+      [fixture("consecutive-lease-loss-escalation.jsonl"), escalation],
+    ] as const) {
+      expect(plan.retry.external_delivery).toBe(false);
+      expect(plan.audit_fields).toMatchObject({
+        causal_event_id: plan.causal_event_id,
+        transition_event_id: transitionByPlan(result, plan).event_id,
+      });
+    }
 
     const first = fixture("consecutive-lease-loss-escalation.jsonl").record.notifications;
     const second = fixture("consecutive-lease-loss-escalation.jsonl").record.notifications;
