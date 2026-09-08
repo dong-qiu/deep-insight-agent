@@ -67,6 +67,7 @@ export interface NotificationPlan {
 /** Immutable evidence receipt admitted with ready_for_human_review. */
 export interface ReadyBundle {
   readonly hash: string;
+  readonly delivery_id: string;
   readonly generation: number;
   readonly freshness: Readonly<Freshness>;
   readonly snapshot_evidence_ref: string;
@@ -421,6 +422,10 @@ function recheckReadyEvidence(record: ControllerRecord, event: ReplayInputEvent,
     return invalid(record, event, "ready_bundle_and_current_freshness_required_for_recheck");
   }
   const bundle = record.ready_bundle;
+  if (!readyBundleVerifiable(record, bundle)) {
+    invalidateFreshness(record, event, undefined, states, notificationKeys, "ready_bundle_unverifiable");
+    return;
+  }
   const snapshotExpired = !isTimestampWithinTtl(bundle.snapshot_evidence.observed_at, clock, SNAPSHOT_TTL_MS);
   const ciExpired = !isTimestampWithinTtl(bundle.ci_evidence.observed_at, clock, EVIDENCE_TTL_MS);
   const reviewExpired = !isTimestampWithinTtl(bundle.review_evidence.observed_at, clock, EVIDENCE_TTL_MS);
@@ -516,6 +521,32 @@ function createReadyBundle(record: ControllerRecord, evidence: ReadyBundleEviden
     review_evidence: evidenceReceipt(evidence.review),
   };
   return { ...fields, hash: fnv1a(JSON.stringify(fields)), admitted_at: admittedAt };
+}
+
+function readyBundleVerifiable(record: ControllerRecord, bundle: ReadyBundle): boolean {
+  if (bundle.hash !== readyBundleHash(bundle)) return false;
+  if (bundle.delivery_id !== record.delivery_id || bundle.generation !== record.generation || !sameFreshness(bundle.freshness, record.current_freshness)) return false;
+  return receiptMatchesActiveEvidence(record, bundle.snapshot_evidence, "snapshot", bundle.freshness, undefined)
+    && receiptMatchesActiveEvidence(record, bundle.ci_evidence, "ci", bundle.freshness, "passed")
+    && receiptMatchesActiveEvidence(record, bundle.review_evidence, "review", bundle.freshness, "approved");
+}
+
+function readyBundleHash(bundle: ReadyBundle): string {
+  const { hash: _hash, admitted_at: _admittedAt, ...fields } = bundle;
+  return fnv1a(JSON.stringify(fields));
+}
+
+function receiptMatchesActiveEvidence(record: ControllerRecord, receipt: EvidenceReceipt, kind: Evidence["kind"], freshness: Freshness, conclusion: Evidence["conclusion"] | undefined): boolean {
+  if (!sameFreshness(receipt.freshness, freshness) || receipt.conclusion !== conclusion) return false;
+  const evidence = record.evidence.find((candidate) => candidate.id === receipt.id && candidate.kind === kind && candidate.status === "active");
+  return Boolean(evidence
+    && evidence.source === receipt.source
+    && evidence.immutable_ref === receipt.immutable_ref
+    && evidence.payload_hash === receipt.payload_hash
+    && evidence.observed_at === receipt.observed_at
+    && sameFreshness(evidence.freshness, freshness)
+    && evidence.conclusion === conclusion
+    && !evidence.expired);
 }
 
 function evidenceReceipt(evidence: Evidence): EvidenceReceipt {

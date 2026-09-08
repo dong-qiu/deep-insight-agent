@@ -146,6 +146,27 @@ describe("controller dry-run replay", () => {
     }));
   });
 
+  it("fails closed when a recovered ready bundle no longer verifies against active evidence", () => {
+    const accepted = fixture("ready-with-current-evidence.jsonl").record;
+    const tampered = { ...accepted.ready_bundle!, hash: "00000000" };
+    const result = replay([
+      { event_id: "ready-recheck", kind: "freshness_recheck", occurred_at: "2026-09-01T00:04:00.000Z", evidence_refs: ["recheck"], expected_generation: 0 },
+    ], {
+      kind: "fixture",
+      delivery_id: accepted.delivery_id,
+      clock: "2026-09-01T00:06:00.000Z",
+      state: accepted.state,
+      generation: accepted.generation,
+      current_freshness: accepted.current_freshness,
+      evidence: accepted.evidence,
+      ready_bundle: tampered,
+    });
+    expect(result.record).toMatchObject({ state: "freshness_invalidated", generation: 1, ready_bundle: undefined });
+    expect(result.record.transitions).toContainEqual(expect.objectContaining({
+      idempotency_key: `delivery-ready:0:invalidate:${freshnessHash({ head_sha: "h1", base_sha: "b1", merge_state_status: "clean" })}:ready_bundle_unverifiable`,
+    }));
+  });
+
   it("derives evidence expiry from the fixture clock and rejects foreign events", () => {
     const result = replay([
       { event_id: "current", kind: "snapshot", occurred_at: "2026-09-01T23:55:00.000Z", evidence_refs: ["current"], expected_generation: 0, freshness: { head_sha: "h1", base_sha: "b1", merge_state_status: "clean" } },
