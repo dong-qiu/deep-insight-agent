@@ -63,14 +63,15 @@ describe("controller dry-run replay", () => {
       review_evidence_ref: "review",
     });
     const ready = result.record.notifications.filter((plan) => plan.signal === "ready");
-    expect(ready).toEqual([expect.objectContaining({ dedupe_key: `delivery-ready:0:ready:${result.record.ready_bundle!.hash}` })]);
+    expect(ready).toEqual([expect.objectContaining({ dedupe_key: "delivery-ready:0:ready:ready-1" })]);
   });
 
   it.each([
-    ["stale", "stale-snapshot-after-ready.jsonl", "freshness_unknown"],
-    ["expired", "expired-snapshot-after-ready.jsonl", "freshness_unknown"],
-    ["unknown", "unknown-snapshot-after-ready.jsonl", freshnessHash({ head_sha: "h1", base_sha: "b1", merge_state_status: "unknown" })],
-  ])("invalidates an already-ready immutable bundle for a %s authoritative snapshot", (_case, name, nextFreshnessHash) => {
+    ["stale", "stale-snapshot-after-ready.jsonl", "authoritative_freshness_changed_or_unknown"],
+    ["expired", "expired-snapshot-after-ready.jsonl", "authoritative_snapshot_expired"],
+    ["unknown", "unknown-snapshot-after-ready.jsonl", "authoritative_freshness_changed_or_unknown"],
+    ["missing", "missing-freshness-after-ready.jsonl", "freshness_unknown"],
+  ])("invalidates an already-ready immutable bundle for a %s authoritative snapshot", (_case, name, cause) => {
     const result = fixture(name);
     const [bundle] = result.record.superseded_ready_bundles;
     expect(result.record).toMatchObject({ state: "freshness_invalidated", generation: 1, ready_bundle: undefined });
@@ -87,10 +88,29 @@ describe("controller dry-run replay", () => {
       expect.objectContaining({ kind: "replayed_event" }),
     ]));
     expect(result.record.notifications).toEqual(expect.arrayContaining([
-      expect.objectContaining({ signal: "ready", dedupe_key: `${result.record.delivery_id}:0:ready:${bundle.hash}` }),
-      expect.objectContaining({ signal: "invalidation", dedupe_key: `${result.record.delivery_id}:1:invalidation:${bundle.hash}:${nextFreshnessHash}` }),
+      expect.objectContaining({ signal: "ready", dedupe_key: `${result.record.delivery_id}:0:ready:ready-1` }),
+      expect.objectContaining({ signal: "invalidation", dedupe_key: `${result.record.delivery_id}:1:invalidation:${freshnessHash({ head_sha: "h1", base_sha: "b1", merge_state_status: "clean" })}:${cause}` }),
     ]));
     expect(result.record.notifications.filter((plan) => plan.signal === "invalidation")).toHaveLength(1);
+  });
+
+  it.each([
+    "freshness-recovery-after-expired-ready.jsonl",
+    "freshness-recovery-after-unknown-ready.jsonl",
+  ])("recovers an invalidated generation only after a new clean authoritative snapshot: %s", (name) => {
+    const result = fixture(name);
+    expect(result.record).toMatchObject({
+      state: "evidence_collecting",
+      generation: 1,
+      current_freshness: { head_sha: "h2", base_sha: "b1", merge_state_status: "clean" },
+      ready_bundle: undefined,
+    });
+    expect(result.record.evidence.filter((evidence) => evidence.freshness?.head_sha === "h1").every((evidence) => evidence.status === "superseded")).toBe(true);
+    expect(result.record.transitions).toContainEqual(expect.objectContaining({
+      from_state: "freshness_invalidated",
+      to_state: "evidence_collecting",
+      precondition: "authoritative_new_generation_snapshot",
+    }));
   });
 
   it("derives evidence expiry from the fixture clock and rejects foreign events", () => {

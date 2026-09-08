@@ -58,6 +58,13 @@ export interface ReadyBundle {
   readonly admitted_at: string;
 }
 
+/** The three independently admissible evidence receipts pinned into a ready bundle. */
+interface ReadyBundleEvidence {
+  snapshot: Evidence;
+  ci: Evidence;
+  review: Evidence;
+}
+
 export interface AuditEntry {
   event_id: string;
   kind: "invalid_transition" | "stale_event" | "replayed_event" | "ready_bundle_invalidated";
@@ -262,7 +269,7 @@ function reduce(record: ControllerRecord, event: ReplayInputEvent, states: Contr
       if (transition(record, event, "ready_for_human_review", states, "current_freshness_and_matching_unexpired_evidence", "recheck_freshness_before_any_human_acceptance")) {
         const bundle = createReadyBundle(record, bundleEvidence, event.occurred_at);
         record.ready_bundle = bundle;
-        notify(record, event, notificationKeys, "ready", `${record.delivery_id}:${record.generation}:ready:${bundle.hash}`);
+        notify(record, event, notificationKeys, "ready", `${record.delivery_id}:${record.generation}:ready:${event.event_id}`);
       }
       return;
     }
@@ -301,12 +308,20 @@ function applyResult(record: ControllerRecord, event: ReplayInputEvent, states: 
   record.active_task_ids = [];
   // Result freshness is correlation evidence only. An authoritative snapshot is
   // the sole source allowed to establish current_freshness.
-  record.evidence.push(evidenceFromEvent(event, "result", clock, event.freshness, event.result === "completed" ? "passed" : "failed"));
+  record.evidence.push(evidenceFromEvent(event, "result", clock, event.freshness ? normalizeFreshness(event.freshness) : undefined, event.result === "completed" ? "passed" : "failed"));
   if (to === "awaiting_human_decision") notify(record, event, notificationKeys, "repair_exhausted", `${record.delivery_id}:${record.generation}:repair_exhausted:${event.event_id}`);
 }
 
 function applySnapshot(record: ControllerRecord, event: ReplayInputEvent, states: ControllerState[], notificationKeys: Set<string>, clock: number): void {
-  if (!event.freshness) return invalid(record, event, "freshness_required");
+  if (!event.freshness) {
+    // A snapshot without F cannot prove that the ready bundle is still for the
+    // current PR. Revoke any active generation before recording the rejected
+    // observation; never leave prior acceptance evidence actionable.
+    if (record.state !== "freshness_invalidated" && canInvalidateFreshness(record) && (record.current_freshness || record.ready_bundle)) {
+      invalidateFreshness(record, event, undefined, states, notificationKeys, "freshness_unknown");
+    }
+    return invalid(record, event, "freshness_required");
+  }
   const freshness = normalizeFreshness(event.freshness);
   if (evidenceExpired(event, clock, "snapshot")) {
     // Keep the supplied snapshot reference as rejected evidence so the
@@ -320,23 +335,35 @@ function applySnapshot(record: ControllerRecord, event: ReplayInputEvent, states
     }
     return invalid(record, event, "authoritative_snapshot_expired");
   }
+  if (record.state === "freshness_invalidated") {
+    // The invalidated generation can only recover from a newly observed clean
+    // authoritative snapshot. Supersede the failed/unknown F observation too,
+    // so a later ready bundle can only see evidence for the replacement F.
+    const priorFreshness = record.current_freshness;
+    if (priorFreshness) {
+      record.evidence.forEach((evidence) => {
+        if (evidence.freshness && sameFreshness(evidence.freshness, priorFreshness)) evidence.status = "superseded";
+      });
+    }
+    record.current_freshness = freshness;
+    record.evidence.push(evidenceFromEvent(event, "snapshot", clock, freshness));
+    if (freshness.merge_state_status === "clean") {
+      transition(record, event, "evidence_collecting", states, "authoritative_new_generation_snapshot", "collect_new_ci_and_review_evidence");
+    }
+    return;
+  }
   if (!record.current_freshness) {
     record.current_freshness = freshness;
     record.evidence.push(evidenceFromEvent(event, "snapshot", clock, freshness));
     return;
   }
-  if (sameFreshness(record.current_freshness, freshness)) {
-    if (record.state === "freshness_invalidated") {
-      transition(record, event, "evidence_collecting", states, "authoritative_new_generation_snapshot", "collect_new_ci_and_review_evidence");
-    }
-    return;
-  }
+  if (sameFreshness(record.current_freshness, freshness)) return;
   if (!canInvalidateFreshness(record)) return invalid(record, event, "freshness_change_from_non_active_state");
   invalidateFreshness(record, event, freshness, states, notificationKeys, "authoritative_freshness_changed_or_unknown", clock);
 }
 
 function canInvalidateFreshness(record: ControllerRecord): boolean {
-  return ACTIVE_STATES.has(record.state) || record.state === "ready_for_human_review";
+  return record.state !== "freshness_invalidated" && (ACTIVE_STATES.has(record.state) || record.state === "ready_for_human_review");
 }
 
 function invalidateFreshness(record: ControllerRecord, event: ReplayInputEvent, freshness: Freshness | undefined, states: ControllerState[], notificationKeys: Set<string>, reason: string, clock?: number): void {
@@ -358,7 +385,7 @@ function invalidateFreshness(record: ControllerRecord, event: ReplayInputEvent, 
   record.active_lease_expires_at = undefined;
   record.active_task_ids = [];
   if (clock !== undefined && freshness) record.evidence.push(evidenceFromEvent(event, "snapshot", clock, freshness));
-  notify(record, event, notificationKeys, "invalidation", `${record.delivery_id}:${record.generation}:invalidation:${oldBundle?.hash ?? oldHash}:${freshness ? freshnessHash(freshness) : "freshness_unknown"}`);
+  notify(record, event, notificationKeys, "invalidation", `${record.delivery_id}:${record.generation}:invalidation:${oldHash}:${reason}`);
 }
 
 function addFreshEvidence(record: ControllerRecord, event: ReplayInputEvent, kind: "ci" | "review", clock: number): void {
@@ -425,7 +452,7 @@ function allowed(from: ControllerState, to: ControllerState): boolean {
   return edges[from]?.includes(to) ?? false;
 }
 
-function readyBundleEvidence(record: ControllerRecord, clock: number): { snapshot: Evidence; ci: Evidence; review: Evidence } | undefined {
+function readyBundleEvidence(record: ControllerRecord, clock: number): ReadyBundleEvidence | undefined {
   const freshness = record.current_freshness;
   if (!freshness || freshness.merge_state_status !== "clean") return undefined;
   const snapshot = record.evidence.find((e) => e.kind === "snapshot" && e.status === "active" && !e.expired && isTimestampWithinTtl(e.observed_at, clock, SNAPSHOT_TTL_MS) && sameFreshness(e.freshness, freshness));
@@ -434,7 +461,7 @@ function readyBundleEvidence(record: ControllerRecord, clock: number): { snapsho
   return snapshot && ci && review ? { snapshot, ci, review } : undefined;
 }
 
-function createReadyBundle(record: ControllerRecord, evidence: { snapshot: Evidence; ci: Evidence; review: Evidence }, admittedAt: string): ReadyBundle {
+function createReadyBundle(record: ControllerRecord, evidence: ReadyBundleEvidence, admittedAt: string): ReadyBundle {
   const freshness = record.current_freshness!;
   const fields = {
     delivery_id: record.delivery_id,
