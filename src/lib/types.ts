@@ -460,8 +460,8 @@ export const LlmCitationSchema = z.object({
 
 /** analyzer 产出的单条洞察 */
 export const LlmInsightSchema = z.object({
-  statement: z.string().describe("结论文本，中性叙述，不预测、不评论"),
-  statement_citation_index: z.number().int().positive().describe("statement 唯一绑定的 citations 1-based 序号。statement 去除首尾/连续空白与句末标点后必须与该 citation 的 claim 完全一致；不得选择多个引用，也不得在 statement 添加 claim 中没有的范围、关系、机制、程度或评价"),
+  statement: z.string().describe("候选结论草稿，中性叙述，不预测、不评论；最终展示 statement 由 statement_citation_index 所选 citation 的 claim 在代码侧确定性构造，草稿不得添加该 claim 没有的范围、关系、机制、程度或评价"),
+  statement_citation_index: z.number().int().positive().describe("最终展示 statement 唯一绑定的 citations 1-based 序号。所选 citation 的 claim 必须是完整、可读的原子事实；代码以它构造最终 statement，不得选择多个引用"),
   headline: z
     .string()
     .describe(

@@ -7,7 +7,8 @@ import type { Citation, ContentItem, Insight, Topic } from "../types.js";
 // callStructured mock 掉——repairCoverage 经 verifyCandidates 调它；无 API key、CI 可跑纯函数。
 vi.mock("../runtime/llm.js", () => ({
   callStructured: vi.fn(),
-  MODELS: { analyzer: "test-analyzer", validator: "test-validator" },
+  assertCoverageModelSeparation: vi.fn(),
+  MODELS: { analyzer: "test-analyzer", validator: "test-validator", coverage: "test-coverage" },
 }));
 import { callStructured } from "../runtime/llm.js";
 import { ANALYZE_BODY_CHARS, ANALYZER_SYSTEM, CITATION_CLAUSE_AUDIT, QuoteCoverageRejectedError, REPAIR_QUOTE_MIN_PREFIX, SELECT_SEPARATOR, analyze, canonicalizeInsightEvents, carveQuote, chunkByChars, chunkWindows, coverageGaps, filterByQuoteCoverage, isCompleteStatement, quoteCoverageClauses, renderImportanceBasis, repairCitationSource, repairCoverage, repairQuote, selectForAnalyze, specificClaims, truncateForAnalyze } from "./analyzer.js";
@@ -55,12 +56,16 @@ describe("analyze 的展示覆盖审计投影", () => {
       .mockResolvedValueOnce({ data: {
         no_significant_event: false,
         insights: [{
-          statement: "Fact is supported.", statement_citation_index: 1, headline: "", type: "aggregation", importance: 3,
+          statement: "A draft that expands the fact.", statement_citation_index: 1, headline: "", type: "aggregation", importance: 3,
           importance_facts: [], importance_reason: "research_tracking", importance_reason_claim_indexes: [1],
           confidence: null, event_id: null, is_followup: false, entities: [], tags: [],
           citations: [{ content_item_id: "ci", claim: "Fact is supported", quote: "Fact is supported." }],
         }],
       } } as unknown as Awaited<ReturnType<typeof callStructured>>)
+      .mockResolvedValueOnce({ data: { verdicts: [{
+        index: 1, kind: "factual", supports: true, citation_indexes: [1],
+        evidence_spans: [{ citation_index: 1, quote_start: 0, quote_end: "Fact is supported.".length, evidence_excerpt: "Fact is supported." }],
+      }] } } as unknown as Awaited<ReturnType<typeof callStructured>>)
       .mockResolvedValueOnce({ data: { verdicts: [{
         index: 1, kind: "factual", supports: true, citation_indexes: [1],
         evidence_spans: [{ citation_index: 1, quote_start: 0, quote_end: "Fact is supported.".length, evidence_excerpt: "Fact is supported." }],
@@ -74,6 +79,7 @@ describe("analyze 的展示覆盖审计投影", () => {
 
     const batch = await analyze(topic, [content], { start: "2026-09-09", end: "2026-09-09" });
     const [insight] = batch.insights;
+    expect(insight.statement).toBe("Fact is supported.");
     expect(insight.id).toMatch(/^ins_batch_/);
     expect(insight.citations[0].citation_ref).toMatch(/^cite_/);
     expect(batch.display_coverage_audits).toMatchObject([{
@@ -126,6 +132,10 @@ describe("analyze 的展示覆盖审计投影", () => {
           citations: [{ content_item_id: "ci_kept", claim: "Supported fact", quote: "Supported fact." }],
         }],
       } } as unknown as Awaited<ReturnType<typeof callStructured>>)
+      .mockResolvedValueOnce({ data: { verdicts: [{
+        index: 1, kind: "factual", supports: true, citation_indexes: [1],
+        evidence_spans: [{ citation_index: 1, quote_start: 0, quote_end: "Supported fact.".length, evidence_excerpt: "Supported fact." }],
+      }] } } as unknown as Awaited<ReturnType<typeof callStructured>>)
       .mockResolvedValueOnce({ data: { verdicts: [{
         index: 1, kind: "factual", supports: true, citation_indexes: [1],
         evidence_spans: [{ citation_index: 1, quote_start: 0, quote_end: "Supported fact.".length, evidence_excerpt: "Supported fact." }],
@@ -609,11 +619,17 @@ describe("filterByQuoteCoverage（展示 quote 覆盖门）", () => {
   it("联合 quotes 直接覆盖 statement 时保留", async () => {
     vi.mocked(callStructured).mockResolvedValue(coverageVerdicts(true));
     const row = insight("被完整覆盖的结论。");
-    await expect(filterByQuoteCoverage([row])).resolves.toEqual([row]);
+    const audits: Array<{ claims: Array<{ supports: boolean; countercheck?: { model: string; supports: boolean; reason: string; prompt_hash: string } }> }> = [];
+    await expect(filterByQuoteCoverage([row], undefined, undefined, (decision) => audits.push(decision))).resolves.toEqual([row]);
+    expect(vi.mocked(callStructured).mock.calls.map(([request]) => request.role)).toEqual(["validator", "coverage"]);
+    expect(audits[0]?.claims[0]).toMatchObject({
+      supports: true,
+      countercheck: { model: "test-coverage", supports: true, reason: "countercheck_supported", prompt_hash: expect.any(String) },
+    });
   });
 
   it("statement 仅插入一个未绑定的程度词时在调用 judge 前拒绝", async () => {
-    const audits: Array<{ claims: Array<{ reason: string }> }> = [];
+    const audits: Array<{ statement_citation_index?: number; statement_citation_ref?: string; statement_citation_claim?: string; claims: Array<{ reason: string }> }> = [];
     const row = insight("候选由临时 worker 重放验证，并带健康检查门控的自动回滚。", [{
       content_item_id: "ci",
       claim: "候选由临时 worker 重放验证，并带健康检查门控的回滚",
@@ -624,6 +640,11 @@ describe("filterByQuoteCoverage（展示 quote 覆盖门）", () => {
     await expect(filterByQuoteCoverage([row], undefined, undefined, (decision) => audits.push(decision))).resolves.toEqual([]);
     expect(vi.mocked(callStructured)).not.toHaveBeenCalled();
     expect(audits[0]?.claims[0]?.reason).toBe("statement_not_bound_to_citation_claim");
+    expect(audits[0]).toMatchObject({
+      statement_citation_index: 1,
+      statement_citation_ref: expect.stringMatching(/^cite_/),
+      statement_citation_claim: "候选由临时 worker 重放验证，并带健康检查门控的回滚",
+    });
   });
 
   it("statement 与 claim 相等仍必须经过 claim→quote 语义审计", async () => {
@@ -637,7 +658,7 @@ describe("filterByQuoteCoverage（展示 quote 覆盖门）", () => {
     }]);
 
     await expect(filterByQuoteCoverage([row], undefined, undefined, (decision) => audits.push(decision))).resolves.toEqual([]);
-    expect(vi.mocked(callStructured)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(callStructured)).toHaveBeenCalledTimes(2);
     expect(audits[0]?.claims[0]?.reason).toBe("judge_not_supported");
   });
 
@@ -651,8 +672,170 @@ describe("filterByQuoteCoverage（展示 quote 覆盖门）", () => {
     }]);
 
     await expect(filterByQuoteCoverage([row])).resolves.toEqual([]);
-    expect(vi.mocked(callStructured)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(callStructured)).toHaveBeenCalledTimes(2);
     expect(vi.mocked(callStructured).mock.calls[0]?.[0].system).toContain("省略的上文、下文、标题或全文上下文");
+  });
+
+  it("主审错误放行 Khmer 适用范围时，独立复核必须拒绝并留下双审审计", async () => {
+    const quote = "We observe the best performance for the character-based Recursive chunking method.";
+    vi.mocked(callStructured)
+      .mockResolvedValueOnce(coverageVerdictsFor(quote, true))
+      .mockResolvedValueOnce(coverageVerdictsFor(quote, false));
+    const audits: Array<{ claims: Array<{ supports: boolean; reason: string; countercheck?: { model: string; supports: boolean; reason: string } }> }> = [];
+    const row = insight("The character-based Recursive chunking method performs best for Khmer agricultural RAG.", [{
+      content_item_id: "ci",
+      claim: "The character-based Recursive chunking method performs best for Khmer agricultural RAG",
+      quote,
+      locator: { paragraph_index: 0, char_start: 0, char_end: quote.length },
+    }]);
+
+    await expect(filterByQuoteCoverage([row], undefined, undefined, (decision) => audits.push(decision))).resolves.toEqual([]);
+    expect(vi.mocked(callStructured)).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(callStructured).mock.calls.map(([request]) => request.role)).toEqual(["validator", "coverage"]);
+    expect(audits[0]?.claims[0]).toMatchObject({
+      supports: false,
+      reason: "countercheck_not_supported",
+      countercheck: { model: "test-coverage", supports: false, reason: "countercheck_not_supported" },
+    });
+  });
+
+  it("独立复核缺少 verdict 时 fail-closed，不能回退到主审放行", async () => {
+    const quote = "SpecBench contains 30 systems-level programming tasks.";
+    vi.mocked(callStructured)
+      .mockResolvedValueOnce(coverageVerdictsFor(quote, true))
+      .mockResolvedValueOnce({ data: { verdicts: [] } } as unknown as Awaited<ReturnType<typeof callStructured>>);
+    const audits: Array<{ claims: Array<{ supports: boolean; reason: string; countercheck?: { supports: boolean; reason: string } }> }> = [];
+    const row = insight("SpecBench contains 30 systems-level programming tasks.", [{
+      content_item_id: "ci",
+      claim: "SpecBench contains 30 systems-level programming tasks",
+      quote,
+      locator: { paragraph_index: 0, char_start: 0, char_end: quote.length },
+    }]);
+
+    await expect(filterByQuoteCoverage([row], undefined, undefined, (decision) => audits.push(decision))).resolves.toEqual([]);
+    expect(audits[0]?.claims[0]).toMatchObject({
+      supports: false,
+      reason: "countercheck_invalid_verdict_set",
+      countercheck: { supports: false, reason: "countercheck_invalid_verdict_set" },
+    });
+  });
+
+  it("独立复核输出额外 verdict 时按非法集合拒绝", async () => {
+    const quote = "SpecBench contains 30 systems-level programming tasks.";
+    vi.mocked(callStructured)
+      .mockResolvedValueOnce(coverageVerdictsFor(quote, true))
+      .mockResolvedValueOnce({ data: { verdicts: [
+        { index: 1, kind: "factual", supports: true, citation_indexes: [1], evidence_spans: [{ citation_index: 1, quote_start: 0, quote_end: quote.length, evidence_excerpt: quote }] },
+        { index: 2, kind: "factual", supports: false, citation_indexes: [], evidence_spans: [] },
+      ] } } as unknown as Awaited<ReturnType<typeof callStructured>>);
+    const audits: Array<{ claims: Array<{ reason: string; countercheck?: { reason: string } }> }> = [];
+    const row = insight("SpecBench contains 30 systems-level programming tasks.", [{
+      content_item_id: "ci", claim: "SpecBench contains 30 systems-level programming tasks", quote,
+      locator: { paragraph_index: 0, char_start: 0, char_end: quote.length },
+    }]);
+
+    await expect(filterByQuoteCoverage([row], undefined, undefined, (decision) => audits.push(decision))).resolves.toEqual([]);
+    expect(audits[0]?.claims[0]).toMatchObject({ reason: "countercheck_invalid_verdict_set", countercheck: { reason: "countercheck_invalid_verdict_set" } });
+  });
+
+  it("主审重复冲突 verdict 即使反审支持也必须拒绝", async () => {
+    const quote = "SpecBench contains 30 systems-level programming tasks.";
+    vi.mocked(callStructured)
+      .mockResolvedValueOnce({ data: { verdicts: [
+        { index: 1, kind: "factual", supports: true, citation_indexes: [1], evidence_spans: [{ citation_index: 1, quote_start: 0, quote_end: quote.length, evidence_excerpt: quote }] },
+        { index: 1, kind: "factual", supports: false, citation_indexes: [], evidence_spans: [] },
+      ] } } as unknown as Awaited<ReturnType<typeof callStructured>>)
+      .mockResolvedValueOnce(coverageVerdictsFor(quote, true));
+    const audits: Array<{ claims: Array<{ supports: boolean; reason: string; countercheck?: { supports: boolean } }> }> = [];
+    const row = insight("SpecBench contains 30 systems-level programming tasks.", [{
+      content_item_id: "ci", claim: "SpecBench contains 30 systems-level programming tasks", quote,
+      locator: { paragraph_index: 0, char_start: 0, char_end: quote.length },
+    }]);
+
+    await expect(filterByQuoteCoverage([row], undefined, undefined, (decision) => audits.push(decision))).resolves.toEqual([]);
+    expect(audits[0]?.claims[0]).toMatchObject({ supports: false, reason: "primary_invalid_verdict_set", countercheck: { supports: true } });
+  });
+
+  it("主审输出越界 verdict 即使反审支持也必须拒绝", async () => {
+    const quote = "SpecBench contains 30 systems-level programming tasks.";
+    vi.mocked(callStructured)
+      .mockResolvedValueOnce({ data: { verdicts: [
+        { index: 1, kind: "factual", supports: true, citation_indexes: [1], evidence_spans: [{ citation_index: 1, quote_start: 0, quote_end: quote.length, evidence_excerpt: quote }] },
+        { index: 2, kind: "factual", supports: false, citation_indexes: [], evidence_spans: [] },
+      ] } } as unknown as Awaited<ReturnType<typeof callStructured>>)
+      .mockResolvedValueOnce(coverageVerdictsFor(quote, true));
+    const audits: Array<{ claims: Array<{ supports: boolean; reason: string; countercheck?: { supports: boolean } }> }> = [];
+    const row = insight("SpecBench contains 30 systems-level programming tasks.", [{
+      content_item_id: "ci", claim: "SpecBench contains 30 systems-level programming tasks", quote,
+      locator: { paragraph_index: 0, char_start: 0, char_end: quote.length },
+    }]);
+
+    await expect(filterByQuoteCoverage([row], undefined, undefined, (decision) => audits.push(decision))).resolves.toEqual([]);
+    expect(audits[0]?.claims[0]).toMatchObject({ supports: false, reason: "primary_invalid_verdict_set", countercheck: { supports: true } });
+  });
+
+  it("主审拒绝时即使独立复核支持也不放行", async () => {
+    const quote = "SpecBench contains 30 systems-level programming tasks.";
+    vi.mocked(callStructured)
+      .mockResolvedValueOnce(coverageVerdictsFor(quote, false))
+      .mockResolvedValueOnce(coverageVerdictsFor(quote, true));
+    const audits: Array<{ claims: Array<{ supports: boolean; reason: string; countercheck?: { supports: boolean } }> }> = [];
+    const row = insight("SpecBench contains 30 systems-level programming tasks.", [{
+      content_item_id: "ci", claim: "SpecBench contains 30 systems-level programming tasks", quote,
+      locator: { paragraph_index: 0, char_start: 0, char_end: quote.length },
+    }]);
+
+    await expect(filterByQuoteCoverage([row], undefined, undefined, (decision) => audits.push(decision))).resolves.toEqual([]);
+    expect(audits[0]?.claims[0]).toMatchObject({ supports: false, reason: "judge_not_supported", countercheck: { supports: true } });
+  });
+
+  it("主审不可用时仍写入终态并调用独立复核", async () => {
+    const priorRetries = process.env.VALIDATOR_RETRIES;
+    process.env.VALIDATOR_RETRIES = "0";
+    try {
+      const quote = "SpecBench contains 30 systems-level programming tasks.";
+      vi.mocked(callStructured)
+        .mockRejectedValueOnce(new Error("primary unavailable"))
+        .mockResolvedValueOnce(coverageVerdictsFor(quote, true));
+      const audits: Array<{ terminal_reason: string; claims: Array<{ supports: boolean; reason: string; countercheck?: { supports: boolean } }> }> = [];
+      const row = insight("SpecBench contains 30 systems-level programming tasks.", [{
+        content_item_id: "ci", claim: "SpecBench contains 30 systems-level programming tasks", quote,
+        locator: { paragraph_index: 0, char_start: 0, char_end: quote.length },
+      }]);
+
+      await expect(filterByQuoteCoverage([row], undefined, undefined, (decision) => audits.push(decision))).resolves.toEqual([]);
+      expect(vi.mocked(callStructured).mock.calls.map(([request]) => request.role)).toEqual(["validator", "coverage"]);
+      expect(audits[0]).toMatchObject({ terminal_reason: "dropped_coverage", claims: [{ supports: false, reason: "primary_unavailable", countercheck: { supports: true } }] });
+    } finally {
+      if (priorRetries === undefined) delete process.env.VALIDATOR_RETRIES;
+      else process.env.VALIDATOR_RETRIES = priorRetries;
+    }
+  });
+
+  it("独立复核调用异常时 fail-closed，不能回退主审支持", async () => {
+    const priorRetries = process.env.VALIDATOR_RETRIES;
+    process.env.VALIDATOR_RETRIES = "0";
+    try {
+      const quote = "SpecBench contains 30 systems-level programming tasks.";
+      vi.mocked(callStructured)
+        .mockResolvedValueOnce(coverageVerdictsFor(quote, true))
+        .mockRejectedValueOnce(new Error("countercheck unavailable"));
+      const audits: Array<{ claims: Array<{ supports: boolean; reason: string; countercheck?: { supports: boolean; reason: string; error?: string } }> }> = [];
+      const row = insight("SpecBench contains 30 systems-level programming tasks.", [{
+        content_item_id: "ci", claim: "SpecBench contains 30 systems-level programming tasks", quote,
+        locator: { paragraph_index: 0, char_start: 0, char_end: quote.length },
+      }]);
+
+      await expect(filterByQuoteCoverage([row], undefined, undefined, (decision) => audits.push(decision))).resolves.toEqual([]);
+      expect(audits[0]?.claims[0]).toMatchObject({
+        supports: false,
+        reason: "countercheck_unavailable",
+        countercheck: { supports: false, reason: "countercheck_unavailable", error: "countercheck unavailable" },
+      });
+    } finally {
+      if (priorRetries === undefined) delete process.env.VALIDATOR_RETRIES;
+      else process.env.VALIDATOR_RETRIES = priorRetries;
+    }
   });
 
   it("把复合 statement 拆为可审计的实质 clause，跳过纯引导语", () => {

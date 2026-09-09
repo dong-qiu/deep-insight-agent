@@ -1,5 +1,5 @@
 /** 设置页（B-3）：主题 / 数据源 CRUD。
- *  - 顶部为只读模型对子；
+ *  - 顶部为只读模型配置；
  *  - 主题/数据源各自分块：① 列表（每行内嵌编辑表单 details + 删除按钮）；② 新建（折叠 details）。
  *  - 表单通过客户端组件（TopicForm/SourceForm）调 /api/admin/* 路由，成功后 router.refresh()。 */
 import { getEffectiveModels, loadStaticConfig } from "../../lib/config/index.js";
@@ -40,7 +40,7 @@ export default function SettingsPage() {
   ].filter((g) => g.items.length > 0);
   const users = listUsers(db);
   const recipients = listRecipients(db);
-  let models: { analyzer: string; validator: string } | null = null;
+  let models: { analyzer: string; validator: string; coverage: string | null } | null = null;
   try {
     models = getEffectiveModels(loadStaticConfig());
   } catch {
@@ -60,15 +60,15 @@ export default function SettingsPage() {
         <a href="#sources">数据源（{sources.length}）</a>
       </nav>
 
-      {/* 只读模型对子：低频查看，折叠收起避免占据顶部最显眼位 */}
+      {/* 只读模型配置：低频查看，折叠收起避免占据顶部最显眼位 */}
       <details style={{ margin: ".5rem 0" }}>
         <summary className="muted" style={{ cursor: "pointer" }}>
-          模型对子{models ? `（分析 ${models.analyzer} · 校验 ${models.validator}）` : "（未就绪）"}
+          模型配置{models ? `（分析 ${models.analyzer} · 校验 ${models.validator} · 反扩写复核 ${models.coverage ?? "未配置"}）` : "（未就绪）"}
         </summary>
         {models ? (
           <p className="muted" style={{ marginTop: ".5rem" }}>
-            分析 <code>{models.analyzer}</code> · 校验 <code>{models.validator}</code>。
-            由环境变量 / config 配置（只读）；更换模型需改配置并重启服务。
+            分析 <code>{models.analyzer}</code> · 校验 <code>{models.validator}</code> · 展示反扩写复核 <code>{models.coverage ?? "未配置（分析将 fail-closed）"}</code>。
+            三者必须为不同模型；由环境变量 / config 配置（只读），更换后需重启服务。
           </p>
         ) : (
           <p className="muted" style={{ marginTop: ".5rem" }}>（模型配置未就绪：检查 ANTHROPIC_API_KEY 环境变量）</p>

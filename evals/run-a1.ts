@@ -22,9 +22,21 @@ import { readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
-import { analyze, coverageGaps, filterByQuoteCoverage, renderImportanceBasis, specificClaims, type CoverageDecision } from "../src/lib/agents/analyzer.js";
+import {
+  analyze,
+  coverageGaps,
+  DISPLAY_COVERAGE_COUNTERCHECK_PROMPT_HASH,
+  DISPLAY_COVERAGE_COUNTERCHECK_PROMPT_VERSION,
+  DISPLAY_COVERAGE_GATE_VERSION,
+  DISPLAY_COVERAGE_PROMPT_HASH,
+  DISPLAY_COVERAGE_PROMPT_VERSION,
+  filterByQuoteCoverage,
+  renderImportanceBasis,
+  specificClaims,
+  type CoverageDecision,
+} from "../src/lib/agents/analyzer.js";
 import { judgeWithRetry, validateBatch } from "../src/lib/agents/validator.js";
-import { anthropicBaseUrl, MODELS, assertModelSeparation, getCostReport } from "../src/lib/runtime/llm.js";
+import { anthropicBaseUrl, MODELS, assertCoverageModelSeparation, getCostReport } from "../src/lib/runtime/llm.js";
 import { validatorBatchOn, validatorThinking } from "../src/lib/runtime/env.js";
 import type { CitationCheck, ContentItem, ImportanceReason, Insight, Topic } from "../src/lib/types.js";
 import { beginA1Run, finalizeA1Run, finalizeFailedA1Run, sha256File, writeJson, type A1RunWorkspace } from "./a1-artifacts.js";
@@ -88,6 +100,7 @@ const THRESHOLDS_BY_STRATUM: Record<Stratum, Thresholds> = {
 // eval-criteria 评测集规模下限（低于则结论仅供管线验证，不作 DCP 判定依据）
 const MIN_TOPICS = 5;
 const MIN_CONSISTENCY_PAIRS = 100;
+const DISPLAY_COVERAGE_FIXTURE = "evals/dataset/display-coverage-benchmark.json";
 
 interface QualityCase {
   topic: Topic;
@@ -107,19 +120,33 @@ type ConfusionMatrix = Record<ConsistencyLabel, Record<ConsistencyLabel, number>
 interface EvalConfig {
   analyzer_model: string;
   validator_model: string;
+  coverage_model: string;
   validator_thinking: boolean;
   validator_batch: boolean;
   quality_dataset_sha256: string;
   consistency_dataset_sha256: string;
+  display_coverage_dataset_sha256: string;
+  display_coverage_gate_version: string;
+  display_coverage_primary_prompt_version: string;
+  display_coverage_primary_prompt_sha256: string;
+  display_coverage_countercheck_prompt_version: string;
+  display_coverage_countercheck_prompt_sha256: string;
 }
 
 const EVAL_CONFIG_KEYS: Array<keyof EvalConfig> = [
   "analyzer_model",
   "validator_model",
+  "coverage_model",
   "validator_thinking",
   "validator_batch",
   "quality_dataset_sha256",
   "consistency_dataset_sha256",
+  "display_coverage_dataset_sha256",
+  "display_coverage_gate_version",
+  "display_coverage_primary_prompt_version",
+  "display_coverage_primary_prompt_sha256",
+  "display_coverage_countercheck_prompt_version",
+  "display_coverage_countercheck_prompt_sha256",
 ];
 
 interface QualityEvidence {
@@ -181,10 +208,17 @@ function currentEvalConfig(qualityFile: string, consistencyFile: string): EvalCo
   return {
     analyzer_model: MODELS.analyzer,
     validator_model: MODELS.validator,
+    coverage_model: MODELS.coverage,
     validator_thinking: validatorThinking(),
     validator_batch: validatorBatchOn(),
     quality_dataset_sha256: datasetDigest(qualityFile),
     consistency_dataset_sha256: datasetDigest(consistencyFile),
+    display_coverage_dataset_sha256: datasetDigest(DISPLAY_COVERAGE_FIXTURE),
+    display_coverage_gate_version: DISPLAY_COVERAGE_GATE_VERSION,
+    display_coverage_primary_prompt_version: DISPLAY_COVERAGE_PROMPT_VERSION,
+    display_coverage_primary_prompt_sha256: DISPLAY_COVERAGE_PROMPT_HASH,
+    display_coverage_countercheck_prompt_version: DISPLAY_COVERAGE_COUNTERCHECK_PROMPT_VERSION,
+    display_coverage_countercheck_prompt_sha256: DISPLAY_COVERAGE_COUNTERCHECK_PROMPT_HASH,
   };
 }
 
@@ -207,7 +241,7 @@ function readJsonl<T>(path: string): T[] {
     .map((l) => JSON.parse(l) as T);
 }
 
-function readDisplayCoverageCases(path = "evals/dataset/display-coverage-benchmark.json"): DisplayCoverageCase[] {
+function readDisplayCoverageCases(path = DISPLAY_COVERAGE_FIXTURE): DisplayCoverageCase[] {
   const parsed = JSON.parse(readFileSync(path, "utf8")) as { cases?: DisplayCoverageCase[] };
   if (!Array.isArray(parsed.cases) || !parsed.cases.length) throw new Error(`${path} 缺少 display coverage cases`);
   return parsed.cases;
@@ -384,7 +418,7 @@ async function main(): Promise<void> {
         "（Anthropic key 形如 sk-ant-api03-...）。若实跑报 401/403，请先核对 key。\n",
     );
   }
-  assertModelSeparation();
+  assertCoverageModelSeparation();
   activeWorkspace = beginA1Run();
   // 子集冒烟开关：A1_QUALITY_LIMIT / A1_CONSISTENCY_LIMIT 限制跑多少条（廉价验证链路+成本）
   const qLimit = parseLimit(process.env.A1_QUALITY_LIMIT, "A1_QUALITY_LIMIT");
@@ -407,6 +441,7 @@ async function main(): Promise<void> {
     dataset: {
       quality_file: qualityFile,
       consistency_file: consistencyFile,
+      display_coverage_fixture: DISPLAY_COVERAGE_FIXTURE,
       quality_cases: qualityCases.length,
       consistency_cases: consistencyCases.length,
       smoke,
@@ -414,7 +449,7 @@ async function main(): Promise<void> {
     source: sourceState(),
   };
   console.log(
-    `A1 验证实跑\n模型：分析=${MODELS.analyzer} / 校验=${MODELS.validator}` +
+    `A1 验证实跑\n模型：分析=${MODELS.analyzer} / 校验=${MODELS.validator} / 反扩写复核=${MODELS.coverage}` +
       `\n配置：thinking=${evalConfig.validator_thinking ? "on" : "off"} / batch=${evalConfig.validator_batch ? "on" : "off"}\n`,
   );
   if (smoke) {
@@ -597,7 +632,8 @@ async function main(): Promise<void> {
       metrics: rowsByStratum,
       coverage: { claims_covered: claimsCovered, claims_total: claimsTotal, ratio: coverageRatio },
       display_coverage: {
-        fixture: "evals/dataset/display-coverage-benchmark.json",
+        fixture: DISPLAY_COVERAGE_FIXTURE,
+        fixture_sha256: evalConfig.display_coverage_dataset_sha256,
         unsafe_accept: { count: unsafeAccepts.length, total: expectedRejects.length, rate: unsafeAcceptRate },
         false_reject: { count: falseRejects.length, total: expectedAccepts.length },
         results: displayCoverageResults,

@@ -34,22 +34,41 @@ function fallbackCostUSD(model: string, u: TokenUsage): number {
   return inputUSD + outputUSD;
 }
 
-export type Role = "analyzer" | "validator" | "followup";
+export type Role = "analyzer" | "validator" | "coverage" | "followup";
 
 export const MODELS: Record<Role, string> = {
   analyzer: process.env.ANALYZER_MODEL ?? "claude-sonnet-4-6",
   validator: process.env.VALIDATOR_MODEL ?? "claude-opus-4-7",
+  // 展示级引用覆盖的反扩写复核必须由部署显式指定，避免它在未配置环境里与 analyzer
+  // 默认同模型却要到深层 LLM 路径才失败。assertCoverageModelSeparation 给出可操作错误。
+  coverage: process.env.COVERAGE_MODEL ?? "",
   // 追问生成（A4）：成本敏感、非校验路径，默认与 analyzer 同档 sonnet；
   // 一致性兜底仍走独立的 validator 角色（opus），同源偏差约束不受影响。
   followup: process.env.FOLLOWUP_MODEL ?? "claude-sonnet-4-6",
 };
 
-/** 同源偏差约束：校验模型必须独立于分析模型（citation-validation 行为规约 3 / AC7） */
+/** 同源偏差约束：主校验必须独立于分析模型（citation-validation 行为规约 3 / AC7）。 */
 export function assertModelSeparation(): void {
   if (MODELS.analyzer === MODELS.validator) {
     throw new Error(
       `校验模型必须独立于分析模型（同源偏差约束）：` +
         `analyzer=${MODELS.analyzer} validator=${MODELS.validator}`,
+    );
+  }
+}
+
+/** 展示引用反扩写复核实际启用时，复核模型还必须独立于生成器与主校验。 */
+export function assertCoverageModelSeparation(): void {
+  assertModelSeparation();
+  if (!MODELS.coverage) {
+    throw new Error(
+      "展示引用反扩写复核要求显式设置 COVERAGE_MODEL，且它必须不同于 ANALYZER_MODEL 与 VALIDATOR_MODEL。",
+    );
+  }
+  if (new Set([MODELS.analyzer, MODELS.validator, MODELS.coverage]).size !== 3) {
+    throw new Error(
+      `展示引用反扩写复核模型必须独立于分析与主校验模型：` +
+        `analyzer=${MODELS.analyzer} validator=${MODELS.validator} coverage=${MODELS.coverage}`,
     );
   }
 }

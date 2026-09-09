@@ -1,5 +1,5 @@
 {
-  "version": "display-coverage-v3",
+  "version": "display-coverage-v4",
   "cases": [
     {
       "id": "controlled-poc-to-blackbox",
@@ -92,6 +92,34 @@
       "facets": ["direct_fact"],
       "statement": "SpecBench contains 30 systems-level programming tasks.",
       "statement_citation_index": 1,
+      "citations": [{ "claim": "SpecBench contains 30 systems-level programming tasks", "quote": "SpecBench contains 30 systems-level programming tasks." }]
+    },
+    {
+      "id": "recursive-chunking-direct-positive",
+      "expected": "accept",
+      "field": "statement",
+      "facets": ["direct_fact", "scope_narrowing"],
+      "statement": "The character-based Recursive chunking method performs best.",
+      "statement_citation_index": 1,
+      "citations": [{ "claim": "The character-based Recursive chunking method performs best", "quote": "We observe the best performance for the character-based Recursive chunking method." }]
+    },
+    {
+      "id": "chinese-scoped-numeric-direct-positive",
+      "expected": "accept",
+      "field": "statement",
+      "facets": ["direct_fact", "chinese", "numeric", "scope", "condition"],
+      "statement": "在受控评测的 30 个系统级编程任务中，该方法优于基线。",
+      "statement_citation_index": 1,
+      "citations": [{ "claim": "在受控评测的 30 个系统级编程任务中，该方法优于基线", "quote": "在受控评测的 30 个系统级编程任务中，该方法优于基线。" }]
+    },
+    {
+      "id": "headline-direct-positive",
+      "expected": "accept",
+      "field": "headline",
+      "facets": ["direct_fact", "headline"],
+      "statement": "SpecBench contains 30 systems-level programming tasks.",
+      "statement_citation_index": 1,
+      "headline": "SpecBench contains 30 systems-level programming tasks.",
       "citations": [{ "claim": "SpecBench contains 30 systems-level programming tasks", "quote": "SpecBench contains 30 systems-level programming tasks." }]
     },
     {

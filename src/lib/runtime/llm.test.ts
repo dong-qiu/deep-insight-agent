@@ -1,7 +1,28 @@
 /** coerceStringifiedFields 纯函数单测（6b 防御：模型偶发把 array/object 字段返成 JSON 字符串）。 */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod/v4";
-import { anthropicBaseUrl, coerceStringifiedFields, createRequestAbortSignal } from "./llm.js";
+import { MODELS, anthropicBaseUrl, assertCoverageModelSeparation, coerceStringifiedFields, createRequestAbortSignal } from "./llm.js";
+
+const originalModels = { ...MODELS };
+
+afterEach(() => Object.assign(MODELS, originalModels));
+
+describe("assertCoverageModelSeparation", () => {
+  it("接受三个不同且显式配置的模型", () => {
+    Object.assign(MODELS, { analyzer: "analyzer", validator: "validator", coverage: "coverage" });
+    expect(() => assertCoverageModelSeparation()).not.toThrow();
+  });
+
+  it("拒绝未配置的反扩写复核模型", () => {
+    Object.assign(MODELS, { analyzer: "analyzer", validator: "validator", coverage: "" });
+    expect(() => assertCoverageModelSeparation()).toThrow("COVERAGE_MODEL");
+  });
+
+  it("拒绝任意同源的三个角色", () => {
+    Object.assign(MODELS, { analyzer: "same", validator: "validator", coverage: "same" });
+    expect(() => assertCoverageModelSeparation()).toThrow("必须独立于分析与主校验");
+  });
+});
 
 describe("coerceStringifiedFields（6b 结构化输出防御）", () => {
   const schema = z.object({ insights: z.array(z.string()) });

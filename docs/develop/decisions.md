@@ -1330,7 +1330,7 @@ production-ready 声明仍由 INSI-25 阻断；若 future profile 允许任一 P
 
 ### 决定
 
-1. 发布只消费 `verified_display`：statement 为核心事实，失败即拒绝候选；新 analyzer 必须以 `statement_citation_index` 显式绑定唯一 citation，statement 与其 atomic claim 只允许极窄格式归一后完全相等；该代码不变量在 quote/span 语义审计前先阻断 statement 追加范围、关系、机制或程度，且不做自动改写。headline 校验失败时清空并回退 statement；
+1. 发布只消费 `verified_display`：statement 为核心事实，失败即拒绝候选；新 analyzer 必须以 `statement_citation_index` 显式绑定唯一 citation，代码在创建 `Insight` 时把该 citation 的 atomic claim 直接构造为最终 statement。这样消除模型重复生成 statement/claim 的不稳定旁路；它是构造时的单一事实源，不是审计后的自动改写、补引或放宽。无效绑定仍 fail-closed，且草稿不得向最终 statement 追加范围、关系、机制或程度。绑定后的 statement 还必须由主 validator 与独立 coverage 模型分别仅依据 claim、displayed quote、locator 认可；coverage 不可见正文、标题或主审结论，任一模型失败、超时、非法或缺失 verdict 都拒绝并记录双审审计。headline 校验失败时清空并回退 statement；
    重要性说明只接受受控 reason code 的固定文案，附带自由来源事实时逐项审计，失败只剥离该事实。不得由模型自行将
    任意文本标为“评价”以逃避引用。
 2. 每条 citation 使用稳定 `citation_ref`，并持久化其 claim、quote、locator；展示覆盖审计按 batch/insight/field/claim/citation
