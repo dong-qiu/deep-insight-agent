@@ -12,6 +12,7 @@ import { coverageBackfillOff, validatorBackoffMs, validatorRetries, validatorThi
 import { MODELS, assertCoverageModelSeparation, callStructured } from "../runtime/llm.js";
 import { collapseWithMap, compareKey } from "../runtime/text-normalize.js";
 import { insightFingerprint } from "../runtime/statement-fingerprint.js";
+import { entitiesMentionedInStatement } from "../utils/reader-visible-entities.js";
 import {
   AnalyzerOutputSchema,
   CoverageRepairSchema,
@@ -504,6 +505,11 @@ const ASCII_PROPER_TOKEN = /\b[A-Z][A-Za-z0-9]*(?:[._-][A-Za-z0-9]+)*\b/g;
 const ASCII_NON_ANCHORS = new Set([
   "A", "An", "Across", "After", "Although", "As", "At", "Before", "By", "Compared", "During", "Each", "Every", "For", "From", "However", "If", "In", "It", "Its", "Meanwhile", "Moreover", "No", "Not", "On", "Only", "Our", "Over", "Since", "That", "The", "Their", "These", "They", "This", "Those", "To", "Under", "Unless", "Until", "We", "When", "Where", "While", "With", "Without",
 ]);
+// A type label immediately attached to a named subject is a factual classification, not mere
+// prose. For example, `LivePI` does not establish that LivePI is a *benchmark*. Keep this
+// deliberately short and limited to `Name type` phrases: general lexical parity would turn the
+// quote gate into an unreliable cross-language translation checker.
+const ASCII_NAMED_SUBJECT_TYPE_LABEL = /\b([A-Z][A-Za-z0-9]*(?:[._-][A-Za-z0-9]+)*)(?:'s)?\s+(benchmark|dataset|framework|library|model|platform|protocol|service|simulator|system|tool)\b/gi;
 
 /** A cheap necessary condition before semantic judging.  This deliberately covers only tokens
  * whose surface form is stable across the source/statement languages: Arabic numerals and ASCII
@@ -547,6 +553,22 @@ function stableBoundQuoteTokenGaps(
 ): string[] {
   return stableBoundQuoteTokens(statement, entities)
     .filter((token) => !boundQuoteHasStableToken(boundCitation.quote, token));
+}
+
+/** Do not let a displayed statement attach an unquoted type/classification to a named subject.
+ * The named subject itself must occur in the bound quote; otherwise the ordinary stable-anchor
+ * check already handles it. */
+function namedSubjectTypeLabelGaps(statement: string, boundCitation: Citation): string[] {
+  const gaps = new Set<string>();
+  for (const match of statement.matchAll(ASCII_NAMED_SUBJECT_TYPE_LABEL)) {
+    const [, subject, typeLabel] = match;
+    if (subject && typeLabel
+      && boundQuoteHasStableToken(boundCitation.quote, subject)
+      && !boundQuoteHasStableToken(boundCitation.quote, typeLabel)) {
+      gaps.add(typeLabel.toLowerCase());
+    }
+  }
+  return [...gaps];
 }
 
 type StatementBindingFailure =
@@ -968,7 +990,10 @@ export async function filterByQuoteCoverage(
       return null;
     }
     const boundCitation = displayableCitations[boundDisplayCitationIndex - 1]!;
-    const tokenGaps = stableBoundQuoteTokenGaps(insight.statement, insight.entities ?? [], boundCitation);
+    const tokenGaps = [
+      ...stableBoundQuoteTokenGaps(insight.statement, insight.entities ?? [], boundCitation),
+      ...namedSubjectTypeLabelGaps(insight.statement, boundCitation),
+    ];
     if (tokenGaps.length) {
       console.warn(`  ⚠️ 丢弃绑定 quote 缺少稳定锚点的 statement：${insight.statement.slice(0, 36)}…`);
       onDecision?.({
@@ -1416,7 +1441,9 @@ ${renderItems(items, topic.keywords)}`;
       confidence: li.confidence,
       language: topic.language,
       is_followup: isFollowup,
-      entities: li.entities,
+      // Entity graph membership is a display claim too. Do not persist an LLM-extracted entity
+      // that the final canonical statement does not actually mention.
+      entities: entitiesMentionedInStatement(statement, li.entities),
       tags: li.tags,
     };
   });

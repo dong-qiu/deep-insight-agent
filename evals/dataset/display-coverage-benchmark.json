@@ -134,6 +134,15 @@
       ]
     },
     {
+      "id": "stable-token-cannot-match-a-longer-substring",
+      "expected": "reject",
+      "field": "statement",
+      "facets": ["stable_token", "token_boundary", "entity", "number"],
+      "statement": "AI reduces error by 2%.",
+      "statement_citation_index": 1,
+      "citations": [{ "claim": "AI reduces error by 2%", "quote": "FAIR reduces error by 12%." }]
+    },
+    {
       "id": "generic-subject-direct-positive",
       "expected": "accept",
       "field": "statement",

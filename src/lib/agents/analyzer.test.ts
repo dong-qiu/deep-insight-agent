@@ -689,6 +689,34 @@ describe("filterByQuoteCoverage（展示 quote 覆盖门）", () => {
     expect(audits[0]?.claims[0]).toMatchObject({ reason: "statement_token_not_in_bound_quote", uncovered_tokens: ["Frontier"] });
   });
 
+  it("稳定锚点不能由更长 token 的子串伪造", async () => {
+    const audits: Array<{ claims: Array<{ reason: string; uncovered_tokens?: string[] }> }> = [];
+    const row = insight("AI reduces error by 2%.", [{
+      content_item_id: "ci", claim: "AI reduces error by 2%", quote: "FAIR reduces error by 12%.",
+      locator: { paragraph_index: 0, char_start: 0, char_end: 25 },
+    }]);
+
+    await expect(filterByQuoteCoverage([row], undefined, undefined, (decision) => audits.push(decision))).resolves.toEqual([]);
+    expect(vi.mocked(callStructured)).not.toHaveBeenCalled();
+    expect(audits[0]?.claims[0]).toMatchObject({
+      reason: "statement_token_not_in_bound_quote", uncovered_tokens: ["2%", "AI"],
+    });
+  });
+
+  it("不能把绑定 quote 中的专名擅自分类为 benchmark", async () => {
+    const audits: Array<{ claims: Array<{ reason: string; uncovered_tokens?: string[] }> }> = [];
+    const row = insight("The LivePI benchmark covers seven input surfaces.", [{
+      content_item_id: "ci", claim: "The LivePI benchmark covers seven input surfaces", quote: "LivePI covers seven input surfaces.",
+      locator: { paragraph_index: 0, char_start: 0, char_end: 35 },
+    }]);
+
+    await expect(filterByQuoteCoverage([row], undefined, undefined, (decision) => audits.push(decision))).resolves.toEqual([]);
+    expect(vi.mocked(callStructured)).not.toHaveBeenCalled();
+    expect(audits[0]?.claims[0]).toMatchObject({
+      reason: "statement_token_not_in_bound_quote", uncovered_tokens: ["benchmark"],
+    });
+  });
+
   it("非 ASCII 的双语实体不触发词面锚点误杀，仍交由双审覆盖", async () => {
     const quote = "The method performs best for Khmer agricultural RAG.";
     vi.mocked(callStructured).mockResolvedValue(coverageVerdictsFor(quote, true));

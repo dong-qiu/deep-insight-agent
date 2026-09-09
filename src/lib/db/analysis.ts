@@ -12,6 +12,7 @@ export interface InsightRow {
   type: Insight["type"];
   event_id: string | null;
   statement: string;
+  statement_citation_index: number | null;
   headline: string | null;
   importance: number;
   importance_basis: string;
@@ -44,6 +45,7 @@ export function rowToInsight(db: DB, r: InsightRow): Insight {
     type: r.type,
     event_id: r.event_id ?? null,
     statement: r.statement,
+    ...(r.statement_citation_index != null ? { statement_citation_index: r.statement_citation_index } : {}),
     headline: r.headline ?? "",
     importance: r.importance,
     importance_basis: r.importance_basis,
@@ -76,8 +78,8 @@ export function saveAnalysisBatch(db: DB, batch: AnalysisBatch, afterSave?: () =
     });
     const insStmt = db.prepare(
       `INSERT INTO insight
-         (id,batch_id,topic_id,type,event_id,statement,headline,importance,importance_basis,source_count,multi_source,time_window,confidence,language,is_followup,entities,tags)
-       VALUES (@id,@batch_id,@topic_id,@type,@event_id,@statement,@headline,@importance,@importance_basis,@source_count,@multi_source,@time_window,@confidence,@language,@is_followup,@entities,@tags)`,
+         (id,batch_id,topic_id,type,event_id,statement,statement_citation_index,headline,importance,importance_basis,source_count,multi_source,time_window,confidence,language,is_followup,entities,tags)
+       VALUES (@id,@batch_id,@topic_id,@type,@event_id,@statement,@statement_citation_index,@headline,@importance,@importance_basis,@source_count,@multi_source,@time_window,@confidence,@language,@is_followup,@entities,@tags)`,
     );
     const citStmt = db.prepare(
       `INSERT INTO citation (insight_id,citation_index,content_item_id,citation_ref,claim,quote,locator)
@@ -96,7 +98,8 @@ export function saveAnalysisBatch(db: DB, batch: AnalysisBatch, afterSave?: () =
     for (const ins of batch.insights) {
       insStmt.run({
         id: ins.id, batch_id: batch.id, topic_id: ins.topic_id, type: ins.type, event_id: ins.event_id,
-        statement: ins.statement, headline: ins.headline ?? "", importance: ins.importance, importance_basis: ins.importance_basis,
+        statement: ins.statement, statement_citation_index: ins.statement_citation_index ?? null,
+        headline: ins.headline ?? "", importance: ins.importance, importance_basis: ins.importance_basis,
         source_count: ins.source_count, multi_source: b(ins.multi_source),
         time_window: j(ins.time_window), confidence: ins.confidence, language: ins.language,
         is_followup: b(ins.is_followup ?? false), entities: j(ins.entities ?? []), tags: j(ins.tags ?? []),

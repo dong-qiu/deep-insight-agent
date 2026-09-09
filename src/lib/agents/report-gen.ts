@@ -7,35 +7,9 @@ import type {
 } from "../types.js";
 import { facetLabel } from "../topics/facets.js";
 import { flagLabel, isIncludableCheck } from "../utils/citation-verdict.js";
+import { requiredAuditCitationIndexes } from "../utils/display-coverage-audit.js";
 import { insightFingerprint } from "../runtime/statement-fingerprint.js";
 import { coverageGaps, specificClaims } from "./analyzer.js";
-
-type AuditClaim = {
-  field?: unknown;
-  kind?: unknown;
-  supports?: unknown;
-  citation_indexes?: unknown;
-  based_on_display_claim_ids?: unknown;
-};
-
-/** Return every citation still required by a kept display audit. An unreadable or incomplete
- * decision fails closed: a durable audit may never be treated as a generic insight-level pass. */
-function requiredAuditCitationIndexes(audit: { decision: unknown }): Set<number> | null {
-  if (!audit.decision || typeof audit.decision !== "object") return null;
-  const claims = (audit.decision as { claims?: unknown }).claims;
-  if (!Array.isArray(claims)) return null;
-  const factual = claims.filter((claim): claim is AuditClaim => Boolean(claim) && typeof claim === "object"
-    && (claim as AuditClaim).kind === "factual");
-  if (!factual.length || factual.some((claim) => claim.supports !== true || !Array.isArray(claim.citation_indexes) || claim.citation_indexes.length === 0)) return null;
-  const required = new Set<number>();
-  for (const claim of factual) {
-    for (const index of claim.citation_indexes as unknown[]) {
-      if (!Number.isInteger(index) || (index as number) < 1) return null;
-      required.add((index as number) - 1);
-    }
-  }
-  return required;
-}
 
 /** 每日节奏中已发布 event 的成功校验证据；由 DB 层读取、作为纯函数输入传入。 */
 export interface PublishedEventEvidence {

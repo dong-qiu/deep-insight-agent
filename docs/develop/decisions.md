@@ -1332,7 +1332,7 @@ production-ready 声明仍由 INSI-25 阻断；若 future profile 允许任一 P
 
 1. 发布只消费 `verified_display`：statement 为核心事实，失败即拒绝候选；新 analyzer 必须以 `statement_citation_index` 显式绑定唯一 citation，statement 与该 citation 的 atomic claim 只允许极窄格式归一后完全相等。对数字、百分比和 ASCII 专名等稳定源面锚点，绑定 quote 必须亲自包含它们，不能从第二条 citation 拼接。绑定后的 statement 还必须由主 validator 与独立 coverage 模型分别仅依据 claim、displayed quote、locator 认可；coverage 不可见正文、标题或主审结论，泛称不得借隐藏先行词具体化，任一模型失败、超时、非法或缺失 verdict 都拒绝并记录双审审计。P0 headline 与 importance_facts 只有完全复用 statement 才保留，否则清空并由消费者回退 statement；
    重要性说明只接受受控 reason code 的固定文案。不得由模型自行将任意文本标为“评价”以逃避引用。
-2. 每条 citation 使用稳定 `citation_ref`，并持久化其 claim、quote、locator；展示覆盖审计按 batch/insight/field/claim/citation
+2. 每条 citation 使用稳定 `citation_ref`，并持久化其 claim、quote、locator；`statement_citation_index` 以 1-based 形式持久化 statement 的唯一展示主引用。图谱节点、共现边和 drill 侧栏作为读者可见展示面，必须只消费 `audited` batch 中 audit 为 `kept`/`kept_degraded`、且该绑定 citation 有 validator `pass/support` 的洞察，并只返回绑定 quote；实体还必须逐字出现在最终 statement（不做翻译、别名或模糊匹配），否则不参与节点/边/drill。legacy、coverage-rejected 或 validator-blocked 行仍可保留审计历史，但不能混入图或卡片。展示覆盖审计按 batch/insight/field/claim/citation
    保存 verdict、UTF-16 evidence span、模型/提示词版本与输入哈希。旧数据显式标为 `legacy`，不得获得“已审计”语义。
 3. A1 在启动时创建隔离的 `run_id` 与运行目录。核心评测结果、manifest 与完成状态为原子证据；CSV、review sheet 和
    预评属于非阻断辅助产物，失败只记录 `review_artifact_error`。全量运行若任一必测主题或一致性样本失败，状态为

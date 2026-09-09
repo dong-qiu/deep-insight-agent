@@ -34,8 +34,12 @@ npm run typecheck   # tsc 类型检查
 阈值镜像自 `docs/verify/eval-criteria.md`「上线门槛」（改阈值请同步那份文档）。
 自动门槛全过 → 退出码 0；有 FAIL → 退出码 1（便于 CI 门禁）。
 
+完整 A1 还要求显式配置且两两不同的 `ANALYZER_MODEL`、`VALIDATOR_MODEL`、`COVERAGE_MODEL`；
+后者是展示引用的独立反向复核模型，缺失、相同或不可用都会 fail-closed。不要把密钥或这些本地模型配置提交进仓库。
+
 每次运行写入独立 `out/runs/<run-id>/`（`a1-run.json`、review queue/CSV、`manifest.json`）；
 `out/runs/latest-complete.json` 只是最近完成的指针，必须分别读取 `auto_gate`、`manual_review`、`dcp_eligibility`，不能当作 PASS 标记。
+`npm run review:csv` / `npm run review:sheet` 默认沿该指针读取隔离 run 的 review queue；也可显式传入某次 run 的路径。
 
 ## 数据集
 

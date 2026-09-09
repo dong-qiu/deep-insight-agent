@@ -64,6 +64,9 @@ function migrate(db: DB): void {
   // 一句话要点（headline 方案）：analyzer 为每条洞察产出的 ≤40 字浓缩，供列表卡片扫读；
   // 旧库补列默认 ''（重跑管线写正确值，渲染端回退到 statement）。
   ensureColumn(db, "insight", "headline", "headline TEXT NOT NULL DEFAULT ''");
+  // 展示 statement 的唯一 citation 绑定。旧数据保留 NULL，reader-visible 图谱会 fail-closed 排除。
+  ensureColumn(db, "insight", "statement_citation_index", "statement_citation_index INTEGER");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_insight_batch_statement_citation ON insight(batch_id, statement_citation_index)");
   // New analysis batches are explicitly audited even when all candidates are rejected. Old rows
   // remain legacy, so a read round-trip cannot turn an audited-empty batch into compatibility data.
   ensureColumn(db, "analysis_batch", "display_coverage_state", "display_coverage_state TEXT NOT NULL DEFAULT 'legacy' CHECK (display_coverage_state IN ('legacy','audited'))");

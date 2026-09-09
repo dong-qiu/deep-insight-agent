@@ -23,6 +23,7 @@ describe("display coverage hand-labelled benchmark", () => {
       "generic-it-cannot-become-frontier-comparison",
       "livepi-is-not-proven-benchmark",
       "bound-token-cannot-come-from-second-citation",
+      "stable-token-cannot-match-a-longer-substring",
       "bad-evaluation-anchor",
     ]) expect(rejected.has(id)).toBe(true);
     const accepted = new Set(data.cases.filter((c) => c.expected === "accept").map((c) => c.id));

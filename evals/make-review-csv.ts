@@ -1,14 +1,16 @@
 /**
  * 把 A1 跑批产出的 review-queue.json 转成 CSV 打分表（用 Excel/Sheets 打开，多人分工 + 自动算比例）。
  * 用法：npm run review:csv [输入 json] [输出 csv]
- *   默认 evals/out/review-queue.json → evals/out/review.csv
+ *   默认 latest-complete run 的 review-queue.json → 同目录 review.csv
  */
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { isCompleteStatement } from "../src/lib/agents/analyzer.js";
 import type { Insight } from "../src/lib/types.js";
+import { latestReviewQueuePath } from "./review-artifact-paths.js";
 
-const inPath = process.argv[2] ?? "evals/out/review-queue.json";
-const outPath = process.argv[3] ?? "evals/out/review.csv";
+const inPath = process.argv[2] ?? latestReviewQueuePath();
+const outPath = process.argv[3] ?? join(dirname(inPath), "review.csv");
 
 if (!existsSync(inPath)) {
   console.error(`找不到 ${inPath}，请先跑 npm run eval:a1`);
@@ -44,6 +46,7 @@ const esc = (v: string | number): string => `"${literalCell(v).replace(/"/g, '""
 const aiCols = prejudge ? ["AI预评·非显然", "AI预评·幻觉", "AI预评·理由"] : [];
 const headers = [
   "run_id", "queue_generated_at", "序号", "id", "主题", "类型", "重要性", "结论", "引用",
+  "statement_citation_index", "statement_citation_claim",
   "可定位", "截断",
   ...aiCols,
   "非显然(是/否)", "幻觉(有/无)", "importance合理(是/否)", "备注",
@@ -52,6 +55,7 @@ const rows = [headers.map(esc).join(",")];
 
 insights.forEach((it, i) => {
   const quotes = it.citations.map((c) => `[${c.content_item_id}] ${c.quote}`).join("  ‖  ");
+  const boundCitation = it.statement_citation_index == null ? undefined : it.citations[it.statement_citation_index - 1];
   const locatable = it.citations.every((c) => c.locator.char_start >= 0) ? "是" : "否";
   const truncated = isCompleteStatement(it.statement) ? "" : "是";
   const j = prejudge?.get(it.id);
@@ -59,7 +63,7 @@ insights.forEach((it, i) => {
   rows.push(
     [
       queue.run_id ?? "legacy", queue.generated_at, i + 1, it.id, it.topic_id, it.type, it.importance,
-      it.statement, quotes, locatable, truncated,
+      it.statement, quotes, it.statement_citation_index ?? "", boundCitation?.claim ?? "", locatable, truncated,
       ...aiCells,
       "", "", "", "",
     ].map(esc).join(","),

@@ -24,6 +24,9 @@ import { createHash } from "node:crypto";
 import { join } from "node:path";
 import {
   analyze,
+  ANALYZE_BODY_CHARS,
+  ANALYZER_OUTPUT_VERSION,
+  ANALYZER_SYSTEM,
   coverageGaps,
   DISPLAY_COVERAGE_COUNTERCHECK_PROMPT_HASH,
   DISPLAY_COVERAGE_COUNTERCHECK_PROMPT_VERSION,
@@ -32,14 +35,16 @@ import {
   DISPLAY_COVERAGE_PROMPT_VERSION,
   filterByQuoteCoverage,
   renderImportanceBasis,
+  SELECT_WINDOW_CHARS,
   specificClaims,
   type CoverageDecision,
 } from "../src/lib/agents/analyzer.js";
-import { judgeWithRetry, validateBatch } from "../src/lib/agents/validator.js";
+import { consistencyBatchMax, consistencyCacheVersion, CONSISTENCY_WINDOW_CHARS, judgeWithRetry, validateBatch } from "../src/lib/agents/validator.js";
 import { anthropicBaseUrl, MODELS, assertCoverageModelSeparation, getCostReport } from "../src/lib/runtime/llm.js";
 import { validatorBatchOn, validatorThinking } from "../src/lib/runtime/env.js";
 import type { CitationCheck, ContentItem, ImportanceReason, Insight, Topic } from "../src/lib/types.js";
 import { beginA1Run, finalizeA1Run, finalizeFailedA1Run, sha256File, writeJson, type A1RunWorkspace } from "./a1-artifacts.js";
+import { sameEvalConfig, type EvalConfig } from "./a1-config.js";
 import {
   emptyJudgeStats,
   judgeAccuracy,
@@ -117,38 +122,6 @@ interface ConsistencyCase {
 }
 type ConfusionMatrix = Record<ConsistencyLabel, Record<ConsistencyLabel, number>>;
 
-interface EvalConfig {
-  analyzer_model: string;
-  validator_model: string;
-  coverage_model: string;
-  validator_thinking: boolean;
-  validator_batch: boolean;
-  quality_dataset_sha256: string;
-  consistency_dataset_sha256: string;
-  display_coverage_dataset_sha256: string;
-  display_coverage_gate_version: string;
-  display_coverage_primary_prompt_version: string;
-  display_coverage_primary_prompt_sha256: string;
-  display_coverage_countercheck_prompt_version: string;
-  display_coverage_countercheck_prompt_sha256: string;
-}
-
-const EVAL_CONFIG_KEYS: Array<keyof EvalConfig> = [
-  "analyzer_model",
-  "validator_model",
-  "coverage_model",
-  "validator_thinking",
-  "validator_batch",
-  "quality_dataset_sha256",
-  "consistency_dataset_sha256",
-  "display_coverage_dataset_sha256",
-  "display_coverage_gate_version",
-  "display_coverage_primary_prompt_version",
-  "display_coverage_primary_prompt_sha256",
-  "display_coverage_countercheck_prompt_version",
-  "display_coverage_countercheck_prompt_sha256",
-];
-
 interface QualityEvidence {
   case_index: number;
   topic_id: string;
@@ -207,7 +180,14 @@ function datasetDigest(path: string): string {
 function currentEvalConfig(qualityFile: string, consistencyFile: string): EvalConfig {
   return {
     analyzer_model: MODELS.analyzer,
+    analyzer_output_version: ANALYZER_OUTPUT_VERSION,
+    analyzer_prompt_sha256: createHash("sha256").update(ANALYZER_SYSTEM).digest("hex"),
+    analyze_body_chars: ANALYZE_BODY_CHARS,
+    select_window_chars: SELECT_WINDOW_CHARS,
     validator_model: MODELS.validator,
+    validator_contract_version: consistencyCacheVersion(),
+    consistency_window_chars: CONSISTENCY_WINDOW_CHARS,
+    consistency_batch_max: consistencyBatchMax(),
     coverage_model: MODELS.coverage,
     validator_thinking: validatorThinking(),
     validator_batch: validatorBatchOn(),
@@ -227,10 +207,6 @@ function parseLimit(raw: string | undefined, name: string): number {
   const n = Number(raw);
   if (!Number.isInteger(n) || n < 0) throw new Error(`${name} 必须是非负整数（0=全量）`);
   return n;
-}
-
-function sameEvalConfig(baseline: Record<string, unknown>, current: EvalConfig): boolean {
-  return EVAL_CONFIG_KEYS.every((key) => baseline[key] === current[key]);
 }
 
 function readJsonl<T>(path: string): T[] {

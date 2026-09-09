@@ -840,6 +840,8 @@ CREATE TABLE IF NOT EXISTS insight (
   type             TEXT NOT NULL CHECK (type IN ('aggregation','trend')),
   event_id         TEXT,
   statement        TEXT NOT NULL,
+  -- 1-based citation binding for reader-visible statement provenance. NULL means legacy/unverified.
+  statement_citation_index INTEGER,
   headline         TEXT NOT NULL DEFAULT '',
   importance       INTEGER NOT NULL CHECK (importance BETWEEN 1 AND 5),
   importance_basis TEXT NOT NULL,
@@ -850,6 +852,7 @@ CREATE TABLE IF NOT EXISTS insight (
   language         TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_insight_batch ON insight(batch_id);
+CREATE INDEX IF NOT EXISTS idx_insight_batch_statement_citation ON insight(batch_id, statement_citation_index);
 
 CREATE TABLE IF NOT EXISTS citation (
   insight_id      TEXT NOT NULL REFERENCES insight(id),

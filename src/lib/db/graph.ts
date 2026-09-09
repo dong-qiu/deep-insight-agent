@@ -10,39 +10,83 @@ import {
 import { canonKey } from "../graph/entity-normalize.js";
 import { insightFingerprint } from "../runtime/statement-fingerprint.js";
 import type { Entity, Insight } from "../types.js";
+import { auditSupportsStatementBinding } from "../utils/display-coverage-audit.js";
+import { entitiesMentionedInStatement } from "../utils/reader-visible-entities.js";
 import { type InsightRow, rowToInsight } from "./analysis.js";
 import type { DB } from "./index.js";
 
-/** 轻量加载：只取派生共现图所需的 entities，不查 citation（图装配热路径，避免 N+1）。
- *  注：读 `insight` 全表——刻意展示「原始分析判断」（含未过 validator 校验的洞察）。
- *  S1 单用户 dogfood 阶段可接受；多用户/公开前需按 citation_check verdict 过滤（见 ADR-0012 风险）。 */
+/** Reader-visible graph membership is intentionally stricter than raw insight storage.  A graph
+ * node/edge and its drill card are reader-facing claims, so they need the same core evidence as
+ * a publishable statement: an audited kept candidate, a durable one-citation binding, and a
+ * pass/support validation result for that bound citation.  Legacy rows stay in the database for
+ * history but cannot silently re-enter a card or graph after this cutover. */
+const READER_VISIBLE_INSIGHT_JOINS = `
+  JOIN analysis_batch b ON i.batch_id = b.id
+  JOIN display_coverage_audit d ON d.batch_id = i.batch_id AND d.insight_id = i.id
+    AND d.terminal_reason IN ('kept', 'kept_degraded')
+  JOIN citation statement_citation ON statement_citation.insight_id = i.id
+    AND statement_citation.citation_index = i.statement_citation_index - 1`;
+
+const READER_VISIBLE_INSIGHT_WHERE = `
+  b.status = 'done'
+  AND b.display_coverage_state = 'audited'
+  AND i.statement_citation_index IS NOT NULL
+  AND EXISTS (
+    SELECT 1 FROM citation_check cc
+    WHERE cc.batch_id = i.batch_id AND cc.insight_id = i.id
+      AND cc.citation_index = i.statement_citation_index - 1
+      AND cc.reachability = 'pass' AND cc.consistency = 'support' AND cc.verdict = 'pass'
+  )`;
+
+type ReaderVisibleRow = {
+  statement: string;
+  entities: string | null;
+  statement_citation_index: number | null;
+  statement_citation_ref: string | null;
+  display_coverage_decision: string;
+};
+
+function parseReaderVisibleDecision(decision: string): unknown | null {
+  try { return JSON.parse(decision); } catch { return null; }
+}
+
+function auditMatchesPersistedBinding(row: Pick<ReaderVisibleRow, "statement_citation_index" | "statement_citation_ref" | "display_coverage_decision">): boolean {
+  return auditSupportsStatementBinding(parseReaderVisibleDecision(row.display_coverage_decision), {
+    citation_index: row.statement_citation_index,
+    citation_ref: row.statement_citation_ref,
+  });
+}
+
+/** 轻量加载：只取 reader-visible 图所需的 entities，不查 citation（图装配热路径，避免 N+1）。 */
 function loadTopicEntityRows(db: DB, topicId: string, since?: string): { entities: Entity[] }[] {
-  const rows = (
-    since
-      ? db
-          .prepare(
-            `SELECT i.entities FROM insight i JOIN analysis_batch b ON i.batch_id = b.id
-             WHERE i.topic_id = ? AND b.created_at >= ?`,
-          )
-          .all(topicId, since)
-      : db.prepare("SELECT entities FROM insight WHERE topic_id = ?").all(topicId)
-  ) as { entities: string | null }[];
-  return rows.map((r) => ({ entities: JSON.parse(r.entities ?? "[]") as Entity[] }));
+  const sql = `SELECT i.statement, i.entities, i.statement_citation_index,
+      statement_citation.citation_ref AS statement_citation_ref, d.decision AS display_coverage_decision
+    FROM insight i ${READER_VISIBLE_INSIGHT_JOINS}
+    WHERE i.topic_id = ?${since ? " AND b.created_at >= ?" : ""} AND ${READER_VISIBLE_INSIGHT_WHERE}`;
+  const rows = db.prepare(sql).all(...(since ? [topicId, since] : [topicId])) as ReaderVisibleRow[];
+  return rows.filter(auditMatchesPersistedBinding)
+    .map((r) => ({ entities: entitiesMentionedInStatement(r.statement, JSON.parse(r.entities ?? "[]") as Entity[]) }));
 }
 
 /** 加载某主题的洞察（含 citation，溯源用）；since（batch.created_at 下界，ISO）可选限定时间窗。 */
 export function loadTopicInsights(db: DB, topicId: string, since?: string): Insight[] {
-  const rows = (
-    since
-      ? db
-          .prepare(
-            `SELECT i.* FROM insight i JOIN analysis_batch b ON i.batch_id = b.id
-             WHERE i.topic_id = ? AND b.created_at >= ? ORDER BY i.rowid`,
-          )
-          .all(topicId, since)
-      : db.prepare("SELECT * FROM insight WHERE topic_id = ? ORDER BY rowid").all(topicId)
-  ) as InsightRow[];
-  return rows.map((r) => rowToInsight(db, r));
+  const sql = `SELECT i.*, statement_citation.citation_ref AS statement_citation_ref,
+      d.decision AS display_coverage_decision
+    FROM insight i ${READER_VISIBLE_INSIGHT_JOINS}
+    WHERE i.topic_id = ?${since ? " AND b.created_at >= ?" : ""} AND ${READER_VISIBLE_INSIGHT_WHERE}
+    ORDER BY i.rowid`;
+  const rows = db.prepare(sql).all(...(since ? [topicId, since] : [topicId])) as Array<InsightRow & Pick<ReaderVisibleRow, "statement_citation_ref" | "display_coverage_decision">>;
+  const insights: Insight[] = [];
+  for (const r of rows) {
+    if (!auditMatchesPersistedBinding({
+      statement_citation_index: r.statement_citation_index,
+      statement_citation_ref: r.statement_citation_ref,
+      display_coverage_decision: r.display_coverage_decision,
+    })) continue;
+    const insight = rowToInsight(db, r);
+    insights.push({ ...insight, entities: entitiesMentionedInStatement(insight.statement, insight.entities) });
+  }
+  return insights;
 }
 
 export interface TopicGraphOptions {
@@ -221,7 +265,10 @@ export function groupDrillInsights(insights: Insight[], links: Map<string, Insig
     const occurrence: DrillOccurrence = {
       id: insight.id, headline: insight.headline || insight.statement, statement: insight.statement,
       importance: insight.importance, multi_source: insight.multi_source,
-      quotes: insight.citations.map((citation) => citation.quote).filter(Boolean), report_links: links.get(insight.id) ?? [],
+      // The accessor above admits only durable bindings.  Never reintroduce an unrelated first
+      // citation into the side panel merely because it happens to be stored on the same insight.
+      quotes: [insight.citations[(insight.statement_citation_index ?? 0) - 1]?.quote].filter((quote): quote is string => Boolean(quote)),
+      report_links: links.get(insight.id) ?? [],
     };
     const list = groups.get(key) ?? [];
     list.push(occurrence);
@@ -230,7 +277,8 @@ export function groupDrillInsights(insights: Insight[], links: Map<string, Insig
   const latestDate = (x: DrillOccurrence) => x.report_links.at(-1)?.date ?? "";
   return [...groups.entries()].map(([id, occurrences]) => {
     occurrences.sort((a, b) => latestDate(b).localeCompare(latestDate(a)) || b.importance - a.importance || a.id.localeCompare(b.id));
-    const representative = [...occurrences].sort((a, b) => b.importance - a.importance || latestDate(b).localeCompare(latestDate(a)) || a.id.localeCompare(b.id))[0];
+    // The top-level card and the initially shown quote/link must come from the same occurrence.
+    const representative = occurrences[0]!;
     return { id, headline: representative.headline, statement: representative.statement, importance: representative.importance,
       multi_source: representative.multi_source, occurrence_count: occurrences.length, occurrences };
   }).sort((a, b) => b.importance - a.importance || a.id.localeCompare(b.id));
