@@ -2,7 +2,10 @@
  * 不调用 LLM、不新增事实文本；推荐理由只由已审计字段拼装。 */
 import type { AnalysisBatch, ContentItem, TechLeadKind, TechLeadScoreDetail, ValidationResult } from "../types.js";
 import { DISPLAY_PROJECTION_VERSION } from "../utils/source-quote-projection.js";
+import { classifyTechLead } from "../utils/tech-lead-classify.js";
 import { selectInsights } from "./report-gen.js";
+
+export { classifyTechLead } from "../utils/tech-lead-classify.js";
 
 export interface LeadCandidate {
   topic_id: string;
@@ -28,18 +31,6 @@ const BUSINESS_OR_POLICY_CONTEXT = /\b(ipo|fund(?:ing)?|donat(?:ion|e)|acqui(?:r
 export function isTechnicalLead(text: string): boolean {
   if (BUSINESS_OR_POLICY_CONTEXT.test(text)) return false;
   return DIRECT_TECHNICAL_SIGNAL.test(text) || MODEL_WORK_SIGNAL.test(text);
-}
-
-export function classifyTechLead(text: string, tags: string[]): TechLeadKind {
-  const value = `${text} ${tags.join(" ")}`.toLowerCase();
-  if (/\b(arxiv|paper)\b|论文|研究/.test(value)) return "paper";
-  if (/\b(benchmark|eval|swe-bench)\b|基准|评测/.test(value)) return "benchmark";
-  if (/\b(security|vulnerability|attack|cve)\b|安全|漏洞|攻击/.test(value)) return "security";
-  if (/\b(framework|sdk|mcp|library)\b|框架|协议/.test(value)) return "framework";
-  if (/\b(model|llm|claude|gpt|gemini)\b|模型/.test(value)) return "model";
-  if (/\b(tool|agent|ide|copilot|cursor)\b|工具|代理/.test(value)) return "tool";
-  if (/\b(method|workflow|practice)\b|方法|实践/.test(value)) return "method";
-  return "other";
 }
 
 /** 分数 0–100：近期性 35、证据强度 25、重要性 20、主题相关性 20。

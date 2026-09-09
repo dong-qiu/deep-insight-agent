@@ -1,8 +1,9 @@
 /** 技术线索持久化与查询。证据始终关联 citation 的复合主键，读取时只联明确 support 的 pass。 */
 import { randomUUID } from "node:crypto";
 import type { TechLead, TechLeadEvidence, TechLeadStatus } from "../types.js";
-import { classifyTechLead, type LeadCandidate } from "../agents/tech-leads.js";
+import type { LeadCandidate } from "../agents/tech-leads.js";
 import { auditSupportsStatementBinding, hasSafeReaderMetadata } from "../utils/display-coverage-audit.js";
+import { classifyTechLead } from "../utils/tech-lead-classify.js";
 import type { DB } from "./index.js";
 
 const toLead = (r: any): TechLead => ({
