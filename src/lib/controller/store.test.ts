@@ -146,6 +146,9 @@ describe("ControllerStore", () => {
   it("fails closed when a raw ready record has an invalid ReadyBundle shape", () => {
     const { ready_bundle: _bundle, ...withoutBundle } = readyRecord();
     expect(canAcceptEvidence(withoutBundle)).toBe(false);
+    const valid = readyRecord();
+    const ready_bundle = rehash({ ...valid.ready_bundle!, ci_evidence: { ...valid.ready_bundle!.ci_evidence, conclusion: "failed" } });
+    expect(canAcceptEvidence({ ...valid, ready_bundle })).toBe(false);
   });
 
   it("rejects direct create/CAS ready receipts that are not resolvable in the same immutable ledger", () => {

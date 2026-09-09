@@ -265,7 +265,7 @@ function readyBundleEvidence(record: DurableControllerRecord): [Evidence, Eviden
 }
 
 function readyEvidenceMatches(evidence: Evidence, receipt: ReadyBundle["snapshot_evidence"], ref: string, kind: Evidence["kind"], conclusion: Evidence["conclusion"] | undefined, bundle: ReadyBundle, now: number, ttl: number): boolean {
-  return evidence.id === ref && !evidence.expired && receipt.id === ref && evidence.kind === kind && evidence.source === receipt.source && evidence.immutable_ref === receipt.immutable_ref && evidence.payload_hash === receipt.payload_hash && evidence.observed_at === receipt.observed_at && evidence.conclusion === conclusion && sameFreshness(evidence.freshness, bundle.freshness) && sameFreshness(receipt.freshness, bundle.freshness) && isTimestampWithinTtl(evidence.observed_at, now, ttl) && isTimestampWithinTtl(receipt.observed_at, now, ttl);
+  return evidence.id === ref && !evidence.expired && receipt.id === ref && evidence.kind === kind && evidence.source === receipt.source && evidence.immutable_ref === receipt.immutable_ref && evidence.payload_hash === receipt.payload_hash && evidence.observed_at === receipt.observed_at && evidence.conclusion === conclusion && receipt.conclusion === conclusion && sameFreshness(evidence.freshness, bundle.freshness) && sameFreshness(receipt.freshness, bundle.freshness) && isTimestampWithinTtl(evidence.observed_at, now, ttl) && isTimestampWithinTtl(receipt.observed_at, now, ttl);
 }
 
 function sameFreshness(left: Evidence["freshness"] | undefined, right: Evidence["freshness"] | undefined): boolean {
