@@ -10,6 +10,7 @@ import {
   validatorRetries, validatorThinking,
 } from "../runtime/env.js";
 import { MODELS, callStructured } from "../runtime/llm.js";
+import { RelayUnavailableError, withRelayRecovery } from "../runtime/relay-recovery.js";
 import { compareKey } from "../runtime/text-normalize.js";
 import { isIncludableCheck, isValidationError } from "../utils/citation-verdict.js";
 import {
@@ -210,6 +211,33 @@ ${list}
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
+function validatorRelayBaseUrl(): string | undefined {
+  const baseUrl = process.env.ANTHROPIC_BASE_URL?.trim();
+  return baseUrl ? baseUrl.replace(/\/+$/, "") : undefined;
+}
+
+/** Keep ordinary transient/model-output retry semantics, but let an explicit relay capacity
+ * outage enter the shared, bounded half-open recovery gate.  A recovered probe returns its own
+ * judgment; a budget-exhausted gate is deliberately surfaced as an error to the existing
+ * fail-closed caller path rather than being reclassified as a semantic verdict. */
+async function retryJudge<T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  const extra = validatorRetries();
+  const base = validatorBackoffMs();
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= extra; attempt++) {
+    try {
+      return await withRelayRecovery({ baseUrl: validatorRelayBaseUrl(), model: MODELS.validator }, operation, signal);
+    } catch (error) {
+      // The shared gate has already consumed its finite recovery budget. Fast per-call retries
+      // would reopen a thundering herd and turn one relay outage into many failed evaluations.
+      if (error instanceof RelayUnavailableError) throw error;
+      lastErr = error;
+      if (attempt < extra) await sleep(base * 2 ** attempt);
+    }
+  }
+  throw lastErr;
+}
+
 /** 批量判定带重试 + 退避（与 judgeWithRetry 同款抗瞬时抖动；整批一起重试，最终失败由调用方记校验失败）。 */
 export async function judgeBatchWithRetry(
   claims: string[],
@@ -218,18 +246,7 @@ export async function judgeBatchWithRetry(
   metadata?: SourceMetadata,
   quotes?: Array<string | undefined>,
 ): Promise<ConsistencyJudge[]> {
-  const extra = validatorRetries();
-  const base = validatorBackoffMs();
-  let lastErr: unknown;
-  for (let attempt = 0; attempt <= extra; attempt++) {
-    try {
-      return await judgeConsistencyBatch(claims, sourceText, onCost, metadata, quotes);
-    } catch (e) {
-      lastErr = e;
-      if (attempt < extra) await sleep(base * 2 ** attempt);
-    }
-  }
-  throw lastErr;
+  return retryJudge(() => judgeConsistencyBatch(claims, sourceText, onCost, metadata, quotes));
 }
 
 /** 一致性判定带重试 + 指数退避——抗中转站/LLM **瞬时**抖动（超时/限流/5xx/解析错）。
@@ -242,19 +259,9 @@ export async function judgeWithRetry(
   onCost?: (cost: Cost) => void,
   metadata?: SourceMetadata,
   quote?: string,
+  signal?: AbortSignal,
 ): Promise<ConsistencyJudge> {
-  const extra = validatorRetries();
-  const base = validatorBackoffMs();
-  let lastErr: unknown;
-  for (let attempt = 0; attempt <= extra; attempt++) {
-    try {
-      return await judgeConsistency(claim, sourceText, onCost, metadata, quote);
-    } catch (e) {
-      lastErr = e;
-      if (attempt < extra) await sleep(base * 2 ** attempt); // 800ms, 1600ms, …
-    }
-  }
-  throw lastErr;
+  return retryJudge(() => judgeConsistency(claim, sourceText, onCost, metadata, quote), signal);
 }
 
 /** 校验是否"大面积失败"（疑似 LLM/中转站抖动，非内容问题）：可达引用中"校验失败"占比 ≥ 阈值。
@@ -499,9 +506,17 @@ export async function validateBatch(
         let results: JudgeOutcome[];
         try {
           results = await judgeBatchWithRetry(group.map((e) => e.claim), body, onCost, metadata, group.map((e) => e.quote));
-        } catch (e) {
-          console.warn(`  ⚠️ 批量一致性校验失败，本组 ${group.length} 条退回逐条复判（${(e as Error).message}）`);
-          results = await judgeIndividually();
+        } catch (error) {
+          if (error instanceof RelayUnavailableError) {
+            // A capacity outage is process-wide and already spent a shared recovery budget.
+            // Do not amplify one failed batch into N individual relay requests; keep every item
+            // not_evaluated so the standard reader fail-closed path and later retry can handle it.
+            console.warn(`  ⚠️ relay 容量恢复耗尽，本组 ${group.length} 条不扇出逐条复判，记为校验失败`);
+            results = group.map(() => ({ error: true }));
+          } else {
+            console.warn(`  ⚠️ 批量一致性校验失败，本组 ${group.length} 条退回逐条复判（${(error as Error).message}）`);
+            results = await judgeIndividually();
+          }
         }
         group.forEach((e, i) => {
           outcomes.set(pairKey(e.key, itemId), results[i]);

@@ -16,11 +16,8 @@ import {
 } from "d3-force";
 import { type MouseEvent as RMouseEvent, useEffect, useMemo, useRef, useState } from "react";
 import { selectGraph } from "../../../lib/graph/cooccurrence.js";
-import type { EntityType } from "../../../lib/types.js";
-
 export interface GNode {
   name: string;
-  type: EntityType;
   mentions: number;
 }
 export interface GEdge {
@@ -40,14 +37,12 @@ interface DrillItem {
   headline: string;
   statement: string;
   importance: number;
-  multi_source: boolean;
   occurrence_count: number;
   occurrences: Array<{
     id: string;
     headline: string;
     statement: string;
     importance: number;
-    multi_source: boolean;
     quotes: string[];
     report_links: Array<{ report_id: string; date: string }>;
   }>;
@@ -56,18 +51,7 @@ type Selection = { kind: "node"; a: string } | { kind: "edge"; a: string; b: str
 
 const W = 820;
 const H = 560;
-const COLOR: Record<GNode["type"], string> = {
-  organization: "#2563eb",
-  person: "#db2777",
-  product: "#16a34a",
-  project: "#d97706",
-};
-const TYPE_LABEL: Record<GNode["type"], string> = {
-  organization: "组织",
-  person: "人物",
-  product: "产品/模型",
-  project: "项目/研究",
-};
+const NODE_COLOR = "#2563eb";
 
 export interface GraphData {
   nodes: GNode[];
@@ -104,7 +88,10 @@ export function ForceGraph({
 
   // 即时选边：从候选图按当前口径/阈值产出展示图（纯函数、毫秒级，不重算布局）
   const selected = useMemo(
-    () => selectGraph(data.nodes, data.candidateEdges, { metric, minEdgeWeight: minWeight, maxEdges: data.maxEdges }),
+    // cooccurrence keeps an internal GraphNode.type for algorithmic compatibility.  The client
+    // deliberately receives no extracted type, so use a neutral placeholder only in this local
+    // selection call and never render or serialize it.
+    () => selectGraph(data.nodes.map((node) => ({ ...node, type: "organization" as const })), data.candidateEdges, { metric, minEdgeWeight: minWeight, maxEdges: data.maxEdges }),
     [data, metric, minWeight],
   );
   const nodes = selected.nodes;
@@ -145,7 +132,6 @@ export function ForceGraph({
       .tick(360);
     const placed: PlacedNode[] = sn.map((n) => ({
       name: n.name,
-      type: n.type,
       mentions: n.mentions,
       x: Math.max(28, Math.min(W - 28, n.x ?? W / 2)),
       y: Math.max(28, Math.min(H - 28, n.y ?? H / 2)),
@@ -356,12 +342,12 @@ export function ForceGraph({
                     cx={p.x}
                     cy={p.y}
                     r={r}
-                    fill={COLOR[nd.type]}
+                    fill={NODE_COLOR}
                     fillOpacity={on ? 1 : 0.82}
                     stroke={on ? "#111827" : "#fff"}
                     strokeWidth={on ? 2 : 1}
                   >
-                    <title>{`${nd.name}（${TYPE_LABEL[nd.type]}）：${nd.mentions} 条洞察提及`}</title>
+                    <title>{`${nd.name}：${nd.mentions} 条洞察提及`}</title>
                   </circle>
                   <text x={p.x} y={p.y - r - 3} textAnchor="middle" fontSize={11} fill="#374151">
                     {nd.name}
@@ -406,19 +392,18 @@ export function ForceGraph({
                 {items.map((it) => (
                   <li key={it.id} style={{ marginBottom: 10 }}>
                     {it.occurrences[0]?.report_links.at(-1) ? (
-                      <a href={`/reports/${it.occurrences[0].report_links.at(-1)!.report_id}`} title={it.statement}>
+                      <a href={`/reports/${it.occurrences[0].report_links.at(-1)!.report_id}`}>
                         {it.headline}
                       </a>
                     ) : (
-                      <span title={it.statement}>{it.headline}</span>
+                      <span>{it.headline}</span>
                     )}
                     <span className="muted" style={{ fontSize: 11 }}>
                       {" · 重要度 "}
                       {it.importance}
-                      {it.multi_source ? " · 多源" : ""}
                       {it.occurrence_count > 1 ? ` · 相同表述 ${it.occurrence_count} 条` : ""}
                     </span>
-                    {it.occurrences[0]?.quotes.length > 0 ? (
+                    {it.occurrences[0]?.quotes.length > 0 && it.occurrences[0].quotes[0] !== it.statement ? (
                       <div className="muted" style={{ fontSize: 11, marginTop: 2, fontStyle: "italic" }}>
                         「{it.occurrences[0].quotes[0]}」{it.occurrences[0].quotes.length > 1 ? ` 等 ${it.occurrences[0].quotes.length} 处` : ""}
                       </div>
@@ -430,9 +415,9 @@ export function ForceGraph({
                           {it.occurrences.map((occurrence) => (
                             <li key={occurrence.id} className="muted" style={{ fontSize: 11, marginBottom: 3 }}>
                               {occurrence.report_links.length ? occurrence.report_links.map((link, index) => (
-                                <span key={link.report_id}>{index ? " · " : ""}<a href={`/reports/${link.report_id}`} title={occurrence.statement}>{link.date}</a></span>
+                                <span key={link.report_id}>{index ? " · " : ""}<a href={`/reports/${link.report_id}`}>{link.date}</a></span>
                               )) : "未入报告"}
-                              {occurrence.quotes[0] ? ` · 「${occurrence.quotes[0]}」` : ""}
+                              {occurrence.quotes[0] && occurrence.quotes[0] !== occurrence.statement ? ` · 「${occurrence.quotes[0]}」` : ""}
                             </li>
                           ))}
                         </ul>
@@ -454,14 +439,7 @@ function Legend({ metric }: { metric: "frequency" | "association" }) {
     <p className="muted" style={{ fontSize: 12 }}>
       点大小 = 被提及洞察数 · 边粗 ={" "}
       {metric === "association" ? "关联强度 Jaccard" : "共现次数"}（本图内归一化）· 颜色：
-      {(Object.keys(COLOR) as GNode["type"][]).map((t) => (
-        <span key={t} style={{ marginLeft: 8 }}>
-          <span
-            style={{ display: "inline-block", width: 9, height: 9, borderRadius: 9, background: COLOR[t], marginRight: 3 }}
-          />
-          {TYPE_LABEL[t]}
-        </span>
-      ))}
+      <span style={{ marginLeft: 8 }}><span style={{ display: "inline-block", width: 9, height: 9, borderRadius: 9, background: NODE_COLOR, marginRight: 3 }} />实体</span>
       <br />
       <em>共现 ≠ 因果：边只表「在同一条洞察里被一起提及」，不代表语义关系。</em>
     </p>

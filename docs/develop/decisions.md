@@ -1344,3 +1344,11 @@ production-ready 声明仍由 INSI-25 阻断；若 future profile 允许任一 P
 
 分析、数据库写入、报告/PPT 重渲染和 A1 证据需要增加受控投影与可迁移审计记录；展示优化不会放宽 statement 的失败语义。
 评测产物可并行运行而不覆盖，并可让独立人工复审可靠回链到特定 Git SHA、数据集与模型配置。
+
+### v6 补充决定（source quote projection）
+
+独立审阅发现，v5 即使有 claim→quote 双审，仍会把中文模型草稿显示为读者事实：例如把 `corresponded to` 写成因果、从第二个未展示引用补入 `synthetic`，或把泛称的 design 改成“该架构”。这不是增加词面规则可以稳妥修复的问题，因为读者看到的句子本身已不是原文证据。
+
+5. `source_quote_v1` 将唯一绑定 citation 的 `quote` 逐字投影为 reader-visible `statement`；`claim` 降为内部审计记录，可拒绝候选但绝不可作为显示、实体抽取、图谱、报告或重要性事实的输入。读者界面只显示一次该 source quote，不再重复呈现相同的“引用摘录”。
+6. 独立自足性审计只接收 source quote 与 locator，必须拒绝未在 quote 内解析的 it/the gap/the method/former-latter/respectively 及中文指示词；主审、独立审和持久化记录通过投影版本、citation index/ref、prompt/input hash 以及 statement/quote SHA-256 绑定。任一项不符，图谱、侧栏和报告 fail-closed。
+7. 历史批次（包括已经有 v5 display audit 的批次）不迁移为 v6：迁移默认 `legacy`，只能保留审计历史，不能进入新的 reader path。A1 基准随之改为断言最终逐字 quote，并将旧基线标为配置不可比；自动结果仍须与独立人工 review、规模门分开陈述。

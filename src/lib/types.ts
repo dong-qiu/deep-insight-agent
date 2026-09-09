@@ -183,6 +183,8 @@ export interface AnalysisBatch {
   insights: Insight[];
   /** New batches retain display-evidence records. `audited` remains meaningful even with zero kept rows. */
   display_coverage_state?: "legacy" | "audited";
+  /** v6 reader contract. Missing/legacy values are deliberately not reader-visible. */
+  display_projection_version?: "legacy" | "source_quote_v1";
   display_coverage_audits?: DisplayCoverageAudit[];
   /** All terminal candidate decisions, including rejected candidates without an Insight row. */
   display_coverage_candidate_audits?: DisplayCoverageCandidateAudit[];
@@ -460,18 +462,18 @@ export const LlmCitationSchema = z.object({
 
 /** analyzer 产出的单条洞察 */
 export const LlmInsightSchema = z.object({
-  statement: z.string().describe("候选结论草稿，中性叙述，不预测、不评论；最终展示 statement 由 statement_citation_index 所选 citation 的 claim 在代码侧确定性构造，草稿不得添加该 claim 没有的范围、关系、机制、程度或评价"),
-  statement_citation_index: z.number().int().positive().describe("最终展示 statement 唯一绑定的 citations 1-based 序号。所选 citation 的 claim 必须是完整、可读的原子事实；代码以它构造最终 statement，不得选择多个引用"),
+  statement: z.string().describe("仅作绑定校验草稿：中性叙述，不预测、不评论，且不得添加所绑定 quote 没有的范围、关系、机制、程度或评价。读者最终看到的是 statement_citation_index 所选 citation 的 quote 原文，不是本草稿或 citation claim"),
+  statement_citation_index: z.number().int().positive().describe("读者最终展示 statement 唯一绑定的 citations 1-based 序号。所选 quote 必须是完整、可独立理解的原子事实；代码将其逐字投影为最终 statement，不得选择多个引用"),
   headline: z
     .string()
     .describe(
-      "一句话要点（≤40 字），供列表卡片快速扫读：把最关键的结论/数字/主体放句首，去掉铺垫与从句；须是 statement 的忠实浓缩，不得引入 statement 没有的事实、不得放大。",
+      "reader-visible v6 不展示 headline；输出空字符串。不得用它承载事实、摘要或替代 statement。",
     ),
   type: z.enum(["aggregation", "trend"]).describe("aggregation=主题聚合 / trend=趋势识别"),
   importance: z.number().int().min(1).max(5).describe("重要性 1–5"),
-  importance_facts: z.array(z.string()).default([]).describe("可选的来源事实，若展示在重要性说明中，每一项都必须由 citation quote 直接覆盖；不要把系统评价或未引证的范围/部署/影响事实写在这里"),
+  importance_facts: z.array(z.string()).default([]).describe("reader-visible v6 不展示 importance_facts；输出空数组。不得用它承载来源事实、范围、部署、影响或系统评价"),
   importance_reason: z.enum(IMPORTANCE_REASONS).describe("只能选择受控系统重要性判断：engineering_decision=工程选型参考，security_review=安全审查参考，evaluation_interpretation=评测解读参考，research_tracking=研究跟踪参考；不得输出自由文本"),
-  importance_reason_claim_indexes: z.array(z.number().int().positive()).min(1).describe("从 1 开始，先指向本条 statement 的原子实质 claim，随后才是 headline 的原子实质 claim；每个被引用 claim 必须支撑系统重要性判断，不能指向 importance_facts"),
+  importance_reason_claim_indexes: z.array(z.number().int().positive()).min(1).describe("从 1 开始，只指向本条 statement 的原子实质 claim；不得指向 headline 或 importance_facts。每个索引必须支撑受控系统重要性判断"),
   confidence: z
     .enum(["high", "medium", "low"])
     .nullable()

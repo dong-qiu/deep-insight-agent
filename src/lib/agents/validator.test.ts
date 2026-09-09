@@ -8,9 +8,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("../runtime/llm.js", () => ({
   callStructured: vi.fn(),
   MODELS: { analyzer: "claude-sonnet-4-6", validator: "claude-opus-4-7" }, // consistencyCacheVersion 读 MODELS.validator
+  anthropicBaseUrl: () => undefined,
 }));
+vi.mock("../runtime/relay-recovery.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../runtime/relay-recovery.js")>();
+  return { ...actual, withRelayRecovery: vi.fn((_: unknown, operation: () => Promise<unknown>) => operation()) };
+});
 
 import { callStructured } from "../runtime/llm.js";
+import { RelayUnavailableError, isRelayCapacityError, withRelayRecovery } from "../runtime/relay-recovery.js";
 import { buildWindowByItem, checkReachability, CONSISTENCY_LABEL_DECISION_TABLE, consistencyCacheVersion, insightInclusion, isValidationDegraded, judgeConsistency, judgeConsistencyBatch, summarize, validateBatch, verdictFor } from "./validator.js";
 import type { CitationCheck, ContentItem, Insight } from "../types.js";
 
@@ -551,6 +557,60 @@ describe("validateBatch（B 按源归并批量判定 · 成本最大杠杆）", 
     const { checks } = await validateBatch([ins1, ins2], items);
     expect(callStructured).toHaveBeenCalledTimes(3); // no hidden acceptance after a malformed batch
     expect(checks.every((c) => c.consistency === "not_evaluated" && c.verdict === "flagged")).toBe(true);
+  });
+
+  it("relay 容量恢复耗尽时，批量组 fail-closed 且不扇出逐条请求", async () => {
+    const items = [item("ci_capacity", "Body for a relay capacity outage.")];
+    const ins1 = insight("icap1", "A", [{ content_item_id: "ci_capacity", quote: "relay capacity" }]);
+    const ins2 = insight("icap2", "B", [{ content_item_id: "ci_capacity", quote: "capacity outage" }]);
+    vi.mocked(withRelayRecovery).mockRejectedValueOnce(new RelayUnavailableError(new Error("no available channel")));
+
+    const { checks } = await validateBatch([ins1, ins2], items);
+    expect(withRelayRecovery).toHaveBeenCalledTimes(1); // batch request only; no per-claim fan-out
+    expect(callStructured).not.toHaveBeenCalled();
+    expect(checks).toHaveLength(2);
+    expect(checks.every((check) => check.consistency === "not_evaluated" && check.verdict === "flagged")).toBe(true);
+  });
+
+  it("结构化 HTTP 429 同样进入容量终态：整批不扇出、无 support", async () => {
+    const items = [item("ci_429", "Body for a structured 429 outage.")];
+    const ins1 = insight("i429a", "A", [{ content_item_id: "ci_429", quote: "structured 429" }]);
+    const ins2 = insight("i429b", "B", [{ content_item_id: "ci_429", quote: "429 outage" }]);
+    const structured429 = Object.assign(new Error("rate limited by upstream"), { status: 429 });
+    vi.mocked(withRelayRecovery).mockImplementationOnce(async (_input, operation) => {
+      try {
+        return await operation();
+      } catch (error) {
+        if (isRelayCapacityError(error)) throw new RelayUnavailableError(error);
+        throw error;
+      }
+    });
+    vi.mocked(callStructured).mockRejectedValueOnce(structured429);
+
+    const { checks } = await validateBatch([ins1, ins2], items);
+    expect(withRelayRecovery).toHaveBeenCalledTimes(1); // no single-claim fallback after typed 429
+    expect(callStructured).toHaveBeenCalledTimes(1);
+    expect(checks.every((check) => check.consistency === "not_evaluated" && check.verdict === "flagged")).toBe(true);
+  });
+
+  it("容量 gate 已 open 时，跨 batch group 与逐条组均保持 fail-closed", async () => {
+    process.env.CONSISTENCY_BATCH_MAX = "2";
+    const quotes = ["q-one", "q-two", "q-three"];
+    const items = [item("ci_open", quotes.join(" "))];
+    const ins = insight("iopen", "S", quotes.map((quote, index) => ({
+      content_item_id: "ci_open", quote, claim: `claim-${index}`,
+    })));
+    // The recovery module's own latch is covered independently. This contract test makes the
+    // validator see that latched typed result at both a size-2 batch and the remaining size-1
+    // group, proving neither path manufactures a semantic verdict or per-claim fallback.
+    vi.mocked(withRelayRecovery)
+      .mockRejectedValueOnce(new RelayUnavailableError(new Error("no available route")))
+      .mockRejectedValueOnce(new RelayUnavailableError(new Error("no available route")));
+
+    const { checks } = await validateBatch([ins], items);
+    expect(withRelayRecovery).toHaveBeenCalledTimes(2); // [2] batch + [1] single group, never 3
+    expect(callStructured).not.toHaveBeenCalled();
+    expect(checks.every((check) => check.consistency === "not_evaluated" && check.verdict === "flagged")).toBe(true);
   });
 
   it("VALIDATOR_BATCH=0 → 退回逐条判定（两洞察同源 → 2 次单条调用）", async () => {

@@ -42,10 +42,27 @@ import {
 import { consistencyBatchMax, consistencyCacheVersion, CONSISTENCY_WINDOW_CHARS, judgeWithRetry, validateBatch } from "../src/lib/agents/validator.js";
 import { anthropicBaseUrl, MODELS, assertCoverageModelSeparation, getCostReport } from "../src/lib/runtime/llm.js";
 import { validatorBatchOn, validatorThinking } from "../src/lib/runtime/env.js";
+import {
+  RELAY_RECOVERY_MAX_PROBES,
+  RELAY_RECOVERY_MAX_BACKOFF_WAIT_MS,
+  RELAY_RECOVERY_EXHAUSTED_COOLDOWN_MS,
+  RELAY_RECOVERY_POLICY_VERSION,
+  relayRecoveryStats,
+} from "../src/lib/runtime/relay-recovery.js";
 import type { CitationCheck, ContentItem, ImportanceReason, Insight, Topic } from "../src/lib/types.js";
+import { DISPLAY_PROJECTION_VERSION } from "../src/lib/utils/source-quote-projection.js";
+import { selectInsights } from "../src/lib/agents/report-gen.js";
 import { beginA1Run, finalizeA1Run, finalizeFailedA1Run, sha256File, writeJson, type A1RunWorkspace } from "./a1-artifacts.js";
 import { sameEvalConfig, type EvalConfig } from "./a1-config.js";
-import { dirtyFingerprintFromStatus } from "./a1-source-state.js";
+import {
+  countReaderVisibleByTopic,
+  DCP_MIN_CONSISTENCY_PAIRS,
+  DCP_MIN_READER_VISIBLE_INSIGHTS_PER_TOPIC,
+  DCP_MIN_TOPICS,
+  DCP_SAMPLE_CONTRACT_VERSION,
+  dcpSamplePrerequisite,
+} from "./a1-dcp.js";
+import { DIRTY_SOURCE_FINGERPRINT_ALGORITHM, dirtyFingerprintFromSnapshot } from "./a1-source-state.js";
 import {
   emptyJudgeStats,
   judgeAccuracy,
@@ -63,7 +80,7 @@ let activeWorkspace: A1RunWorkspace | null = null;
 let activeRunContext: {
   config: object;
   dataset: object;
-  source: { commit: string | null; dirty_fingerprint: string | null };
+  source: { commit: string | null; dirty_fingerprint: string | null; dirty_fingerprint_algorithm?: string };
 } = {
   config: {}, dataset: {}, source: { commit: null, dirty_fingerprint: null },
 };
@@ -103,9 +120,6 @@ const THRESHOLDS_BY_STRATUM: Record<Stratum, Thresholds> = {
     yieldMin: 0.7, // 上报 yield ≥ 70%（暂定，真实转写跑批后标定）
   },
 };
-// eval-criteria 评测集规模下限（低于则结论仅供管线验证，不作 DCP 判定依据）
-const MIN_TOPICS = 5;
-const MIN_CONSISTENCY_PAIRS = 100;
 const DISPLAY_COVERAGE_FIXTURE = "evals/dataset/display-coverage-benchmark.json";
 
 interface QualityCase {
@@ -129,6 +143,8 @@ interface QualityEvidence {
   topic_name: string;
   stratum: Stratum;
   insight_count: number;
+  /** Production reader selector after v6 audit/binding + validator whitelist, never raw analyze() yield. */
+  reader_visible_insight_count: number;
   checks: CitationCheck[];
   coverage_decisions: CoverageDecision[];
 }
@@ -140,6 +156,8 @@ interface DisplayCoverageCase {
   facets: string[];
   statement: string;
   statement_citation_index: number;
+  /** Required for accepted cases: the reader-visible statement must be this exact bound quote. */
+  expected_statement?: string;
   headline?: string;
   importance_facts?: string[];
   importance_reason?: ImportanceReason;
@@ -153,6 +171,8 @@ interface DisplayCoverageResult {
   field: DisplayCoverageCase["field"];
   facets: string[];
   actual: "accept" | "reject";
+  rendered_statement: string | null;
+  projection_matches_expected: boolean;
   decisions: CoverageDecision[];
   error: string | null;
 }
@@ -189,6 +209,10 @@ function currentEvalConfig(qualityFile: string, consistencyFile: string): EvalCo
     validator_contract_version: consistencyCacheVersion(),
     consistency_window_chars: CONSISTENCY_WINDOW_CHARS,
     consistency_batch_max: consistencyBatchMax(),
+    relay_recovery_policy_version: RELAY_RECOVERY_POLICY_VERSION,
+    relay_recovery_max_probes: RELAY_RECOVERY_MAX_PROBES,
+    relay_recovery_max_backoff_wait_ms: RELAY_RECOVERY_MAX_BACKOFF_WAIT_MS,
+    relay_recovery_exhausted_cooldown_ms: RELAY_RECOVERY_EXHAUSTED_COOLDOWN_MS,
     coverage_model: MODELS.coverage,
     validator_thinking: validatorThinking(),
     validator_batch: validatorBatchOn(),
@@ -196,6 +220,7 @@ function currentEvalConfig(qualityFile: string, consistencyFile: string): EvalCo
     consistency_dataset_sha256: datasetDigest(consistencyFile),
     display_coverage_dataset_sha256: datasetDigest(DISPLAY_COVERAGE_FIXTURE),
     display_coverage_gate_version: DISPLAY_COVERAGE_GATE_VERSION,
+    display_projection_version: DISPLAY_PROJECTION_VERSION,
     display_coverage_primary_prompt_version: DISPLAY_COVERAGE_PROMPT_VERSION,
     display_coverage_primary_prompt_sha256: DISPLAY_COVERAGE_PROMPT_HASH,
     display_coverage_countercheck_prompt_version: DISPLAY_COVERAGE_COUNTERCHECK_PROMPT_VERSION,
@@ -290,9 +315,19 @@ async function runDisplayCoverageBenchmark(cases: DisplayCoverageCase[]): Promis
     const decisions: CoverageDecision[] = [];
     try {
       const kept = await filterByQuoteCoverage([insight], undefined, undefined, (decision) => decisions.push(decision));
-      results.push({ id: c.id, expected: c.expected, field: c.field, facets: c.facets, actual: kept.length ? "accept" : "reject", decisions, error: null });
+      const rendered_statement = kept[0]?.statement ?? null;
+      results.push({
+        id: c.id, expected: c.expected, field: c.field, facets: c.facets,
+        actual: kept.length ? "accept" : "reject", rendered_statement,
+        projection_matches_expected: c.expected_statement == null || rendered_statement === c.expected_statement,
+        decisions, error: null,
+      });
     } catch (error) {
-      results.push({ id: c.id, expected: c.expected, field: c.field, facets: c.facets, actual: "reject", decisions, error: (error as Error).message });
+      results.push({
+        id: c.id, expected: c.expected, field: c.field, facets: c.facets, actual: "reject",
+        rendered_statement: null, projection_matches_expected: c.expected_statement == null,
+        decisions, error: (error as Error).message,
+      });
     }
   }
   return results;
@@ -306,16 +341,29 @@ function gitValue(args: string[]): string | null {
   }
 }
 
-function sourceState() {
-  let dirty: string | null;
+function gitBuffer(args: string[]): Buffer | null {
   try {
-    dirty = execFileSync("git", ["status", "--porcelain=v1"], { encoding: "utf8" }).trim();
+    return execFileSync("git", args);
   } catch {
-    dirty = null;
+    return null;
   }
+}
+
+function sourceState() {
+  const dirty = gitBuffer(["status", "--porcelain=v1", "-z"]);
+  const untrackedPaths = gitBuffer(["ls-files", "--others", "--exclude-standard", "-z"]);
+  const untracked = untrackedPaths == null ? [] : untrackedPaths.toString("utf8").split("\0").filter(Boolean).map((path) => {
+    try { return { path, content: readFileSync(path) }; } catch { return { path, content: null }; }
+  });
   return {
     commit: gitValue(["rev-parse", "HEAD"]),
-    dirty_fingerprint: dirtyFingerprintFromStatus(dirty),
+    dirty_fingerprint: dirtyFingerprintFromSnapshot({
+      status: dirty,
+      staged_diff: gitBuffer(["diff", "--no-ext-diff", "--binary", "--cached"]),
+      unstaged_diff: gitBuffer(["diff", "--no-ext-diff", "--binary"]),
+      untracked,
+    }),
+    dirty_fingerprint_algorithm: DIRTY_SOURCE_FINGERPRINT_ALGORITHM,
   };
 }
 
@@ -448,6 +496,8 @@ async function main(): Promise<void> {
   }
   const checksByStratum: Record<Stratum, CitationCheck[]> = { arxiv: [], transcript: [] };
   const insightsByStratum: Record<Stratum, Insight[]> = { arxiv: [], transcript: [] };
+  const readerVisibleInsightsByStratum: Record<Stratum, Insight[]> = { arxiv: [], transcript: [] };
+  const dcpTopicIds = [...new Set(qualityAll.map((quality) => quality.topic.id))];
   const coverageDecisionsByStratum: Record<Stratum, CoverageDecision[]> = { arxiv: [], transcript: [] };
   const qualityEvidence: Array<QualityEvidence & { error?: string }> = [];
   let qualitySucceeded = 0;
@@ -461,6 +511,10 @@ async function main(): Promise<void> {
         onCoverageDecision: (decision) => coverageDecisions.push(decision),
       });
       const vr = await validateBatch(batch.insights, c.items);
+      // DCP counts the same reader-visible derivative as production, rather than raw analyzer
+      // yield. A topic whose citations are all blocked/flagged therefore contributes zero.
+      const readerVisible = selectInsights(batch, vr);
+      readerVisibleInsightsByStratum[stratum].push(...readerVisible.map((entry) => entry.insight));
       insightsByStratum[stratum].push(...batch.insights);
       checksByStratum[stratum].push(...vr.checks);
       coverageDecisionsByStratum[stratum].push(...coverageDecisions);
@@ -471,6 +525,7 @@ async function main(): Promise<void> {
         topic_name: c.topic.name,
         stratum,
         insight_count: batch.insights.length,
+        reader_visible_insight_count: readerVisible.length,
         checks: vr.checks,
         coverage_decisions: coverageDecisions,
       });
@@ -479,7 +534,7 @@ async function main(): Promise<void> {
       const error = (e as Error).message;
       qualityFailures.push({ case_index: caseIndex, topic_id: c.topic.id, error });
       coverageDecisionsByStratum[stratum].push(...coverageDecisions);
-      qualityEvidence.push({ case_index: caseIndex, topic_id: c.topic.id, topic_name: c.topic.name, stratum, insight_count: 0, checks: [], coverage_decisions: coverageDecisions, error });
+      qualityEvidence.push({ case_index: caseIndex, topic_id: c.topic.id, topic_name: c.topic.name, stratum, insight_count: 0, reader_visible_insight_count: 0, checks: [], coverage_decisions: coverageDecisions, error });
       console.log(`失败，跳过该主题（${error}）`);
     }
   }
@@ -535,10 +590,28 @@ async function main(): Promise<void> {
 
   // ── 覆盖度（第三层校验，informational，全形态合计）：结论里的具体声明（数字/实体）被引用直接
   // 覆盖的比例。统计 analyzer 产出层（用 it.citations 全量、不剔 blocked）；非硬门，量化缺口现状。 ──
-  const allInsights = STRATA.flatMap((s) => insightsByStratum[s]);
+  const rawInsights = STRATA.flatMap((s) => insightsByStratum[s]);
+  // The queue and manifest are DCP evidence, so they contain exactly production reader-visible
+  // insights—not pre-validation analyzer candidates retained below for informational coverage.
+  const allInsights = STRATA.flatMap((s) => readerVisibleInsightsByStratum[s]);
+  const readerVisibleByTopic = countReaderVisibleByTopic(dcpTopicIds, allInsights);
+  const samplePrerequisite = dcpSamplePrerequisite({
+    topics: dcpTopicIds.length,
+    consistencyPairs: consistencyAll.length,
+    readerVisibleInsightsByTopic: readerVisibleByTopic,
+  });
+  const dcpSample = {
+    contract_version: DCP_SAMPLE_CONTRACT_VERSION,
+    min_topics: DCP_MIN_TOPICS,
+    min_consistency_pairs: DCP_MIN_CONSISTENCY_PAIRS,
+    min_reader_visible_insights_per_topic: DCP_MIN_READER_VISIBLE_INSIGHTS_PER_TOPIC,
+    unique_topic_count: dcpTopicIds.length,
+    reader_visible_total: allInsights.length,
+    reader_visible_by_topic: Object.fromEntries(readerVisibleByTopic.map(({ topic_id, count }) => [topic_id, count])),
+  };
   let claimsTotal = 0;
   let claimsCovered = 0;
-  for (const it of allInsights) {
+  for (const it of rawInsights) {
     const ents = (it.entities ?? []).map((e) => e.name);
     const quotes = it.citations.map((c) => c.quote);
     const all = specificClaims(it.statement, ents).length;
@@ -560,12 +633,18 @@ async function main(): Promise<void> {
   const displayCoverageResults = await runDisplayCoverageBenchmark(displayCoverageCases);
   const expectedRejects = displayCoverageResults.filter((result) => result.expected === "reject");
   const expectedAccepts = displayCoverageResults.filter((result) => result.expected === "accept");
-  const unsafeAccepts = expectedRejects.filter((result) => result.actual === "accept");
+  // An accepted case whose rendered text differs from its manually pinned bound quote is also a
+  // P0 unsafe acceptance: it would prove that an internal claim has leaked back to a reader.
+  const projectionViolations = displayCoverageResults.filter((result) => result.actual === "accept" && !result.projection_matches_expected);
+  const unsafeAccepts = [
+    ...expectedRejects.filter((result) => result.actual === "accept"),
+    ...projectionViolations,
+  ];
   const falseRejects = expectedAccepts.filter((result) => result.actual === "reject");
   const unsafeAcceptRate = expectedRejects.length ? unsafeAccepts.length / expectedRejects.length : 1;
   const displayCoverageMetric = metric("display_unsafe_accept", "展示覆盖 unsafe_accept", unsafeAcceptRate, 0, "<=", "publish_safety");
   allRows.push(displayCoverageMetric);
-  console.log(`${displayCoverageMetric.pass ? "✅" : "❌"} unsafe_accept ${unsafeAccepts.length}/${expectedRejects.length}；false_reject ${falseRejects.length}/${expectedAccepts.length}`);
+  console.log(`${displayCoverageMetric.pass ? "✅" : "❌"} unsafe_accept ${unsafeAccepts.length}/${expectedRejects.length}；projection_violation ${projectionViolations.length}/${displayCoverageResults.length}；false_reject ${falseRejects.length}/${expectedAccepts.length}`);
 
   // ── 成本（估算，A5 成本可控） ──
   const cost = getCostReport();
@@ -587,6 +666,7 @@ async function main(): Promise<void> {
   // All files first land in this run's private temp directory. Only finalizeA1Run publishes it.
   const workspace = activeWorkspace!;
   const reviewGeneratedAt = new Date().toISOString();
+  const recovery = relayRecoveryStats();
   const pipelineCoverage = Object.fromEntries(STRATA.map((stratum) => [stratum, coveragePipelineSummary(coverageDecisionsByStratum[stratum])]));
   const reviewQueuePath = join(workspace.tempDir, "review-queue.json");
   const a1RunPath = join(workspace.tempDir, "a1-run.json");
@@ -613,6 +693,7 @@ async function main(): Promise<void> {
         judge_total: consistencyCases.length,
         judge_failures: judgeFailures,
       },
+      dcp_sample: dcpSample,
       quality_cases: qualityEvidence,
       judge_cases: judgeEvidence,
       confusion_matrix: matrixByStratum,
@@ -622,10 +703,12 @@ async function main(): Promise<void> {
         fixture: DISPLAY_COVERAGE_FIXTURE,
         fixture_sha256: evalConfig.display_coverage_dataset_sha256,
         unsafe_accept: { count: unsafeAccepts.length, total: expectedRejects.length, rate: unsafeAcceptRate },
+        projection_violation: { count: projectionViolations.length, total: displayCoverageResults.length },
         false_reject: { count: falseRejects.length, total: expectedAccepts.length },
         results: displayCoverageResults,
       },
       pipeline_coverage: pipelineCoverage,
+      relay_recovery: recovery,
     },
   );
   let reviewArtifactError: string | null = null;
@@ -649,10 +732,9 @@ async function main(): Promise<void> {
       `\n⚠️ 子集冒烟：仅跑了主题 ${qualityCases.length}/${qualityAll.length}、一致性对 ${consistencyCases.length}/${consistencyAll.length}。\n` +
         "   结果仅用于验证真模型链路 + 标定成本，不作 A1 / DCP 判定依据。去掉 A1_*_LIMIT 跑全量才出结论。",
     );
-  } else if (qualityAll.length < MIN_TOPICS || consistencyAll.length < MIN_CONSISTENCY_PAIRS) {
+  } else if (samplePrerequisite) {
     console.log(
-      `\n⚠️ 样本量低于 eval-criteria 规模（主题 ${qualityAll.length}/${MIN_TOPICS}，` +
-        `一致性对 ${consistencyAll.length}/${MIN_CONSISTENCY_PAIRS}）。\n` +
+      `\n⚠️ ${samplePrerequisite}。\n` +
         "   当前结论仅验证管线打通，不作 DCP 判定依据。请用真实采集数据扩充数据集后重跑。",
     );
   }
@@ -660,9 +742,11 @@ async function main(): Promise<void> {
   // ── 回归门（eval-criteria：任一指标较基线降 >3pp 告警/阻断）。各 stratum 各比各的基线段。
   // baseline.json：arxiv → `auto_metrics`（历史键，向后兼容）；transcript → `transcript`。 ──
   let regressed = false;
+  let baselineComparison: "comparable" | "incomparable" | "not_evaluated" = "not_evaluated";
   if (!coreComplete) {
     console.log("\n（核心评测不完整，跳过 baseline 回归对照）");
   } else try {
+    baselineComparison = "comparable";
     const baseDoc = JSON.parse(readFileSync("evals/baseline.json", "utf8")) as Record<string, unknown>;
     const configs = baseDoc.eval_configs;
     const configsByStratum = configs && typeof configs === "object" && !Array.isArray(configs)
@@ -673,13 +757,18 @@ async function main(): Promise<void> {
     const TOL = 0.03;
     for (const s of activeStrata) {
       const base = baseForStratum(s);
-      if (!Object.keys(base).length) continue;
+      if (!Object.keys(base).length) {
+        baselineComparison = "incomparable";
+        console.log(`\n回归对照（${s} · vs baseline.json）：⚠️ 缺少该形态的基线指标，不能作回归结论。`);
+        continue;
+      }
       const baseConfig = configsByStratum[s];
       const configCompatible = baseConfig && typeof baseConfig === "object" && !Array.isArray(baseConfig)
         ? sameEvalConfig(baseConfig as Record<string, unknown>, evalConfig)
         : false;
       console.log(`\n回归对照（${s} · vs baseline.json）：`);
       if (!configCompatible) {
+        baselineComparison = "incomparable";
         console.log("  ⚠️ 此形态缺少同配置的结构化基线：仅展示指标，不作回归结论；请先全量重建该形态基线。");
       }
       for (const r of rowsByStratum[s]) {
@@ -700,6 +789,7 @@ async function main(): Promise<void> {
       );
     }
   } catch {
+    baselineComparison = "incomparable";
     console.log("\n（无 baseline.json，跳过回归对照）");
   }
 
@@ -735,6 +825,14 @@ async function main(): Promise<void> {
     autoGate = exitCode === 0 ? "pass" : "fail";
   }
 
+  const dcpPrerequisites = [
+    ...(baselineComparison !== "comparable" ? ["缺少同配置的可比 baseline"] : []),
+    ...(smoke ? ["当前为 smoke 子集运行"] : []),
+    ...(samplePrerequisite ? [samplePrerequisite] : []),
+    "人工 review queue 尚未完成",
+  ];
+  const dcpEligibleForManualReview = autoGate === "pass" && dcpPrerequisites.length === 1;
+
   const artifactPaths = {
     "a1-run.json": a1RunPath,
     "review-queue.json": reviewQueuePath,
@@ -745,12 +843,16 @@ async function main(): Promise<void> {
     status: "completed",
     auto_gate: autoGate,
     manual_review: "pending",
-    dcp_eligibility: autoGate === "pass" ? "pending_manual_review" : "ineligible",
+    dcp_eligibility: dcpEligibleForManualReview ? "pending_manual_review" : "ineligible",
     started_at: workspace.startedAt,
     ended_at: new Date().toISOString(),
     config: activeRunContext.config,
     dataset: activeRunContext.dataset,
     source: activeRunContext.source,
+    baseline_comparison: baselineComparison,
+    dcp_sample: dcpSample,
+    dcp_prerequisites: dcpPrerequisites,
+    relay_recovery: recovery,
     insights: insightManifest(allInsights),
     artifacts: Object.fromEntries(Object.entries(artifactPaths).map(([name, path]) => [name, sha256File(path)])),
     ...(reviewArtifactError ? { review_artifact_error: reviewArtifactError } : {}),

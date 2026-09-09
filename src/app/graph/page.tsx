@@ -32,7 +32,13 @@ export default async function GraphPage({ searchParams }: { searchParams: Promis
       ? new Date(Date.now() - days * 86400000).toISOString().replace("T", " ").slice(0, 19)
       : undefined;
 
-  const data = topicId ? buildTopicGraphData(db, topicId, { since }) : null;
+  const rawData = topicId ? buildTopicGraphData(db, topicId, { since }) : null;
+  // Entity type is internal extraction metadata. The client only receives exact-name nodes and
+  // deterministic counts, so an unbound LLM classification cannot leak through the graph API.
+  const data = rawData ? {
+    ...rawData,
+    nodes: rawData.nodes.map(({ name, mentions }) => ({ name, mentions })),
+  } : null;
   const topicName = topics.find((t) => t.id === topicId)?.name ?? topicId;
 
   return (

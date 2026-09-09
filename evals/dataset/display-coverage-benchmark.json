@@ -1,5 +1,5 @@
 {
-  "version": "display-coverage-v5",
+  "version": "display-coverage-v6",
   "cases": [
     {
       "id": "controlled-poc-to-blackbox",
@@ -17,6 +17,7 @@
       "facets": ["task_scope", "universality"],
       "statement": "Long-horizon coding agents universally reward-hack.",
       "statement_citation_index": 1,
+      "expected_statement": "SpecBench contains 30 systems-level programming tasks.",
       "citations": [{ "claim": "SpecBench has 30 systems-level programming tasks", "quote": "SpecBench contains 30 systems-level programming tasks." }]
     },
     {
@@ -74,6 +75,7 @@
       "facets": ["statement_claim_binding", "scope", "system_type"],
       "statement": "The exemplification technique targets black-box chatbots.",
       "statement_citation_index": 1,
+      "expected_statement": "We evaluate a new prompt-injection technique using a bridge in external content to create few-shot examples.",
       "citations": [{ "claim": "The exemplification technique targets black-box chatbots", "quote": "We evaluate a new prompt-injection technique using a bridge in external content to create few-shot examples." }]
     },
     {
@@ -83,6 +85,7 @@
       "facets": ["statement_claim_binding", "elided_context", "scope"],
       "statement": "The character-based Recursive chunking method performs best for Khmer agricultural RAG.",
       "statement_citation_index": 1,
+      "expected_statement": "We observe the best performance for the character-based Recursive chunking method.",
       "citations": [{ "claim": "The character-based Recursive chunking method performs best for Khmer agricultural RAG", "quote": "We observe the best performance for the character-based Recursive chunking method." }]
     },
     {
@@ -119,6 +122,7 @@
       "facets": ["type_label", "scope"],
       "statement": "The LivePI benchmark covers seven input surfaces.",
       "statement_citation_index": 1,
+      "expected_statement": "LivePI covers seven input surfaces.",
       "citations": [{ "claim": "The LivePI benchmark covers seven input surfaces", "quote": "LivePI covers seven input surfaces." }]
     },
     {
@@ -140,6 +144,7 @@
       "facets": ["stable_token", "token_boundary", "entity", "number"],
       "statement": "AI reduces error by 2%.",
       "statement_citation_index": 1,
+      "expected_statement": "FAIR reduces error by 12%.",
       "citations": [{ "claim": "AI reduces error by 2%", "quote": "FAIR reduces error by 12%." }]
     },
     {
@@ -149,6 +154,7 @@
       "facets": ["direct_fact", "explicit_subject"],
       "statement": "Frontier reduces latency error.",
       "statement_citation_index": 1,
+      "expected_statement": "Frontier reduces latency error.",
       "citations": [{ "claim": "Frontier reduces latency error", "quote": "Frontier reduces latency error." }]
     },
     {
@@ -159,11 +165,12 @@
       "statement": "LivePI covers seven input surfaces.",
       "statement_citation_index": 1,
       "headline": "LivePI benchmark covers seven input surfaces.",
+      "expected_statement": "LivePI covers seven input surfaces.",
       "citations": [{ "claim": "LivePI covers seven input surfaces", "quote": "LivePI covers seven input surfaces." }]
     },
     {
       "id": "importance-fact-expansion-is-safely-cleared",
-      "expected": "accept",
+      "expected": "reject",
       "field": "importance_basis",
       "facets": ["importance_fact", "safe_projection"],
       "statement": "The method provides local certification.",
@@ -180,6 +187,7 @@
       "facets": ["direct_fact"],
       "statement": "SpecBench contains 30 systems-level programming tasks.",
       "statement_citation_index": 1,
+      "expected_statement": "SpecBench contains 30 systems-level programming tasks.",
       "citations": [{ "claim": "SpecBench contains 30 systems-level programming tasks", "quote": "SpecBench contains 30 systems-level programming tasks." }]
     },
     {
@@ -189,11 +197,12 @@
       "facets": ["direct_fact", "scope_narrowing"],
       "statement": "The character-based Recursive chunking method performs best.",
       "statement_citation_index": 1,
+      "expected_statement": "We observe the best performance for the character-based Recursive chunking method.",
       "citations": [{ "claim": "The character-based Recursive chunking method performs best", "quote": "We observe the best performance for the character-based Recursive chunking method." }]
     },
     {
       "id": "chinese-scoped-numeric-direct-positive",
-      "expected": "accept",
+      "expected": "reject",
       "field": "statement",
       "facets": ["direct_fact", "chinese", "numeric", "scope", "condition"],
       "statement": "在受控评测的 30 个系统级编程任务中，该方法优于基线。",
@@ -208,11 +217,12 @@
       "statement": "SpecBench contains 30 systems-level programming tasks.",
       "statement_citation_index": 1,
       "headline": "SpecBench contains 30 systems-level programming tasks.",
+      "expected_statement": "SpecBench contains 30 systems-level programming tasks.",
       "citations": [{ "claim": "SpecBench contains 30 systems-level programming tasks", "quote": "SpecBench contains 30 systems-level programming tasks." }]
     },
     {
       "id": "controlled-evaluation-positive",
-      "expected": "accept",
+      "expected": "reject",
       "field": "importance_basis",
       "facets": ["controlled_evaluation", "passed_anchor"],
       "statement": "The method provides local certification.",
@@ -220,6 +230,155 @@
       "importance_reason": "research_tracking",
       "importance_reason_claim_indexes": [1],
       "citations": [{ "claim": "The method provides local certification", "quote": "The method provides local certification." }]
+    },
+    {
+      "id": "source-quote-projects-correlation-not-causality",
+      "expected": "accept",
+      "field": "statement",
+      "facets": ["source_projection", "causality", "bilingual"],
+      "statement": "MCP workflow 优化带来 1.67 倍加速并将中位端到端延迟降低 40%。",
+      "statement_citation_index": 1,
+      "expected_statement": "MCP workflow optimizations corresponded to a 1.67x speedup and a 40% reduction in median end-to-end latency.",
+      "citations": [{ "claim": "MCP workflow 优化带来 1.67 倍加速并将中位端到端延迟降低 40%", "quote": "MCP workflow optimizations corresponded to a 1.67x speedup and a 40% reduction in median end-to-end latency." }]
+    },
+    {
+      "id": "source-quote-projects-synthetic-scope",
+      "expected": "accept",
+      "field": "statement",
+      "facets": ["source_projection", "scope", "bilingual"],
+      "statement": "SynAE 检测合成数据。",
+      "statement_citation_index": 1,
+      "expected_statement": "SynAE detects data in text benchmarks.",
+      "citations": [{ "claim": "SynAE 检测合成数据", "quote": "SynAE detects data in text benchmarks." }]
+    },
+    {
+      "id": "source-quote-projects-explicit-architecture",
+      "expected": "accept",
+      "field": "statement",
+      "facets": ["source_projection", "architecture", "bilingual"],
+      "statement": "DASH 架构提升吞吐量。",
+      "statement_citation_index": 1,
+      "expected_statement": "The DASH architecture improves throughput.",
+      "citations": [{ "claim": "DASH 架构提升吞吐量", "quote": "The DASH architecture improves throughput." }]
+    },
+    {
+      "id": "source-quote-explicit-openai-positive",
+      "expected": "accept",
+      "field": "statement",
+      "facets": ["self_contained", "explicit_subject"],
+      "statement": "OpenAI released Codex.",
+      "statement_citation_index": 1,
+      "expected_statement": "OpenAI released Codex.",
+      "citations": [{ "claim": "OpenAI released Codex", "quote": "OpenAI released Codex." }]
+    },
+    {
+      "id": "source-quote-we-present-gsqa-positive",
+      "expected": "accept",
+      "field": "statement",
+      "facets": ["self_contained", "explicit_subject"],
+      "statement": "We present GS-QA, a benchmark for grounded software-agent questions.",
+      "statement_citation_index": 1,
+      "expected_statement": "We present GS-QA, a benchmark for grounded software-agent questions.",
+      "citations": [{ "claim": "We present GS-QA, a benchmark for grounded software-agent questions", "quote": "We present GS-QA, a benchmark for grounded software-agent questions." }]
+    },
+    {
+      "id": "leading-it-quote-reject",
+      "expected": "reject",
+      "field": "statement",
+      "facets": ["anaphora", "self_contained", "leading_pronoun"],
+      "statement": "It grows by 28 percentage points for every tenfold increase in code size.",
+      "statement_citation_index": 1,
+      "citations": [{ "claim": "It grows by 28 percentage points for every tenfold increase in code size", "quote": "It grows by 28 percentage points for every tenfold increase in code size." }]
+    },
+    {
+      "id": "leading-the-gap-quote-reject",
+      "expected": "reject",
+      "field": "statement",
+      "facets": ["anaphora", "self_contained", "definite_reference"],
+      "statement": "The gap grows sharply with task length.",
+      "statement_citation_index": 1,
+      "citations": [{ "claim": "The gap grows sharply with task length", "quote": "The gap grows sharply with task length." }]
+    },
+    {
+      "id": "inline-it-quote-reject",
+      "expected": "reject",
+      "field": "statement",
+      "facets": ["anaphora", "self_contained", "inline_pronoun"],
+      "statement": "In the evaluation, it reduced latency by 40%.",
+      "statement_citation_index": 1,
+      "citations": [{ "claim": "In the evaluation, it reduced latency by 40%", "quote": "In the evaluation, it reduced latency by 40%." }]
+    },
+    {
+      "id": "former-latter-quote-reject",
+      "expected": "reject",
+      "field": "statement",
+      "facets": ["anaphora", "self_contained", "former_latter"],
+      "statement": "The former outperformed the latter.",
+      "statement_citation_index": 1,
+      "citations": [{ "claim": "The former outperformed the latter", "quote": "The former outperformed the latter." }]
+    },
+    {
+      "id": "respectively-quote-reject",
+      "expected": "reject",
+      "field": "statement",
+      "facets": ["anaphora", "self_contained", "respectively"],
+      "statement": "They scored 90 and 80, respectively.",
+      "statement_citation_index": 1,
+      "citations": [{ "claim": "They scored 90 and 80, respectively", "quote": "They scored 90 and 80, respectively." }]
+    },
+    {
+      "id": "chinese-demonstrative-quote-reject",
+      "expected": "reject",
+      "field": "statement",
+      "facets": ["anaphora", "self_contained", "chinese"],
+      "statement": "该方法将延迟降低 40%。",
+      "statement_citation_index": 1,
+      "citations": [{ "claim": "该方法将延迟降低 40%", "quote": "该方法将延迟降低 40%。" }]
+    },
+    {
+      "id": "our-approach-quote-reject",
+      "expected": "reject",
+      "field": "statement",
+      "facets": ["self_contained", "possessive_subject", "real_queue_regression"],
+      "statement": "Our approach improves compilability across all targets.",
+      "statement_citation_index": 1,
+      "citations": [{ "claim": "Our approach improves compilability across all targets", "quote": "Our approach improves compilability across all targets." }]
+    },
+    {
+      "id": "full-system-quote-reject",
+      "expected": "reject",
+      "field": "statement",
+      "facets": ["self_contained", "definite_subject", "real_queue_regression"],
+      "statement": "The full system records action accuracy for every task.",
+      "statement_citation_index": 1,
+      "citations": [{ "claim": "The full system records action accuracy for every task", "quote": "The full system records action accuracy for every task." }]
+    },
+    {
+      "id": "top-systems-quote-reject",
+      "expected": "reject",
+      "field": "statement",
+      "facets": ["self_contained", "implicit_comparison_set", "real_queue_regression"],
+      "statement": "top systems converge on the same method.",
+      "statement_citation_index": 1,
+      "citations": [{ "claim": "top systems converge on the same method", "quote": "top systems converge on the same method." }]
+    },
+    {
+      "id": "no-single-model-quote-reject",
+      "expected": "reject",
+      "field": "statement",
+      "facets": ["self_contained", "implicit_comparison_set", "real_queue_regression"],
+      "statement": "no single model wins all three dimensions.",
+      "statement_citation_index": 1,
+      "citations": [{ "claim": "no single model wins all three dimensions", "quote": "no single model wins all three dimensions." }]
+    },
+    {
+      "id": "int8-keys-quote-reject",
+      "expected": "reject",
+      "field": "statement",
+      "facets": ["self_contained", "unnamed_subject", "real_queue_regression"],
+      "statement": "INT8 keys preserve the same performance.",
+      "statement_citation_index": 1,
+      "citations": [{ "claim": "INT8 keys preserve the same performance", "quote": "INT8 keys preserve the same performance." }]
     },
     {
       "id": "bad-evaluation-anchor",

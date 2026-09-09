@@ -6,6 +6,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import type { RelayRecoveryStats } from "../src/lib/runtime/relay-recovery.js";
 
 export interface A1RunWorkspace {
   runId: string;
@@ -29,7 +30,22 @@ export interface A1RunManifest {
   ended_at: string;
   config: object;
   dataset: object;
-  source: { commit: string | null; dirty_fingerprint: string | null };
+  source: { commit: string | null; dirty_fingerprint: string | null; dirty_fingerprint_algorithm?: string };
+  /** A pass on automatic thresholds is not a comparable-baseline or DCP approval. */
+  baseline_comparison?: "comparable" | "incomparable" | "not_evaluated";
+  /** Auditable DCP population: exactly production selectInsights() output, by real topic id. */
+  dcp_sample?: {
+    contract_version: string;
+    min_topics: number;
+    min_consistency_pairs: number;
+    min_reader_visible_insights_per_topic: number;
+    unique_topic_count: number;
+    reader_visible_total: number;
+    reader_visible_by_topic: Record<string, number>;
+  };
+  dcp_prerequisites?: readonly string[];
+  /** Aggregate only: endpoint/key details intentionally never enter an eval artifact. */
+  relay_recovery?: RelayRecoveryStats;
   insights: { count: number; ids_sha256: string };
   artifacts: Record<string, string>;
   review_artifact_error?: string;

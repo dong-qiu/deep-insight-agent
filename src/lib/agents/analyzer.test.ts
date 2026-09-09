@@ -622,10 +622,74 @@ describe("filterByQuoteCoverage（展示 quote 覆盖门）", () => {
     const audits: Array<{ claims: Array<{ supports: boolean; countercheck?: { model: string; supports: boolean; reason: string; prompt_hash: string } }> }> = [];
     await expect(filterByQuoteCoverage([row], undefined, undefined, (decision) => audits.push(decision))).resolves.toEqual([row]);
     expect(vi.mocked(callStructured).mock.calls.map(([request]) => request.role)).toEqual(["validator", "coverage"]);
+    expect(vi.mocked(callStructured).mock.calls[1]?.[0].system).toContain("Frontier reduces latency error.");
+    expect(vi.mocked(callStructured).mock.calls[1]?.[0].system).toContain("The method provides local certification.");
     expect(audits[0]?.claims[0]).toMatchObject({
       supports: true,
-      countercheck: { model: "test-coverage", supports: true, reason: "countercheck_supported", prompt_hash: expect.any(String) },
+      countercheck: { model: "test-coverage", supports: true, reason: "quote_self_contained", prompt_hash: expect.any(String) },
     });
+  });
+
+  it("v6 把模型的翻译 claim 投影为绑定 quote，不能把因果/范围扩写带进读者 statement", async () => {
+    const quote = "MCP workflow optimizations corresponded to a 1.67x speedup and reduced median end-to-end latency by about 40.0%.";
+    vi.mocked(callStructured).mockResolvedValue(coverageVerdictsFor(quote, true));
+    const audits: Array<{ display_projection_version?: string; statement_sha256?: string; quote_sha256?: string }> = [];
+    const row = insight("MCP workflow 优化带来 1.67 倍加速并将中位端到端延迟降低约 40.0%。", [{
+      content_item_id: "ci", claim: "MCP workflow 优化带来 1.67 倍加速并将中位端到端延迟降低约 40.0%",
+      quote, locator: { paragraph_index: 0, char_start: 0, char_end: quote.length },
+    }]);
+
+    await expect(filterByQuoteCoverage([row], undefined, undefined, (decision) => audits.push(decision))).resolves.toEqual([row]);
+    expect(row.statement).toBe(quote);
+    expect(row.headline).toBe("");
+    expect(audits[0]).toMatchObject({ display_projection_version: "source_quote_v1", statement_sha256: expect.any(String), quote_sha256: expect.any(String) });
+    expect(audits[0]?.statement_sha256).toBe(audits[0]?.quote_sha256);
+  });
+
+  it.each([
+    ["SynAE 检测合成数据。", "SynAE detects data in text benchmarks."],
+    ["DASH 架构提升吞吐量。", "The DASH architecture improves throughput."],
+  ])("v6 投影剥离模型草稿的隐藏范围或类别：%s", async (draft, quote) => {
+    vi.mocked(callStructured).mockResolvedValue(coverageVerdictsFor(quote, true));
+    const row = insight(draft, [{
+      content_item_id: "ci", claim: draft.replace(/[。.]$/u, ""), quote,
+      locator: { paragraph_index: 0, char_start: 0, char_end: quote.length },
+    }]);
+
+    await expect(filterByQuoteCoverage([row])).resolves.toEqual([row]);
+    expect(row.statement).toBe(quote);
+    expect(row.entities).toEqual([]);
+  });
+
+  it("v6 在投影前拒绝以未解析 it 开头的 quote，不能把它补成特定差距", async () => {
+    const quote = "it grows by 28 percentage points for every tenfold increase in code size";
+    const audits: Array<{ claims: Array<{ reason: string }> }> = [];
+    const row = insight("差距随代码规模每十倍增长而扩大28个百分点。", [{
+      content_item_id: "ci", claim: "差距随代码规模每十倍增长而扩大28个百分点",
+      quote, locator: { paragraph_index: 0, char_start: 0, char_end: quote.length },
+    }]);
+
+    await expect(filterByQuoteCoverage([row], undefined, undefined, (decision) => audits.push(decision))).resolves.toEqual([]);
+    expect(vi.mocked(callStructured)).not.toHaveBeenCalled();
+    expect(audits[0]?.claims[0]?.reason).toBe("unresolved_deictic_quote");
+  });
+
+  it.each([
+    "Our approach improves compilability across all targets.",
+    "The full system records action accuracy for every task.",
+    "top systems converge on the same method.",
+    "no single model wins all three dimensions.",
+    "INT8 keys preserve the same performance.",
+  ])("v6 在模型调用前拒绝缺少展示内主体或范围的真实 quote：%s", async (quote) => {
+    const audits: Array<{ claims: Array<{ reason: string }> }> = [];
+    const row = insight(quote, [{
+      content_item_id: "ci", claim: quote.replace(/\.$/u, ""), quote,
+      locator: { paragraph_index: 0, char_start: 0, char_end: quote.length },
+    }]);
+
+    await expect(filterByQuoteCoverage([row], undefined, undefined, (decision) => audits.push(decision))).resolves.toEqual([]);
+    expect(vi.mocked(callStructured)).not.toHaveBeenCalled();
+    expect(audits[0]?.claims[0]?.reason).toBe("unresolved_deictic_quote");
   });
 
   it("statement 仅插入一个未绑定的程度词时在调用 judge 前拒绝", async () => {
@@ -748,9 +812,43 @@ describe("filterByQuoteCoverage（展示 quote 覆盖门）", () => {
     expect(vi.mocked(callStructured).mock.calls.map(([request]) => request.role)).toEqual(["validator", "coverage"]);
     expect(audits[0]?.claims[0]).toMatchObject({
       supports: false,
-      reason: "countercheck_not_supported",
-      countercheck: { model: "test-coverage", supports: false, reason: "countercheck_not_supported" },
+      reason: "quote_not_self_contained",
+      countercheck: { model: "test-coverage", supports: false, reason: "quote_not_self_contained" },
     });
+  });
+
+  it.each([
+    ["The gap grows sharply with task length."],
+    ["In the evaluation, it reduced latency by 40%."],
+    ["The former outperformed the latter."],
+    ["They scored 90 and 80, respectively."],
+  ])("独立复核拒绝不在句首的未解析指代：%s", async (quote) => {
+    vi.mocked(callStructured)
+      .mockResolvedValueOnce(coverageVerdictsFor(quote, true))
+      .mockResolvedValueOnce(coverageVerdictsFor(quote, false));
+    const row = insight(quote, [{
+      content_item_id: "ci", claim: quote.replace(/\.$/u, ""), quote,
+      locator: { paragraph_index: 0, char_start: 0, char_end: quote.length },
+    }]);
+
+    await expect(filterByQuoteCoverage([row])).resolves.toEqual([]);
+    const countercheck = vi.mocked(callStructured).mock.calls[1]?.[0];
+    expect(countercheck?.role).toBe("coverage");
+    expect(countercheck?.user).toContain(`<displayed_quote>\n${quote}\n</displayed_quote>`);
+    expect(countercheck?.user).not.toContain("citation_claim");
+  });
+
+  it("中文指示词 quote 在模型调用前 fail-closed，不能由草稿补全主体", async () => {
+    const quote = "该方法将延迟降低 40%。";
+    const audits: Array<{ claims: Array<{ reason: string }> }> = [];
+    const row = insight(quote, [{
+      content_item_id: "ci", claim: "该方法将延迟降低 40%", quote,
+      locator: { paragraph_index: 0, char_start: 0, char_end: quote.length },
+    }]);
+
+    await expect(filterByQuoteCoverage([row], undefined, undefined, (decision) => audits.push(decision))).resolves.toEqual([]);
+    expect(vi.mocked(callStructured)).not.toHaveBeenCalled();
+    expect(audits[0]?.claims[0]?.reason).toBe("unresolved_deictic_quote");
   });
 
   it("独立复核缺少 verdict 时 fail-closed，不能回退到主审放行", async () => {
@@ -769,8 +867,8 @@ describe("filterByQuoteCoverage（展示 quote 覆盖门）", () => {
     await expect(filterByQuoteCoverage([row], undefined, undefined, (decision) => audits.push(decision))).resolves.toEqual([]);
     expect(audits[0]?.claims[0]).toMatchObject({
       supports: false,
-      reason: "countercheck_invalid_verdict_set",
-      countercheck: { supports: false, reason: "countercheck_invalid_verdict_set" },
+      reason: "self_contained_invalid_verdict_set",
+      countercheck: { supports: false, reason: "self_contained_invalid_verdict_set" },
     });
   });
 
@@ -789,7 +887,7 @@ describe("filterByQuoteCoverage（展示 quote 覆盖门）", () => {
     }]);
 
     await expect(filterByQuoteCoverage([row], undefined, undefined, (decision) => audits.push(decision))).resolves.toEqual([]);
-    expect(audits[0]?.claims[0]).toMatchObject({ reason: "countercheck_invalid_verdict_set", countercheck: { reason: "countercheck_invalid_verdict_set" } });
+    expect(audits[0]?.claims[0]).toMatchObject({ reason: "self_contained_invalid_verdict_set", countercheck: { reason: "self_contained_invalid_verdict_set" } });
   });
 
   it("主审重复冲突 verdict 即使反审支持也必须拒绝", async () => {
@@ -883,8 +981,8 @@ describe("filterByQuoteCoverage（展示 quote 覆盖门）", () => {
       await expect(filterByQuoteCoverage([row], undefined, undefined, (decision) => audits.push(decision))).resolves.toEqual([]);
       expect(audits[0]?.claims[0]).toMatchObject({
         supports: false,
-        reason: "countercheck_unavailable",
-        countercheck: { supports: false, reason: "countercheck_unavailable", error: "countercheck unavailable" },
+        reason: "self_contained_unavailable",
+        countercheck: { supports: false, reason: "self_contained_unavailable", error: "countercheck unavailable" },
       });
     } finally {
       if (priorRetries === undefined) delete process.env.VALIDATOR_RETRIES;
@@ -996,9 +1094,8 @@ describe("filterByQuoteCoverage（展示 quote 覆盖门）", () => {
     await expect(filterByQuoteCoverage([row], undefined, undefined, (decision) => audits.push(decision))).resolves.toEqual([row]);
     expect(row).toMatchObject({ headline: "", importance_facts: [], importance_basis: renderImportanceBasis([], "research_tracking") });
     expect(audits[0]).toMatchObject({
-      terminal_reason: "kept_degraded",
-      degraded_fields: ["headline", "importance_basis"],
-      projection_reasons: ["headline_not_exact_statement", "importance_facts_not_exact_statement"],
+      terminal_reason: "kept",
+      projection_reasons: ["headline_removed_for_source_quote_projection", "importance_facts_removed_for_source_quote_projection"],
     });
   });
 
@@ -1047,7 +1144,7 @@ describe("filterByQuoteCoverage（展示 quote 覆盖门）", () => {
   });
 
   it("唯一逐字 evidence excerpt 的错误坐标会规范化为 quote 的 UTF-16 偏移", async () => {
-    const quote = "前缀：完整关系声明。后缀";
+    const quote = "前缀：完整关系声明后缀";
     const excerpt = "完整关系声明";
     vi.mocked(callStructured).mockResolvedValue({ data: { verdicts: [{
       index: 1, kind: "factual", supports: true, citation_indexes: [1],

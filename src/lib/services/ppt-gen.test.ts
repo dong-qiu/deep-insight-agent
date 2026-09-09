@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
+import JSZip from "jszip";
 import type { Insight, Report, Topic } from "../types.js";
-import { briefSummary, buildPptx, type IncludedInsightLite, type PptGenInput } from "./ppt-gen.js";
+import { buildPptx, type IncludedInsightLite, type PptGenInput } from "./ppt-gen.js";
 
 const topic: Topic = {
   id: "t1", name: "测试主题", keywords: ["k"], language: "zh",
@@ -28,7 +29,10 @@ function makeInput(insights: IncludedInsightLite[]): PptGenInput {
   };
   return {
     report, insights, topic,
-    sourceNameByCi: new Map([["ci_a", "Latent Space"], ["ci_b", "Pragmatic Engineer"]]),
+    citationSourceByCi: new Map([
+      ["ci_a", { sourceName: "Latent Space", url: "https://latent.example/a" }],
+      ["ci_b", { sourceName: "Pragmatic Engineer", url: "https://pragmatic.example/b" }],
+    ]),
   };
 }
 
@@ -82,77 +86,70 @@ describe("buildPptx（A 阶段·确定性骨架）", () => {
     expect(buffer.subarray(0, 4)).toEqual(PPTX_MAGIC);
   });
 
-  it("洞察 statement 超长不破坏渲染（标题与正文都被截断或换行处理）", async () => {
+  it("洞察 statement 超长不破坏渲染（完整原文由版面 shrink 适配）", async () => {
     const longStatement = "这是一条非常长的洞察，".repeat(50);
     const insights = [lite(ins("long", longStatement, 5))];
     const { buffer } = await buildPptx(makeInput(insights));
     expect(buffer.subarray(0, 4)).toEqual(PPTX_MAGIC);
     expect(buffer.length).toBeGreaterThan(2000);
   });
-});
 
-describe("buildPptx · polish 接入（B 阶段）", () => {
-  it("polish.executive 存在 → 标题页后插 Executive Summary 页（+1 页）", async () => {
-    const insights = [
-      lite(ins("i1", "重点 A", 5)),
-      lite(ins("i2", "重点 B", 4)),
-    ];
-    const input = makeInput(insights);
-    input.polish = {
-      perInsight: new Map(),
-      executive: { takeaways: ["要点 1", "要点 2", "要点 3"] },
-    };
-    const { pageCount } = await buildPptx(input);
-    expect(pageCount).toBe(1 + 1 + 2 + 1); // title + executive + 2 key + sources
+  it("v6 重点页将完整绑定 quote 写入 PPT XML 一次，不插入润色或截断副本", async () => {
+    const quote = "A source-verified long sentence must remain complete in the generated PowerPoint without any abbreviated duplicate.";
+    const bound = ins("bound", quote, 5);
+    bound.citations[0]!.quote = quote;
+    const { buffer } = await buildPptx(makeInput([lite(bound)]));
+    const zip = await JSZip.loadAsync(buffer);
+    const slideXml = (await Promise.all(
+      Object.entries(zip.files)
+        .filter(([name]) => /^ppt\/slides\/slide\d+\.xml$/.test(name))
+        .map(([, file]) => file.async("string")),
+    )).join("\n");
+    expect(slideXml.split(quote).length - 1).toBe(1);
+    expect(slideXml).not.toContain(`${quote.slice(0, 48)}…`);
+    expect(slideXml).not.toContain("LLM 润色");
   });
 
-  it("polish.executive=null → 不插 Executive 页（与 A 一致）", async () => {
-    const insights = [lite(ins("i1", "重点 A", 5))];
-    const input = makeInput(insights);
-    input.polish = { perInsight: new Map(), executive: null };
-    const { pageCount } = await buildPptx(input);
-    expect(pageCount).toBe(1 + 1 + 1); // title + key + sources
+  it("重点与其他动态均把唯一绑定原文链接回各自 content item", async () => {
+    const keyQuote = "A key source quote.";
+    const otherQuote = "A lower-priority source quote.";
+    const key = ins("key", keyQuote, 4, "ci_a");
+    key.citations[0]!.quote = keyQuote;
+    const other = ins("other", otherQuote, 3, "ci_b");
+    other.citations[0]!.quote = otherQuote;
+    const { buffer } = await buildPptx(makeInput([lite(key), lite(other)]));
+    const zip = await JSZip.loadAsync(buffer);
+    const slideXml = (await Promise.all(Object.entries(zip.files)
+      .filter(([name]) => /^ppt\/slides\/slide\d+\.xml$/.test(name))
+      .map(([, file]) => file.async("string")))).join("\n");
+    const relsXml = (await Promise.all(Object.entries(zip.files)
+      .filter(([name]) => /^ppt\/slides\/_rels\/slide\d+\.xml\.rels$/.test(name))
+      .map(([, file]) => file.async("string")))).join("\n");
+    expect(slideXml.split(keyQuote).length - 1).toBe(1);
+    expect(slideXml.split(otherQuote).length - 1).toBe(1);
+    expect(relsXml).toContain('Target="https://latent.example/a"');
+    expect(relsXml).toContain('Target="https://pragmatic.example/b"');
   });
 
-  it("polish.perInsight 含某条 → 该条 §1/§3 用 polish 数据；其他条 fallback A", async () => {
-    const insights = [
-      lite(ins("i1", "完整 statement 1。后续无关。", 5)),
-      lite(ins("i2", "完整 statement 2。", 4)),
-    ];
-    const input = makeInput(insights);
-    input.polish = {
-      perInsight: new Map([["i1", { brief_summary: "LLM 凝练 1", implications: ["启示 a", "启示 b"] }]]),
-      executive: null,
-    };
-    const { buffer } = await buildPptx(input);
-    // 简单结构性断言：buffer 非空、ZIP 头
-    expect(buffer.subarray(0, 4)).toEqual(PPTX_MAGIC);
-    expect(buffer.length).toBeGreaterThan(5000);
-  });
-});
+  it("缺失或非 http(s) binding URL 时 fail-closed，不写入原文", async () => {
+    const quote = "A quote that must not be published without a safe source URL.";
+    const bound = ins("unsafe", quote, 5);
+    bound.citations[0]!.quote = quote;
 
-describe("briefSummary（§1 简要总结取首句策略）", () => {
-  it("有句末标点 → 取首句（去尾空白）", () => {
-    expect(briefSummary("DHH 已六个月不手写代码。后半段不重要。")).toBe(
-      "DHH 已六个月不手写代码。",
-    );
-  });
+    for (const citationSourceByCi of [
+      new Map<string, { sourceName: string; url: string }>(),
+      new Map([["ci_a", { sourceName: "Unsafe", url: "javascript:alert(1)" }]]),
+    ]) {
+      const input = makeInput([lite(bound)]);
+      input.citationSourceByCi = citationSourceByCi;
+      const { buffer, pageCount } = await buildPptx(input);
+      const zip = await JSZip.loadAsync(buffer);
+      const slideXml = (await Promise.all(Object.entries(zip.files)
+        .filter(([name]) => /^ppt\/slides\/slide\d+\.xml$/.test(name))
+        .map(([, file]) => file.async("string")))).join("\n");
 
-  it("英文句号也算句末", () => {
-    expect(briefSummary("Reachability is 100% by construction. Tests prove it.")).toBe(
-      "Reachability is 100% by construction.",
-    );
-  });
-
-  it("无句末标点 → 截到 ~50 字", () => {
-    const s = "一段不带句号的长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长";
-    const result = briefSummary(s);
-    expect(result.length).toBeLessThanOrEqual(55);
-    expect(result).toContain("…");
-  });
-
-  it("过短首句（<6 字）→ 跳过句号取整段截断", () => {
-    // "是。" 首句过短，regex 不匹配；走 truncate 分支；整段 < 55 字 → 原样返
-    expect(briefSummary("是。后续不重要。")).toBe("是。后续不重要。");
+      expect(pageCount).toBe(2); // title + fail-closed empty state
+      expect(slideXml).not.toContain(quote);
+    }
   });
 });

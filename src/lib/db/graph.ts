@@ -10,7 +10,7 @@ import {
 import { canonKey } from "../graph/entity-normalize.js";
 import { insightFingerprint } from "../runtime/statement-fingerprint.js";
 import type { Entity, Insight } from "../types.js";
-import { auditSupportsStatementBinding } from "../utils/display-coverage-audit.js";
+import { auditSupportsStatementBinding, hasSafeReaderMetadata } from "../utils/display-coverage-audit.js";
 import { entitiesMentionedInStatement } from "../utils/reader-visible-entities.js";
 import { type InsightRow, rowToInsight } from "./analysis.js";
 import type { DB } from "./index.js";
@@ -30,6 +30,7 @@ const READER_VISIBLE_INSIGHT_JOINS = `
 const READER_VISIBLE_INSIGHT_WHERE = `
   b.status = 'done'
   AND b.display_coverage_state = 'audited'
+  AND b.display_projection_version = 'source_quote_v1'
   AND i.statement_citation_index IS NOT NULL
   AND EXISTS (
     SELECT 1 FROM citation_check cc
@@ -40,6 +41,9 @@ const READER_VISIBLE_INSIGHT_WHERE = `
 
 type ReaderVisibleRow = {
   statement: string;
+  statement_quote: string;
+  headline: string | null;
+  importance_basis: string;
   entities: string | null;
   statement_citation_index: number | null;
   statement_citation_ref: string | null;
@@ -50,16 +54,18 @@ function parseReaderVisibleDecision(decision: string): unknown | null {
   try { return JSON.parse(decision); } catch { return null; }
 }
 
-function auditMatchesPersistedBinding(row: Pick<ReaderVisibleRow, "statement_citation_index" | "statement_citation_ref" | "display_coverage_decision">): boolean {
+function auditMatchesPersistedBinding(row: Pick<ReaderVisibleRow, "statement" | "statement_quote" | "headline" | "importance_basis" | "statement_citation_index" | "statement_citation_ref" | "display_coverage_decision">): boolean {
   return auditSupportsStatementBinding(parseReaderVisibleDecision(row.display_coverage_decision), {
     citation_index: row.statement_citation_index,
     citation_ref: row.statement_citation_ref,
-  });
+    statement: row.statement,
+    quote: row.statement_quote,
+  }) && hasSafeReaderMetadata({ headline: row.headline ?? undefined, importance_basis: row.importance_basis, importance_facts: [] });
 }
 
 /** 轻量加载：只取 reader-visible 图所需的 entities，不查 citation（图装配热路径，避免 N+1）。 */
 function loadTopicEntityRows(db: DB, topicId: string, since?: string): { entities: Entity[] }[] {
-  const sql = `SELECT i.statement, i.entities, i.statement_citation_index,
+  const sql = `SELECT i.statement, i.headline, i.importance_basis, i.entities, i.statement_citation_index, statement_citation.quote AS statement_quote,
       statement_citation.citation_ref AS statement_citation_ref, d.decision AS display_coverage_decision
     FROM insight i ${READER_VISIBLE_INSIGHT_JOINS}
     WHERE i.topic_id = ?${since ? " AND b.created_at >= ?" : ""} AND ${READER_VISIBLE_INSIGHT_WHERE}`;
@@ -70,17 +76,21 @@ function loadTopicEntityRows(db: DB, topicId: string, since?: string): { entitie
 
 /** 加载某主题的洞察（含 citation，溯源用）；since（batch.created_at 下界，ISO）可选限定时间窗。 */
 export function loadTopicInsights(db: DB, topicId: string, since?: string): Insight[] {
-  const sql = `SELECT i.*, statement_citation.citation_ref AS statement_citation_ref,
+  const sql = `SELECT i.*, statement_citation.citation_ref AS statement_citation_ref, statement_citation.quote AS statement_quote,
       d.decision AS display_coverage_decision
     FROM insight i ${READER_VISIBLE_INSIGHT_JOINS}
     WHERE i.topic_id = ?${since ? " AND b.created_at >= ?" : ""} AND ${READER_VISIBLE_INSIGHT_WHERE}
     ORDER BY i.rowid`;
-  const rows = db.prepare(sql).all(...(since ? [topicId, since] : [topicId])) as Array<InsightRow & Pick<ReaderVisibleRow, "statement_citation_ref" | "display_coverage_decision">>;
+  const rows = db.prepare(sql).all(...(since ? [topicId, since] : [topicId])) as Array<InsightRow & Pick<ReaderVisibleRow, "statement_citation_ref" | "statement_quote" | "display_coverage_decision">>;
   const insights: Insight[] = [];
   for (const r of rows) {
     if (!auditMatchesPersistedBinding({
       statement_citation_index: r.statement_citation_index,
       statement_citation_ref: r.statement_citation_ref,
+      statement: r.statement,
+      statement_quote: r.statement_quote,
+      headline: r.headline,
+      importance_basis: r.importance_basis,
       display_coverage_decision: r.display_coverage_decision,
     })) continue;
     const insight = rowToInsight(db, r);
@@ -213,7 +223,6 @@ export interface DrillOccurrence {
   headline: string;
   statement: string;
   importance: number;
-  multi_source: boolean;
   quotes: string[];
   report_links: InsightReportLink[];
 }
@@ -223,7 +232,6 @@ export interface DrillGroup {
   headline: string;
   statement: string;
   importance: number;
-  multi_source: boolean;
   occurrence_count: number;
   occurrences: DrillOccurrence[];
 }
@@ -264,7 +272,7 @@ export function groupDrillInsights(insights: Insight[], links: Map<string, Insig
     const key = insightFingerprint(insight.type, insight.statement);
     const occurrence: DrillOccurrence = {
       id: insight.id, headline: insight.headline || insight.statement, statement: insight.statement,
-      importance: insight.importance, multi_source: insight.multi_source,
+      importance: insight.importance,
       // The accessor above admits only durable bindings.  Never reintroduce an unrelated first
       // citation into the side panel merely because it happens to be stored on the same insight.
       quotes: [insight.citations[(insight.statement_citation_index ?? 0) - 1]?.quote].filter((quote): quote is string => Boolean(quote)),
@@ -280,6 +288,6 @@ export function groupDrillInsights(insights: Insight[], links: Map<string, Insig
     // The top-level card and the initially shown quote/link must come from the same occurrence.
     const representative = occurrences[0]!;
     return { id, headline: representative.headline, statement: representative.statement, importance: representative.importance,
-      multi_source: representative.multi_source, occurrence_count: occurrences.length, occurrences };
+      occurrence_count: occurrences.length, occurrences };
   }).sort((a, b) => b.importance - a.importance || a.id.localeCompare(b.id));
 }

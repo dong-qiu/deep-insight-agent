@@ -4,6 +4,7 @@ import { saveAnalysisBatch, saveValidationResult } from "./analysis.js";
 import { buildTopicGraph, groupDrillInsights, insightsCooccurring, insightsMentioningEntity, loadTopicInsights, reportLinkMap, reportLinksByInsight } from "./graph.js";
 import { type DB, openDb } from "./index.js";
 import { insertTopic } from "./repos.js";
+import { DISPLAY_PROJECTION_VERSION, sourceQuoteHash } from "../utils/source-quote-projection.js";
 
 let db: DB;
 const topic: Topic = {
@@ -12,11 +13,12 @@ const topic: Topic = {
 const org = (name: string): Entity => ({ name, type: "organization" });
 
 function mkInsight(id: string, entities: Entity[]): Insight {
+  const statement = `S-${id} ${entities.map((entity) => entity.name).join(" ")}`.trim();
   return {
-    id, topic_id: "t1", type: "aggregation", event_id: null, statement: `S-${id} ${entities.map((entity) => entity.name).join(" ")}`.trim(), headline: "",
+    id, topic_id: "t1", type: "aggregation", event_id: null, statement, headline: "",
     statement_citation_index: 1,
-    importance: 3, importance_basis: "b",
-    citations: [{ content_item_id: `ci-${id}`, citation_ref: `cite-${id}-1`, quote: "q", locator: { paragraph_index: 0, char_start: 0, char_end: 1 } }],
+    importance: 3, importance_basis: "系统重要性判断：该结果可为工程选型提供参考。",
+    citations: [{ content_item_id: `ci-${id}`, citation_ref: `cite-${id}-1`, quote: statement, locator: { paragraph_index: 0, char_start: 0, char_end: statement.length } }],
     source_count: 1, multi_source: false, time_window: { start: "2026-05-01", end: "2026-05-07" },
     confidence: "high", language: "zh", is_followup: false, entities, tags: [],
   };
@@ -28,7 +30,10 @@ function validAuditDecision(insight: Insight) {
   return {
     statement_citation_index: index,
     statement_citation_ref: insight.citations[index - 1]?.citation_ref,
-    claims: [{ claim_id: "statement:1", field: "statement", kind: "factual", supports: true, citation_indexes: [index] }],
+    display_projection_version: DISPLAY_PROJECTION_VERSION,
+    statement_sha256: sourceQuoteHash(insight.statement),
+    quote_sha256: sourceQuoteHash(insight.citations[index - 1]!.quote),
+    claims: [{ claim_id: "statement:1", field: "statement", kind: "factual", supports: true, citation_indexes: [index], countercheck: { supports: true } }],
   };
 }
 
@@ -39,10 +44,11 @@ function saveBatch(id: string, insights: Insight[], visibility: ReaderVisibility
   };
   if (visibility !== "legacy") {
     batch.display_coverage_state = "audited";
+    batch.display_projection_version = DISPLAY_PROJECTION_VERSION;
     batch.display_coverage_audits = insights.map((insight) => ({
-      insight_id: insight.id, candidate_id: `candidate_${insight.id}`, gate_version: "display-coverage-v5",
+      insight_id: insight.id, candidate_id: `candidate_${insight.id}`, gate_version: "display-coverage-v6",
       terminal_reason: visibility === "audit_rejected" ? "dropped_coverage" : "kept",
-      prompt_version: "display-coverage-v5", input_hash: `hash_${insight.id}`, validator_model: "validator",
+      prompt_version: "display-coverage-v6", input_hash: `hash_${insight.id}`, validator_model: "validator",
       decision: validAuditDecision(insight), created_at: "2026-09-09T00:00:00.000Z",
     }));
   }
@@ -123,6 +129,8 @@ describe("buildTopicGraph", () => {
     saveBatch("visible", [mkInsight("visible", [org("OpenAI"), org("Cursor")])]);
     const entityDetached = mkInsight("entity-detached", [org("OpenAI"), org("Cursor")]);
     entityDetached.statement = "S-entity-detached MOSS";
+    entityDetached.citations[0]!.quote = entityDetached.statement;
+    entityDetached.citations[0]!.locator.char_end = entityDetached.statement.length;
     saveBatch("entity-detached", [entityDetached]);
 
     const graph = buildTopicGraph(db, "t1", { minEdgeWeight: 1 });
@@ -134,6 +142,13 @@ describe("buildTopicGraph", () => {
     expect(insightsMentioningEntity(db, "t1", "Unsafe")).toEqual([]);
     expect(insightsMentioningEntity(db, "t1", "OpenAI").map((insight) => insight.id)).toEqual(["visible"]);
     expect(insightsCooccurring(db, "t1", "OpenAI", "Cursor").map((insight) => insight.id)).toEqual(["visible"]);
+  });
+
+  it("绑定审计仍有效时，历史 headline 或自由重要性元数据也会让图与 drill fail-closed", () => {
+    saveBatch("unsafe-meta", [mkInsight("unsafe-meta", [org("OpenAI"), org("Cursor")])]);
+    db.prepare("UPDATE insight SET headline='未审计标题' WHERE id='unsafe-meta'").run();
+    expect(loadTopicInsights(db, "t1")).toEqual([]);
+    expect(buildTopicGraph(db, "t1", { minEdgeWeight: 1 }).insightCount).toBe(0);
   });
 });
 
@@ -208,13 +223,14 @@ describe("reportLinkMap", () => {
       { content_item_id: "ci-unrelated", citation_ref: "cite-bound-1", quote: "第一条无关引文", locator: { paragraph_index: 0, char_start: 0, char_end: 7 } },
       { content_item_id: "ci-bound", citation_ref: "cite-bound-2", quote: "第二条绑定引文", locator: { paragraph_index: 0, char_start: 0, char_end: 7 } },
     ];
+    bound.statement = "第二条绑定引文";
     saveBatch("b_bound", [bound]);
 
     const roundTripped = loadTopicInsights(db, "t1").find((insight) => insight.id === "i_bound")!;
     const grouped = groupDrillInsights([roundTripped], new Map());
     expect(roundTripped.statement_citation_index).toBe(2);
     expect(grouped[0]?.occurrences[0]?.quotes).toEqual(["第二条绑定引文"]);
-    expect(grouped[0]).toMatchObject({ headline: "S-i_bound OpenAI", statement: "S-i_bound OpenAI" });
+    expect(grouped[0]).toMatchObject({ headline: "第二条绑定引文", statement: "第二条绑定引文" });
   });
 
   it("空 audit 或与持久化 binding 错位时，图和 drill 均 fail-closed", () => {
@@ -240,6 +256,23 @@ describe("reportLinkMap", () => {
     expect(loadTopicInsights(db, "t1").map((insight) => insight.id)).toEqual([]);
     expect(buildTopicGraph(db, "t1", { minEdgeWeight: 1 }).insightCount).toBe(0);
     expect(insightsMentioningEntity(db, "t1", "Unsafe")).toEqual([]);
+  });
+
+  it("v6 读路径拒绝旧投影、statement/quote 不等或 audit hash 被篡改的记录", () => {
+    const legacyProjection = mkInsight("legacy-projection", [org("LegacyV6")]);
+    saveBatch("legacy-projection", [legacyProjection]);
+    db.prepare("UPDATE analysis_batch SET display_projection_version = 'legacy' WHERE id = ?").run("legacy-projection");
+
+    const mutatedText = mkInsight("mutated-text", [org("Mutated")]);
+    saveBatch("mutated-text", [mutatedText]);
+    db.prepare("UPDATE insight SET statement = ? WHERE id = ?").run("a rewritten reader statement", "mutated-text");
+
+    const mutatedHash = mkInsight("mutated-hash", [org("Hash")]);
+    saveBatch("mutated-hash", [mutatedHash]);
+    db.prepare("UPDATE display_coverage_audit SET decision = json_set(decision, '$.quote_sha256', 'wrong') WHERE batch_id = ?").run("mutated-hash");
+
+    expect(loadTopicInsights(db, "t1")).toEqual([]);
+    expect(buildTopicGraph(db, "t1", { minEdgeWeight: 1 }).insightCount).toBe(0);
   });
 
   it("只算 status='done' 的报告", () => {

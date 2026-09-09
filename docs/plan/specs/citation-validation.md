@@ -30,7 +30,7 @@
 5. 误判倾向：一致性不确定时偏保守（判 `uncertain` / `not_support`），宁误杀勿漏网，呼应「幻觉零容忍」。
 6. 安全：喂给校验模型的原文片段按不可信内容处理（来源隔离 / 指令剥离），防 prompt injection 污染校验结论。
 7. 人工抽检：按 `eval-criteria.md` 规定比例抽检校验结果，作为护栏指标真值来源；抽检发现的错误回流校准 LLM-judge 判定阈值（自动 `consistency_failure_rate` 是代理指标，人工抽检的「幻觉率」是真值）。
-8. 容错：网络类失败（超时 / 限流）置 `retryable` 重试（默认上限 3 次），区别于内容类 `fail`。
+8. 容错：网络类失败（超时 / 限流）置 `retryable` 重试（默认上限 3 次），区别于内容类 `fail`。对于 relay 明确返回的“无可用渠道 / no available route”（或 429）容量故障，按「端点 + 校验模型」共享一个进程内、限时 half-open 恢复门：10s / 20s / 40s（各带 ≤250ms jitter）串行探测，最多 3 次、backoff 等待总额 ≤70.75s；同门其他请求等待同一个 probe，不能重试风暴。恢复耗尽后 gate 在 70.75s cooldown 内 fail-fast，之后才允许一个新的 half-open cycle，避免持续 outage 按 claim/group 重复消耗预算。恢复耗尽后仍落既有 `not_evaluated` / `flagged` fail-closed 路径，绝不改判 `support` 或自动降级模型。批量 judge 的此类容量失败不得扇出为逐条调用；仅 schema/模型输出等非容量批量失败保留逐条复判。
 9. `releasable` 计算：「有效洞察」= 经「洞察级纳入判定」仍有 ≥ 1 条明确 `support` 的 `pass` 引用的洞察。至少一条有效洞察 → `releasable=true`；`total=0`（空批次 / 上游 `no_significant_event=true`）→ `releasable=true`（让 brief 走「无重要事件」路径，**不置 failed**）；其余 → `releasable=false`，下游报告置 `failed`。
 10. 上报两个护栏指标：`consistency_failure_rate`（= `not_support` 占比，引用级）与 `flagged_rate`（= `uncertain` 占比，引用级），见 `charter.md` 成功指标与 `eval-criteria.md` 阈值。
 
@@ -39,7 +39,7 @@
 - [ ] AC1: 引用指向不存在 / 不可访问来源时，`reachability=fail`、`reachability_reason` 取值正确，短路使 `consistency=not_evaluated`、`consistency_reason=not_evaluated`、`verdict=blocked`。
 - [ ] AC2: `quote` 不在原文时，`reachability=fail`、`reachability_reason=quote_not_in_source`。
 - [ ] AC3: 在 `eval-criteria.md`「引用一致性集」上，三分类（support / not_support / uncertain）判定准确率 ≥ 90%、对负例（not_support）召回率 ≥ 95%。
-- [ ] AC4: 网络类失败判 `retryable` 并重试，与内容类 `fail` 区分；重试耗尽才归为 `fail`。
+- [ ] AC4: 网络类失败判 `retryable` 并重试，与内容类 `fail` 区分；明确 relay 容量失败使用共享、限时 half-open probe，重试耗尽才归为 `fail`，不产生模型降级或批量扇出。
 - [ ] AC5: `verdict` 严格按校验判定流程取值；`consistency_reason` 严格按取值约束；仅 `pass`（明确 `support`）内容可出现在最终报告；`blocked` 与 `flagged` 内容分别进入屏蔽/人工核实队列，不得发布。
 - [ ] AC6: `ValidationReport.consistency_failure_rate` 与 `flagged_rate` 计算正确，且在评测集上均达 `eval-criteria.md` 上线门槛（≤ 5% / ≤ 10%）；管理看板可查看趋势。
 - [ ] AC7: 校验模型配置与分析模型配置不同（提供商或模型 ID 不同），配置层强制可校验。

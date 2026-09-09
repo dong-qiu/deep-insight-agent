@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { AnalysisBatch, ContentItem, Topic, ValidationResult } from "../types.js";
 import { BRIEF_SUPPLEMENTAL_MAX, buildReport, HIGHLIGHTS_MAX, inlineCitedStatement, isMilestoneInsight, KEY_MIN_IMPORTANCE, reportHighlights, selectBriefInsights, selectInsights, summarizeBriefSelection } from "./report-gen.js";
 import { flagLabel } from "../utils/citation-verdict.js";
+import { DISPLAY_PROJECTION_VERSION, sourceQuoteHash } from "../utils/source-quote-projection.js";
 
 const topic: Topic = {
   id: "t1", name: "Code Agent", keywords: ["a"], language: "zh",
@@ -10,14 +11,15 @@ const topic: Topic = {
 const win = { start: "2026-05-01", end: "2026-05-07" };
 
 function batchOf(): AnalysisBatch {
+  const bindingQuote = "S1";
   return {
     id: "b1", topic_id: "t1", time_window: win, status: "done", no_significant_event: false,
     insights: [
       {
-        id: "i1", topic_id: "t1", type: "aggregation", event_id: "e1", statement: "S1", importance: 4,
-        importance_basis: "x",
+        id: "i1", topic_id: "t1", type: "aggregation", event_id: "e1", statement: bindingQuote, statement_citation_index: 1, importance: 4,
+        importance_basis: "系统重要性判断：该结果可为工程选型提供参考。",
         citations: [
-          { content_item_id: "ci1", quote: "q1", locator: { paragraph_index: 0, char_start: 0, char_end: 1 } },
+          { content_item_id: "ci1", citation_ref: "i1binding", claim: bindingQuote, quote: bindingQuote, locator: { paragraph_index: 0, char_start: 0, char_end: 2 } },
           { content_item_id: "ci2", quote: "q2", locator: { paragraph_index: 0, char_start: 1, char_end: 2 } },
         ],
         source_count: 2, multi_source: true, time_window: win, confidence: null, language: "zh",
@@ -40,7 +42,10 @@ function batchOf(): AnalysisBatch {
         entities: [{ name: "排除不应出现", type: "project" }],
         tags: ["排除标签不应出现"],
       },
-    ],
+    ], display_coverage_state: "audited", display_projection_version: DISPLAY_PROJECTION_VERSION, display_coverage_audits: [{
+      insight_id: "i1", candidate_id: "i1", gate_version: "display-coverage-v6", terminal_reason: "kept", prompt_version: "v6", input_hash: "x", validator_model: "coverage",
+      decision: { statement_citation_index: 1, statement_citation_ref: "i1binding", display_projection_version: DISPLAY_PROJECTION_VERSION, statement_sha256: sourceQuoteHash(bindingQuote), quote_sha256: sourceQuoteHash(bindingQuote), claims: [{ claim_id: "statement:1", field: "statement", kind: "factual", supports: true, citation_indexes: [1], countercheck: { supports: true } }] }, created_at: "2026-09-09T00:00:00Z",
+    }],
   };
 }
 
@@ -168,6 +173,71 @@ describe("selectInsights（洞察级纳入判定）", () => {
     // i1 的第 1 条可达且支持，但第 2 条被 validator 拦截；完整展示 claim 不得发布。
     expect(selectInsights(batch, validation)).toEqual([]);
   });
+
+  it("v6 审计只发布逐字绑定 source quote，哈希或独立复核不符均拒绝", () => {
+    const batch = batchOf();
+    const safe = batch.insights[0]!;
+    safe.statement = safe.citations[0]!.quote;
+    safe.statement_citation_index = 1;
+    safe.citations[0] = { ...safe.citations[0]!, citation_ref: "cite_source_quote", claim: "internal audit claim" };
+    batch.display_coverage_state = "audited";
+    batch.display_projection_version = DISPLAY_PROJECTION_VERSION;
+    batch.display_coverage_audits = [{
+      insight_id: safe.id, candidate_id: safe.id, gate_version: "display-coverage-v6", terminal_reason: "kept",
+      prompt_version: "display-coverage-v6", input_hash: "input", validator_model: "validator",
+      decision: {
+        statement_citation_index: 1, statement_citation_ref: "cite_source_quote",
+        display_projection_version: DISPLAY_PROJECTION_VERSION,
+        statement_sha256: sourceQuoteHash(safe.statement), quote_sha256: sourceQuoteHash(safe.citations[0]!.quote),
+        claims: [{ claim_id: "statement:1", field: "statement", kind: "factual", supports: true, citation_indexes: [1], countercheck: { supports: true } }],
+      },
+      created_at: "2026-09-09T00:00:00.000Z",
+    }];
+    expect(selectInsights(batch, validation).map((entry) => entry.insight.id)).toEqual(["i1"]);
+
+    (batch.display_coverage_audits[0]!.decision as { quote_sha256: string }).quote_sha256 = "mutated";
+    expect(selectInsights(batch, validation)).toEqual([]);
+  });
+
+  it("v6 报告只显示一次绑定原文，次级引用仅留作审计而不进入 Markdown 或 HTML", () => {
+    const batch = batchOf();
+    const safe = batch.insights[0]!;
+    safe.statement = "OpenAI released Codex.";
+    safe.statement_citation_index = 1;
+    safe.citations[0] = { ...safe.citations[0]!, quote: safe.statement, citation_ref: "binding" };
+    safe.citations[1] = { ...safe.citations[1]!, quote: "An audit-only secondary quote.", citation_ref: "secondary" };
+    batch.display_coverage_state = "audited";
+    batch.display_projection_version = DISPLAY_PROJECTION_VERSION;
+    batch.display_coverage_audits = [{
+      insight_id: safe.id, candidate_id: safe.id, gate_version: "display-coverage-v6", terminal_reason: "kept",
+      prompt_version: "display-coverage-v6", input_hash: "input", validator_model: "validator",
+      decision: {
+        statement_citation_index: 1, statement_citation_ref: "binding", display_projection_version: DISPLAY_PROJECTION_VERSION,
+        statement_sha256: sourceQuoteHash(safe.statement), quote_sha256: sourceQuoteHash(safe.statement),
+        claims: [{ claim_id: "statement:1", field: "statement", kind: "factual", supports: true, citation_indexes: [1], countercheck: { supports: true } }],
+      }, created_at: "2026-09-09T00:00:00.000Z",
+    }];
+    const passing: ValidationResult = {
+      ...validation,
+      checks: validation.checks.map((check) => check.insight_id === safe.id
+        ? { ...check, consistency: "support" as const, consistency_reason: "ok", verdict: "pass" as const }
+        : check),
+    };
+    const { report } = buildReport({
+      topic, batch, validation: passing, type: "brief",
+      contentLookup: new Map([
+        ["ci1", { source_id: "s1", source_name: "Primary Source", tags: [], url: "https://primary.example", published_at: null, observed_at: "2026-09-09T00:00:00Z" }],
+        ["ci2", { source_id: "s2", source_name: "Secondary Source", tags: [], url: "https://secondary.example", published_at: null, observed_at: "2026-09-09T00:00:00Z" }],
+      ]), now: "2026-09-09T00:00:00Z",
+    });
+    for (const body of [report.body_md, report.body_html]) {
+      expect(body.split(safe.statement).length - 1).toBe(1);
+      expect(body).not.toContain("An audit-only secondary quote.");
+      expect(body).not.toContain("Secondary Source");
+    }
+    expect(report.body_md).toContain("已核验原文 [1] [Primary Source](https://primary.example)");
+    expect(report.body_html).toContain("已核验原文");
+  });
 });
 
 describe("selectBriefInsights（Daily Brief 已发布证据去重）", () => {
@@ -188,6 +258,7 @@ describe("selectBriefInsights（Daily Brief 已发布证据去重）", () => {
   it("同批同 event 的重复只发布确定性代表项，且不合并 citations", () => {
     const batch = batchOf();
     batch.insights.push({ ...batch.insights[0], id: "i_dup", importance: 5, citations: [{ ...batch.insights[0].citations[0], content_item_id: "ci_new" }] });
+    batch.display_coverage_audits!.push({ ...batch.display_coverage_audits![0]!, insight_id: "i_dup", candidate_id: "i_dup" });
     const checks: ValidationResult = {
       ...validation,
       checks: [...validation.checks, { insight_id: "i_dup", citation_index: 0, reachability: "pass", reachability_reason: "ok", consistency: "support", consistency_reason: "ok", verdict: "pass" }],
@@ -231,10 +302,10 @@ describe("selectBriefInsights（Daily Brief 已发布证据去重）", () => {
       supplemental_candidate_count: 1, supplemental_published_insight_count: 1, published_insight_count: 1, published_citation_count: 1,
     });
     const { report, index } = buildReport({ topic, batch, validation, type: "brief", contentLookup: new Map(), briefFreshness: freshness, now: "2026-05-07T08:00:00Z" });
-    expect(report.body_md).toContain("〔补充发现〕");
-    expect(report.body_html).toContain('<span class="supplemental">补充发现</span>');
-    expect(index.highlights).toEqual(["S1〔补充发现〕"]);
-    expect(reportHighlights(batch, validation, { freshness }).map((x) => x.text)).toEqual(["S1〔补充发现〕"]);
+    expect(report.body_md).not.toContain("〔补充发现〕");
+    expect(report.body_html).not.toContain('<span class="supplemental">补充发现</span>');
+    expect(index.highlights).toEqual([]);
+    expect(reportHighlights(batch, validation, { freshness }).map((x) => x.text)).toEqual(["已核验原文"]);
 
     const noFreshnessGate = summarizeBriefSelection(batch, validation, "brief", published);
     expect(noFreshnessGate.included).toEqual([]);
@@ -294,6 +365,9 @@ describe("selectBriefInsights（Daily Brief 已发布证据去重）", () => {
         citations: [{ ...base.citations[0], content_item_id: `old_ci_${i}` }],
       })),
     };
+    batch.display_coverage_audits = batch.insights.map((insight) => ({
+      ...batchOf().display_coverage_audits![0]!, insight_id: insight.id, candidate_id: insight.id,
+    }));
     const checks: ValidationResult = {
       ...validation,
       checks: batch.insights.map((insight) => ({
@@ -310,7 +384,7 @@ describe("selectBriefInsights（Daily Brief 已发布证据去重）", () => {
     });
   });
 
-  it("同 event 有新的成功校验证据时保留，blocked 引用不算新增", () => {
+  it("同 event 的 audit-only 次要引用不会被重新发布为新的 reader-visible 证据", () => {
     const batch = batchOf();
     batch.insights[0].citations.push({
       content_item_id: "ci_new", quote: "q new", locator: { paragraph_index: 0, char_start: 2, char_end: 3 },
@@ -322,7 +396,7 @@ describe("selectBriefInsights（Daily Brief 已发布证据去重）", () => {
         consistency: "support", consistency_reason: "ok", verdict: "pass",
       }],
     };
-    expect(selectBriefInsights(batch, withNewEvidence, "brief", published).map((x) => x.insight.id)).toEqual(["i1"]);
+    expect(selectBriefInsights(batch, withNewEvidence, "brief", published).map((x) => x.insight.id)).toEqual([]);
   });
 
   it("deep_dive 不套用 Daily Brief 去重基线", () => {
@@ -333,29 +407,29 @@ describe("selectBriefInsights（Daily Brief 已发布证据去重）", () => {
     const freshness = { since: "2026-05-06T00:00:00Z", content_item_ids: ["ci1"], freshest_candidate_at: "2026-05-07T00:00:00Z" };
     expect(selectBriefInsights(batchOf(), validation, "brief", [], freshness).map((x) => x.insight.id)).toEqual(["i1"]);
     expect(selectBriefInsights(batchOf(), validation, "deep_dive", [], freshness).map((x) => x.insight.id)).toEqual(["i1"]);
-    expect(reportHighlights(batchOf(), validation, { freshness }).map((x) => x.text)).toEqual(["S1"]);
+    expect(reportHighlights(batchOf(), validation, { freshness }).map((x) => x.text)).toEqual(["已核验原文"]);
   });
 });
 
 describe("reportHighlights（推送要点 · 复用选取排序）", () => {
   it("纳入洞察按 importance 降序、排除 blocked/flagged、标记 key（≥阈值）", () => {
     const hl = reportHighlights(batchOf(), validation);
-    expect(hl.map((h) => h.text)).toEqual(["S1"]);
+    expect(hl.map((h) => h.text)).toEqual(["已核验原文"]);
     expect(hl.map((h) => h.key)).toEqual([true]);
   });
-  it("headline 优先于 statement（缺失才回退 statement）", () => {
+  it("历史 headline 不能绕过 v6 元数据闸门", () => {
     const b = batchOf();
     b.insights[0].headline = "i1 一句话要点"; // i1 importance 4
     b.insights[1].headline = "  "; // 空白 → 回退 statement
     const hl = reportHighlights(b, validation);
-    expect(hl.find((h) => h.text === "i1 一句话要点")).toBeTruthy();
+    expect(hl).toEqual([]);
     expect(hl.find((h) => h.text === "S2")).toBeFalsy(); // i2 仅 flagged，不进入发布要点
   });
   it("key 分级严格按 KEY_MIN_IMPORTANCE：importance<4 的纳入洞察 key=false", () => {
     const b = batchOf();
     b.insights[0].importance = 3; // i1 降到 3（仍 includable：有 pass 引用）
     const hl = reportHighlights(b, validation);
-    const i1h = hl.find((h) => h.text === "S1")!;
+    const i1h = hl.find((h) => h.text === "已核验原文")!;
     expect(i1h.key).toBe(false);
     expect(KEY_MIN_IMPORTANCE).toBe(4); // 阈值单点，防漂移
   });
@@ -364,15 +438,21 @@ describe("reportHighlights（推送要点 · 复用选取排序）", () => {
     // 造 HIGHLIGHTS_MAX+2 条 includable 洞察（都配一条 pass check）
     const n = HIGHLIGHTS_MAX + 2;
     b.insights = Array.from({ length: n }, (_, k) => ({
-      id: `k${k}`, topic_id: "t1", type: "aggregation" as const, event_id: null, statement: `K${k}`, importance: 4,
-      importance_basis: "x",
-      citations: [{ content_item_id: "c", quote: "q", locator: { paragraph_index: 0, char_start: 0, char_end: 1 } }],
+      id: `k${k}`, topic_id: "t1", type: "aggregation" as const, event_id: null, statement: `K${k}`, statement_citation_index: 1, importance: 4,
+      importance_basis: "系统重要性判断：该结果可为工程选型提供参考。",
+      citations: [{ content_item_id: "c", citation_ref: `k${k}-binding`, quote: `K${k}`, locator: { paragraph_index: 0, char_start: 0, char_end: 1 } }],
       source_count: 1, multi_source: false, time_window: win, confidence: null, language: "zh" as const,
     }));
     const v: ValidationResult = {
       checks: b.insights.map((ins) => ({ insight_id: ins.id, citation_index: 0, reachability: "pass" as const, reachability_reason: "ok" as const, consistency: "support" as const, consistency_reason: "ok" as const, verdict: "pass" as const })),
       report: { total: n, pass: n, blocked: 0, flagged: 0, errored: 0, consistency_failure_rate: 0, flagged_rate: 0, insights_total: n, insights_includable: n, releasable: true },
     };
+    b.display_coverage_audits = b.insights.map((insight) => ({
+      insight_id: insight.id, candidate_id: insight.id, gate_version: "display-coverage-v6", terminal_reason: "kept",
+      prompt_version: "v6", input_hash: "x", validator_model: "coverage",
+      decision: { statement_citation_index: 1, statement_citation_ref: insight.citations[0]!.citation_ref, display_projection_version: DISPLAY_PROJECTION_VERSION, statement_sha256: sourceQuoteHash(insight.statement), quote_sha256: sourceQuoteHash(insight.statement), claims: [{ claim_id: "statement:1", field: "statement", kind: "factual", supports: true, citation_indexes: [1], countercheck: { supports: true } }] },
+      created_at: "2026-09-09T00:00:00Z",
+    }));
     expect(reportHighlights(b, v).length).toBe(HIGHLIGHTS_MAX);
   });
 });
@@ -387,8 +467,8 @@ describe("buildReport 派生", () => {
   });
 
   it("重要性展示明确标为系统判断，旧记录也不再伪装成来源依据", () => {
-    expect(report.body_md).toContain("系统重要性判断：x");
-    expect(report.body_html).toContain("系统重要性判断：x");
+    expect(report.body_md).toContain("系统重要性判断：该结果可为工程选型提供参考。");
+    expect(report.body_html).toContain("系统重要性判断：该结果可为工程选型提供参考。");
   });
 
   it("report 字段：insight_ids / citation_count / event_ids / cost", () => {
@@ -399,14 +479,12 @@ describe("buildReport 派生", () => {
     expect(report.cost).toEqual({ tokens: 0, amount: 0 });
   });
 
-  it("index 派生：source_ids / tags / importance / date / entity_names", () => {
+  it("v6 index 仅保留受控元数据，不复制 quote、tags 或实体", () => {
     expect(index.source_ids.sort()).toEqual(["s_a"]);
-    expect(index.tags.slice().sort()).toEqual(["benchmark", "code-agent", "t-x"].sort());
-    expect(index.tags).not.toContain("排除标签不应出现"); // i3 全 blocked，其标签不泄漏
+    expect(index.tags).toEqual([]);
     expect(index.importance).toBe(4);
     expect(index.date).toBe("2026-05-07");
-    expect(index.entity_names).toEqual(["OpenAI", "Codex"]);
-    expect(index.entity_names).not.toContain("排除不应出现");
+    expect(index.entity_names).toEqual([]);
     expect(index.title).toContain("Code Agent");
     // 里程碑（ADR-0006）：i1=aggregation 但 importance 4 未达门槛、i2=trend 排除、i3 全 blocked 排除 → 0
     expect(index.milestone_count).toBe(0);
@@ -423,16 +501,16 @@ describe("buildReport 派生", () => {
   });
 
   it("highlights（headline 方案）：仅取发布白名单内洞察", () => {
-    expect(index.highlights).toEqual(["S1"]);
+    expect(index.highlights).toEqual([]);
   });
 
-  it("highlights：有 headline 时用 headline（不是完整 statement）", () => {
+  it("highlights：有 headline 的历史行不会作为已核验投影显示", () => {
     const batch = batchOf();
     batch.insights[0].headline = "H1 要点"; // i1 imp4
     const { index: idx } = buildReport({
       topic, batch, validation, type: "brief", contentLookup: lookup, now: "2026-05-07T08:00:00Z",
     });
-    expect(idx.highlights).toEqual(["H1 要点"]);
+    expect(idx.highlights).toEqual([]);
   });
 
   it("milestone_count：importance=5 的新 aggregation 洞察计入（trend/低分不计）", () => {
@@ -452,7 +530,7 @@ describe("buildReport 派生", () => {
     expect(report.body_html).not.toContain("待核实");
   });
 
-  it("覆盖度外露：结论里数字/实体未被已渲染引用覆盖 → 标 〔待补引〕（md + html），且只按已渲染引用算", () => {
+  it("无法投影为绑定原文的旧结论不会以 coverage badge 的形式重新发布", () => {
     const b: AnalysisBatch = {
       id: "bc", topic_id: "t1", time_window: win, status: "done", no_significant_event: false,
       insights: [{
@@ -474,9 +552,9 @@ describe("buildReport 派生", () => {
       report: { total: 2, pass: 1, blocked: 1, flagged: 0, errored: 0, consistency_failure_rate: 0.5, flagged_rate: 0, insights_total: 1, insights_includable: 1, releasable: true },
     };
     const { report: r } = buildReport({ topic, batch: b, validation: v, type: "brief", contentLookup: new Map(), now: "2026-05-07T08:00:00Z" });
-    // 含 900 的引用被 blocked 不渲染 → 900 与 Chollet 都未被已渲染引用覆盖 → 都进 〔待补引〕
-    expect(r.body_md).toContain("〔待补引：900、Chollet〕");
-    expect(r.body_html).toContain('<span class="coverage-gap">待补引：900、Chollet</span>');
+    expect(r.insight_ids).toEqual([]);
+    expect(r.body_md).not.toContain("900");
+    expect(r.body_html).not.toContain("<section>");
   });
 
   it("覆盖度外露：所有具体声明都被已渲染引用覆盖 → 无 〔待补引〕", () => {
@@ -499,12 +577,12 @@ describe("buildReport 派生", () => {
     expect(r.body_html).not.toContain('<span class="coverage-gap">'); // CSS 类定义恒在 <style>，断言 badge 元素本身
   });
 
-  it("HTML 引用按文档分组：源名一次（可点跳源）+ 日期，quote 挂其下，不再裸露 ci_xxx", () => {
+  it("HTML 只显示一次绑定原文的来源，不重复显示 quote 或裸露 ci_xxx", () => {
     // 分组后：源名 Source A 包在 <a href>（链接移到源名、每篇一次）、日期 2026-05-07，quote 另起一项
     expect(report.body_html).toContain('<a href="https://a.example/q1" target="_blank" rel="noopener noreferrer"><span class="src">Source A</span></a> · 2026-05-07');
-    expect(report.body_html).toContain('<li class="cite-quote"><q>「q1」</q></li>');
-    // 诚实信号：引用 N 句/K 篇（同篇多句不再被误读成多源）
-    expect(report.body_html).toContain("· 引用 1 句/1 篇");
+    expect(report.body_html).toContain('class="cite-src verified-source"');
+    expect(report.body_html).not.toContain('<li class="cite-quote">');
+    expect(report.body_html).toContain("· 引用 已核验原文");
     // 旧的裸 content_item_id 形式已消失
     expect(report.body_html).not.toContain("<code>ci");
   });
@@ -539,26 +617,23 @@ describe("buildReport 派生", () => {
     expect(report.body_html).not.toContain("<h3>");
   });
 
-  it("C-2 全局连续引用编号：statement 含 [N] inline + 列表项 [N] 前缀", () => {
-    // i1 留 1 条明确 support 引用 → [1]；i2 的 flagged 引用不渲染。
-    expect(report.body_md).toMatch(/## 1\. S1 \[1\]/);
+  it("C-2 绑定来源保留连续编号，但不把编号重复注入 statement", () => {
+    expect(report.body_md).toMatch(/## 1\. S1/);
     expect(report.body_md).not.toContain("S2");
-    // 分组渲染：先"引用 N 句 · 来自 K 篇"信号；每篇一行表头（源名链接 + 日期）；
-    // 其下每条 quote 行以全局 [N] 开头（[N] 锚点与缩进无关，markdown.tsx 仍建锚）
-    expect(report.body_md).toMatch(/- 引用：1 句 · 来自 1 篇/);
-    expect(report.body_md).toMatch(/- \[Source A\]\(https:\/\/a\.example\/q1\) · 2026-05-07/);
-    expect(report.body_md).toMatch(/- \[1\] 「q1」/);
+    expect(report.body_md).toMatch(/- 引用：已核验原文 \[1\] \[Source A\]\(https:\/\/a\.example\/q1\) · 2026-05-07/);
+    expect(report.body_md).not.toContain("「q1」");
   });
 
-  it("P1 不复报：is_followup=true 的洞察 statement 后渲染 〔更新〕（md）+ <span class=\"followup\">（html）", () => {
+  it("v6 不将 is_followup 元数据混入绑定原文", () => {
     const fb = batchOf();
     fb.insights[0].is_followup = true; // i1 标记为续报
     const { report } = buildReport({
       topic, batch: fb, validation, type: "brief", contentLookup: lookup, now: "2026-05-07T08:00:00Z",
     });
-    expect(report.body_md).toMatch(/## 1\. S1 \[1\] 〔更新〕/); // i1 有 〔更新〕
+    expect(report.body_md).toMatch(/## 1\. S1/);
+    expect(report.body_md).not.toContain("〔更新〕");
     expect(report.body_md).not.toContain("S2"); // i2 仅 flagged，不发布
-    expect(report.body_html).toContain('<span class="followup">更新</span>');
+    expect(report.body_html).not.toContain('<span class="followup">更新</span>');
   });
 
   it("外露 validator 屏蔽信号：md/html 各加 1 行（仅 blockedCount>0 时展示）", () => {
@@ -584,8 +659,8 @@ describe("buildReport · deep_dive（最小确定性深挖）", () => {
     expect(report.body_md).toContain("### "); // 节内洞察用三级标题
     expect(report.body_html).toContain("<h3>");
   });
-  it("详版多展示来源（来源数 / 多源）", () => {
-    expect(report.body_md).toContain("- 来源：");
+  it("详版不把审计外来源数或多源印证显示为绑定原文的属性", () => {
+    expect(report.body_md).not.toContain("- 来源：");
   });
   it("仍只纳入明确 support 洞察（与 brief 同闸门）", () => {
     expect(report.insight_ids).toEqual(["i1"]);
@@ -593,7 +668,7 @@ describe("buildReport · deep_dive（最小确定性深挖）", () => {
   });
 
   // #19：deep_dive 结构化六段（TL;DR / 概览 / 趋势 / 时间线 / 详版关键发现+其他）
-  it("TL;DR 段上浮，仅展示发布白名单内洞察", () => {
+  it("TL;DR 段只给受控序号，不复制绑定原文", () => {
     const md = report.body_md;
     expect(md).toContain("## TL;DR");
     const tldrIdx = md.indexOf("## TL;DR");
@@ -602,28 +677,30 @@ describe("buildReport · deep_dive（最小确定性深挖）", () => {
     expect(tldrIdx).toBeGreaterThan(-1);
     expect(tldrIdx).toBeLessThan(overviewIdx);
     const tldrBlock = md.slice(tldrIdx, overviewIdx);
-    expect(tldrBlock).toContain("S1");
+    expect(tldrBlock).toContain("已核验洞察 #1");
+    expect(tldrBlock).not.toContain("S1");
     expect(tldrBlock).not.toContain("S2");
   });
-  it("概览对比表：GFM 表格 + 类型/重要性/来源/置信度列；行号对应详版序", () => {
+  it("概览对比表不包含类型、置信度或原文副本", () => {
     const md = report.body_md;
-    expect(md).toContain("| # | 洞察 | 类型 | 重要性 | 来源 | 置信度 |");
-    expect(md).toMatch(/\| 1 \| S1 \| 聚合 \| 4\/5 \| 2·多源 \| — \|/);
+    expect(md).toContain("| # | 重要性 | 展示证据 |");
+    expect(md).toMatch(/\| 1 \| 4\/5 \| 已核验原文（见下方） \|/);
+    expect(md).not.toContain("| 类型 |");
     // HTML 自包含版同样含 <table>
     expect(report.body_html).toContain("<table>");
-    expect(report.body_html).toContain("<th>置信度</th>");
+    expect(report.body_html).not.toContain("<th>置信度</th>");
   });
   it("趋势分析段不泄漏仅 flagged 的 trend 洞察", () => {
     const md = report.body_md;
     const seg = md.slice(md.indexOf("## 趋势分析"), md.indexOf("## 时间线"));
     expect(seg).not.toContain("S2");
-    expect(seg).not.toContain("S1"); // S1 是 aggregation，不进趋势段
+    expect(seg).not.toContain("S1");
   });
   it("时间线段：按日期倒序，无可解析发布日时回退洞察窗口末", () => {
     const md = report.body_md;
     const seg = md.slice(md.indexOf("## 时间线"), md.indexOf("## 重点关注"));
     // lookup 为空 → 回退 time_window.end = 2026-05-07
-    expect(seg).toContain("`2026-05-07` — S1");
+    expect(seg).toContain("2026-05-07 — 已核验洞察 #1");
     expect(seg).not.toContain("S2");
   });
   it("详版仍在最后，含关键发现分节 + 行内引用", () => {
@@ -631,14 +708,34 @@ describe("buildReport · deep_dive（最小确定性深挖）", () => {
     expect(md.indexOf("## 重点关注")).toBeGreaterThan(md.indexOf("## 时间线"));
     expect(md).toContain("### 1. S1");
   });
-  it("无趋势型洞察时趋势段诚实标注", () => {
+  it("趋势段不读取模型类型，而是导向下方原文", () => {
     const onlyAgg = batchOf();
     onlyAgg.insights[1].type = "aggregation"; // i2 改为聚合
     const { report: r } = buildReport({
       topic, batch: onlyAgg, validation, type: "deep_dive", contentLookup: new Map(), now: "2026-05-07T08:00:00Z",
     });
     const seg = r.body_md.slice(r.body_md.indexOf("## 趋势分析"), r.body_md.indexOf("## 时间线"));
-    expect(seg).toContain("无显著趋势信号");
+    expect(seg).toContain("请参阅下方各条已核验原文");
+  });
+
+  it("深度报告将每条绑定原文只展示一次，且不截断或复活 quote 外实体", () => {
+    const deep = batchOf();
+    const quote = "A tool shipped with a long exact source sentence that must never be abbreviated.";
+    const insight = deep.insights[0]!;
+    insight.statement = quote;
+    insight.citations[0] = { ...insight.citations[0]!, quote, citation_ref: "i1binding" };
+    insight.entities = [{ name: "OpenAI", type: "organization" }];
+    deep.display_coverage_audits![0]!.decision = {
+      statement_citation_index: 1, statement_citation_ref: "i1binding", display_projection_version: DISPLAY_PROJECTION_VERSION,
+      statement_sha256: sourceQuoteHash(quote), quote_sha256: sourceQuoteHash(quote),
+      claims: [{ claim_id: "statement:1", field: "statement", kind: "factual", supports: true, citation_indexes: [1], countercheck: { supports: true } }],
+    };
+    const { report: projected } = buildReport({ topic, batch: deep, validation, type: "deep_dive", contentLookup: new Map(), now: "2026-05-07T08:00:00Z" });
+    for (const body of [projected.body_md, projected.body_html]) {
+      expect(body.split(quote).length - 1).toBe(1);
+      expect(body).not.toContain(`${quote.slice(0, 30)}…`);
+      expect(body).not.toContain("待补引：OpenAI");
+    }
   });
 });
 
@@ -655,12 +752,15 @@ describe("flagLabel + 校验失败/待核实 区分（C）", () => {
     const batch: AnalysisBatch = {
       id: "be", topic_id: "t1", time_window: win, status: "done", no_significant_event: false,
       insights: [{
-        id: "ie", topic_id: "t1", type: "aggregation", event_id: null, statement: "Serr", importance: 4,
-        importance_basis: "x",
+        id: "ie", topic_id: "t1", type: "aggregation", event_id: null, statement: "q0", statement_citation_index: 1, importance: 4,
+        importance_basis: "系统重要性判断：该结果可为工程选型提供参考。",
         citations: Array.from({ length: nCitations }, (_, i) => ({
-          content_item_id: `ci${i}`, quote: `q${i}`, locator: { paragraph_index: 0, char_start: 0, char_end: 1 },
+          content_item_id: `ci${i}`, citation_ref: `binding-${i}`, quote: `q${i}`, locator: { paragraph_index: 0, char_start: 0, char_end: 1 },
         })),
         source_count: 1, multi_source: false, time_window: win, confidence: null, language: "zh",
+      }], display_coverage_state: "audited", display_projection_version: DISPLAY_PROJECTION_VERSION, display_coverage_audits: [{
+        insight_id: "ie", candidate_id: "ie", gate_version: "display-coverage-v6", terminal_reason: "kept", prompt_version: "v6", input_hash: "x", validator_model: "coverage",
+        decision: { statement_citation_index: 1, statement_citation_ref: "binding-0", display_projection_version: DISPLAY_PROJECTION_VERSION, statement_sha256: sourceQuoteHash("q0"), quote_sha256: sourceQuoteHash("q0"), claims: [{ claim_id: "statement:1", field: "statement", kind: "factual", supports: true, citation_indexes: [1], countercheck: { supports: true } }] }, created_at: "2026-09-09T00:00:00Z",
       }],
     };
     const v: ValidationResult = {

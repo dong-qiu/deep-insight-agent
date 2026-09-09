@@ -330,6 +330,12 @@ const STATEMENT_CITATION_BINDING_SQL = `
 CREATE INDEX IF NOT EXISTS idx_insight_batch_statement_citation ON insight(batch_id, statement_citation_index);
 `;
 
+/** v6 deliberately does not upgrade old audited rows: quote projection requires a fresh
+ * self-contained decision, so the new column defaults every historical batch to legacy. */
+const SOURCE_QUOTE_PROJECTION_SQL = `
+CREATE INDEX IF NOT EXISTS idx_analysis_batch_display_projection ON analysis_batch(display_projection_version, id);
+`;
+
 const MIGRATIONS = [
   { version: "20260803_01_provenance_core", sql: CORE_SQL },
   { version: "20260803_02_report_lifecycle", sql: REPORT_LIFECYCLE_SQL },
@@ -386,6 +392,7 @@ DELETE FROM dashboard_cost_fact_v1 WHERE tenant_id='default' AND EXISTS (
   { version: "20260909_36_display_coverage_evidence", sql: DISPLAY_COVERAGE_EVIDENCE_SQL },
   { version: "20260909_37_display_coverage_candidate_audit", sql: DISPLAY_COVERAGE_CANDIDATE_AUDIT_SQL },
   { version: "20260909_38_statement_citation_binding", sql: STATEMENT_CITATION_BINDING_SQL },
+  { version: "20260909_39_source_quote_projection", sql: SOURCE_QUOTE_PROJECTION_SQL },
 ];
 
 function hasColumn(db: DB, table: string, column: string): boolean {
@@ -490,6 +497,11 @@ export function applyProvenanceMigrations(db: DB): void {
       } else if (migration.version === "20260909_38_statement_citation_binding") {
         if (!hasColumn(db, "insight", "statement_citation_index")) {
           db.exec("ALTER TABLE insight ADD COLUMN statement_citation_index INTEGER");
+        }
+        db.exec(migration.sql);
+      } else if (migration.version === "20260909_39_source_quote_projection") {
+        if (!hasColumn(db, "analysis_batch", "display_projection_version")) {
+          db.exec("ALTER TABLE analysis_batch ADD COLUMN display_projection_version TEXT NOT NULL DEFAULT 'legacy' CHECK (display_projection_version IN ('legacy','source_quote_v1'))");
         }
         db.exec(migration.sql);
       } else if (migration.version === "20260825_31_integrity_daily_root_material_backfill") {

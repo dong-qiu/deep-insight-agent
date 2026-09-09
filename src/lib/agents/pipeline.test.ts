@@ -5,12 +5,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { getAnalysisBatch, getValidationResult, saveAnalysisBatch, saveValidationResult } from "../db/analysis.js";
 import { type DB, openDb } from "../db/index.js";
 import { insertContentItem, insertSource, insertTopic, listRuns } from "../db/repos.js";
-import { listTechLeadEvidence, listTechLeads } from "../db/tech-leads.js";
-import { createTopicDirection, listOpportunityLeads, listTechnologyOpportunities } from "../db/planning.js";
+import { listPlanningTechLeads, listTechLeadEvidence, listTechLeads } from "../db/tech-leads.js";
+import { createTopicDirection, getTechnologyOpportunity, listOpportunityLeads, listTechnologyOpportunities, previewTopicDirectionMapping, reprojectTopicDirection } from "../db/planning.js";
 import { applyProvenanceMigrations } from "../db/provenance-migrations.js";
 import { captureRevision, entityKey, type EntityRef } from "../db/provenance-facts.js";
 import { contentItemRef, contentItemRevision } from "../db/provenance-revisions.js";
 import type { AnalysisBatch, ContentItem, Insight, Report, ReportIndexEntry, Source, Topic, ValidationResult } from "../types.js";
+import { DISPLAY_PROJECTION_VERSION, sourceQuoteHash } from "../utils/source-quote-projection.js";
 
 // vi.hoisted：vi.mock 工厂被提升到文件顶部，须用 hoisted 让 mock fns 在工厂运行时已初始化
 const { analyzeMock, validateBatchMock, buildReportMock, saveReportMock, seedDefaultDirectionsMock, upsertTechnologyOpportunitiesMock } = vi.hoisted(() => ({
@@ -69,7 +70,7 @@ const win = { start: "2026-06-01", end: "2026-06-07" };
 function mkInsight(id: string): Insight {
   return {
     id, topic_id: "t1", type: "aggregation", event_id: null, statement: `S-${id}`, headline: "",
-    importance: 3, importance_basis: "b",
+    importance: 3, importance_basis: "系统重要性判断：该结果可为工程选型提供参考。",
     citations: [{ content_item_id: "ci1", quote: "q", locator: { paragraph_index: 0, char_start: 0, char_end: 1 } }],
     source_count: 1, multi_source: false, time_window: win, confidence: "high", language: "zh",
     is_followup: false, entities: [], tags: [],
@@ -77,6 +78,20 @@ function mkInsight(id: string): Insight {
 }
 function mkBatch(): AnalysisBatch {
   return { id: "b1", topic_id: "t1", time_window: win, status: "done", no_significant_event: false, insights: [mkInsight("i1")] };
+}
+function makeLeadReaderVisible(batch: AnalysisBatch): void {
+  const insight = batch.insights[0]!;
+  const quote = "Agent tool release";
+  insight.statement = quote;
+  insight.headline = "";
+  insight.statement_citation_index = 1;
+  insight.citations[0] = { ...insight.citations[0]!, citation_ref: "binding", claim: quote, quote };
+  batch.display_coverage_state = "audited";
+  batch.display_projection_version = DISPLAY_PROJECTION_VERSION;
+  batch.display_coverage_audits = [{
+    insight_id: insight.id, candidate_id: insight.id, gate_version: "display-coverage-v6", terminal_reason: "kept", prompt_version: "v6", input_hash: "x", validator_model: "coverage",
+    decision: { statement_citation_index: 1, statement_citation_ref: "binding", display_projection_version: DISPLAY_PROJECTION_VERSION, statement_sha256: sourceQuoteHash(quote), quote_sha256: sourceQuoteHash(quote), claims: [{ claim_id: "statement:1", field: "statement", kind: "factual", supports: true, citation_indexes: [1], countercheck: { supports: true } }] }, created_at: "2026-09-09T00:00:00Z",
+  }];
 }
 function mkValidation(insightId = "i1"): ValidationResult {
   return {
@@ -435,6 +450,7 @@ describe("runReportGen", () => {
     saveReportMock.mockImplementation((_db, _report, _index, hooks) => hooks?.afterPublish?.());
     const freshness = { since: "2026-06-06T00:00:00Z", content_item_ids: ["ci_new"], freshest_candidate_at: "2026-06-07T00:00:00Z" };
     const batch = mkBatch();
+    makeLeadReaderVisible(batch);
     batch.insights[0].event_id = "event_unpublished";
 
     await runReportGen(db, { topic, batch, validation: mkValidation(), type: "brief", traceId: "trace_1", briefFreshness: freshness });
@@ -471,6 +487,7 @@ describe("runTechLeadExtraction", () => {
     const batch = mkBatch();
     batch.insights[0].headline = "Agent tool";
     batch.insights[0].tags = ["tool"];
+    makeLeadReaderVisible(batch);
     const validation = mkValidation();
     saveAnalysisBatch(db, batch); saveValidationResult(db, batch.id, validation);
     return { batch, validation };
@@ -483,16 +500,28 @@ describe("runTechLeadExtraction", () => {
     const batch = mkBatch();
     batch.insights[0].headline = "Agent tool";
     batch.insights[0].tags = ["tool"];
+    makeLeadReaderVisible(batch);
     saveAnalysisBatch(db, batch); saveValidationResult(db, batch.id, mkValidation());
     const leads = runTechLeadExtraction(db, batch, mkValidation(), "2026-06-07T01:00:00Z");
     expect(leads).toHaveLength(1);
-    expect(listTechLeads(db)[0]).toMatchObject({ topic_id: topic.id, title: "Agent tool" });
+    expect(listTechLeads(db)[0]).toMatchObject({
+      topic_id: topic.id,
+      title: "已核验技术线索",
+      summary: "请展开下方已核验原文与来源。",
+    });
     const [opportunity] = listTechnologyOpportunities(db);
     // t1 没有默认方向档案：高价值技术线索只能作为 horizon 供人工校准，不伪装成方向内项目。
     expect(opportunity).toMatchObject({ lane: "horizon", direction_id: null });
+    db.prepare("UPDATE technology_opportunity SET title='Free project claim',score_detail=? WHERE id=?")
+      .run(JSON.stringify({ ...opportunity.score_detail, reason: "unbound opportunity reason" }), opportunity.id);
+    expect(listTechnologyOpportunities(db)[0]).toMatchObject({
+      title: "待验证机会",
+      score_detail: { reason: "系统优先级评分（待人工验证）。" },
+    });
+    expect((getTechnologyOpportunity(db, opportunity.id))?.title).toBe("待验证机会");
     const [linkedLead] = listOpportunityLeads(db, opportunity.id);
-    expect(linkedLead.id).toBe(leads[0].id);
-    expect(listTechLeadEvidence(db, linkedLead.id)).toMatchObject([{ url: "https://x/ci1", quote: "q" }]);
+    expect(linkedLead).toMatchObject({ id: leads[0].id, title: "已核验技术线索" });
+    expect(listTechLeadEvidence(db, linkedLead.id)).toMatchObject([{ url: "https://x/ci1", quote: "Agent tool release" }]);
   });
 
   it("机会写入失败只标记 derive_opportunity.failed，不反写已完成的方向映射", () => {
@@ -530,13 +559,23 @@ describe("runTechLeadExtraction", () => {
     applyProvenanceMigrations(db);
     db.prepare(`INSERT INTO generation_trace(id,scope_kind,trigger_kind,status,completion_policy,coverage,runtime_version,summary,started_at)
       VALUES ('trace_1','topic_pipeline','api','running','{}','complete','{}','{}','2026-06-07T00:00:00Z')`).run();
-    createTopicDirection(db, {
+    const direction = createTopicDirection(db, {
       id: "direction_1", topic_id: topic.id, name: "Agent", objective: "O", problem_statement: "P",
       in_scope: [], out_of_scope: [], key_questions: [], constraints: [], success_signals: [],
       match_terms: ["agent"], adjacent_terms: [], challenge_terms: [], horizon: "now", status: "active",
     }, "2026-06-07T00:00:00Z");
     const { batch, validation } = seedLeadInput();
     runTechLeadExtraction(db, batch, validation, "2026-06-07T01:00:00Z", { traceId: "trace_1" });
+    // Reprojection must use an internal v6 binding projection, not generic reader lead fields.
+    // Otherwise every lead becomes kind=other / empty matching text and all candidates go stale.
+    expect(reprojectTopicDirection(db, "direction_1", "2026-06-07T02:00:00Z")).toMatchObject({ kind: "done", refreshed: 1 });
+    expect(listTechnologyOpportunities(db).some((opportunity) => opportunity.direction_id === "direction_1")).toBe(true);
+    const preview = previewTopicDirectionMapping(
+      listPlanningTechLeads(db, { topic: topic.id }), direction,
+      { ...direction, match_terms: ["not-present"] },
+    );
+    expect(preview).toMatchObject([{ title: "已核验技术线索" }]);
+    expect(JSON.stringify(preview)).not.toContain("Agent tool release");
     expect(db.prepare(`SELECT DISTINCT entity_type FROM generation_entity_ref
       WHERE trace_id='trace_1' AND role='output' ORDER BY entity_type`).all()).toEqual([
       { entity_type: "tech_lead" }, { entity_type: "technology_opportunity" },

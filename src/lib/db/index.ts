@@ -70,6 +70,9 @@ function migrate(db: DB): void {
   // New analysis batches are explicitly audited even when all candidates are rejected. Old rows
   // remain legacy, so a read round-trip cannot turn an audited-empty batch into compatibility data.
   ensureColumn(db, "analysis_batch", "display_coverage_state", "display_coverage_state TEXT NOT NULL DEFAULT 'legacy' CHECK (display_coverage_state IN ('legacy','audited'))");
+  // Source-quote v6 is a new reader contract, not a backfill: historical audited rows remain
+  // legacy until they are re-analysed and pass the self-contained quote gate.
+  ensureColumn(db, "analysis_batch", "display_projection_version", "display_projection_version TEXT NOT NULL DEFAULT 'legacy' CHECK (display_projection_version IN ('legacy','source_quote_v1'))");
   // 展示级引用审计：旧 citation 没有 claim/ref，保持空值并由读路径视为 legacy；新分析写入
   // 稳定 ref 与原子 claim，不能把旧数据误报成已审计。
   ensureColumn(db, "citation", "citation_ref", "citation_ref TEXT NOT NULL DEFAULT ''");

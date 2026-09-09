@@ -44,7 +44,7 @@ const batch: AnalysisBatch = {
 
 it("AnalysisBatch 往返（含 insights + citations）", () => {
   saveAnalysisBatch(db, batch);
-  expect(getAnalysisBatch(db, "b1")).toEqual({ ...batch, display_coverage_state: "legacy" });
+  expect(getAnalysisBatch(db, "b1")).toEqual({ ...batch, display_coverage_state: "legacy", display_projection_version: "legacy" });
   expect(db.prepare("SELECT statement_citation_index FROM insight WHERE id = 'i2'").get()).toEqual({ statement_citation_index: 2 });
 });
 
@@ -60,6 +60,7 @@ it("同一事务持久化 citation_ref/claim 与展示覆盖审计，读回不�
     created_at: "2026-09-09T00:00:00.000Z",
   }];
   audited.display_coverage_state = "audited";
+  audited.display_projection_version = "legacy";
   audited.display_coverage_candidate_audits = [
     {
       candidate_id: "i1", insight_id: "i1", gate_version: "display-coverage-v2", terminal_reason: "kept",
@@ -83,6 +84,7 @@ it("同一事务持久化 citation_ref/claim 与展示覆盖审计，读回不�
 it("已审计但无保留洞察的缓存读回仍是 audited，不能退化为 legacy", () => {
   const emptyAudited: AnalysisBatch = {
     ...structuredClone(batch), id: "b-empty", insights: [], display_coverage_state: "audited",
+    display_projection_version: "legacy",
     display_coverage_audits: [],
     display_coverage_candidate_audits: [{
       candidate_id: "candidate_rejected", gate_version: "display-coverage-v2", terminal_reason: "dropped_no_displayable_citation",

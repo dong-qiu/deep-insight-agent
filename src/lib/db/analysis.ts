@@ -69,12 +69,13 @@ export function rowToInsight(db: DB, r: InsightRow): Insight {
 export function saveAnalysisBatch(db: DB, batch: AnalysisBatch, afterSave?: () => void): void {
   db.transaction(() => {
     db.prepare(
-      `INSERT INTO analysis_batch (id,topic_id,time_window,status,no_significant_event,display_coverage_state)
-       VALUES (@id,@topic_id,@time_window,@status,@nse,@display_coverage_state)`,
+      `INSERT INTO analysis_batch (id,topic_id,time_window,status,no_significant_event,display_coverage_state,display_projection_version)
+       VALUES (@id,@topic_id,@time_window,@status,@nse,@display_coverage_state,@display_projection_version)`,
     ).run({
       id: batch.id, topic_id: batch.topic_id, time_window: j(batch.time_window),
       status: batch.status, nse: b(batch.no_significant_event),
       display_coverage_state: batch.display_coverage_state ?? "legacy",
+      display_projection_version: batch.display_projection_version ?? "legacy",
     });
     const insStmt = db.prepare(
       `INSERT INTO insight
@@ -129,9 +130,10 @@ export function getAnalysisBatch(db: DB, id: string): AnalysisBatch | null {
   const audits = db.prepare("SELECT * FROM display_coverage_audit WHERE batch_id = ? ORDER BY insight_id").all(id) as Array<Record<string, string>>;
   const candidateAudits = db.prepare("SELECT * FROM display_coverage_candidate_audit WHERE batch_id = ? ORDER BY candidate_id").all(id) as Array<Record<string, string | null>>;
   const display_coverage_state = (br.display_coverage_state ?? "legacy") as "legacy" | "audited";
+  const display_projection_version = (br.display_projection_version ?? "legacy") as "legacy" | "source_quote_v1";
   return {
     id: br.id, topic_id: br.topic_id, time_window: JSON.parse(br.time_window), status: br.status,
-    no_significant_event: br.no_significant_event === 1, insights, display_coverage_state,
+    no_significant_event: br.no_significant_event === 1, insights, display_coverage_state, display_projection_version,
     ...(display_coverage_state === "audited" ? { display_coverage_audits: audits.map((audit): DisplayCoverageAudit => ({
       insight_id: audit.insight_id, candidate_id: audit.candidate_id, gate_version: audit.gate_version,
       terminal_reason: audit.terminal_reason, prompt_version: audit.prompt_version, input_hash: audit.input_hash,

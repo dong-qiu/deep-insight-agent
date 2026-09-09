@@ -9,7 +9,7 @@ describe("provenance migration runner", () => {
     applyProvenanceMigrations(db);
     applyProvenanceMigrations(db);
     expect(() => assertProvenanceSchema(db)).not.toThrow();
-    expect(db.prepare("SELECT COUNT(*) AS count FROM schema_migration").get()).toEqual({ count: 38 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM schema_migration").get()).toEqual({ count: 39 });
     expect((db.prepare("PRAGMA table_info(run)").all() as { name: string }[]).some((row) => row.name === "trace_id")).toBe(true);
     const reportColumns = db.prepare("PRAGMA table_info(report)").all() as { name: string; notnull: number }[];
     expect(reportColumns.find((column) => column.name === "body_path")?.notnull).toBe(0);
@@ -46,6 +46,7 @@ describe("provenance migration runner", () => {
     expect(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='display_coverage_audit'").get()).toBeTruthy();
     expect(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='display_coverage_candidate_audit'").get()).toBeTruthy();
     expect((db.prepare("PRAGMA table_info(analysis_batch)").all() as { name: string }[]).some((row) => row.name === "display_coverage_state")).toBe(true);
+    expect((db.prepare("PRAGMA table_info(analysis_batch)").all() as { name: string }[]).some((row) => row.name === "display_projection_version")).toBe(true);
     expect((db.prepare("PRAGMA table_info(insight)").all() as { name: string }[]).some((row) => row.name === "statement_citation_index")).toBe(true);
     expect(db.prepare("SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='display_coverage_audit_batch_matches_insight'").get()).toBeTruthy();
     expect(db.prepare("SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='display_coverage_candidate_audit_batch_matches_insight'").get()).toBeTruthy();
@@ -92,7 +93,7 @@ describe("provenance migration runner", () => {
     db.prepare("DELETE FROM schema_migration WHERE version IN ('20260823_12_source_credit_facts','20260823_13_source_credit_tenant_primary_keys')").run();
 
     applyProvenanceMigrations(db);
-    expect(db.prepare("SELECT COUNT(*) AS count FROM schema_migration").get()).toEqual({ count: 38 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM schema_migration").get()).toEqual({ count: 39 });
     expect(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='source_credit_event'").get()).toBeTruthy();
     expect(db.prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_source_credit_fact_tenant_source_event'").get()).toBeTruthy();
     for (const table of ["source_credit_conflict", "source_credit_late_reconciliation"]) {
@@ -115,18 +116,23 @@ describe("provenance migration runner", () => {
       DROP TABLE display_coverage_candidate_audit;
       DROP TABLE display_coverage_audit;
       DROP INDEX idx_citation_ref;
+      DROP INDEX idx_analysis_batch_display_projection;
       ALTER TABLE citation DROP COLUMN citation_ref;
       ALTER TABLE citation DROP COLUMN claim;
       ALTER TABLE analysis_batch DROP COLUMN display_coverage_state;
+      ALTER TABLE analysis_batch DROP COLUMN display_projection_version;
     `);
-    db.prepare("DELETE FROM schema_migration WHERE version IN (?, ?)")
-      .run("20260909_36_display_coverage_evidence", "20260909_37_display_coverage_candidate_audit");
+    db.prepare("DELETE FROM schema_migration WHERE version IN (?, ?, ?, ?)")
+      .run("20260909_36_display_coverage_evidence", "20260909_37_display_coverage_candidate_audit", "20260909_38_statement_citation_binding", "20260909_39_source_quote_projection");
 
     expect(() => applyProvenanceMigrations(db)).not.toThrow();
     expect((db.prepare("PRAGMA table_info(citation)").all() as { name: string }[]).map((row) => row.name))
       .toEqual(expect.arrayContaining(["citation_ref", "claim"]));
     expect((db.prepare("PRAGMA table_info(analysis_batch)").all() as { name: string }[]).map((row) => row.name))
       .toContain("display_coverage_state");
+    expect((db.prepare("PRAGMA table_info(analysis_batch)").all() as { name: string }[]).map((row) => row.name))
+      .toContain("display_projection_version");
+    expect(db.prepare("SELECT display_projection_version FROM analysis_batch LIMIT 1").all()).toEqual([]);
     expect(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='display_coverage_candidate_audit'").get()).toBeTruthy();
     expect(db.prepare("SELECT 1 FROM schema_migration WHERE version='20260909_37_display_coverage_candidate_audit'").get()).toBeTruthy();
   });
@@ -141,6 +147,19 @@ describe("provenance migration runner", () => {
     expect((db.prepare("PRAGMA table_info(insight)").all() as { name: string }[]).map((column) => column.name))
       .toContain("statement_citation_index");
     expect(db.prepare("SELECT 1 FROM schema_migration WHERE version='20260909_38_statement_citation_binding'").get()).toBeTruthy();
+  });
+
+  it("upgrades an audited v5 batch as legacy rather than claiming a v6 source projection", () => {
+    const db = openDb(":memory:");
+    applyProvenanceMigrations(db);
+    db.exec("DROP INDEX idx_analysis_batch_display_projection; ALTER TABLE analysis_batch DROP COLUMN display_projection_version;");
+    db.prepare("DELETE FROM schema_migration WHERE version=?").run("20260909_39_source_quote_projection");
+    db.prepare("INSERT INTO topic(id,name,keywords,language,brief_schedule,enabled) VALUES ('legacy_topic','Legacy','[]','en','daily',1)").run();
+    db.prepare("INSERT INTO analysis_batch(id,topic_id,time_window,status,no_significant_event,display_coverage_state) VALUES ('legacy_batch','legacy_topic','{}','done',0,'audited')").run();
+
+    applyProvenanceMigrations(db);
+    expect(db.prepare("SELECT display_projection_version FROM analysis_batch WHERE id='legacy_batch'").get())
+      .toEqual({ display_projection_version: "legacy" });
   });
 
   it("upgrades an already-ledgered v12 source-credit schema without checksum drift", () => {

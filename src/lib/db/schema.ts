@@ -828,6 +828,8 @@ CREATE TABLE IF NOT EXISTS analysis_batch (
   status               TEXT NOT NULL CHECK (status IN ('done','failed')),
   no_significant_event INTEGER NOT NULL DEFAULT 0,
   display_coverage_state TEXT NOT NULL DEFAULT 'legacy' CHECK (display_coverage_state IN ('legacy','audited')),
+  -- v6 source-quote projection. Existing batches stay legacy and are excluded from reader paths.
+  display_projection_version TEXT NOT NULL DEFAULT 'legacy' CHECK (display_projection_version IN ('legacy','source_quote_v1')),
   created_at           TEXT NOT NULL DEFAULT (datetime('now')),
   CHECK (NOT (no_significant_event = 1 AND status <> 'done'))
 );

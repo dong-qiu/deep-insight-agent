@@ -9,6 +9,7 @@ import { saveAnalysisBatch, saveValidationResult } from "../db/analysis.js";
 import { type DB, openDb } from "../db/index.js";
 import { insertContentItem, insertSource, insertTopic } from "../db/repos.js";
 import { saveReport } from "../db/reports.js";
+import { DISPLAY_PROJECTION_VERSION, sourceQuoteHash } from "../utils/source-quote-projection.js";
 
 // 把 ppt-polish 整体 mock：测试无 API key、CI 可跑；polish 路径只验调用契约
 vi.mock("./ppt-polish.js", () => ({
@@ -45,8 +46,9 @@ const batch: AnalysisBatch = {
     {
       id: "i1", topic_id: "t1", type: "aggregation", event_id: null,
       statement: "重要洞察一。",
-      importance: 5, importance_basis: "因为关键",
-      citations: [{ content_item_id: "ci1", quote: "示例引用 quote", locator: { paragraph_index: 0, char_start: 0, char_end: 2 } }],
+      importance: 5, importance_basis: "系统重要性判断：该结果可为工程选型提供参考。",
+      statement_citation_index: 1,
+      citations: [{ content_item_id: "ci1", citation_ref: "binding", claim: "重要洞察一", quote: "重要洞察一。", locator: { paragraph_index: 0, char_start: 0, char_end: 5 } }],
       source_count: 1, multi_source: false, time_window: win, confidence: null, language: "zh",
     },
     // i2：原文沉默（uncertain/flagged）→ 即使历史 report.insight_ids 含它，也不得被 PPT 重建重新发布。
@@ -57,7 +59,10 @@ const batch: AnalysisBatch = {
       citations: [{ content_item_id: "ci1", quote: "q2", locator: { paragraph_index: 0, char_start: 3, char_end: 5 } }],
       source_count: 1, multi_source: false, time_window: win, confidence: null, language: "zh",
     },
-  ],
+  ], display_coverage_state: "audited", display_projection_version: DISPLAY_PROJECTION_VERSION, display_coverage_audits: [{
+    insight_id: "i1", candidate_id: "i1", gate_version: "display-coverage-v6", terminal_reason: "kept", prompt_version: "v6", input_hash: "x", validator_model: "coverage",
+    decision: { statement_citation_index: 1, statement_citation_ref: "binding", display_projection_version: DISPLAY_PROJECTION_VERSION, statement_sha256: sourceQuoteHash("重要洞察一。"), quote_sha256: sourceQuoteHash("重要洞察一。"), claims: [{ claim_id: "statement:1", field: "statement", kind: "factual", supports: true, citation_indexes: [1], countercheck: { supports: true } }] }, created_at: "2026-09-09T00:00:00Z",
+  }],
 };
 const vr: ValidationResult = {
   checks: [
@@ -116,7 +121,15 @@ describe("exportReportPptx", () => {
     expect(r!.pageCount).toBe(3); // 仍只有 i1；i2 不可复活
   });
 
-  it("usePolish=true → 调 polishForPpt(只传重点条) + polishCost 透传 + cache miss", async () => {
+  it("legacy report 不能被重新导出为 v6 已核验 PPT", async () => {
+    db.prepare("UPDATE analysis_batch SET display_coverage_state='legacy', display_projection_version='legacy' WHERE id='b1'").run();
+    const r = await exportReportPptx(db, "rep_t1");
+    expect(r).not.toBeNull();
+    // 无 reader-visible insight：只留下标题和来源方法页。
+    expect(r!.pageCount).toBe(2);
+  });
+
+  it("usePolish=true 也不会将自由 LLM 改写发布为 reader-visible 内容", async () => {
     vi.mocked(polishForPpt).mockResolvedValue({
       perInsight: new Map([["i1", { brief_summary: "凝练", implications: ["启示 a"] }]]),
       executive: { takeaways: ["TK1", "TK2", "TK3"] },
@@ -124,30 +137,26 @@ describe("exportReportPptx", () => {
     });
     const r = await exportReportPptx(db, "rep_t1", { usePolish: true });
     expect(r).not.toBeNull();
-    expect(polishForPpt).toHaveBeenCalledTimes(1);
-    const [keyInsights] = vi.mocked(polishForPpt).mock.calls[0];
-    // 只重点条入 polish（i2 flagged 已被剔除；i1 importance=5≥4 入选）
-    expect(keyInsights).toHaveLength(1);
-    expect(keyInsights[0].insight.id).toBe("i1");
-    expect(r!.polishCost).toEqual({ tokens: 1234, amount: 0.0789 });
-    expect(r!.polishCache).toBe("miss");
-    // executive 存在 → 多 1 页：1 标题 + 1 executive + 1 重点 + 1 源 = 4 页
-    expect(r!.pageCount).toBe(4);
+    expect(polishForPpt).not.toHaveBeenCalled();
+    expect(r!.polishCost).toEqual({ tokens: 0, amount: 0 });
+    expect(r!.polishCache).toBe("none");
+    expect(r!.polishStatus).toBe("none");
+    expect(r!.pageCount).toBe(3);
   });
 
-  it("第二次同参数请求 → cache hit、零成本、不调 LLM", async () => {
+  it("刷新参数同样不会绕过原文投影", async () => {
     vi.mocked(polishForPpt).mockResolvedValue({
       perInsight: new Map([["i1", { brief_summary: "凝练", implications: ["启示 a"] }]]),
       executive: { takeaways: ["TK1", "TK2", "TK3"] },
       cost: { tokens: 1234, amount: 0.0789 },
     });
-    await exportReportPptx(db, "rep_t1", { usePolish: true }); // 第 1 次：miss + 写缓存
+    await exportReportPptx(db, "rep_t1", { usePolish: true });
     vi.mocked(polishForPpt).mockReset();
     const r2 = await exportReportPptx(db, "rep_t1", { usePolish: true });
-    expect(r2!.polishCache).toBe("hit");
+    expect(r2!.polishCache).toBe("none");
     expect(r2!.polishCost).toEqual({ tokens: 0, amount: 0 });
     expect(polishForPpt).not.toHaveBeenCalled();
-    expect(r2!.pageCount).toBe(4); // 仍然包含 Executive 页（从缓存还原）
+    expect(r2!.pageCount).toBe(3);
   });
 
   it("partial polish（executive=null）→ 仍写缓存；status='no-executive'；下次 hit 仍 partial", async () => {
@@ -157,14 +166,14 @@ describe("exportReportPptx", () => {
       cost: { tokens: 500, amount: 0.05 },
     });
     const r1 = await exportReportPptx(db, "rep_t1", { usePolish: true });
-    expect(r1!.polishCache).toBe("miss");
-    expect(r1!.polishStatus).toBe("no-executive");
-    expect(r1!.polishCoverage).toEqual({ perInsightDone: 1, perInsightTotal: 1, hasExecutive: false });
+    expect(r1!.polishCache).toBe("none");
+    expect(r1!.polishStatus).toBe("none");
+    expect(r1!.polishCoverage).toEqual({ perInsightDone: 0, perInsightTotal: 0, hasExecutive: false });
 
     vi.mocked(polishForPpt).mockReset();
     const r2 = await exportReportPptx(db, "rep_t1", { usePolish: true });
-    expect(r2!.polishCache).toBe("hit"); // 缓存命中（即使 partial）
-    expect(r2!.polishStatus).toBe("no-executive");
+    expect(r2!.polishCache).toBe("none");
+    expect(r2!.polishStatus).toBe("none");
     expect(polishForPpt).not.toHaveBeenCalled();
   });
 
@@ -184,15 +193,15 @@ describe("exportReportPptx", () => {
       cost: { tokens: 50, amount: 0.005 },
     });
     const rRefresh = await exportReportPptx(db, "rep_t1", { usePolish: true, refresh: true });
-    expect(rRefresh!.polishStatus).toBe("complete");
-    expect(rRefresh!.polishCache).toBe("miss"); // refresh 强制 miss
-    expect(rRefresh!.polishCoverage).toEqual({ perInsightDone: 1, perInsightTotal: 1, hasExecutive: true });
+    expect(rRefresh!.polishStatus).toBe("none");
+    expect(rRefresh!.polishCache).toBe("none");
+    expect(rRefresh!.polishCoverage).toEqual({ perInsightDone: 0, perInsightTotal: 0, hasExecutive: false });
 
     // 第 3 次正常请求：hit 完整缓存
     vi.mocked(polishForPpt).mockReset();
     const r3 = await exportReportPptx(db, "rep_t1", { usePolish: true });
-    expect(r3!.polishCache).toBe("hit");
-    expect(r3!.polishStatus).toBe("complete");
+    expect(r3!.polishCache).toBe("none");
+    expect(r3!.polishStatus).toBe("none");
     expect(polishForPpt).not.toHaveBeenCalled();
   });
 
@@ -210,12 +219,12 @@ describe("exportReportPptx", () => {
       cost: { tokens: 200, amount: 0.02 },
     });
     const rRefresh = await exportReportPptx(db, "rep_t1", { usePolish: true, refresh: true });
-    expect(rRefresh!.polishCache).toBe("miss"); // refresh 强制重跑
-    expect(rRefresh!.polishCost.amount).toBe(0.02);
+    expect(rRefresh!.polishCache).toBe("none");
+    expect(rRefresh!.polishCost.amount).toBe(0);
 
     // 再次普通请求 → 命中刚写入的 v2
     const r3 = await exportReportPptx(db, "rep_t1", { usePolish: true });
-    expect(r3!.polishCache).toBe("hit");
+    expect(r3!.polishCache).toBe("none");
     expect(r3!.polishCost.amount).toBe(0);
   });
 
@@ -247,10 +256,9 @@ describe("exportReportPptx", () => {
     const r = await exportReportPptx(db, "rep_t1", { usePolish: true });
     delete process.env.PPT_POLISH_COST_CAP_USD;
 
-    expect(r!.polishAborted).toBe(true);
-    expect(r!.polishCostCapUsd).toBe(0.30);
-    // 仍写缓存（保留已成功子结果，与 D 阶段 partial-also-cache 语义一致）
-    expect(r!.polishStatus).not.toBe("complete");
+    expect(r!.polishAborted).toBe(false);
+    expect(r!.polishCostCapUsd).toBe(0);
+    expect(r!.polishStatus).toBe("none");
   });
 
   it("cache hit 不消耗 LLM → polishAborted=false、CostCapUsd 仍透传 cap 让 UI 显示", async () => {
@@ -262,8 +270,8 @@ describe("exportReportPptx", () => {
     await exportReportPptx(db, "rep_t1", { usePolish: true }); // 写缓存
     vi.mocked(polishForPpt).mockReset();
     const r2 = await exportReportPptx(db, "rep_t1", { usePolish: true });
-    expect(r2!.polishCache).toBe("hit");
+    expect(r2!.polishCache).toBe("none");
     expect(r2!.polishAborted).toBe(false);
-    expect(r2!.polishCostCapUsd).toBeGreaterThan(0); // 默认 0.30
+    expect(r2!.polishCostCapUsd).toBe(0);
   });
 });
