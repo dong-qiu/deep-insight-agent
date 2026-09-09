@@ -41,6 +41,11 @@ npm run typecheck   # tsc 类型检查
 `out/runs/latest-complete.json` 只是最近完成的指针，必须分别读取 `auto_gate`、`manual_review`、`dcp_eligibility`，不能当作 PASS 标记。
 `npm run review:csv` / `npm run review:sheet` 默认沿该指针读取隔离 run 的 review queue；也可显式传入某次 run 的路径。
 
+运行时须把 `VALIDATOR_THINKING` 与 `COVERAGE_THINKING` 分开显式配置。先对每个 relay/model
+运行 `npm run eval:canary-thinking`：它验证 A1 所用的 **thinking + forced structured tool** 组合，而不是
+只验证 API 可达。canary 成功后才可把 validator 设为 `1`；Coverage 模型须自行通过同一组合的 canary，
+在此之前保持 `COVERAGE_THINKING=0`。A1 manifest 会记录两角色的有效值、Coverage 值来源和传输版本。
+
 ## 数据集
 
 - `dataset/insight-quality.jsonl` —— 每行 `{topic, items, time_window}`，喂给 analyzer。

@@ -18,10 +18,18 @@ export interface EvalConfig {
   relay_recovery_exhausted_cooldown_ms: number;
   coverage_model: string;
   validator_thinking: boolean;
+  coverage_thinking: boolean;
+  /** Explicit settings are required for frozen baselines; inherited preserves legacy behaviour only. */
+  coverage_thinking_source: "explicit" | "inherited";
+  structured_thinking_transport_version: string;
   validator_batch: boolean;
   quality_dataset_sha256: string;
   consistency_dataset_sha256: string;
+  /** A score is not a promotable baseline without a byte- and provenance-locked dataset. */
+  dataset_lock_sha256: string;
+  dataset_lock_status: "verified_legacy" | "verified_v2" | "invalid";
   display_coverage_dataset_sha256: string;
+  quote_self_contained_dataset_sha256: string;
   display_coverage_gate_version: string;
   display_projection_version: string;
   display_coverage_primary_prompt_version: string;
@@ -34,8 +42,8 @@ export const EVAL_CONFIG_KEYS: Array<keyof EvalConfig> = [
   "analyzer_model", "analyzer_output_version", "analyzer_prompt_sha256", "analyze_body_chars", "select_window_chars",
   "validator_model", "validator_contract_version", "consistency_window_chars", "consistency_batch_max",
   "relay_recovery_policy_version", "relay_recovery_max_probes", "relay_recovery_max_backoff_wait_ms", "relay_recovery_exhausted_cooldown_ms",
-  "coverage_model", "validator_thinking", "validator_batch",
-  "quality_dataset_sha256", "consistency_dataset_sha256", "display_coverage_dataset_sha256",
+  "coverage_model", "validator_thinking", "coverage_thinking", "coverage_thinking_source", "structured_thinking_transport_version", "validator_batch",
+  "quality_dataset_sha256", "consistency_dataset_sha256", "dataset_lock_sha256", "dataset_lock_status", "display_coverage_dataset_sha256", "quote_self_contained_dataset_sha256",
   "display_coverage_gate_version", "display_projection_version", "display_coverage_primary_prompt_version", "display_coverage_primary_prompt_sha256",
   "display_coverage_countercheck_prompt_version", "display_coverage_countercheck_prompt_sha256",
 ];

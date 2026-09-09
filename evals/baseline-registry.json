@@ -1,0 +1,13 @@
+{
+  "schema_version": "a1-baseline-registry-v1",
+  "strata": {
+    "arxiv": {
+      "status": "legacy",
+      "note": "Historical baseline.json has no complete EvalConfig or v2 dataset lock; it is intentionally incomparable and cannot be promoted."
+    },
+    "transcript": {
+      "status": "legacy",
+      "note": "Historical baseline.json has no complete EvalConfig or v2 dataset lock; it is intentionally incomparable and cannot be promoted."
+    }
+  }
+}

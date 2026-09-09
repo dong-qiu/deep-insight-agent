@@ -9,6 +9,19 @@
 /** 校验器思考模式：默认开，VALIDATOR_THINKING=0 关。analyzer 补引校验与 judge 同源。 */
 export const validatorThinking = (): boolean => process.env.VALIDATOR_THINKING !== "0";
 
+/**
+ * 独立 quote 自足性 countercheck 的思考开关。
+ *
+ * 缺失时刻意继承 VALIDATOR_THINKING，保持拆分该旋钮前的生产语义；一旦显式配置，
+ * 只影响 role=coverage，绝不能改变主 validator 的一致性或展示覆盖裁决。基线/DCP
+ * 配置会同时记录有效值和该值来自显式配置还是继承，避免把迁移期行为误当作已冻结策略。
+ */
+export const coverageThinkingSource = (): "explicit" | "inherited" =>
+  process.env.COVERAGE_THINKING == null || process.env.COVERAGE_THINKING === "" ? "inherited" : "explicit";
+
+export const coverageThinking = (): boolean =>
+  coverageThinkingSource() === "inherited" ? validatorThinking() : process.env.COVERAGE_THINKING !== "0";
+
 /** 校验器重试次数（指数退避），默认 2。 */
 export const validatorRetries = (): number => Math.max(0, Number(process.env.VALIDATOR_RETRIES ?? 2));
 

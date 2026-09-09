@@ -630,6 +630,24 @@ describe("filterByQuoteCoverage（展示 quote 覆盖门）", () => {
     });
   });
 
+  it("主展示审计读取 validator thinking，quote-only countercheck 只读取 COVERAGE_THINKING", async () => {
+    const oldValidator = process.env.VALIDATOR_THINKING;
+    const oldCoverage = process.env.COVERAGE_THINKING;
+    process.env.VALIDATOR_THINKING = "1";
+    process.env.COVERAGE_THINKING = "0";
+    try {
+      vi.mocked(callStructured).mockResolvedValue(coverageVerdicts(true));
+      await expect(filterByQuoteCoverage([insight("被完整覆盖的结论。")])).resolves.toHaveLength(1);
+      expect(vi.mocked(callStructured).mock.calls[0]?.[0]).toMatchObject({ role: "validator", thinking: true });
+      expect(vi.mocked(callStructured).mock.calls[1]?.[0]).toMatchObject({ role: "coverage", thinking: false });
+    } finally {
+      if (oldValidator === undefined) delete process.env.VALIDATOR_THINKING;
+      else process.env.VALIDATOR_THINKING = oldValidator;
+      if (oldCoverage === undefined) delete process.env.COVERAGE_THINKING;
+      else process.env.COVERAGE_THINKING = oldCoverage;
+    }
+  });
+
   it("v6 把模型的翻译 claim 投影为绑定 quote，不能把因果/范围扩写带进读者 statement", async () => {
     const quote = "MCP workflow optimizations corresponded to a 1.67x speedup and reduced median end-to-end latency by about 40.0%.";
     vi.mocked(callStructured).mockResolvedValue(coverageVerdictsFor(quote, true));

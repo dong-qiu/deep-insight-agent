@@ -36,6 +36,11 @@ function fallbackCostUSD(model: string, u: TokenUsage): number {
 
 export type Role = "analyzer" | "validator" | "coverage" | "followup";
 
+/** Admission-tested against the configured relay with forced tool_choice (2026-09-10). Any
+ * transport/budget change is part of EvalConfig because it changes validator behaviour. */
+export const STRUCTURED_THINKING_TRANSPORT_VERSION = "forced-tool-enabled-v1";
+export const STRUCTURED_THINKING_BUDGET_TOKENS = 1024;
+
 export const MODELS: Record<Role, string> = {
   analyzer: process.env.ANALYZER_MODEL ?? "claude-sonnet-4-6",
   validator: process.env.VALIDATOR_MODEL ?? "claude-opus-4-7",
@@ -117,7 +122,49 @@ export interface CostReport {
   totalUSD: number;
 }
 
+export interface RoleCallTelemetry {
+  calls: number;
+  failures: number;
+  /** Underlying relay requests; may exceed calls when refusal is retried. */
+  requests: number;
+  latency_ms: { p50: number; p95: number; max: number };
+}
+
 const meter = new Map<string, ModelUsage>();
+const roleMeter = new Map<Role, { calls: number; failures: number; requests: number; latency: number[] }>();
+
+const percentile = (values: readonly number[], fraction: number): number => {
+  if (!values.length) return 0;
+  const ordered = [...values].sort((a, b) => a - b);
+  return ordered[Math.min(ordered.length - 1, Math.ceil(ordered.length * fraction) - 1)]!;
+};
+
+/** Exported for deterministic tests and non-LLM harnesses; production calls record it in
+ * callStructured's finally block so failures and retries cannot disappear from A1 evidence. */
+export function recordRoleCallTelemetry(role: Role, latencyMs: number, requests: number, failed: boolean): void {
+  const aggregate = roleMeter.get(role) ?? { calls: 0, failures: 0, requests: 0, latency: [] };
+  aggregate.calls++;
+  aggregate.requests += requests;
+  if (failed) aggregate.failures++;
+  aggregate.latency.push(Math.max(0, latencyMs));
+  roleMeter.set(role, aggregate);
+}
+
+export function getRoleCallTelemetry(): Record<Role, RoleCallTelemetry> {
+  return Object.fromEntries((["analyzer", "validator", "coverage", "followup"] as Role[]).map((role) => {
+    const aggregate = roleMeter.get(role) ?? { calls: 0, failures: 0, requests: 0, latency: [] };
+    return [role, {
+      calls: aggregate.calls,
+      failures: aggregate.failures,
+      requests: aggregate.requests,
+      latency_ms: { p50: percentile(aggregate.latency, 0.5), p95: percentile(aggregate.latency, 0.95), max: aggregate.latency.length ? Math.max(...aggregate.latency) : 0 },
+    }];
+  })) as Record<Role, RoleCallTelemetry>;
+}
+
+export function resetRoleCallTelemetry(): void {
+  roleMeter.clear();
+}
 
 function record(model: string, u: Anthropic.Usage): void {
   const agg = meter.get(model) ?? {
@@ -191,6 +238,14 @@ export interface StructuredResult<T> {
   cost: Cost;
 }
 
+export function structuredThinkingConfig(enabled: boolean, maxTokens: number): Anthropic.Messages.ThinkingConfigParam | undefined {
+  if (!enabled) return undefined;
+  if (maxTokens <= STRUCTURED_THINKING_BUDGET_TOKENS) {
+    throw new Error(`启用 thinking 时 maxTokens 必须大于 ${STRUCTURED_THINKING_BUDGET_TOKENS}`);
+  }
+  return { type: "enabled", budget_tokens: STRUCTURED_THINKING_BUDGET_TOKENS, display: "omitted" };
+}
+
 const STRUCTURED_TOOL_NAME = "respond_with_structured_output";
 
 /** 模型/中转站偶发把应为 array/object 的字段返成 JSON 字符串（6b 真机：opus-4-7 经中转站把 insights 返字符串）。
@@ -259,7 +314,12 @@ export function createRequestAbortSignal(
 export async function callStructured<T extends z.ZodType>(
   opts: StructuredCall<T>,
 ): Promise<StructuredResult<z.infer<T>>> {
+  const startedAt = performance.now();
+  let underlyingRequests = 0;
+  let succeeded = false;
+  try {
   const model = MODELS[opts.role];
+  const maxTokens = opts.maxTokens ?? 16000;
   // 默认对稳定 system 前缀打 prompt cache；PROMPT_CACHE=0 时关闭——某些第三方中转站只写不读，
   // 缓存从不命中却仍计写入开销（见 a1-runs），此时关闭更省。
   const useCache = promptCacheOn();
@@ -279,18 +339,16 @@ export async function callStructured<T extends z.ZodType>(
   ];
   const params = {
     model,
-    max_tokens: opts.maxTokens ?? 16000,
+    max_tokens: maxTokens,
     system: [
       { type: "text" as const, text: opts.system, ...(useCache ? { cache_control: { type: "ephemeral" as const } } : {}) },
     ],
     messages: [{ role: "user" as const, content: opts.user }],
     tools,
     tool_choice: { type: "tool" as const, name: STRUCTURED_TOOL_NAME },
-    // 中转站兼容性（2026-06-06）：yibuapi 新策略对"forced tool_choice + thinking"组合
-    // 返 400 "Thinking may not be enabled when tool_choice forces tool use"——但 Anthropic
-    // 直连允许。callStructured 必定 forced tool_choice，故无论 opts.thinking 真假都不发
-    // thinking 参数（否则所有 validator 调用 100% 失败）。等中转站放开或切直连再恢复。
-    // opts.thinking 字段保留：调用方语义层未变；以后改回时只需要把这一行加回来。
+    // 该 relay 的 exact endpoint/key/model 已经由 eval:canary-thinking 验证可以同时接受
+    // thinking + forced tool_choice；仍由每个 role 的显式开关控制，不把 thinking 传给 analyzer。
+    thinking: structuredThinkingConfig(Boolean(opts.thinking), maxTokens),
   };
 
   let cost: Cost = { tokens: 0, amount: 0 };
@@ -307,6 +365,7 @@ export async function callStructured<T extends z.ZodType>(
   // 每次流式调用同时受调用方取消和 LLM_TIMEOUT_MS 的硬性墙钟超时约束；无论 SSE 是否持续有
   // 心跳/分片数据，超时后都必须终止，避免中转站永不 finalMessage() 时卡住整个 Job。
   const streamFinalMessage = async (): Promise<Anthropic.Message> => {
+    underlyingRequests++;
     const request = createRequestAbortSignal(llmTimeoutMs(), opts.signal);
     let onAbort: (() => void) | undefined;
     try {
@@ -359,6 +418,7 @@ export async function callStructured<T extends z.ZodType>(
     const retry = coerced != null ? opts.schema.safeParse(coerced) : null;
     if (retry?.success) {
       console.warn(`  ⚠️ 结构化输出字段被序列化成字符串、已定点 JSON.parse 修正（role=${opts.role}）`);
+      succeeded = true;
       return { data: retry.data, usage: res.usage, cost };
     }
     throw new Error(
@@ -368,5 +428,9 @@ export async function callStructured<T extends z.ZodType>(
         .join("; ")}`,
     );
   }
+  succeeded = true;
   return { data: parsed.data, usage: res.usage, cost };
+  } finally {
+    recordRoleCallTelemetry(opts.role, performance.now() - startedAt, underlyingRequests, !succeeded);
+  }
 }

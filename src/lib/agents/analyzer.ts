@@ -8,7 +8,7 @@
  */
 import { createHash, randomUUID } from "node:crypto";
 import { isTransientApiError } from "../runtime/errors.js";
-import { coverageBackfillOff, validatorBackoffMs, validatorRetries, validatorThinking } from "../runtime/env.js";
+import { coverageBackfillOff, coverageThinking, validatorBackoffMs, validatorRetries, validatorThinking } from "../runtime/env.js";
 import { MODELS, assertCoverageModelSeparation, callStructured } from "../runtime/llm.js";
 import { collapseWithMap, compareKey } from "../runtime/text-normalize.js";
 import { insightFingerprint } from "../runtime/statement-fingerprint.js";
@@ -652,7 +652,10 @@ function statementBindingFailureClaims(statement: string, reason: StatementBindi
   }));
 }
 
-async function verifyStatementCountercheck(
+/** Stand-alone Coverage role decision. Its deliberately narrow input is the exact reader-visible
+ * quote plus locator, so its false accept rate can be calibrated independently of the primary
+ * validator's claim-to-quote audit. */
+export async function verifyQuoteSelfContained(
   citation: Citation,
   onCost?: (cost: Cost) => void,
 ): Promise<CoverageCountercheck> {
@@ -680,7 +683,8 @@ async function verifyStatementCountercheck(
     try {
       const result = await callStructured({
         role: "coverage", system: QUOTE_COVERAGE_COUNTERCHECK_SYSTEM, user, schema: QuoteCoverageSchema,
-        thinking: validatorThinking(), maxTokens: 1024, onCost,
+        // 1024 is the minimum thinking budget, so the total response allowance must be larger.
+        thinking: coverageThinking(), maxTokens: 2048, onCost,
       });
       data = result.data as QuoteCoverage;
       break;
@@ -809,7 +813,7 @@ async function verifyDisplayedQuoteCoverage(
   // Do not short-circuit when the primary validator rejects: the second model's verdict is part
   // of the audit record and lets A1 measure disagreement.  A missing/invalid countercheck is
   // deliberately a rejection, never a fallback to the primary verdict.
-  const countercheck = await verifyStatementCountercheck(citations[statementCitationIndex - 1]!, onCost);
+  const countercheck = await verifyQuoteSelfContained(citations[statementCitationIndex - 1]!, onCost);
   const statementDecision = decisions.find((decision) => decision.field === "statement");
   if (statementDecision) {
     statementDecision.countercheck = countercheck;

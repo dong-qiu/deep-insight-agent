@@ -1415,3 +1415,23 @@ P0 可在不写 P1 指标的默认路径上继续发布。未来恢复 P1 时，
 `observe/relevant_only`。规范性状态机、指标和运维优先级以
 [`podcast-transcript-acquisition.md`](../plan/specs/podcast-transcript-acquisition.md) 为准，避免在 ADR 重复。
 所有 source/collector 改动遵循 Eval-Gate；A1 不完整时不得作为全文日报上线证明。
+
+---
+
+## ADR-0028: A1 Coverage 校准与可比基线治理
+
+- **日期**: 2026-09-10
+- **状态**: Accepted
+
+### 决定
+
+1. `VALIDATOR_THINKING` 与 `COVERAGE_THINKING` 分离：主展示引用审计继续由 validator 读取前者；仅 quote-self-contained 的独立 coverage countercheck 读取后者。迁移期 Coverage 缺省继承 validator，但任何 CI/生产/DCP 基线必须显式冻结它并在 EvalConfig 记录有效值、来源和 transport 版本。
+2. 不把任一 Sonnet/relay 型号写死为 Coverage 结论。coverage 模型须与 analyzer、validator 两两不同，并先对实际 endpoint/key/model 跑 **thinking + forced tool_choice** canary。2026-09-10 当前 validator relay canary 已通过；Coverage 保持显式 thinking-off，直到其独立模型通过同一 canary。
+3. 端到端展示覆盖的 `unsafe_accept=0` 继续是发布 AND 门；另设 quote-only 手标 fixture，以测量 Coverage 自身对读者可见 quote+locator 的 `unsafe_accept=0`，不得由主 validator 先拒绝而掩盖。历史 27 个 reject 候选不可自动转作新的金标，须人工标注、去重后才能加入。
+4. 评测数据分为可回归的 repository legacy fixture 与可提升的受控 v2 snapshot。v2 不提交新的第三方全文，必须由不可变快照、source URL/ID manifest、license/retention、topic mapping、去重规则、标签分布和 dataset-lock 绑定；锁验证至少 100 consistency pairs、40 not_support 和三类负例齐全。
+5. 旧 baseline 因缺完整配置/lock 永远不可比。新的 baseline 首次 clean/full/pass/v2 run 仅为 `provisional`；同 commit/config/lock/stratum 的第二个不同 run 才可 `dcp_accepted`。自动状态不得替代 owner/architect DCP 签署。
+6. 人评 receipt 是绑定 manifest/queue/dataset lock/reader-visible insight text hashes 的加性证据。两份完整独立盲评、无漏项/重复、所有分歧第三人 adjudication 后才可 `eligible_for_signoff`；n=50 中至多 1 例幻觉只说明样本点估计 ≤2%，不外推为总体保证。非显然和 importance 合理性保持诊断指标。
+
+### 后果
+
+模型/提示词/数据锁改变均会使旧基线不可比；A1 必须保留 role-level calls、request attempts、failures 与 P95，之后才可把成本或 P95 用作比较标准。Coverage 模型实验与 validator thinking A/B 需先同配置 A/A，再至少三次重复；Analyzer 仅在 v2 错误终态稳定后才考虑调整，且不得放宽 fail-closed 或自动修复引用。

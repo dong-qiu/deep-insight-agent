@@ -42,10 +42,19 @@ export interface A1RunManifest {
     unique_topic_count: number;
     reader_visible_total: number;
     reader_visible_by_topic: Record<string, number>;
+    duplicate_insight_ids?: readonly string[];
+    duplicate_statement_quote_count?: number;
   };
   dcp_prerequisites?: readonly string[];
   /** Aggregate only: endpoint/key details intentionally never enter an eval artifact. */
   relay_recovery?: RelayRecoveryStats;
+  /** Per-role call/failure/retry/P95 evidence; endpoint and key details never enter artifacts. */
+  llm_role_telemetry?: Record<string, {
+    calls: number;
+    failures: number;
+    requests: number;
+    latency_ms: { p50: number; p95: number; max: number };
+  }>;
   insights: { count: number; ids_sha256: string };
   artifacts: Record<string, string>;
   review_artifact_error?: string;

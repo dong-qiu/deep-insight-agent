@@ -1,0 +1,14 @@
+{
+  "version": "quote-self-contained-v1",
+  "labeling_provenance": "Controlled, synthetic quote-only cases manually labelled against the reader-visible self-contained contract. These cases do not relabel production candidates.",
+  "cases": [
+    { "id": "anaphora-it", "expected": "reject", "quote": "It reduces latency by 40%.", "locator": "0:0:25" },
+    { "id": "anaphora-former", "expected": "reject", "quote": "The former outperformed the latter.", "locator": "1:0:34" },
+    { "id": "generic-approach", "expected": "reject", "quote": "Our approach improves accuracy.", "locator": "2:0:31" },
+    { "id": "chinese-demonstrative", "expected": "reject", "quote": "该方法将延迟降低 40%。", "locator": "3:0:14" },
+    { "id": "explicit-subject", "expected": "accept", "quote": "Frontier reduces latency error by 40%.", "locator": "4:0:38" },
+    { "id": "explicit-benchmark", "expected": "accept", "quote": "LivePI covers seven input surfaces.", "locator": "5:0:34" },
+    { "id": "explicit-scope", "expected": "accept", "quote": "SpecBench contains 30 systems-level programming tasks.", "locator": "6:0:55" },
+    { "id": "chinese-explicit", "expected": "accept", "quote": "LlamaWeb 在四种 GPU 上提高了解码吞吐量。", "locator": "7:0:25" }
+  ]
+}

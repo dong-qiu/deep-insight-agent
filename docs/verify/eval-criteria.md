@@ -43,6 +43,7 @@
 | 一致性失败率（护栏） | ≤ 5% | charter 反向护栏指标 = `not_support` 占比 |
 | flagged 率（第二护栏） | ≤ 10% | 一致性 `uncertain` 占比；防「负例藏进 uncertain」 |
 | 展示覆盖 unsafe_accept | = 0 | 手标 display-coverage 反例不得被展示门放行 |
+| Coverage quote-self-contained unsafe_accept | = 0 | 独立 coverage 模型仅看 quote+locator 的手标反例不得被放行；不可由主 validator 的先行拒绝掩盖 |
 | 幻觉率（人工抽检） | ≤ 2% | charter 反向护栏指标 |
 | event_id 跨批次对齐准确率 | ≥ 85% | 不复报机制（在「事件对齐集」上） |
 
@@ -109,12 +110,20 @@
 
 ### 基线可比性与诊断证据
 
-基线只对**同一评测配置**有效。`evals/baseline.json` 必须在 `eval_configs.<stratum>` 记录每个形态的
-配置（分析/校验模型、`validator_thinking`、批量判定开关及两个数据集的 SHA-256）；任一项变化后，脚本只展示该形态的旧指标，不得把它当作回归结论，必须先在新配置下全量重跑并更新 provenance。
+基线只对**同一评测配置**有效。`EvalConfig` 必须记录分析/校验/Coverage 模型、两角色 thinking 的有效值及来源、
+thinking transport 版本、批量判定开关、各数据集与 `dataset-lock` SHA-256。任一项变化后，脚本只展示旧指标，
+不得把它当作回归结论。历史 `baseline.json` 没有完整配置与 v2 lock，登记为 `legacy`，明确不可比。
+
+新的可比基线走 `evals/baseline-registry.json` 的两次运行状态机：同一 clean commit、同一 stratum、相同
+EvalConfig 和受控 v2 数据锁的首个完整 automatic pass 只能是 `provisional`；第二个不同 run_id 的同条件完整
+automatic pass 才可标为 `dcp_accepted`。dirty、smoke、失败/不完整、缺 lock、artifact hash 失配或配置漂移一律
+拒绝提升。`dcp_accepted` 仍不是人类 DCP 签字。
 
 `consistency_ok` / `consistency_failure` 衡量的是 analyzer 原始输出中「完整 statement × 单个来源」的判定结果；它既反映过度声称，也会受多源复合结论的逐来源严格判定影响，不能单独等同于已发布报告的幻觉率。发布安全仍以白名单后的引用可达性和人工幻觉抽检为准；校验器能力应同时查看三分类混淆矩阵、各类 precision/recall 与负例召回。
 
-每次真模型运行都应保留 `evals/out/runs/<run-id>/a1-run.json`：包含配置、逐主题 CitationCheck、逐标注对预测/rationale、混淆矩阵、逐候选展示覆盖终态与手标 display-coverage 基准结果；同目录 `manifest.json` 记录输入/源码指纹、洞察 ID 集合 digest 和 artifact hashes。运行目录先在临时位置完整写入后才原子发布；`evals/out/runs/latest-complete.json` 只指向最近**完成**运行，绝不表示质量或 DCP 通过，必须分别查看 `auto_gate`、`manual_review`、`dcp_eligibility`。定时工作流会将该目录作为 artifact 保存；改 analyzer 或 validator 前先读真实错例，再决定是改 prompt、原子事实/引用映射，还是校验策略。
+每次真模型运行都应保留 `evals/out/runs/<run-id>/a1-run.json`：包含配置、逐主题 CitationCheck、逐标注对预测/rationale、混淆矩阵、逐候选展示覆盖终态、主 AND 门和 quote-only Coverage 基准结果，以及按 role 的 calls/requests/failures/P95。`manifest.json` 记录输入/源码指纹、洞察 ID 集合 digest 和 artifact hashes。运行目录先在临时位置完整写入后才原子发布；`latest-complete.json` 只指向最近**完成**运行，绝不表示质量或 DCP 通过。
+
+人工结论通过 verifier-backed 的**加性** `review-receipt.json` 绑定 run_id、manifest/queue/dataset-lock hash、全量 reader-visible insight ID 和文本 hash。两位 reviewer 必须对每条作独立盲评；所有分歧必须由不同的第三人 adjudicate。receipt 即使成功也只写 `eligible_for_signoff`。n=50、至多 1 条幻觉只是观测样本率 ≤2%，不是总体保证；非显然（目标 ≥30%）及 importance 合理性均为诊断，不是 receipt 的自动 DCP 阈值。
 
 ## 评测流程
 

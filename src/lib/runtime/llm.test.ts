@@ -1,7 +1,7 @@
 /** coerceStringifiedFields 纯函数单测（6b 防御：模型偶发把 array/object 字段返成 JSON 字符串）。 */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod/v4";
-import { MODELS, anthropicBaseUrl, assertCoverageModelSeparation, coerceStringifiedFields, createRequestAbortSignal } from "./llm.js";
+import { MODELS, anthropicBaseUrl, assertCoverageModelSeparation, coerceStringifiedFields, createRequestAbortSignal, getRoleCallTelemetry, recordRoleCallTelemetry, resetRoleCallTelemetry, structuredThinkingConfig } from "./llm.js";
 
 const originalModels = { ...MODELS };
 
@@ -94,5 +94,27 @@ describe("createRequestAbortSignal（LLM 流硬超时）", () => {
     request.dispose();
     vi.advanceTimersByTime(120);
     expect(request.signal.reason).toBe(reason);
+  });
+});
+
+describe("role-level LLM telemetry", () => {
+  afterEach(() => resetRoleCallTelemetry());
+
+  it("records attempts, failures and percentile latency separately for each role", () => {
+    recordRoleCallTelemetry("coverage", 10, 1, false);
+    recordRoleCallTelemetry("coverage", 30, 3, true);
+    recordRoleCallTelemetry("validator", 20, 1, false);
+    expect(getRoleCallTelemetry()).toMatchObject({
+      coverage: { calls: 2, failures: 1, requests: 4, latency_ms: { p50: 10, p95: 30, max: 30 } },
+      validator: { calls: 1, failures: 0, requests: 1, latency_ms: { p50: 20, p95: 20, max: 20 } },
+    });
+  });
+});
+
+describe("structured thinking transport", () => {
+  it("only sends an admission-tested thinking payload with room above the minimum budget", () => {
+    expect(structuredThinkingConfig(false, 1024)).toBeUndefined();
+    expect(structuredThinkingConfig(true, 2048)).toEqual({ type: "enabled", budget_tokens: 1024, display: "omitted" });
+    expect(() => structuredThinkingConfig(true, 1024)).toThrow("maxTokens");
   });
 });

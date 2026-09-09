@@ -37,11 +37,12 @@ import {
   renderImportanceBasis,
   SELECT_WINDOW_CHARS,
   specificClaims,
+  verifyQuoteSelfContained,
   type CoverageDecision,
 } from "../src/lib/agents/analyzer.js";
 import { consistencyBatchMax, consistencyCacheVersion, CONSISTENCY_WINDOW_CHARS, judgeWithRetry, validateBatch } from "../src/lib/agents/validator.js";
-import { anthropicBaseUrl, MODELS, assertCoverageModelSeparation, getCostReport } from "../src/lib/runtime/llm.js";
-import { validatorBatchOn, validatorThinking } from "../src/lib/runtime/env.js";
+import { anthropicBaseUrl, MODELS, assertCoverageModelSeparation, getCostReport, getRoleCallTelemetry, STRUCTURED_THINKING_TRANSPORT_VERSION } from "../src/lib/runtime/llm.js";
+import { coverageThinking, coverageThinkingSource, validatorBatchOn, validatorThinking } from "../src/lib/runtime/env.js";
 import {
   RELAY_RECOVERY_MAX_PROBES,
   RELAY_RECOVERY_MAX_BACKOFF_WAIT_MS,
@@ -54,6 +55,7 @@ import { DISPLAY_PROJECTION_VERSION } from "../src/lib/utils/source-quote-projec
 import { selectInsights } from "../src/lib/agents/report-gen.js";
 import { beginA1Run, finalizeA1Run, finalizeFailedA1Run, sha256File, writeJson, type A1RunWorkspace } from "./a1-artifacts.js";
 import { sameEvalConfig, type EvalConfig } from "./a1-config.js";
+import { validateDatasetLock, type DatasetLockValidation } from "./a1-dataset-lock.js";
 import {
   countReaderVisibleByTopic,
   DCP_MIN_CONSISTENCY_PAIRS,
@@ -61,6 +63,7 @@ import {
   DCP_MIN_TOPICS,
   DCP_SAMPLE_CONTRACT_VERSION,
   dcpSamplePrerequisite,
+  readerVisibleDuplicateEvidence,
 } from "./a1-dcp.js";
 import { DIRTY_SOURCE_FINGERPRINT_ALGORITHM, dirtyFingerprintFromSnapshot } from "./a1-source-state.js";
 import {
@@ -121,6 +124,8 @@ const THRESHOLDS_BY_STRATUM: Record<Stratum, Thresholds> = {
   },
 };
 const DISPLAY_COVERAGE_FIXTURE = "evals/dataset/display-coverage-benchmark.json";
+const QUOTE_SELF_CONTAINED_FIXTURE = "evals/dataset/quote-self-contained-benchmark.json";
+const DEFAULT_DATASET_LOCK = "evals/dataset/dataset-lock.json";
 
 interface QualityCase {
   topic: Topic;
@@ -177,6 +182,21 @@ interface DisplayCoverageResult {
   error: string | null;
 }
 
+interface QuoteSelfContainedCase {
+  id: string;
+  expected: "accept" | "reject";
+  quote: string;
+  locator: string;
+}
+
+interface QuoteSelfContainedResult {
+  id: string;
+  expected: "accept" | "reject";
+  actual: "accept" | "reject";
+  reason: string;
+  error: string | null;
+}
+
 interface JudgeEvidence {
   case_index: number;
   stratum: Stratum;
@@ -198,7 +218,7 @@ function datasetDigest(path: string): string {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
 
-function currentEvalConfig(qualityFile: string, consistencyFile: string): EvalConfig {
+function currentEvalConfig(qualityFile: string, consistencyFile: string, datasetLock: DatasetLockValidation): EvalConfig {
   return {
     analyzer_model: MODELS.analyzer,
     analyzer_output_version: ANALYZER_OUTPUT_VERSION,
@@ -215,10 +235,16 @@ function currentEvalConfig(qualityFile: string, consistencyFile: string): EvalCo
     relay_recovery_exhausted_cooldown_ms: RELAY_RECOVERY_EXHAUSTED_COOLDOWN_MS,
     coverage_model: MODELS.coverage,
     validator_thinking: validatorThinking(),
+    coverage_thinking: coverageThinking(),
+    coverage_thinking_source: coverageThinkingSource(),
+    structured_thinking_transport_version: STRUCTURED_THINKING_TRANSPORT_VERSION,
     validator_batch: validatorBatchOn(),
     quality_dataset_sha256: datasetDigest(qualityFile),
     consistency_dataset_sha256: datasetDigest(consistencyFile),
+    dataset_lock_sha256: datasetLock.lock_sha256,
+    dataset_lock_status: datasetLock.status,
     display_coverage_dataset_sha256: datasetDigest(DISPLAY_COVERAGE_FIXTURE),
+    quote_self_contained_dataset_sha256: datasetDigest(QUOTE_SELF_CONTAINED_FIXTURE),
     display_coverage_gate_version: DISPLAY_COVERAGE_GATE_VERSION,
     display_projection_version: DISPLAY_PROJECTION_VERSION,
     display_coverage_primary_prompt_version: DISPLAY_COVERAGE_PROMPT_VERSION,
@@ -246,6 +272,14 @@ function readJsonl<T>(path: string): T[] {
 function readDisplayCoverageCases(path = DISPLAY_COVERAGE_FIXTURE): DisplayCoverageCase[] {
   const parsed = JSON.parse(readFileSync(path, "utf8")) as { cases?: DisplayCoverageCase[] };
   if (!Array.isArray(parsed.cases) || !parsed.cases.length) throw new Error(`${path} 缺少 display coverage cases`);
+  return parsed.cases;
+}
+
+function readQuoteSelfContainedCases(path = QUOTE_SELF_CONTAINED_FIXTURE): QuoteSelfContainedCase[] {
+  const parsed = JSON.parse(readFileSync(path, "utf8")) as { version?: string; cases?: QuoteSelfContainedCase[] };
+  if (parsed.version !== "quote-self-contained-v1" || !Array.isArray(parsed.cases) || !parsed.cases.length) {
+    throw new Error(`${path} 缺少 quote-self-contained-v1 cases`);
+  }
   return parsed.cases;
 }
 
@@ -328,6 +362,32 @@ async function runDisplayCoverageBenchmark(cases: DisplayCoverageCase[]): Promis
         rendered_statement: null, projection_matches_expected: c.expected_statement == null,
         decisions, error: (error as Error).message,
       });
+    }
+  }
+  return results;
+}
+
+/** Coverage is evaluated without the primary validator in this fixture.  Keeping this separate
+ * prevents the end-to-end AND gate from masking an unsafe independent countercheck. */
+async function runQuoteSelfContainedBenchmark(cases: QuoteSelfContainedCase[]): Promise<QuoteSelfContainedResult[]> {
+  const results: QuoteSelfContainedResult[] = [];
+  for (const c of cases) {
+    const [paragraph, start, end] = c.locator.split(":").map(Number);
+    try {
+      const decision = await verifyQuoteSelfContained({
+        content_item_id: `quote-benchmark_${c.id}`,
+        quote: c.quote,
+        locator: { paragraph_index: paragraph!, char_start: start!, char_end: end! },
+      });
+      results.push({
+        id: c.id,
+        expected: c.expected,
+        actual: decision.supports ? "accept" : "reject",
+        reason: decision.reason,
+        error: decision.error ?? null,
+      });
+    } catch (error) {
+      results.push({ id: c.id, expected: c.expected, actual: "reject", reason: "countercheck_threw", error: error instanceof Error ? error.message : String(error) });
     }
   }
   return results;
@@ -468,15 +528,34 @@ async function main(): Promise<void> {
   const consistencyFile = process.env.A1_CONSISTENCY_FILE ?? "evals/dataset/citation-consistency.jsonl";
   const consistencyAll = readJsonl<ConsistencyCase>(consistencyFile);
   const consistencyCases = cLimit ? consistencyAll.slice(0, cLimit) : consistencyAll;
+  const datasetLockPath = process.env.A1_DATASET_LOCK ?? DEFAULT_DATASET_LOCK;
+  let datasetLock: DatasetLockValidation;
+  try {
+    datasetLock = validateDatasetLock(datasetLockPath, {
+      qualityFile,
+      consistencyFile,
+      displayCoverageFixture: DISPLAY_COVERAGE_FIXTURE,
+    });
+  } catch (error) {
+    // An unreadable lock cannot make a run comparable or promotable, but preserving the failed
+    // inspection in artifacts is more useful than hiding a genuine model run behind setup noise.
+    datasetLock = {
+      lock_sha256: "unavailable",
+      status: "invalid",
+      promotion_eligible: false,
+      issues: [`dataset lock 不可读取：${error instanceof Error ? error.message : String(error)}`],
+    };
+  }
   // 仅实际缩小样本时才是冒烟；上限大于数据集不能悄悄绕过全量质量门。
   const smoke = qualityCases.length < qualityAll.length || consistencyCases.length < consistencyAll.length;
-  const evalConfig = currentEvalConfig(qualityFile, consistencyFile);
+  const evalConfig = currentEvalConfig(qualityFile, consistencyFile, datasetLock);
   activeRunContext = {
     config: evalConfig,
     dataset: {
       quality_file: qualityFile,
       consistency_file: consistencyFile,
       display_coverage_fixture: DISPLAY_COVERAGE_FIXTURE,
+      dataset_lock: { path: datasetLockPath, ...datasetLock },
       quality_cases: qualityCases.length,
       consistency_cases: consistencyCases.length,
       smoke,
@@ -485,7 +564,8 @@ async function main(): Promise<void> {
   };
   console.log(
     `A1 验证实跑\n模型：分析=${MODELS.analyzer} / 校验=${MODELS.validator} / 反扩写复核=${MODELS.coverage}` +
-      `\n配置：thinking=${evalConfig.validator_thinking ? "on" : "off"} / batch=${evalConfig.validator_batch ? "on" : "off"}\n`,
+      `\n配置：validator thinking=${evalConfig.validator_thinking ? "on" : "off"} / coverage thinking=${evalConfig.coverage_thinking ? "on" : "off"} (${evalConfig.coverage_thinking_source}) / batch=${evalConfig.validator_batch ? "on" : "off"}` +
+      `\n数据集锁：${datasetLock.status}（${datasetLock.promotion_eligible ? "可候选提升" : "不可提升"}）\n`,
   );
   if (smoke) {
     console.log(
@@ -595,10 +675,13 @@ async function main(): Promise<void> {
   // insights—not pre-validation analyzer candidates retained below for informational coverage.
   const allInsights = STRATA.flatMap((s) => readerVisibleInsightsByStratum[s]);
   const readerVisibleByTopic = countReaderVisibleByTopic(dcpTopicIds, allInsights);
+  const readerVisibleDuplicates = readerVisibleDuplicateEvidence(allInsights);
   const samplePrerequisite = dcpSamplePrerequisite({
     topics: dcpTopicIds.length,
     consistencyPairs: consistencyAll.length,
     readerVisibleInsightsByTopic: readerVisibleByTopic,
+    duplicateInsightIds: readerVisibleDuplicates.duplicate_insight_ids,
+    duplicateStatementQuoteKeys: readerVisibleDuplicates.duplicate_statement_quote_keys,
   });
   const dcpSample = {
     contract_version: DCP_SAMPLE_CONTRACT_VERSION,
@@ -608,6 +691,8 @@ async function main(): Promise<void> {
     unique_topic_count: dcpTopicIds.length,
     reader_visible_total: allInsights.length,
     reader_visible_by_topic: Object.fromEntries(readerVisibleByTopic.map(({ topic_id, count }) => [topic_id, count])),
+    duplicate_insight_ids: readerVisibleDuplicates.duplicate_insight_ids,
+    duplicate_statement_quote_count: readerVisibleDuplicates.duplicate_statement_quote_keys.length,
   };
   let claimsTotal = 0;
   let claimsCovered = 0;
@@ -646,9 +731,27 @@ async function main(): Promise<void> {
   allRows.push(displayCoverageMetric);
   console.log(`${displayCoverageMetric.pass ? "✅" : "❌"} unsafe_accept ${unsafeAccepts.length}/${expectedRejects.length}；projection_violation ${projectionViolations.length}/${displayCoverageResults.length}；false_reject ${falseRejects.length}/${expectedAccepts.length}`);
 
+  // ── Coverage 单角色校准（不能由主 validator 的先行拒绝代替）──
+  const quoteSelfContainedCases = readQuoteSelfContainedCases();
+  process.stdout.write(`[Coverage quote-self-contained] ${quoteSelfContainedCases.length} 条手标 quote-only 用例… `);
+  const quoteSelfContainedResults = await runQuoteSelfContainedBenchmark(quoteSelfContainedCases);
+  const quoteExpectedRejects = quoteSelfContainedResults.filter((result) => result.expected === "reject");
+  const quoteUnsafeAccepts = quoteExpectedRejects.filter((result) => result.actual === "accept");
+  const quoteFalseRejects = quoteSelfContainedResults.filter((result) => result.expected === "accept" && result.actual === "reject");
+  const quoteUnsafeAcceptRate = quoteExpectedRejects.length ? quoteUnsafeAccepts.length / quoteExpectedRejects.length : 1;
+  const quoteSelfContainedMetric = metric("quote_self_contained_unsafe_accept", "Coverage quote-self-contained unsafe_accept", quoteUnsafeAcceptRate, 0, "<=", "publish_safety");
+  allRows.push(quoteSelfContainedMetric);
+  console.log(`${quoteSelfContainedMetric.pass ? "✅" : "❌"} unsafe_accept ${quoteUnsafeAccepts.length}/${quoteExpectedRejects.length}；false_reject ${quoteFalseRejects.length}/${quoteSelfContainedResults.filter((result) => result.expected === "accept").length}`);
+
   // ── 成本（估算，A5 成本可控） ──
   const cost = getCostReport();
+  const roleTelemetry = getRoleCallTelemetry();
   const checksTotal = STRATA.reduce((n, s) => n + checksByStratum[s].length, 0);
+  console.log("\n角色调用观测：");
+  for (const [role, telemetry] of Object.entries(roleTelemetry)) {
+    if (!telemetry.calls) continue;
+    console.log(`  ${role}：${telemetry.calls} calls / ${telemetry.requests} requests / ${telemetry.failures} failures · p95 ${telemetry.latency_ms.p95.toFixed(0)}ms`);
+  }
   console.log("\n本次运行成本（估算）：");
   for (const m of cost.byModel) {
     const cache = m.cacheRead || m.cacheWrite ? ` · cache r/w ${m.cacheRead}/${m.cacheWrite}` : "";
@@ -683,7 +786,14 @@ async function main(): Promise<void> {
       run_id: workspace.runId,
       generated_at: reviewGeneratedAt,
       config: evalConfig,
-      dataset: { quality_file: qualityFile, quality_cases: qualityCases.length, consistency_file: consistencyFile, consistency_cases: consistencyCases.length, smoke },
+      dataset: {
+        quality_file: qualityFile,
+        quality_cases: qualityCases.length,
+        consistency_file: consistencyFile,
+        consistency_cases: consistencyCases.length,
+        dataset_lock: { path: datasetLockPath, ...datasetLock },
+        smoke,
+      },
       completion: {
         core_complete: coreComplete,
         quality_succeeded: qualitySucceeded,
@@ -707,7 +817,15 @@ async function main(): Promise<void> {
         false_reject: { count: falseRejects.length, total: expectedAccepts.length },
         results: displayCoverageResults,
       },
+      quote_self_contained_coverage: {
+        fixture: QUOTE_SELF_CONTAINED_FIXTURE,
+        fixture_sha256: evalConfig.quote_self_contained_dataset_sha256,
+        unsafe_accept: { count: quoteUnsafeAccepts.length, total: quoteExpectedRejects.length, rate: quoteUnsafeAcceptRate },
+        false_reject: { count: quoteFalseRejects.length, total: quoteSelfContainedResults.filter((result) => result.expected === "accept").length },
+        results: quoteSelfContainedResults,
+      },
       pipeline_coverage: pipelineCoverage,
+      llm_role_telemetry: roleTelemetry,
       relay_recovery: recovery,
     },
   );
@@ -829,6 +947,7 @@ async function main(): Promise<void> {
     ...(baselineComparison !== "comparable" ? ["缺少同配置的可比 baseline"] : []),
     ...(smoke ? ["当前为 smoke 子集运行"] : []),
     ...(samplePrerequisite ? [samplePrerequisite] : []),
+    ...(!datasetLock.promotion_eligible ? [`dataset lock 不具备 v2 提升资格：${datasetLock.issues.join("；") || datasetLock.status}`] : []),
     "人工 review queue 尚未完成",
   ];
   const dcpEligibleForManualReview = autoGate === "pass" && dcpPrerequisites.length === 1;
@@ -853,6 +972,7 @@ async function main(): Promise<void> {
     dcp_sample: dcpSample,
     dcp_prerequisites: dcpPrerequisites,
     relay_recovery: recovery,
+    llm_role_telemetry: roleTelemetry,
     insights: insightManifest(allInsights),
     artifacts: Object.fromEntries(Object.entries(artifactPaths).map(([name, path]) => [name, sha256File(path)])),
     ...(reviewArtifactError ? { review_artifact_error: reviewArtifactError } : {}),
