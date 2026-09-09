@@ -2,7 +2,7 @@
  * Reconciles recorded, read-only snapshots into the local ControllerStore.
  * It intentionally cannot dispatch work or call a provider mutation endpoint.
  */
-import { readyBundleFor, type ControllerRecord, type Evidence, type Freshness, type NotificationPlan, type TransitionEvent } from "./replay.js";
+import { normalizeFreshness, readyBundleFor, type ControllerRecord, type Evidence, type Freshness, type NotificationPlan, type TransitionEvent } from "./replay.js";
 import type { GitHubEvidencePort, GitHubEvidenceSnapshot, RuntimeReceipt, RuntimeSnapshot, RuntimeSnapshotPort, RuntimeTaskSnapshot, RuntimeTerminalReceipt } from "./ports.js";
 import { ControllerStore, type DurableControllerRecord, type StoreMutation } from "./store.js";
 
@@ -42,12 +42,13 @@ export async function reconcileController(
 }
 
 function reconcileGitHub(store: ControllerStore, record: DurableControllerRecord, snapshot: GitHubEvidenceSnapshot, now: string): ReconcileResult | undefined {
-  const source = snapshot.snapshot;
+  const normalized = normalizeGitHubSnapshot(snapshot);
+  const source = normalized.snapshot;
   if (!source || stale(source.observed_at, now, SNAPSHOT_MS) || !isClean(source.freshness)) {
     return invalidateOrFreeze(store, record, now, "github_snapshot_missing_stale_or_unknown", source?.freshness);
   }
   if (record.state === "freshness_invalidated") {
-    const incoming = toEvidence({ ...snapshot, ci: undefined, review: undefined }, record.generation);
+    const incoming = toEvidence({ ...normalized, ci: undefined, review: undefined }, record.generation);
     if (evidenceConflict(record, incoming)) return freeze(store, record, now, "github_evidence_identity_conflict");
     const next: DurableControllerRecord = { ...record, state: "evidence_collecting", current_freshness: { ...source.freshness }, evidence: [...record.evidence, ...incoming.filter((item) => !record.evidence.some((existing) => existing.id === item.id))], updated_at: now };
     return commit(store, record, next, now, "freshness_refreshed", "new_generation_clean_snapshot", "evidence_collecting", next.evidence.filter((item) => !record.evidence.some((existing) => existing.id === item.id)));
@@ -55,10 +56,10 @@ function reconcileGitHub(store: ControllerStore, record: DurableControllerRecord
   if (record.current_freshness && !sameFreshness(record.current_freshness, source.freshness)) {
     return invalidateOrFreeze(store, record, now, "github_freshness_changed", source.freshness);
   }
-  if ((record.state === "evidence_collecting" || record.state === "ready_for_human_review") && !hasCurrentEvidenceBundle(snapshot, source.freshness, now)) {
+  if ((record.state === "evidence_collecting" || record.state === "ready_for_human_review") && !hasCurrentEvidenceBundle(normalized, source.freshness, now)) {
     return invalidateOrFreeze(store, record, now, "github_ci_review_missing_stale_or_mismatched", source.freshness);
   }
-  const evidence = toEvidence(snapshot, record.generation);
+  const evidence = toEvidence(normalized, record.generation);
   if (evidenceConflict(record, evidence)) return freeze(store, record, now, "github_evidence_identity_conflict");
   const additions = evidence.filter((item) => !record.evidence.some((existing) => existing.id === item.id));
   const next = { ...record, current_freshness: { ...source.freshness }, evidence: [...record.evidence, ...additions], updated_at: now };
@@ -78,7 +79,7 @@ function reconcileRuntime(store: ControllerStore, record: DurableControllerRecor
   const active = runtime.tasks.find((task) => task.state === "queued" || task.state === "leased" || task.state === "running");
   const terminal = runtime.tasks.find((task) => task.state === "completed" || task.state === "failed");
   if (record.state === "waiting_for_runtime" && active?.state === "leased") {
-    if (!runtime.heartbeat_at || stale(runtime.heartbeat_at, now, HEARTBEAT_MS) || !active.lease_id || !active.runtime_id || !active.runtime_identity || !active.lease_fencing_token || !active.lease_expires_at || time(active.lease_expires_at) <= time(now)) {
+    if (!runtime.heartbeat_at || !validFreshTimestamp(runtime.heartbeat_at, now, HEARTBEAT_MS) || !active.lease_id || !active.runtime_id || !active.runtime_identity || !active.lease_fencing_token || !validFutureTimestamp(active.lease_expires_at, now)) {
       return freeze(store, record, now, "lease_confirmation_evidence_incomplete_or_expired");
     }
     const next: DurableControllerRecord = { ...record, state: "leased", active_task_ids: [active.task_id], active_lease_id: active.lease_id, active_runtime_id: active.runtime_id, active_runtime_identity: active.runtime_identity, active_lease_fencing_token: active.lease_fencing_token, active_lease_expires_at: active.lease_expires_at, last_heartbeat_at: runtime.heartbeat_at, offline_incident_id: undefined, offline_started_at: undefined, updated_at: now };
@@ -132,7 +133,7 @@ function invalidateOrFreeze(store: ControllerStore, record: DurableControllerRec
 
 function freeze(store: ControllerStore, record: DurableControllerRecord, now: string, reason: string): ReconcileResult {
   if (record.state === "awaiting_human_decision") return { kind: "frozen", record, reason };
-  const next: DurableControllerRecord = { ...record, state: "awaiting_human_decision", active_task_ids: [], active_lease_id: undefined, active_runtime_id: undefined, active_runtime_identity: undefined, active_lease_expires_at: undefined, active_lease_fencing_token: undefined, updated_at: now };
+  const next: DurableControllerRecord = { ...record, state: "awaiting_human_decision", ready_bundle: undefined, superseded_ready_bundles: record.ready_bundle ? [...record.superseded_ready_bundles, record.ready_bundle] : record.superseded_ready_bundles, active_task_ids: [], active_lease_id: undefined, active_runtime_id: undefined, active_runtime_identity: undefined, active_lease_expires_at: undefined, active_lease_fencing_token: undefined, updated_at: now };
   const result = commit(store, record, next, now, "human_escalation", `fail_closed:${reason}`, "awaiting_human_decision", [localEvidence(next, `local:${reason}`, now)], [plan(next, "human_escalation", now, reason)]);
   return { kind: "frozen", record: result.record, reason };
 }
@@ -167,6 +168,11 @@ function toEvidence(snapshot: GitHubEvidenceSnapshot, generation: number): Evide
   return entries;
 }
 
+function normalizeGitHubSnapshot(snapshot: GitHubEvidenceSnapshot): GitHubEvidenceSnapshot {
+  const normalize = <T extends { freshness: Freshness }>(entry: T | undefined): T | undefined => entry && { ...entry, freshness: normalizeFreshness(entry.freshness) };
+  return { ...snapshot, snapshot: normalize(snapshot.snapshot), ci: normalize(snapshot.ci), review: normalize(snapshot.review) };
+}
+
 function versionedEvidence(entry: NonNullable<GitHubEvidenceSnapshot["snapshot"]> | NonNullable<GitHubEvidenceSnapshot["ci"]> | NonNullable<GitHubEvidenceSnapshot["review"]>, kind: Evidence["kind"], generation: number): Evidence {
   const version = `${generation}:${entry.id}:${entry.payload_hash}:${freshnessKey(entry.freshness)}`;
   return { ...entry, id: `github:${kind}:${hash(version)}`, kind, source: "github:recorded-read-only", status: "active" };
@@ -174,9 +180,17 @@ function versionedEvidence(entry: NonNullable<GitHubEvidenceSnapshot["snapshot"]
 
 function evidenceConflict(record: DurableControllerRecord, incoming: Evidence[]): boolean {
   return incoming.some((item) => {
-    const existing = record.evidence.find((candidate) => candidate.id === item.id);
-    return Boolean(existing && JSON.stringify(existing) !== JSON.stringify(item));
+    const existing = record.evidence.find((candidate) => candidate.status === "active" && evidenceIdentity(record.generation, candidate) === evidenceIdentity(record.generation, item));
+    return Boolean(existing && (existing.payload_hash !== item.payload_hash || evidenceReceipt(existing) !== evidenceReceipt(item)));
   });
+}
+
+/** The provider's immutable ref names an evidence receipt; payload and receipt fields must not rewrite it. */
+function evidenceIdentity(generation: number, evidence: Evidence): string {
+  return `${generation}:${evidence.kind}:${evidence.source}:${evidence.immutable_ref}:${evidence.freshness ? freshnessKey(evidence.freshness) : "none"}`;
+}
+function evidenceReceipt(evidence: Evidence): string {
+  return JSON.stringify({ observed_at: evidence.observed_at, conclusion: evidence.conclusion, expired: evidence.expired });
 }
 
 function localEvidence(record: DurableControllerRecord, id: string, observedAt: string): Evidence {
@@ -217,8 +231,9 @@ function terminalReceiptIsUsable(record: DurableControllerRecord, task: RuntimeT
 }
 function isClean(freshness: Freshness): boolean { return freshness.merge_state_status.toLowerCase() === "clean"; }
 function sameFreshness(a: Freshness, b: Freshness): boolean { return a.head_sha === b.head_sha && a.base_sha === b.base_sha && a.merge_state_status.toLowerCase() === b.merge_state_status.toLowerCase(); }
-function stale(observed: string, now: string, max: number): boolean { return !Number.isFinite(time(observed)) || time(now) - time(observed) > max; }
-function validFreshTimestamp(observed: string, now: string, max: number): boolean { return Number.isFinite(time(observed)) && time(observed) <= time(now) && time(now) - time(observed) <= max; }
+function stale(observed: string, now: string, max: number): boolean { return !validFreshTimestamp(observed, now, max); }
+function validFreshTimestamp(observed: string, now: string, max: number): boolean { return Number.isFinite(time(observed)) && Number.isFinite(time(now)) && time(observed) <= time(now) && time(now) - time(observed) <= max; }
+function validFutureTimestamp(value: string | undefined, now: string): boolean { return Boolean(value && Number.isFinite(time(value)) && Number.isFinite(time(now)) && time(value) > time(now)); }
 function freshnessKey(value: Freshness): string { return `${value.head_sha}:${value.base_sha}:${value.merge_state_status.toLowerCase()}`; }
 function time(value: string): number { return Date.parse(value); }
 function hash(value: string): string { let result = 2166136261; for (let i = 0; i < value.length; i += 1) result = Math.imul(result ^ value.charCodeAt(i), 16777619); return (result >>> 0).toString(16); }

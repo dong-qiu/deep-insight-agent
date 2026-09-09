@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
-import { createControllerRecord, type NotificationPlan, type TransitionEvent } from "./replay.js";
+import { createControllerRecord, readyBundleFor, readyBundleHash, type Evidence, type NotificationPlan, type ReadyBundle, type TransitionEvent } from "./replay.js";
 import { canAcceptEvidence, ControllerStore, type DurableControllerRecord, type StoreMutation } from "./store.js";
 
 const directories: string[] = [];
@@ -32,6 +32,18 @@ function mutation(before: DurableControllerRecord, key = "delivery-1:0:queue:one
 function plan(): NotificationPlan {
   return { dedupe_key: "delivery-1:0:offline:one", signal: "offline", occurred_at: "2026-09-08T00:01:00.000Z", causal_event_id: "offline-1", delivery_id: "delivery-1", generation: 0, retry: { idempotency_key: "notify-1", backoff_minutes: [5, 15], max_attempts: 3, external_delivery: false }, audit_fields: {} };
 }
+function readyRecord(): DurableControllerRecord {
+  const freshness = { head_sha: "head-1", base_sha: "base-1", merge_state_status: "clean" };
+  const updated_at = "2026-09-08T00:10:00.000Z";
+  const evidence: Evidence[] = [
+    { id: "snapshot-1", kind: "snapshot", source: "github", immutable_ref: "snapshot-1", payload_hash: "snapshot", freshness, status: "active", observed_at: updated_at },
+    { id: "ci-1", kind: "ci", source: "github", immutable_ref: "ci-1", payload_hash: "ci", freshness, status: "active", conclusion: "passed", observed_at: updated_at },
+    { id: "review-1", kind: "review", source: "github", immutable_ref: "review-1", payload_hash: "review", freshness, status: "active", conclusion: "approved", observed_at: updated_at },
+  ];
+  const record = { ...createControllerRecord({ delivery_id: "delivery-ready", state: "ready_for_human_review", generation: 0, current_freshness: freshness, evidence }), updated_at };
+  return { ...record, ready_bundle: readyBundleFor(record, updated_at)! };
+}
+function rehash(bundle: ReadyBundle): ReadyBundle { return { ...bundle, hash: readyBundleHash(bundle) }; }
 
 describe("ControllerStore", () => {
   it("uses an explicitly injected isolated root and rejects live/shared/escape paths", () => {
@@ -133,6 +145,42 @@ describe("ControllerStore", () => {
     expect(db.compareAndAppend(change).kind).toBe("applied");
     expect(db.claimNotification(plan().dedupe_key, "claimer-a", "2026-09-08T00:02:00.000Z").kind).toBe("claimed");
     expect(db.claimNotification(plan().dedupe_key, "claimer-b", "2026-09-08T00:02:01.000Z").kind).toBe("already_claimed");
+    db.close();
+  });
+
+  it.each([
+    { name: "malformed hash", modify: (value: DurableControllerRecord) => ({ ...value, ready_bundle: { ...value.ready_bundle!, hash: "broken" } }) },
+    { name: "expired snapshot", modify: (value: DurableControllerRecord) => {
+      const observed_at = "2026-09-07T23:59:59.999Z";
+      const evidence = value.evidence.map((item) => item.kind === "snapshot" ? { ...item, observed_at } : item);
+      const bundle = rehash({ ...value.ready_bundle!, snapshot_evidence: { ...value.ready_bundle!.snapshot_evidence, observed_at } });
+      return { ...value, evidence, ready_bundle: bundle };
+    } },
+    { name: "future CI receipt", modify: (value: DurableControllerRecord) => {
+      const observed_at = "2026-09-08T00:10:00.001Z";
+      const evidence = value.evidence.map((item) => item.kind === "ci" ? { ...item, observed_at } : item);
+      const bundle = rehash({ ...value.ready_bundle!, ci_evidence: { ...value.ready_bundle!.ci_evidence, observed_at } });
+      return { ...value, evidence, ready_bundle: bundle };
+    } },
+    { name: "invalid review timestamp", modify: (value: DurableControllerRecord) => {
+      const observed_at = "not-a-date";
+      const evidence = value.evidence.map((item) => item.kind === "review" ? { ...item, observed_at } : item);
+      const bundle = rehash({ ...value.ready_bundle!, review_evidence: { ...value.ready_bundle!.review_evidence, observed_at } });
+      return { ...value, evidence, ready_bundle: bundle };
+    } },
+    { name: "non-clean freshness", modify: (value: DurableControllerRecord) => {
+      const freshness = { ...value.current_freshness!, merge_state_status: "dirty" };
+      const evidence = value.evidence.map((item) => ({ ...item, freshness }));
+      const bundle = rehash({ ...value.ready_bundle!, freshness, snapshot_evidence: { ...value.ready_bundle!.snapshot_evidence, freshness }, ci_evidence: { ...value.ready_bundle!.ci_evidence, freshness }, review_evidence: { ...value.ready_bundle!.review_evidence, freshness } });
+      return { ...value, current_freshness: freshness, evidence, ready_bundle: bundle };
+    } },
+    { name: "mismatched freshness", modify: (value: DurableControllerRecord) => {
+      const freshness = { ...value.ready_bundle!.freshness, head_sha: "other-head" };
+      return { ...value, ready_bundle: rehash({ ...value.ready_bundle!, freshness }) };
+    } },
+  ])("rejects direct $name ReadyBundle data", ({ modify }) => {
+    const db = store();
+    expect(() => db.create(modify(readyRecord()))).toThrow(/controller_ready_bundle_(invalid|evidence_missing)/);
     db.close();
   });
 });

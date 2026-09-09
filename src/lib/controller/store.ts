@@ -9,6 +9,9 @@ import { mkdirSync, realpathSync } from "node:fs";
 import { basename, resolve, sep } from "node:path";
 import { readyBundleHash, type ControllerRecord, type ControllerState, type Evidence, type NotificationPlan, type TransitionEvent } from "./replay.js";
 
+const SNAPSHOT_MS = 10 * 60_000;
+const EVIDENCE_MS = 24 * 60 * 60_000;
+
 export type DurableControllerRecord = ControllerRecord & {
   updated_at: string;
   pending_invalidation?: PendingInvalidation;
@@ -91,6 +94,7 @@ export class ControllerStore {
   }
 
   create(record: DurableControllerRecord): AppendResult {
+    validateReadyBundleAdmission(record);
     const existing = this.load(record.delivery_id);
     if (existing) return { kind: "cas_conflict", record: existing };
     this.db.prepare("INSERT INTO controller_record(delivery_id,generation,state,pending_invalidation,record_json,updated_at) VALUES (@delivery_id,@generation,@state,0,@record_json,@updated_at)")
@@ -100,6 +104,7 @@ export class ControllerStore {
 
   compareAndAppend(mutation: StoreMutation): AppendResult {
     validateMutation(mutation);
+    validateReadyBundleAdmission(mutation.next);
     const idempotencyKey = mutation.transition?.idempotency_key ?? mutation.idempotency_key!;
     const semantic = stableJson({ expected: mutation.expected, next: mutation.next, transition: mutation.transition, idempotency_key: idempotencyKey, evidence: mutation.evidence ?? [], outbox: mutation.outbox ?? [], audit: mutation.audit ?? [] });
     const tx = this.db.transaction(() => {
@@ -209,6 +214,24 @@ export class ControllerStore {
     }
   }
 }
+
+function validateReadyBundleAdmission(record: DurableControllerRecord): void {
+  const bundle = record.ready_bundle;
+  if (!bundle) return;
+  const now = timestamp(record.updated_at);
+  if (!Number.isFinite(now) || record.state !== "ready_for_human_review" || !record.current_freshness || record.current_freshness.merge_state_status !== "clean" || bundle.hash !== readyBundleHash(bundle) || bundle.delivery_id !== record.delivery_id || bundle.generation !== record.generation || !sameFreshness(bundle.freshness, record.current_freshness) || !isNonFutureTimestamp(bundle.admitted_at, now)) throw new Error("controller_ready_bundle_invalid");
+  for (const [ref, receipt, kind, conclusion, ttl] of [[bundle.snapshot_evidence_ref, bundle.snapshot_evidence, "snapshot", undefined, SNAPSHOT_MS], [bundle.ci_evidence_ref, bundle.ci_evidence, "ci", "passed", EVIDENCE_MS], [bundle.review_evidence_ref, bundle.review_evidence, "review", "approved", EVIDENCE_MS]] as const) {
+    const evidence = record.evidence.find((candidate) => candidate.id === ref && candidate.status === "active");
+    if (!evidence || evidence.expired || receipt.id !== ref || evidence.kind !== kind || evidence.source !== receipt.source || evidence.immutable_ref !== receipt.immutable_ref || evidence.payload_hash !== receipt.payload_hash || evidence.observed_at !== receipt.observed_at || evidence.conclusion !== conclusion || !sameFreshness(evidence.freshness, bundle.freshness) || !sameFreshness(receipt.freshness, bundle.freshness) || !isTimestampWithinTtl(evidence.observed_at, now, ttl) || !isTimestampWithinTtl(receipt.observed_at, now, ttl)) throw new Error("controller_ready_bundle_evidence_missing");
+  }
+}
+
+function sameFreshness(left: Evidence["freshness"] | undefined, right: Evidence["freshness"] | undefined): boolean {
+  return Boolean(left && right && left.head_sha === right.head_sha && left.base_sha === right.base_sha && left.merge_state_status === right.merge_state_status);
+}
+function timestamp(value: string): number { return Date.parse(value); }
+function isNonFutureTimestamp(value: string, now: number): boolean { const observed = timestamp(value); return Number.isFinite(observed) && observed <= now; }
+function isTimestampWithinTtl(value: string, now: number, ttl: number): boolean { const observed = timestamp(value); return Number.isFinite(observed) && observed <= now && now - observed <= ttl; }
 
 const ALLOWED_EDGES: Readonly<Record<ControllerState, readonly ControllerState[]>> = {
   intake: ["admitted", "awaiting_human_decision"],

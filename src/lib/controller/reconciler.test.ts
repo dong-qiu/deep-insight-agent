@@ -12,6 +12,7 @@ const directories: string[] = [];
 afterEach(() => { for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true }); });
 const now = "2026-09-08T00:10:00.000Z";
 const freshness = { head_sha: "head-1", base_sha: "base-1", merge_state_status: "clean" };
+type SnapshotEvidence = NonNullable<Awaited<ReturnType<GitHubEvidencePort["readGitHubEvidenceSnapshot"]>>["snapshot"]>;
 
 function setup(record: DurableControllerRecord): ControllerStore {
   const directory = mkdtempSync(join(tmpdir(), "insight-controller-reconciler-")); directories.push(directory);
@@ -50,6 +51,19 @@ describe("read-only controller reconciliation", () => {
     const db = setup(waiting);
     const result = await reconcileController(db, "delivery-1", { runtime: runtime({ observed_at: now, heartbeat_at: now, tasks: [{ task_id: "task-1", state: "leased", lease_id: "lease-2", runtime_id: "runtime-2", runtime_identity: "identity-2", lease_fencing_token: "fence-2", lease_expires_at: "2026-09-08T00:20:00.000Z" }] }), github: github() }, now);
     expect(result.record).toMatchObject({ state: "leased", active_lease_id: "lease-2", active_runtime_id: "runtime-2", attempt_count: 0 });
+    db.close();
+  });
+
+  it.each([
+    { name: "invalid heartbeat", heartbeat_at: "not-a-date", lease_expires_at: "2026-09-08T00:20:00.000Z" },
+    { name: "future heartbeat", heartbeat_at: "2026-09-08T00:10:00.001Z", lease_expires_at: "2026-09-08T00:20:00.000Z" },
+    { name: "stale heartbeat", heartbeat_at: "2026-09-08T00:08:29.999Z", lease_expires_at: "2026-09-08T00:20:00.000Z" },
+    { name: "invalid lease expiry", heartbeat_at: now, lease_expires_at: "not-a-date" },
+  ])("fails closed on a $name before admitting a lease", async ({ heartbeat_at, lease_expires_at }) => {
+    const waiting = { ...base(), state: "waiting_for_runtime" as const, active_lease_id: undefined, active_runtime_id: undefined, active_runtime_identity: undefined, active_lease_fencing_token: undefined, active_lease_expires_at: undefined };
+    const db = setup(waiting);
+    const result = await reconcileController(db, "delivery-1", { runtime: runtime({ observed_at: now, heartbeat_at, tasks: [{ task_id: "task-1", state: "leased", lease_id: "lease-2", runtime_id: "runtime-2", runtime_identity: "identity-2", lease_fencing_token: "fence-2", lease_expires_at }] }), github: github() }, now);
+    expect(result).toMatchObject({ kind: "frozen", reason: "lease_confirmation_evidence_incomplete_or_expired", record: { state: "awaiting_human_decision" } });
     db.close();
   });
 
@@ -118,6 +132,30 @@ describe("read-only controller reconciliation", () => {
     const db = setup(collecting);
     const result = await reconcileController(db, "delivery-1", { runtime: runtime({ observed_at: now, heartbeat_at: now, tasks: [] }), github: github() }, now);
     expect(result.record).toMatchObject({ state: "freshness_invalidated", generation: 1 });
+    db.close();
+  });
+
+  it("normalizes GitHub CLEAN evidence and admits it as ready", async () => {
+    const db = setup({ ...base(), state: "evidence_collecting" as const });
+    const result = await reconcileController(db, "delivery-1", { runtime: runtime({ observed_at: now, heartbeat_at: now, tasks: [] }), github: githubWithEvidence({ ...freshness, merge_state_status: "CLEAN" }) }, now);
+    expect(result.record).toMatchObject({ state: "ready_for_human_review", current_freshness: { merge_state_status: "clean" }, ready_bundle: expect.any(Object) });
+    db.close();
+  });
+
+  it.each([
+    { name: "payload", change: (entry: SnapshotEvidence): SnapshotEvidence => ({ ...entry, payload_hash: "changed-payload" }) },
+    { name: "receipt", change: (entry: SnapshotEvidence): SnapshotEvidence => ({ ...entry, observed_at: "2026-09-08T00:09:59.000Z" }) },
+  ])("freezes when an immutable provider evidence identity has a different $name", async ({ change }) => {
+    const db = setup({ ...base(), state: "evidence_collecting" as const });
+    await reconcileController(db, "delivery-1", { runtime: runtime({ observed_at: now, heartbeat_at: now, tasks: [] }), github: githubWithEvidence() }, now);
+    const conflicting: GitHubEvidencePort = { async readGitHubEvidenceSnapshot() { return {
+      observed_at: now,
+      snapshot: change({ id: "snapshot-head-1", immutable_ref: "https://example.invalid/pr/1", payload_hash: "snapshot-hash", freshness, observed_at: now }),
+      ci: { id: "ci-head-1", immutable_ref: "https://example.invalid/ci/1", payload_hash: "ci-hash", freshness, conclusion: "passed", observed_at: now },
+      review: { id: "review-head-1", immutable_ref: "https://example.invalid/review/1", payload_hash: "review-hash", freshness, conclusion: "approved", observed_at: now },
+    }; } };
+    const result = await reconcileController(db, "delivery-1", { runtime: runtime({ observed_at: now, heartbeat_at: now, tasks: [] }), github: conflicting }, now);
+    expect(result).toMatchObject({ kind: "frozen", reason: "github_evidence_identity_conflict", record: { state: "awaiting_human_decision" } });
     db.close();
   });
 
