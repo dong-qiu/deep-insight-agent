@@ -243,12 +243,6 @@ function validateReadyBundleAdmission(record: DurableControllerRecord): void {
   if (record.state === "ready_for_human_review" && !record.ready_bundle) throw new Error("controller_ready_bundle_required");
   if (!record.ready_bundle) return;
   if (!readyBundleAdmissionValid(record)) throw new Error("controller_ready_bundle_invalid");
-  const bundle = record.ready_bundle;
-  const now = timestamp(record.updated_at);
-  for (const [ref, receipt, kind, conclusion, ttl] of [[bundle.snapshot_evidence_ref, bundle.snapshot_evidence, "snapshot", undefined, SNAPSHOT_MS], [bundle.ci_evidence_ref, bundle.ci_evidence, "ci", "passed", EVIDENCE_MS], [bundle.review_evidence_ref, bundle.review_evidence, "review", "approved", EVIDENCE_MS]] as const) {
-    const evidence = record.evidence.find((candidate) => candidate.id === ref && candidate.status === "active");
-    if (!evidence || evidence.expired || receipt.id !== ref || evidence.kind !== kind || evidence.source !== receipt.source || evidence.immutable_ref !== receipt.immutable_ref || evidence.payload_hash !== receipt.payload_hash || evidence.observed_at !== receipt.observed_at || evidence.conclusion !== conclusion || !sameFreshness(evidence.freshness, bundle.freshness) || !sameFreshness(receipt.freshness, bundle.freshness) || !isTimestampWithinTtl(evidence.observed_at, now, ttl) || !isTimestampWithinTtl(receipt.observed_at, now, ttl)) throw new Error("controller_ready_bundle_evidence_missing");
-  }
 }
 
 function readyBundleAdmissionValid(record: DurableControllerRecord): boolean {
