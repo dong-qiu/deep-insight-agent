@@ -32,7 +32,7 @@ function mutation(before: DurableControllerRecord, key = "delivery-1:0:queue:one
 function plan(): NotificationPlan {
   return { dedupe_key: "delivery-1:0:offline:one", signal: "offline", occurred_at: "2026-09-08T00:01:00.000Z", causal_event_id: "offline-1", delivery_id: "delivery-1", generation: 0, retry: { idempotency_key: "notify-1", backoff_minutes: [5, 15], max_attempts: 3, external_delivery: false }, audit_fields: {} };
 }
-function readyRecord(): DurableControllerRecord {
+function readyRecord(deliveryId = "delivery-ready"): DurableControllerRecord {
   const freshness = { head_sha: "head-1", base_sha: "base-1", merge_state_status: "clean" };
   const updated_at = "2026-09-08T00:10:00.000Z";
   const evidence: Evidence[] = [
@@ -40,7 +40,7 @@ function readyRecord(): DurableControllerRecord {
     { id: "ci-1", kind: "ci", source: "github", immutable_ref: "ci-1", payload_hash: "ci", freshness, status: "active", conclusion: "passed", observed_at: updated_at },
     { id: "review-1", kind: "review", source: "github", immutable_ref: "review-1", payload_hash: "review", freshness, status: "active", conclusion: "approved", observed_at: updated_at },
   ];
-  const record = { ...createControllerRecord({ delivery_id: "delivery-ready", state: "ready_for_human_review", generation: 0, current_freshness: freshness, evidence }), updated_at };
+  const record = { ...createControllerRecord({ delivery_id: deliveryId, state: "ready_for_human_review", generation: 0, current_freshness: freshness, evidence }), updated_at };
   return { ...record, ready_bundle: readyBundleFor(record, updated_at)! };
 }
 function rehash(bundle: ReadyBundle): ReadyBundle { return { ...bundle, hash: readyBundleHash(bundle) }; }
@@ -127,12 +127,43 @@ describe("ControllerStore", () => {
 
   it("makes a crash between invalidation fence and completion fail closed after restart", () => {
     const db = store();
-    const original = { ...record(), state: "ready_for_human_review" as const, current_freshness: { head_sha: "h1", base_sha: "b1", merge_state_status: "clean" } };
+    const original = readyRecord("delivery-1");
     db.create(original);
     expect(db.beginInvalidation(original.delivery_id, { generation: 0, state: "ready_for_human_review" }, { idempotency_key: "invalidate-1", observed_freshness: { head_sha: "h2", base_sha: "b1", merge_state_status: "clean" }, reason: "head_changed", fenced_at: "2026-09-08T00:01:00.000Z" }).kind).toBe("applied");
     expect(canAcceptEvidence(db.load(original.delivery_id)!)).toBe(false);
     expect(db.recoverPendingInvalidation(original.delivery_id, "2026-09-08T00:02:00.000Z")?.state).toBe("awaiting_human_decision");
     expect(canAcceptEvidence(db.load(original.delivery_id)!)).toBe(false);
+    db.close();
+  });
+
+  it("rejects direct ready creation without a complete ReadyBundle", () => {
+    const db = store();
+    const { ready_bundle: _bundle, ...withoutBundle } = readyRecord();
+    expect(() => db.create(withoutBundle)).toThrow("controller_ready_bundle_required");
+    db.close();
+  });
+
+  it("fails closed when a raw ready record has an invalid ReadyBundle shape", () => {
+    const { ready_bundle: _bundle, ...withoutBundle } = readyRecord();
+    expect(canAcceptEvidence(withoutBundle)).toBe(false);
+  });
+
+  it("rejects direct create/CAS ready receipts that are not resolvable in the same immutable ledger", () => {
+    const db = store();
+    expect(db.create(readyRecord()).kind).toBe("applied");
+    expect(() => db.create(readyRecord("delivery-other"))).toThrow("controller_evidence_identity_conflict");
+
+    const ready = readyRecord("delivery-cas");
+    const before = { ...ready, state: "evidence_collecting" as const, ready_bundle: undefined };
+    expect(db.create(before).kind).toBe("applied");
+    const transition: TransitionEvent = {
+      event_id: "ready-transition", causal_event_id: "ready-event", delivery_id: ready.delivery_id,
+      generation_before: 0, generation_after: 0, from_state: "evidence_collecting", to_state: "ready_for_human_review",
+      writer: "test", occurred_at: ready.updated_at, idempotency_key: "delivery-cas:0:ready", precondition: "test",
+      evidence_refs: ready.evidence.map((evidence) => evidence.id), recovery_action: "none",
+    };
+    expect(() => db.compareAndAppend({ expected: { generation: 0, state: "evidence_collecting" }, next: ready, transition })).toThrow("controller_ready_bundle_evidence_ledger_unresolvable");
+    expect(db.load(ready.delivery_id)?.state).toBe("evidence_collecting");
     db.close();
   });
 

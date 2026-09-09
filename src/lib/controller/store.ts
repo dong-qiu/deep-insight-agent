@@ -7,7 +7,7 @@
 import Database from "better-sqlite3";
 import { mkdirSync, realpathSync } from "node:fs";
 import { basename, resolve, sep } from "node:path";
-import { readyBundleHash, type ControllerRecord, type ControllerState, type Evidence, type NotificationPlan, type TransitionEvent } from "./replay.js";
+import { readyBundleHash, type ControllerRecord, type ControllerState, type Evidence, type NotificationPlan, type ReadyBundle, type TransitionEvent } from "./replay.js";
 
 const SNAPSHOT_MS = 10 * 60_000;
 const EVIDENCE_MS = 24 * 60 * 60_000;
@@ -60,7 +60,10 @@ export interface ControllerStoreLocation {
 
 /** The acceptance predicate is intentionally available to every reader. */
 export function canAcceptEvidence(record: DurableControllerRecord): boolean {
-  return !record.pending_invalidation && record.state !== "freshness_invalidated" && record.state !== "awaiting_human_decision";
+  return !record.pending_invalidation
+    && record.state !== "freshness_invalidated"
+    && record.state !== "awaiting_human_decision"
+    && (record.state !== "ready_for_human_review" || readyBundleAdmissionValid(record));
 }
 
 export class ControllerStore {
@@ -95,11 +98,16 @@ export class ControllerStore {
 
   create(record: DurableControllerRecord): AppendResult {
     validateReadyBundleAdmission(record);
-    const existing = this.load(record.delivery_id);
-    if (existing) return { kind: "cas_conflict", record: existing };
-    this.db.prepare("INSERT INTO controller_record(delivery_id,generation,state,pending_invalidation,record_json,updated_at) VALUES (@delivery_id,@generation,@state,0,@record_json,@updated_at)")
-      .run({ ...record, record_json: JSON.stringify(record) });
-    return { kind: "applied", record: clone(record) };
+    const tx = this.db.transaction(() => {
+      const existing = this.load(record.delivery_id);
+      if (existing) return { kind: "cas_conflict", record: existing } as AppendResult;
+      this.insertReadyBundleEvidenceUnsafe(record);
+      this.validateReadyBundleLedgerUnsafe(record);
+      this.db.prepare("INSERT INTO controller_record(delivery_id,generation,state,pending_invalidation,record_json,updated_at) VALUES (@delivery_id,@generation,@state,0,@record_json,@updated_at)")
+        .run({ ...record, record_json: JSON.stringify(record) });
+      return { kind: "applied", record: clone(record) } as AppendResult;
+    });
+    return tx();
   }
 
   compareAndAppend(mutation: StoreMutation): AppendResult {
@@ -124,6 +132,7 @@ export class ControllerStore {
           .run(mutation.transition.event_id, mutation.next.delivery_id, mutation.transition.generation_before, mutation.transition.generation_after, JSON.stringify(mutation.transition));
       }
       for (const evidence of mutation.evidence ?? []) this.insertEvidenceUnsafe(mutation.next.delivery_id, mutation.next.generation, evidence);
+      this.validateReadyBundleLedgerUnsafe(mutation.next);
       this.validateEvidenceRefsUnsafe(mutation.next, mutation.transition, mutation.evidence ?? []);
       for (const plan of mutation.outbox ?? []) this.db.prepare("INSERT OR IGNORE INTO controller_outbox(dedupe_key,delivery_id,generation,plan_json) VALUES (?,?,?,?)").run(plan.dedupe_key, plan.delivery_id, plan.generation, JSON.stringify(plan));
       for (const item of mutation.audit ?? []) this.appendAuditUnsafe(mutation.next.delivery_id, item.kind, item.reason, item.occurred_at);
@@ -197,6 +206,21 @@ export class ControllerStore {
     this.db.prepare("INSERT INTO controller_evidence(evidence_id,delivery_id,generation,evidence_json) VALUES (?,?,?,?)").run(evidence.id, deliveryId, generation, JSON.stringify(evidence));
   }
 
+  private insertReadyBundleEvidenceUnsafe(record: DurableControllerRecord): void {
+    for (const evidence of readyBundleEvidence(record) ?? []) this.insertEvidenceUnsafe(record.delivery_id, record.generation, evidence);
+  }
+
+  private validateReadyBundleLedgerUnsafe(record: DurableControllerRecord): void {
+    if (!record.ready_bundle) return;
+    const evidence = readyBundleEvidence(record);
+    if (!evidence) throw new Error("controller_ready_bundle_evidence_ledger_unresolvable");
+    for (const item of evidence) {
+      const entry = this.db.prepare("SELECT evidence_json FROM controller_evidence WHERE evidence_id=? AND delivery_id=? AND generation=?")
+        .get(item.id, record.delivery_id, record.generation) as { evidence_json: string } | undefined;
+      if (!entry || entry.evidence_json !== JSON.stringify(item)) throw new Error("controller_ready_bundle_evidence_ledger_unresolvable");
+    }
+  }
+
   private validateEvidenceRefsUnsafe(next: DurableControllerRecord, transition: TransitionEvent | undefined, supplied: Evidence[]): void {
     if (!transition) return;
     for (const ref of transition.evidence_refs) {
@@ -216,14 +240,38 @@ export class ControllerStore {
 }
 
 function validateReadyBundleAdmission(record: DurableControllerRecord): void {
+  if (record.state === "ready_for_human_review" && !record.ready_bundle) throw new Error("controller_ready_bundle_required");
+  if (!record.ready_bundle) return;
+  if (!readyBundleAdmissionValid(record)) throw new Error("controller_ready_bundle_invalid");
   const bundle = record.ready_bundle;
-  if (!bundle) return;
   const now = timestamp(record.updated_at);
-  if (!Number.isFinite(now) || record.state !== "ready_for_human_review" || !record.current_freshness || record.current_freshness.merge_state_status !== "clean" || bundle.hash !== readyBundleHash(bundle) || bundle.delivery_id !== record.delivery_id || bundle.generation !== record.generation || !sameFreshness(bundle.freshness, record.current_freshness) || !isNonFutureTimestamp(bundle.admitted_at, now)) throw new Error("controller_ready_bundle_invalid");
   for (const [ref, receipt, kind, conclusion, ttl] of [[bundle.snapshot_evidence_ref, bundle.snapshot_evidence, "snapshot", undefined, SNAPSHOT_MS], [bundle.ci_evidence_ref, bundle.ci_evidence, "ci", "passed", EVIDENCE_MS], [bundle.review_evidence_ref, bundle.review_evidence, "review", "approved", EVIDENCE_MS]] as const) {
     const evidence = record.evidence.find((candidate) => candidate.id === ref && candidate.status === "active");
     if (!evidence || evidence.expired || receipt.id !== ref || evidence.kind !== kind || evidence.source !== receipt.source || evidence.immutable_ref !== receipt.immutable_ref || evidence.payload_hash !== receipt.payload_hash || evidence.observed_at !== receipt.observed_at || evidence.conclusion !== conclusion || !sameFreshness(evidence.freshness, bundle.freshness) || !sameFreshness(receipt.freshness, bundle.freshness) || !isTimestampWithinTtl(evidence.observed_at, now, ttl) || !isTimestampWithinTtl(receipt.observed_at, now, ttl)) throw new Error("controller_ready_bundle_evidence_missing");
   }
+}
+
+function readyBundleAdmissionValid(record: DurableControllerRecord): boolean {
+  const bundle = record.ready_bundle;
+  const now = timestamp(record.updated_at);
+  const evidence = readyBundleEvidence(record);
+  if (!bundle || !evidence || !Number.isFinite(now) || record.state !== "ready_for_human_review" || !record.current_freshness || record.current_freshness.merge_state_status !== "clean" || bundle.hash !== readyBundleHash(bundle) || bundle.delivery_id !== record.delivery_id || bundle.generation !== record.generation || !sameFreshness(bundle.freshness, record.current_freshness) || !isNonFutureTimestamp(bundle.admitted_at, now)) return false;
+  return readyEvidenceMatches(evidence[0], bundle.snapshot_evidence, bundle.snapshot_evidence_ref, "snapshot", undefined, bundle, now, SNAPSHOT_MS)
+    && readyEvidenceMatches(evidence[1], bundle.ci_evidence, bundle.ci_evidence_ref, "ci", "passed", bundle, now, EVIDENCE_MS)
+    && readyEvidenceMatches(evidence[2], bundle.review_evidence, bundle.review_evidence_ref, "review", "approved", bundle, now, EVIDENCE_MS);
+}
+
+function readyBundleEvidence(record: DurableControllerRecord): [Evidence, Evidence, Evidence] | undefined {
+  const bundle = record.ready_bundle;
+  if (!bundle) return undefined;
+  const snapshot = record.evidence.find((candidate) => candidate.id === bundle.snapshot_evidence_ref && candidate.status === "active");
+  const ci = record.evidence.find((candidate) => candidate.id === bundle.ci_evidence_ref && candidate.status === "active");
+  const review = record.evidence.find((candidate) => candidate.id === bundle.review_evidence_ref && candidate.status === "active");
+  return snapshot && ci && review ? [snapshot, ci, review] : undefined;
+}
+
+function readyEvidenceMatches(evidence: Evidence, receipt: ReadyBundle["snapshot_evidence"], ref: string, kind: Evidence["kind"], conclusion: Evidence["conclusion"] | undefined, bundle: ReadyBundle, now: number, ttl: number): boolean {
+  return evidence.id === ref && !evidence.expired && receipt.id === ref && evidence.kind === kind && evidence.source === receipt.source && evidence.immutable_ref === receipt.immutable_ref && evidence.payload_hash === receipt.payload_hash && evidence.observed_at === receipt.observed_at && evidence.conclusion === conclusion && sameFreshness(evidence.freshness, bundle.freshness) && sameFreshness(receipt.freshness, bundle.freshness) && isTimestampWithinTtl(evidence.observed_at, now, ttl) && isTimestampWithinTtl(receipt.observed_at, now, ttl);
 }
 
 function sameFreshness(left: Evidence["freshness"] | undefined, right: Evidence["freshness"] | undefined): boolean {

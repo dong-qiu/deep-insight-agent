@@ -4,7 +4,7 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { capabilityDeniedTransport, type GitHubEvidencePort, type RuntimeSnapshotPort } from "./ports.js";
-import { createControllerRecord } from "./replay.js";
+import { createControllerRecord, readyBundleFor, type Evidence } from "./replay.js";
 import { reconcileController } from "./reconciler.js";
 import { ControllerStore, type DurableControllerRecord } from "./store.js";
 
@@ -36,6 +36,15 @@ function githubWithEvidence(snapshot = freshness, observedAt = now): GitHubEvide
 }
 function runtime(input: Awaited<ReturnType<RuntimeSnapshotPort["readRuntimeSnapshot"]>>): RuntimeSnapshotPort { return { async readRuntimeSnapshot() { return input; } }; }
 function base(): DurableControllerRecord { return { ...createControllerRecord({ delivery_id: "delivery-1", state: "executing", generation: 0, active_lease_id: "lease-1", active_runtime_id: "runtime-1", active_runtime_identity: "identity-1", active_lease_fencing_token: "fence-1", active_lease_expires_at: "2026-09-08T00:20:00.000Z", current_freshness: freshness }), updated_at: "2026-09-08T00:00:00.000Z" }; }
+function ready(): DurableControllerRecord {
+  const evidence: Evidence[] = [
+    { id: "snapshot-old", kind: "snapshot", source: "fixture", immutable_ref: "snapshot", payload_hash: "snapshot", freshness, status: "active", observed_at: now },
+    { id: "ci-old", kind: "ci", source: "fixture", immutable_ref: "ci", payload_hash: "ci", freshness, status: "active", conclusion: "passed", observed_at: now },
+    { id: "review-old", kind: "review", source: "fixture", immutable_ref: "review", payload_hash: "review", freshness, status: "active", conclusion: "approved", observed_at: now },
+  ];
+  const record = { ...base(), state: "ready_for_human_review" as const, evidence, updated_at: now };
+  return { ...record, ready_bundle: readyBundleFor(record, now)! };
+}
 
 describe("read-only controller reconciliation", () => {
   it("recovers an offline executing runtime without charging an attempt", async () => {
@@ -118,8 +127,7 @@ describe("read-only controller reconciliation", () => {
   });
 
   it("invalidates head/base/CLEAN changes before retaining any ready evidence", async () => {
-    const ready = { ...base(), state: "ready_for_human_review" as const, evidence: [{ id: "old-ci", kind: "ci" as const, source: "fixture", immutable_ref: "ci", payload_hash: "x", freshness, status: "active" as const, conclusion: "passed" as const, observed_at: now }] };
-    const db = setup(ready);
+    const db = setup(ready());
     const result = await reconcileController(db, "delivery-1", { runtime: runtime({ observed_at: now, heartbeat_at: now, tasks: [] }), github: github({ ...freshness, head_sha: "head-2" }) }, now);
     expect(result.record).toMatchObject({ state: "freshness_invalidated", generation: 1 });
     expect(result.record?.active_lease_id).toBeUndefined();
@@ -161,8 +169,7 @@ describe("read-only controller reconciliation", () => {
 
   it.each(["snapshot", "ci", "review"])("fails closed when ready %s evidence has expired", async (kind) => {
     const evidenceTime = kind === "snapshot" ? "2026-09-07T23:59:00.000Z" : "2026-09-06T00:00:00.000Z";
-    const ready = { ...base(), state: "ready_for_human_review" as const };
-    const db = setup(ready);
+    const db = setup(ready());
     const first = await reconcileController(db, "delivery-1", { runtime: runtime({ observed_at: now, heartbeat_at: now, tasks: [] }), github: githubWithEvidence(freshness, evidenceTime) }, now);
     expect(first.record).toMatchObject({ state: "freshness_invalidated", generation: 1 });
     db.close();
@@ -174,12 +181,7 @@ describe("read-only controller reconciliation", () => {
     { head_sha: "head-1", base_sha: "base-1", merge_state_status: "dirty" },
     { head_sha: "head-1", base_sha: "base-1", merge_state_status: "unknown" },
   ])("invalidates changed freshness then only readmits a new clean generation with matching evidence", async (changed) => {
-    const ready = { ...base(), state: "ready_for_human_review" as const, evidence: [
-      { id: "snapshot-old", kind: "snapshot" as const, source: "fixture", immutable_ref: "snapshot", payload_hash: "snapshot", freshness, status: "active" as const, observed_at: now },
-      { id: "ci-old", kind: "ci" as const, source: "fixture", immutable_ref: "ci", payload_hash: "ci", freshness, status: "active" as const, conclusion: "passed" as const, observed_at: now },
-      { id: "review-old", kind: "review" as const, source: "fixture", immutable_ref: "review", payload_hash: "review", freshness, status: "active" as const, conclusion: "approved" as const, observed_at: now },
-    ] };
-    const db = setup(ready);
+    const db = setup(ready());
     const ports = { runtime: runtime({ observed_at: now, heartbeat_at: now, tasks: [] }), github: github(changed) };
     const invalidated = await reconcileController(db, "delivery-1", ports, now);
     expect(invalidated.record).toMatchObject({ state: "freshness_invalidated", generation: 1 });
@@ -190,7 +192,7 @@ describe("read-only controller reconciliation", () => {
   });
 
   it("dedupes the invalidation outbox receipt across repeated stale freshness reads", async () => {
-    const { db, path } = setupWithPath({ ...base(), state: "ready_for_human_review" as const });
+    const { db, path } = setupWithPath(ready());
     const changed = { ...freshness, head_sha: "head-2" };
     const ports = { runtime: runtime({ observed_at: now, heartbeat_at: now, tasks: [] }), github: github(changed) };
     await reconcileController(db, "delivery-1", ports, now);
