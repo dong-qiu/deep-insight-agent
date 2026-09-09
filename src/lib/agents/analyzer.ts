@@ -195,6 +195,7 @@ const QUOTE_COVERAGE_SYSTEM = `你是展示级引用覆盖审计员。只允许�
 - 对某项 supports=true，citation_indexes **必须且只能有一个** citation：这一条 citation 的 citation_claim 与 displayed_quote 必须逐字、直接覆盖该项的全部事实。citation_claim 只是它的 quote 所能证明内容的边界说明，绝不是额外证据；quote 仍必须直接支持它。多个 quote 分别覆盖吞吐、机制、范围或条件，属于 evidence stitching，必须 supports=false；若两个来源各自完整复述同一原子事实，只选择其中一个。
 - 研究/来源数量、机制、比较对象、适用范围、时间、条件、因果和程度都是事实，不能只覆盖其中的数字或实体。一个含“在 X 中”“通过 Y”“比 Z”或“因此”的关系 claim 必须由直接表达该关系的展示 quote 支撑；不得拼接局部 quote 来推导来源没有明确说出的关系。
 - quote 只覆盖该项的一部分、quote 被截断、citation_claim 比 quote 更宽、或只主题相关而未直接证明该项，必须 supports=false。不得把“同一实体/数字出现过”“原文大概会有更多上下文”或“多条相关 quote 合起来看似合理”当作覆盖。claim 写“黑盒聊天机器人”“通过反馈或直接提交”“类生产环境”等限定而 quote 没有直接表达时，必须 false。
+- citation_claim 即使逐字等于 statement，也不能把 displayed_quote 省略的上文、下文、标题或全文上下文带进来。例如 claim/statement 说“该分块方法在 Khmer 农业 RAG 中表现最好”，而 displayed_quote 只说“该方法取得最低 L2 距离和最高指标”，则 Khmer、农业和 RAG 适用范围都没有展示证据，必须 supports=false。
 - supports=true 时 citation_indexes 必须列出至少一个直接覆盖它的 citation 序号；supports=false 时 citation_indexes 与 evidence_spans 必须都是空数组。
 - supports=true 时，每个 citation_index 必须至少有一个 evidence_spans。每项给 quote_start（0-based）、quote_end（exclusive）和 evidence_excerpt；代码会验证 displayed_quote.slice(quote_start, quote_end) 与 evidence_excerpt 完全相同。span 只是定位审计锚点，不可替代对整个 claim 的语义判断。没有能逐字指出“black-box”“long-horizon”“not merely empirical”“edge/portable”等限定的 evidence_excerpt，就必须 supports=false。
 

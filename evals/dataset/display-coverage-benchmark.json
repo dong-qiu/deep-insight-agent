@@ -77,6 +77,15 @@
       "citations": [{ "claim": "The exemplification technique targets black-box chatbots", "quote": "We evaluate a new prompt-injection technique using a bridge in external content to create few-shot examples." }]
     },
     {
+      "id": "bound-claim-cannot-supply-elided-scope",
+      "expected": "reject",
+      "field": "statement",
+      "facets": ["statement_claim_binding", "elided_context", "scope"],
+      "statement": "The character-based Recursive chunking method performs best for Khmer agricultural RAG.",
+      "statement_citation_index": 1,
+      "citations": [{ "claim": "The character-based Recursive chunking method performs best for Khmer agricultural RAG", "quote": "We observe the best performance for the character-based Recursive chunking method." }]
+    },
+    {
       "id": "direct-factual-positive",
       "expected": "accept",
       "field": "statement",

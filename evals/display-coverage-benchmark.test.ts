@@ -17,6 +17,7 @@ describe("display coverage hand-labelled benchmark", () => {
       "composite-evidence-stitching",
       "statement-expands-bound-claim-with-automatic",
       "bound-claim-still-needs-quote-support",
+      "bound-claim-cannot-supply-elided-scope",
       "bad-evaluation-anchor",
     ]) expect(rejected.has(id)).toBe(true);
     expect(data.cases.every((c) => c.field.length > 0 && c.facets.length > 0 && c.statement_citation_index >= 1)).toBe(true);

@@ -641,6 +641,20 @@ describe("filterByQuoteCoverage（展示 quote 覆盖门）", () => {
     expect(audits[0]?.claims[0]?.reason).toBe("judge_not_supported");
   });
 
+  it("citation claim 不能把展示 quote 以外的适用范围带入 statement", async () => {
+    vi.mocked(callStructured).mockResolvedValue(coverageVerdicts(false));
+    const row = insight("The character-based Recursive chunking method performs best for Khmer agricultural RAG.", [{
+      content_item_id: "ci",
+      claim: "The character-based Recursive chunking method performs best for Khmer agricultural RAG",
+      quote: "We observe the best performance for the character-based Recursive chunking method.",
+      locator: { paragraph_index: 0, char_start: 0, char_end: 78 },
+    }]);
+
+    await expect(filterByQuoteCoverage([row])).resolves.toEqual([]);
+    expect(vi.mocked(callStructured)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(callStructured).mock.calls[0]?.[0].system).toContain("省略的上文、下文、标题或全文上下文");
+  });
+
   it("把复合 statement 拆为可审计的实质 clause，跳过纯引导语", () => {
     expect(quoteCoverageClauses("该研究还发现，在被合并的 Agentic Pull Requests 中，15.4%需要审阅者通过反馈或直接提交进行明确介入；其机制在受控环境验证。"))
       .toEqual([
