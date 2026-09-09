@@ -42,7 +42,66 @@ const batch: AnalysisBatch = {
 
 it("AnalysisBatch 往返（含 insights + citations）", () => {
   saveAnalysisBatch(db, batch);
-  expect(getAnalysisBatch(db, "b1")).toEqual(batch);
+  expect(getAnalysisBatch(db, "b1")).toEqual({ ...batch, display_coverage_state: "legacy" });
+});
+
+it("同一事务持久化 citation_ref/claim 与展示覆盖审计，读回不把旧行伪装成已审计", () => {
+  const audited = structuredClone(batch);
+  audited.insights[0].citations[0] = {
+    ...audited.insights[0].citations[0], citation_ref: "cite_abc", claim: "S1 的原子事实",
+  };
+  audited.display_coverage_audits = [{
+    insight_id: "i1", candidate_id: "i1", gate_version: "display-coverage-v2", terminal_reason: "kept",
+    prompt_version: "display-coverage-v2", input_hash: "input-sha", validator_model: "validator-test",
+    decision: { claims: [{ claim_id: "statement:1", supports: true, evidence_spans: [{ quote_start: 0, quote_end: 2, evidence_excerpt: "q1" }] }] },
+    created_at: "2026-09-09T00:00:00.000Z",
+  }];
+  audited.display_coverage_state = "audited";
+  audited.display_coverage_candidate_audits = [
+    {
+      candidate_id: "i1", insight_id: "i1", gate_version: "display-coverage-v2", terminal_reason: "kept",
+      prompt_version: "display-coverage-v2", input_hash: "input-sha", validator_model: "validator-test",
+      decision: { claims: [{ claim_id: "statement:1", kind: "factual", supports: true, citation_indexes: [1] }] },
+      created_at: "2026-09-09T00:00:00.000Z",
+    },
+    {
+      candidate_id: "rejected_before_persistence", gate_version: "display-coverage-v2", terminal_reason: "dropped_no_displayable_citation",
+      prompt_version: "display-coverage-v2", input_hash: "input-rejected", validator_model: "validator-test",
+      decision: { claims: [{ claim_id: "statement:1", kind: "factual", supports: false, citation_indexes: [] }] },
+      created_at: "2026-09-09T00:00:00.000Z",
+    },
+  ];
+  saveAnalysisBatch(db, audited);
+
+  expect(getAnalysisBatch(db, "b1")).toEqual(audited);
+  expect(db.prepare("SELECT citation_ref, claim FROM citation WHERE insight_id = 'i1'").get()).toEqual({ citation_ref: "cite_abc", claim: "S1 的原子事实" });
+});
+
+it("已审计但无保留洞察的缓存读回仍是 audited，不能退化为 legacy", () => {
+  const emptyAudited: AnalysisBatch = {
+    ...structuredClone(batch), id: "b-empty", insights: [], display_coverage_state: "audited",
+    display_coverage_audits: [],
+    display_coverage_candidate_audits: [{
+      candidate_id: "candidate_rejected", gate_version: "display-coverage-v2", terminal_reason: "dropped_no_displayable_citation",
+      prompt_version: "display-coverage-v2", input_hash: "input", validator_model: "validator",
+      decision: { claims: [] }, created_at: "2026-09-09T00:00:00.000Z",
+    }],
+  };
+  saveAnalysisBatch(db, emptyAudited);
+  expect(getAnalysisBatch(db, "b-empty")).toEqual(emptyAudited);
+});
+
+it("展示审计不能把其他 batch 的 insight 伪装成本 batch 的证据", () => {
+  saveAnalysisBatch(db, batch);
+  saveAnalysisBatch(db, { ...structuredClone(batch), id: "b2", insights: [] });
+  const params = {
+    batch_id: "b2", insight_id: "i1", candidate_id: "candidate", gate_version: "v", terminal_reason: "kept",
+    prompt_version: "v", input_hash: "hash", validator_model: "validator", decision: "{}", created_at: "2026-09-09T00:00:00.000Z",
+  };
+  expect(() => db.prepare(`INSERT INTO display_coverage_audit
+    (batch_id,insight_id,candidate_id,gate_version,terminal_reason,prompt_version,input_hash,validator_model,decision,created_at)
+    VALUES (@batch_id,@insight_id,@candidate_id,@gate_version,@terminal_reason,@prompt_version,@input_hash,@validator_model,@decision,@created_at)`).run(params))
+    .toThrow("display coverage audit insight belongs to another batch");
 });
 
 it("ValidationResult 往返（checks + report，含可达性短路项）", () => {

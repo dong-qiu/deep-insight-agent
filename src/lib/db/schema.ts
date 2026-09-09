@@ -827,6 +827,7 @@ CREATE TABLE IF NOT EXISTS analysis_batch (
   time_window          TEXT NOT NULL,
   status               TEXT NOT NULL CHECK (status IN ('done','failed')),
   no_significant_event INTEGER NOT NULL DEFAULT 0,
+  display_coverage_state TEXT NOT NULL DEFAULT 'legacy' CHECK (display_coverage_state IN ('legacy','audited')),
   created_at           TEXT NOT NULL DEFAULT (datetime('now')),
   CHECK (NOT (no_significant_event = 1 AND status <> 'done'))
 );
@@ -854,10 +855,54 @@ CREATE TABLE IF NOT EXISTS citation (
   insight_id      TEXT NOT NULL REFERENCES insight(id),
   citation_index  INTEGER NOT NULL,
   content_item_id TEXT NOT NULL,
+  citation_ref    TEXT NOT NULL DEFAULT '',
+  claim           TEXT NOT NULL DEFAULT '',
   quote           TEXT NOT NULL,
   locator         TEXT NOT NULL,
   PRIMARY KEY (insight_id, citation_index)
 );
+CREATE INDEX IF NOT EXISTS idx_citation_ref ON citation(citation_ref);
+
+CREATE TABLE IF NOT EXISTS display_coverage_audit (
+  batch_id        TEXT NOT NULL REFERENCES analysis_batch(id),
+  insight_id      TEXT NOT NULL REFERENCES insight(id),
+  candidate_id    TEXT NOT NULL,
+  gate_version    TEXT NOT NULL,
+  terminal_reason TEXT NOT NULL,
+  prompt_version  TEXT NOT NULL,
+  input_hash      TEXT NOT NULL,
+  validator_model TEXT NOT NULL,
+  decision        TEXT NOT NULL,
+  created_at      TEXT NOT NULL,
+  PRIMARY KEY (batch_id, insight_id)
+);
+CREATE INDEX IF NOT EXISTS idx_display_coverage_audit_insight ON display_coverage_audit(insight_id, created_at);
+-- SQLite cannot express that two independent foreign keys belong to the same batch.
+-- Keep the audit row from associating an insight in another batch.
+CREATE TRIGGER IF NOT EXISTS display_coverage_audit_batch_matches_insight
+BEFORE INSERT ON display_coverage_audit
+WHEN NOT EXISTS (SELECT 1 FROM insight WHERE id = NEW.insight_id AND batch_id = NEW.batch_id)
+BEGIN SELECT RAISE(ABORT, 'display coverage audit insight belongs to another batch'); END;
+
+CREATE TABLE IF NOT EXISTS display_coverage_candidate_audit (
+  batch_id        TEXT NOT NULL REFERENCES analysis_batch(id),
+  candidate_id    TEXT NOT NULL,
+  insight_id      TEXT REFERENCES insight(id),
+  gate_version    TEXT NOT NULL,
+  terminal_reason TEXT NOT NULL,
+  prompt_version  TEXT NOT NULL,
+  input_hash      TEXT NOT NULL,
+  validator_model TEXT NOT NULL,
+  decision        TEXT NOT NULL,
+  created_at      TEXT NOT NULL,
+  PRIMARY KEY (batch_id, candidate_id)
+);
+CREATE INDEX IF NOT EXISTS idx_display_coverage_candidate_audit_insight ON display_coverage_candidate_audit(insight_id, created_at);
+CREATE TRIGGER IF NOT EXISTS display_coverage_candidate_audit_batch_matches_insight
+BEFORE INSERT ON display_coverage_candidate_audit
+WHEN NEW.insight_id IS NOT NULL
+ AND NOT EXISTS (SELECT 1 FROM insight WHERE id = NEW.insight_id AND batch_id = NEW.batch_id)
+BEGIN SELECT RAISE(ABORT, 'display coverage candidate audit insight belongs to another batch'); END;
 
 CREATE TABLE IF NOT EXISTS citation_check (
   batch_id            TEXT NOT NULL REFERENCES analysis_batch(id),

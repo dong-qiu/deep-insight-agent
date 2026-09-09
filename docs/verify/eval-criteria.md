@@ -42,6 +42,7 @@
 | 引用一致性合格率 | ≥ 95% | A1 验证 / charter 护栏 |
 | 一致性失败率（护栏） | ≤ 5% | charter 反向护栏指标 = `not_support` 占比 |
 | flagged 率（第二护栏） | ≤ 10% | 一致性 `uncertain` 占比；防「负例藏进 uncertain」 |
+| 展示覆盖 unsafe_accept | = 0 | 手标 display-coverage 反例不得被展示门放行 |
 | 幻觉率（人工抽检） | ≤ 2% | charter 反向护栏指标 |
 | event_id 跨批次对齐准确率 | ≥ 85% | 不复报机制（在「事件对齐集」上） |
 
@@ -113,7 +114,7 @@
 
 `consistency_ok` / `consistency_failure` 衡量的是 analyzer 原始输出中「完整 statement × 单个来源」的判定结果；它既反映过度声称，也会受多源复合结论的逐来源严格判定影响，不能单独等同于已发布报告的幻觉率。发布安全仍以白名单后的引用可达性和人工幻觉抽检为准；校验器能力应同时查看三分类混淆矩阵、各类 precision/recall 与负例召回。
 
-每次真模型运行都应保留 `evals/out/a1-run.json`：包含配置、逐主题 CitationCheck、逐标注对预测/rationale 与混淆矩阵。定时工作流会将它作为 artifact 保存；改 analyzer 或 validator 前先读真实错例，再决定是改 prompt、原子事实/引用映射，还是校验策略。
+每次真模型运行都应保留 `evals/out/runs/<run-id>/a1-run.json`：包含配置、逐主题 CitationCheck、逐标注对预测/rationale、混淆矩阵、逐候选展示覆盖终态与手标 display-coverage 基准结果；同目录 `manifest.json` 记录输入/源码指纹、洞察 ID 集合 digest 和 artifact hashes。运行目录先在临时位置完整写入后才原子发布；`evals/out/runs/latest-complete.json` 只指向最近**完成**运行，绝不表示质量或 DCP 通过，必须分别查看 `auto_gate`、`manual_review`、`dcp_eligibility`。定时工作流会将该目录作为 artifact 保存；改 analyzer 或 validator 前先读真实错例，再决定是改 prompt、原子事实/引用映射，还是校验策略。
 
 ## 评测流程
 

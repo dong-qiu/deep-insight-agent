@@ -65,7 +65,7 @@
 - [ ] `body` / `source_text` 为真实原文，未改写
 - [ ] 标注由**非生成者**完成（避免与 analyzer 同源偏差），最好双人交叉
 - [ ] 跑 `npm run eval:a1`，⚠️ 规模提示消失，自动门槛全 PASS
-- [ ] 人评 `evals/out/review-queue.json`：非显然占比 ≥ 60% / 幻觉率 ≤ 2%
+- [ ] 人评 `evals/out/runs/<run-id>/review-queue.json`：非显然占比 ≥ 60% / 幻觉率 ≤ 2%（从 `runs/latest-complete.json` 找 run-id，但先核对 `auto_gate`、`manual_review`、`dcp_eligibility`）
 
 ## 本仓自带数据集的来源与已知局限
 

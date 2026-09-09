@@ -144,6 +144,30 @@ describe("selectInsights（洞察级纳入判定）", () => {
     };
     expect(selectInsights(batch2, noChecks)).toEqual([]); // 无 check → 整条不纳入
   });
+
+  it("有展示审计的批次只消费 kept / kept_degraded 洞察，缺审计不能借 validator 白名单绕过", () => {
+    const batch = batchOf();
+    batch.display_coverage_audits = [{
+      insight_id: "i2", candidate_id: "i2", gate_version: "display-coverage-v2", terminal_reason: "kept",
+      prompt_version: "display-coverage-v2", input_hash: "input", validator_model: "validator", decision: {},
+      created_at: "2026-09-09T00:00:00.000Z",
+    }];
+    // i1 本来拥有唯一的 pass 引用，但此批次中没有它的展示审计记录，不能作为“已验证展示”。
+    expect(selectInsights(batch, validation)).toEqual([]);
+  });
+
+  it("展示审计要求的每条事实引用都必须通过 validator，不能以部分证据发布整条结论", () => {
+    const batch = batchOf();
+    batch.display_coverage_state = "audited";
+    batch.display_coverage_audits = [{
+      insight_id: "i1", candidate_id: "i1", gate_version: "display-coverage-v2", terminal_reason: "kept",
+      prompt_version: "display-coverage-v2", input_hash: "input", validator_model: "validator",
+      decision: { claims: [{ claim_id: "statement:1", kind: "factual", supports: true, citation_indexes: [1, 2] }] },
+      created_at: "2026-09-09T00:00:00.000Z",
+    }];
+    // i1 的第 1 条可达且支持，但第 2 条被 validator 拦截；完整展示 claim 不得发布。
+    expect(selectInsights(batch, validation)).toEqual([]);
+  });
 });
 
 describe("selectBriefInsights（Daily Brief 已发布证据去重）", () => {
@@ -360,6 +384,11 @@ describe("buildReport 派生", () => {
   ]);
   const { report, index } = buildReport({
     topic, batch: batchOf(), validation, type: "brief", contentLookup: lookup, now: "2026-05-07T08:00:00Z",
+  });
+
+  it("重要性展示明确标为系统判断，旧记录也不再伪装成来源依据", () => {
+    expect(report.body_md).toContain("系统重要性判断：x");
+    expect(report.body_html).toContain("系统重要性判断：x");
   });
 
   it("report 字段：insight_ids / citation_count / event_ids / cost", () => {

@@ -524,14 +524,31 @@ describe("validateBatch（B 按源归并批量判定 · 成本最大杠杆）", 
     expect(checks[1]).toMatchObject({ consistency: "not_support", verdict: "blocked" }); // ins2 = index 2
   });
 
-  it("批量产出残缺（少一条）→ 整组记校验失败，绝不把缺项默认成 support", async () => {
+  it("批量产出残缺（少一条）→ 退回逐条复判，绝不把缺项默认成 support", async () => {
     const items = [item("ci_p", "Body for partial output case alpha beta.")];
     const ins1 = insight("ip1", "A", [{ content_item_id: "ci_p", quote: "alpha" }]);
     const ins2 = insight("ip2", "B", [{ content_item_id: "ci_p", quote: "beta" }]);
-    vi.mocked(callStructured).mockResolvedValue(batchJudgeData([
-      { index: 1, consistency: "support", consistency_reason: "ok" }, // 缺 index 2
-    ]));
+    vi.mocked(callStructured)
+      .mockResolvedValueOnce(batchJudgeData([
+        { index: 1, consistency: "support", consistency_reason: "ok" }, // 缺 index 2
+      ]))
+      .mockResolvedValueOnce(judgeData("support", "ok"))
+      .mockResolvedValueOnce(judgeData("not_support", "exaggeration"));
     const { checks } = await validateBatch([ins1, ins2], items);
+    expect(callStructured).toHaveBeenCalledTimes(3); // 1 batch + 2 single fallbacks
+    expect(checks.map((c) => c.verdict)).toEqual(["pass", "blocked"]);
+  });
+
+  it("批量 schema 失败而单条复判仍失败时，逐条保留 not_evaluated，不伪装为 support", async () => {
+    const items = [item("ci_bf", "Body for malformed batch fallback.")];
+    const ins1 = insight("ibf1", "A", [{ content_item_id: "ci_bf", quote: "malformed" }]);
+    const ins2 = insight("ibf2", "B", [{ content_item_id: "ci_bf", quote: "fallback" }]);
+    vi.mocked(callStructured)
+      .mockResolvedValueOnce({ data: { judgments: "not-an-array" } } as never)
+      .mockRejectedValueOnce(new Error("single one failed"))
+      .mockRejectedValueOnce(new Error("single two failed"));
+    const { checks } = await validateBatch([ins1, ins2], items);
+    expect(callStructured).toHaveBeenCalledTimes(3); // no hidden acceptance after a malformed batch
     expect(checks.every((c) => c.consistency === "not_evaluated" && c.verdict === "flagged")).toBe(true);
   });
 

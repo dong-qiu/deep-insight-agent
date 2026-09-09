@@ -393,6 +393,40 @@ describe("runReportGen", () => {
     expect(report.insight_ids).toEqual([]);
   });
 
+  it("runReportGen 从缓存读回 audited batch 后，仍拒绝包含 validator 已拦截必需引用的整条结论", async () => {
+    const actual = await vi.importActual<typeof import("./report-gen.js")>("./report-gen.js");
+    buildReportMock.mockImplementation(actual.buildReport);
+    const batch = mkBatch();
+    batch.insights[0].citations.push({
+      content_item_id: "ci2", quote: "q2", locator: { paragraph_index: 0, char_start: 0, char_end: 2 },
+    });
+    batch.display_coverage_state = "audited";
+    batch.display_coverage_audits = [{
+      insight_id: "i1", candidate_id: "candidate_i1", gate_version: "display-coverage-v2", terminal_reason: "kept",
+      prompt_version: "display-coverage-v2", input_hash: "input", validator_model: "validator",
+      decision: { claims: [{ claim_id: "statement:1", kind: "factual", supports: true, citation_indexes: [1, 2] }] },
+      created_at: "2026-09-09T00:00:00.000Z",
+    }];
+    batch.display_coverage_candidate_audits = [{
+      candidate_id: "candidate_i1", insight_id: "i1", gate_version: "display-coverage-v2", terminal_reason: "kept",
+      prompt_version: "display-coverage-v2", input_hash: "input", validator_model: "validator",
+      decision: { claims: [{ claim_id: "statement:1", kind: "factual", supports: true, citation_indexes: [1, 2] }] },
+      created_at: "2026-09-09T00:00:00.000Z",
+    }];
+    saveAnalysisBatch(db, batch);
+    const cached = getAnalysisBatch(db, batch.id)!;
+    const validation = mkValidation();
+    validation.checks.push({
+      insight_id: "i1", citation_index: 1, reachability: "pass", reachability_reason: "ok",
+      consistency: "not_support", consistency_reason: "exaggeration", verdict: "blocked",
+    });
+
+    const report = await runReportGen(db, { topic, batch: cached, validation, type: "brief" });
+
+    expect(buildReportMock).toHaveBeenCalledWith(expect.objectContaining({ included: [] }));
+    expect(report.insight_ids).toEqual([]);
+  });
+
   it("trace 记录日报选择漏斗，较早未发布 event 的补充发现与主通道过滤可审计", async () => {
     applyProvenanceMigrations(db);
     db.prepare(`INSERT INTO generation_trace(id,scope_kind,trigger_kind,status,completion_policy,coverage,runtime_version,summary,started_at)

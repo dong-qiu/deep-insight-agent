@@ -1,5 +1,5 @@
 /** AnalysisBatch / ValidationResult 持久化（事务写）。增量4。 */
-import type { AnalysisBatch, Insight, ValidationResult } from "../types.js";
+import type { AnalysisBatch, DisplayCoverageAudit, DisplayCoverageCandidateAudit, Insight, ValidationResult } from "../types.js";
 import type { DB } from "./index.js";
 
 const j = (v: unknown): string => JSON.stringify(v);
@@ -26,6 +26,8 @@ export interface InsightRow {
 }
 interface CitationRow {
   content_item_id: string;
+  citation_ref: string;
+  claim: string;
   quote: string;
   locator: string; // JSON
 }
@@ -45,7 +47,11 @@ export function rowToInsight(db: DB, r: InsightRow): Insight {
     headline: r.headline ?? "",
     importance: r.importance,
     importance_basis: r.importance_basis,
-    citations: cits.map((c) => ({ content_item_id: c.content_item_id, quote: c.quote, locator: JSON.parse(c.locator) })),
+    citations: cits.map((c) => ({
+      content_item_id: c.content_item_id, quote: c.quote, locator: JSON.parse(c.locator),
+      ...(c.citation_ref ? { citation_ref: c.citation_ref } : {}),
+      ...(c.claim ? { claim: c.claim } : {}),
+    })),
     source_count: r.source_count,
     multi_source: r.multi_source === 1,
     time_window: JSON.parse(r.time_window),
@@ -61,11 +67,12 @@ export function rowToInsight(db: DB, r: InsightRow): Insight {
 export function saveAnalysisBatch(db: DB, batch: AnalysisBatch, afterSave?: () => void): void {
   db.transaction(() => {
     db.prepare(
-      `INSERT INTO analysis_batch (id,topic_id,time_window,status,no_significant_event)
-       VALUES (@id,@topic_id,@time_window,@status,@nse)`,
+      `INSERT INTO analysis_batch (id,topic_id,time_window,status,no_significant_event,display_coverage_state)
+       VALUES (@id,@topic_id,@time_window,@status,@nse,@display_coverage_state)`,
     ).run({
       id: batch.id, topic_id: batch.topic_id, time_window: j(batch.time_window),
       status: batch.status, nse: b(batch.no_significant_event),
+      display_coverage_state: batch.display_coverage_state ?? "legacy",
     });
     const insStmt = db.prepare(
       `INSERT INTO insight
@@ -73,8 +80,18 @@ export function saveAnalysisBatch(db: DB, batch: AnalysisBatch, afterSave?: () =
        VALUES (@id,@batch_id,@topic_id,@type,@event_id,@statement,@headline,@importance,@importance_basis,@source_count,@multi_source,@time_window,@confidence,@language,@is_followup,@entities,@tags)`,
     );
     const citStmt = db.prepare(
-      `INSERT INTO citation (insight_id,citation_index,content_item_id,quote,locator)
-       VALUES (@insight_id,@citation_index,@content_item_id,@quote,@locator)`,
+      `INSERT INTO citation (insight_id,citation_index,content_item_id,citation_ref,claim,quote,locator)
+       VALUES (@insight_id,@citation_index,@content_item_id,@citation_ref,@claim,@quote,@locator)`,
+    );
+    const auditStmt = db.prepare(
+      `INSERT INTO display_coverage_audit
+       (batch_id,insight_id,candidate_id,gate_version,terminal_reason,prompt_version,input_hash,validator_model,decision,created_at)
+       VALUES (@batch_id,@insight_id,@candidate_id,@gate_version,@terminal_reason,@prompt_version,@input_hash,@validator_model,@decision,@created_at)`,
+    );
+    const candidateAuditStmt = db.prepare(
+      `INSERT INTO display_coverage_candidate_audit
+       (batch_id,candidate_id,insight_id,gate_version,terminal_reason,prompt_version,input_hash,validator_model,decision,created_at)
+       VALUES (@batch_id,@candidate_id,@insight_id,@gate_version,@terminal_reason,@prompt_version,@input_hash,@validator_model,@decision,@created_at)`,
     );
     for (const ins of batch.insights) {
       insStmt.run({
@@ -87,9 +104,15 @@ export function saveAnalysisBatch(db: DB, batch: AnalysisBatch, afterSave?: () =
       ins.citations.forEach((c, i) =>
         citStmt.run({
           insight_id: ins.id, citation_index: i, content_item_id: c.content_item_id,
-          quote: c.quote, locator: j(c.locator),
+          citation_ref: c.citation_ref ?? "", claim: c.claim ?? "", quote: c.quote, locator: j(c.locator),
         }),
       );
+    }
+    for (const audit of batch.display_coverage_audits ?? []) {
+      auditStmt.run({ ...audit, batch_id: batch.id, decision: j(audit.decision) });
+    }
+    for (const audit of batch.display_coverage_candidate_audits ?? []) {
+      candidateAuditStmt.run({ ...audit, batch_id: batch.id, insight_id: audit.insight_id ?? null, decision: j(audit.decision) });
     }
     afterSave?.();
   })();
@@ -100,9 +123,24 @@ export function getAnalysisBatch(db: DB, id: string): AnalysisBatch | null {
   if (!br) return null;
   const insRows = db.prepare("SELECT * FROM insight WHERE batch_id = ? ORDER BY rowid").all(id) as InsightRow[];
   const insights: Insight[] = insRows.map((r) => rowToInsight(db, r));
+  const audits = db.prepare("SELECT * FROM display_coverage_audit WHERE batch_id = ? ORDER BY insight_id").all(id) as Array<Record<string, string>>;
+  const candidateAudits = db.prepare("SELECT * FROM display_coverage_candidate_audit WHERE batch_id = ? ORDER BY candidate_id").all(id) as Array<Record<string, string | null>>;
+  const display_coverage_state = (br.display_coverage_state ?? "legacy") as "legacy" | "audited";
   return {
     id: br.id, topic_id: br.topic_id, time_window: JSON.parse(br.time_window), status: br.status,
-    no_significant_event: br.no_significant_event === 1, insights,
+    no_significant_event: br.no_significant_event === 1, insights, display_coverage_state,
+    ...(display_coverage_state === "audited" ? { display_coverage_audits: audits.map((audit): DisplayCoverageAudit => ({
+      insight_id: audit.insight_id, candidate_id: audit.candidate_id, gate_version: audit.gate_version,
+      terminal_reason: audit.terminal_reason, prompt_version: audit.prompt_version, input_hash: audit.input_hash,
+      validator_model: audit.validator_model, decision: JSON.parse(audit.decision), created_at: audit.created_at,
+    })) } : {}),
+    ...(display_coverage_state === "audited" ? { display_coverage_candidate_audits: candidateAudits.map((audit): DisplayCoverageCandidateAudit => ({
+      candidate_id: audit.candidate_id as string,
+      ...(audit.insight_id ? { insight_id: audit.insight_id } : {}),
+      gate_version: audit.gate_version as string, terminal_reason: audit.terminal_reason as string,
+      prompt_version: audit.prompt_version as string, input_hash: audit.input_hash as string,
+      validator_model: audit.validator_model as string, decision: JSON.parse(audit.decision as string), created_at: audit.created_at as string,
+    })) } : {}),
   };
 }
 

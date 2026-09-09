@@ -10,6 +10,33 @@ import { flagLabel, isIncludableCheck } from "../utils/citation-verdict.js";
 import { insightFingerprint } from "../runtime/statement-fingerprint.js";
 import { coverageGaps, specificClaims } from "./analyzer.js";
 
+type AuditClaim = {
+  field?: unknown;
+  kind?: unknown;
+  supports?: unknown;
+  citation_indexes?: unknown;
+  based_on_display_claim_ids?: unknown;
+};
+
+/** Return every citation still required by a kept display audit. An unreadable or incomplete
+ * decision fails closed: a durable audit may never be treated as a generic insight-level pass. */
+function requiredAuditCitationIndexes(audit: { decision: unknown }): Set<number> | null {
+  if (!audit.decision || typeof audit.decision !== "object") return null;
+  const claims = (audit.decision as { claims?: unknown }).claims;
+  if (!Array.isArray(claims)) return null;
+  const factual = claims.filter((claim): claim is AuditClaim => Boolean(claim) && typeof claim === "object"
+    && (claim as AuditClaim).kind === "factual");
+  if (!factual.length || factual.some((claim) => claim.supports !== true || !Array.isArray(claim.citation_indexes) || claim.citation_indexes.length === 0)) return null;
+  const required = new Set<number>();
+  for (const claim of factual) {
+    for (const index of claim.citation_indexes as unknown[]) {
+      if (!Number.isInteger(index) || (index as number) < 1) return null;
+      required.add((index as number) - 1);
+    }
+  }
+  return required;
+}
+
 /** 每日节奏中已发布 event 的成功校验证据；由 DB 层读取、作为纯函数输入传入。 */
 export interface PublishedEventEvidence {
   event_id: string;
@@ -105,6 +132,13 @@ function blockedReason(c: import("../types.js").CitationCheck): string | null {
  *  uncertain/校验失败仍保存在 ValidationResult，供人工核实或重试，不可作为发布证据。
  *  同时汇总被屏蔽数与理由直方图——供渲染端外露 validator 把关力度（透明信任信号）。 */
 export function selectInsights(batch: AnalysisBatch, validation: ValidationResult): IncludedInsight[] {
+  // A missing audit is explicitly a legacy/cache-derived batch: validator's existing publication
+  // whitelist remains its compatibility boundary. Once a batch carries display audits, however,
+  // a caller cannot inject an unreviewed Insight beside audited ones and have report generation
+  // silently treat it as verified.
+  const audited = batch.display_coverage_state === "audited" || batch.display_coverage_audits !== undefined
+    ? new Map((batch.display_coverage_audits ?? []).map((audit) => [audit.insight_id, audit]))
+    : null;
   const checksByInsight = new Map<string, Map<number, import("../types.js").CitationCheck>>();
   for (const c of validation.checks) {
     if (!checksByInsight.has(c.insight_id)) checksByInsight.set(c.insight_id, new Map());
@@ -112,6 +146,13 @@ export function selectInsights(batch: AnalysisBatch, validation: ValidationResul
   }
   const out: IncludedInsight[] = [];
   for (const ins of batch.insights) {
+    let requiredAuditCitations: Set<number> | null = null;
+    if (audited) {
+      const audit = audited.get(ins.id);
+      if (!audit || (audit.terminal_reason !== "kept" && audit.terminal_reason !== "kept_degraded")) continue;
+      requiredAuditCitations = requiredAuditCitationIndexes(audit);
+      if (!requiredAuditCitations) continue;
+    }
     const cs = checksByInsight.get(ins.id);
     const kept: number[] = [];
     const includableIndices: number[] = [];
@@ -133,7 +174,7 @@ export function selectInsights(batch: AnalysisBatch, validation: ValidationResul
       }
     });
     // 纳入需 ≥1 明确支持的引用：仅存疑/校验失败的洞察整条剔除，等人工核实或重试后恢复。
-    if (includable)
+    if (includable && (!requiredAuditCitations || [...requiredAuditCitations].every((index) => kept.includes(index))))
       out.push({
         insight: ins, citationIndices: kept, includableCitationIndices: includableIndices,
         flaggedUncertain: false, flaggedError: false, blockedCount, blockedReasonCounts,
@@ -486,6 +527,12 @@ export function inlineCitedStatement(
 
 /** 单条洞察的 Markdown 块。deep_dive（detailed）多展示来源数 / 多源印证。
  *  citeStart：全局连续引用编号起点（C-2 引用 [n] 行内 + 列表锚）；返回 next 让 caller 串联。 */
+function displayedImportanceBasis(value: string): string {
+  // P0 analyzer records already carry this explicit label. Historical rows retain their text,
+  // but the reader still sees that it is the system's judgment rather than an uncited source fact.
+  return value.includes("系统重要性判断：") ? value : `系统重要性判断：${value}`;
+}
+
 function insightBlockMd(
   x: IncludedInsight,
   heading: string,
@@ -518,7 +565,7 @@ function insightBlockMd(
   const gaps = coverageGapTokens(x);
   const coverageTag = gaps.length ? ` 〔待补引：${gaps.join("、")}〕` : "";
   const L = [`${heading} ${statementWithRefs}${followupTag}${supplementalTag}${flaggedTag}${coverageTag}`, ""];
-  L.push(`- 重要性：${ins.importance}/5 · 依据：${ins.importance_basis}`);
+  L.push(`- 重要性：${ins.importance}/5 · ${displayedImportanceBasis(ins.importance_basis)}`);
   if (detailed) L.push(`- 来源：${ins.source_count} 个 · ${ins.multi_source ? "多源印证" : "单源"}`);
   if (ins.type === "trend" && ins.confidence) L.push(`- 置信度：${ins.confidence}`);
   if (orderedCites.length > 0) {
@@ -720,7 +767,7 @@ function insightHtml(
   const flaggedBadge = label ? ` <span class="flag">${label}</span>` : "";
   const gaps = coverageGapTokens(x);
   const coverageBadge = gaps.length ? ` <span class="coverage-gap">待补引：${esc(gaps.join("、"))}</span>` : "";
-  return `<section><${tag}>${n}. ${esc(ins.statement)}${followupBadge}${supplementalBadge}${flaggedBadge}${coverageBadge}</${tag}><p class="meta">重要性 ${ins.importance}/5 · ${esc(ins.importance_basis)}${conf}${src}${citeSummary}</p><ul>${cites}</ul>${blocked}</section>`;
+  return `<section><${tag}>${n}. ${esc(ins.statement)}${followupBadge}${supplementalBadge}${flaggedBadge}${coverageBadge}</${tag}><p class="meta">重要性 ${ins.importance}/5 · ${esc(displayedImportanceBasis(ins.importance_basis))}${conf}${src}${citeSummary}</p><ul>${cites}</ul>${blocked}</section>`;
 }
 
 function renderHtml(

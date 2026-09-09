@@ -17,15 +17,22 @@ export interface A1RunWorkspace {
 
 export interface A1RunManifest {
   run_id: string;
-  status: "completed" | "failed";
-  /** `completed` only means files were finalized. Consumers must inspect this separately. */
-  gate_outcome: "pass" | "fail" | "smoke" | "not_evaluated";
+  /** `running` is written in the private temporary workspace; published runs are terminal. */
+  status: "running" | "completed" | "failed";
+  /** The automatic gate is deliberately separate from completion and human review. */
+  auto_gate: "pass" | "fail" | "smoke" | "not_evaluated";
+  /** A queue is evidence to review, not evidence that review occurred. */
+  manual_review: "pending" | "not_generated";
+  /** DCP cannot be eligible until a full automatic pass has a completed human review. */
+  dcp_eligibility: "pending_manual_review" | "ineligible" | "not_evaluated";
   started_at: string;
   ended_at: string;
-  config: Record<string, unknown>;
-  dataset: Record<string, unknown>;
+  config: object;
+  dataset: object;
   source: { commit: string | null; dirty_fingerprint: string | null };
+  insights: { count: number; ids_sha256: string };
   artifacts: Record<string, string>;
+  review_artifact_error?: string;
   error?: string;
 }
 
@@ -36,12 +43,28 @@ export function beginA1Run(root = "evals/out/runs", startedAt = new Date().toISO
   const finalDir = join(root, runId);
   mkdirSync(root, { recursive: true });
   mkdirSync(tempDir, { recursive: false });
-  return { runId, root, tempDir, finalDir, startedAt };
+  const workspace = { runId, root, tempDir, finalDir, startedAt };
+  writeJson(join(tempDir, "manifest.json"), {
+    run_id: runId,
+    status: "running",
+    auto_gate: "not_evaluated",
+    manual_review: "not_generated",
+    dcp_eligibility: "not_evaluated",
+    started_at: startedAt,
+    config: {},
+    dataset: {},
+    source: { commit: null, dirty_fingerprint: null },
+    insights: { count: 0, ids_sha256: createHash("sha256").update("").digest("hex") },
+    artifacts: {},
+  } satisfies Omit<A1RunManifest, "ended_at">);
+  return workspace;
 }
 
 export function writeJson(path: string, value: unknown): void {
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
+  const temporary = `${path}.${process.pid}.${randomUUID().slice(0, 6)}.tmp`;
+  writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`);
+  renameSync(temporary, path);
 }
 
 export function sha256File(path: string): string {
@@ -60,7 +83,9 @@ export function finalizeA1Run(workspace: A1RunWorkspace, manifest: A1RunManifest
       manifest: join(workspace.finalDir, "manifest.json"),
       completed_at: manifest.ended_at,
       // Deliberately duplicated so scripts do not accidentally treat `latest` as a pass badge.
-      gate_outcome: manifest.gate_outcome,
+      auto_gate: manifest.auto_gate,
+      manual_review: manifest.manual_review,
+      dcp_eligibility: manifest.dcp_eligibility,
     });
     renameSync(pointerTmp, pointer);
   }

@@ -15,14 +15,25 @@ function root(): string {
   return value;
 }
 
-function manifest(runId: string, status: "completed" | "failed", outcome: "pass" | "fail" | "smoke" | "not_evaluated") {
+function manifest(runId: string, status: "completed" | "failed", autoGate: "pass" | "fail" | "smoke" | "not_evaluated") {
   return {
-    run_id: runId, status, gate_outcome: outcome, started_at: "2026-09-09T00:00:00.000Z", ended_at: "2026-09-09T00:01:00.000Z",
-    config: {}, dataset: {}, source: { commit: "abc", dirty_fingerprint: "def" }, artifacts: {},
+    run_id: runId, status, auto_gate: autoGate,
+    manual_review: "pending", dcp_eligibility: autoGate === "pass" ? "pending_manual_review" : "ineligible",
+    started_at: "2026-09-09T00:00:00.000Z", ended_at: "2026-09-09T00:01:00.000Z",
+    config: {}, dataset: {}, source: { commit: "abc", dirty_fingerprint: "def" }, insights: { count: 0, ids_sha256: "empty" }, artifacts: {},
   } as const;
 }
 
 describe("A1 isolated artifacts", () => {
+  it("records the early running manifest inside the private workspace", () => {
+    const runs = root();
+    const workspace = beginA1Run(runs, "2026-09-09T00:00:00.000Z");
+    expect(JSON.parse(readFileSync(join(workspace.tempDir, "manifest.json"), "utf8"))).toMatchObject({
+      run_id: workspace.runId, status: "running", auto_gate: "not_evaluated", dcp_eligibility: "not_evaluated",
+    });
+    expect(existsSync(workspace.finalDir)).toBe(false);
+  });
+
   it("publishes a complete run then points latest-complete at it without implying pass", () => {
     const runs = root();
     const workspace = beginA1Run(runs, "2026-09-09T00:00:00.000Z");
@@ -32,7 +43,9 @@ describe("A1 isolated artifacts", () => {
 
     expect(existsSync(join(workspace.finalDir, "manifest.json"))).toBe(true);
     expect(existsSync(workspace.tempDir)).toBe(false);
-    expect(JSON.parse(readFileSync(join(runs, "latest-complete.json"), "utf8"))).toMatchObject({ run_id: workspace.runId, gate_outcome: "fail" });
+    expect(JSON.parse(readFileSync(join(runs, "latest-complete.json"), "utf8"))).toMatchObject({
+      run_id: workspace.runId, auto_gate: "fail", dcp_eligibility: "ineligible",
+    });
   });
 
   it("records a failed run but never advances latest-complete", () => {

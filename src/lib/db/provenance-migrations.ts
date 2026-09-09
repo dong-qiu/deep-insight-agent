@@ -293,6 +293,38 @@ CREATE INDEX idx_source_credit_late_reconciliation_tenant_event ON source_credit
 CREATE TRIGGER source_credit_late_reconciliation_no_update BEFORE UPDATE ON source_credit_late_reconciliation BEGIN SELECT RAISE(ABORT, 'source_credit_late_reconciliation is append-only'); END;
 CREATE TRIGGER source_credit_late_reconciliation_no_delete BEFORE DELETE ON source_credit_late_reconciliation BEGIN SELECT RAISE(ABORT, 'source_credit_late_reconciliation is append-only'); END;
 `;
+// Citation display evidence is added conditionally by the runner below so this checksum works
+// for both freshly bootstrapped databases and pre-existing production databases.
+const DISPLAY_COVERAGE_EVIDENCE_SQL = `
+CREATE INDEX IF NOT EXISTS idx_citation_ref ON citation(citation_ref);
+CREATE TABLE IF NOT EXISTS display_coverage_audit (
+  batch_id TEXT NOT NULL REFERENCES analysis_batch(id), insight_id TEXT NOT NULL REFERENCES insight(id),
+  candidate_id TEXT NOT NULL, gate_version TEXT NOT NULL, terminal_reason TEXT NOT NULL,
+  prompt_version TEXT NOT NULL, input_hash TEXT NOT NULL, validator_model TEXT NOT NULL,
+  decision TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (batch_id, insight_id)
+);
+CREATE INDEX IF NOT EXISTS idx_display_coverage_audit_insight ON display_coverage_audit(insight_id, created_at);
+`;
+
+const DISPLAY_COVERAGE_CANDIDATE_AUDIT_SQL = `
+CREATE TABLE IF NOT EXISTS display_coverage_candidate_audit (
+  batch_id TEXT NOT NULL REFERENCES analysis_batch(id), candidate_id TEXT NOT NULL,
+  insight_id TEXT REFERENCES insight(id), gate_version TEXT NOT NULL, terminal_reason TEXT NOT NULL,
+  prompt_version TEXT NOT NULL, input_hash TEXT NOT NULL, validator_model TEXT NOT NULL,
+  decision TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (batch_id, candidate_id)
+);
+CREATE INDEX IF NOT EXISTS idx_display_coverage_candidate_audit_insight ON display_coverage_candidate_audit(insight_id, created_at);
+CREATE TRIGGER IF NOT EXISTS display_coverage_audit_batch_matches_insight
+BEFORE INSERT ON display_coverage_audit
+WHEN NOT EXISTS (SELECT 1 FROM insight WHERE id = NEW.insight_id AND batch_id = NEW.batch_id)
+BEGIN SELECT RAISE(ABORT, 'display coverage audit insight belongs to another batch'); END;
+CREATE TRIGGER IF NOT EXISTS display_coverage_candidate_audit_batch_matches_insight
+BEFORE INSERT ON display_coverage_candidate_audit
+WHEN NEW.insight_id IS NOT NULL
+ AND NOT EXISTS (SELECT 1 FROM insight WHERE id = NEW.insight_id AND batch_id = NEW.batch_id)
+BEGIN SELECT RAISE(ABORT, 'display coverage candidate audit insight belongs to another batch'); END;
+`;
+
 const MIGRATIONS = [
   { version: "20260803_01_provenance_core", sql: CORE_SQL },
   { version: "20260803_02_report_lifecycle", sql: REPORT_LIFECYCLE_SQL },
@@ -346,6 +378,8 @@ DELETE FROM dashboard_cost_fact_v1 WHERE tenant_id='default' AND EXISTS (
   SELECT 1 FROM metric_late_event late WHERE late.tenant_id=dashboard_cost_fact_v1.tenant_id AND late.fact_kind='cost' AND late.event_id=dashboard_cost_fact_v1.entry_id
     AND COALESCE((SELECT action FROM metric_late_reconciliation r WHERE r.tenant_id=late.tenant_id AND r.fact_kind=late.fact_kind AND r.event_id=late.event_id ORDER BY r.recorded_at DESC,r.id DESC LIMIT 1),'')!='backfilled'
 );` },
+  { version: "20260909_36_display_coverage_evidence", sql: DISPLAY_COVERAGE_EVIDENCE_SQL },
+  { version: "20260909_37_display_coverage_candidate_audit", sql: DISPLAY_COVERAGE_CANDIDATE_AUDIT_SQL },
 ];
 
 function hasColumn(db: DB, table: string, column: string): boolean {
@@ -438,6 +472,15 @@ export function applyProvenanceMigrations(db: DB): void {
       } else if (migration.version === "20260811_08_source_collect") {
         if (!hasColumn(db, "generation_trace", "source_id")) db.exec("ALTER TABLE generation_trace ADD COLUMN source_id TEXT REFERENCES source(id)");
         db.exec("CREATE INDEX IF NOT EXISTS idx_generation_trace_source_started ON generation_trace(source_id, started_at DESC)");
+      } else if (migration.version === "20260909_36_display_coverage_evidence") {
+        if (!hasColumn(db, "citation", "citation_ref")) db.exec("ALTER TABLE citation ADD COLUMN citation_ref TEXT NOT NULL DEFAULT ''");
+        if (!hasColumn(db, "citation", "claim")) db.exec("ALTER TABLE citation ADD COLUMN claim TEXT NOT NULL DEFAULT ''");
+        db.exec(migration.sql);
+      } else if (migration.version === "20260909_37_display_coverage_candidate_audit") {
+        if (!hasColumn(db, "analysis_batch", "display_coverage_state")) {
+          db.exec("ALTER TABLE analysis_batch ADD COLUMN display_coverage_state TEXT NOT NULL DEFAULT 'legacy' CHECK (display_coverage_state IN ('legacy','audited'))");
+        }
+        db.exec(migration.sql);
       } else if (migration.version === "20260825_31_integrity_daily_root_material_backfill") {
         backfillDailyRootMaterial(db);
       } else if (migration.version === "20260817_09_bounded_provenance_views" || migration.version === "20260817_10_bounded_provenance_view_index_fix" || migration.version === "20260820_11_effect_event_link" || migration.version === "20260823_12_source_credit_facts" || migration.version === "20260823_14_p1_metric_facts" || migration.version === "20260823_15_p1_metric_fact_contracts" || migration.version === "20260823_16_p1_metric_conflict_audit" || migration.version === "20260823_17_integrity_anchors" || migration.version === "20260823_18_integrity_anchor_immutability" || migration.version === "20260824_19_integrity_anchor_recovery_material" || migration.version === "20260824_20_integrity_anchor_hardening" || migration.version === "20260824_21_integrity_anchor_tenant_reconcile_index" || migration.version === "20260824_22_integrity_check_ledger" || migration.version === "20260824_23_integrity_check_key_revocation" || migration.version === "20260824_24_integrity_lifecycle" || migration.version === "20260824_25_integrity_lifecycle_purge" || migration.version === "20260825_26_integrity_lifecycle_completion_proof" || migration.version === "20260825_27_integrity_lifecycle_registry_proof" || migration.version === "20260825_28_integrity_lifecycle_hold_and_tombstone_retention" || migration.version === "20260825_29_integrity_lifecycle_hold_tombstone_snapshot" || migration.version === "20260825_30_integrity_lifecycle_external_hold" || migration.version === "20260825_32_integrity_maintenance_lease" || migration.version === "20260826_33_dashboard_trace_read_model_v1" || migration.version === "20260826_34_dashboard_cost_read_model_v1" || migration.version === "20260828_35_dashboard_late_visibility_and_dimensions") {

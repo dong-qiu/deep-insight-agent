@@ -7,7 +7,7 @@
  * 用法：`npm run eval:a1`（需 .env.local 里的 ANTHROPIC_API_KEY）
  *
  * 自动可测指标：引用可达性 / 一致性合格率 / 失败率 / flagged 率 / 校验器准召。
- * 人工指标（非显然占比、幻觉率）：脚本导出 evals/out/review-queue.json 供人评。
+ * 人工指标（非显然占比、幻觉率）：脚本导出隔离的 evals/out/runs/<run-id>/review-queue.json 供人评。
  *
  * ── 分形态（stratum）评测（ADR-0007 B2 前置）──
  * 数据集每条可带 `stratum`（缺省 `arxiv`）。指标**按 stratum 分组**算、各比各的基线，避免
@@ -24,7 +24,7 @@ import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { analyze, coverageGaps, filterByQuoteCoverage, renderImportanceBasis, specificClaims, type CoverageDecision } from "../src/lib/agents/analyzer.js";
 import { judgeWithRetry, validateBatch } from "../src/lib/agents/validator.js";
-import { MODELS, assertModelSeparation, getCostReport } from "../src/lib/runtime/llm.js";
+import { anthropicBaseUrl, MODELS, assertModelSeparation, getCostReport } from "../src/lib/runtime/llm.js";
 import { validatorBatchOn, validatorThinking } from "../src/lib/runtime/env.js";
 import type { CitationCheck, ContentItem, ImportanceReason, Insight, Topic } from "../src/lib/types.js";
 import { beginA1Run, finalizeA1Run, finalizeFailedA1Run, sha256File, writeJson, type A1RunWorkspace } from "./a1-artifacts.js";
@@ -41,6 +41,14 @@ import {
 type Stratum = "arxiv" | "transcript";
 const STRATA: Stratum[] = ["arxiv", "transcript"];
 let activeWorkspace: A1RunWorkspace | null = null;
+/** Captured at startup so a long run cannot be attributed to a later checkout or dataset edit. */
+let activeRunContext: {
+  config: object;
+  dataset: object;
+  source: { commit: string | null; dirty_fingerprint: string | null };
+} = {
+  config: {}, dataset: {}, source: { commit: null, dirty_fingerprint: null },
+};
 
 interface Thresholds {
   reachabilityPass: number;
@@ -127,6 +135,8 @@ interface QualityEvidence {
 interface DisplayCoverageCase {
   id: string;
   expected: "accept" | "reject";
+  field: "statement" | "headline" | "importance_basis";
+  facets: string[];
   statement: string;
   headline?: string;
   importance_facts?: string[];
@@ -138,6 +148,8 @@ interface DisplayCoverageCase {
 interface DisplayCoverageResult {
   id: string;
   expected: "accept" | "reject";
+  field: DisplayCoverageCase["field"];
+  facets: string[];
   actual: "accept" | "reject";
   decisions: CoverageDecision[];
   error: string | null;
@@ -260,9 +272,9 @@ async function runDisplayCoverageBenchmark(cases: DisplayCoverageCase[]): Promis
     const decisions: CoverageDecision[] = [];
     try {
       const kept = await filterByQuoteCoverage([insight], undefined, undefined, (decision) => decisions.push(decision));
-      results.push({ id: c.id, expected: c.expected, actual: kept.length ? "accept" : "reject", decisions, error: null });
+      results.push({ id: c.id, expected: c.expected, field: c.field, facets: c.facets, actual: kept.length ? "accept" : "reject", decisions, error: null });
     } catch (error) {
-      results.push({ id: c.id, expected: c.expected, actual: "reject", decisions, error: (error as Error).message });
+      results.push({ id: c.id, expected: c.expected, field: c.field, facets: c.facets, actual: "reject", decisions, error: (error as Error).message });
     }
   }
   return results;
@@ -281,6 +293,14 @@ function sourceState() {
   return {
     commit: gitValue(["rev-parse", "HEAD"]),
     dirty_fingerprint: createHash("sha256").update(dirty).digest("hex"),
+  };
+}
+
+function insightManifest(insights: Insight[]) {
+  const ids = insights.map((insight) => insight.id).sort();
+  return {
+    count: ids.length,
+    ids_sha256: createHash("sha256").update(ids.join("\n")).digest("hex"),
   };
 }
 
@@ -356,13 +376,14 @@ async function main(): Promise<void> {
     );
     process.exit(2);
   }
-  if (!process.env.ANTHROPIC_API_KEY.startsWith("sk-ant-")) {
+  if (!process.env.ANTHROPIC_API_KEY.startsWith("sk-ant-") && !anthropicBaseUrl()) {
     console.warn(
       "⚠️ ANTHROPIC_API_KEY 不以 'sk-ant-' 开头，可能不是有效的 Anthropic key" +
         "（Anthropic key 形如 sk-ant-api03-...）。若实跑报 401/403，请先核对 key。\n",
     );
   }
   assertModelSeparation();
+  activeWorkspace = beginA1Run();
   // 子集冒烟开关：A1_QUALITY_LIMIT / A1_CONSISTENCY_LIMIT 限制跑多少条（廉价验证链路+成本）
   const qLimit = parseLimit(process.env.A1_QUALITY_LIMIT, "A1_QUALITY_LIMIT");
   const cLimit = parseLimit(process.env.A1_CONSISTENCY_LIMIT, "A1_CONSISTENCY_LIMIT");
@@ -379,6 +400,17 @@ async function main(): Promise<void> {
   // 仅实际缩小样本时才是冒烟；上限大于数据集不能悄悄绕过全量质量门。
   const smoke = qualityCases.length < qualityAll.length || consistencyCases.length < consistencyAll.length;
   const evalConfig = currentEvalConfig(qualityFile, consistencyFile);
+  activeRunContext = {
+    config: evalConfig,
+    dataset: {
+      quality_file: qualityFile,
+      consistency_file: consistencyFile,
+      quality_cases: qualityCases.length,
+      consistency_cases: consistencyCases.length,
+      smoke,
+    },
+    source: sourceState(),
+  };
   console.log(
     `A1 验证实跑\n模型：分析=${MODELS.analyzer} / 校验=${MODELS.validator}` +
       `\n配置：thinking=${evalConfig.validator_thinking ? "on" : "off"} / batch=${evalConfig.validator_batch ? "on" : "off"}\n`,
@@ -395,6 +427,7 @@ async function main(): Promise<void> {
   const coverageDecisionsByStratum: Record<Stratum, CoverageDecision[]> = { arxiv: [], transcript: [] };
   const qualityEvidence: Array<QualityEvidence & { error?: string }> = [];
   let qualitySucceeded = 0;
+  const qualityFailures: Array<{ case_index: number; topic_id: string; error: string }> = [];
   for (const [caseIndex, c] of qualityCases.entries()) {
     const stratum: Stratum = c.stratum ?? "arxiv";
     process.stdout.write(`[分析] 主题「${c.topic.name}」(${stratum})… `);
@@ -420,6 +453,7 @@ async function main(): Promise<void> {
       console.log(`${batch.insights.length} 洞察 / ${vr.checks.length} 引用校验`);
     } catch (e) {
       const error = (e as Error).message;
+      qualityFailures.push({ case_index: caseIndex, topic_id: c.topic.id, error });
       coverageDecisionsByStratum[stratum].push(...coverageDecisions);
       qualityEvidence.push({ case_index: caseIndex, topic_id: c.topic.id, topic_name: c.topic.name, stratum, insight_count: 0, checks: [], coverage_decisions: coverageDecisions, error });
       console.log(`失败，跳过该主题（${error}）`);
@@ -431,6 +465,7 @@ async function main(): Promise<void> {
   const matrixByStratum: Record<Stratum, ConfusionMatrix> = { arxiv: emptyMatrix(), transcript: emptyMatrix() };
   const judgeEvidence: JudgeEvidence[] = [];
   let judgeSucceeded = 0;
+  const judgeFailures: Array<{ case_index: number; error: string }> = [];
   process.stdout.write(`[校验器准召] ${consistencyCases.length} 组标注对… `);
   for (const [caseIndex, c] of consistencyCases.entries()) {
     const st = judgeByStratum[c.stratum ?? "arxiv"];
@@ -442,6 +477,7 @@ async function main(): Promise<void> {
       // validate-batch-judge.ts 覆盖，不能用本循环替代其验证。
       j = await judgeWithRetry(c.statement, c.source_text);
     } catch (e) {
+      judgeFailures.push({ case_index: caseIndex, error: (e as Error).message });
       recordJudgeAttempt(st, c.expected_consistency, null);
       judgeEvidence.push({ case_index: caseIndex, stratum, expected: c.expected_consistency, predicted: null, rationale: null, error: (e as Error).message });
       continue;
@@ -454,6 +490,13 @@ async function main(): Promise<void> {
   const judgedTotal = STRATA.reduce((n, s) => n + judgeByStratum[s].judged, 0);
   const errorsTotal = STRATA.reduce((n, s) => n + judgeByStratum[s].errors, 0);
   console.log(`done（完成 ${judgedTotal}/${consistencyCases.length}${errorsTotal ? `，重试耗尽 ${errorsTotal}（计未命中）` : ""}）`);
+  const coreComplete = qualityFailures.length === 0 && judgeFailures.length === 0;
+  if (!coreComplete) {
+    console.log(
+      `❌ 核心评测不完整：分析主题失败 ${qualityFailures.length} 个，校验标注对失败 ${judgeFailures.length} 个。` +
+        " 不会将部分样本与基线比较或宣称自动门通过。",
+    );
+  }
 
   // ── 指标（按 stratum 分组打印 + 收集所有硬门行用于退出码） ──
   const activeStrata = STRATA.filter((s) => checksByStratum[s].length > 0 || judgeByStratum[s].attempted > 0);
@@ -485,6 +528,21 @@ async function main(): Promise<void> {
       `（数字+实体，按 analyzer 产出 quote 直接覆盖；缺口由 report-gen 在渲染层外露 〔待补引〕）`,
   );
 
+  // ── 展示级引用覆盖基准（P0，独立于 analyzer 的最终 yield）──
+  // 手标 reject 的任何一条若被放行就是 unsafe_accept，硬门必须为 0；false reject 暂作
+  // 信息量，避免在未建立足够样本前把“保守”误报成安全放行。
+  const displayCoverageCases = readDisplayCoverageCases();
+  process.stdout.write(`[展示引用覆盖] ${displayCoverageCases.length} 条手标反例/正例… `);
+  const displayCoverageResults = await runDisplayCoverageBenchmark(displayCoverageCases);
+  const expectedRejects = displayCoverageResults.filter((result) => result.expected === "reject");
+  const expectedAccepts = displayCoverageResults.filter((result) => result.expected === "accept");
+  const unsafeAccepts = expectedRejects.filter((result) => result.actual === "accept");
+  const falseRejects = expectedAccepts.filter((result) => result.actual === "reject");
+  const unsafeAcceptRate = expectedRejects.length ? unsafeAccepts.length / expectedRejects.length : 1;
+  const displayCoverageMetric = metric("display_unsafe_accept", "展示覆盖 unsafe_accept", unsafeAcceptRate, 0, "<=", "publish_safety");
+  allRows.push(displayCoverageMetric);
+  console.log(`${displayCoverageMetric.pass ? "✅" : "❌"} unsafe_accept ${unsafeAccepts.length}/${expectedRejects.length}；false_reject ${falseRejects.length}/${expectedAccepts.length}`);
+
   // ── 成本（估算，A5 成本可控） ──
   const cost = getCostReport();
   const checksTotal = STRATA.reduce((n, s) => n + checksByStratum[s].length, 0);
@@ -502,34 +560,62 @@ async function main(): Promise<void> {
   );
 
   // ── 人工指标：导出 review queue（非显然占比、幻觉率需人评） ──
-  mkdirSync("evals/out", { recursive: true });
+  // All files first land in this run's private temp directory. Only finalizeA1Run publishes it.
+  const workspace = activeWorkspace!;
   const reviewGeneratedAt = new Date().toISOString();
-  const reviewRunId = createHash("sha256").update(`${reviewGeneratedAt}:${JSON.stringify(evalConfig)}`).digest("hex").slice(0, 12);
-  writeFileSync(
-    "evals/out/review-queue.json",
-    JSON.stringify({ run_id: reviewRunId, generated_at: reviewGeneratedAt, insights: allInsights }, null, 2),
+  const pipelineCoverage = Object.fromEntries(STRATA.map((stratum) => [stratum, coveragePipelineSummary(coverageDecisionsByStratum[stratum])]));
+  const reviewQueuePath = join(workspace.tempDir, "review-queue.json");
+  const a1RunPath = join(workspace.tempDir, "a1-run.json");
+  const reviewCsvPath = join(workspace.tempDir, "review.csv");
+  writeJson(
+    reviewQueuePath,
+    { run_id: workspace.runId, generated_at: reviewGeneratedAt, insights: allInsights },
   );
   // 可审计证据：避免只留下聚合率，导致无法区分 analyzer 过度声称、validator 误杀或评测标签问题。
   // CI 会把本文件作为 artifact 上传；其中不含 API 凭据，仅含仓内评测样本索引和模型输出。
-  writeFileSync(
-    "evals/out/a1-run.json",
-    JSON.stringify({
-      run_id: reviewRunId,
+  writeJson(
+    a1RunPath,
+    {
+      run_id: workspace.runId,
       generated_at: reviewGeneratedAt,
       config: evalConfig,
       dataset: { quality_file: qualityFile, quality_cases: qualityCases.length, consistency_file: consistencyFile, consistency_cases: consistencyCases.length, smoke },
+      completion: {
+        core_complete: coreComplete,
+        quality_succeeded: qualitySucceeded,
+        quality_total: qualityCases.length,
+        quality_failures: qualityFailures,
+        judge_succeeded: judgeSucceeded,
+        judge_total: consistencyCases.length,
+        judge_failures: judgeFailures,
+      },
       quality_cases: qualityEvidence,
       judge_cases: judgeEvidence,
       confusion_matrix: matrixByStratum,
       metrics: rowsByStratum,
       coverage: { claims_covered: claimsCovered, claims_total: claimsTotal, ratio: coverageRatio },
-    }, null, 2),
+      display_coverage: {
+        fixture: "evals/dataset/display-coverage-benchmark.json",
+        unsafe_accept: { count: unsafeAccepts.length, total: expectedRejects.length, rate: unsafeAcceptRate },
+        false_reject: { count: falseRejects.length, total: expectedAccepts.length },
+        results: displayCoverageResults,
+      },
+      pipeline_coverage: pipelineCoverage,
+    },
   );
-  execFileSync(process.execPath, ["node_modules/tsx/dist/cli.mjs", "evals/make-review-csv.ts"], { stdio: "inherit" });
+  let reviewArtifactError: string | null = null;
+  try {
+    execFileSync(process.execPath, ["node_modules/tsx/dist/cli.mjs", "evals/make-review-csv.ts", reviewQueuePath, reviewCsvPath], { stdio: "inherit" });
+  } catch (error) {
+    // Human-review convenience files are auxiliary. The durable queue remains available and a
+    // malformed spreadsheet export must never convert a valid core A1 run into a false failure.
+    reviewArtifactError = error instanceof Error ? error.message : String(error);
+    console.warn(`⚠️ review CSV 未生成（核心评测不受影响）：${reviewArtifactError}`);
+  }
   console.log(
     "\n人工指标（脚本无法自动算）：\n" +
       "  · 非显然洞察占比 ≥ 60%、幻觉率 ≤ 2%\n" +
-      "  → 见 evals/out/review-queue.json，逐条人评后回填。",
+      `  → 见 ${join(workspace.finalDir, "review-queue.json")}，逐条人评后回填。`,
   );
 
   // ── 样本量提示 ──
@@ -549,7 +635,9 @@ async function main(): Promise<void> {
   // ── 回归门（eval-criteria：任一指标较基线降 >3pp 告警/阻断）。各 stratum 各比各的基线段。
   // baseline.json：arxiv → `auto_metrics`（历史键，向后兼容）；transcript → `transcript`。 ──
   let regressed = false;
-  try {
+  if (!coreComplete) {
+    console.log("\n（核心评测不完整，跳过 baseline 回归对照）");
+  } else try {
     const baseDoc = JSON.parse(readFileSync("evals/baseline.json", "utf8")) as Record<string, unknown>;
     const configs = baseDoc.eval_configs;
     const configsByStratum = configs && typeof configs === "object" && !Array.isArray(configs)
@@ -596,24 +684,79 @@ async function main(): Promise<void> {
   // （与重构前等价：原版恒 6 行、空数据下四项算 0 → FAIL → exit 1）。
   if (!allRows.length) console.log("❌ 无任何可评指标（所有主题失败 + 零一致性对）——判失败，非通过。");
   // 冒烟只证明链路能跑，刻意不把不完整子集的类别缺失当作质量失败；全量仍严格执行阈值与回归门。
-  if (smoke) {
+  let exitCode: number;
+  let autoGate: "pass" | "fail" | "smoke" | "not_evaluated";
+  if (!coreComplete) {
+    exitCode = 1;
+    autoGate = "not_evaluated";
+  } else if (smoke) {
     const qualityPathSucceeded = qualityCases.length === 0 || qualitySucceeded > 0;
     const judgePathSucceeded = consistencyCases.length === 0 || judgeSucceeded > 0;
     if (allRows.length && qualityPathSucceeded && judgePathSucceeded) {
       console.log("冒烟模式：忽略质量阈值退出码；请查看 artifact，不能据此更新基线或签发布门。");
-      process.exit(0);
+      exitCode = 0;
+      autoGate = "smoke";
+    } else {
+      console.log(
+        `❌ 冒烟链路未完整跑通（analyzer+validator ${qualitySucceeded}/${qualityCases.length} 主题成功，` +
+          `一致性校验 ${judgeSucceeded}/${consistencyCases.length} 对成功）。`,
+      );
+      exitCode = 1;
+      autoGate = "fail";
     }
-    console.log(
-      `❌ 冒烟链路未完整跑通（analyzer+validator ${qualitySucceeded}/${qualityCases.length} 主题成功，` +
-        `一致性校验 ${judgeSucceeded}/${consistencyCases.length} 对成功）。`,
-    );
-    process.exit(1);
+  } else {
+    // 阈值 FAIL 或（配置可比的）>3pp 回归 → 非零退出（带 key 的 job/CI 可据此阻断合并）
+    exitCode = !allRows.length || failed.length || regressed ? 1 : 0;
+    autoGate = exitCode === 0 ? "pass" : "fail";
   }
-  // 阈值 FAIL 或（配置可比的）>3pp 回归 → 非零退出（带 key 的 job/CI 可据此阻断合并）
-  process.exit(!allRows.length || failed.length || regressed ? 1 : 0);
+
+  const artifactPaths = {
+    "a1-run.json": a1RunPath,
+    "review-queue.json": reviewQueuePath,
+    ...(reviewArtifactError ? {} : { "review.csv": reviewCsvPath }),
+  };
+  finalizeA1Run(workspace, {
+    run_id: workspace.runId,
+    status: "completed",
+    auto_gate: autoGate,
+    manual_review: "pending",
+    dcp_eligibility: autoGate === "pass" ? "pending_manual_review" : "ineligible",
+    started_at: workspace.startedAt,
+    ended_at: new Date().toISOString(),
+    config: activeRunContext.config,
+    dataset: activeRunContext.dataset,
+    source: activeRunContext.source,
+    insights: insightManifest(allInsights),
+    artifacts: Object.fromEntries(Object.entries(artifactPaths).map(([name, path]) => [name, sha256File(path)])),
+    ...(reviewArtifactError ? { review_artifact_error: reviewArtifactError } : {}),
+  });
+  activeWorkspace = null;
+  process.exit(exitCode);
 }
 
 main().catch((err) => {
   console.error("A1 验证运行出错：", err);
+  if (activeWorkspace) {
+    const workspace = activeWorkspace;
+    try {
+      finalizeFailedA1Run(workspace, {
+        run_id: workspace.runId,
+        status: "failed",
+        auto_gate: "not_evaluated",
+        manual_review: "not_generated",
+        dcp_eligibility: "not_evaluated",
+        started_at: workspace.startedAt,
+        ended_at: new Date().toISOString(),
+        config: activeRunContext.config,
+        dataset: activeRunContext.dataset,
+        source: activeRunContext.source,
+        insights: { count: 0, ids_sha256: createHash("sha256").update("").digest("hex") },
+        artifacts: {},
+        error: (err as Error).message,
+      });
+    } catch (artifactError) {
+      console.error("A1 失败产物记录也失败：", artifactError);
+    }
+  }
   process.exit(1);
 });

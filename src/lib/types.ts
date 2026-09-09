@@ -75,11 +75,41 @@ export interface Citation {
   content_item_id: string;
   quote: string;
   locator: { paragraph_index: number; char_start: number; char_end: number };
+  /** Stable, opaque identity derived in code from source content + locator + quote. */
+  citation_ref?: string;
   /**
    * 此引用单独支撑的原子事实。新 analyzer 输出必填；历史批次缺失时 validator
    * 保守回退为验证完整 statement，避免旧数据被静默放宽。
    */
   claim?: string;
+}
+
+/** Durable evidence for the reader-facing projection. `decision` intentionally preserves the
+ * complete structured judge response and code-side validation result for later review. */
+export interface DisplayCoverageAudit {
+  insight_id: string;
+  candidate_id: string;
+  gate_version: string;
+  terminal_reason: string;
+  prompt_version: string;
+  input_hash: string;
+  validator_model: string;
+  decision: unknown;
+  created_at: string;
+}
+
+/** Every analyzer candidate receives one terminal record. Rejected candidates have no Insight row,
+ * so their audit must not depend on an Insight foreign key. */
+export interface DisplayCoverageCandidateAudit {
+  candidate_id: string;
+  insight_id?: string;
+  gate_version: string;
+  terminal_reason: string;
+  prompt_version: string;
+  input_hash: string;
+  validator_model: string;
+  decision: unknown;
+  created_at: string;
 }
 
 /** 实体（product-definition 洞察「实体追踪」：组织/人物/项目/产品维度的动态聚合）。
@@ -147,6 +177,11 @@ export interface AnalysisBatch {
   status: "done" | "failed";
   no_significant_event: boolean;
   insights: Insight[];
+  /** New batches retain display-evidence records. `audited` remains meaningful even with zero kept rows. */
+  display_coverage_state?: "legacy" | "audited";
+  display_coverage_audits?: DisplayCoverageAudit[];
+  /** All terminal candidate decisions, including rejected candidates without an Insight row. */
+  display_coverage_candidate_audits?: DisplayCoverageCandidateAudit[];
 }
 
 /** 逐引用校验项（architecture 数据模型 · CitationCheck） */
@@ -431,7 +466,7 @@ export const LlmInsightSchema = z.object({
   importance: z.number().int().min(1).max(5).describe("重要性 1–5"),
   importance_facts: z.array(z.string()).default([]).describe("可选的来源事实，若展示在重要性说明中，每一项都必须由 citation quote 直接覆盖；不要把系统评价或未引证的范围/部署/影响事实写在这里"),
   importance_reason: z.enum(IMPORTANCE_REASONS).describe("只能选择受控系统重要性判断：engineering_decision=工程选型参考，security_review=安全审查参考，evaluation_interpretation=评测解读参考，research_tracking=研究跟踪参考；不得输出自由文本"),
-  importance_reason_claim_indexes: z.array(z.number().int().positive()).min(1).describe("从 1 开始，指向本条 statement 的原子实质 claim，随后才是 headline 的原子实质 claim；每个被引用 claim 必须支撑系统重要性判断，不能指向 importance_facts"),
+  importance_reason_claim_indexes: z.array(z.number().int().positive()).min(1).describe("从 1 开始，先指向本条 statement 的原子实质 claim，随后才是 headline 的原子实质 claim；每个被引用 claim 必须支撑系统重要性判断，不能指向 importance_facts"),
   confidence: z
     .enum(["high", "medium", "low"])
     .nullable()

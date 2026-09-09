@@ -1314,3 +1314,34 @@ P1 驾驶舱实现已在同一应用构建中受测试，但 `required` 镜像�
 P0 修复可继续使用当前 main 的不可变镜像发布，不再依赖过时镜像。P1 的实际启用、外部可达性、生产验收和
 production-ready 声明仍由 INSI-25 阻断；若 future profile 允许任一 P1 seam 返回成功，必须先取得该门的可审计
 证据，并将其标签改为 `enabled`（届时现有部署门会拒绝，直到发布流程被有意识地更新）。
+
+---
+
+## ADR-0025: 展示级引用证据与 A1 运行证据分层
+
+- **日期**: 2026-09-09
+- **状态**: Accepted
+
+### 背景
+
+`statement` 的引用覆盖门已经阻断了读者不可见的证据缺口，但列表 headline、重要性说明和历史重渲染仍可能
+把未单独审计的文本带到读者面前。早期 followup 草稿又把展示字段的一次失败等同于整条洞察失败，并把人工审阅 CSV
+变成 A1 的同步依赖；这会同时压低有效产出并混淆模型质量、网络故障和辅助产物故障。
+
+### 决定
+
+1. 发布只消费 `verified_display`：statement 为核心事实，失败即拒绝候选；headline 校验失败时清空并回退 statement；
+   重要性说明只接受受控 reason code 的固定文案，附带自由来源事实时逐项审计，失败只剥离该事实。不得由模型自行将
+   任意文本标为“评价”以逃避引用。
+2. 每条 citation 使用稳定 `citation_ref`，并持久化其 claim、quote、locator；展示覆盖审计按 batch/insight/field/claim/citation
+   保存 verdict、UTF-16 evidence span、模型/提示词版本与输入哈希。旧数据显式标为 `legacy`，不得获得“已审计”语义。
+3. A1 在启动时创建隔离的 `run_id` 与运行目录。核心评测结果、manifest 与完成状态为原子证据；CSV、review sheet 和
+   预评属于非阻断辅助产物，失败只记录 `review_artifact_error`。全量运行若任一必测主题或一致性样本失败，状态为
+   `incomplete/failed`，不得用部分样本与基线宣称通过。
+4. 自动和人工结论分开：`auto_gate`、`manual_review`、`dcp_eligibility` 必须分别记录。人工审阅 pending 时只能说明自动门通过，
+   不能作为 DCP 或发布通过证据。
+
+### 后果
+
+分析、数据库写入、报告/PPT 重渲染和 A1 证据需要增加受控投影与可迁移审计记录；展示优化不会放宽 statement 的失败语义。
+评测产物可并行运行而不覆盖，并可让独立人工复审可靠回链到特定 Git SHA、数据集与模型配置。

@@ -57,6 +57,16 @@ export function assertModelSeparation(): void {
 // 懒加载：首次调用时才构造客户端，确保 .env.local 已被注入 process.env
 // （模块 import 早于 run-a1 的 loadEnvLocal，过早 new Anthropic() 会拿不到 key）
 let _client: Anthropic | null = null;
+/**
+ * Keep relay configuration explicit and testable. The official SDK defaults to Anthropic's
+ * public API, so merely documenting ANTHROPIC_BASE_URL is insufficient: an unrecognised relay
+ * credential then produces long, misleading timeouts against the wrong endpoint.
+ */
+export function anthropicBaseUrl(raw = process.env.ANTHROPIC_BASE_URL): string | undefined {
+  const value = raw?.trim();
+  return value ? value.replace(/\/+$/, "") : undefined;
+}
+
 function getClient(): Anthropic {
   // 超时取舍：原 45s 是为快速失败中转站「卡死」；但 Opus 生成 8k token 输出的合法调用可能 >45s，
   // 且每次重试也只等 45s → 合法慢生成永远成功不了（F4 live 确认暴露）。改 120s（env LLM_TIMEOUT_MS 可配），
@@ -65,7 +75,12 @@ function getClient(): Anthropic {
   // maxRetries 可调（LLM_MAX_RETRIES，默认 2）：中转站抖动期可临时调高兜网络层；
   // 与 validator.judgeWithRetry 的应用层重试叠加（前者管网络/5xx，后者覆盖 SDK 重试耗尽后的短窗）。
   const maxRetries = llmMaxRetries();
-  return (_client ??= new Anthropic({ timeout, maxRetries })); // key from env
+  const baseURL = anthropicBaseUrl();
+  return (_client ??= new Anthropic({
+    timeout,
+    maxRetries,
+    ...(baseURL ? { baseURL } : {}),
+  })); // key from env
 }
 
 // ── Cost Meter（进程内累计本次运行的 token / 成本） ──

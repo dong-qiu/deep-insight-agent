@@ -28,10 +28,14 @@ npm run typecheck   # tsc 类型检查
 | 引用可达性通过率 | validator 确定性校验（quote 是否逐字在原文） | 自动 |
 | 引用一致性合格率 / 失败率 / flagged 率 | validator LLM 一致性评判 | 自动 |
 | 校验器端到端三分类准确率 / 负例召回率 / 完成率 | 标注集 `citation-consistency.jsonl`；经生产单条路径的重试，失败按未命中计入前两项 | 自动 |
-| 非显然洞察占比、幻觉率 | 需人评 → 脚本导出 `out/review-queue.json` | 人工 |
+| 展示引用覆盖 unsafe_accept | 手标 `dataset/display-coverage-benchmark.json`；任一 reject 被放行即 FAIL | 自动 |
+| 非显然洞察占比、幻觉率 | 需人评 → 脚本导出 `out/runs/<run-id>/review-queue.json` | 人工 |
 
 阈值镜像自 `docs/verify/eval-criteria.md`「上线门槛」（改阈值请同步那份文档）。
 自动门槛全过 → 退出码 0；有 FAIL → 退出码 1（便于 CI 门禁）。
+
+每次运行写入独立 `out/runs/<run-id>/`（`a1-run.json`、review queue/CSV、`manifest.json`）；
+`out/runs/latest-complete.json` 只是最近完成的指针，必须分别读取 `auto_gate`、`manual_review`、`dcp_eligibility`，不能当作 PASS 标记。
 
 ## 数据集
 

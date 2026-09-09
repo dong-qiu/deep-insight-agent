@@ -477,14 +477,30 @@ export async function validateBatch(
     const metadata = judgeMetadata(itemId);
     const cacheInput = cacheSource(itemId);
     for (const group of chunk(evidences, maxPer)) {
+      // A malformed batch response is transport/model-output degradation, not evidence about every
+      // claim in the group. Fall back to the established single-claim retry path before recording
+      // `not_evaluated`; individual failures remain visible and are never cached as successes.
+      const judgeIndividually = async (): Promise<JudgeOutcome[]> => {
+        const results: JudgeOutcome[] = [];
+        for (const evidence of group) {
+          try {
+            results.push(await judgeWithRetry(evidence.claim, body, onCost, metadata, evidence.quote));
+          } catch (error) {
+            console.warn(`  ⚠️ 一致性校验失败，记为校验失败（${(error as Error).message}）`);
+            results.push({ error: true });
+          }
+        }
+        return results;
+      };
       if (batchOn && group.length > 1) {
-        // 批量：源文发一遍，逐条独立判。整组失败（瞬时抖动/产出残缺）→ 本组全记校验失败（不静默漏）。
+        // 批量：源文发一遍，逐条独立判。整组失败（瞬时抖动/产出残缺）时退回逐条，
+        // 不能把一次 schema 漂移放大成整组引用都未评估。
         let results: JudgeOutcome[];
         try {
           results = await judgeBatchWithRetry(group.map((e) => e.claim), body, onCost, metadata, group.map((e) => e.quote));
         } catch (e) {
-          console.warn(`  ⚠️ 批量一致性校验失败，本组 ${group.length} 条记为校验失败（${(e as Error).message}）`);
-          results = group.map(() => ({ error: true }));
+          console.warn(`  ⚠️ 批量一致性校验失败，本组 ${group.length} 条退回逐条复判（${(e as Error).message}）`);
+          results = await judgeIndividually();
         }
         group.forEach((e, i) => {
           outcomes.set(pairKey(e.key, itemId), results[i]);
@@ -492,19 +508,11 @@ export async function validateBatch(
         });
       } else {
         // 逐条（单条组 / kill-switch 关）：沿用单条判定路径（与历史行为一致）。
-        for (const e of group) {
-          let out: JudgeOutcome;
-          try {
-            out = await judgeWithRetry(e.claim, body, onCost, metadata, e.quote);
-          } catch (e) {
-            // 调用失败（超时/限流/解析错）与「判官真说不确定」分开记账：记 consistency=not_evaluated
-            // （此组合专指「校验失败」），verdict 仍 flagged（不让未校验引用伪装已核实），进入重试队列且不得发布。
-            console.warn(`  ⚠️ 一致性校验失败，记为校验失败（${(e as Error).message}）`);
-            out = { error: true };
-          }
-          outcomes.set(pairKey(e.key, itemId), out);
-          remember(e.key, cacheInput, out);
-        }
+        const results = await judgeIndividually();
+        group.forEach((e, i) => {
+          outcomes.set(pairKey(e.key, itemId), results[i]);
+          remember(e.key, cacheInput, results[i]);
+        });
       }
     }
   }

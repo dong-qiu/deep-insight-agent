@@ -33,8 +33,13 @@ const prejudge = prejudgePath
   ? new Map((JSON.parse(readFileSync(prejudgePath, "utf8")) as Prejudge[]).map((j) => [j.id, j]))
   : null;
 
-const esc = (v: string | number): string =>
-  `"${String(v).replace(/\r?\n/g, " ").replace(/"/g, '""')}"`;
+/** Spreadsheet formula injection is a data-integrity problem: reader-facing source text must
+ * remain literal even when an evaluator opens the CSV in Excel or Sheets. */
+const literalCell = (v: string | number): string => {
+  const value = String(v).replace(/\r?\n/g, " ");
+  return /^[=+\-@]/.test(value) ? `'${value}` : value;
+};
+const esc = (v: string | number): string => `"${literalCell(v).replace(/"/g, '""')}"`;
 
 const aiCols = prejudge ? ["AI预评·非显然", "AI预评·幻觉", "AI预评·理由"] : [];
 const headers = [
