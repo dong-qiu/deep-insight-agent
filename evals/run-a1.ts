@@ -45,6 +45,7 @@ import { validatorBatchOn, validatorThinking } from "../src/lib/runtime/env.js";
 import type { CitationCheck, ContentItem, ImportanceReason, Insight, Topic } from "../src/lib/types.js";
 import { beginA1Run, finalizeA1Run, finalizeFailedA1Run, sha256File, writeJson, type A1RunWorkspace } from "./a1-artifacts.js";
 import { sameEvalConfig, type EvalConfig } from "./a1-config.js";
+import { dirtyFingerprintFromStatus } from "./a1-source-state.js";
 import {
   emptyJudgeStats,
   judgeAccuracy,
@@ -306,10 +307,15 @@ function gitValue(args: string[]): string | null {
 }
 
 function sourceState() {
-  const dirty = gitValue(["status", "--porcelain=v1"]) ?? "unavailable";
+  let dirty: string | null;
+  try {
+    dirty = execFileSync("git", ["status", "--porcelain=v1"], { encoding: "utf8" }).trim();
+  } catch {
+    dirty = null;
+  }
   return {
     commit: gitValue(["rev-parse", "HEAD"]),
-    dirty_fingerprint: createHash("sha256").update(dirty).digest("hex"),
+    dirty_fingerprint: dirtyFingerprintFromStatus(dirty),
   };
 }
 
