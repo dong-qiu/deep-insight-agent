@@ -1,5 +1,5 @@
 {
-  "version": "display-coverage-v4",
+  "version": "display-coverage-v5",
   "cases": [
     {
       "id": "controlled-poc-to-blackbox",
@@ -84,6 +84,85 @@
       "statement": "The character-based Recursive chunking method performs best for Khmer agricultural RAG.",
       "statement_citation_index": 1,
       "citations": [{ "claim": "The character-based Recursive chunking method performs best for Khmer agricultural RAG", "quote": "We observe the best performance for the character-based Recursive chunking method." }]
+    },
+    {
+      "id": "generic-agent-cannot-become-coding-agent",
+      "expected": "reject",
+      "field": "statement",
+      "facets": ["anaphora", "system_type", "scope"],
+      "statement": "A coding agent sometimes does more than asked.",
+      "statement_citation_index": 1,
+      "citations": [{ "claim": "A coding agent sometimes does more than asked", "quote": "The agent sometimes does more than asked." }]
+    },
+    {
+      "id": "generic-gap-cannot-become-reward-hacking-gap",
+      "expected": "reject",
+      "field": "statement",
+      "facets": ["anaphora", "relationship", "benchmark_scope"],
+      "statement": "SpecBench's reward-hacking gap grows with task length.",
+      "statement_citation_index": 1,
+      "citations": [{ "claim": "SpecBench's reward-hacking gap grows with task length", "quote": "The gap grows sharply with task length." }]
+    },
+    {
+      "id": "generic-it-cannot-become-frontier-comparison",
+      "expected": "reject",
+      "field": "statement",
+      "facets": ["anaphora", "entity", "comparison"],
+      "statement": "Frontier reduces latency error compared with state-of-the-art simulators.",
+      "statement_citation_index": 1,
+      "citations": [{ "claim": "Frontier reduces latency error compared with state-of-the-art simulators", "quote": "It reduces end-to-end latency error from 44.9% to 6.4%." }]
+    },
+    {
+      "id": "livepi-is-not-proven-benchmark",
+      "expected": "reject",
+      "field": "statement",
+      "facets": ["type_label", "scope"],
+      "statement": "The LivePI benchmark covers seven input surfaces.",
+      "statement_citation_index": 1,
+      "citations": [{ "claim": "The LivePI benchmark covers seven input surfaces", "quote": "LivePI covers seven input surfaces." }]
+    },
+    {
+      "id": "bound-token-cannot-come-from-second-citation",
+      "expected": "reject",
+      "field": "statement",
+      "facets": ["bound_citation", "entity", "evidence_stitching"],
+      "statement": "Frontier reduces latency error.",
+      "statement_citation_index": 1,
+      "citations": [
+        { "claim": "Frontier reduces latency error", "quote": "It reduces latency error." },
+        { "claim": "Frontier is a simulator", "quote": "Frontier is a simulator." }
+      ]
+    },
+    {
+      "id": "generic-subject-direct-positive",
+      "expected": "accept",
+      "field": "statement",
+      "facets": ["direct_fact", "explicit_subject"],
+      "statement": "Frontier reduces latency error.",
+      "statement_citation_index": 1,
+      "citations": [{ "claim": "Frontier reduces latency error", "quote": "Frontier reduces latency error." }]
+    },
+    {
+      "id": "headline-expansion-is-safely-cleared",
+      "expected": "accept",
+      "field": "headline",
+      "facets": ["headline", "safe_projection"],
+      "statement": "LivePI covers seven input surfaces.",
+      "statement_citation_index": 1,
+      "headline": "LivePI benchmark covers seven input surfaces.",
+      "citations": [{ "claim": "LivePI covers seven input surfaces", "quote": "LivePI covers seven input surfaces." }]
+    },
+    {
+      "id": "importance-fact-expansion-is-safely-cleared",
+      "expected": "accept",
+      "field": "importance_basis",
+      "facets": ["importance_fact", "safe_projection"],
+      "statement": "The method provides local certification.",
+      "statement_citation_index": 1,
+      "importance_facts": ["The method is deployed in production."],
+      "importance_reason": "research_tracking",
+      "importance_reason_claim_indexes": [1],
+      "citations": [{ "claim": "The method provides local certification", "quote": "The method provides local certification." }]
     },
     {
       "id": "direct-factual-positive",

@@ -251,8 +251,12 @@ function coveragePipelineSummary(decisions: CoverageDecision[]) {
   const terminal_reasons: Record<string, number> = {};
   const dropped_claims_by_field: Record<string, number> = {};
   const dropped_claims_by_reason: Record<string, number> = {};
+  const projection_reasons: Record<string, number> = {};
   for (const decision of decisions) {
     terminal_reasons[decision.terminal_reason] = (terminal_reasons[decision.terminal_reason] ?? 0) + 1;
+    for (const reason of decision.projection_reasons ?? []) {
+      projection_reasons[reason] = (projection_reasons[reason] ?? 0) + 1;
+    }
     for (const claim of decision.claims.filter((claim) => !claim.supports)) {
       dropped_claims_by_field[claim.field] = (dropped_claims_by_field[claim.field] ?? 0) + 1;
       dropped_claims_by_reason[claim.reason] = (dropped_claims_by_reason[claim.reason] ?? 0) + 1;
@@ -268,6 +272,7 @@ function coveragePipelineSummary(decisions: CoverageDecision[]) {
     terminal_reasons,
     dropped_claims_by_field,
     dropped_claims_by_reason,
+    projection_reasons,
   };
 }
 

@@ -662,8 +662,9 @@ describe("filterByQuoteCoverage（展示 quote 覆盖门）", () => {
     expect(audits[0]?.claims[0]?.reason).toBe("judge_not_supported");
   });
 
-  it("citation claim 不能把展示 quote 以外的适用范围带入 statement", async () => {
+  it("绑定 quote 缺少稳定专名时在调用 judge 前拒绝，不能由 claim 补全适用范围", async () => {
     vi.mocked(callStructured).mockResolvedValue(coverageVerdicts(false));
+    const audits: Array<{ claims: Array<{ reason: string; uncovered_tokens?: string[] }> }> = [];
     const row = insight("The character-based Recursive chunking method performs best for Khmer agricultural RAG.", [{
       content_item_id: "ci",
       claim: "The character-based Recursive chunking method performs best for Khmer agricultural RAG",
@@ -671,20 +672,45 @@ describe("filterByQuoteCoverage（展示 quote 覆盖门）", () => {
       locator: { paragraph_index: 0, char_start: 0, char_end: 78 },
     }]);
 
-    await expect(filterByQuoteCoverage([row])).resolves.toEqual([]);
-    expect(vi.mocked(callStructured)).toHaveBeenCalledTimes(2);
-    expect(vi.mocked(callStructured).mock.calls[0]?.[0].system).toContain("省略的上文、下文、标题或全文上下文");
+    await expect(filterByQuoteCoverage([row], undefined, undefined, (decision) => audits.push(decision))).resolves.toEqual([]);
+    expect(vi.mocked(callStructured)).not.toHaveBeenCalled();
+    expect(audits[0]?.claims[0]).toMatchObject({ reason: "statement_token_not_in_bound_quote", uncovered_tokens: ["Khmer", "RAG"] });
   });
 
-  it("主审错误放行 Khmer 适用范围时，独立复核必须拒绝并留下双审审计", async () => {
-    const quote = "We observe the best performance for the character-based Recursive chunking method.";
+  it("稳定锚点只可来自绑定 quote，不能从第二条 citation 拼接", async () => {
+    const audits: Array<{ claims: Array<{ reason: string; uncovered_tokens?: string[] }> }> = [];
+    const row = insight("Frontier reduces latency error.", [
+      { content_item_id: "ci1", claim: "Frontier reduces latency error", quote: "It reduces latency error.", locator: { paragraph_index: 0, char_start: 0, char_end: 25 } },
+      { content_item_id: "ci2", claim: "Frontier is a simulator", quote: "Frontier is a simulator.", locator: { paragraph_index: 0, char_start: 0, char_end: 24 } },
+    ]);
+
+    await expect(filterByQuoteCoverage([row], undefined, undefined, (decision) => audits.push(decision))).resolves.toEqual([]);
+    expect(vi.mocked(callStructured)).not.toHaveBeenCalled();
+    expect(audits[0]?.claims[0]).toMatchObject({ reason: "statement_token_not_in_bound_quote", uncovered_tokens: ["Frontier"] });
+  });
+
+  it("非 ASCII 的双语实体不触发词面锚点误杀，仍交由双审覆盖", async () => {
+    const quote = "The method performs best for Khmer agricultural RAG.";
+    vi.mocked(callStructured).mockResolvedValue(coverageVerdictsFor(quote, true));
+    const row = insight("该方法在高棉农业 RAG 中表现最佳。", [{
+      content_item_id: "ci", claim: "该方法在高棉农业 RAG 中表现最佳", quote,
+      locator: { paragraph_index: 0, char_start: 0, char_end: quote.length },
+    }]);
+    row.entities = [{ name: "高棉", type: "project" }];
+
+    await expect(filterByQuoteCoverage([row])).resolves.toEqual([row]);
+    expect(vi.mocked(callStructured).mock.calls.map(([request]) => request.role)).toEqual(["validator", "coverage"]);
+  });
+
+  it("主审错误放行泛称 agent→编码代理时，独立复核必须拒绝并留下双审审计", async () => {
+    const quote = "The agent sometimes does more than asked.";
     vi.mocked(callStructured)
       .mockResolvedValueOnce(coverageVerdictsFor(quote, true))
       .mockResolvedValueOnce(coverageVerdictsFor(quote, false));
     const audits: Array<{ claims: Array<{ supports: boolean; reason: string; countercheck?: { model: string; supports: boolean; reason: string } }> }> = [];
-    const row = insight("The character-based Recursive chunking method performs best for Khmer agricultural RAG.", [{
+    const row = insight("A coding agent sometimes does more than asked.", [{
       content_item_id: "ci",
-      claim: "The character-based Recursive chunking method performs best for Khmer agricultural RAG",
+      claim: "A coding agent sometimes does more than asked",
       quote,
       locator: { paragraph_index: 0, char_start: 0, char_end: quote.length },
     }]);
@@ -861,7 +887,7 @@ describe("filterByQuoteCoverage（展示 quote 覆盖门）", () => {
     expect(vi.mocked(callStructured)).not.toHaveBeenCalled();
   });
 
-  it("不可定位的标题 quote 不得作为展示证据；剩余 quote 不足则丢弃", async () => {
+  it("不可定位的标题 quote 剔除后，若绑定 quote 缺稳定专名则在 judge 前拒绝", async () => {
     vi.mocked(callStructured).mockResolvedValue(coverageVerdicts(false));
     const row = insight("SynAE 的框架同时衡量有效性、保真度和多样性。", [
       { content_item_id: "ci", claim: "框架名称", quote: "SynAE: a Framework for Measuring", locator: { paragraph_index: -1, char_start: -1, char_end: -1 } },
@@ -870,9 +896,7 @@ describe("filterByQuoteCoverage（展示 quote 覆盖门）", () => {
     row.statement_citation_index = 2;
 
     await expect(filterByQuoteCoverage([row])).resolves.toEqual([]);
-    const user = vi.mocked(callStructured).mock.calls[0][0].user;
-    expect(user).toContain("validity");
-    expect(user).not.toContain("SynAE: a Framework");
+    expect(vi.mocked(callStructured)).not.toHaveBeenCalled();
     expect(row.citations.map((citation) => citation.quote)).toEqual(["validity"]);
   });
 
@@ -926,23 +950,28 @@ describe("filterByQuoteCoverage（展示 quote 覆盖门）", () => {
     expect(row).toMatchObject({ source_count: 1, multi_source: false });
   });
 
-  it("headline 及 importance_basis 中新增的事实也必须逐项有 citation claim/quote 覆盖", async () => {
-    vi.mocked(callStructured).mockResolvedValue(coverageVerdicts(true, false, true));
+  it("P0 剥离自由 headline 与 importance_facts，只发布经绑定的 statement", async () => {
+    const quote = "Mem-pi 论文提出了一种记忆方法。";
+    vi.mocked(callStructured).mockResolvedValue(coverageVerdictsFor(quote, true));
+    const audits: Array<{ terminal_reason: string; degraded_fields?: string[]; projection_reasons?: string[] }> = [];
     const row = {
       ...insight("Mem-pi 论文提出了一种记忆方法。", [{
-        content_item_id: "ci", claim: "Mem-pi 论文提出了一种记忆方法", quote: "We present Mem-pi", locator: { paragraph_index: 0, char_start: 0, char_end: 17 },
+        content_item_id: "ci", claim: "Mem-pi 论文提出了一种记忆方法", quote, locator: { paragraph_index: 0, char_start: 0, char_end: quote.length },
       }]),
       headline: "Mem-pi 已上线",
-      importance_basis: "该论文提出了 Mem-pi",
+      importance_facts: ["该论文提出了 Mem-pi"],
+      importance_reason: "research_tracking" as const,
+      importance_reason_claim_indexes: [1],
+      importance_basis: renderImportanceBasis(["该论文提出了 Mem-pi"], "research_tracking"),
     };
 
-    await expect(filterByQuoteCoverage([row])).resolves.toEqual([]);
-    const user = vi.mocked(callStructured).mock.calls[0][0].user;
-    expect(user).toContain("[statement] Mem-pi 论文提出了一种记忆方法");
-    expect(user).toContain("[headline] Mem-pi 已上线");
-    expect(user).toContain("[importance_basis] 该论文提出了 Mem-pi");
-    expect(user).toContain("<citation_evidence>");
-    expect(user).toContain("citation_claim：Mem-pi 论文提出了一种记忆方法");
+    await expect(filterByQuoteCoverage([row], undefined, undefined, (decision) => audits.push(decision))).resolves.toEqual([row]);
+    expect(row).toMatchObject({ headline: "", importance_facts: [], importance_basis: renderImportanceBasis([], "research_tracking") });
+    expect(audits[0]).toMatchObject({
+      terminal_reason: "kept_degraded",
+      degraded_fields: ["headline", "importance_basis"],
+      projection_reasons: ["headline_not_exact_statement", "importance_facts_not_exact_statement"],
+    });
   });
 
   it("缺少能指向 citation claim/quote 的证据索引时 fail-closed", async () => {
@@ -1025,12 +1054,12 @@ describe("filterByQuoteCoverage（展示 quote 覆盖门）", () => {
   it("importance_basis 只作已覆盖事实的评价、没有新增可核验事实时可以保留", async () => {
     vi.mocked(callStructured).mockResolvedValue({
       data: { verdicts: [
-        { index: 1, kind: "factual", supports: true, citation_indexes: [1], evidence_spans: [{ citation_index: 1, quote_start: 0, quote_end: "Recursive chunking performs best".length, evidence_excerpt: "Recursive chunking performs best" }] },
+        { index: 1, kind: "factual", supports: true, citation_indexes: [1], evidence_spans: [{ citation_index: 1, quote_start: 0, quote_end: "Recursive chunking performs best in Khmer RAG".length, evidence_excerpt: "Recursive chunking performs best in Khmer RAG" }] },
       ] },
     } as unknown as Awaited<ReturnType<typeof callStructured>>);
     const row = {
       ...insight("Recursive 分块在 Khmer RAG 评测中表现最佳。", [{
-        content_item_id: "ci", claim: "Recursive 分块在 Khmer RAG 评测中表现最佳", quote: "Recursive chunking performs best", locator: { paragraph_index: 0, char_start: 0, char_end: 32 },
+        content_item_id: "ci", claim: "Recursive 分块在 Khmer RAG 评测中表现最佳", quote: "Recursive chunking performs best in Khmer RAG", locator: { paragraph_index: 0, char_start: 0, char_end: 45 },
       }]),
       importance_facts: [],
       importance_reason: "engineering_decision" as const,

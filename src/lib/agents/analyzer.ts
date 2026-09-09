@@ -58,9 +58,9 @@ export class QuoteCoverageRejectedError extends Error {
 
 /** Bound parallel validator calls without serialising a whole analysis batch. */
 export const QUOTE_COVERAGE_CONCURRENCY = 3;
-export const DISPLAY_COVERAGE_GATE_VERSION = "display-coverage-v4";
-export const DISPLAY_COVERAGE_PROMPT_VERSION = "display-coverage-v4";
-export const DISPLAY_COVERAGE_COUNTERCHECK_PROMPT_VERSION = "display-coverage-countercheck-v1";
+export const DISPLAY_COVERAGE_GATE_VERSION = "display-coverage-v5";
+export const DISPLAY_COVERAGE_PROMPT_VERSION = "display-coverage-v5";
+export const DISPLAY_COVERAGE_COUNTERCHECK_PROMPT_VERSION = "display-coverage-countercheck-v2";
 
 export const ANALYZER_SYSTEM = `你是行业洞察分析引擎。给定一个主题与一批已采集的多源内容，提炼围绕该主题的结构化洞察。
 
@@ -76,8 +76,8 @@ export const ANALYZER_SYSTEM = `你是行业洞察分析引擎。给定一个主
 ${CITATION_CLAUSE_AUDIT}
 5. 不得放大：结论的适用范围/程度/条件必须与来源严格一致。不得把"仅在 X 上"写成"在多类/所有上"，不得把"最高 N / up to N"写成"总是 N"，不得把"提示 / 有限证据"写成"证明"。
 6. 完整自足：statement 必须是完整句子，不得截断或留半句。
-6.5. 一句话要点（headline）：为每条洞察额外产出 headline——≤40 字、把最关键的结论/数字/主体置于句首、去掉铺垫与从句，供列表卡片扫读；须忠实浓缩同条 statement，不得新增 statement 没有的事实、不得放大范围/程度。
-6.6. 展示字段同样可溯源：headline 只能压缩已有 statement 的已引证事实，不能加入新事实。不要输出 importance_basis 自由文本；改为输出 importance_facts（可选、每项都是需要 citation quote 直接覆盖的来源事实）、importance_reason（只能从 schema 枚举选一个）和 importance_reason_claim_indexes（指向 statement 原子 claim，随后才是 headline 原子 claim）。系统会以固定模板渲染“系统重要性判断”，所以不得在任何重要性字段写“首次”、独立研究数量、行业级影响、已上线/生产部署、适用模型范围等未被 quote 直接覆盖的事实。
+6.5. 一句话要点（headline）：P0 暂不发布自由改写的 headline。只在能把 statement 原样重述（仅可忽略首尾/连续空白和句末标点）时输出它；不能则置空。不要翻译、压缩、改写或添加类别词，代码只会保留与 statement 完全等值的 headline。
+6.6. 展示字段同样可溯源：不要输出 importance_basis 自由文本；importance_facts 在 P0 只能原样重述 statement（否则置空），importance_reason 只能从 schema 枚举选一个，importance_reason_claim_indexes 只能指向 statement 原子 claim。系统会以固定模板展示“系统重要性判断”，所以不得在任何重要性字段写“首次”、独立研究数量、行业级影响、已上线/生产部署、适用模型范围等未被 quote 直接覆盖的事实。
 7. 偏好非显然：在满足 P0 原子洞察契约后，才优先产出**跨多个来源的并列对照**或揭示非显然模式/共识/张力的洞察；单源但直接、完整可引证的事实优先于不完整的“综合”。**不得为了"综合"而编造来源间并不存在的关联。尤其不得从多篇文章同期出现，推出它们相互验证、彼此无关、构成共同瓶颈、共同因果、独立研究方向等关系；原文未明确陈述的来源间关系不要写进 statement 或 claim。**
 8. 去重：同一来源的同一发现只产出一条洞察，不拆成多条。
 9. 中性叙述：客观陈述已发生的事，不预测、不评论、不带情绪。
@@ -104,8 +104,9 @@ ${CITATION_CLAUSE_AUDIT}
 // v13 canonicalizes a unique, verbatim evidence excerpt to the persisted UTF-16 locator;
 // v14 makes the minimum independently verifiable insight contract explicit; v15 adds an
 // explicit statement-to-citation-claim binding; v16 adds an independent, fail-closed
-// countercheck of that bound claim against its displayed quote.
-export const ANALYZER_OUTPUT_VERSION = 16;
+// countercheck of that bound claim against its displayed quote; v17 introduces a bound-quote
+// stable-token necessary condition and removes free-form headline/importance-fact projection.
+export const ANALYZER_OUTPUT_VERSION = 17;
 
 /** 分析缓存版本（ADR-0009）：analyzer 模型 + SYSTEM prompt 哈希 + 输出契约版本——任一变 → 版本变 → 旧分析缓存
  *  自动失效（不复用陈旧 prompt/schema/派生的洞察）。镜像 validator.consistencyCacheVersion 的版本隔离口径。 */
@@ -208,6 +209,7 @@ const QUOTE_COVERAGE_SYSTEM = `你是展示级引用覆盖审计员。只允许�
 - 对某项 supports=true，citation_indexes **必须且只能有一个** citation：这一条 citation 的 citation_claim 与 displayed_quote 必须逐字、直接覆盖该项的全部事实。citation_claim 只是它的 quote 所能证明内容的边界说明，绝不是额外证据；quote 仍必须直接支持它。多个 quote 分别覆盖吞吐、机制、范围或条件，属于 evidence stitching，必须 supports=false；若两个来源各自完整复述同一原子事实，只选择其中一个。
 - 研究/来源数量、机制、比较对象、适用范围、时间、条件、因果和程度都是事实，不能只覆盖其中的数字或实体。一个含“在 X 中”“通过 Y”“比 Z”或“因此”的关系 claim 必须由直接表达该关系的展示 quote 支撑；不得拼接局部 quote 来推导来源没有明确说出的关系。
 - quote 只覆盖该项的一部分、quote 被截断、citation_claim 比 quote 更宽、或只主题相关而未直接证明该项，必须 supports=false。不得把“同一实体/数字出现过”“原文大概会有更多上下文”或“多条相关 quote 合起来看似合理”当作覆盖。claim 写“黑盒聊天机器人”“通过反馈或直接提交”“类生产环境”等限定而 quote 没有直接表达时，必须 false。
+- displayed_quote 中的 “the agent”、“it”、“the gap”、“the effect”、“this method” 等泛称没有标题、正文或主题中的先行词。不得把它们改写为特定系统、代理类别、基准类型、机制、比较基线、部署范围或性能含义。例：quote 仅说 “the agent sometimes does more than asked” 不能支持 “a coding agent …”；quote 仅说 “it reduces latency error” 不能支持 “Frontier reduces error compared with state-of-the-art simulators”；quote 仅说 “the gap grows” 不能支持 “the reward-hacking gap grows”。
 - 明确反例：quote 仅说 “We observe the best performance for the character-based Recursive chunking method.” 时，claim 即使也写成 “The character-based Recursive chunking method performs best for Khmer agricultural RAG”，仍必须 false；“Khmer agricultural RAG”不在展示 quote 中，不能从标题、主题或全文补入。
 - citation_claim 即使逐字等于 statement，也不能把 displayed_quote 省略的上文、下文、标题或全文上下文带进来。例如 claim/statement 说“该分块方法在 Khmer 农业 RAG 中表现最好”，而 displayed_quote 只说“该方法取得最低 L2 距离和最高指标”，则 Khmer、农业和 RAG 适用范围都没有展示证据，必须 supports=false。
 - supports=true 时 citation_indexes 必须列出至少一个直接覆盖它的 citation 序号；supports=false 时 citation_indexes 与 evidence_spans 必须都是空数组。
@@ -221,7 +223,7 @@ const QUOTE_COVERAGE_COUNTERCHECK_SYSTEM = `你是展示级引用的反扩写审
 
 你只在 displayed_quote 单独、明确表达 statement 的每个主体、范围、条件、关系、比较、机制、程度和数字时才输出 supports=true。citation_claim 不是额外证据：它即使与 statement 相同，也必须被 quote 自己完整支持。任一新增或被省略的范围都为 false；不确定即 false。
 
-反例：statement/citation_claim 写 “The character-based Recursive chunking method performs best for Khmer agricultural RAG”，而 quote 只写 “We observe the best performance for the character-based Recursive chunking method.” 时，Khmer agricultural RAG 不可从上下文补全，必须 supports=false。
+反例：statement/citation_claim 写 “The character-based Recursive chunking method performs best for Khmer agricultural RAG”，而 quote 只写 “We observe the best performance for the character-based Recursive chunking method.” 时，Khmer agricultural RAG 不可从上下文补全，必须 supports=false。相同地，quote 中的 “the agent”/“it”/“the gap”/“the effect” 不可借标题、正文、主题或 citation_claim 补成特定系统、代理类别、比较基线、机制或部署范围；无法从 quote 自指识别时必须 false。
 
 supports=true 时 citation_indexes 必须且只能为 [1]，并给出 displayed_quote 内逐字 evidence_span；span 只是定位，不能代替对完整 statement 的判断。supports=false 时 citation_indexes 与 evidence_spans 必须为空。
 
@@ -322,6 +324,8 @@ export interface CoverageClaimDecision {
   supports: boolean;
   citation_indexes: number[];
   evidence_spans: CoverageEvidenceSpan[];
+  /** Stable source-form anchors absent from the one citation explicitly bound to statement. */
+  uncovered_tokens?: string[];
   /** Present for statement claims in newly audited records; both judges must support to publish. */
   countercheck?: CoverageCountercheck;
   /** Only populated for the fixed, code-rendered system importance judgment. */
@@ -333,7 +337,7 @@ export interface CoverageClaimDecision {
  * display coverage from final yield. `evidence_spans` remain an audit locator, not semantic proof. */
 export interface CoverageDecision {
   candidate_id: string;
-  gate_version: "display-coverage-v4";
+  gate_version: "display-coverage-v5";
   terminal_reason:
     | "kept"
     | "kept_degraded"
@@ -353,6 +357,8 @@ export interface CoverageDecision {
   /** Start time of the primary audit; the countercheck retains its own independent timestamp. */
   checked_at?: string;
   validator_model?: string;
+  /** Reader-facing model text removed by deterministic P0 projection before judging. */
+  projection_reasons?: string[];
   /** The exact display citation selected by the statement binding, if binding was valid. */
   statement_citation_index?: number;
   statement_citation_ref?: string;
@@ -492,6 +498,55 @@ function normalizeStatementClaimBinding(text: string): string {
     .trim()
     .replace(/[。．.!！?？]+$/u, "")
     .trim();
+}
+
+const ASCII_PROPER_TOKEN = /\b[A-Z][A-Za-z0-9]*(?:[._-][A-Za-z0-9]+)*\b/g;
+const ASCII_NON_ANCHORS = new Set([
+  "A", "An", "Across", "After", "Although", "As", "At", "Before", "By", "Compared", "During", "Each", "Every", "For", "From", "However", "If", "In", "It", "Its", "Meanwhile", "Moreover", "No", "Not", "On", "Only", "Our", "Over", "Since", "That", "The", "Their", "These", "They", "This", "Those", "To", "Under", "Unless", "Until", "We", "When", "Where", "While", "With", "Without",
+]);
+
+/** A cheap necessary condition before semantic judging.  This deliberately covers only tokens
+ * whose surface form is stable across the source/statement languages: Arabic numerals and ASCII
+ * proper identifiers.  It must not become a cross-language NER equality test. */
+function stableBoundQuoteTokens(statement: string, entities: Insight["entities"]): string[] {
+  const numeric = (statement.replace(VERSION_TOKEN, " ").match(/\d[\d,，.]*%?/g) ?? [])
+    .map((token) => token.replace(/[.．]+$/u, ""))
+    .filter(Boolean);
+  const entityTokens = (entities ?? [])
+    .map((entity) => entity.name.trim())
+    .filter((name) => statement.includes(name) && /^[\x20-\x7E]+$/u.test(name) && /[A-Za-z0-9]/u.test(name));
+  const sourceTokens = statement.match(ASCII_PROPER_TOKEN) ?? [];
+  return [...new Set([...numeric, ...entityTokens, ...sourceTokens]
+    .filter((token) => !ASCII_NON_ANCHORS.has(token)))];
+}
+
+function stableTokenKey(token: string): string {
+  return token.normalize("NFC").replace(/[,，]/gu, "").replace(/\s+/gu, " ").trim().toLowerCase();
+}
+
+function escapesForRegex(token: string): string {
+  return token.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
+/** `includes` would treat `AI` as present in `FAIR` and `2` as present in `12`.
+ * Stable anchors are a necessary condition, so check ASCII and numeric token boundaries rather
+ * than allowing those accidental substrings to bypass the deterministic preflight. */
+function boundQuoteHasStableToken(quote: string, token: string): boolean {
+  const normalizedQuote = stableTokenKey(quote);
+  const normalizedToken = stableTokenKey(token);
+  if (!normalizedToken) return true;
+  const boundary = /^\d/u.test(normalizedToken) ? "[^0-9]" : "[^a-z0-9]";
+  return new RegExp(`(?:^|${boundary})${escapesForRegex(normalizedToken)}(?=$|${boundary})`, "iu").test(normalizedQuote);
+}
+
+/** The binding is one citation, so checking all citations here would recreate evidence stitching. */
+function stableBoundQuoteTokenGaps(
+  statement: string,
+  entities: Insight["entities"],
+  boundCitation: Citation,
+): string[] {
+  return stableBoundQuoteTokens(statement, entities)
+    .filter((token) => !boundQuoteHasStableToken(boundCitation.quote, token));
 }
 
 type StatementBindingFailure =
@@ -839,6 +894,21 @@ export async function filterByQuoteCoverage(
     // audit record to its eventual `ins_<batch>_<n>` id; otherwise the audit table would silently
     // be empty after the final id assignment.
     if (!insight.id) insight.id = candidate_id;
+    // A model-written headline/importance fact is a second free-form claim even when the core
+    // statement is safe.  P0 therefore publishes only exact restatements of the statement;
+    // consumers already fall back to statement when headline is empty.
+    const projection_reasons: string[] = [];
+    if (insight.headline?.trim()
+      && normalizeStatementClaimBinding(insight.headline) !== normalizeStatementClaimBinding(insight.statement)) {
+      insight.headline = "";
+      projection_reasons.push("headline_not_exact_statement");
+    }
+    const importanceFacts = insight.importance_facts ?? [];
+    if (importanceFacts.some((fact) => normalizeStatementClaimBinding(fact) !== normalizeStatementClaimBinding(insight.statement))) {
+      insight.importance_facts = [];
+      if (insight.importance_reason) insight.importance_basis = renderImportanceBasis([], insight.importance_reason);
+      projection_reasons.push("importance_facts_not_exact_statement");
+    }
     // Locator 由本地 body 派生。-1 代表 quote 不在来源正文（常见于模型误引标题）；缺少原子
     // claim 则没有“这条 quote 证明什么”的证据边界。两者都不能作为展示证据，也不能留到
     // validator 才把整条洞察阻断。先剔除，再以剩余绑定 citation 做覆盖审计。
@@ -870,7 +940,10 @@ export async function filterByQuoteCoverage(
     }
     if (!displayableCitations.length) {
       console.warn(`  ⚠️ 丢弃无引用洞察：${insight.id || insight.statement.slice(0, 24)}`);
-      onDecision?.({ candidate_id, gate_version: "display-coverage-v4", terminal_reason: "dropped_no_displayable_citation", pruned_citation_count, claims: [] });
+      onDecision?.({
+        candidate_id, gate_version: "display-coverage-v5", terminal_reason: "dropped_no_displayable_citation",
+        pruned_citation_count, projection_reasons, claims: [],
+      });
       return null;
     }
     const boundDisplayCitationIndex = typeof declaredBinding === "string"
@@ -883,7 +956,7 @@ export async function filterByQuoteCoverage(
       console.warn(`  ⚠️ 丢弃未绑定原子 citation claim 的 statement：${insight.statement.slice(0, 36)}…`);
       onDecision?.({
         candidate_id,
-        gate_version: "display-coverage-v4",
+        gate_version: "display-coverage-v5",
         terminal_reason: "dropped_coverage",
         pruned_citation_count,
         prompt_version: DISPLAY_COVERAGE_PROMPT_VERSION,
@@ -894,19 +967,51 @@ export async function filterByQuoteCoverage(
       });
       return null;
     }
+    const boundCitation = displayableCitations[boundDisplayCitationIndex - 1]!;
+    const tokenGaps = stableBoundQuoteTokenGaps(insight.statement, insight.entities ?? [], boundCitation);
+    if (tokenGaps.length) {
+      console.warn(`  ⚠️ 丢弃绑定 quote 缺少稳定锚点的 statement：${insight.statement.slice(0, 36)}…`);
+      onDecision?.({
+        candidate_id,
+        gate_version: "display-coverage-v5",
+        terminal_reason: "dropped_coverage",
+        pruned_citation_count,
+        prompt_version: DISPLAY_COVERAGE_PROMPT_VERSION,
+        prompt_hash: DISPLAY_COVERAGE_PROMPT_HASH,
+        input_hash: "",
+        validator_model: MODELS.validator,
+        statement_citation_index: boundDisplayCitationIndex,
+        statement_citation_ref: (declaredBinding as StatementCitationBinding).citation_ref,
+        statement_citation_claim: boundCitation.claim,
+        projection_reasons,
+        claims: [{
+          claim_id: "statement:1",
+          field: "statement",
+          text: insight.statement,
+          kind: "factual",
+          supports: false,
+          citation_indexes: [],
+          evidence_spans: [],
+          reason: "statement_token_not_in_bound_quote",
+          uncovered_tokens: tokenGaps,
+        }],
+      });
+      return null;
+    }
     // Persist the binding in the same coordinate system as the pruned citation list. Otherwise
     // a valid original binding such as #2 becomes an out-of-range pointer after an invalid #1
     // is removed, and a later audit of the persisted row would reject it incorrectly.
     insight.statement_citation_index = boundDisplayCitationIndex;
     const coverage = await verifyDisplayedQuoteCoverage(insight, displayableCitations, boundDisplayCitationIndex, onCost);
     const decisionBase = {
-      candidate_id, gate_version: "display-coverage-v4" as const, pruned_citation_count,
+      candidate_id, gate_version: "display-coverage-v5" as const, pruned_citation_count,
       prompt_version: DISPLAY_COVERAGE_PROMPT_VERSION, prompt_hash: coverage.prompt_hash,
       input_hash: coverage.input_hash, checked_at: coverage.checked_at,
       validator_model: MODELS.validator,
       statement_citation_index: boundDisplayCitationIndex,
       statement_citation_ref: typeof declaredBinding === "string" ? undefined : declaredBinding.citation_ref,
       statement_citation_claim: displayableCitations[boundDisplayCitationIndex - 1]?.claim,
+      projection_reasons,
       claims: coverage.claims,
     };
     // Statement is the publication invariant. A missing direct proof rejects the candidate;
@@ -917,7 +1022,10 @@ export async function filterByQuoteCoverage(
       onDecision?.({ ...decisionBase, terminal_reason: "dropped_coverage" });
       return null;
     }
-    const degraded_fields: Array<"headline" | "importance_basis"> = [];
+    const degraded_fields: Array<"headline" | "importance_basis"> = [
+      ...(projection_reasons.includes("headline_not_exact_statement") ? ["headline" as const] : []),
+      ...(projection_reasons.includes("importance_facts_not_exact_statement") ? ["importance_basis" as const] : []),
+    ];
     if (coverage.claims.some((claim) => claim.field === "headline" && !claim.supports)) {
       insight.headline = "";
       degraded_fields.push("headline");
@@ -1319,7 +1427,7 @@ ${renderItems(items, topic.keywords)}`;
     console.warn(`  ⚠️ 丢弃疑似截断洞察：…「${it.statement.trim().slice(-24)}」`);
     onDecision?.({
       candidate_id: citationCandidateId(it, candidateIndex),
-      gate_version: "display-coverage-v4",
+      gate_version: "display-coverage-v5",
       terminal_reason: "dropped_truncated",
       claims: [],
     });
