@@ -141,6 +141,10 @@ export interface Insight {
   type: "aggregation" | "trend";
   event_id: string | null;
   statement: string;
+  /** 1-based binding to the single citation whose atomic claim is reproduced by statement.
+   * Analyzer output requires it; persisted legacy rows may omit it but must never be re-published
+   * through a fresh display-coverage audit. */
+  statement_citation_index?: number;
   /** 一句话要点（headline 方案）：statement 的 ≤40 字浓缩，结论/数字/主体前置，供列表卡片扫读。
    *  analyzer 产出；缺省 ""（旧库 migration 默认 ''，渲染端回退到 statement）。 */
   headline?: string;
@@ -457,6 +461,7 @@ export const LlmCitationSchema = z.object({
 /** analyzer 产出的单条洞察 */
 export const LlmInsightSchema = z.object({
   statement: z.string().describe("结论文本，中性叙述，不预测、不评论"),
+  statement_citation_index: z.number().int().positive().describe("statement 唯一绑定的 citations 1-based 序号。statement 去除首尾/连续空白与句末标点后必须与该 citation 的 claim 完全一致；不得选择多个引用，也不得在 statement 添加 claim 中没有的范围、关系、机制、程度或评价"),
   headline: z
     .string()
     .describe(

@@ -17,7 +17,7 @@ describe("AnalyzerOutputSchema 的原子 citation claim", () => {
   const base = {
     no_significant_event: false,
     insights: [{
-      statement: "事实 A。", headline: "事实 A", type: "aggregation", importance: 3,
+      statement: "事实 A。", statement_citation_index: 1, headline: "事实 A", type: "aggregation", importance: 3,
       importance_facts: [], importance_reason: "research_tracking", importance_reason_claim_indexes: [1], confidence: null,
       event_id: null, is_followup: false, entities: [], tags: [],
       citations: [{ content_item_id: "ci1", quote: "fact A", claim: "事实 A" }],
@@ -29,6 +29,12 @@ describe("AnalyzerOutputSchema 的原子 citation claim", () => {
     const withoutClaim = structuredClone(base);
     delete (withoutClaim.insights[0].citations[0] as { claim?: string }).claim;
     expect(AnalyzerOutputSchema.safeParse(withoutClaim).success).toBe(false);
+  });
+
+  it("新 analyzer 输出要求 statement 显式绑定唯一 citation", () => {
+    const withoutBinding = structuredClone(base);
+    delete (withoutBinding.insights[0] as { statement_citation_index?: number }).statement_citation_index;
+    expect(AnalyzerOutputSchema.safeParse(withoutBinding).success).toBe(false);
   });
 
   it("新 analyzer 输出拒绝自由文本 importance_basis，要求受控理由与 statement/headline 锚点", () => {
@@ -49,7 +55,7 @@ describe("analyze 的展示覆盖审计投影", () => {
       .mockResolvedValueOnce({ data: {
         no_significant_event: false,
         insights: [{
-          statement: "Fact is supported.", headline: "", type: "aggregation", importance: 3,
+          statement: "Fact is supported.", statement_citation_index: 1, headline: "", type: "aggregation", importance: 3,
           importance_facts: [], importance_reason: "research_tracking", importance_reason_claim_indexes: [1],
           confidence: null, event_id: null, is_followup: false, entities: [], tags: [],
           citations: [{ content_item_id: "ci", claim: "Fact is supported", quote: "Fact is supported." }],
@@ -88,7 +94,7 @@ describe("analyze 的展示覆盖审计投影", () => {
       .mockResolvedValueOnce({ data: {
         no_significant_event: false,
         insights: [{
-          statement: "Unsupported claim.", headline: "", type: "aggregation", importance: 3,
+          statement: "Unsupported claim.", statement_citation_index: 1, headline: "", type: "aggregation", importance: 3,
           importance_facts: [], importance_reason: "research_tracking", importance_reason_claim_indexes: [1],
           confidence: null, event_id: null, is_followup: false, entities: [], tags: [],
           citations: [{ content_item_id: "ci", claim: "different fact", quote: "Source quote." }],
@@ -114,7 +120,7 @@ describe("analyze 的展示覆盖审计投影", () => {
       .mockResolvedValueOnce({ data: {
         no_significant_event: false,
         insights: [{
-          statement: "Supported fact.", headline: "", type: "aggregation", importance: 3,
+          statement: "Supported fact.", statement_citation_index: 1, headline: "", type: "aggregation", importance: 3,
           importance_facts: [], importance_reason: "research_tracking", importance_reason_claim_indexes: [1],
           confidence: null, event_id: null, is_followup: false, entities: [], tags: [],
           citations: [{ content_item_id: "ci_kept", claim: "Supported fact", quote: "Supported fact." }],
@@ -128,7 +134,7 @@ describe("analyze 的展示覆盖审计投影", () => {
       .mockResolvedValueOnce({ data: {
         no_significant_event: false,
         insights: [{
-          statement: "Unsupported fact.", headline: "", type: "aggregation", importance: 3,
+          statement: "Unsupported fact.", statement_citation_index: 1, headline: "", type: "aggregation", importance: 3,
           importance_facts: [], importance_reason: "research_tracking", importance_reason_claim_indexes: [1],
           confidence: null, event_id: null, is_followup: false, entities: [], tags: [],
           citations: [{ content_item_id: "ci_dropped", claim: "different fact", quote: "Source quote." }],
@@ -572,9 +578,9 @@ describe("repairCoverage（真正补引：候选 → Opus 校验 → 仅 support
 });
 
 describe("filterByQuoteCoverage（展示 quote 覆盖门）", () => {
-  const insight = (statement: string, citations: Citation[] = [{ content_item_id: "ci", claim: "原子事实", quote: "展示的直接证据", locator: { paragraph_index: 0, char_start: 0, char_end: 8 } }]): Insight => ({
-    id: "i", topic_id: "t", type: "aggregation", event_id: null, statement, headline: "", importance: 3, importance_basis: "",
-    citations,
+  const insight = (statement: string, citations?: Citation[]): Insight => ({
+    id: "i", topic_id: "t", type: "aggregation", event_id: null, statement, statement_citation_index: 1, headline: "", importance: 3, importance_basis: "",
+    citations: citations ?? [{ content_item_id: "ci", claim: statement, quote: "展示的直接证据", locator: { paragraph_index: 0, char_start: 0, char_end: 8 } }],
     source_count: 1, multi_source: false, time_window: { start: "", end: "" }, confidence: null, language: "zh", is_followup: false,
   });
 
@@ -606,6 +612,35 @@ describe("filterByQuoteCoverage（展示 quote 覆盖门）", () => {
     await expect(filterByQuoteCoverage([row])).resolves.toEqual([row]);
   });
 
+  it("statement 仅插入一个未绑定的程度词时在调用 judge 前拒绝", async () => {
+    const audits: Array<{ claims: Array<{ reason: string }> }> = [];
+    const row = insight("候选由临时 worker 重放验证，并带健康检查门控的自动回滚。", [{
+      content_item_id: "ci",
+      claim: "候选由临时 worker 重放验证，并带健康检查门控的回滚",
+      quote: "候选由临时 worker 重放验证，并带健康检查门控的回滚。",
+      locator: { paragraph_index: 0, char_start: 0, char_end: 28 },
+    }]);
+
+    await expect(filterByQuoteCoverage([row], undefined, undefined, (decision) => audits.push(decision))).resolves.toEqual([]);
+    expect(vi.mocked(callStructured)).not.toHaveBeenCalled();
+    expect(audits[0]?.claims[0]?.reason).toBe("statement_not_bound_to_citation_claim");
+  });
+
+  it("statement 与 claim 相等仍必须经过 claim→quote 语义审计", async () => {
+    vi.mocked(callStructured).mockResolvedValue(coverageVerdicts(false));
+    const audits: Array<{ claims: Array<{ reason: string }> }> = [];
+    const row = insight("The exemplification technique targets black-box chatbots.", [{
+      content_item_id: "ci",
+      claim: "The exemplification technique targets black-box chatbots",
+      quote: "We evaluate a prompt-injection technique using a bridge in external content.",
+      locator: { paragraph_index: 0, char_start: 0, char_end: 73 },
+    }]);
+
+    await expect(filterByQuoteCoverage([row], undefined, undefined, (decision) => audits.push(decision))).resolves.toEqual([]);
+    expect(vi.mocked(callStructured)).toHaveBeenCalledTimes(1);
+    expect(audits[0]?.claims[0]?.reason).toBe("judge_not_supported");
+  });
+
   it("把复合 statement 拆为可审计的实质 clause，跳过纯引导语", () => {
     expect(quoteCoverageClauses("该研究还发现，在被合并的 Agentic Pull Requests 中，15.4%需要审阅者通过反馈或直接提交进行明确介入；其机制在受控环境验证。"))
       .toEqual([
@@ -619,25 +654,23 @@ describe("filterByQuoteCoverage（展示 quote 覆盖门）", () => {
       .toEqual(["在受控环境中，15.4% 的样本通过反馈完成修复"]);
   });
 
-  it("任一实质 clause 缺判定或不被直接支持时 fail-closed，不能以第一项 support 放行整条", async () => {
+  it("多个 statement 实质 clause 在调用 judge 前 fail-closed，不能以第一项 support 放行整条", async () => {
     vi.mocked(callStructured).mockResolvedValue(coverageVerdictsFor("validity metric", true));
     const row = insight("已被引用的结果；未被引用的机制和适用范围。", [{
       content_item_id: "ci", claim: "结果", quote: "quoted result", locator: { paragraph_index: 0, char_start: 0, char_end: 13 },
     }]);
 
     await expect(filterByQuoteCoverage([row])).resolves.toEqual([]);
-    const call = vi.mocked(callStructured).mock.calls[0][0];
-    expect(call.user).toContain("<atomic_claims>");
-    expect(call.user).toContain("未被引用的机制和适用范围");
-    expect(call.system).toContain("不得遗漏、合并或改写");
+    expect(vi.mocked(callStructured)).not.toHaveBeenCalled();
   });
 
   it("不可定位的标题 quote 不得作为展示证据；剩余 quote 不足则丢弃", async () => {
     vi.mocked(callStructured).mockResolvedValue(coverageVerdicts(false));
     const row = insight("SynAE 的框架同时衡量有效性、保真度和多样性。", [
       { content_item_id: "ci", claim: "框架名称", quote: "SynAE: a Framework for Measuring", locator: { paragraph_index: -1, char_start: -1, char_end: -1 } },
-      { content_item_id: "ci", claim: "有效性", quote: "validity", locator: { paragraph_index: 2, char_start: 24, char_end: 32 } },
+      { content_item_id: "ci", claim: "SynAE 的框架同时衡量有效性、保真度和多样性", quote: "validity", locator: { paragraph_index: 2, char_start: 24, char_end: 32 } },
     ]);
+    row.statement_citation_index = 2;
 
     await expect(filterByQuoteCoverage([row])).resolves.toEqual([]);
     const user = vi.mocked(callStructured).mock.calls[0][0].user;
@@ -650,11 +683,13 @@ describe("filterByQuoteCoverage（展示 quote 覆盖门）", () => {
     vi.mocked(callStructured).mockResolvedValue(coverageVerdictsFor("validity metric", true));
     const row = insight("有效性指标。", [
       { content_item_id: "ci", claim: "无效标题", quote: "Only a title", locator: { paragraph_index: -1, char_start: -1, char_end: -1 } },
-      { content_item_id: "ci", claim: "有效性", quote: "validity metric", locator: { paragraph_index: 2, char_start: 24, char_end: 39 } },
+      { content_item_id: "ci", claim: "有效性指标", quote: "validity metric", locator: { paragraph_index: 2, char_start: 24, char_end: 39 } },
     ]);
+    row.statement_citation_index = 2;
 
     await expect(filterByQuoteCoverage([row])).resolves.toEqual([row]);
     expect(row.citations.map((citation) => citation.quote)).toEqual(["validity metric"]);
+    expect(row.statement_citation_index).toBe(1);
   });
 
   it("缺原子 claim 的 citation 不能作为展示证据或虚高多源标签", async () => {
@@ -663,6 +698,7 @@ describe("filterByQuoteCoverage（展示 quote 覆盖门）", () => {
       { content_item_id: "ci_no_claim", quote: "validity metric", locator: { paragraph_index: 0, char_start: 0, char_end: 15 } },
       { content_item_id: "ci_good", claim: "有效性指标", quote: "validity metric", locator: { paragraph_index: 1, char_start: 0, char_end: 15 } },
     ]);
+    row.statement_citation_index = 2;
     row.source_count = 2;
     row.multi_source = true;
     const itemsById = new Map<string, ContentItem>([
@@ -679,8 +715,9 @@ describe("filterByQuoteCoverage（展示 quote 覆盖门）", () => {
     vi.mocked(callStructured).mockResolvedValue(coverageVerdictsFor("validity metric", true));
     const row = insight("有效性指标。", [
       { content_item_id: "ci_bad", claim: "无效标题", quote: "Only a title", locator: { paragraph_index: -1, char_start: -1, char_end: -1 } },
-      { content_item_id: "ci_good", claim: "有效性", quote: "validity metric", locator: { paragraph_index: 2, char_start: 24, char_end: 39 } },
+      { content_item_id: "ci_good", claim: "有效性指标", quote: "validity metric", locator: { paragraph_index: 2, char_start: 24, char_end: 39 } },
     ]);
+    row.statement_citation_index = 2;
     row.source_count = 2;
     row.multi_source = true;
     const itemsById = new Map<string, ContentItem>([
@@ -696,7 +733,7 @@ describe("filterByQuoteCoverage（展示 quote 覆盖门）", () => {
     vi.mocked(callStructured).mockResolvedValue(coverageVerdicts(true, false, true));
     const row = {
       ...insight("Mem-pi 论文提出了一种记忆方法。", [{
-        content_item_id: "ci", claim: "论文提出 Mem-pi", quote: "We present Mem-pi", locator: { paragraph_index: 0, char_start: 0, char_end: 17 },
+        content_item_id: "ci", claim: "Mem-pi 论文提出了一种记忆方法", quote: "We present Mem-pi", locator: { paragraph_index: 0, char_start: 0, char_end: 17 },
       }]),
       headline: "Mem-pi 已上线",
       importance_basis: "该论文提出了 Mem-pi",
@@ -708,7 +745,7 @@ describe("filterByQuoteCoverage（展示 quote 覆盖门）", () => {
     expect(user).toContain("[headline] Mem-pi 已上线");
     expect(user).toContain("[importance_basis] 该论文提出了 Mem-pi");
     expect(user).toContain("<citation_evidence>");
-    expect(user).toContain("citation_claim：论文提出 Mem-pi");
+    expect(user).toContain("citation_claim：Mem-pi 论文提出了一种记忆方法");
   });
 
   it("缺少能指向 citation claim/quote 的证据索引时 fail-closed", async () => {
@@ -717,6 +754,25 @@ describe("filterByQuoteCoverage（展示 quote 覆盖门）", () => {
     } as unknown as Awaited<ReturnType<typeof callStructured>>);
 
     await expect(filterByQuoteCoverage([insight("有展示证据的结论。")])).resolves.toEqual([]);
+  });
+
+  it("不得用两个局部 quote 拼接同一个事实 claim", async () => {
+    const first = "The system improves throughput.";
+    const second = "The approach does not require retraining.";
+    vi.mocked(callStructured).mockResolvedValue({ data: { verdicts: [{
+      index: 1, kind: "factual", supports: true, citation_indexes: [1, 2], evidence_spans: [
+        { citation_index: 1, quote_start: 0, quote_end: first.length, evidence_excerpt: first },
+        { citation_index: 2, quote_start: 0, quote_end: second.length, evidence_excerpt: second },
+      ],
+    }] } } as unknown as Awaited<ReturnType<typeof callStructured>>);
+    const audits: Array<{ claims: Array<{ reason: string }> }> = [];
+    const row = insight("The system improves throughput without retraining for mixture-of-experts models.", [
+      { content_item_id: "ci1", claim: "The system improves throughput without retraining for mixture-of-experts models", quote: first, locator: { paragraph_index: 0, char_start: 0, char_end: first.length } },
+      { content_item_id: "ci2", claim: "no retraining", quote: second, locator: { paragraph_index: 0, char_start: 0, char_end: second.length } },
+    ]);
+
+    await expect(filterByQuoteCoverage([row], undefined, undefined, (decision) => audits.push(decision))).resolves.toEqual([]);
+    expect(audits[0]?.claims[0]?.reason).toBe("invalid_citation_indexes");
   });
 
   it("缺少可定位 evidence span 时 fail-closed，不能以相关 quote 放行范围扩大", async () => {
@@ -777,7 +833,7 @@ describe("filterByQuoteCoverage（展示 quote 覆盖门）", () => {
     } as unknown as Awaited<ReturnType<typeof callStructured>>);
     const row = {
       ...insight("Recursive 分块在 Khmer RAG 评测中表现最佳。", [{
-        content_item_id: "ci", claim: "Recursive 分块表现最佳", quote: "Recursive chunking performs best", locator: { paragraph_index: 0, char_start: 0, char_end: 32 },
+        content_item_id: "ci", claim: "Recursive 分块在 Khmer RAG 评测中表现最佳", quote: "Recursive chunking performs best", locator: { paragraph_index: 0, char_start: 0, char_end: 32 },
       }]),
       importance_facts: [],
       importance_reason: "engineering_decision" as const,
@@ -841,16 +897,15 @@ describe("filterByQuoteCoverage（展示 quote 覆盖门）", () => {
     ["SpecBench：系统级任务不能扩大为长时程编码智能体普遍问题", "长时程编码智能体普遍奖励黑客", "30 systems-level programming tasks", "30 个系统级任务"],
     ["KV：认证机制不能写成非仅经验验证", "该机制而非仅经验验证", "local certification", "局部认证"],
     ["LlamaWeb：跨设备指标不能推导端侧性能可移植", "端侧浏览器推理的性能可移植后端", "across several combinations of device, browser, and operating system", "多设备浏览器组合"],
-  ])("反例：%s 必须把完整展示 claim 和其 citation claim 一起送审", async (_name, statement, quote, claim) => {
+  ])("反例：%s 在调用语义 judge 前必须拒绝 statement 对 citation claim 的范围扩大", async (_name, statement, quote, claim) => {
     vi.mocked(callStructured).mockResolvedValue(coverageVerdicts(false));
+    const audits: Array<{ claims: Array<{ reason: string }> }> = [];
     const row = insight(statement, [{
       content_item_id: "ci", claim, quote, locator: { paragraph_index: 0, char_start: 0, char_end: quote.length },
     }]);
 
-    await expect(filterByQuoteCoverage([row])).resolves.toEqual([]);
-    const user = vi.mocked(callStructured).mock.calls[0][0].user;
-    expect(user).toContain(`[statement] ${statement}`);
-    expect(user).toContain(`citation_claim：${claim}`);
-    expect(user).toContain(`displayed_quote：${quote}`);
+    await expect(filterByQuoteCoverage([row], undefined, undefined, (decision) => audits.push(decision))).resolves.toEqual([]);
+    expect(vi.mocked(callStructured)).not.toHaveBeenCalled();
+    expect(audits[0]?.claims[0]?.reason).toBe("statement_not_bound_to_citation_claim");
   });
 });

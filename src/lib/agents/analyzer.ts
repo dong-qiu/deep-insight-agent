@@ -2,7 +2,7 @@
  * analyzer —— 把多源 ContentItem 提炼成围绕主题的结构化洞察。
  * 对应 spec `docs/plan/specs/insight-analysis.md`（A1 切片：不做趋势预测 / 实体追踪 / 跨批次 event_id 对齐）。
  *
- * 模型只产出 statement/type/importance/受控 importance_reason/confidence/citations(claim/quote)；
+ * 模型只产出 statement/statement_citation_index/type/importance/受控 importance_reason/confidence/citations(claim/quote)；
  * id / locator / source_count / multi_source / time_window / language / event_id 在代码侧派生，
  * 不让模型编造。
  */
@@ -58,7 +58,7 @@ export class QuoteCoverageRejectedError extends Error {
 
 /** Bound parallel validator calls without serialising a whole analysis batch. */
 export const QUOTE_COVERAGE_CONCURRENCY = 3;
-const DISPLAY_COVERAGE_PROMPT_VERSION = "display-coverage-v2";
+const DISPLAY_COVERAGE_PROMPT_VERSION = "display-coverage-v3";
 
 export const ANALYZER_SYSTEM = `你是行业洞察分析引擎。给定一个主题与一批已采集的多源内容，提炼围绕该主题的结构化洞察。
 
@@ -70,6 +70,7 @@ export const ANALYZER_SYSTEM = `你是行业洞察分析引擎。给定一个主
 3. 可溯源（逐字、宁短勿拼）：每条洞察挂 ≥ 1 条引用；quote 必须能**原样在该 citation 的 content_item_id 对应 body 里搜到**——逐字逐标点复制 body 中**一段连续**的原文，**优先短而精确的片段（一句话以内、尽量 ≤ 30 字）**；绝不改写/转述/补全/把分散句子拼接（需要多处证据就拆成多条 citation）。**不得把某篇的 quote 挂到另一篇 content_item_id，也不得把 title、URL、发布时间等元数据当作 quote。**与其引一段长而可能漂移的，不如引一小段绝对逐字的。content_item_id 必须来自输入清单。
 4. 引用覆盖结论（**每个具体声明都要有覆盖它的 quote**）：结论里出现的每一个具体数字、金额、百分比、专有名称、关键限定，都必须有**一条所挂 quote 直接包含它**。若已挂的 quote 没覆盖到某个数字/实体，就**为它单独再加一条短 quote**（逐字复制 body 中含该数字/实体的那句）——结论综合了原文多句时，**每个被引用的事实各挂一条短 quote**；宁可多挂几条逐字短引用，也不得让任何具体声明无 quote 覆盖（例：结论说"900 份调查"，就必须有一条 quote 含 "900"；说"得分 1507"，就必须有一条含 "1507"）。没有 quote 直接支撑的具体数字/论断，不要写进结论。
 4.5. 原子 claim 对齐：每条 citation 都要填 claim——它是该条 quote **单独、直接**支撑的一个完整事实，使用 statement 的语言；不得把其他来源的事实、跨来源共识、因果解释或泛化结论塞进同一个 claim。跨来源洞察要拆成多个 citation claim，而非让任一来源支撑整段综合结论。标题、URL、发布时间等元数据即使可在输入条目中看到，也**不能单独作为 citation claim 或 quote**；若要提及论文/来源名称，必须同时用该条 body 中的原文事实支撑结论。
+4.5.1. **绑定不变量（机器强制）**：每条 insight 只能有一个 statement 实质命题；statement_citation_index 必须指向唯一支撑它的 citation（从 1 起），且 statement（仅可忽略首尾/连续空白与句末标点）必须与该 citation 的 claim 完全相同。不要在 statement 加“黑盒”“生产”“自动”“因此”“领先”等 claim 没有的词；需要不同事实就另建 insight，不能依赖后续审计替你改写。
 ${CITATION_CLAUSE_AUDIT}
 5. 不得放大：结论的适用范围/程度/条件必须与来源严格一致。不得把"仅在 X 上"写成"在多类/所有上"，不得把"最高 N / up to N"写成"总是 N"，不得把"提示 / 有限证据"写成"证明"。
 6. 完整自足：statement 必须是完整句子，不得截断或留半句。
@@ -99,8 +100,9 @@ ${CITATION_CLAUSE_AUDIT}
 // field; v10 made the fact/evaluation boundary explicit; v11 introduced controlled
 // reasons; v12 rejects invalid anchors instead of silently selecting a replacement;
 // v13 canonicalizes a unique, verbatim evidence excerpt to the persisted UTF-16 locator;
-// v14 makes the minimum independently verifiable insight contract explicit.
-export const ANALYZER_OUTPUT_VERSION = 14;
+// v14 makes the minimum independently verifiable insight contract explicit; v15 adds an
+// explicit statement-to-citation-claim binding so the statement cannot expand after claim creation.
+export const ANALYZER_OUTPUT_VERSION = 15;
 
 /** 分析缓存版本（ADR-0009）：analyzer 模型 + SYSTEM prompt 哈希 + 输出契约版本——任一变 → 版本变 → 旧分析缓存
  *  自动失效（不复用陈旧 prompt/schema/派生的洞察）。镜像 validator.consistencyCacheVersion 的版本隔离口径。 */
@@ -190,7 +192,7 @@ const COVERAGE_VERIFY_SYSTEM = `你是引用补全校验员，独立于生成洞
 const QUOTE_COVERAGE_SYSTEM = `你是展示级引用覆盖审计员。只允许使用 <citation_evidence> 内展示给读者的 citation_claim 与 displayed_quote；不得假设原始全文还有其他证据。
 
 <atomic_claims> 只包含需要来源证明的最终展示事实（statement、headline、importance_facts），且每一项都是不可省略的完整语义 claim；每一项有固定 index。你必须对每一个 index 各输出一项，不得遗漏、合并或改写，也不得拆散。
-- 对某项 supports=true，仅当 citation_indexes 中指向的一条或多条 citation 的 **citation_claim 与 displayed_quote** 合起来逐字、直接覆盖该项的全部事实。citation_claim 只是它的 quote 所能证明内容的边界说明，绝不是额外证据；quote 仍必须直接支持它。
+- 对某项 supports=true，citation_indexes **必须且只能有一个** citation：这一条 citation 的 citation_claim 与 displayed_quote 必须逐字、直接覆盖该项的全部事实。citation_claim 只是它的 quote 所能证明内容的边界说明，绝不是额外证据；quote 仍必须直接支持它。多个 quote 分别覆盖吞吐、机制、范围或条件，属于 evidence stitching，必须 supports=false；若两个来源各自完整复述同一原子事实，只选择其中一个。
 - 研究/来源数量、机制、比较对象、适用范围、时间、条件、因果和程度都是事实，不能只覆盖其中的数字或实体。一个含“在 X 中”“通过 Y”“比 Z”或“因此”的关系 claim 必须由直接表达该关系的展示 quote 支撑；不得拼接局部 quote 来推导来源没有明确说出的关系。
 - quote 只覆盖该项的一部分、quote 被截断、citation_claim 比 quote 更宽、或只主题相关而未直接证明该项，必须 supports=false。不得把“同一实体/数字出现过”“原文大概会有更多上下文”或“多条相关 quote 合起来看似合理”当作覆盖。claim 写“黑盒聊天机器人”“通过反馈或直接提交”“类生产环境”等限定而 quote 没有直接表达时，必须 false。
 - supports=true 时 citation_indexes 必须列出至少一个直接覆盖它的 citation 序号；supports=false 时 citation_indexes 与 evidence_spans 必须都是空数组。
@@ -283,7 +285,7 @@ export interface CoverageClaimDecision {
  * display coverage from final yield. `evidence_spans` remain an audit locator, not semantic proof. */
 export interface CoverageDecision {
   candidate_id: string;
-  gate_version: "display-coverage-v2";
+  gate_version: "display-coverage-v3";
   terminal_reason:
     | "kept"
     | "kept_degraded"
@@ -299,6 +301,8 @@ export interface CoverageDecision {
   prompt_version?: string;
   input_hash?: string;
   validator_model?: string;
+  /** The exact display citation selected by the statement binding, if binding was valid. */
+  statement_citation_ref?: string;
   claims: CoverageClaimDecision[];
 }
 export type CoverageAuditSink = (decision: CoverageDecision) => void;
@@ -405,9 +409,71 @@ function canonicalizeEvidenceSpan(
   };
 }
 
+/**
+ * The analyzer already produces one atomic `claim` per citation.  Letting it independently
+ * phrase `statement` made that contract advisory: a later wording pass could append a scope,
+ * relation, or degree that did not occur in the claim.  This intentionally narrow normalizer
+ * only ignores formatting that cannot carry a factual distinction.  In particular, it never
+ * drops words, numbers, comparison operators, negation, commas, hyphens, or parentheses.
+ */
+function normalizeStatementClaimBinding(text: string): string {
+  return text
+    .normalize("NFC")
+    .replace(/\s+/gu, " ")
+    .trim()
+    .replace(/[。．.!！?？]+$/u, "")
+    .trim();
+}
+
+type StatementBindingFailure =
+  | "missing_statement_citation_binding"
+  | "invalid_statement_citation_binding"
+  | "statement_binding_citation_not_displayable"
+  | "statement_not_atomic"
+  | "statement_not_bound_to_citation_claim";
+
+interface StatementCitationBinding {
+  citation_index: number;
+  citation_ref: string;
+}
+
+function statementCitationBinding(
+  insight: Pick<Insight, "statement" | "statement_citation_index">,
+  citations: Citation[],
+): StatementCitationBinding | StatementBindingFailure {
+  const declaredIndex = insight.statement_citation_index;
+  if (declaredIndex === undefined) return "missing_statement_citation_binding";
+  if (!Number.isInteger(declaredIndex) || declaredIndex < 1 || declaredIndex > citations.length) {
+    return "invalid_statement_citation_binding";
+  }
+  if (quoteCoverageClauses(insight.statement).length !== 1) return "statement_not_atomic";
+  const citation = citations[declaredIndex - 1]!;
+  if (!citation.claim?.trim()
+    || normalizeStatementClaimBinding(insight.statement) !== normalizeStatementClaimBinding(citation.claim)) {
+    return "statement_not_bound_to_citation_claim";
+  }
+  return { citation_index: declaredIndex, citation_ref: citation.citation_ref ?? stableCitationRef(citation) };
+}
+
+function statementBindingFailureClaims(statement: string, reason: StatementBindingFailure): CoverageClaimDecision[] {
+  const clauses = quoteCoverageClauses(statement);
+  const texts = clauses.length ? clauses : [statement.trim()];
+  return texts.map((text, index) => ({
+    claim_id: `statement:${index + 1}`,
+    field: "statement" as const,
+    text,
+    kind: "factual" as const,
+    supports: false,
+    citation_indexes: [],
+    evidence_spans: [],
+    reason,
+  }));
+}
+
 async function verifyDisplayedQuoteCoverage(
   insight: Pick<Insight, "statement" | "headline" | "importance_basis" | "importance_facts" | "importance_reason" | "importance_reason_claim_indexes">,
   citations: Citation[],
+  statementCitationIndex: number,
   onCost?: (cost: Cost) => void,
 ): Promise<CoverageVerification> {
   const claims = displayedQuoteCoverageClaims(insight);
@@ -440,7 +506,7 @@ async function verifyDisplayedQuoteCoverage(
     const verdict = byIndex.get(i + 1);
     if (!verdict) return { claim_id: claim.id, field: claim.field, text: claim.text, kind: "factual", supports: false, citation_indexes: [], evidence_spans: [], reason: "missing_or_duplicate_verdict" };
     const citationIndexes = verdict.citation_indexes;
-    const validCitationIndexes = citationIndexes.length > 0
+    const validCitationIndexes = citationIndexes.length === 1
       && citationIndexes.every((citationIndex) => citationIndex >= 1 && citationIndex <= citations.length)
       && new Set(citationIndexes).size === citationIndexes.length;
     const spans: CoverageEvidenceSpan[] = (verdict.evidence_spans ?? []).map((span) => canonicalizeEvidenceSpan({
@@ -465,6 +531,9 @@ async function verifyDisplayedQuoteCoverage(
       return { claim_id: claim.id, field: claim.field, text: claim.text, kind: "factual", supports: false, citation_indexes: [], evidence_spans: [], reason: noUnexpectedEvidence ? "judge_not_supported" : "unsupported_with_evidence" };
     }
     if (!validCitationIndexes) return { claim_id: claim.id, field: claim.field, text: claim.text, kind: "factual", supports: false, citation_indexes: [], evidence_spans: [], reason: "invalid_citation_indexes" };
+    if (claim.field === "statement" && citationIndexes[0] !== statementCitationIndex) {
+      return { claim_id: claim.id, field: claim.field, text: claim.text, kind: "factual", supports: false, citation_indexes: [], evidence_spans: [], reason: "statement_bound_citation_not_selected" };
+    }
     if (!validSpans) return { claim_id: claim.id, field: claim.field, text: claim.text, kind: "factual", supports: false, citation_indexes: [], evidence_spans: [], reason: "invalid_evidence_span" };
     return { claim_id: claim.id, field: claim.field, text: claim.text, kind: "factual", supports: true, citation_indexes: citationIndexes, evidence_spans: spans, reason: "judge_supported" };
   });
@@ -576,12 +645,15 @@ export async function filterByQuoteCoverage(
     // Locator 由本地 body 派生。-1 代表 quote 不在来源正文（常见于模型误引标题）；缺少原子
     // claim 则没有“这条 quote 证明什么”的证据边界。两者都不能作为展示证据，也不能留到
     // validator 才把整条洞察阻断。先剔除，再以剩余绑定 citation 做覆盖审计。
-    const displayableCitations = insight.citations.filter((citation) => (
+    const declaredBinding = statementCitationBinding(insight, insight.citations);
+    const displayableCitationEntries = insight.citations.map((citation, index) => ({ citation, index: index + 1 }))
+      .filter(({ citation }) => (
       citation.locator.paragraph_index >= 0
       && citation.locator.char_start >= 0
       && citation.locator.char_end > citation.locator.char_start
       && Boolean(citation.claim?.trim())
-    ));
+      ));
+    const displayableCitations = displayableCitationEntries.map(({ citation }) => citation);
     const pruned_citation_count = insight.citations.length - displayableCitations.length;
     if (pruned_citation_count) {
       console.warn(`  ⚠️ 剔除不可作展示证据的引用：${insight.id || insight.statement.slice(0, 24)}`);
@@ -600,14 +672,40 @@ export async function filterByQuoteCoverage(
     }
     if (!displayableCitations.length) {
       console.warn(`  ⚠️ 丢弃无引用洞察：${insight.id || insight.statement.slice(0, 24)}`);
-      onDecision?.({ candidate_id, gate_version: "display-coverage-v2", terminal_reason: "dropped_no_displayable_citation", pruned_citation_count, claims: [] });
+      onDecision?.({ candidate_id, gate_version: "display-coverage-v3", terminal_reason: "dropped_no_displayable_citation", pruned_citation_count, claims: [] });
       return null;
     }
-    const coverage = await verifyDisplayedQuoteCoverage(insight, displayableCitations, onCost);
+    const boundDisplayCitationIndex = typeof declaredBinding === "string"
+      ? -1
+      : displayableCitationEntries.findIndex(({ index }) => index === declaredBinding.citation_index) + 1;
+    const bindingFailure: StatementBindingFailure | undefined = typeof declaredBinding === "string"
+      ? declaredBinding
+      : boundDisplayCitationIndex < 1 ? "statement_binding_citation_not_displayable" : undefined;
+    if (bindingFailure) {
+      console.warn(`  ⚠️ 丢弃未绑定原子 citation claim 的 statement：${insight.statement.slice(0, 36)}…`);
+      onDecision?.({
+        candidate_id,
+        gate_version: "display-coverage-v3",
+        terminal_reason: "dropped_coverage",
+        pruned_citation_count,
+        prompt_version: DISPLAY_COVERAGE_PROMPT_VERSION,
+        input_hash: "",
+        validator_model: MODELS.validator,
+        claims: statementBindingFailureClaims(insight.statement, bindingFailure),
+      });
+      return null;
+    }
+    // Persist the binding in the same coordinate system as the pruned citation list. Otherwise
+    // a valid original binding such as #2 becomes an out-of-range pointer after an invalid #1
+    // is removed, and a later audit of the persisted row would reject it incorrectly.
+    insight.statement_citation_index = boundDisplayCitationIndex;
+    const coverage = await verifyDisplayedQuoteCoverage(insight, displayableCitations, boundDisplayCitationIndex, onCost);
     const decisionBase = {
-      candidate_id, gate_version: "display-coverage-v2" as const, pruned_citation_count,
+      candidate_id, gate_version: "display-coverage-v3" as const, pruned_citation_count,
       prompt_version: DISPLAY_COVERAGE_PROMPT_VERSION, input_hash: coverage.input_hash,
-      validator_model: MODELS.validator, claims: coverage.claims,
+      validator_model: MODELS.validator,
+      statement_citation_ref: typeof declaredBinding === "string" ? undefined : declaredBinding.citation_ref,
+      claims: coverage.claims,
     };
     // Statement is the publication invariant. A missing direct proof rejects the candidate;
     // optional display facets may be safely removed below without throwing away the core fact.
@@ -987,6 +1085,7 @@ ${renderItems(items, topic.keywords)}`;
       type: li.type,
       event_id: reusedEventId, // null → analyze 末尾分配新 event_id（按 batch 内重复 statement 共享）
       statement: li.statement,
+      statement_citation_index: li.statement_citation_index,
       headline: li.headline,
       importance: li.importance,
       importance_facts: li.importance_facts,
@@ -1011,7 +1110,7 @@ ${renderItems(items, topic.keywords)}`;
     console.warn(`  ⚠️ 丢弃疑似截断洞察：…「${it.statement.trim().slice(-24)}」`);
     onDecision?.({
       candidate_id: citationCandidateId(it, candidateIndex),
-      gate_version: "display-coverage-v2",
+      gate_version: "display-coverage-v3",
       terminal_reason: "dropped_truncated",
       claims: [],
     });

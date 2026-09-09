@@ -316,7 +316,7 @@ describe("validateBatch（A 去重 + C 校验失败分账）", () => {
     expect(system).toContain("原文与 claim 存在可判定冲突");
   });
 
-  it("单条与批量判官仅将同一关系的替换、范围扩大判为负例", async () => {
+  it("单条与批量判官仅将同一关系/机制的替换、范围扩大判为负例", async () => {
     vi.mocked(callStructured)
       .mockResolvedValueOnce(judgeData("not_support", "exaggeration"))
       .mockResolvedValueOnce(batchJudgeData([
@@ -337,6 +337,7 @@ describe("validateBatch（A 去重 + C 校验失败分账）", () => {
       expect(args.system).toContain("同一主体的同一属性、比较或身份");
       expect(args.system).toContain("同一结果");
       expect(args.system).toContain("排他或全称表述");
+      expect(args.system).toContain("在 source level 自我改写");
       expect(args.system).toContain("原文只谈 A、没有谈 B");
     }
   });

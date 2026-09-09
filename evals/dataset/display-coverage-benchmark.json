@@ -1,5 +1,5 @@
 {
-  "version": "display-coverage-v1",
+  "version": "display-coverage-v3",
   "cases": [
     {
       "id": "controlled-poc-to-blackbox",
@@ -7,6 +7,7 @@
       "field": "statement",
       "facets": ["scope", "system_type"],
       "statement": "A controlled PoC proves privacy leakage in black-box chatbots.",
+      "statement_citation_index": 1,
       "citations": [{ "claim": "The PoC was validated in a controlled setting", "quote": "We validate the PoC in a controlled setting." }]
     },
     {
@@ -15,6 +16,7 @@
       "field": "statement",
       "facets": ["task_scope", "universality"],
       "statement": "Long-horizon coding agents universally reward-hack.",
+      "statement_citation_index": 1,
       "citations": [{ "claim": "SpecBench has 30 systems-level programming tasks", "quote": "SpecBench contains 30 systems-level programming tasks." }]
     },
     {
@@ -23,6 +25,7 @@
       "field": "statement",
       "facets": ["claim_strength"],
       "statement": "The KV mechanism is not merely empirically validated.",
+      "statement_citation_index": 1,
       "citations": [{ "claim": "The method provides local certification", "quote": "Our method provides local certification." }]
     },
     {
@@ -31,6 +34,7 @@
       "field": "statement",
       "facets": ["deployment", "performance_portability"],
       "statement": "LlamaWeb provides portable edge performance for browser inference.",
+      "statement_citation_index": 1,
       "citations": [{ "claim": "The evaluation spans device, browser, and operating-system combinations", "quote": "We evaluate several combinations of device, browser, and operating system." }]
     },
     {
@@ -39,6 +43,7 @@
       "field": "statement",
       "facets": ["deployment", "scope"],
       "statement": "该方法已在生产 RAG 系统上线。",
+      "statement_citation_index": 1,
       "citations": [{ "claim": "该方法在受控评测中优于基线", "quote": "该方法在受控评测中优于基线。" }]
     },
     {
@@ -47,10 +52,29 @@
       "field": "statement",
       "facets": ["relationship", "model_scope"],
       "statement": "The system improves throughput without retraining for mixture-of-experts models.",
+      "statement_citation_index": 1,
       "citations": [
         { "claim": "The system improves throughput", "quote": "The system improves throughput." },
         { "claim": "The approach does not require retraining", "quote": "The approach does not require retraining." }
       ]
+    },
+    {
+      "id": "statement-expands-bound-claim-with-automatic",
+      "expected": "reject",
+      "field": "statement",
+      "facets": ["statement_claim_binding", "degree"],
+      "statement": "Candidates are verified by replaying the batch with health-probe-gated automatic rollback.",
+      "statement_citation_index": 1,
+      "citations": [{ "claim": "Candidates are verified by replaying the batch with health-probe-gated rollback", "quote": "Candidates are verified by replaying the batch with health-probe-gated rollback." }]
+    },
+    {
+      "id": "bound-claim-still-needs-quote-support",
+      "expected": "reject",
+      "field": "statement",
+      "facets": ["statement_claim_binding", "scope", "system_type"],
+      "statement": "The exemplification technique targets black-box chatbots.",
+      "statement_citation_index": 1,
+      "citations": [{ "claim": "The exemplification technique targets black-box chatbots", "quote": "We evaluate a new prompt-injection technique using a bridge in external content to create few-shot examples." }]
     },
     {
       "id": "direct-factual-positive",
@@ -58,6 +82,7 @@
       "field": "statement",
       "facets": ["direct_fact"],
       "statement": "SpecBench contains 30 systems-level programming tasks.",
+      "statement_citation_index": 1,
       "citations": [{ "claim": "SpecBench contains 30 systems-level programming tasks", "quote": "SpecBench contains 30 systems-level programming tasks." }]
     },
     {
@@ -66,6 +91,7 @@
       "field": "importance_basis",
       "facets": ["controlled_evaluation", "passed_anchor"],
       "statement": "The method provides local certification.",
+      "statement_citation_index": 1,
       "importance_reason": "research_tracking",
       "importance_reason_claim_indexes": [1],
       "citations": [{ "claim": "The method provides local certification", "quote": "The method provides local certification." }]
@@ -76,6 +102,7 @@
       "field": "importance_basis",
       "facets": ["controlled_evaluation", "bad_anchor"],
       "statement": "The method provides local certification.",
+      "statement_citation_index": 1,
       "importance_reason": "research_tracking",
       "importance_reason_claim_indexes": [2],
       "citations": [{ "claim": "The method provides local certification", "quote": "The method provides local certification." }]

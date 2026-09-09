@@ -138,6 +138,7 @@ interface DisplayCoverageCase {
   field: "statement" | "headline" | "importance_basis";
   facets: string[];
   statement: string;
+  statement_citation_index: number;
   headline?: string;
   importance_facts?: string[];
   importance_reason?: ImportanceReason;
@@ -248,6 +249,7 @@ async function runDisplayCoverageBenchmark(cases: DisplayCoverageCase[]): Promis
       type: "aggregation",
       event_id: null,
       statement: c.statement,
+      statement_citation_index: c.statement_citation_index,
       headline: c.headline ?? "",
       importance: 3,
       ...(controlled && reason ? {

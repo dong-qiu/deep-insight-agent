@@ -1330,7 +1330,7 @@ production-ready 声明仍由 INSI-25 阻断；若 future profile 允许任一 P
 
 ### 决定
 
-1. 发布只消费 `verified_display`：statement 为核心事实，失败即拒绝候选；headline 校验失败时清空并回退 statement；
+1. 发布只消费 `verified_display`：statement 为核心事实，失败即拒绝候选；新 analyzer 必须以 `statement_citation_index` 显式绑定唯一 citation，statement 与其 atomic claim 只允许极窄格式归一后完全相等；该代码不变量在 quote/span 语义审计前先阻断 statement 追加范围、关系、机制或程度，且不做自动改写。headline 校验失败时清空并回退 statement；
    重要性说明只接受受控 reason code 的固定文案，附带自由来源事实时逐项审计，失败只剥离该事实。不得由模型自行将
    任意文本标为“评价”以逃避引用。
 2. 每条 citation 使用稳定 `citation_ref`，并持久化其 claim、quote、locator；展示覆盖审计按 batch/insight/field/claim/citation

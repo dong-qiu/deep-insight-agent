@@ -28,7 +28,7 @@ npm run typecheck   # tsc 类型检查
 | 引用可达性通过率 | validator 确定性校验（quote 是否逐字在原文） | 自动 |
 | 引用一致性合格率 / 失败率 / flagged 率 | validator LLM 一致性评判 | 自动 |
 | 校验器端到端三分类准确率 / 负例召回率 / 完成率 | 标注集 `citation-consistency.jsonl`；经生产单条路径的重试，失败按未命中计入前两项 | 自动 |
-| 展示引用覆盖 unsafe_accept | 手标 `dataset/display-coverage-benchmark.json`；任一 reject 被放行即 FAIL | 自动 |
+| 展示引用覆盖 unsafe_accept | 手标 `dataset/display-coverage-benchmark.json`；先验证 statement→唯一 citation claim 的显式绑定，再验证 claim→displayed quote/span；任一 reject 被放行即 FAIL | 自动 |
 | 非显然洞察占比、幻觉率 | 需人评 → 脚本导出 `out/runs/<run-id>/review-queue.json` | 人工 |
 
 阈值镜像自 `docs/verify/eval-criteria.md`「上线门槛」（改阈值请同步那份文档）。
