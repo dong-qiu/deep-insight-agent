@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type DB, openDb } from "../db/index.js";
 import { applyProvenanceMigrations } from "../db/provenance-migrations.js";
+import { SQLITE_P1_TELEMETRY_SINK } from "../capabilities/p1-telemetry-sqlite.js";
 import { claimSourceCollectTrace, createScheduledSourceCollectTrace, getGenerationTraceStatus } from "../db/provenance.js";
 import { getContentByUrl, getContentItem, insertContentItem, insertSource } from "../db/repos.js";
 import { captureRevision, entityKey } from "../db/provenance-facts.js";
@@ -255,7 +256,7 @@ describe("collector P0b-1 source_collect provenance", () => {
     const claim = claimSourceCollectTrace(db, accepted.traceId, now);
     if (!claim) throw new Error("expected source trace claim");
 
-    const result = await collectSource(db, sourcePod, { traceClaim: claim });
+    const result = await collectSource(db, sourcePod, { traceClaim: claim, telemetry: SQLITE_P1_TELEMETRY_SINK });
     expect(getGenerationTraceStatus(db, accepted.traceId)).toMatchObject({
       trace_id: accepted.traceId, source_id: sourcePod.id, scope_kind: "source_collect",
       status: "done", root_run_id: result.runId,
@@ -288,14 +289,14 @@ describe("collector P0b-1 source_collect provenance", () => {
     if (firstAccepted.kind !== "accepted") throw new Error("expected first source trace");
     const firstClaim = claimSourceCollectTrace(db, firstAccepted.traceId, now);
     if (!firstClaim) throw new Error("expected first source claim");
-    await collectSource(db, sourcePod, { traceClaim: firstClaim });
+    await collectSource(db, sourcePod, { traceClaim: firstClaim, telemetry: SQLITE_P1_TELEMETRY_SINK });
 
     raws.value = [{ ...mkRaw(url, "second source body with a changed revision"), published_at: "2026-08-26T14:00:00.000Z" }];
     const secondAccepted = createScheduledSourceCollectTrace(db, { sourceId: secondSource.id, now });
     if (secondAccepted.kind !== "accepted") throw new Error("expected second source trace");
     const secondClaim = claimSourceCollectTrace(db, secondAccepted.traceId, now);
     if (!secondClaim) throw new Error("expected second source claim");
-    const secondResult = await collectSource(db, secondSource, { traceClaim: secondClaim });
+    const secondResult = await collectSource(db, secondSource, { traceClaim: secondClaim, telemetry: SQLITE_P1_TELEMETRY_SINK });
 
     const persisted = getContentItem(db, getContentByUrl(db, url)!.id)!;
     expect(persisted).toMatchObject({ source_id: sourcePod.id, published_at: firstPublishedAt, topic_ids: sourcePod.topic_ids, body: "second source body with a changed revision" });

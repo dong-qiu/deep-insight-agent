@@ -1352,3 +1352,25 @@ production-ready 声明仍由 INSI-25 阻断；若 future profile 允许任一 P
 5. `source_quote_v1` 将唯一绑定 citation 的 `quote` 逐字投影为 reader-visible `statement`；`claim` 降为内部审计记录，可拒绝候选但绝不可作为显示、实体抽取、图谱、报告或重要性事实的输入。读者界面只显示一次该 source quote，不再重复呈现相同的“引用摘录”。
 6. 独立自足性审计只接收 source quote 与 locator，必须拒绝未在 quote 内解析的 it/the gap/the method/former-latter/respectively 及中文指示词；主审、独立审和持久化记录通过投影版本、citation index/ref、prompt/input hash 以及 statement/quote SHA-256 绑定。任一项不符，图谱、侧栏和报告 fail-closed。
 7. 历史批次（包括已经有 v5 display audit 的批次）不迁移为 v6：迁移默认 `legacy`，只能保留审计历史，不能进入新的 reader path。A1 基准随之改为断言最终逐字 quote，并将旧基线标为配置不可比；自动结果仍须与独立人工 review、规模门分开陈述。
+
+---
+
+## ADR-0026: P1 以可拔插观测能力休眠，不拆分既有事实账本
+
+- **日期**: 2026-09-10
+- **状态**: Accepted
+
+### 背景
+
+P0 已满足当前产品的可追溯与可审计交付；P1 的指标、完整性锚定和驾驶舱实现仍保留为未来候选。它们曾从采集、分析、校验和调度热路径直接写入同一 SQLite 账本，使未获生产准入的 P1 观测行为持续参与 P0 请求路径。
+
+### 决定
+
+1. 引入纯 `P1TelemetrySink` 端口。P0 编排层只依赖该端口，默认注入无副作用的 no-op；`P1_LIFECYCLE=dev` 且非生产时才组合 SQLite 指标适配器。指标写入永远是 P0 已提交工作的观察者，不能影响报告、引用校验或发布语义。
+2. 生产生命周期固定为 `dormant`。它不是准入或功能开关：完整性锚定、dashboard 与部署 profile 的既有 fail-closed 控制仍独立生效；任何未来 `admitted` 状态须先有新的 ADR、INSI-25 治理证据、运行镜像/签名准入和容器级验证。
+3. 不在本阶段拆服务、拆数据库、拆 migration ledger、删除 P1 表，或移除 AWS SDK。迁移编号与 P0 事实表交错，且 P0 脱敏登记册仍使用 AWS SDK；先改变依赖方向，避免制造破坏性数据迁移与供应链风险。
+4. CI 始终验证 P0 等价性、P1 seam 404 与 no-op 不写指标事实；变更 P1 或共享边界时继续运行 P1 指标容量、完整性与向量门。P1-only 的定时回归优化留后续独立交付，不能以降低当前门禁覆盖为代价。
+
+### 后果
+
+P0 可在不写 P1 指标的默认路径上继续发布。未来恢复 P1 时，先将任务从 `dormant` 转为有明确验收项的 `P1-dev`，再完成生产准入；不得把生命周期记录当作授权。恢复清单见 `docs/plan/p1-dormant-reentry.md`。

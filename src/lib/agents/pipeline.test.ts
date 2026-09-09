@@ -8,6 +8,7 @@ import { insertContentItem, insertSource, insertTopic, listRuns } from "../db/re
 import { listPlanningTechLeads, listTechLeadEvidence, listTechLeads } from "../db/tech-leads.js";
 import { createTopicDirection, getTechnologyOpportunity, listOpportunityLeads, listTechnologyOpportunities, previewTopicDirectionMapping, reprojectTopicDirection } from "../db/planning.js";
 import { applyProvenanceMigrations } from "../db/provenance-migrations.js";
+import { SQLITE_P1_TELEMETRY_SINK } from "../capabilities/p1-telemetry-sqlite.js";
 import { captureRevision, entityKey, type EntityRef } from "../db/provenance-facts.js";
 import { contentItemRef, contentItemRevision } from "../db/provenance-revisions.js";
 import type { AnalysisBatch, ContentItem, Insight, Report, ReportIndexEntry, Source, Topic, ValidationResult } from "../types.js";
@@ -332,13 +333,34 @@ describe("runValidation", () => {
     insertSource(db, source); insertContentItem(db, item);
     saveAnalysisBatch(db, mkBatch()); // 先落 batch（validation_result/citation_check 需 FK 到 batch/insight）
     validateBatchMock.mockResolvedValue(mkValidation());
-    const vr = await runValidation(db, mkBatch(), [item]);
+    const vr = await runValidation(db, mkBatch(), [item], { telemetry: SQLITE_P1_TELEMETRY_SINK });
     expect(vr.report.releasable).toBe(true);
     expect(getValidationResult(db, "b1")?.report.pass).toBe(1); // 真落库
     const run = listRuns(db, { kind: "validate" }).find((r) => r.target.batch_id === "b1")!;
     expect(run.status).toBe("done");
     expect(db.prepare("SELECT COUNT(*) AS count FROM funnel_event WHERE stage='validated'").get()).toEqual({ count: 1 });
     expect(db.prepare("SELECT COUNT(*) AS count FROM validator_result_fact WHERE validator='citation'").get()).toEqual({ count: 1 });
+  });
+
+  it("dormant 默认值完成分析和校验，但绝不写入 P1 指标事实", async () => {
+    applyProvenanceMigrations(db);
+    const source: Source = { id: "s_dormant", name: "Dormant", type: "rss", endpoint: "https://dormant.test", topic_ids: ["t1"], fetch_interval: "1h", backfill: null, enabled: true };
+    const item: ContentItem = { id: "ci_dormant", source_id: source.id, url: "https://dormant.test/a", title: "A", author: null, published_at: null, fetched_at: "2026-06-07T00:00:00.000Z", language: "zh", topic_ids: ["t1"], tags: [], body: "body", body_kind: "article", raw_ref: "raw", content_hash: "hash_dormant", fetch_status: "ok" };
+    insertSource(db, source); insertContentItem(db, item);
+    const batch = { ...mkBatch(), id: "b_dormant", insights: [mkInsight("i_dormant")] };
+    analyzeMock.mockResolvedValue(batch);
+    validateBatchMock.mockResolvedValue(mkValidation("i_dormant"));
+
+    const analyzed = await runAnalysis(db, topic, [item], win);
+    await runValidation(db, analyzed, [item]);
+
+    expect(db.prepare(`SELECT
+      (SELECT COUNT(*) FROM funnel_event) AS funnel,
+      (SELECT COUNT(*) FROM cost_ledger) AS cost,
+      (SELECT COUNT(*) FROM validator_result_fact) AS validator,
+      (SELECT COUNT(*) FROM dashboard_trace_fact_v1) AS dashboard_trace,
+      (SELECT COUNT(*) FROM dashboard_cost_fact_v1) AS dashboard_cost`).get())
+      .toEqual({ funnel: 0, cost: 0, validator: 0, dashboard_trace: 0, dashboard_cost: 0 });
   });
 
   it("输入 revision 冲突时追加可审计失败事件，不调用校验器", async () => {

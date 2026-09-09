@@ -6,13 +6,14 @@
 import { getEffectiveSources, loadStaticConfig } from "../config/index.js";
 import type { DB } from "../db/index.js";
 import { finishRun, getTopic, listTopics } from "../db/repos.js";
-import { freezeDueMetricDay } from "../db/p1-metrics-facts.js";
+import { type P1TelemetrySink } from "../capabilities/p1-telemetry.js";
 import { claimSourceCollectTrace, createScheduledSourceCollectTrace, createScheduledTraceRequest, sourceCollectTracingAvailable } from "../db/provenance.js";
 import { appendGenerationEvent } from "../db/provenance-facts.js";
 import { listRecentPublishedInsightOccurrences, previousReportForTopic, topicHasReport, type ReportAnchorPublication } from "../db/reports.js";
 import { notifyBudget } from "../runtime/alert.js";
 import { getBudgetStatus } from "../runtime/cost-guard.js";
 import { runLogger } from "../runtime/logger.js";
+import { p1TelemetrySinkForRuntime } from "../runtime/p1-lifecycle.js";
 import type { Report } from "../types.js";
 import { collectSource } from "./collector.js";
 import { briefFreshHours, briefFreshQuota, contentObservedAt, selectAnalysisItems, selectAnalysisItemsWithDiagnostics } from "./analysis-selection.js";
@@ -55,6 +56,8 @@ export interface GenerationExecutionOptions {
   assertWrite?: () => void;
   /** Supplied only by the deployment composition root. */
   anchor?: ReportAnchorPublication;
+  /** Optional P1 observer; it may never influence P0 publication semantics. */
+  telemetry?: P1TelemetrySink;
 }
 
 /** 冷启动决策（纯函数，可测）：topic 无历史报告 → 首版综述 initial_digest（更宽窗口 / 更多条，
@@ -82,17 +85,18 @@ function utcIsoWeek(now: Date): string {
 
 /** 采集 + 源健康自愈（熔断 / 半开 / 零产出）。“collect” cron 调此函数，保证每 6h 数据更新
  * 不会把同一天的 Brief 反复重新生成。 */
-export async function runCollectionCycle(db: DB): Promise<CollectionSummary> {
+export async function runCollectionCycle(db: DB, opts: { telemetry?: P1TelemetrySink } = {}): Promise<CollectionSummary> {
+  const telemetry = opts.telemetry ?? p1TelemetrySinkForRuntime();
   const startedAt = new Date().toISOString();
   const summary: CollectionSummary = { startedAt, finishedAt: startedAt, collected: [], errors: [] };
-  // P1b-2 daily buckets freeze exactly once on the first scheduler cycle at/after UTC 02:00.
-  freezeDueMetricDay(db, startedAt);
+  // P1 daily buckets are optional telemetry and cannot block P0 collection.
+  telemetry.freezeDueDay(db, startedAt);
   const sources = getEffectiveSources(db, loadStaticConfig()).filter((s) => s.enabled);
   const traceEnabled = sourceCollectTracingAvailable(db);
   for (const s of sources) {
     try {
       if (!traceEnabled) {
-        const r = await collectSource(db, s);
+        const r = await collectSource(db, s, { telemetry });
         summary.collected.push({ source: s.id, fetched: r.fetched, inserted: r.inserted, updated: r.updated });
         continue;
       }
@@ -107,7 +111,7 @@ export async function runCollectionCycle(db: DB): Promise<CollectionSummary> {
       }
       const claim = claimSourceCollectTrace(db, accepted.traceId);
       if (!claim) throw new Error("source_collect_claim_lost");
-      const r = await collectSource(db, s, { traceClaim: claim });
+      const r = await collectSource(db, s, { traceClaim: claim, telemetry });
       summary.collected.push({ source: s.id, traceId: accepted.traceId, status: "done", fetched: r.fetched, inserted: r.inserted, updated: r.updated });
     } catch (e) {
       summary.collected.push({ source: s.id, error: errMsg(e) });
@@ -118,7 +122,7 @@ export async function runCollectionCycle(db: DB): Promise<CollectionSummary> {
   const circuit = runCircuitCheck(db, sources);
   if (circuit.opened.length) summary.circuitOpened = circuit.opened;
   summary.errors.push(...circuit.errors);
-  const halfOpen = await runHalfOpenProbe(db, collectSource);
+  const halfOpen = await runHalfOpenProbe(db, (probeDb, source, probeOpts) => collectSource(probeDb, source, { ...probeOpts, telemetry }));
   if (halfOpen.revived.length) summary.circuitRevived = halfOpen.revived;
   summary.errors.push(...halfOpen.errors);
   const zeroYield = runZeroYieldWatch(db, sources);
@@ -153,7 +157,7 @@ export async function runScheduledPipeline(
   };
 
   // 1. 出刊前先采一轮；额外 collect cron 复用同一函数但不会走后续 LLM/report 路径。
-  const collection = await runCollectionCycle(db);
+  const collection = await runCollectionCycle(db, { telemetry: p1TelemetrySinkForRuntime() });
   summary.collected = collection.collected;
   summary.errors.push(...collection.errors);
   summary.circuitOpened = collection.circuitOpened;
@@ -219,6 +223,7 @@ export async function runScheduledTopicPipeline(
   topicId: string,
   input: { reportType: "brief" | "deep_dive" | "initial_digest"; windowHours: number; items: number } & GenerationExecutionOptions,
 ): Promise<Report | null> {
+  const telemetry = input.telemetry ?? p1TelemetrySinkForRuntime();
   const topic = getTopic(db, topicId);
   if (!topic) throw new Error(`topic ${topicId} 不存在`);
   if (!topic.enabled) throw new Error(`topic ${topicId} 已停用`);
@@ -260,9 +265,9 @@ export async function runScheduledTopicPipeline(
     }))
     : [];
   const batch = await runAnalysis(db, topic, items, { start: since, end: endIso }, {
-    history, traceId: input.traceId, rootRunId: input.rootRunId, assertWrite: input.assertWrite,
+    history, traceId: input.traceId, rootRunId: input.rootRunId, assertWrite: input.assertWrite, telemetry,
   });
-  const validation = await runValidation(db, batch, items, { traceId: input.traceId, assertWrite: input.assertWrite });
+  const validation = await runValidation(db, batch, items, { traceId: input.traceId, assertWrite: input.assertWrite, telemetry });
   try {
     runTechLeadExtraction(db, batch, validation, endIso, { traceId: input.traceId, assertWrite: input.assertWrite });
   } catch (e) {
@@ -301,6 +306,7 @@ export async function runPipelineForTopic(
   topicId: string,
   opts: { windowHours?: number; items?: number } & GenerationExecutionOptions = {},
 ): Promise<Report> {
+  const telemetry = opts.telemetry ?? p1TelemetrySinkForRuntime();
   const topic = getTopic(db, topicId);
   if (!topic) throw new Error(`topic ${topicId} 不存在`);
   if (!topic.enabled) throw new Error(`topic ${topicId} 已停用，启用后再深挖`);
@@ -335,8 +341,8 @@ export async function runPipelineForTopic(
     throw new Error(`窗口 ${windowHours}h 内无可分析内容（请先触发 /api/cron 采集或扩大窗口）`);
   }
 
-  const batch = await runAnalysis(db, topic, items, { start: since, end: endIso }, { traceId: opts.traceId, rootRunId: opts.rootRunId, assertWrite: opts.assertWrite });
-  const validation = await runValidation(db, batch, items, { traceId: opts.traceId, assertWrite: opts.assertWrite });
+  const batch = await runAnalysis(db, topic, items, { start: since, end: endIso }, { traceId: opts.traceId, rootRunId: opts.rootRunId, assertWrite: opts.assertWrite, telemetry });
+  const validation = await runValidation(db, batch, items, { traceId: opts.traceId, assertWrite: opts.assertWrite, telemetry });
   // 规划派生是 non-blocking：保留报告主链路，即使线索阶段失败也由 trace 记录为可解释的 partial。
   try { runTechLeadExtraction(db, batch, validation, endIso, { traceId: opts.traceId, assertWrite: opts.assertWrite }); } catch (error) {
     runLogger({ stage: "tech-leads" }).warn({ topicId: topic.id, batchId: batch.id, err: errMsg(error) }, "深挖技术线索派生失败，继续生成报告");

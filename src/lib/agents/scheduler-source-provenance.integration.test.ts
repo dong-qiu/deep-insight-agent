@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type DB, openDb } from "../db/index.js";
 import { applyProvenanceMigrations } from "../db/provenance-migrations.js";
+import { NOOP_P1_TELEMETRY_SINK } from "../capabilities/p1-telemetry.js";
 import { getGenerationTraceStatus } from "../db/provenance.js";
 import { insertSource } from "../db/repos.js";
 import type { RawItem } from "../sources/types.js";
@@ -48,7 +49,7 @@ afterEach(() => {
 
 describe("scheduled source provenance", () => {
   it("creates, claims and completes a source_collect trace on the real collection path", async () => {
-    const summary = await runCollectionCycle(db);
+    const summary = await runCollectionCycle(db, { telemetry: NOOP_P1_TELEMETRY_SINK });
     expect(summary.errors).toEqual([]);
     expect(summary.collected).toHaveLength(1);
     expect(summary.collected[0]).toMatchObject({ source: source.id, status: "done", inserted: 1 });
@@ -58,5 +59,6 @@ describe("scheduled source provenance", () => {
     });
     expect(db.prepare("SELECT COUNT(*) AS count FROM generation_entity_ref WHERE trace_id=? AND entity_type='content_item' AND role='output'").get(traceId))
       .toEqual({ count: 1 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM funnel_event").get()).toEqual({ count: 0 });
   });
 });

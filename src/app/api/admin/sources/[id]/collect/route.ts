@@ -10,6 +10,7 @@ import { collectSource } from "../../../../../../lib/agents/collector.js";
 import { getDb } from "../../../../../../lib/db/index.js";
 import { getSource, hasRunningRun } from "../../../../../../lib/db/repos.js";
 import { runLogger } from "../../../../../../lib/runtime/logger.js";
+import { p1TelemetrySinkForRuntime } from "../../../../../../lib/runtime/p1-lifecycle.js";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -44,7 +45,7 @@ export async function POST(
 
   // fire-and-forget：collectSource 内部 runJob 立刻 INSERT Run，UI 可立即在 /admin 看到 running。
   // 失败由 runJob 标 failed + notifyFailure 兜底；这里 promise rejection 进 logger 不阻塞 response。
-  void collectSource(db, source).then(
+  void collectSource(db, source, { telemetry: p1TelemetrySinkForRuntime() }).then(
     (out) => log.info({ runId: out.runId, fetched: out.fetched, inserted: out.inserted }, "立即抓取完成"),
     (e) => log.error({ err: (e as Error).message }, "立即抓取失败（runJob 已落 failed Run）"),
   );
