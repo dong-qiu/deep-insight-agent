@@ -183,6 +183,14 @@ dry-run 只运行同一 reducer、幂等、invalidation 和通知去重逻辑，
 
 通知输出扩展为确定性、无 recipient/channel 的 plan，保留 signal-specific dedupe key、审计字段与 5/15 分钟 retry policy；`external_delivery: false` 是模型的显式边界，而非 provider receipt。该补偿不验证真实 Multica/GitHub webhook、条件持久化、子任务 exactly-once、通知投递或 AC9 integration proof。
 
+### INSI-155 本地持久化补偿边界
+
+本地 `ControllerStore` 以**调用方显式注入的 controller 专用隔离根目录**（和可选 basename）保存 Controller record、CAS/idempotency effect、append-only transition/evidence/outbox audit 和 notification claim。它拒绝 live/shared/production 根和 escape filename，不读取应用的 `DB_PATH`；测试使用临时独立根。record 更新以 delivery、generation、state 条件更新并检查影响行数；outbox claim 同样条件更新并复读，因此并发 reader 不能获得双 claimant。每个 transition 的 `evidence_refs` 必须在同一 delivery/generation evidence ledger 中解析；evidence identity 包含 freshness/version，冲突 fail closed。`pending_invalidation` 会在跨事务中断时先使 acceptance fail closed，重启后冻结到人工决策。reconciler 仅可读取注入的 runtime/GitHub snapshot ports；adapter error、多个 active task、旧 lease/result、缺失或 stale/unknown evidence 均不允许自动推进。
+
+运行时 receipt 是持久化的本地 evidence：它必须同时匹配 delivery、generation、task、runtime identity、lease、fencing token、receipt identity 和预期状态，且 heartbeat/receipt 不得未来或倒序、heartbeat 不超过 90 秒、lease 未过期。ready 状态在一次 store mutation 中持久化不可变 `ReadyBundle`，其中固定同一 `(head, base, CLEAN)` 的 snapshot/CI/review 三个 receipt、hash 与 TTL 采纳条件；任一失配或 reread 失败都失效而非推进。
+
+此实现只提供 fake/recorded transport 的本地证据和持久 outbox plan/claim，**不**创建、取消或撤销 Multica task/lease，**不**配置或发送通知，且**不**配置 GitHub webhook、token/credential、CI/review/PR mutation、merge、deploy 或 IAM。它不是实际平台、webhook 或 notification-delivery 的验收证据。
+
 ## 明确禁止项与阶段 2 交付边界
 
 Controller 及其自动修复**不得**：自动合入 PR、修改分支保护、触发或执行部署、访问生产系统/数据、创建或修改 AWS 资源、修改 IAM/权限、读取或写入凭据，或以任何方式绕过 CI、Reviewer 或人工授权。

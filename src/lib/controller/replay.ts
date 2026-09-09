@@ -613,6 +613,13 @@ function allowed(from: ControllerState, to: ControllerState): boolean {
   return edges[from]?.includes(to) ?? false;
 }
 
+export function readyBundleFor(record: ControllerRecord, now: string): ReadyBundle | undefined {
+  const clock = parseTimestamp(now);
+  if (clock === undefined) return undefined;
+  const evidence = readyBundleEvidence(record, clock);
+  return evidence ? createReadyBundle(record, evidence, now) : undefined;
+}
+
 function readyBundleEvidence(record: ControllerRecord, clock: number): ReadyBundleEvidence | undefined {
   const freshness = record.current_freshness;
   if (!freshness || freshness.merge_state_status !== "clean") return undefined;
