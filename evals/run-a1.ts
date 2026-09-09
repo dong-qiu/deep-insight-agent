@@ -7,7 +7,7 @@
  * 用法：`npm run eval:a1`（需 .env.local 里的 ANTHROPIC_API_KEY）
  *
  * 自动可测指标：引用可达性 / 一致性合格率 / 失败率 / flagged 率 / 校验器准召。
- * 人工指标（非显然占比、幻觉率）：脚本导出 evals/out/review-queue.json 供人评。
+ * 人工指标（非显然占比、幻觉率）：脚本导出隔离的 evals/out/runs/<run-id>/review-queue.json 供人评。
  *
  * ── 分形态（stratum）评测（ADR-0007 B2 前置）──
  * 数据集每条可带 `stratum`（缺省 `arxiv`）。指标**按 stratum 分组**算、各比各的基线，避免
@@ -18,13 +18,51 @@
  * 仅含 arxiv 数据时（当前默认数据集），行为与分形态前一致——arxiv 那组的门槛/退出码逐项不变。
  */
 import "./load-env.js"; // 必须最先 import：载 .env.local，早于 MODELS（llm.ts 模块加载时求值）
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { analyze, coverageGaps, specificClaims } from "../src/lib/agents/analyzer.js";
-import { judgeWithRetry, validateBatch } from "../src/lib/agents/validator.js";
-import { MODELS, assertModelSeparation, getCostReport } from "../src/lib/runtime/llm.js";
+import { join } from "node:path";
+import {
+  analyze,
+  ANALYZE_BODY_CHARS,
+  ANALYZER_OUTPUT_VERSION,
+  ANALYZER_SYSTEM,
+  coverageGaps,
+  DISPLAY_COVERAGE_COUNTERCHECK_PROMPT_HASH,
+  DISPLAY_COVERAGE_COUNTERCHECK_PROMPT_VERSION,
+  DISPLAY_COVERAGE_GATE_VERSION,
+  DISPLAY_COVERAGE_PROMPT_HASH,
+  DISPLAY_COVERAGE_PROMPT_VERSION,
+  filterByQuoteCoverage,
+  renderImportanceBasis,
+  SELECT_WINDOW_CHARS,
+  specificClaims,
+  type CoverageDecision,
+} from "../src/lib/agents/analyzer.js";
+import { consistencyBatchMax, consistencyCacheVersion, CONSISTENCY_WINDOW_CHARS, judgeWithRetry, validateBatch } from "../src/lib/agents/validator.js";
+import { anthropicBaseUrl, MODELS, assertCoverageModelSeparation, getCostReport } from "../src/lib/runtime/llm.js";
 import { validatorBatchOn, validatorThinking } from "../src/lib/runtime/env.js";
-import type { CitationCheck, ContentItem, Insight, Topic } from "../src/lib/types.js";
+import {
+  RELAY_RECOVERY_MAX_PROBES,
+  RELAY_RECOVERY_MAX_BACKOFF_WAIT_MS,
+  RELAY_RECOVERY_EXHAUSTED_COOLDOWN_MS,
+  RELAY_RECOVERY_POLICY_VERSION,
+  relayRecoveryStats,
+} from "../src/lib/runtime/relay-recovery.js";
+import type { CitationCheck, ContentItem, ImportanceReason, Insight, Topic } from "../src/lib/types.js";
+import { DISPLAY_PROJECTION_VERSION } from "../src/lib/utils/source-quote-projection.js";
+import { selectInsights } from "../src/lib/agents/report-gen.js";
+import { beginA1Run, finalizeA1Run, finalizeFailedA1Run, sha256File, writeJson, type A1RunWorkspace } from "./a1-artifacts.js";
+import { sameEvalConfig, type EvalConfig } from "./a1-config.js";
+import {
+  countReaderVisibleByTopic,
+  DCP_MIN_CONSISTENCY_PAIRS,
+  DCP_MIN_READER_VISIBLE_INSIGHTS_PER_TOPIC,
+  DCP_MIN_TOPICS,
+  DCP_SAMPLE_CONTRACT_VERSION,
+  dcpSamplePrerequisite,
+} from "./a1-dcp.js";
+import { DIRTY_SOURCE_FINGERPRINT_ALGORITHM, dirtyFingerprintFromSnapshot } from "./a1-source-state.js";
 import {
   emptyJudgeStats,
   judgeAccuracy,
@@ -37,6 +75,15 @@ import {
 
 type Stratum = "arxiv" | "transcript";
 const STRATA: Stratum[] = ["arxiv", "transcript"];
+let activeWorkspace: A1RunWorkspace | null = null;
+/** Captured at startup so a long run cannot be attributed to a later checkout or dataset edit. */
+let activeRunContext: {
+  config: object;
+  dataset: object;
+  source: { commit: string | null; dirty_fingerprint: string | null; dirty_fingerprint_algorithm?: string };
+} = {
+  config: {}, dataset: {}, source: { commit: null, dirty_fingerprint: null },
+};
 
 interface Thresholds {
   reachabilityPass: number;
@@ -73,9 +120,7 @@ const THRESHOLDS_BY_STRATUM: Record<Stratum, Thresholds> = {
     yieldMin: 0.7, // 上报 yield ≥ 70%（暂定，真实转写跑批后标定）
   },
 };
-// eval-criteria 评测集规模下限（低于则结论仅供管线验证，不作 DCP 判定依据）
-const MIN_TOPICS = 5;
-const MIN_CONSISTENCY_PAIRS = 100;
+const DISPLAY_COVERAGE_FIXTURE = "evals/dataset/display-coverage-benchmark.json";
 
 interface QualityCase {
   topic: Topic;
@@ -92,31 +137,44 @@ interface ConsistencyCase {
 }
 type ConfusionMatrix = Record<ConsistencyLabel, Record<ConsistencyLabel, number>>;
 
-interface EvalConfig {
-  analyzer_model: string;
-  validator_model: string;
-  validator_thinking: boolean;
-  validator_batch: boolean;
-  quality_dataset_sha256: string;
-  consistency_dataset_sha256: string;
-}
-
-const EVAL_CONFIG_KEYS: Array<keyof EvalConfig> = [
-  "analyzer_model",
-  "validator_model",
-  "validator_thinking",
-  "validator_batch",
-  "quality_dataset_sha256",
-  "consistency_dataset_sha256",
-];
-
 interface QualityEvidence {
   case_index: number;
   topic_id: string;
   topic_name: string;
   stratum: Stratum;
   insight_count: number;
+  /** Production reader selector after v6 audit/binding + validator whitelist, never raw analyze() yield. */
+  reader_visible_insight_count: number;
   checks: CitationCheck[];
+  coverage_decisions: CoverageDecision[];
+}
+
+interface DisplayCoverageCase {
+  id: string;
+  expected: "accept" | "reject";
+  field: "statement" | "headline" | "importance_basis";
+  facets: string[];
+  statement: string;
+  statement_citation_index: number;
+  /** Required for accepted cases: the reader-visible statement must be this exact bound quote. */
+  expected_statement?: string;
+  headline?: string;
+  importance_facts?: string[];
+  importance_reason?: ImportanceReason;
+  importance_reason_claim_indexes?: number[];
+  citations: Array<{ claim: string; quote: string }>;
+}
+
+interface DisplayCoverageResult {
+  id: string;
+  expected: "accept" | "reject";
+  field: DisplayCoverageCase["field"];
+  facets: string[];
+  actual: "accept" | "reject";
+  rendered_statement: string | null;
+  projection_matches_expected: boolean;
+  decisions: CoverageDecision[];
+  error: string | null;
 }
 
 interface JudgeEvidence {
@@ -143,11 +201,30 @@ function datasetDigest(path: string): string {
 function currentEvalConfig(qualityFile: string, consistencyFile: string): EvalConfig {
   return {
     analyzer_model: MODELS.analyzer,
+    analyzer_output_version: ANALYZER_OUTPUT_VERSION,
+    analyzer_prompt_sha256: createHash("sha256").update(ANALYZER_SYSTEM).digest("hex"),
+    analyze_body_chars: ANALYZE_BODY_CHARS,
+    select_window_chars: SELECT_WINDOW_CHARS,
     validator_model: MODELS.validator,
+    validator_contract_version: consistencyCacheVersion(),
+    consistency_window_chars: CONSISTENCY_WINDOW_CHARS,
+    consistency_batch_max: consistencyBatchMax(),
+    relay_recovery_policy_version: RELAY_RECOVERY_POLICY_VERSION,
+    relay_recovery_max_probes: RELAY_RECOVERY_MAX_PROBES,
+    relay_recovery_max_backoff_wait_ms: RELAY_RECOVERY_MAX_BACKOFF_WAIT_MS,
+    relay_recovery_exhausted_cooldown_ms: RELAY_RECOVERY_EXHAUSTED_COOLDOWN_MS,
+    coverage_model: MODELS.coverage,
     validator_thinking: validatorThinking(),
     validator_batch: validatorBatchOn(),
     quality_dataset_sha256: datasetDigest(qualityFile),
     consistency_dataset_sha256: datasetDigest(consistencyFile),
+    display_coverage_dataset_sha256: datasetDigest(DISPLAY_COVERAGE_FIXTURE),
+    display_coverage_gate_version: DISPLAY_COVERAGE_GATE_VERSION,
+    display_projection_version: DISPLAY_PROJECTION_VERSION,
+    display_coverage_primary_prompt_version: DISPLAY_COVERAGE_PROMPT_VERSION,
+    display_coverage_primary_prompt_sha256: DISPLAY_COVERAGE_PROMPT_HASH,
+    display_coverage_countercheck_prompt_version: DISPLAY_COVERAGE_COUNTERCHECK_PROMPT_VERSION,
+    display_coverage_countercheck_prompt_sha256: DISPLAY_COVERAGE_COUNTERCHECK_PROMPT_HASH,
   };
 }
 
@@ -158,16 +235,144 @@ function parseLimit(raw: string | undefined, name: string): number {
   return n;
 }
 
-function sameEvalConfig(baseline: Record<string, unknown>, current: EvalConfig): boolean {
-  return EVAL_CONFIG_KEYS.every((key) => baseline[key] === current[key]);
-}
-
 function readJsonl<T>(path: string): T[] {
   return readFileSync(path, "utf8")
     .split("\n")
     .map((l) => l.trim())
     .filter(Boolean)
     .map((l) => JSON.parse(l) as T);
+}
+
+function readDisplayCoverageCases(path = DISPLAY_COVERAGE_FIXTURE): DisplayCoverageCase[] {
+  const parsed = JSON.parse(readFileSync(path, "utf8")) as { cases?: DisplayCoverageCase[] };
+  if (!Array.isArray(parsed.cases) || !parsed.cases.length) throw new Error(`${path} 缺少 display coverage cases`);
+  return parsed.cases;
+}
+
+function coveragePipelineSummary(decisions: CoverageDecision[]) {
+  const terminal_reasons: Record<string, number> = {};
+  const dropped_claims_by_field: Record<string, number> = {};
+  const dropped_claims_by_reason: Record<string, number> = {};
+  const projection_reasons: Record<string, number> = {};
+  for (const decision of decisions) {
+    terminal_reasons[decision.terminal_reason] = (terminal_reasons[decision.terminal_reason] ?? 0) + 1;
+    for (const reason of decision.projection_reasons ?? []) {
+      projection_reasons[reason] = (projection_reasons[reason] ?? 0) + 1;
+    }
+    for (const claim of decision.claims.filter((claim) => !claim.supports)) {
+      dropped_claims_by_field[claim.field] = (dropped_claims_by_field[claim.field] ?? 0) + 1;
+      dropped_claims_by_reason[claim.reason] = (dropped_claims_by_reason[claim.reason] ?? 0) + 1;
+    }
+  }
+  return {
+    generated: decisions.length,
+    dropped_truncated: terminal_reasons.dropped_truncated ?? 0,
+    dropped_other: (terminal_reasons.dropped_no_displayable_citation ?? 0) + (terminal_reasons.dropped_invalid_citation ?? 0),
+    repair: { attempted: 0, kept: 0, note: "P0 disables automatic rewrite/backfill" },
+    dropped_coverage: (terminal_reasons.dropped_coverage ?? 0) + (terminal_reasons.dropped_coverage_error ?? 0),
+    kept: terminal_reasons.kept ?? 0,
+    terminal_reasons,
+    dropped_claims_by_field,
+    dropped_claims_by_reason,
+    projection_reasons,
+  };
+}
+
+async function runDisplayCoverageBenchmark(cases: DisplayCoverageCase[]): Promise<DisplayCoverageResult[]> {
+  const results: DisplayCoverageResult[] = [];
+  for (const c of cases) {
+    const controlled = c.importance_reason != null || c.importance_facts != null || c.importance_reason_claim_indexes != null;
+    const facts = c.importance_facts ?? [];
+    const reason = c.importance_reason;
+    const insight: Insight = {
+      id: `display-benchmark_${c.id}`,
+      topic_id: "display-coverage-benchmark",
+      type: "aggregation",
+      event_id: null,
+      statement: c.statement,
+      statement_citation_index: c.statement_citation_index,
+      headline: c.headline ?? "",
+      importance: 3,
+      ...(controlled && reason ? {
+        importance_facts: facts,
+        importance_reason: reason,
+        importance_reason_claim_indexes: c.importance_reason_claim_indexes ?? [],
+        importance_basis: renderImportanceBasis(facts, reason),
+      } : { importance_basis: "" }),
+      citations: c.citations.map((citation) => ({
+        content_item_id: `benchmark_${c.id}`,
+        claim: citation.claim,
+        quote: citation.quote,
+        locator: { paragraph_index: 0, char_start: 0, char_end: citation.quote.length },
+      })),
+      source_count: 1,
+      multi_source: false,
+      time_window: { start: "", end: "" },
+      confidence: null,
+      language: "en",
+      is_followup: false,
+    };
+    const decisions: CoverageDecision[] = [];
+    try {
+      const kept = await filterByQuoteCoverage([insight], undefined, undefined, (decision) => decisions.push(decision));
+      const rendered_statement = kept[0]?.statement ?? null;
+      results.push({
+        id: c.id, expected: c.expected, field: c.field, facets: c.facets,
+        actual: kept.length ? "accept" : "reject", rendered_statement,
+        projection_matches_expected: c.expected_statement == null || rendered_statement === c.expected_statement,
+        decisions, error: null,
+      });
+    } catch (error) {
+      results.push({
+        id: c.id, expected: c.expected, field: c.field, facets: c.facets, actual: "reject",
+        rendered_statement: null, projection_matches_expected: c.expected_statement == null,
+        decisions, error: (error as Error).message,
+      });
+    }
+  }
+  return results;
+}
+
+function gitValue(args: string[]): string | null {
+  try {
+    return execFileSync("git", args, { encoding: "utf8" }).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+function gitBuffer(args: string[]): Buffer | null {
+  try {
+    return execFileSync("git", args);
+  } catch {
+    return null;
+  }
+}
+
+function sourceState() {
+  const dirty = gitBuffer(["status", "--porcelain=v1", "-z"]);
+  const untrackedPaths = gitBuffer(["ls-files", "--others", "--exclude-standard", "-z"]);
+  const untracked = untrackedPaths == null ? [] : untrackedPaths.toString("utf8").split("\0").filter(Boolean).map((path) => {
+    try { return { path, content: readFileSync(path) }; } catch { return { path, content: null }; }
+  });
+  return {
+    commit: gitValue(["rev-parse", "HEAD"]),
+    dirty_fingerprint: dirtyFingerprintFromSnapshot({
+      status: dirty,
+      staged_diff: gitBuffer(["diff", "--no-ext-diff", "--binary", "--cached"]),
+      unstaged_diff: gitBuffer(["diff", "--no-ext-diff", "--binary"]),
+      untracked,
+    }),
+    dirty_fingerprint_algorithm: DIRTY_SOURCE_FINGERPRINT_ALGORITHM,
+  };
+}
+
+function insightManifest(insights: Insight[]) {
+  const ids = insights.map((insight) => insight.id).sort();
+  return {
+    count: ids.length,
+    ids_sha256: createHash("sha256").update(ids.join("\n")).digest("hex"),
+  };
 }
 
 const pct = (x: number) => `${(x * 100).toFixed(1)}%`;
@@ -242,13 +447,14 @@ async function main(): Promise<void> {
     );
     process.exit(2);
   }
-  if (!process.env.ANTHROPIC_API_KEY.startsWith("sk-ant-")) {
+  if (!process.env.ANTHROPIC_API_KEY.startsWith("sk-ant-") && !anthropicBaseUrl()) {
     console.warn(
       "⚠️ ANTHROPIC_API_KEY 不以 'sk-ant-' 开头，可能不是有效的 Anthropic key" +
         "（Anthropic key 形如 sk-ant-api03-...）。若实跑报 401/403，请先核对 key。\n",
     );
   }
-  assertModelSeparation();
+  assertCoverageModelSeparation();
+  activeWorkspace = beginA1Run();
   // 子集冒烟开关：A1_QUALITY_LIMIT / A1_CONSISTENCY_LIMIT 限制跑多少条（廉价验证链路+成本）
   const qLimit = parseLimit(process.env.A1_QUALITY_LIMIT, "A1_QUALITY_LIMIT");
   const cLimit = parseLimit(process.env.A1_CONSISTENCY_LIMIT, "A1_CONSISTENCY_LIMIT");
@@ -265,8 +471,20 @@ async function main(): Promise<void> {
   // 仅实际缩小样本时才是冒烟；上限大于数据集不能悄悄绕过全量质量门。
   const smoke = qualityCases.length < qualityAll.length || consistencyCases.length < consistencyAll.length;
   const evalConfig = currentEvalConfig(qualityFile, consistencyFile);
+  activeRunContext = {
+    config: evalConfig,
+    dataset: {
+      quality_file: qualityFile,
+      consistency_file: consistencyFile,
+      display_coverage_fixture: DISPLAY_COVERAGE_FIXTURE,
+      quality_cases: qualityCases.length,
+      consistency_cases: consistencyCases.length,
+      smoke,
+    },
+    source: sourceState(),
+  };
   console.log(
-    `A1 验证实跑\n模型：分析=${MODELS.analyzer} / 校验=${MODELS.validator}` +
+    `A1 验证实跑\n模型：分析=${MODELS.analyzer} / 校验=${MODELS.validator} / 反扩写复核=${MODELS.coverage}` +
       `\n配置：thinking=${evalConfig.validator_thinking ? "on" : "off"} / batch=${evalConfig.validator_batch ? "on" : "off"}\n`,
   );
   if (smoke) {
@@ -278,16 +496,28 @@ async function main(): Promise<void> {
   }
   const checksByStratum: Record<Stratum, CitationCheck[]> = { arxiv: [], transcript: [] };
   const insightsByStratum: Record<Stratum, Insight[]> = { arxiv: [], transcript: [] };
+  const readerVisibleInsightsByStratum: Record<Stratum, Insight[]> = { arxiv: [], transcript: [] };
+  const dcpTopicIds = [...new Set(qualityAll.map((quality) => quality.topic.id))];
+  const coverageDecisionsByStratum: Record<Stratum, CoverageDecision[]> = { arxiv: [], transcript: [] };
   const qualityEvidence: Array<QualityEvidence & { error?: string }> = [];
   let qualitySucceeded = 0;
+  const qualityFailures: Array<{ case_index: number; topic_id: string; error: string }> = [];
   for (const [caseIndex, c] of qualityCases.entries()) {
     const stratum: Stratum = c.stratum ?? "arxiv";
     process.stdout.write(`[分析] 主题「${c.topic.name}」(${stratum})… `);
+    const coverageDecisions: CoverageDecision[] = [];
     try {
-      const batch = await analyze(c.topic, c.items, c.time_window);
+      const batch = await analyze(c.topic, c.items, c.time_window, undefined, {
+        onCoverageDecision: (decision) => coverageDecisions.push(decision),
+      });
       const vr = await validateBatch(batch.insights, c.items);
+      // DCP counts the same reader-visible derivative as production, rather than raw analyzer
+      // yield. A topic whose citations are all blocked/flagged therefore contributes zero.
+      const readerVisible = selectInsights(batch, vr);
+      readerVisibleInsightsByStratum[stratum].push(...readerVisible.map((entry) => entry.insight));
       insightsByStratum[stratum].push(...batch.insights);
       checksByStratum[stratum].push(...vr.checks);
+      coverageDecisionsByStratum[stratum].push(...coverageDecisions);
       qualitySucceeded++;
       qualityEvidence.push({
         case_index: caseIndex,
@@ -295,12 +525,16 @@ async function main(): Promise<void> {
         topic_name: c.topic.name,
         stratum,
         insight_count: batch.insights.length,
+        reader_visible_insight_count: readerVisible.length,
         checks: vr.checks,
+        coverage_decisions: coverageDecisions,
       });
       console.log(`${batch.insights.length} 洞察 / ${vr.checks.length} 引用校验`);
     } catch (e) {
       const error = (e as Error).message;
-      qualityEvidence.push({ case_index: caseIndex, topic_id: c.topic.id, topic_name: c.topic.name, stratum, insight_count: 0, checks: [], error });
+      qualityFailures.push({ case_index: caseIndex, topic_id: c.topic.id, error });
+      coverageDecisionsByStratum[stratum].push(...coverageDecisions);
+      qualityEvidence.push({ case_index: caseIndex, topic_id: c.topic.id, topic_name: c.topic.name, stratum, insight_count: 0, reader_visible_insight_count: 0, checks: [], coverage_decisions: coverageDecisions, error });
       console.log(`失败，跳过该主题（${error}）`);
     }
   }
@@ -310,6 +544,7 @@ async function main(): Promise<void> {
   const matrixByStratum: Record<Stratum, ConfusionMatrix> = { arxiv: emptyMatrix(), transcript: emptyMatrix() };
   const judgeEvidence: JudgeEvidence[] = [];
   let judgeSucceeded = 0;
+  const judgeFailures: Array<{ case_index: number; error: string }> = [];
   process.stdout.write(`[校验器准召] ${consistencyCases.length} 组标注对… `);
   for (const [caseIndex, c] of consistencyCases.entries()) {
     const st = judgeByStratum[c.stratum ?? "arxiv"];
@@ -321,6 +556,7 @@ async function main(): Promise<void> {
       // validate-batch-judge.ts 覆盖，不能用本循环替代其验证。
       j = await judgeWithRetry(c.statement, c.source_text);
     } catch (e) {
+      judgeFailures.push({ case_index: caseIndex, error: (e as Error).message });
       recordJudgeAttempt(st, c.expected_consistency, null);
       judgeEvidence.push({ case_index: caseIndex, stratum, expected: c.expected_consistency, predicted: null, rationale: null, error: (e as Error).message });
       continue;
@@ -333,6 +569,13 @@ async function main(): Promise<void> {
   const judgedTotal = STRATA.reduce((n, s) => n + judgeByStratum[s].judged, 0);
   const errorsTotal = STRATA.reduce((n, s) => n + judgeByStratum[s].errors, 0);
   console.log(`done（完成 ${judgedTotal}/${consistencyCases.length}${errorsTotal ? `，重试耗尽 ${errorsTotal}（计未命中）` : ""}）`);
+  const coreComplete = qualityFailures.length === 0 && judgeFailures.length === 0;
+  if (!coreComplete) {
+    console.log(
+      `❌ 核心评测不完整：分析主题失败 ${qualityFailures.length} 个，校验标注对失败 ${judgeFailures.length} 个。` +
+        " 不会将部分样本与基线比较或宣称自动门通过。",
+    );
+  }
 
   // ── 指标（按 stratum 分组打印 + 收集所有硬门行用于退出码） ──
   const activeStrata = STRATA.filter((s) => checksByStratum[s].length > 0 || judgeByStratum[s].attempted > 0);
@@ -347,10 +590,28 @@ async function main(): Promise<void> {
 
   // ── 覆盖度（第三层校验，informational，全形态合计）：结论里的具体声明（数字/实体）被引用直接
   // 覆盖的比例。统计 analyzer 产出层（用 it.citations 全量、不剔 blocked）；非硬门，量化缺口现状。 ──
-  const allInsights = STRATA.flatMap((s) => insightsByStratum[s]);
+  const rawInsights = STRATA.flatMap((s) => insightsByStratum[s]);
+  // The queue and manifest are DCP evidence, so they contain exactly production reader-visible
+  // insights—not pre-validation analyzer candidates retained below for informational coverage.
+  const allInsights = STRATA.flatMap((s) => readerVisibleInsightsByStratum[s]);
+  const readerVisibleByTopic = countReaderVisibleByTopic(dcpTopicIds, allInsights);
+  const samplePrerequisite = dcpSamplePrerequisite({
+    topics: dcpTopicIds.length,
+    consistencyPairs: consistencyAll.length,
+    readerVisibleInsightsByTopic: readerVisibleByTopic,
+  });
+  const dcpSample = {
+    contract_version: DCP_SAMPLE_CONTRACT_VERSION,
+    min_topics: DCP_MIN_TOPICS,
+    min_consistency_pairs: DCP_MIN_CONSISTENCY_PAIRS,
+    min_reader_visible_insights_per_topic: DCP_MIN_READER_VISIBLE_INSIGHTS_PER_TOPIC,
+    unique_topic_count: dcpTopicIds.length,
+    reader_visible_total: allInsights.length,
+    reader_visible_by_topic: Object.fromEntries(readerVisibleByTopic.map(({ topic_id, count }) => [topic_id, count])),
+  };
   let claimsTotal = 0;
   let claimsCovered = 0;
-  for (const it of allInsights) {
+  for (const it of rawInsights) {
     const ents = (it.entities ?? []).map((e) => e.name);
     const quotes = it.citations.map((c) => c.quote);
     const all = specificClaims(it.statement, ents).length;
@@ -363,6 +624,27 @@ async function main(): Promise<void> {
     `\n引用覆盖度（informational）：具体声明 ${claimsCovered}/${claimsTotal} 被引用直接覆盖 = ${pct(coverageRatio)}` +
       `（数字+实体，按 analyzer 产出 quote 直接覆盖；缺口由 report-gen 在渲染层外露 〔待补引〕）`,
   );
+
+  // ── 展示级引用覆盖基准（P0，独立于 analyzer 的最终 yield）──
+  // 手标 reject 的任何一条若被放行就是 unsafe_accept，硬门必须为 0；false reject 暂作
+  // 信息量，避免在未建立足够样本前把“保守”误报成安全放行。
+  const displayCoverageCases = readDisplayCoverageCases();
+  process.stdout.write(`[展示引用覆盖] ${displayCoverageCases.length} 条手标反例/正例… `);
+  const displayCoverageResults = await runDisplayCoverageBenchmark(displayCoverageCases);
+  const expectedRejects = displayCoverageResults.filter((result) => result.expected === "reject");
+  const expectedAccepts = displayCoverageResults.filter((result) => result.expected === "accept");
+  // An accepted case whose rendered text differs from its manually pinned bound quote is also a
+  // P0 unsafe acceptance: it would prove that an internal claim has leaked back to a reader.
+  const projectionViolations = displayCoverageResults.filter((result) => result.actual === "accept" && !result.projection_matches_expected);
+  const unsafeAccepts = [
+    ...expectedRejects.filter((result) => result.actual === "accept"),
+    ...projectionViolations,
+  ];
+  const falseRejects = expectedAccepts.filter((result) => result.actual === "reject");
+  const unsafeAcceptRate = expectedRejects.length ? unsafeAccepts.length / expectedRejects.length : 1;
+  const displayCoverageMetric = metric("display_unsafe_accept", "展示覆盖 unsafe_accept", unsafeAcceptRate, 0, "<=", "publish_safety");
+  allRows.push(displayCoverageMetric);
+  console.log(`${displayCoverageMetric.pass ? "✅" : "❌"} unsafe_accept ${unsafeAccepts.length}/${expectedRejects.length}；projection_violation ${projectionViolations.length}/${displayCoverageResults.length}；false_reject ${falseRejects.length}/${expectedAccepts.length}`);
 
   // ── 成本（估算，A5 成本可控） ──
   const cost = getCostReport();
@@ -381,30 +663,67 @@ async function main(): Promise<void> {
   );
 
   // ── 人工指标：导出 review queue（非显然占比、幻觉率需人评） ──
-  mkdirSync("evals/out", { recursive: true });
-  writeFileSync(
-    "evals/out/review-queue.json",
-    JSON.stringify({ generated_at: new Date().toISOString(), insights: allInsights }, null, 2),
+  // All files first land in this run's private temp directory. Only finalizeA1Run publishes it.
+  const workspace = activeWorkspace!;
+  const reviewGeneratedAt = new Date().toISOString();
+  const recovery = relayRecoveryStats();
+  const pipelineCoverage = Object.fromEntries(STRATA.map((stratum) => [stratum, coveragePipelineSummary(coverageDecisionsByStratum[stratum])]));
+  const reviewQueuePath = join(workspace.tempDir, "review-queue.json");
+  const a1RunPath = join(workspace.tempDir, "a1-run.json");
+  const reviewCsvPath = join(workspace.tempDir, "review.csv");
+  writeJson(
+    reviewQueuePath,
+    { run_id: workspace.runId, generated_at: reviewGeneratedAt, insights: allInsights },
   );
   // 可审计证据：避免只留下聚合率，导致无法区分 analyzer 过度声称、validator 误杀或评测标签问题。
   // CI 会把本文件作为 artifact 上传；其中不含 API 凭据，仅含仓内评测样本索引和模型输出。
-  writeFileSync(
-    "evals/out/a1-run.json",
-    JSON.stringify({
-      generated_at: new Date().toISOString(),
+  writeJson(
+    a1RunPath,
+    {
+      run_id: workspace.runId,
+      generated_at: reviewGeneratedAt,
       config: evalConfig,
       dataset: { quality_file: qualityFile, quality_cases: qualityCases.length, consistency_file: consistencyFile, consistency_cases: consistencyCases.length, smoke },
+      completion: {
+        core_complete: coreComplete,
+        quality_succeeded: qualitySucceeded,
+        quality_total: qualityCases.length,
+        quality_failures: qualityFailures,
+        judge_succeeded: judgeSucceeded,
+        judge_total: consistencyCases.length,
+        judge_failures: judgeFailures,
+      },
+      dcp_sample: dcpSample,
       quality_cases: qualityEvidence,
       judge_cases: judgeEvidence,
       confusion_matrix: matrixByStratum,
       metrics: rowsByStratum,
       coverage: { claims_covered: claimsCovered, claims_total: claimsTotal, ratio: coverageRatio },
-    }, null, 2),
+      display_coverage: {
+        fixture: DISPLAY_COVERAGE_FIXTURE,
+        fixture_sha256: evalConfig.display_coverage_dataset_sha256,
+        unsafe_accept: { count: unsafeAccepts.length, total: expectedRejects.length, rate: unsafeAcceptRate },
+        projection_violation: { count: projectionViolations.length, total: displayCoverageResults.length },
+        false_reject: { count: falseRejects.length, total: expectedAccepts.length },
+        results: displayCoverageResults,
+      },
+      pipeline_coverage: pipelineCoverage,
+      relay_recovery: recovery,
+    },
   );
+  let reviewArtifactError: string | null = null;
+  try {
+    execFileSync(process.execPath, ["node_modules/tsx/dist/cli.mjs", "evals/make-review-csv.ts", reviewQueuePath, reviewCsvPath], { stdio: "inherit" });
+  } catch (error) {
+    // Human-review convenience files are auxiliary. The durable queue remains available and a
+    // malformed spreadsheet export must never convert a valid core A1 run into a false failure.
+    reviewArtifactError = error instanceof Error ? error.message : String(error);
+    console.warn(`⚠️ review CSV 未生成（核心评测不受影响）：${reviewArtifactError}`);
+  }
   console.log(
     "\n人工指标（脚本无法自动算）：\n" +
       "  · 非显然洞察占比 ≥ 60%、幻觉率 ≤ 2%\n" +
-      "  → 见 evals/out/review-queue.json，逐条人评后回填。",
+      `  → 见 ${join(workspace.finalDir, "review-queue.json")}，逐条人评后回填。`,
   );
 
   // ── 样本量提示 ──
@@ -413,10 +732,9 @@ async function main(): Promise<void> {
       `\n⚠️ 子集冒烟：仅跑了主题 ${qualityCases.length}/${qualityAll.length}、一致性对 ${consistencyCases.length}/${consistencyAll.length}。\n` +
         "   结果仅用于验证真模型链路 + 标定成本，不作 A1 / DCP 判定依据。去掉 A1_*_LIMIT 跑全量才出结论。",
     );
-  } else if (qualityAll.length < MIN_TOPICS || consistencyAll.length < MIN_CONSISTENCY_PAIRS) {
+  } else if (samplePrerequisite) {
     console.log(
-      `\n⚠️ 样本量低于 eval-criteria 规模（主题 ${qualityAll.length}/${MIN_TOPICS}，` +
-        `一致性对 ${consistencyAll.length}/${MIN_CONSISTENCY_PAIRS}）。\n` +
+      `\n⚠️ ${samplePrerequisite}。\n` +
         "   当前结论仅验证管线打通，不作 DCP 判定依据。请用真实采集数据扩充数据集后重跑。",
     );
   }
@@ -424,7 +742,11 @@ async function main(): Promise<void> {
   // ── 回归门（eval-criteria：任一指标较基线降 >3pp 告警/阻断）。各 stratum 各比各的基线段。
   // baseline.json：arxiv → `auto_metrics`（历史键，向后兼容）；transcript → `transcript`。 ──
   let regressed = false;
-  try {
+  let baselineComparison: "comparable" | "incomparable" | "not_evaluated" = "not_evaluated";
+  if (!coreComplete) {
+    console.log("\n（核心评测不完整，跳过 baseline 回归对照）");
+  } else try {
+    baselineComparison = "comparable";
     const baseDoc = JSON.parse(readFileSync("evals/baseline.json", "utf8")) as Record<string, unknown>;
     const configs = baseDoc.eval_configs;
     const configsByStratum = configs && typeof configs === "object" && !Array.isArray(configs)
@@ -435,13 +757,18 @@ async function main(): Promise<void> {
     const TOL = 0.03;
     for (const s of activeStrata) {
       const base = baseForStratum(s);
-      if (!Object.keys(base).length) continue;
+      if (!Object.keys(base).length) {
+        baselineComparison = "incomparable";
+        console.log(`\n回归对照（${s} · vs baseline.json）：⚠️ 缺少该形态的基线指标，不能作回归结论。`);
+        continue;
+      }
       const baseConfig = configsByStratum[s];
       const configCompatible = baseConfig && typeof baseConfig === "object" && !Array.isArray(baseConfig)
         ? sameEvalConfig(baseConfig as Record<string, unknown>, evalConfig)
         : false;
       console.log(`\n回归对照（${s} · vs baseline.json）：`);
       if (!configCompatible) {
+        baselineComparison = "incomparable";
         console.log("  ⚠️ 此形态缺少同配置的结构化基线：仅展示指标，不作回归结论；请先全量重建该形态基线。");
       }
       for (const r of rowsByStratum[s]) {
@@ -462,6 +789,7 @@ async function main(): Promise<void> {
       );
     }
   } catch {
+    baselineComparison = "incomparable";
     console.log("\n（无 baseline.json，跳过回归对照）");
   }
 
@@ -471,24 +799,91 @@ async function main(): Promise<void> {
   // （与重构前等价：原版恒 6 行、空数据下四项算 0 → FAIL → exit 1）。
   if (!allRows.length) console.log("❌ 无任何可评指标（所有主题失败 + 零一致性对）——判失败，非通过。");
   // 冒烟只证明链路能跑，刻意不把不完整子集的类别缺失当作质量失败；全量仍严格执行阈值与回归门。
-  if (smoke) {
+  let exitCode: number;
+  let autoGate: "pass" | "fail" | "smoke" | "not_evaluated";
+  if (!coreComplete) {
+    exitCode = 1;
+    autoGate = "not_evaluated";
+  } else if (smoke) {
     const qualityPathSucceeded = qualityCases.length === 0 || qualitySucceeded > 0;
     const judgePathSucceeded = consistencyCases.length === 0 || judgeSucceeded > 0;
     if (allRows.length && qualityPathSucceeded && judgePathSucceeded) {
       console.log("冒烟模式：忽略质量阈值退出码；请查看 artifact，不能据此更新基线或签发布门。");
-      process.exit(0);
+      exitCode = 0;
+      autoGate = "smoke";
+    } else {
+      console.log(
+        `❌ 冒烟链路未完整跑通（analyzer+validator ${qualitySucceeded}/${qualityCases.length} 主题成功，` +
+          `一致性校验 ${judgeSucceeded}/${consistencyCases.length} 对成功）。`,
+      );
+      exitCode = 1;
+      autoGate = "fail";
     }
-    console.log(
-      `❌ 冒烟链路未完整跑通（analyzer+validator ${qualitySucceeded}/${qualityCases.length} 主题成功，` +
-        `一致性校验 ${judgeSucceeded}/${consistencyCases.length} 对成功）。`,
-    );
-    process.exit(1);
+  } else {
+    // 阈值 FAIL 或（配置可比的）>3pp 回归 → 非零退出（带 key 的 job/CI 可据此阻断合并）
+    exitCode = !allRows.length || failed.length || regressed ? 1 : 0;
+    autoGate = exitCode === 0 ? "pass" : "fail";
   }
-  // 阈值 FAIL 或（配置可比的）>3pp 回归 → 非零退出（带 key 的 job/CI 可据此阻断合并）
-  process.exit(!allRows.length || failed.length || regressed ? 1 : 0);
+
+  const dcpPrerequisites = [
+    ...(baselineComparison !== "comparable" ? ["缺少同配置的可比 baseline"] : []),
+    ...(smoke ? ["当前为 smoke 子集运行"] : []),
+    ...(samplePrerequisite ? [samplePrerequisite] : []),
+    "人工 review queue 尚未完成",
+  ];
+  const dcpEligibleForManualReview = autoGate === "pass" && dcpPrerequisites.length === 1;
+
+  const artifactPaths = {
+    "a1-run.json": a1RunPath,
+    "review-queue.json": reviewQueuePath,
+    ...(reviewArtifactError ? {} : { "review.csv": reviewCsvPath }),
+  };
+  finalizeA1Run(workspace, {
+    run_id: workspace.runId,
+    status: "completed",
+    auto_gate: autoGate,
+    manual_review: "pending",
+    dcp_eligibility: dcpEligibleForManualReview ? "pending_manual_review" : "ineligible",
+    started_at: workspace.startedAt,
+    ended_at: new Date().toISOString(),
+    config: activeRunContext.config,
+    dataset: activeRunContext.dataset,
+    source: activeRunContext.source,
+    baseline_comparison: baselineComparison,
+    dcp_sample: dcpSample,
+    dcp_prerequisites: dcpPrerequisites,
+    relay_recovery: recovery,
+    insights: insightManifest(allInsights),
+    artifacts: Object.fromEntries(Object.entries(artifactPaths).map(([name, path]) => [name, sha256File(path)])),
+    ...(reviewArtifactError ? { review_artifact_error: reviewArtifactError } : {}),
+  });
+  activeWorkspace = null;
+  process.exit(exitCode);
 }
 
 main().catch((err) => {
   console.error("A1 验证运行出错：", err);
+  if (activeWorkspace) {
+    const workspace = activeWorkspace;
+    try {
+      finalizeFailedA1Run(workspace, {
+        run_id: workspace.runId,
+        status: "failed",
+        auto_gate: "not_evaluated",
+        manual_review: "not_generated",
+        dcp_eligibility: "not_evaluated",
+        started_at: workspace.startedAt,
+        ended_at: new Date().toISOString(),
+        config: activeRunContext.config,
+        dataset: activeRunContext.dataset,
+        source: activeRunContext.source,
+        insights: { count: 0, ids_sha256: createHash("sha256").update("").digest("hex") },
+        artifacts: {},
+        error: (err as Error).message,
+      });
+    } catch (artifactError) {
+      console.error("A1 失败产物记录也失败：", artifactError);
+    }
+  }
   process.exit(1);
 });

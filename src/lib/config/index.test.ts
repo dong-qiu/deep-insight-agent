@@ -122,10 +122,19 @@ describe("loadStaticConfig + 播种 + 合并", () => {
 
   it("getEffectiveModels：env 覆盖 > 静态默认", () => {
     const cfg = loadStaticConfig();
+    const priorAnalyzer = process.env.ANALYZER_MODEL;
+    const priorCoverage = process.env.COVERAGE_MODEL;
     delete process.env.ANALYZER_MODEL;
+    delete process.env.COVERAGE_MODEL;
     expect(getEffectiveModels(cfg).analyzer).toBe(cfg.models.analyzer);
+    expect(getEffectiveModels(cfg).coverage).toBeNull();
     process.env.ANALYZER_MODEL = "claude-opus-4-6";
+    process.env.COVERAGE_MODEL = "claude-opus-4-8";
     expect(getEffectiveModels(cfg).analyzer).toBe("claude-opus-4-6");
-    delete process.env.ANALYZER_MODEL;
+    expect(getEffectiveModels(cfg).coverage).toBe("claude-opus-4-8");
+    if (priorAnalyzer === undefined) delete process.env.ANALYZER_MODEL;
+    else process.env.ANALYZER_MODEL = priorAnalyzer;
+    if (priorCoverage === undefined) delete process.env.COVERAGE_MODEL;
+    else process.env.COVERAGE_MODEL = priorCoverage;
   });
 });

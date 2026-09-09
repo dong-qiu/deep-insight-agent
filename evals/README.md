@@ -28,21 +28,28 @@ npm run typecheck   # tsc 类型检查
 | 引用可达性通过率 | validator 确定性校验（quote 是否逐字在原文） | 自动 |
 | 引用一致性合格率 / 失败率 / flagged 率 | validator LLM 一致性评判 | 自动 |
 | 校验器端到端三分类准确率 / 负例召回率 / 完成率 | 标注集 `citation-consistency.jsonl`；经生产单条路径的重试，失败按未命中计入前两项 | 自动 |
-| 非显然洞察占比、幻觉率 | 需人评 → 脚本导出 `out/review-queue.json` | 人工 |
+| 展示引用覆盖 unsafe_accept | 手标 `dataset/display-coverage-benchmark.json`；v6 的最终 statement 必须逐字等于唯一绑定 source quote，并同时核 batch 投影版本、citation index/ref、statement/quote SHA-256。主 validator 可审计内部 claim→quote 边界；独立 coverage 模型只看 quote+locator，判定读者能否脱离标题/正文理解。任何 reject 被放行、投影不等于手标 quote、或任一复核错误/缺 verdict 都 FAIL。headline/importance_fact 不进入读者事实投影 | 自动 |
+| 非显然洞察占比、幻觉率 | 需人评 → 脚本导出 `out/runs/<run-id>/review-queue.json` | 人工 |
 
 阈值镜像自 `docs/verify/eval-criteria.md`「上线门槛」（改阈值请同步那份文档）。
 自动门槛全过 → 退出码 0；有 FAIL → 退出码 1（便于 CI 门禁）。
+
+完整 A1 还要求显式配置且两两不同的 `ANALYZER_MODEL`、`VALIDATOR_MODEL`、`COVERAGE_MODEL`；
+后者是展示引用的独立反向复核模型，缺失、相同或不可用都会 fail-closed。不要把密钥或这些本地模型配置提交进仓库。
+
+每次运行写入独立 `out/runs/<run-id>/`（`a1-run.json`、review queue/CSV、`manifest.json`）；
+`out/runs/latest-complete.json` 只是最近完成的指针，必须分别读取 `auto_gate`、`manual_review`、`dcp_eligibility`，不能当作 PASS 标记。
+`npm run review:csv` / `npm run review:sheet` 默认沿该指针读取隔离 run 的 review queue；也可显式传入某次 run 的路径。
 
 ## 数据集
 
 - `dataset/insight-quality.jsonl` —— 每行 `{topic, items, time_window}`，喂给 analyzer。
 - `dataset/citation-consistency.jsonl` —— 每行 `{statement, source_text, expected_consistency, negative_type?}`，标注集。
+- `dataset/display-coverage-benchmark.json` —— v6 source-quote 投影与 quote 自足性反例；accept 必须同时满足最终 reader-visible 原文自足、逐字投影，且候选草稿/claim 的稳定锚点未与绑定 quote 冲突。所有 accept case 固定 `expected_statement` 为其绑定 quote，防止内部草稿重新泄漏到读者面。
 
 三分类标注口径：`support`=原文明确支持；`not_support`=原文与 claim 有可判定冲突，或原文已有事实被断章取义、夸大、张冠李戴；`uncertain`=原文对关键主体、数值、比较、范围或条件没有足够信息，既不能证实也不能反驳。原文仅仅未提到 claim 时标为 `uncertain`，而不是 `not_support`。
 
-⚠️ **当前是 2 个主题 + 5 组标注的种子样本，仅够验证管线打通。**
-作 DCP 判定前须扩到 eval-criteria 规模：**≥ 5 主题 × ≥ 10 洞察、≥ 100 组引用-结论对**，
-且用 `source-feasibility.md` MVP 清单里的**真实采集内容**（种子样本是示意，非真实数据）。
+⚠️ A1 的真实 arXiv cohort 已按当前 `dataset/GUIDE.md` 维护；展示覆盖基准是独立的手标安全回归集，不计入 A1 的主题/引用对规模。作 DCP 判定前仍须满足 `eval-criteria.md` 的 **≥ 5 个唯一主题、最终 `reader_visible_by_topic` 中每个主题 ≥ 10 条洞察、≥ 100 组引用-结论对**，且使用 `source-feasibility.md` MVP 清单里的**真实采集内容**；计数以运行 `manifest.json` 的 `dcp_sample` 为准。
 
 👉 怎么填：见 **`dataset/GUIDE.md`**（目标规模、取数来源、格式、引用一致性 3 类负例的标注规则与 checklist）。
 

@@ -7,6 +7,9 @@ import type {
 } from "../types.js";
 import { facetLabel } from "../topics/facets.js";
 import { flagLabel, isIncludableCheck } from "../utils/citation-verdict.js";
+import { auditSupportsReaderProjection, requiredAuditCitationIndexes } from "../utils/display-coverage-audit.js";
+import { DISPLAY_PROJECTION_VERSION } from "../utils/source-quote-projection.js";
+import { entitiesMentionedInStatement } from "../utils/reader-visible-entities.js";
 import { insightFingerprint } from "../runtime/statement-fingerprint.js";
 import { coverageGaps, specificClaims } from "./analyzer.js";
 
@@ -64,6 +67,8 @@ export interface IncludedInsight {
   blockedReasonCounts: Record<string, number>; // 屏蔽理由直方图（如 exaggeration→2、out_of_context→1）
   /** Brief 的非近期、未发布 event 才会带此标记；渲染端不得把它表述为今日新事件。 */
   brief_inclusion?: "supplemental";
+  /** v6 reader projection: the statement is the sole bound source quote, shown only once. */
+  source_quote_projection?: true;
 }
 
 /** 里程碑判定的重要性下限（ADR-0006）：可调常量——6/23 看真实里程碑数量再校准（太严=永远没有、太松=稀释）。 */
@@ -105,13 +110,31 @@ function blockedReason(c: import("../types.js").CitationCheck): string | null {
  *  uncertain/校验失败仍保存在 ValidationResult，供人工核实或重试，不可作为发布证据。
  *  同时汇总被屏蔽数与理由直方图——供渲染端外露 validator 把关力度（透明信任信号）。 */
 export function selectInsights(batch: AnalysisBatch, validation: ValidationResult): IncludedInsight[] {
+  // Reports are a new reader-visible derivative. Historical report text may remain available,
+  // but a legacy/cache-derived batch cannot be rendered again from the old validator whitelist.
+  // Every new report must have the persisted v6 binding audit below.
+  const audited = batch.display_coverage_state === "audited" || batch.display_coverage_audits !== undefined
+    ? new Map((batch.display_coverage_audits ?? []).map((audit) => [audit.insight_id, audit]))
+    : null;
   const checksByInsight = new Map<string, Map<number, import("../types.js").CitationCheck>>();
   for (const c of validation.checks) {
     if (!checksByInsight.has(c.insight_id)) checksByInsight.set(c.insight_id, new Map());
     checksByInsight.get(c.insight_id)!.set(c.citation_index, c);
   }
   const out: IncludedInsight[] = [];
+  // Neither an unaudited legacy batch nor an audited v5 batch is a v6 reader record.
+  if (!audited || batch.display_projection_version !== DISPLAY_PROJECTION_VERSION) return out;
   for (const ins of batch.insights) {
+    let requiredAuditCitations: Set<number> | null = null;
+    if (audited) {
+      const audit = audited.get(ins.id);
+      if (!audit || (audit.terminal_reason !== "kept" && audit.terminal_reason !== "kept_degraded")) continue;
+      const citationIndex = ins.statement_citation_index;
+      const citation = citationIndex == null ? undefined : ins.citations[citationIndex - 1];
+      if (!citation || !auditSupportsReaderProjection(audit.decision, ins)) continue;
+      requiredAuditCitations = requiredAuditCitationIndexes(audit);
+      if (!requiredAuditCitations) continue;
+    }
     const cs = checksByInsight.get(ins.id);
     const kept: number[] = [];
     const includableIndices: number[] = [];
@@ -133,11 +156,17 @@ export function selectInsights(batch: AnalysisBatch, validation: ValidationResul
       }
     });
     // 纳入需 ≥1 明确支持的引用：仅存疑/校验失败的洞察整条剔除，等人工核实或重试后恢复。
-    if (includable)
+    if (includable && (!requiredAuditCitations || [...requiredAuditCitations].every((index) => kept.includes(index)))) {
+      // Secondary validator-supported citations remain durable audit evidence, but are not reader
+      // evidence for a v6 source-quote statement. Rendering them would duplicate the binding quote
+      // or imply that a second quote independently states this exact reader-visible fact.
+      const readerCitationIndices = audited ? [ins.statement_citation_index! - 1] : kept;
       out.push({
-        insight: ins, citationIndices: kept, includableCitationIndices: includableIndices,
+        insight: ins, citationIndices: readerCitationIndices, includableCitationIndices: readerCitationIndices,
         flaggedUncertain: false, flaggedError: false, blockedCount, blockedReasonCounts,
+        ...(audited ? { source_quote_projection: true as const } : {}),
       });
+    }
   }
   return out;
 }
@@ -284,6 +313,9 @@ function pickHighlightInsights(included: IncludedInsight[]): IncludedInsight[] {
 
 /** 列表卡片与推送也必须保留补充发现语义，避免只在详情页标注而把它误读为今日新事件。 */
 function headlineText(x: IncludedInsight): string {
+  // v6's only reader-visible source wording lives in the report body.  Index cards, email and
+  // webhook highlights must link readers back there rather than copying the bound quote.
+  if (x.source_quote_projection) return "已核验原文";
   const headline = x.insight.headline?.trim() || x.insight.statement;
   return x.brief_inclusion === "supplemental" ? `${headline}〔补充发现〕` : headline;
 }
@@ -384,12 +416,20 @@ export function buildReport(input: BuildReportInput): { report: Report; index: R
   const freshnessLagHours = freshestCitationAt
     ? Math.max(0, (new Date(now).getTime() - new Date(freshestCitationAt).getTime()) / 3_600_000)
     : null;
-  const summary = included.slice(0, 3).map((x) => x.insight.statement).join(" ");
+  const usesReaderProjection = included.some((x) => x.source_quote_projection);
+  // A report index feeds cards, topic pages and notifications.  It is a separate reader
+  // derivative, so it cannot duplicate the one bound quote rendered in the report itself.
+  const summary = usesReaderProjection
+    ? `本期包含 ${included.length} 条已核验原文。`
+    : included.slice(0, 3).map((x) => x.insight.statement).join(" ");
   // 卡片要点列表（headline 方案）：按重要性降序取前 N 条洞察的一句话 headline，供列表卡片分点扫读，
   // 取代把多条长 statement 拼成一坨的 summary。headline 缺失（旧批次/未产出）则回退该条 statement。
-  const highlights = pickHighlightInsights(included).map(headlineText);
+  const highlights = usesReaderProjection ? [] : pickHighlightInsights(included).map(headlineText);
   // 实体追踪：跨纳入洞察聚合关键实体名（去重保序），供主题页「关键实体」按报告频次再聚合。
-  const entityNames = uniq(included.flatMap((x) => (x.insight.entities ?? []).map((e) => e.name.trim()).filter(Boolean)));
+  const entityNames = usesReaderProjection
+    ? []
+    : uniq(included.flatMap((x) => entitiesMentionedInStatement(x.insight.statement, x.insight.entities)
+      .map((e) => e.name.trim()).filter(Boolean)));
 
   const report: Report = {
     id, type: input.type, topic_id: input.topic.id, status: "done", generated_at: now, title,
@@ -405,7 +445,7 @@ export function buildReport(input: BuildReportInput): { report: Report; index: R
     report_id: id, type: input.type, topic_id: input.topic.id,
     // ADR-0010：报告分类维度取 topic.facets（rowToTopic 保证非空；Step2c 砍 industry 后这是唯一来源）。
     facets: input.topic.facets ?? [],
-    date, source_ids: sourceIds, title, summary, highlights, tags, entity_names: entityNames, importance, event_ids: eventIds,
+    date, source_ids: sourceIds, title, summary, highlights, tags: usesReaderProjection ? [] : tags, entity_names: entityNames, importance, event_ids: eventIds,
     milestone_count: milestoneCount,
     freshest_candidate_at: input.briefFreshness?.freshest_candidate_at ?? null,
     freshest_citation_at: freshestCitationAt,
@@ -486,6 +526,12 @@ export function inlineCitedStatement(
 
 /** 单条洞察的 Markdown 块。deep_dive（detailed）多展示来源数 / 多源印证。
  *  citeStart：全局连续引用编号起点（C-2 引用 [n] 行内 + 列表锚）；返回 next 让 caller 串联。 */
+function displayedImportanceBasis(value: string): string {
+  // P0 analyzer records already carry this explicit label. Historical rows retain their text,
+  // but the reader still sees that it is the system's judgment rather than an uncited source fact.
+  return value.includes("系统重要性判断：") ? value : `系统重要性判断：${value}`;
+}
+
 function insightBlockMd(
   x: IncludedInsight,
   heading: string,
@@ -500,7 +546,9 @@ function insightBlockMd(
   const numOf = new Map<number, number>();
   orderedCites.forEach((i, p) => numOf.set(i, citeStart + p));
   // 方案 A：行内引用锚定——[n] 放到对应声明 token 后，匹配不到回退句末（见 inlineCitedStatement）。
-  const statementWithRefs = orderedCites.length
+  const statementWithRefs = x.source_quote_projection
+    ? ins.statement
+    : orderedCites.length
     ? inlineCitedStatement(
         ins.statement,
         orderedCites.map((i) => ({ num: numOf.get(i)!, quote: ins.citations[i].quote })),
@@ -510,18 +558,29 @@ function insightBlockMd(
   // P1 不复报：is_followup=true 标 〔更新〕——读者一眼看出"本条是已报告事件的新进展"。
   // analyzer 已在 prompt 层约束"无新进展则不出"，此标记仅作展示提示。flagged 洞察
   // 不进入发布渲染，待核实/重试状态仅保留在 ValidationResult 的人工处理队列。
-  const followupTag = ins.is_followup ? " 〔更新〕" : "";
-  const supplementalTag = x.brief_inclusion === "supplemental" ? " 〔补充发现〕" : "";
-  const label = flagLabel(x);
+  const followupTag = !x.source_quote_projection && ins.is_followup ? " 〔更新〕" : "";
+  const supplementalTag = !x.source_quote_projection && x.brief_inclusion === "supplemental" ? " 〔补充发现〕" : "";
+  const label = x.source_quote_projection ? null : flagLabel(x);
   const flaggedTag = label ? ` 〔${label}〕` : "";
   // 覆盖度外露：结论里有具体数字/实体未被已渲染引用覆盖 → 标 〔待补引：…〕。
-  const gaps = coverageGapTokens(x);
+  const gaps = x.source_quote_projection ? [] : coverageGapTokens(x);
   const coverageTag = gaps.length ? ` 〔待补引：${gaps.join("、")}〕` : "";
   const L = [`${heading} ${statementWithRefs}${followupTag}${supplementalTag}${flaggedTag}${coverageTag}`, ""];
-  L.push(`- 重要性：${ins.importance}/5 · 依据：${ins.importance_basis}`);
-  if (detailed) L.push(`- 来源：${ins.source_count} 个 · ${ins.multi_source ? "多源印证" : "单源"}`);
-  if (ins.type === "trend" && ins.confidence) L.push(`- 置信度：${ins.confidence}`);
+  L.push(`- 重要性：${ins.importance}/5 · ${displayedImportanceBasis(ins.importance_basis)}`);
+  if (detailed && !x.source_quote_projection) L.push(`- 来源：${ins.source_count} 个 · ${ins.multi_source ? "多源印证" : "单源"}`);
+  if (!x.source_quote_projection && ins.type === "trend" && ins.confidence) L.push(`- 置信度：${ins.confidence}`);
   if (orderedCites.length > 0) {
+    if (x.source_quote_projection) {
+      const citation = ins.citations[orderedCites[0]!];
+      const info = lookup.get(citation!.content_item_id);
+      const sourceLabel = info?.source_name ?? citation!.content_item_id;
+      const dateIso = info?.published_at && /^\d{4}-\d{2}-\d{2}T/.test(info.published_at)
+        ? info.published_at.slice(0, 10)
+        : null;
+      const datePart = dateIso ? ` · ${dateIso}` : "";
+      // The statement above is the raw quote. Repeat neither it nor audit-only secondary quotes.
+      L.push(`- 引用：已核验原文 [${numOf.get(orderedCites[0]!)!}] ${info?.url ? `[${sourceLabel}](${info.url})` : sourceLabel}${datePart}`);
+    } else {
     // 诚实信号：N 句引用来自 K 篇文档——把"同篇多句覆盖引用"与"多个独立来源"分清，
     // 避免一条洞察挂多条引用、实则只来自 1 篇被误读为多源（dogfood 反馈）。
     L.push(`- 引用：${x.citationIndices.length} 句 · 来自 ${groups.length} 篇${groups.length >= 2 ? "（多篇印证）" : ""}`);
@@ -539,6 +598,7 @@ function insightBlockMd(
         L.push(`    - [${numOf.get(i)}] 「${ins.citations[i].quote}」`);
       }
     }
+    }
   }
   if (x.blockedCount > 0) L.push(`- 校验阻断：${x.blockedCount} 条${blockedReasonStr(x.blockedReasonCounts)}`);
   L.push("");
@@ -551,7 +611,9 @@ const KEY = (x: IncludedInsight): boolean => x.insight.importance >= KEY_MIN_IMP
 const TYPE_CN: Record<Insight["type"], string> = { aggregation: "聚合", trend: "趋势" };
 const CONF_CN: Record<string, string> = { high: "高", medium: "中", low: "低" };
 const confLabel = (x: IncludedInsight): string => (x.insight.confidence ? CONF_CN[x.insight.confidence] : "—");
-const sourceLabel = (x: IncludedInsight): string => `${x.insight.source_count}·${x.insight.multi_source ? "多源" : "单源"}`;
+const sourceLabel = (x: IncludedInsight): string => x.source_quote_projection
+  ? "已核验原文"
+  : `${x.insight.source_count}·${x.insight.multi_source ? "多源" : "单源"}`;
 const TLDR_MAX = 5;
 
 /** 详版与各概览段共用的洞察顺序：重点关注（importance≥4）在前、其他动态在后。
@@ -622,6 +684,40 @@ function renderMarkdown(
   // 上浮可扫读段（TL;DR / 概览 / 趋势 / 时间线）→ 再到详版（关键发现+其他动态，含行内引用清单）。
   const ordered = orderInsights(included);
 
+  // v6 makes the bound source quote the sole factual reader text.  The navigational sections
+  // below therefore contain only controlled ordinal/importance/date metadata; the quote itself
+  // appears once, in its detailed block, and is never abbreviated or copied into a summary.
+  if (ordered.every((x) => x.source_quote_projection)) {
+    const ordinal = new Map(ordered.map((x, i) => [x.insight.id, i + 1]));
+    L.push("## TL;DR", "");
+    for (const x of tldrPick(included)) L.push(`- 已核验洞察 #${ordinal.get(x.insight.id)} · 重要性 ${x.insight.importance}/5`);
+    L.push("");
+    L.push("## 概览", "", "| # | 重要性 | 展示证据 |", "| --- | --- | --- |");
+    for (const x of ordered) L.push(`| ${ordinal.get(x.insight.id)} | ${x.insight.importance}/5 | 已核验原文（见下方） |`);
+    L.push("");
+    L.push("## 趋势分析", "", "_本报告以原文证据为准；请参阅下方各条已核验原文。_", "");
+    L.push("## 时间线", "");
+    for (const x of [...ordered].sort((a, b) => insightDate(b, lookup).localeCompare(insightDate(a, lookup)))) {
+      L.push(`- ${insightDate(x, lookup)} — 已核验洞察 #${ordinal.get(x.insight.id)}`);
+    }
+    L.push("");
+    const tiers = [
+      { label: "重点关注", items: ordered.filter(KEY) },
+      { label: "其他动态", items: ordered.filter((x) => !KEY(x)) },
+    ];
+    let n = 0;
+    for (const t of tiers) {
+      if (!t.items.length) continue;
+      L.push(`## ${t.label}（${t.items.length}）`, "");
+      for (const x of t.items) {
+        const r = insightBlockMd(x, `### ${(n += 1)}.`, true, cite, lookup);
+        L.push(...r.lines);
+        cite = r.next;
+      }
+    }
+    return L.join("\n");
+  }
+
   // ① TL;DR —— 可读性优先，结论上浮（product-definition「TL;DR 第一优先」）
   L.push("## TL;DR", "");
   for (const x of tldrPick(included)) L.push(`- ${x.insight.statement}`);
@@ -684,7 +780,20 @@ function insightHtml(
   // 按被引文档分组：源名/日期每篇一次（可点跳源），其下挂该篇各条逐字 quote——
   // 避免"同篇多句覆盖引用"被渲染成多个来源（dogfood 反馈）。
   const groups = groupCitationsBySource(x);
-  const cites = groups
+  const cites = x.source_quote_projection
+    ? groups.map((g) => {
+      const info = lookup.get(g.itemId);
+      const safeUrl = info?.url && /^https?:\/\//i.test(info.url) ? info.url : null;
+      const srcName = esc(info?.source_name ?? g.itemId);
+      const nameEl = safeUrl
+        ? `<a href="${escAttr(safeUrl)}" target="_blank" rel="noopener noreferrer"><span class="src">${srcName}</span></a>`
+        : `<span class="src">${srcName}</span>`;
+      const dateIso = info?.published_at && /^\d{4}-\d{2}-\d{2}T/.test(info.published_at)
+        ? info.published_at.slice(0, 10)
+        : null;
+      return `<li class="cite-src verified-source">已核验原文 · ${nameEl}${dateIso ? ` · ${dateIso}` : ""}</li>`;
+    }).join("")
+    : groups
     .map((g) => {
       const info = lookup.get(g.itemId);
       // 自包含 HTML 直接在浏览器打开：仅 http(s) 源 URL 可点（挡 javascript:/data: 等危险 scheme，
@@ -704,23 +813,25 @@ function insightHtml(
       return `<li class="cite-src">${nameEl}${datePart}</li>${quotes}`;
     })
     .join("");
-  const conf = ins.type === "trend" && ins.confidence ? ` · 置信度 ${ins.confidence}` : "";
-  const src = detailed ? ` · 来源 ${ins.source_count}（${ins.multi_source ? "多源" : "单源"}）` : "";
+  const conf = !x.source_quote_projection && ins.type === "trend" && ins.confidence ? ` · 置信度 ${ins.confidence}` : "";
+  const src = detailed && !x.source_quote_projection ? ` · 来源 ${ins.source_count}（${ins.multi_source ? "多源" : "单源"}）` : "";
   // 诚实信号：N 句引用来自 K 篇文档（区分"同篇多句"与"多篇印证"，brief/deep 都显）
-  const citeSummary = x.citationIndices.length
+  const citeSummary = x.source_quote_projection
+    ? " · 引用 已核验原文"
+    : x.citationIndices.length
     ? ` · 引用 ${x.citationIndices.length} 句/${groups.length} 篇`
     : "";
   // 透明信任信号：validator 屏蔽计数 + 理由（仅在有屏蔽时展示）
   const blocked = x.blockedCount > 0
     ? `<p class="meta blocked">校验阻断：${x.blockedCount} 条${esc(blockedReasonStr(x.blockedReasonCounts))}</p>`
     : "";
-  const followupBadge = ins.is_followup ? ' <span class="followup">更新</span>' : "";
-  const supplementalBadge = x.brief_inclusion === "supplemental" ? ' <span class="supplemental">补充发现</span>' : "";
-  const label = flagLabel(x);
+  const followupBadge = !x.source_quote_projection && ins.is_followup ? ' <span class="followup">更新</span>' : "";
+  const supplementalBadge = !x.source_quote_projection && x.brief_inclusion === "supplemental" ? ' <span class="supplemental">补充发现</span>' : "";
+  const label = x.source_quote_projection ? null : flagLabel(x);
   const flaggedBadge = label ? ` <span class="flag">${label}</span>` : "";
-  const gaps = coverageGapTokens(x);
+  const gaps = x.source_quote_projection ? [] : coverageGapTokens(x);
   const coverageBadge = gaps.length ? ` <span class="coverage-gap">待补引：${esc(gaps.join("、"))}</span>` : "";
-  return `<section><${tag}>${n}. ${esc(ins.statement)}${followupBadge}${supplementalBadge}${flaggedBadge}${coverageBadge}</${tag}><p class="meta">重要性 ${ins.importance}/5 · ${esc(ins.importance_basis)}${conf}${src}${citeSummary}</p><ul>${cites}</ul>${blocked}</section>`;
+  return `<section><${tag}>${n}. ${esc(ins.statement)}${followupBadge}${supplementalBadge}${flaggedBadge}${coverageBadge}</${tag}><p class="meta">重要性 ${ins.importance}/5 · ${esc(displayedImportanceBasis(ins.importance_basis))}${conf}${src}${citeSummary}</p><ul>${cites}</ul>${blocked}</section>`;
 }
 
 function renderHtml(
@@ -739,6 +850,34 @@ function renderHtml(
   } else {
     // deep_dive 结构化六段，与 Markdown 版式对齐（#19）
     const ordered = orderInsights(included);
+    if (ordered.every((x) => x.source_quote_projection)) {
+      const ordinal = new Map(ordered.map((x, i) => [x.insight.id, i + 1]));
+      const tldr = `<section class="tldr"><h2>TL;DR</h2><ul>${tldrPick(included)
+        .map((x) => `<li>已核验洞察 #${ordinal.get(x.insight.id)} · 重要性 ${x.insight.importance}/5</li>`)
+        .join("")}</ul></section>`;
+      const rows = ordered.map((x) => `<tr><td>${ordinal.get(x.insight.id)}</td><td>${x.insight.importance}/5</td><td>已核验原文（见下方）</td></tr>`).join("");
+      const overview = `<section class="overview"><h2>概览</h2><table><thead><tr><th>#</th><th>重要性</th><th>展示证据</th></tr></thead><tbody>${rows}</tbody></table></section>`;
+      const trend = "<section class=\"trend\"><h2>趋势分析</h2><p><em>本报告以原文证据为准；请参阅下方各条已核验原文。</em></p></section>";
+      const timeline = `<section class="timeline"><h2>时间线</h2><ul>${[...ordered]
+        .sort((a, b) => insightDate(b, lookup).localeCompare(insightDate(a, lookup)))
+        .map((x) => `<li><code>${insightDate(x, lookup)}</code> — 已核验洞察 #${ordinal.get(x.insight.id)}</li>`)
+        .join("")}</ul></section>`;
+      const tiers = [
+        { label: "重点关注", items: ordered.filter(KEY) },
+        { label: "其他动态", items: ordered.filter((x) => !KEY(x)) },
+      ];
+      let n = 0;
+      const detail = tiers
+        .filter((t) => t.items.length)
+        .map((t) => `<h2>${esc(t.label)}（${t.items.length}）</h2>` + t.items.map((x) => insightHtml(x, (n += 1), "h3", true, lookup)).join("\n"))
+        .join("\n");
+      body = tldr + overview + trend + timeline + detail;
+      return `<!doctype html><html lang="${topic.language}"><head><meta charset="utf-8"><title>${esc(
+        title,
+      )}</title><style>body{font-family:system-ui,sans-serif;max-width:46rem;margin:2rem auto;padding:0 1rem;line-height:1.6}h1{font-size:1.5rem}h2{font-size:1.1rem;margin-top:1.5rem}h3{font-size:1rem;margin-top:1rem}.meta{color:#666;font-size:.9rem}.meta.blocked{color:#6b7280;font-size:.8rem;margin-top:.25rem}.flag{color:#b45309;font-size:.75rem;border:1px solid #b45309;border-radius:4px;padding:0 .3rem}.supplemental{color:#1d4ed8;font-size:.75rem;border:1px solid #60a5fa;border-radius:4px;padding:0 .3rem}.coverage-gap{color:#6b7280;font-size:.75rem;border:1px dashed #9ca3af;border-radius:4px;padding:0 .3rem}q{color:#1f2937}code{color:#6b7280;font-size:.85rem}.src{color:#6b7280;font-size:.85rem}.cite-src{list-style:none;margin-top:.35rem;font-weight:500}.cite-quote{margin-left:1.1rem}li a q{cursor:pointer}table{border-collapse:collapse;width:100%;font-size:.85rem;margin:.5rem 0}th,td{border:1px solid #e5e7eb;padding:.3rem .5rem;text-align:left}th{background:#f9fafb}.tldr ul{padding-left:1.2rem}.tldr li{margin:.2rem 0}</style></head><body><h1>${esc(
+        title,
+      )}</h1><p class="meta">${esc(topic.name)}（${esc((topic.facets ?? []).map(facetLabel).join("·"))}）· ${date} · 共 ${included.length} 条洞察</p>${body}</body></html>`;
+    }
     const tldr = `<section class="tldr"><h2>TL;DR</h2><ul>${tldrPick(included)
       .map((x) => `<li>${esc(x.insight.statement)}</li>`)
       .join("")}</ul></section>`;

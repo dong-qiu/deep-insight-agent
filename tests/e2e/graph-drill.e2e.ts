@@ -4,11 +4,12 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { saveAnalysisBatch } from "../../src/lib/db/analysis.js";
+import { saveAnalysisBatch, saveValidationResult } from "../../src/lib/db/analysis.js";
 import { openDb } from "../../src/lib/db/index.js";
 import { insertTopic } from "../../src/lib/db/repos.js";
 import { upsertUser } from "../../src/lib/db/users.js";
-import type { AnalysisBatch, Insight, Topic } from "../../src/lib/types.js";
+import type { AnalysisBatch, Insight, Topic, ValidationResult } from "../../src/lib/types.js";
+import { DISPLAY_PROJECTION_VERSION, sourceQuoteHash } from "../../src/lib/utils/source-quote-projection.js";
 
 const tempRoot = mkdtempSync(join(tmpdir(), "insight-graph-drill-e2e-"));
 const dbPath = join(tempRoot, "insight.db");
@@ -71,20 +72,51 @@ async function signIn(email: string, password: string): Promise<CookieJar> {
 beforeAll(async () => {
   const db = openDb(dbPath);
   const topic: Topic = { id: "t1", name: "T", keywords: ["OpenAI"], language: "zh", brief_schedule: "daily", enabled: true };
+  const statement = "OpenAI 发布了产品。";
   const occurrence = (id: string): Insight => ({
     id, topic_id: topic.id, type: "aggregation", event_id: id,
-    statement: "OpenAI 发布了产品。", headline: "产品发布", importance: 4, importance_basis: "test",
-    citations: [{ content_item_id: `ci-${id}`, quote: "OpenAI released a product", locator: { paragraph_index: 0, char_start: 0, char_end: 25 } }],
+    statement, statement_citation_index: 1, headline: "", importance: 4,
+    importance_basis: "系统重要性判断：该结果可为工程选型提供参考。",
+    citations: [{
+      content_item_id: `ci-${id}`, citation_ref: `cite-${id}`, claim: statement, quote: statement,
+      locator: { paragraph_index: 0, char_start: 0, char_end: statement.length },
+    }],
     source_count: 1, multi_source: false, time_window: { start: "2026-09-08", end: "2026-09-08" },
     confidence: null, language: "zh", is_followup: false, entities: [{ name: "OpenAI", type: "organization" }], tags: [],
   });
   const batch: AnalysisBatch = {
     id: "b1", topic_id: topic.id, time_window: { start: "2026-09-08", end: "2026-09-08" },
     status: "done", no_significant_event: false, insights: [occurrence("i1"), occurrence("i2")],
+    display_coverage_state: "audited", display_projection_version: DISPLAY_PROJECTION_VERSION,
   };
+  batch.display_coverage_audits = batch.insights.map((insight) => ({
+    insight_id: insight.id, candidate_id: `candidate-${insight.id}`, gate_version: "display-coverage-v6",
+    terminal_reason: "kept", prompt_version: "display-coverage-v6", input_hash: `hash-${insight.id}`,
+    validator_model: "validator-test", created_at: "2026-09-10T00:00:00.000Z",
+    decision: {
+      statement_citation_index: 1, statement_citation_ref: insight.citations[0]!.citation_ref,
+      display_projection_version: DISPLAY_PROJECTION_VERSION,
+      statement_sha256: sourceQuoteHash(statement), quote_sha256: sourceQuoteHash(statement),
+      claims: [{
+        claim_id: "statement:1", field: "statement", kind: "factual", supports: true,
+        citation_indexes: [1], countercheck: { supports: true },
+      }],
+    },
+  }));
   insertTopic(db, topic);
   upsertUser(db, "viewer@example.test", "viewer-password", "viewer");
   saveAnalysisBatch(db, batch);
+  const validation: ValidationResult = {
+    checks: batch.insights.map((insight) => ({
+      insight_id: insight.id, citation_index: 0, reachability: "pass", reachability_reason: "ok",
+      consistency: "support", consistency_reason: "ok", verdict: "pass",
+    })),
+    report: {
+      total: 2, pass: 2, blocked: 0, flagged: 0, errored: 0, consistency_failure_rate: 0, flagged_rate: 0,
+      insights_total: 2, insights_includable: 2, releasable: true,
+    },
+  };
+  saveValidationResult(db, batch.id, validation);
   db.prepare(
     `INSERT INTO report (id,type,topic_id,status,generated_at,title,body_path,insight_ids,event_ids,citation_count,cost)
      VALUES (?,?,?,?,?,?,?,?,?,?,?)`,

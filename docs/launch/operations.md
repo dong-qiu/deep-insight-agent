@@ -85,8 +85,9 @@ curl -fsS -X POST http://127.0.0.1:3000/api/cron -H "authorization: Bearer $CRON
 |---|---|---|
 | `ANTHROPIC_API_KEY` | ✅ | 模型调用凭据 |
 | `ANTHROPIC_BASE_URL` | 中转站时 | 第三方中转站地址；直连 Anthropic 留空 |
-| `ANALYZER_MODEL` | 中转站时 ✅ | **Opus-only 中转站必须显式设 Opus**（如 `claude-opus-4-6`），否则打到默认 sonnet → analyze 失败。须 ≠ validator |
-| `VALIDATOR_MODEL` | 否 | 默认 `claude-opus-4-7`；**必须独立于 analyzer**（同源偏差约束，相同则启动报错） |
+| `ANALYZER_MODEL` | ✅ | 分析模型；中转站必须显式设为其支持的模型。须同时 ≠ validator、coverage |
+| `VALIDATOR_MODEL` | ✅ | 主校验模型；须同时 ≠ analyzer、coverage |
+| `COVERAGE_MODEL` | ✅ | 展示引用反扩写复核模型；须同时 ≠ analyzer、validator。缺失或任意同模型时 analyze fail-closed。若 relay 只支持 Opus，可使用三种不同版本（如 `claude-opus-4-6` / `-4-7` / `-4-8`） |
 | `VALIDATOR_THINKING` | 中转站建议 | 设 `0` 关校验思考（部分中转站 thinking 计价虚高/不稳） |
 | `VALIDATOR_BATCH` | 否 | 一致性判定**按源归并**（同一源被多条结论引用时，源文只发一遍、一次调用逐条独立判 → token 从 ~K×源文砍到 ~1×源文，成本最大杠杆）。默认开；`0` 回退逐条判定（精度回归排查 / 怀疑批量串扰时的运维开关）。判定语义与逐条一致、缓存共享 |
 | `CONSISTENCY_BATCH_MAX` | 否 | 单次批量调用最多判几条结论，默认 8。超出拆多次调用（源文各发一遍，仍远省于逐条）。调小=更稳的输出/更高精度但省得少，调大=更省但单调用输出更长、批内判定数更多 |
@@ -459,8 +460,9 @@ docker compose exec -T -e ALERT_WEBHOOK=<url> app node /app/ops/probe-alert.mjs
 |---|---|---|---|
 | Secret | `ANTHROPIC_API_KEY` | ✅ | relay 凭据 |
 | Secret | `ANTHROPIC_BASE_URL` | ✅ | relay 端点 |
-| Variable | `ANALYZER_MODEL` | ✅ | Opus-only relay 必设为 Opus（如 `claude-opus-4-6`），且须与 validator 不同（否则 `assertModelSeparation` 报错） |
-| Variable | `VALIDATOR_MODEL` | 建议 | 默认 `claude-opus-4-7` |
+| Variable | `ANALYZER_MODEL` | ✅ | relay 支持的分析模型；须与 validator、coverage 均不同 |
+| Variable | `VALIDATOR_MODEL` | ✅ | relay 支持的主校验模型；须与 analyzer、coverage 均不同 |
+| Variable | `COVERAGE_MODEL` | ✅ | relay 支持的展示反扩写复核模型；须与 analyzer、validator 均不同。缺失时 A1 不启动 |
 | Secret | `ALERT_WEBHOOK` | 可选 | 配了则 eval 失败推告警（§12 同款渠道识别）；不配则只看 GitHub 失败通知 |
 | Secret | `ALERT_FEISHU_SECRET` | 可选 | 飞书加签模式 |
 | Variable | `ALERT_CHANNEL` | 可选 | 覆盖渠道自动识别 |

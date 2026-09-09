@@ -6,10 +6,10 @@
 
 | 数据集 | 文件 | 规模下限 | 用途 |
 |---|---|---|---|
-| 洞察质量集 | `insight-quality.jsonl` | **≥ 5 主题 × ≥ 10 条洞察**（即每主题喂够能产 ~10 洞察的真实内容） | 算可达性/一致性/flagged + 人评非显然&幻觉 |
+| 洞察质量集 | `insight-quality.jsonl` | **≥ 5 个唯一主题，且最终 `reader_visible_by_topic` 每个 `topic_id` ≥ 10 条**（经 v6 audit 与 pass/support 白名单筛选后） | 算可达性/一致性/flagged + 人评非显然&幻觉 |
 | 引用一致性集 | `citation-consistency.jsonl` | **≥ 100 组**引用-结论对，正负例均衡（负例覆盖 3 类） | 算校验器三分类准确率 + 负例召回率 |
 
-低于此规模，`run-a1` 会打 ⚠️ 提示，结论**不作 DCP 判定依据**。
+低于此规模，`run-a1` 会打 ⚠️ 提示，结论**不作 DCP 判定依据**。以运行产物 `manifest.json` 的 `dcp_sample.reader_visible_by_topic` 为准，不能用输入条目数或 analyzer 原始输出替代。
 
 ## 数据从哪来
 
@@ -59,13 +59,13 @@
 
 ## 产出 checklist
 
-- [ ] `insight-quality.jsonl`：≥ 5 主题，真实跨源内容，含 ≥ 1 个"无事件"窗口
+- [ ] 最终运行产物：≥ 5 个唯一主题，`dcp_sample.reader_visible_by_topic` 中每个主题 ≥ 10 条 reader-visible 洞察；输入内容真实跨源，含 ≥ 1 个"无事件"窗口
 - [ ] `citation-consistency.jsonl`：≥ 100 组，正负均衡，负例覆盖 3 类（≥ 40 条负例）
 - [ ] 两份文件均为合法 JSONL（每行可独立 `JSON.parse`）
 - [ ] `body` / `source_text` 为真实原文，未改写
 - [ ] 标注由**非生成者**完成（避免与 analyzer 同源偏差），最好双人交叉
 - [ ] 跑 `npm run eval:a1`，⚠️ 规模提示消失，自动门槛全 PASS
-- [ ] 人评 `evals/out/review-queue.json`：非显然占比 ≥ 60% / 幻觉率 ≤ 2%
+- [ ] 人评 `evals/out/runs/<run-id>/review-queue.json`：非显然占比 ≥ 60% / 幻觉率 ≤ 2%（从 `runs/latest-complete.json` 找 run-id，但先核对 `auto_gate`、`manual_review`、`dcp_eligibility`）
 
 ## 本仓自带数据集的来源与已知局限
 

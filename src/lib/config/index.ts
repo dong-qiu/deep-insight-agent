@@ -60,11 +60,13 @@ export function seedDefaults(db: DB, config: AppConfig): { topics: number; sourc
   return { topics, sources };
 }
 
-/** 有效模型对子：env 覆盖 > 静态默认（与 runtime/llm.ts 的 env 机制一致）。 */
-export function getEffectiveModels(config: AppConfig): { analyzer: string; validator: string } {
+/** 有效模型配置：前两者可回退静态默认；展示引用反扩写复核必须显式配置，
+ * 故设置页保留“未配置”而不伪造一个会与其它角色同源的默认模型。 */
+export function getEffectiveModels(config: AppConfig): { analyzer: string; validator: string; coverage: string | null } {
   return {
     analyzer: process.env.ANALYZER_MODEL ?? config.models.analyzer,
     validator: process.env.VALIDATOR_MODEL ?? config.models.validator,
+    coverage: process.env.COVERAGE_MODEL?.trim() || null,
   };
 }
 

@@ -1,11 +1,16 @@
 import { describe, expect, it } from "vitest";
 import type { AnalysisBatch, ContentItem, ValidationResult } from "../types.js";
 import { classifyTechLead, extractLeadCandidates, isTechnicalLead, scoreLead } from "./tech-leads.js";
+import { DISPLAY_PROJECTION_VERSION, sourceQuoteHash } from "../utils/source-quote-projection.js";
 
 const batch: AnalysisBatch = { id: "b", topic_id: "t", time_window: { start: "2026-07-21", end: "2026-07-23" }, status: "done", no_significant_event: false, insights: [{
-  id: "i", topic_id: "t", type: "aggregation", event_id: "evt_model", statement: "A new model is released", headline: "New model release", importance: 5, importance_basis: "new", source_count: 2, multi_source: true,
-  citations: [{ content_item_id: "a", quote: "model", locator: { paragraph_index: 0, char_start: 0, char_end: 5 } }, { content_item_id: "b", quote: "model", locator: { paragraph_index: 0, char_start: 0, char_end: 5 } }],
+  id: "i", topic_id: "t", type: "aggregation", event_id: "evt_model", statement: "A new model release is announced", headline: "", importance: 5, importance_basis: "系统重要性判断：该结果可为工程选型提供参考。", source_count: 2, multi_source: true,
+  statement_citation_index: 1,
+  citations: [{ content_item_id: "a", citation_ref: "binding", claim: "A new model release is announced", quote: "A new model release is announced", locator: { paragraph_index: 0, char_start: 0, char_end: 31 } }, { content_item_id: "b", quote: "model", locator: { paragraph_index: 0, char_start: 0, char_end: 5 } }],
   time_window: { start: "2026-07-21", end: "2026-07-23" }, confidence: null, language: "en", tags: ["model"], entities: [{ name: "Model X", type: "product" }],
+}], display_coverage_state: "audited", display_projection_version: DISPLAY_PROJECTION_VERSION, display_coverage_audits: [{
+  insight_id: "i", candidate_id: "i", gate_version: "display-coverage-v6", terminal_reason: "kept", prompt_version: "v6", input_hash: "x", validator_model: "coverage",
+  decision: { statement_citation_index: 1, statement_citation_ref: "binding", display_projection_version: DISPLAY_PROJECTION_VERSION, statement_sha256: sourceQuoteHash("A new model release is announced"), quote_sha256: sourceQuoteHash("A new model release is announced"), claims: [{ claim_id: "statement:1", field: "statement", kind: "factual", supports: true, citation_indexes: [1], countercheck: { supports: true } }] }, created_at: "2026-09-09T00:00:00Z",
 }] };
 const item = (id: string, source: string, at: string): ContentItem => ({ id, source_id: source, url: `https://x/${id}`, title: id, author: null, published_at: at, fetched_at: at, language: "en", topic_ids: ["t"], tags: [], body: "model", body_kind: "article", raw_ref: "", content_hash: id, fetch_status: "ok" });
 
@@ -31,6 +36,25 @@ describe("技术线索确定性提取", () => {
     ]), "2026-07-23T02:00:00Z")).toEqual([]);
   });
 
+  it("legacy 或未审计批次不能重新派生 reader-visible 技术线索", () => {
+    const legacy = { ...batch, display_coverage_state: "legacy" as const, display_projection_version: "legacy" as const, display_coverage_audits: undefined };
+    const validation: ValidationResult = { checks: [
+      { insight_id: "i", citation_index: 0, reachability: "pass", reachability_reason: "ok", consistency: "support", consistency_reason: "ok", verdict: "pass" },
+    ], report: { total: 1, pass: 1, blocked: 0, flagged: 0, errored: 0, consistency_failure_rate: 0, flagged_rate: 0, insights_total: 1, insights_includable: 1, releasable: true } };
+    expect(extractLeadCandidates(legacy, validation, new Map([["a", item("a", "s1", "2026-07-23T00:00:00Z")]]))).toEqual([]);
+  });
+
+  it("即使绑定 quote 通过，历史 headline 或自由重要性文本也不能派生技术线索", () => {
+    const validation: ValidationResult = { checks: [
+      { insight_id: "i", citation_index: 0, reachability: "pass", reachability_reason: "ok", consistency: "support", consistency_reason: "ok", verdict: "pass" },
+    ], report: { total: 1, pass: 1, blocked: 0, flagged: 0, errored: 0, consistency_failure_rate: 0, flagged_rate: 0, insights_total: 1, insights_includable: 1, releasable: true } };
+    const withHeadline: AnalysisBatch = { ...batch, insights: [{ ...batch.insights[0]!, headline: "未经原文审计的标题" }] };
+    const withFreeImportance: AnalysisBatch = { ...batch, insights: [{ ...batch.insights[0]!, importance_basis: "系统重要性判断：自由改写" }] };
+    const items = new Map([["a", item("a", "s1", "2026-07-23T00:00:00Z")]]);
+    expect(extractLeadCandidates(withHeadline, validation, items)).toEqual([]);
+    expect(extractLeadCandidates(withFreeImportance, validation, items)).toEqual([]);
+  });
+
   it("分类与评分边界稳定", () => {
     expect(classifyTechLead("new SWE-bench evaluation", [])).toBe("benchmark");
     expect(classifyTechLead("新模型发现高危漏洞", [])).toBe("security");
@@ -41,8 +65,11 @@ describe("技术线索确定性提取", () => {
   });
 
   it("同一事件保留不同洞察中的全部 pass 证据，且不混用引用下标", () => {
-    const second = { ...batch.insights[0], id: "i2", importance: 3, citations: [batch.insights[0].citations[1]] };
-    const joined: AnalysisBatch = { ...batch, insights: [batch.insights[0], second] };
+    const second = { ...batch.insights[0], id: "i2", importance: 3, statement: "Model tool release is announced", statement_citation_index: 1, citations: [{ content_item_id: "b", citation_ref: "binding2", claim: "Model tool release is announced", quote: "Model tool release is announced", locator: { paragraph_index: 0, char_start: 0, char_end: 31 } }] };
+    const joined: AnalysisBatch = { ...batch, insights: [batch.insights[0], second], display_coverage_audits: [...batch.display_coverage_audits!, {
+      insight_id: "i2", candidate_id: "i2", gate_version: "display-coverage-v6", terminal_reason: "kept", prompt_version: "v6", input_hash: "x", validator_model: "coverage",
+      decision: { statement_citation_index: 1, statement_citation_ref: "binding2", display_projection_version: DISPLAY_PROJECTION_VERSION, statement_sha256: sourceQuoteHash(second.statement), quote_sha256: sourceQuoteHash(second.statement), claims: [{ claim_id: "statement:1", field: "statement", kind: "factual", supports: true, citation_indexes: [1], countercheck: { supports: true } }] }, created_at: "2026-09-09T00:00:00Z",
+    }] };
     const validation: ValidationResult = { checks: [
       { insight_id: "i", citation_index: 0, reachability: "pass", reachability_reason: "ok", consistency: "support", consistency_reason: "ok", verdict: "pass" },
       { insight_id: "i2", citation_index: 0, reachability: "pass", reachability_reason: "ok", consistency: "support", consistency_reason: "ok", verdict: "pass" },

@@ -34,17 +34,20 @@ function fallbackCostUSD(model: string, u: TokenUsage): number {
   return inputUSD + outputUSD;
 }
 
-export type Role = "analyzer" | "validator" | "followup";
+export type Role = "analyzer" | "validator" | "coverage" | "followup";
 
 export const MODELS: Record<Role, string> = {
   analyzer: process.env.ANALYZER_MODEL ?? "claude-sonnet-4-6",
   validator: process.env.VALIDATOR_MODEL ?? "claude-opus-4-7",
+  // 展示级引用覆盖的反扩写复核必须由部署显式指定，避免它在未配置环境里与 analyzer
+  // 默认同模型却要到深层 LLM 路径才失败。assertCoverageModelSeparation 给出可操作错误。
+  coverage: process.env.COVERAGE_MODEL ?? "",
   // 追问生成（A4）：成本敏感、非校验路径，默认与 analyzer 同档 sonnet；
   // 一致性兜底仍走独立的 validator 角色（opus），同源偏差约束不受影响。
   followup: process.env.FOLLOWUP_MODEL ?? "claude-sonnet-4-6",
 };
 
-/** 同源偏差约束：校验模型必须独立于分析模型（citation-validation 行为规约 3 / AC7） */
+/** 同源偏差约束：主校验必须独立于分析模型（citation-validation 行为规约 3 / AC7）。 */
 export function assertModelSeparation(): void {
   if (MODELS.analyzer === MODELS.validator) {
     throw new Error(
@@ -54,9 +57,35 @@ export function assertModelSeparation(): void {
   }
 }
 
+/** 展示引用反扩写复核实际启用时，复核模型还必须独立于生成器与主校验。 */
+export function assertCoverageModelSeparation(): void {
+  assertModelSeparation();
+  if (!MODELS.coverage) {
+    throw new Error(
+      "展示引用反扩写复核要求显式设置 COVERAGE_MODEL，且它必须不同于 ANALYZER_MODEL 与 VALIDATOR_MODEL。",
+    );
+  }
+  if (new Set([MODELS.analyzer, MODELS.validator, MODELS.coverage]).size !== 3) {
+    throw new Error(
+      `展示引用反扩写复核模型必须独立于分析与主校验模型：` +
+        `analyzer=${MODELS.analyzer} validator=${MODELS.validator} coverage=${MODELS.coverage}`,
+    );
+  }
+}
+
 // 懒加载：首次调用时才构造客户端，确保 .env.local 已被注入 process.env
 // （模块 import 早于 run-a1 的 loadEnvLocal，过早 new Anthropic() 会拿不到 key）
 let _client: Anthropic | null = null;
+/**
+ * Keep relay configuration explicit and testable. The official SDK defaults to Anthropic's
+ * public API, so merely documenting ANTHROPIC_BASE_URL is insufficient: an unrecognised relay
+ * credential then produces long, misleading timeouts against the wrong endpoint.
+ */
+export function anthropicBaseUrl(raw = process.env.ANTHROPIC_BASE_URL): string | undefined {
+  const value = raw?.trim();
+  return value ? value.replace(/\/+$/, "") : undefined;
+}
+
 function getClient(): Anthropic {
   // 超时取舍：原 45s 是为快速失败中转站「卡死」；但 Opus 生成 8k token 输出的合法调用可能 >45s，
   // 且每次重试也只等 45s → 合法慢生成永远成功不了（F4 live 确认暴露）。改 120s（env LLM_TIMEOUT_MS 可配），
@@ -65,7 +94,12 @@ function getClient(): Anthropic {
   // maxRetries 可调（LLM_MAX_RETRIES，默认 2）：中转站抖动期可临时调高兜网络层；
   // 与 validator.judgeWithRetry 的应用层重试叠加（前者管网络/5xx，后者覆盖 SDK 重试耗尽后的短窗）。
   const maxRetries = llmMaxRetries();
-  return (_client ??= new Anthropic({ timeout, maxRetries })); // key from env
+  const baseURL = anthropicBaseUrl();
+  return (_client ??= new Anthropic({
+    timeout,
+    maxRetries,
+    ...(baseURL ? { baseURL } : {}),
+  })); // key from env
 }
 
 // ── Cost Meter（进程内累计本次运行的 token / 成本） ──

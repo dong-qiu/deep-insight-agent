@@ -1,49 +1,39 @@
-/** PPT 导出 orchestrator（C 阶段）：从 reportId 一次性读齐 PPT 所需输入，可选 LLM 润色，
- *  跑 buildPptx 拿 Buffer 给 API route。
+/** PPT 导出 orchestrator：从 reportId 一次性读齐 PPT 所需输入，跑 buildPptx 拿 Buffer 给 API route。
  *
  *  纳入口径与 selectInsights 一致——只取明确 support 的 verdict=pass 引用——
  *  保证导出页面与报告正文同口径，避免"PPT 显示了报告里看不到的引用"这种倒挂。 */
 import type { DB } from "../db/index.js";
-import {
-  computePolishInputsHash,
-  getPolishCacheEntry,
-  upsertPolishCacheEntry,
-} from "../db/ppt-cache.js";
-import { type InsightRow, rowToInsight } from "../db/analysis.js";
+import { getAnalysisBatch, getValidationResult } from "../db/analysis.js";
 import { getReport } from "../db/reports.js";
 import { getSource, getTopic } from "../db/repos.js";
-import type { CitationCheck, Insight, Report, Topic } from "../types.js";
-import { isIncludableCheck } from "../utils/citation-verdict.js";
+import type { AnalysisBatch, Report, Topic, ValidationResult } from "../types.js";
+import { DISPLAY_PROJECTION_VERSION } from "../utils/source-quote-projection.js";
+import { selectInsights } from "../agents/report-gen.js";
 import { buildPptx, type IncludedInsightLite, type PptGenOutput } from "./ppt-gen.js";
-import { polishForPpt, type PolishResult } from "./ppt-polish.js";
 
 export interface PptExportResult extends PptGenOutput {
   report: Report;
   topic: Topic;
-  /** 本次 LLM 净支出（cache hit → 0）。不含历史已支付的 polish 成本（见 polishCacheOriginalCost） */
+  /** 响应兼容字段；v6 不运行 LLM 润色，恒为 0。 */
   polishCost: { tokens: number; amount: number };
-  /** "none"=未启用 polish；"miss"=本次跑了 LLM；"hit"=复用上次缓存 */
+  /** v6 恒为 "none"：自由 LLM 改写不属于 reader-visible 原文。 */
   polishCache: "none" | "hit" | "miss";
-  /** 当前生效的 polish 完整度（用于决定是否提示 refresh）：
-   *  - "complete": 所有重点条 + executive 全有；
-   *  - "no-executive": 重点条全有、executive 缺；
-   *  - "partial": 部分重点条缺；
-   *  - "none": 未启用 polish。 */
+  /** v6 恒为 "none"。 */
   polishStatus: "none" | "complete" | "no-executive" | "partial";
-  /** polish 覆盖度 N/M 透传——complete 时 N=M、有 executive */
+  /** v6 恒为零覆盖。 */
   polishCoverage: { perInsightDone: number; perInsightTotal: number; hasExecutive: boolean };
-  /** 本次 polish 是否因为累计成本越过 PPT_POLISH_COST_CAP_USD 被硬停（cache hit / 未启用 polish 时恒 false） */
+  /** v6 恒为 false。 */
   polishAborted: boolean;
-  /** 触发硬停的成本上限（透传给 header，方便用户知道阈值在哪）；usePolish=false 时 0 */
+  /** v6 不运行 polish，恒为 0。 */
   polishCostCapUsd: number;
   /** 文件名：`{topic.name} · {generated_at[:10]}.pptx`（替换文件系统非法字符） */
   fileName: string;
 }
 
 export interface PptExportOptions {
-  /** 启用 B 阶段 LLM 润色（§1 凝练 + §3 启示 + Executive 页）；缺省 false（A 即时导出） */
+  /** 兼容旧 API；v6 忽略，以避免把自由 LLM 改写显示为来源事实。 */
   usePolish?: boolean;
-  /** 强制重跑 LLM（忽略既有缓存条目；新结果完整则覆盖写入）。缺省 false。 */
+  /** 兼容旧 API；v6 忽略。 */
   refresh?: boolean;
 }
 
@@ -52,52 +42,53 @@ export interface PptExportOptions {
 function loadPptInput(
   db: DB,
   reportId: string,
-): { report: Report; topic: Topic; insights: IncludedInsightLite[]; sourceNameByCi: Map<string, string>; sourceNameById: Map<string, string> } | null {
+): { report: Report; topic: Topic; insights: IncludedInsightLite[]; citationSourceByCi: Map<string, { sourceName: string; url: string }> } | null {
   const report = getReport(db, reportId);
   if (!report) return null;
   const topic = getTopic(db, report.topic_id);
   if (!topic) throw new Error(`报告 ${reportId} 的 topic ${report.topic_id} 不存在`);
 
   const insights: IncludedInsightLite[] = [];
+  const readerVisibleByBatch = new Map<string, Map<string, IncludedInsightLite>>();
   for (const id of report.insight_ids) {
-    const row = db.prepare("SELECT * FROM insight WHERE id = ?").get(id) as InsightRow | undefined;
+    const row = db.prepare("SELECT batch_id FROM insight WHERE id = ?").get(id) as { batch_id: string } | undefined;
     if (!row) continue; // 防御：报告引用了已删除的 insight，跳过不抛
-    const insight: Insight = rowToInsight(db, row); // 单一来源（Q3）
-    // 白名单（与 selectInsights 同口径）：仅明确 support 的 pass 引用可导出。
-    const checks = db
-      .prepare("SELECT citation_index, verdict, consistency FROM citation_check WHERE insight_id = ?")
-      .all(id) as Pick<CitationCheck, "citation_index" | "verdict" | "consistency">[];
-    const cMap = new Map(checks.map((c) => [c.citation_index, c]));
-    const kept: number[] = [];
-    let includable = false;
-    insight.citations.forEach((_, i) => {
-      const c = cMap.get(i);
-      if (c && isIncludableCheck(c)) {
-        kept.push(i);
-        includable = true;
-      }
-    });
-    if (includable) insights.push({ insight, citationIndices: kept, flaggedUncertain: false, flaggedError: false });
+    let readerVisible = readerVisibleByBatch.get(row.batch_id);
+    if (!readerVisible) {
+      const batch: AnalysisBatch | null = getAnalysisBatch(db, row.batch_id);
+      const validation: ValidationResult | null = getValidationResult(db, row.batch_id);
+      // PPT is a new public derivative. Historical report text may remain readable, but a legacy
+      // batch must not be re-exported as a fresh, v6-verified deck.
+      const selected = batch?.display_coverage_state === "audited" && batch.display_projection_version === DISPLAY_PROJECTION_VERSION && validation
+        ? selectInsights(batch, validation)
+        : [];
+      readerVisible = new Map(selected.map((entry) => [entry.insight.id, {
+        insight: entry.insight, citationIndices: entry.citationIndices,
+        flaggedUncertain: entry.flaggedUncertain, flaggedError: entry.flaggedError,
+      }]));
+      readerVisibleByBatch.set(row.batch_id, readerVisible);
+    }
+    const reader = readerVisible.get(id);
+    if (reader) insights.push(reader);
   }
 
-  // 源名映射：ci → source_id → source.name；同时建 source_id → name（供"源与方法"页）
-  const sourceNameByCi = new Map<string, string>();
-  const sourceNameById = new Map<string, string>();
+  // Every deck-visible quote needs its own content-item URL, not merely a de-duplicated source
+  // label.  Invalid URLs are intentionally omitted; buildPptx then fail-closes that item.
+  const citationSourceByCi = new Map<string, { sourceName: string; url: string }>();
   const usedCi = new Set<string>(
     insights.flatMap((x) => x.citationIndices.map((i) => x.insight.citations[i].content_item_id)),
   );
   for (const ciId of usedCi) {
-    const ciRow = db.prepare("SELECT source_id FROM content_item WHERE id = ?").get(ciId) as
-      | { source_id: string }
+    const ciRow = db.prepare("SELECT source_id,url FROM content_item WHERE id = ?").get(ciId) as
+      | { source_id: string; url: string }
       | undefined;
     if (!ciRow) continue;
     const src = getSource(db, ciRow.source_id);
     if (!src) continue;
-    sourceNameByCi.set(ciId, src.name);
-    sourceNameById.set(src.id, src.name);
+    if (/^https?:\/\//i.test(ciRow.url)) citationSourceByCi.set(ciId, { sourceName: src.name, url: ciRow.url });
   }
 
-  return { report, topic, insights, sourceNameByCi, sourceNameById };
+  return { report, topic, insights, citationSourceByCi };
 }
 
 /** 生成安全文件名：替换跨平台禁用字符（/ \\ : * ? " < > |）+ 折叠多余空白 + 长度上限。
@@ -112,116 +103,37 @@ function safeFileName(topicName: string, generatedAt: string): string {
   return `${safe} · ${date}.pptx`;
 }
 
-/** PPT 导出主入口：load → optional polish → buildPptx → return result。
- *  - usePolish=false（默认）：即时返、零 LLM 成本；§1/§3 走 A 确定性 fallback；
- *  - usePolish=true：N 条重点 + 1 executive 并发跑 LLM，~10s + ~\$0.07/PPT；
- *    任一 LLM 失败 → 该项 A fallback、不阻断导出（polishForPpt 内部已 try/catch）。 */
-const KEY_IMPORTANCE = 4;
-const COST_CAP_DEFAULT_USD = 0.30;
-
-function resolveCostCap(): number {
-  const raw = Number(process.env.PPT_POLISH_COST_CAP_USD);
-  return Number.isFinite(raw) && raw > 0 ? raw : COST_CAP_DEFAULT_USD;
-}
+/** PPT 导出主入口：只输出审核过的一条原文与受控重要性判断；不运行或显示 LLM 润色。 */
 
 export async function exportReportPptx(
   db: DB,
   reportId: string,
   opts: PptExportOptions = {},
 ): Promise<PptExportResult | null> {
+  // `usePolish`/`refresh` remain accepted for API compatibility, but reader-visible v6 decks
+  // cannot show free LLM rewrites as if they were source facts.
+  void opts;
   const loaded = loadPptInput(db, reportId);
   if (!loaded) return null;
-  const { report, topic, insights, sourceNameByCi, sourceNameById } = loaded;
-
-  let polish: { perInsight: PolishResult["perInsight"]; executive: PolishResult["executive"] } | undefined;
-  let polishCost = { tokens: 0, amount: 0 };
-  let polishCache: "none" | "hit" | "miss" = "none";
-  let perInsightTotal = 0;
-  let polishAborted = false;
-  const costCap = resolveCostCap();
-
-  if (opts.usePolish) {
-    polishCache = "miss";
-    const key = insights.filter((x) => x.insight.importance >= KEY_IMPORTANCE);
-    perInsightTotal = key.length;
-    const inputsHash = computePolishInputsHash(topic, key.map((x) => x.insight));
-
-    // 1) 命中缓存（refresh=false 时）：直接复用，零成本
-    if (!opts.refresh) {
-      const cached = getPolishCacheEntry(db, reportId);
-      if (cached && cached.inputsHash === inputsHash) {
-        polish = cached.polish;
-        polishCache = "hit";
-      }
-    }
-
-    // 2) 未命中 / refresh：跑 LLM；累计成本越过 costCap → abort 未启动 + in-flight；
-    //    与既有缓存 merge（同 hash）后写回；中转站偶发截断时多次 refresh 渐进收敛。
-    if (!polish) {
-      const controller = new AbortController();
-      let running = 0;
-      const result = await polishForPpt(key, topic, {
-        signal: controller.signal,
-        onCost: (delta) => {
-          running += delta.amount;
-          if (running >= costCap && !controller.signal.aborted) {
-            polishAborted = true;
-            controller.abort();
-            console.warn(
-              `  ⚠️ ppt-polish 累计成本 $${running.toFixed(4)} ≥ cap $${costCap.toFixed(2)}（PPT_POLISH_COST_CAP_USD）→ abort 未启动 + in-flight；已成功子结果保留`,
-            );
-          }
-        },
-      });
-      polishCost = result.cost;
-
-      const existing = getPolishCacheEntry(db, reportId);
-      const baseline = existing && existing.inputsHash === inputsHash ? existing.polish : null;
-      const merged = {
-        perInsight: new Map(baseline?.perInsight ?? []),
-        executive: baseline?.executive ?? null,
-      };
-      for (const [id, p] of result.perInsight) merged.perInsight.set(id, p);
-      if (result.executive) merged.executive = result.executive;
-
-      polish = merged;
-      const mergedCost = {
-        tokens: (existing?.originalCost.tokens ?? 0) + result.cost.tokens,
-        amount: (existing?.originalCost.amount ?? 0) + result.cost.amount,
-      };
-      upsertPolishCacheEntry(db, reportId, inputsHash, merged, mergedCost);
-    }
-  }
-
-  const perInsightDone = polish?.perInsight.size ?? 0;
-  const hasExecutive = polish?.executive != null;
-  const polishStatus: PptExportResult["polishStatus"] = !opts.usePolish
-    ? "none"
-    : perInsightDone < perInsightTotal
-      ? "partial"
-      : hasExecutive
-        ? "complete"
-        : "no-executive";
+  const { report, topic, insights, citationSourceByCi } = loaded;
 
   const out = await buildPptx({
     report,
     insights,
     topic,
-    sourceNameByCi,
-    sourceNameById,
-    polish,
+    citationSourceByCi,
   });
 
   return {
     ...out,
     report,
     topic,
-    polishCost,
-    polishCache,
-    polishStatus,
-    polishCoverage: { perInsightDone, perInsightTotal, hasExecutive },
-    polishAborted,
-    polishCostCapUsd: opts.usePolish ? costCap : 0,
+    polishCost: { tokens: 0, amount: 0 },
+    polishCache: "none",
+    polishStatus: "none",
+    polishCoverage: { perInsightDone: 0, perInsightTotal: 0, hasExecutive: false },
+    polishAborted: false,
+    polishCostCapUsd: 0,
     fileName: safeFileName(topic.name, report.generated_at),
   };
 }

@@ -8,7 +8,6 @@ import { findGenerationTraceForEntity } from "../../lib/db/provenance.js";
 import { ProvenanceTimeline } from "../reports/[id]/_components/provenance-timeline.js";
 
 export const dynamic = "force-dynamic";
-const KIND: Record<string, string> = { model: "模型", framework: "框架", paper: "论文", benchmark: "基准", tool: "工具", method: "方法", security: "安全", other: "技术动态" };
 
 export default async function LeadsPage(): Promise<React.ReactElement> {
   const db = getDb();
@@ -23,9 +22,9 @@ export default async function LeadsPage(): Promise<React.ReactElement> {
       const evidence = listTechLeadEvidence(db, lead.id);
       const traceId = isAdmin ? findGenerationTraceForEntity(db, { type: "tech_lead", locator: { kind: "id", id: lead.id } }) : null;
       return <article className="card lead-card" key={lead.id}>
-        <div className="card-meta"><span className="tag-chip">{KIND[lead.kind]}</span><span className="imp-badge imp-4">{Math.round(lead.score)} 分</span><span className="muted">{names.get(lead.topic_id) ?? lead.topic_id}</span></div>
+        <div className="card-meta"><span className="imp-badge imp-4">{Math.round(lead.score)} 分</span><span className="muted">{names.get(lead.topic_id) ?? lead.topic_id}</span></div>
         <h3>{lead.title}</h3><p>{lead.summary}</p><p className="muted">{lead.score_detail.reason}</p>
-        <details><summary>证据（{evidence.length}）</summary><ul>{evidence.map((item) => <li key={`${item.insight_id}:${item.citation_index}`}><a href={item.url} target="_blank" rel="noreferrer">{item.source_name}</a> · {item.observed_at.slice(0, 10)}<br />「{item.quote}」</li>)}</ul></details>
+        <details><summary>已核验原文与来源（{evidence.length}）</summary><ul>{evidence.map((item) => <li key={`${item.insight_id}:${item.citation_index}`}><a href={item.url} target="_blank" rel="noreferrer">{item.source_name}</a> · {item.observed_at.slice(0, 10)}<br />「{item.quote}」</li>)}</ul></details>
         {traceId ? <ProvenanceTimeline traceId={traceId} /> : null}
         <p><a className="ppt-btn ppt-btn-secondary" href={`/topics/${lead.topic_id}`}>查看主题并深挖</a>{isAdmin ? <LeadActions id={lead.id} status={lead.status} /> : null}</p>
       </article>;

@@ -10,11 +10,11 @@
  *    K+P+2. 源与方法（源列表 + 时间窗 + 生成日）
  *    空报告时退化为标题页 + "本期无重要事件" 一页。
  *
- *  v1 不调 LLM；slide 标题用 statement 截断（B 阶段会换成 LLM 凝练标题 + summary 页）。 */
+ *  Reader-visible v6 never rewrites source facts with an LLM. Each slide prints its one
+ *  auditable source quote exactly once, alongside a controlled system-importance label. */
 import PptxGenJsImport from "pptxgenjs";
 import type { Insight, Report, Topic } from "../types.js";
 import { flagLabel } from "../utils/citation-verdict.js";
-import type { ExecutivePolish, InsightPolish } from "./ppt-polish.js";
 
 // pptxgenjs CJS/ESM 互操作不稳定：tsx 直接跑 ESM 路径返 { default } 而 vitest 走 CJS
 // 路径直接返 class。此处兼容两种形态——确保任意 runtime 下 `new PptxGen()` 都成立。
@@ -33,16 +33,8 @@ export interface PptGenInput {
   report: Report;
   insights: IncludedInsightLite[];
   topic: Topic;
-  /** content_item_id → 源名（来自 source.name），用作 quote 后缀。缺失时回退 ci 代码。 */
-  sourceNameByCi: Map<string, string>;
-  /** source_id → 源名，用作末尾"源与方法"页列表（去重）。 */
-  sourceNameById?: Map<string, string>;
-  /** B 阶段 LLM 润色（可选）。存在时：插入 Executive 页 + 重点条用 polish 覆盖 §1/§3；
-   *  缺失时退化 A 阶段确定性 fallback（statement 首句 / importance_basis）。 */
-  polish?: {
-    perInsight: Map<string, InsightPolish>;
-    executive: ExecutivePolish | null;
-  };
+  /** content_item_id → 可回溯来源。reader-visible quote 必须带其自身的安全原文 URL。 */
+  citationSourceByCi: Map<string, { sourceName: string; url: string }>;
 }
 
 export interface PptGenOutput {
@@ -64,41 +56,53 @@ const KEY_IMPORTANCE = 4;
 const OTHER_PER_SLIDE = 4;
 
 export async function buildPptx(input: PptGenInput): Promise<PptGenOutput> {
+  // A source name alone cannot trace a reader back to the cited article.  Exclude malformed or
+  // missing content links rather than presenting an unverifiable quote in a downloadable deck.
+  const readerInput: PptGenInput = {
+    ...input,
+    insights: input.insights.filter((insight) => Boolean(bindingCitation(input, insight))),
+  };
   const pres = new PptxGen();
   pres.layout = "LAYOUT_WIDE"; // 13.33 x 7.5 inch
 
   let pages = 0;
-  addTitleSlide(pres, input);
+  addTitleSlide(pres, readerInput);
   pages += 1;
 
-  if (input.insights.length === 0) {
+  if (readerInput.insights.length === 0) {
     addEmptySlide(pres);
     pages += 1;
     return finish(pres, pages);
   }
 
-  const key = input.insights.filter((x) => x.insight.importance >= KEY_IMPORTANCE);
-  const rest = input.insights.filter((x) => x.insight.importance < KEY_IMPORTANCE);
-
-  // B 阶段：标题页后插 Executive Summary（仅 polish.executive 存在时）
-  if (input.polish?.executive) {
-    addExecutiveSlide(pres, input.polish.executive, input);
-    pages += 1;
-  }
+  const key = readerInput.insights.filter((x) => x.insight.importance >= KEY_IMPORTANCE);
+  const rest = readerInput.insights.filter((x) => x.insight.importance < KEY_IMPORTANCE);
 
   for (let i = 0; i < key.length; i++) {
-    addKeyInsightSlide(pres, key[i], i + 1, input);
+    addKeyInsightSlide(pres, key[i], i + 1, readerInput);
     pages += 1;
   }
 
   if (rest.length > 0) {
-    pages += addOtherInsightSlides(pres, rest);
+    pages += addOtherInsightSlides(pres, rest, readerInput);
   }
 
-  addSourcesSlide(pres, input);
+  addSourcesSlide(pres, readerInput);
   pages += 1;
 
   return finish(pres, pages);
+}
+
+function bindingCitation(input: PptGenInput, insight: IncludedInsightLite): {
+  quote: string;
+  source: { sourceName: string; url: string };
+} | null {
+  const citationIndex = insight.citationIndices[0];
+  const citation = citationIndex == null ? undefined : insight.insight.citations[citationIndex];
+  const source = citation ? input.citationSourceByCi.get(citation.content_item_id) : undefined;
+  return citation && source && /^https?:\/\//i.test(source.url)
+    ? { quote: citation.quote, source }
+    : null;
 }
 
 async function finish(pres: InstanceType<typeof PptxGen>, pageCount: number): Promise<PptGenOutput> {
@@ -129,38 +133,6 @@ function addTitleSlide(pres: InstanceType<typeof PptxGen>, input: PptGenInput): 
   });
 }
 
-function addExecutiveSlide(
-  pres: InstanceType<typeof PptxGen>,
-  exec: ExecutivePolish,
-  input: PptGenInput,
-): void {
-  const s = pres.addSlide();
-  s.background = { color: STYLE.bgColor };
-  s.addText("Executive Summary", {
-    x: 0.5, y: 0.4, w: 12.3, h: 0.5,
-    fontSize: 13, fontFace: STYLE.fontFace, color: STYLE.textMuted,
-  });
-  s.addText("本期要点总览", {
-    x: 0.5, y: 0.85, w: 12.3, h: 0.7,
-    fontSize: 26, fontFace: STYLE.fontFace, color: STYLE.textPrimary, bold: true,
-  });
-  const lines = exec.takeaways.map((t) => ({
-    text: `· ${t}`,
-    options: { breakLine: true, fontSize: 14, color: STYLE.textSubtle },
-  }));
-  s.addText(lines, {
-    x: 0.5, y: 1.9, w: 12.3, h: 4.6,
-    fontFace: STYLE.fontFace, valign: "top", paraSpaceAfter: 8,
-  });
-  s.addText(
-    `${input.topic.name} · ${input.report.generated_at.slice(0, 10)} · LLM 凝练（基于 ${input.polish?.perInsight.size ?? 0} 条已校验重点）`,
-    {
-      x: 0.5, y: 6.95, w: 12.3, h: 0.25,
-      fontSize: 9, fontFace: STYLE.fontFace, color: STYLE.textMuted, italic: true, align: "right",
-    },
-  );
-}
-
 function addEmptySlide(pres: InstanceType<typeof PptxGen>): void {
   const s = pres.addSlide();
   s.background = { color: STYLE.bgColor };
@@ -170,10 +142,7 @@ function addEmptySlide(pres: InstanceType<typeof PptxGen>): void {
   });
 }
 
-/** 重点条单页：3 段结构（简要总结 / 主要内容 / 对我们的启示）。
- *  A 阶段确定性填充——§1 截 statement 首句；§2 完整 statement + 1-2 verbatim quote；
- *  §3 用 analyzer 标的 importance_basis 作 honest proxy（"为什么重要"），尾部小字提示
- *  "B 阶段 LLM 将基于主题上下文重写为可行启示"。 */
+/** 重点条单页：source quote 一次 + 受控系统重要性。 */
 function addKeyInsightSlide(
   pres: InstanceType<typeof PptxGen>,
   x: IncludedInsightLite,
@@ -193,71 +162,32 @@ function addKeyInsightSlide(
     color: label ? STYLE.flagAccent : STYLE.textMuted,
   });
 
-  // ── 标题（pithy；A 阶段截断、B 阶段 LLM 凝练）──
-  s.addText(briefTitle(x.insight.statement), {
+  // Do not repeat a source quote in a generated title. The title is structural only; the quote
+  // below is the one and only reader-visible factual statement on this slide.
+  s.addText(`重点洞察 #${n}`, {
     x: 0.5, y: 0.65, w: 12.3, h: 0.85,
     fontSize: 22, fontFace: STYLE.fontFace, color: STYLE.textPrimary, bold: true,
     valign: "top",
   });
 
-  // ── §1 简要总结（B：LLM 凝练；A fallback：statement 首句）──
-  sectionHeader(s, "简要总结", 1.6);
-  const polish = input.polish?.perInsight.get(x.insight.id);
-  const summaryText = polish?.brief_summary ?? briefSummary(x.insight.statement);
-  s.addText(summaryText, {
-    x: 0.7, y: 1.95, w: 12.1, h: 0.6,
-    fontSize: 13, fontFace: STYLE.fontFace, color: STYLE.textSubtle, valign: "top",
-  });
-
-  // ── §2 主要内容 / 关键思路 ──
-  sectionHeader(s, "主要内容 · 关键思路", 2.65);
-  // 完整 statement
-  s.addText(x.insight.statement, {
-    x: 0.7, y: 3.0, w: 12.1, h: 1.3,
-    fontSize: 12, fontFace: STYLE.fontFace, color: STYLE.textPrimary, valign: "top",
-  });
-  // 关键引用（最多 2 条 verbatim quote）
-  const cites = x.citationIndices.slice(0, 2).map((i) => x.insight.citations[i]);
-  const quotesText: { text: string; options?: { fontSize?: number; color?: string; italic?: boolean; breakLine?: boolean } }[] = [];
-  for (const c of cites) {
-    const src = input.sourceNameByCi.get(c.content_item_id) ?? c.content_item_id;
-    quotesText.push({
-      text: `「${truncate(c.quote, 120)}」`,
-      options: { fontSize: 11, color: STYLE.textSubtle, italic: true, breakLine: true },
-    });
-    quotesText.push({
-      text: `— ${src}`,
-      options: { fontSize: 9, color: STYLE.textMuted, breakLine: true },
-    });
-  }
-  if (quotesText.length > 0) {
-    s.addText(quotesText, {
-      x: 0.7, y: 4.4, w: 12.1, h: 1.0,
-      valign: "top", fontFace: STYLE.fontFace,
+  sectionHeader(s, "已核验原文", 1.6);
+  const bound = bindingCitation(input, x);
+  if (bound) {
+    const quoteText: PptxGenJsImport.TextProps[] = [
+      { text: `「${bound.quote}」`, options: { fontSize: 11, color: STYLE.textSubtle, italic: true, breakLine: true } },
+      { text: `— ${bound.source.sourceName}`, options: { fontSize: 9, color: STYLE.textMuted, breakLine: true, hyperlink: { url: bound.source.url, tooltip: "打开已核验原文" } } },
+    ];
+    s.addText(quoteText, {
+      x: 0.7, y: 1.95, w: 12.1, h: 2.2,
+      valign: "top", fontFace: STYLE.fontFace, fit: "shrink",
     });
   }
 
-  // ── §3 对我们的启示（B：LLM 多 bullet；A fallback：importance_basis 整段）──
-  sectionHeader(s, "对我们的启示", 5.55);
-  if (polish?.implications && polish.implications.length > 0) {
-    const implLines = polish.implications.map((t) => ({
-      text: `· ${t}`,
-      options: { breakLine: true, fontSize: 12, color: STYLE.textSubtle },
-    }));
-    s.addText(implLines, {
-      x: 0.7, y: 5.9, w: 12.1, h: 1.0,
-      fontFace: STYLE.fontFace, valign: "top", paraSpaceAfter: 4,
-    });
-  } else {
-    s.addText(x.insight.importance_basis, {
-      x: 0.7, y: 5.9, w: 12.1, h: 0.85,
-      fontSize: 12, fontFace: STYLE.fontFace, color: STYLE.textSubtle, valign: "top",
-    });
-    s.addText("（A fallback：analyzer importance_basis；启用 LLM 润色后此处由 polish 重写）", {
-      x: 0.7, y: 6.6, w: 12.1, h: 0.25,
-      fontSize: 8, fontFace: STYLE.fontFace, color: STYLE.textMuted, italic: true,
-    });
-  }
+  sectionHeader(s, "系统重要性判断", 4.65);
+  s.addText(x.insight.importance_basis, {
+    x: 0.7, y: 5.0, w: 12.1, h: 0.85,
+    fontSize: 12, fontFace: STYLE.fontFace, color: STYLE.textSubtle, valign: "top",
+  });
 
   // ── 页脚 ──
   s.addText(`${input.topic.name} · ${date}`, {
@@ -278,21 +208,8 @@ function sectionHeader(
   });
 }
 
-/** §1 用：抽 statement 首句作"简要总结"。优先按"。"切；无句号则截到 ~50 字。 */
-export function briefSummary(statement: string): string {
-  const m = statement.match(/^[^。！？.!?]{6,}[。！？.!?]/);
-  if (m) return m[0].trim();
-  return truncate(statement, 55);
-}
-
-/** 标题：pithy 截断；首句过长则截到 ~26 字。 */
-function briefTitle(statement: string): string {
-  const summary = briefSummary(statement);
-  return summary.length > 28 ? truncate(summary, 28) : summary;
-}
-
 /** 返回新增页数。其他动态按 OTHER_PER_SLIDE 条/页聚合，每条一行。 */
-function addOtherInsightSlides(pres: InstanceType<typeof PptxGen>, rest: IncludedInsightLite[]): number {
+function addOtherInsightSlides(pres: InstanceType<typeof PptxGen>, rest: IncludedInsightLite[], input: PptGenInput): number {
   let added = 0;
   for (let i = 0; i < rest.length; i += OTHER_PER_SLIDE) {
     const chunk = rest.slice(i, i + OTHER_PER_SLIDE);
@@ -306,10 +223,15 @@ function addOtherInsightSlides(pres: InstanceType<typeof PptxGen>, rest: Include
     for (const x of chunk) {
       const lbl = flagLabel(x);
       const flag = lbl ? `  〔${lbl}〕` : "";
-      s.addText(`· [${x.insight.importance}/5] ${truncate(x.insight.statement, 180)}${flag}`, {
+      const bound = bindingCitation(input, x)!;
+      const text: PptxGenJsImport.TextProps[] = [
+        { text: `· [${x.insight.importance}/5] 「${bound.quote}」${flag}`, options: { breakLine: true } },
+        { text: `— ${bound.source.sourceName}`, options: { fontSize: 9, color: STYLE.textMuted, hyperlink: { url: bound.source.url, tooltip: "打开已核验原文" } } },
+      ];
+      s.addText(text, {
         x: 0.6, y, w: 12.1, h: 1.3,
         fontSize: 12, fontFace: STYLE.fontFace, color: STYLE.textSubtle,
-        valign: "top",
+        valign: "top", fit: "shrink",
       });
       y += 1.4;
     }
@@ -333,8 +255,8 @@ function addSourcesSlide(pres: InstanceType<typeof PptxGen>, input: PptGenInput)
   }
   const sourceLabels = new Set<string>();
   for (const ci of citedCi) {
-    const name = input.sourceNameByCi.get(ci);
-    if (name) sourceLabels.add(name);
+    const source = input.citationSourceByCi.get(ci);
+    if (source) sourceLabels.add(source.sourceName);
   }
 
   const sourceList = [...sourceLabels].sort();
@@ -358,9 +280,4 @@ function addSourcesSlide(pres: InstanceType<typeof PptxGen>, input: PptGenInput)
       fontSize: 9, fontFace: STYLE.fontFace, color: STYLE.textMuted, italic: true,
     },
   );
-}
-
-function truncate(s: string, n: number): string {
-  const trimmed = s.trim();
-  return trimmed.length > n ? trimmed.slice(0, n - 1) + "…" : trimmed;
 }

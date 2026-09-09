@@ -1,8 +1,5 @@
-/** GET /api/reports/{id}/pptx?polish=1[&refresh=1] —— 把报告导出为 .pptx 下载。
- *  - polish=1 → 跑 B 阶段 LLM 润色（§1 凝练 + §3 启示 + Executive 页，~10s + ~$0.07–0.21）；
- *  - refresh=1 → 忽略缓存强制重跑 LLM（用于 partial/失败重试）；缺省命中即复用、零成本；
- *  - 缺省（A 即时导出）：仅确定性骨架 + statement 首句 + importance_basis；零 LLM 成本。
- *  鉴权由 middleware.ts 已统一拦截，未登录走 401。 */
+/** GET /api/reports/{id}/pptx —— 下载确定性 v6 原文证据 deck。
+ * 自由 LLM 润色会把非来源文本伪装成报告内容，因此不再支持 polish/refresh 参数。 */
 import { NextResponse } from "next/server";
 import { forbidNonAdmin } from "../../../../../lib/auth-guard.js";
 import { getDb } from "../../../../../lib/db/index.js";
@@ -20,12 +17,13 @@ export async function GET(
   if (denied) return denied;
   const { id } = await params;
   const sp = new URL(req.url).searchParams;
-  const usePolish = sp.get("polish") === "1";
-  const refresh = sp.get("refresh") === "1";
+  if (sp.has("polish") || sp.has("refresh")) {
+    return NextResponse.json({ error: "ppt_polish_not_supported_in_source_quote_v6" }, { status: 422 });
+  }
 
   let result;
   try {
-    result = await exportReportPptx(getDb(), id, { usePolish, refresh });
+    result = await exportReportPptx(getDb(), id);
   } catch (e) {
     console.error(`[pptx] 报告 ${id} 导出失败：`, e);
     return NextResponse.json({ error: (e as Error).message }, { status: 500 });
@@ -41,15 +39,7 @@ export async function GET(
       "Content-Disposition": `attachment; filename="report.pptx"; filename*=UTF-8''${encoded}`,
       "Content-Length": String(result.buffer.length),
       "Cache-Control": "no-store",
-      // 把 polish 成本透传 header，方便 admin/devtools 看
       "X-Ppt-Page-Count": String(result.pageCount),
-      "X-Ppt-Polish-Tokens": String(result.polishCost.tokens),
-      "X-Ppt-Polish-Cost-Usd": result.polishCost.amount.toFixed(6),
-      "X-Ppt-Polish-Cache": result.polishCache,
-      "X-Ppt-Polish-Status": result.polishStatus,
-      "X-Ppt-Polish-Coverage": `${result.polishCoverage.perInsightDone}/${result.polishCoverage.perInsightTotal} exec=${result.polishCoverage.hasExecutive ? "y" : "n"}`,
-      "X-Ppt-Polish-Aborted": result.polishAborted ? "true" : "false",
-      "X-Ppt-Polish-Cost-Cap-Usd": result.polishCostCapUsd.toFixed(2),
     },
   });
 }

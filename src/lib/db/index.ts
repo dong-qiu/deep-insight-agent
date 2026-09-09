@@ -64,6 +64,43 @@ function migrate(db: DB): void {
   // 一句话要点（headline 方案）：analyzer 为每条洞察产出的 ≤40 字浓缩，供列表卡片扫读；
   // 旧库补列默认 ''（重跑管线写正确值，渲染端回退到 statement）。
   ensureColumn(db, "insight", "headline", "headline TEXT NOT NULL DEFAULT ''");
+  // 展示 statement 的唯一 citation 绑定。旧数据保留 NULL，reader-visible 图谱会 fail-closed 排除。
+  ensureColumn(db, "insight", "statement_citation_index", "statement_citation_index INTEGER");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_insight_batch_statement_citation ON insight(batch_id, statement_citation_index)");
+  // New analysis batches are explicitly audited even when all candidates are rejected. Old rows
+  // remain legacy, so a read round-trip cannot turn an audited-empty batch into compatibility data.
+  ensureColumn(db, "analysis_batch", "display_coverage_state", "display_coverage_state TEXT NOT NULL DEFAULT 'legacy' CHECK (display_coverage_state IN ('legacy','audited'))");
+  // Source-quote v6 is a new reader contract, not a backfill: historical audited rows remain
+  // legacy until they are re-analysed and pass the self-contained quote gate.
+  ensureColumn(db, "analysis_batch", "display_projection_version", "display_projection_version TEXT NOT NULL DEFAULT 'legacy' CHECK (display_projection_version IN ('legacy','source_quote_v1'))");
+  // 展示级引用审计：旧 citation 没有 claim/ref，保持空值并由读路径视为 legacy；新分析写入
+  // 稳定 ref 与原子 claim，不能把旧数据误报成已审计。
+  ensureColumn(db, "citation", "citation_ref", "citation_ref TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, "citation", "claim", "claim TEXT NOT NULL DEFAULT ''");
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_citation_ref ON citation(citation_ref);
+    CREATE TABLE IF NOT EXISTS display_coverage_audit (
+      batch_id TEXT NOT NULL REFERENCES analysis_batch(id), insight_id TEXT NOT NULL REFERENCES insight(id),
+      candidate_id TEXT NOT NULL, gate_version TEXT NOT NULL, terminal_reason TEXT NOT NULL,
+      prompt_version TEXT NOT NULL, input_hash TEXT NOT NULL, validator_model TEXT NOT NULL,
+      decision TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (batch_id, insight_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_display_coverage_audit_insight ON display_coverage_audit(insight_id, created_at);
+    CREATE TRIGGER IF NOT EXISTS display_coverage_audit_batch_matches_insight
+    BEFORE INSERT ON display_coverage_audit
+    WHEN NOT EXISTS (SELECT 1 FROM insight WHERE id = NEW.insight_id AND batch_id = NEW.batch_id)
+    BEGIN SELECT RAISE(ABORT, 'display coverage audit insight belongs to another batch'); END;
+    CREATE TABLE IF NOT EXISTS display_coverage_candidate_audit (
+      batch_id TEXT NOT NULL REFERENCES analysis_batch(id), candidate_id TEXT NOT NULL,
+      insight_id TEXT REFERENCES insight(id), gate_version TEXT NOT NULL, terminal_reason TEXT NOT NULL,
+      prompt_version TEXT NOT NULL, input_hash TEXT NOT NULL, validator_model TEXT NOT NULL,
+      decision TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (batch_id, candidate_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_display_coverage_candidate_audit_insight ON display_coverage_candidate_audit(insight_id, created_at);
+    CREATE TRIGGER IF NOT EXISTS display_coverage_candidate_audit_batch_matches_insight
+    BEFORE INSERT ON display_coverage_candidate_audit
+    WHEN NEW.insight_id IS NOT NULL
+     AND NOT EXISTS (SELECT 1 FROM insight WHERE id = NEW.insight_id AND batch_id = NEW.batch_id)
+    BEGIN SELECT RAISE(ABORT, 'display coverage candidate audit insight belongs to another batch'); END;`);
   // 卡片要点列表（headline 方案）：report_index 派生的 headline 数组，取代 summary 拼接长串供卡片分点扫读；
   // 旧报告补列默认 '[]'（重生报告写正确值，渲染端回退到 summary）。
   ensureColumn(db, "report_index", "highlights", "highlights TEXT NOT NULL DEFAULT '[]'");

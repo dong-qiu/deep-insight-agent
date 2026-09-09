@@ -1,20 +1,23 @@
 /**
  * 把 A1 跑批产出的 review-queue.json 转成 CSV 打分表（用 Excel/Sheets 打开，多人分工 + 自动算比例）。
  * 用法：npm run review:csv [输入 json] [输出 csv]
- *   默认 evals/out/review-queue.json → evals/out/review.csv
+ *   默认 latest-complete run 的 review-queue.json → 同目录 review.csv
  */
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { isCompleteStatement } from "../src/lib/agents/analyzer.js";
 import type { Insight } from "../src/lib/types.js";
+import { latestReviewQueuePath } from "./review-artifact-paths.js";
 
-const inPath = process.argv[2] ?? "evals/out/review-queue.json";
-const outPath = process.argv[3] ?? "evals/out/review.csv";
+const inPath = process.argv[2] ?? latestReviewQueuePath();
+const outPath = process.argv[3] ?? join(dirname(inPath), "review.csv");
 
 if (!existsSync(inPath)) {
   console.error(`找不到 ${inPath}，请先跑 npm run eval:a1`);
   process.exit(1);
 }
-const insights = (JSON.parse(readFileSync(inPath, "utf8")) as { insights: Insight[] }).insights;
+const queue = JSON.parse(readFileSync(inPath, "utf8")) as { run_id?: string; generated_at: string; insights: Insight[] };
+const insights = queue.insights;
 
 // 可选：AI 预评 JSON（argv[4]，id → {non_obvious, hallucination, note}），合并成「AI预评」列作人评起点
 interface Prejudge {
@@ -32,12 +35,18 @@ const prejudge = prejudgePath
   ? new Map((JSON.parse(readFileSync(prejudgePath, "utf8")) as Prejudge[]).map((j) => [j.id, j]))
   : null;
 
-const esc = (v: string | number): string =>
-  `"${String(v).replace(/\r?\n/g, " ").replace(/"/g, '""')}"`;
+/** Spreadsheet formula injection is a data-integrity problem: reader-facing source text must
+ * remain literal even when an evaluator opens the CSV in Excel or Sheets. */
+const literalCell = (v: string | number): string => {
+  const value = String(v).replace(/\r?\n/g, " ");
+  return /^[=+\-@]/.test(value) ? `'${value}` : value;
+};
+const esc = (v: string | number): string => `"${literalCell(v).replace(/"/g, '""')}"`;
 
 const aiCols = prejudge ? ["AI预评·非显然", "AI预评·幻觉", "AI预评·理由"] : [];
 const headers = [
-  "序号", "id", "主题", "类型", "重要性", "结论", "引用",
+  "run_id", "queue_generated_at", "序号", "id", "主题", "类型", "重要性", "结论", "引用",
+  "statement_citation_index", "statement_citation_claim",
   "可定位", "截断",
   ...aiCols,
   "非显然(是/否)", "幻觉(有/无)", "importance合理(是/否)", "备注",
@@ -46,14 +55,15 @@ const rows = [headers.map(esc).join(",")];
 
 insights.forEach((it, i) => {
   const quotes = it.citations.map((c) => `[${c.content_item_id}] ${c.quote}`).join("  ‖  ");
+  const boundCitation = it.statement_citation_index == null ? undefined : it.citations[it.statement_citation_index - 1];
   const locatable = it.citations.every((c) => c.locator.char_start >= 0) ? "是" : "否";
   const truncated = isCompleteStatement(it.statement) ? "" : "是";
   const j = prejudge?.get(it.id);
   const aiCells = prejudge ? [j?.non_obvious ?? "", j?.hallucination ?? "", j?.note ?? ""] : [];
   rows.push(
     [
-      i + 1, it.id, it.topic_id, it.type, it.importance,
-      it.statement, quotes, locatable, truncated,
+      queue.run_id ?? "legacy", queue.generated_at, i + 1, it.id, it.topic_id, it.type, it.importance,
+      it.statement, quotes, it.statement_citation_index ?? "", boundCitation?.claim ?? "", locatable, truncated,
       ...aiCells,
       "", "", "", "",
     ].map(esc).join(","),

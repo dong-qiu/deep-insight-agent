@@ -75,11 +75,41 @@ export interface Citation {
   content_item_id: string;
   quote: string;
   locator: { paragraph_index: number; char_start: number; char_end: number };
+  /** Stable, opaque identity derived in code from source content + locator + quote. */
+  citation_ref?: string;
   /**
    * 此引用单独支撑的原子事实。新 analyzer 输出必填；历史批次缺失时 validator
    * 保守回退为验证完整 statement，避免旧数据被静默放宽。
    */
   claim?: string;
+}
+
+/** Durable evidence for the reader-facing projection. `decision` intentionally preserves the
+ * complete structured judge response and code-side validation result for later review. */
+export interface DisplayCoverageAudit {
+  insight_id: string;
+  candidate_id: string;
+  gate_version: string;
+  terminal_reason: string;
+  prompt_version: string;
+  input_hash: string;
+  validator_model: string;
+  decision: unknown;
+  created_at: string;
+}
+
+/** Every analyzer candidate receives one terminal record. Rejected candidates have no Insight row,
+ * so their audit must not depend on an Insight foreign key. */
+export interface DisplayCoverageCandidateAudit {
+  candidate_id: string;
+  insight_id?: string;
+  gate_version: string;
+  terminal_reason: string;
+  prompt_version: string;
+  input_hash: string;
+  validator_model: string;
+  decision: unknown;
+  created_at: string;
 }
 
 /** 实体（product-definition 洞察「实体追踪」：组织/人物/项目/产品维度的动态聚合）。
@@ -91,6 +121,19 @@ export interface Entity {
   type: EntityType;
 }
 
+/**
+ * 重要性说明不是另一个可自由发挥的事实展示面。P0 只允许使用这四种受控的、
+ * 不声称来源事实的系统判断；任何诸如「已上线」「适用于 RAG」的内容必须回到
+ * statement / headline / importance_facts，并走 quote 覆盖审计。
+ */
+export const IMPORTANCE_REASONS = [
+  "engineering_decision",
+  "security_review",
+  "evaluation_interpretation",
+  "research_tracking",
+] as const;
+export type ImportanceReason = (typeof IMPORTANCE_REASONS)[number];
+
 /** 洞察对象（architecture 数据模型 · Insight） */
 export interface Insight {
   id: string;
@@ -98,10 +141,21 @@ export interface Insight {
   type: "aggregation" | "trend";
   event_id: string | null;
   statement: string;
+  /** 1-based binding to the single citation whose atomic claim is reproduced by statement.
+   * Analyzer output requires it; persisted legacy rows may omit it but must never be re-published
+   * through a fresh display-coverage audit. */
+  statement_citation_index?: number;
   /** 一句话要点（headline 方案）：statement 的 ≤40 字浓缩，结论/数字/主体前置，供列表卡片扫读。
    *  analyzer 产出；缺省 ""（旧库 migration 默认 ''，渲染端回退到 statement）。 */
   headline?: string;
   importance: number; // 1–5
+  /** 已展示的来源事实；每项与 statement/headline 一样必须通过 quote 覆盖门。
+   *  仅在 analyzer 运行期保留，持久化展示仍由 importance_basis 承载。 */
+  importance_facts?: string[];
+  /** 受控的系统重要性判断，不能是自由文本。 */
+  importance_reason?: ImportanceReason;
+  /** 1-based，指向 statement/headline 的已通过原子 claim；不能指向 importance_facts。 */
+  importance_reason_claim_indexes?: number[];
   importance_basis: string;
   citations: Citation[];
   source_count: number;
@@ -127,6 +181,13 @@ export interface AnalysisBatch {
   status: "done" | "failed";
   no_significant_event: boolean;
   insights: Insight[];
+  /** New batches retain display-evidence records. `audited` remains meaningful even with zero kept rows. */
+  display_coverage_state?: "legacy" | "audited";
+  /** v6 reader contract. Missing/legacy values are deliberately not reader-visible. */
+  display_projection_version?: "legacy" | "source_quote_v1";
+  display_coverage_audits?: DisplayCoverageAudit[];
+  /** All terminal candidate decisions, including rejected candidates without an Insight row. */
+  display_coverage_candidate_audits?: DisplayCoverageCandidateAudit[];
 }
 
 /** 逐引用校验项（architecture 数据模型 · CitationCheck） */
@@ -401,15 +462,18 @@ export const LlmCitationSchema = z.object({
 
 /** analyzer 产出的单条洞察 */
 export const LlmInsightSchema = z.object({
-  statement: z.string().describe("结论文本，中性叙述，不预测、不评论"),
+  statement: z.string().describe("仅作绑定校验草稿：中性叙述，不预测、不评论，且不得添加所绑定 quote 没有的范围、关系、机制、程度或评价。读者最终看到的是 statement_citation_index 所选 citation 的 quote 原文，不是本草稿或 citation claim"),
+  statement_citation_index: z.number().int().positive().describe("读者最终展示 statement 唯一绑定的 citations 1-based 序号。所选 quote 必须是完整、可独立理解的原子事实；代码将其逐字投影为最终 statement，不得选择多个引用"),
   headline: z
     .string()
     .describe(
-      "一句话要点（≤40 字），供列表卡片快速扫读：把最关键的结论/数字/主体放句首，去掉铺垫与从句；须是 statement 的忠实浓缩，不得引入 statement 没有的事实、不得放大。",
+      "reader-visible v6 不展示 headline；输出空字符串。不得用它承载事实、摘要或替代 statement。",
     ),
   type: z.enum(["aggregation", "trend"]).describe("aggregation=主题聚合 / trend=趋势识别"),
   importance: z.number().int().min(1).max(5).describe("重要性 1–5"),
-  importance_basis: z.string().describe("评分依据，须可追溯到证据或规则"),
+  importance_facts: z.array(z.string()).default([]).describe("reader-visible v6 不展示 importance_facts；输出空数组。不得用它承载来源事实、范围、部署、影响或系统评价"),
+  importance_reason: z.enum(IMPORTANCE_REASONS).describe("只能选择受控系统重要性判断：engineering_decision=工程选型参考，security_review=安全审查参考，evaluation_interpretation=评测解读参考，research_tracking=研究跟踪参考；不得输出自由文本"),
+  importance_reason_claim_indexes: z.array(z.number().int().positive()).min(1).describe("从 1 开始，只指向本条 statement 的原子实质 claim；不得指向 headline 或 importance_facts。每个索引必须支撑受控系统重要性判断"),
   confidence: z
     .enum(["high", "medium", "low"])
     .nullable()
@@ -497,6 +561,32 @@ export const CoverageRepairSchema = z.object({
     .describe("对每个候选 quote 各输出一项；宁缺毋滥，同形不同义/语境不符判 false"),
 });
 export type CoverageRepair = z.infer<typeof CoverageRepairSchema>;
+
+/** 展示级 quote 覆盖门的逐事实 claim 判定。每个 supports=true 的事实必须明确指向至少一条
+ * 已展示的 citation；不能只给一个总体布尔值，让代码在缺失映射时默认放行。
+ *
+ * 注意 span 只是 quote 内的位置审计锚点，不是语义证明本身；support 仍由独立 judge 给出。 */
+export const QuoteCoverageSchema = z.object({
+  verdicts: z
+    .array(
+      z.object({
+        index: z.number().int().describe("展示 claim 的序号（从 1 起，与 atomic_claims 一一对应）"),
+        kind: z.literal("factual").describe("本 schema 只接收须由来源 quote 覆盖的事实；受控系统评价由代码以已通过 statement/headline anchors 审计"),
+        supports: z.boolean().describe("指定的 citation claim/quote 是否完整、直接支持该展示 claim；不确定→false"),
+        citation_indexes: z
+          .array(z.number().int().positive())
+          .describe("supports=true 时，直接覆盖该展示事实的 displayed citation 序号；不支持时置空数组"),
+        evidence_spans: z.array(z.object({
+          citation_index: z.number().int().positive(),
+          quote_start: z.number().int().nonnegative().describe("evidence_excerpt 在 displayed_quote 中的 0-based 起始偏移"),
+          quote_end: z.number().int().positive().describe("evidence_excerpt 在 displayed_quote 中的终止偏移（exclusive）"),
+          evidence_excerpt: z.string().min(1).describe("displayed_quote.slice(quote_start, quote_end) 的逐字内容，用于证明该 claim 的主体、范围、条件、比较或程度"),
+        })).describe("supports=true 时，每个引用至少一项带 offsets 的逐字证据；supports=false 时置空数组"),
+      }),
+    )
+    .describe("每个事实 claim 各一项；不得遗漏、合并或臆增；supports=true 必须给出 citation_indexes 和可在 quote 中定位的 evidence_spans"),
+});
+export type QuoteCoverage = z.infer<typeof QuoteCoverageSchema>;
 
 /** 跨批/跨run 一致性判定缓存的共享契约（DB 实现见 db/consistency-cache.ts，消费方 validator.validateBatch）。
  *  放共享 types 而非 validator——避免 db 层反向依赖 agents 层。

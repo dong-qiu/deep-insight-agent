@@ -1,7 +1,11 @@
 /** 技术线索 V1：把“已成功校验”的洞察确定性投影成可追踪对象。
  * 不调用 LLM、不新增事实文本；推荐理由只由已审计字段拼装。 */
 import type { AnalysisBatch, ContentItem, TechLeadKind, TechLeadScoreDetail, ValidationResult } from "../types.js";
-import { isIncludableCheck } from "../utils/citation-verdict.js";
+import { DISPLAY_PROJECTION_VERSION } from "../utils/source-quote-projection.js";
+import { classifyTechLead } from "../utils/tech-lead-classify.js";
+import { selectInsights } from "./report-gen.js";
+
+export { classifyTechLead } from "../utils/tech-lead-classify.js";
 
 export interface LeadCandidate {
   topic_id: string;
@@ -29,19 +33,9 @@ export function isTechnicalLead(text: string): boolean {
   return DIRECT_TECHNICAL_SIGNAL.test(text) || MODEL_WORK_SIGNAL.test(text);
 }
 
-export function classifyTechLead(text: string, tags: string[]): TechLeadKind {
-  const value = `${text} ${tags.join(" ")}`.toLowerCase();
-  if (/\b(arxiv|paper)\b|论文|研究/.test(value)) return "paper";
-  if (/\b(benchmark|eval|swe-bench)\b|基准|评测/.test(value)) return "benchmark";
-  if (/\b(security|vulnerability|attack|cve)\b|安全|漏洞|攻击/.test(value)) return "security";
-  if (/\b(framework|sdk|mcp|library)\b|框架|协议/.test(value)) return "framework";
-  if (/\b(model|llm|claude|gpt|gemini)\b|模型/.test(value)) return "model";
-  if (/\b(tool|agent|ide|copilot|cursor)\b|工具|代理/.test(value)) return "tool";
-  if (/\b(method|workflow|practice)\b|方法|实践/.test(value)) return "method";
-  return "other";
-}
-
-/** 分数 0–100：近期性 35、独立来源证据 25、重要性 20、主题标签相关性 20。 */
+/** 分数 0–100：近期性 35、证据强度 25、重要性 20、主题相关性 20。
+ * sourceCount stays an internal scoring signal; reader-visible prose must not turn it into an
+ * unsupported “N independent sources” fact. */
 export function scoreLead(input: {
   observedAt: string;
   now: string;
@@ -56,7 +50,7 @@ export function scoreLead(input: {
   const relevance = input.tags.length ? 20 : 12;
   const total = freshness + evidence + importance + relevance;
   const action = input.sourceCount >= 2 && input.importance >= 4 ? "建议深挖" : "建议关注";
-  return { freshness, evidence, importance, relevance, total, reason: `${action}：${input.sourceCount} 个独立来源 · 重要性 ${input.importance}/5 · 最近证据 ${Math.round(ageHours)}h 前` };
+  return { freshness, evidence, importance, relevance, total, reason: `${action}：系统综合近期性、证据强度与重要性评分（重要性 ${input.importance}/5）。` };
 }
 
 /** 仅保留明确 support 的 pass 引用。event_id 是最可靠的跨日报归并键；无 event 时用首实体/标题的规范化键。 */
@@ -66,23 +60,35 @@ export function extractLeadCandidates(
   items: Map<string, ContentItem>,
   now = new Date().toISOString(),
 ): LeadCandidate[] {
-  const pass = new Map(validation.checks.filter(isIncludableCheck).map((c) => [`${c.insight_id}:${c.citation_index}`, c]));
+  // Leads are a new reader-visible derivative, not a historical renderer. Do not revive legacy
+  // or merely validator-passing rows; the report selector verifies the persisted v6 binding/hash
+  // and returns only that one reader evidence citation.
+  if (batch.display_coverage_state !== "audited" || batch.display_projection_version !== DISPLAY_PROJECTION_VERSION) return [];
+  const readerVisible = new Map(selectInsights(batch, validation).map((entry) => [entry.insight.id, entry]));
   const grouped = new Map<string, LeadCandidate>();
   for (const insight of batch.insights) {
-    const citationIndices = insight.citations.flatMap((citation, index) => pass.has(`${insight.id}:${index}`) ? [index] : []);
+    const reader = readerVisible.get(insight.id);
+    if (!reader) continue;
+    const citationIndices = reader.citationIndices;
     if (!citationIndices.length) continue;
     const cited = citationIndices.map((index) => items.get(insight.citations[index].content_item_id)).filter((x): x is ContentItem => !!x);
     if (!cited.length) continue;
     const observedAt = cited.map((item) => item.published_at ?? item.fetched_at).sort().at(-1)!;
-    const title = insight.headline?.trim() || insight.statement;
+    // A v6 reader projection has no generated title. Reusing a historical headline here would
+    // make a lead look verified even though only the bound source quote was audited.
+    const title = insight.statement;
     const technicalText = `${title} ${insight.statement}`;
     if (!isTechnicalLead(technicalText)) continue;
     const entity = insight.entities?.[0]?.name;
     const canonical_key = insight.event_id ? `event:${insight.event_id}` : `lead:${normalize(entity || title)}`;
     const sourceCount = new Set(cited.map((item) => item.source_id)).size;
-    const score_detail = scoreLead({ observedAt, now, sourceCount, importance: insight.importance, tags: insight.tags ?? [] });
+    // Tags are analyzer metadata rather than bound source wording.  Do not let them affect the
+    // reader-visible score (or turn a quote without “security” into a “security” lead).
+    const score_detail = scoreLead({ observedAt, now, sourceCount, importance: insight.importance, tags: [] });
     const candidate: LeadCandidate = {
-      topic_id: insight.topic_id, canonical_key, kind: classifyTechLead(technicalText, insight.tags ?? []), title,
+      // Classification remains a planner-only selection aid. It is derived from the binding
+      // quote alone (never tags) and is projected to a generic reader label on read.
+      topic_id: insight.topic_id, canonical_key, kind: classifyTechLead(title, []), title: "已核验技术线索",
       summary: insight.statement,
       evidence: citationIndices.map((citation_index) => ({ insight_id: insight.id, citation_index })),
       observed_at: observedAt,

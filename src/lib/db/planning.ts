@@ -6,7 +6,7 @@ import type { OpportunityCandidate } from "../agents/opportunity-planning.js";
 import type { TechLead } from "../types.js";
 import type { DB } from "./index.js";
 import { deriveOpportunityCandidates } from "../agents/opportunity-planning.js";
-import { listTechLeads } from "./tech-leads.js";
+import { listPlanningTechLeads, listTechLeadEvidence, projectReaderVisibleTechLead } from "./tech-leads.js";
 
 const json = (value: unknown): string => JSON.stringify(value);
 const parse = (value: unknown): string[] => value ? JSON.parse(value as string) : [];
@@ -22,6 +22,17 @@ const toOpportunity = (r: any): TechnologyOpportunity => ({
   title: r.title, hypothesis: r.hypothesis, proposed_validation: r.proposed_validation, uncertainties: parse(r.uncertainties), status: r.status, mapping_state: r.mapping_state, mapping_direction_version: r.mapping_direction_version,
   priority_score: r.priority_score, score_detail: JSON.parse(r.score_detail), first_seen_at: r.first_seen_at, last_seen_at: r.last_seen_at, latest_evidence_at: r.latest_evidence_at,
 });
+
+/** Opportunities are planning hypotheses, not independently verified source facts.  Their
+ * persisted title/reason may have been created by an older candidate, so keep reader copy
+ * explicitly generic while the linked v6 lead provides the auditable source evidence. */
+function projectReaderVisibleOpportunity(opportunity: TechnologyOpportunity): TechnologyOpportunity {
+  return {
+    ...opportunity,
+    title: "待验证机会",
+    score_detail: { ...opportunity.score_detail, reason: "系统优先级评分（待人工验证）。" },
+  };
+}
 
 export function seedDefaultDirections(db: DB): number {
   const exists = db.prepare("SELECT 1 FROM topic_direction WHERE id=?");
@@ -97,9 +108,10 @@ export function previewTopicDirectionMapping(leads: TechLead[], current: TopicDi
   const before = candidatesForDirection(leads, current, now);
   const proposed: TopicDirection = { ...draft, version: current.version, created_at: current.created_at, updated_at: current.updated_at };
   const after = candidatesForDirection(leads, proposed, now);
-  const leadNames = new Map(leads.map((lead) => [lead.id, lead.title]));
   return [...new Set([...before.keys(), ...after.keys()])].map((leadId) => ({
-    lead_id: leadId, title: leadNames.get(leadId) ?? leadId,
+    // Preview is a reader response without citation DTOs.  It must not surface the internal
+    // binding quote used for deterministic matching; the stable id/lane delta is sufficient.
+    lead_id: leadId, title: "已核验技术线索",
     before: before.has(leadId) ? { lane: before.get(leadId)!.lane, rationale: before.get(leadId)!.rationale } : null,
     after: after.has(leadId) ? { lane: after.get(leadId)!.lane, rationale: after.get(leadId)!.rationale } : null,
   })).filter((item) => item.before?.lane !== item.after?.lane);
@@ -109,7 +121,7 @@ export function previewTopicDirectionMapping(leads: TechLead[], current: TopicDi
 export function reprojectTopicDirection(db: DB, id: string, now = new Date().toISOString()): { kind: "done"; refreshed: number; stale: number; direction: TopicDirection } | { kind: "not_found" } {
   const direction = getTopicDirection(db, id);
   if (!direction) return { kind: "not_found" };
-  const leads = listTechLeads(db, { topic: direction.topic_id, limit: 500 });
+  const leads = listPlanningTechLeads(db, { topic: direction.topic_id, limit: 500 });
   db.prepare("UPDATE technology_opportunity SET mapping_state='stale' WHERE direction_id=? AND mapping_state='current'").run(id);
   const candidates = candidatesForDirection(leads, direction, now);
   const refreshed = upsertTechnologyOpportunities(db, [...candidates.values()], new Map(leads.map((lead) => [lead.id, lead])), now).length;
@@ -149,16 +161,32 @@ export function listTechnologyOpportunities(db: DB, opts: { topic?: string; dire
   if (opts.lane) { where.push("lane=?"); args.push(opts.lane); }
   if (opts.status) { where.push("status=?"); args.push(opts.status); }
   else if (!opts.includeClosed) where.push("status NOT IN ('rejected','archived')");
-  return (db.prepare(`SELECT * FROM technology_opportunity${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY priority_score DESC,latest_evidence_at DESC LIMIT ?`).all(...args, opts.limit ?? 100) as any[]).map(toOpportunity);
+  return (db.prepare(`SELECT * FROM technology_opportunity${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY priority_score DESC,latest_evidence_at DESC LIMIT ?`).all(...args, opts.limit ?? 100) as any[])
+    .map(toOpportunity)
+    // Opportunity prose is derived from its lead. Hide a stale opportunity instead of exposing
+    // an orphaned derivative after the lead's v6 binding is no longer reader-visible.
+    .map((opportunity) => listOpportunityLeads(db, opportunity.id).length > 0
+      ? projectReaderVisibleOpportunity(opportunity)
+      : null)
+    .filter((opportunity): opportunity is TechnologyOpportunity => opportunity !== null);
 }
 export function getTechnologyOpportunity(db: DB, id: string): TechnologyOpportunity | null {
   const row = db.prepare("SELECT * FROM technology_opportunity WHERE id=?").get(id) as any;
-  return row ? toOpportunity(row) : null;
+  const opportunity = row ? toOpportunity(row) : null;
+  return opportunity && listOpportunityLeads(db, opportunity.id).length > 0
+    ? projectReaderVisibleOpportunity(opportunity)
+    : null;
 }
 export function setTechnologyOpportunityStatus(db: DB, id: string, status: TechnologyOpportunityStatus): boolean {
   return db.prepare("UPDATE technology_opportunity SET status=?,last_seen_at=? WHERE id=?").run(status, new Date().toISOString(), id).changes === 1;
 }
 export function listOpportunityLeads(db: DB, opportunityId: string): TechLead[] {
   const rows = db.prepare(`SELECT l.* FROM opportunity_lead ol JOIN tech_lead l ON l.id=ol.lead_id WHERE ol.opportunity_id=? ORDER BY l.score DESC`).all(opportunityId) as any[];
-  return rows.map((r) => ({ id:r.id,topic_id:r.topic_id,canonical_key:r.canonical_key,kind:r.kind,title:r.title,summary:r.summary,status:r.status,score:r.score,score_detail:JSON.parse(r.score_detail),first_seen_at:r.first_seen_at,last_seen_at:r.last_seen_at,latest_evidence_at:r.latest_evidence_at }));
+  return rows
+    .map((r) => ({ id:r.id,topic_id:r.topic_id,canonical_key:r.canonical_key,kind:r.kind,title:r.title,summary:r.summary,status:r.status,score:r.score,score_detail:JSON.parse(r.score_detail),first_seen_at:r.first_seen_at,last_seen_at:r.last_seen_at,latest_evidence_at:r.latest_evidence_at } as TechLead))
+    .map((lead) => {
+      const evidence = listTechLeadEvidence(db, lead.id);
+      return evidence.length ? projectReaderVisibleTechLead(lead, evidence) : null;
+    })
+    .filter((lead): lead is TechLead => lead !== null);
 }

@@ -3,13 +3,15 @@
  * 人评是 A1 真正的判定环节（非显然占比 / 幻觉率），脚本算不了，只能把门槛降到最低。
  *
  * 用法：npm run review:sheet [输入 json] [输出 md]
- *   默认 evals/out/review-queue.json → evals/out/review-sheet.md
+ *   默认 latest-complete run 的 review-queue.json → 同目录 review-sheet.md
  */
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { Insight } from "../src/lib/types.js";
+import { latestReviewQueuePath } from "./review-artifact-paths.js";
 
-const inPath = process.argv[2] ?? "evals/out/review-queue.json";
-const outPath = process.argv[3] ?? "evals/out/review-sheet.md";
+const inPath = process.argv[2] ?? latestReviewQueuePath();
+const outPath = process.argv[3] ?? join(dirname(inPath), "review-sheet.md");
 
 if (!existsSync(inPath)) {
   console.error(`找不到 ${inPath}，请先跑 npm run eval:a1`);
@@ -42,6 +44,9 @@ insights.forEach((it, i) => {
   L.push(`### ${i + 1}. \`${it.id}\` · ${it.topic_id} · ${it.type} · 重要性 ${it.importance}`);
   L.push("");
   L.push(`**结论**：${it.statement}`);
+  L.push("");
+  const boundCitation = it.statement_citation_index == null ? undefined : it.citations[it.statement_citation_index - 1];
+  L.push(`**主引用绑定**：${it.statement_citation_index == null ? "未持久化" : `#${it.statement_citation_index}${boundCitation?.claim ? ` · ${boundCitation.claim}` : ""}`}`);
   L.push("");
   L.push(`**重要性依据**：${it.importance_basis}`);
   L.push("");

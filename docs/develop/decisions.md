@@ -1314,3 +1314,41 @@ P1 驾驶舱实现已在同一应用构建中受测试，但 `required` 镜像�
 P0 修复可继续使用当前 main 的不可变镜像发布，不再依赖过时镜像。P1 的实际启用、外部可达性、生产验收和
 production-ready 声明仍由 INSI-25 阻断；若 future profile 允许任一 P1 seam 返回成功，必须先取得该门的可审计
 证据，并将其标签改为 `enabled`（届时现有部署门会拒绝，直到发布流程被有意识地更新）。
+
+---
+
+## ADR-0025: 展示级引用证据与 A1 运行证据分层
+
+- **日期**: 2026-09-09
+- **状态**: Accepted
+
+### 背景
+
+`statement` 的引用覆盖门已经阻断了读者不可见的证据缺口，但列表 headline、重要性说明和历史重渲染仍可能
+把未单独审计的文本带到读者面前。早期 followup 草稿又把展示字段的一次失败等同于整条洞察失败，并把人工审阅 CSV
+变成 A1 的同步依赖；这会同时压低有效产出并混淆模型质量、网络故障和辅助产物故障。
+
+### 决定
+
+1. 发布只消费 `verified_display`：statement 为核心事实，失败即拒绝候选；新 analyzer 必须以 `statement_citation_index` 显式绑定唯一 citation，statement 与该 citation 的 atomic claim 只允许极窄格式归一后完全相等。对数字、百分比和 ASCII 专名等稳定源面锚点，绑定 quote 必须亲自包含它们，不能从第二条 citation 拼接。绑定后的 statement 还必须由主 validator 与独立 coverage 模型分别仅依据 claim、displayed quote、locator 认可；coverage 不可见正文、标题或主审结论，泛称不得借隐藏先行词具体化，任一模型失败、超时、非法或缺失 verdict 都拒绝并记录双审审计。P0 headline 与 importance_facts 只有完全复用 statement 才保留，否则清空并由消费者回退 statement；
+   重要性说明只接受受控 reason code 的固定文案。不得由模型自行将任意文本标为“评价”以逃避引用。
+2. 每条 citation 使用稳定 `citation_ref`，并持久化其 claim、quote、locator；`statement_citation_index` 以 1-based 形式持久化 statement 的唯一展示主引用。图谱节点、共现边和 drill 侧栏作为读者可见展示面，必须只消费 `audited` batch 中 audit 为 `kept`/`kept_degraded`、且该绑定 citation 有 validator `pass/support` 的洞察，并只返回绑定 quote；实体还必须逐字出现在最终 statement（不做翻译、别名或模糊匹配），否则不参与节点/边/drill。legacy、coverage-rejected 或 validator-blocked 行仍可保留审计历史，但不能混入图或卡片。展示覆盖审计按 batch/insight/field/claim/citation
+   保存 verdict、UTF-16 evidence span、模型/提示词版本与输入哈希。旧数据显式标为 `legacy`，不得获得“已审计”语义。
+3. A1 在启动时创建隔离的 `run_id` 与运行目录。核心评测结果、manifest 与完成状态为原子证据；CSV、review sheet 和
+   预评属于非阻断辅助产物，失败只记录 `review_artifact_error`。全量运行若任一必测主题或一致性样本失败，状态为
+   `incomplete/failed`，不得用部分样本与基线宣称通过。
+4. 自动和人工结论分开：`auto_gate`、`manual_review`、`dcp_eligibility` 必须分别记录。人工审阅 pending 时只能说明自动门通过，
+   不能作为 DCP 或发布通过证据。
+
+### 后果
+
+分析、数据库写入、报告/PPT 重渲染和 A1 证据需要增加受控投影与可迁移审计记录；展示优化不会放宽 statement 的失败语义。
+评测产物可并行运行而不覆盖，并可让独立人工复审可靠回链到特定 Git SHA、数据集与模型配置。
+
+### v6 补充决定（source quote projection）
+
+独立审阅发现，v5 即使有 claim→quote 双审，仍会把中文模型草稿显示为读者事实：例如把 `corresponded to` 写成因果、从第二个未展示引用补入 `synthetic`，或把泛称的 design 改成“该架构”。这不是增加词面规则可以稳妥修复的问题，因为读者看到的句子本身已不是原文证据。
+
+5. `source_quote_v1` 将唯一绑定 citation 的 `quote` 逐字投影为 reader-visible `statement`；`claim` 降为内部审计记录，可拒绝候选但绝不可作为显示、实体抽取、图谱、报告或重要性事实的输入。读者界面只显示一次该 source quote，不再重复呈现相同的“引用摘录”。
+6. 独立自足性审计只接收 source quote 与 locator，必须拒绝未在 quote 内解析的 it/the gap/the method/former-latter/respectively 及中文指示词；主审、独立审和持久化记录通过投影版本、citation index/ref、prompt/input hash 以及 statement/quote SHA-256 绑定。任一项不符，图谱、侧栏和报告 fail-closed。
+7. 历史批次（包括已经有 v5 display audit 的批次）不迁移为 v6：迁移默认 `legacy`，只能保留审计历史，不能进入新的 reader path。A1 基准随之改为断言最终逐字 quote，并将旧基线标为配置不可比；自动结果仍须与独立人工 review、规模门分开陈述。

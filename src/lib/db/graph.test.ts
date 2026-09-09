@@ -1,9 +1,10 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import type { AnalysisBatch, Entity, Insight, Topic } from "../types.js";
-import { saveAnalysisBatch } from "./analysis.js";
+import type { AnalysisBatch, Entity, Insight, Topic, ValidationResult } from "../types.js";
+import { saveAnalysisBatch, saveValidationResult } from "./analysis.js";
 import { buildTopicGraph, groupDrillInsights, insightsCooccurring, insightsMentioningEntity, loadTopicInsights, reportLinkMap, reportLinksByInsight } from "./graph.js";
 import { type DB, openDb } from "./index.js";
 import { insertTopic } from "./repos.js";
+import { DISPLAY_PROJECTION_VERSION, sourceQuoteHash } from "../utils/source-quote-projection.js";
 
 let db: DB;
 const topic: Topic = {
@@ -12,20 +13,65 @@ const topic: Topic = {
 const org = (name: string): Entity => ({ name, type: "organization" });
 
 function mkInsight(id: string, entities: Entity[]): Insight {
+  const statement = `S-${id} ${entities.map((entity) => entity.name).join(" ")}`.trim();
   return {
-    id, topic_id: "t1", type: "aggregation", event_id: null, statement: `S-${id}`, headline: "",
-    importance: 3, importance_basis: "b",
-    citations: [{ content_item_id: `ci-${id}`, quote: "q", locator: { paragraph_index: 0, char_start: 0, char_end: 1 } }],
+    id, topic_id: "t1", type: "aggregation", event_id: null, statement, headline: "",
+    statement_citation_index: 1,
+    importance: 3, importance_basis: "系统重要性判断：该结果可为工程选型提供参考。",
+    citations: [{ content_item_id: `ci-${id}`, citation_ref: `cite-${id}-1`, quote: statement, locator: { paragraph_index: 0, char_start: 0, char_end: statement.length } }],
     source_count: 1, multi_source: false, time_window: { start: "2026-05-01", end: "2026-05-07" },
     confidence: "high", language: "zh", is_followup: false, entities, tags: [],
   };
 }
-function saveBatch(id: string, insights: Insight[]) {
+type ReaderVisibility = "visible" | "legacy" | "audit_rejected" | "bound_blocked";
+
+function validAuditDecision(insight: Insight) {
+  const index = insight.statement_citation_index!;
+  return {
+    statement_citation_index: index,
+    statement_citation_ref: insight.citations[index - 1]?.citation_ref,
+    display_projection_version: DISPLAY_PROJECTION_VERSION,
+    statement_sha256: sourceQuoteHash(insight.statement),
+    quote_sha256: sourceQuoteHash(insight.citations[index - 1]!.quote),
+    claims: [{ claim_id: "statement:1", field: "statement", kind: "factual", supports: true, citation_indexes: [index], countercheck: { supports: true } }],
+  };
+}
+
+function saveBatch(id: string, insights: Insight[], visibility: ReaderVisibility = "visible") {
   const batch: AnalysisBatch = {
     id, topic_id: "t1", time_window: { start: "2026-05-01", end: "2026-05-07" },
     status: "done", no_significant_event: false, insights,
   };
+  if (visibility !== "legacy") {
+    batch.display_coverage_state = "audited";
+    batch.display_projection_version = DISPLAY_PROJECTION_VERSION;
+    batch.display_coverage_audits = insights.map((insight) => ({
+      insight_id: insight.id, candidate_id: `candidate_${insight.id}`, gate_version: "display-coverage-v6",
+      terminal_reason: visibility === "audit_rejected" ? "dropped_coverage" : "kept",
+      prompt_version: "display-coverage-v6", input_hash: `hash_${insight.id}`, validator_model: "validator",
+      decision: validAuditDecision(insight), created_at: "2026-09-09T00:00:00.000Z",
+    }));
+  }
   saveAnalysisBatch(db, batch);
+  if (visibility === "legacy" || visibility === "audit_rejected") return;
+  const checks = insights.map((insight) => ({
+    insight_id: insight.id, citation_index: insight.statement_citation_index! - 1,
+    reachability: "pass" as const, reachability_reason: "ok" as const,
+    consistency: visibility === "bound_blocked" ? "not_support" as const : "support" as const,
+    consistency_reason: visibility === "bound_blocked" ? "exaggeration" as const : "ok" as const,
+    verdict: visibility === "bound_blocked" ? "blocked" as const : "pass" as const,
+  }));
+  const validation: ValidationResult = {
+    checks,
+    report: {
+      total: checks.length, pass: checks.filter((check) => check.verdict === "pass").length,
+      blocked: checks.filter((check) => check.verdict === "blocked").length, flagged: 0, errored: 0,
+      consistency_failure_rate: visibility === "bound_blocked" ? 1 : 0, flagged_rate: 0,
+      insights_total: insights.length, insights_includable: visibility === "bound_blocked" ? 0 : insights.length,
+      releasable: visibility !== "bound_blocked",
+    },
+  };
+  saveValidationResult(db, id, validation);
 }
 
 beforeEach(() => {
@@ -74,6 +120,35 @@ describe("buildTopicGraph", () => {
     db.prepare("UPDATE analysis_batch SET created_at = ? WHERE id = ?").run("2026-01-01 00:00:00", "bold");
     const r = buildTopicGraph(db, "t1", { since: "2026-05-01" });
     expect(r.insightCount).toBe(1); // 只剩 bnew
+  });
+
+  it("图节点、边和 drill 只使用 audited-kept 且绑定引用通过 validator 的洞察", () => {
+    saveBatch("legacy", [mkInsight("legacy", [org("Legacy"), org("Unsafe")])], "legacy");
+    saveBatch("rejected", [mkInsight("rejected", [org("Rejected"), org("Unsafe")])], "audit_rejected");
+    saveBatch("blocked", [mkInsight("blocked", [org("Blocked"), org("Unsafe")])], "bound_blocked");
+    saveBatch("visible", [mkInsight("visible", [org("OpenAI"), org("Cursor")])]);
+    const entityDetached = mkInsight("entity-detached", [org("OpenAI"), org("Cursor")]);
+    entityDetached.statement = "S-entity-detached MOSS";
+    entityDetached.citations[0]!.quote = entityDetached.statement;
+    entityDetached.citations[0]!.locator.char_end = entityDetached.statement.length;
+    saveBatch("entity-detached", [entityDetached]);
+
+    const graph = buildTopicGraph(db, "t1", { minEdgeWeight: 1 });
+    expect(graph.insightCount).toBe(2); // the safe MOSS statement is still a reader-visible insight, just not a graph relation
+    expect(graph.withEntities).toBe(1);
+    expect(graph.graph.nodes.map((node) => node.name).sort()).toEqual(["Cursor", "OpenAI"]);
+    expect(loadTopicInsights(db, "t1").map((insight) => insight.id)).toEqual(["visible", "entity-detached"]);
+    expect(loadTopicInsights(db, "t1").find((insight) => insight.id === "entity-detached")?.entities).toEqual([]);
+    expect(insightsMentioningEntity(db, "t1", "Unsafe")).toEqual([]);
+    expect(insightsMentioningEntity(db, "t1", "OpenAI").map((insight) => insight.id)).toEqual(["visible"]);
+    expect(insightsCooccurring(db, "t1", "OpenAI", "Cursor").map((insight) => insight.id)).toEqual(["visible"]);
+  });
+
+  it("绑定审计仍有效时，历史 headline 或自由重要性元数据也会让图与 drill fail-closed", () => {
+    saveBatch("unsafe-meta", [mkInsight("unsafe-meta", [org("OpenAI"), org("Cursor")])]);
+    db.prepare("UPDATE insight SET headline='未审计标题' WHERE id='unsafe-meta'").run();
+    expect(loadTopicInsights(db, "t1")).toEqual([]);
+    expect(buildTopicGraph(db, "t1", { minEdgeWeight: 1 }).insightCount).toBe(0);
   });
 });
 
@@ -139,6 +214,65 @@ describe("reportLinkMap", () => {
     expect(grouped[0].occurrences.find((x) => x.id === "i1")?.report_links).toEqual([
       { report_id: "rOld", date: "2026-06-01" }, { report_id: "rNew", date: "2026-06-05" },
     ]);
+  });
+
+  it("drill 只展示持久化的 statement 绑定 quote，并让卡片与默认 occurrence 对齐", () => {
+    const bound = mkInsight("i_bound", [org("OpenAI")]);
+    bound.statement_citation_index = 2;
+    bound.citations = [
+      { content_item_id: "ci-unrelated", citation_ref: "cite-bound-1", quote: "第一条无关引文", locator: { paragraph_index: 0, char_start: 0, char_end: 7 } },
+      { content_item_id: "ci-bound", citation_ref: "cite-bound-2", quote: "第二条绑定引文", locator: { paragraph_index: 0, char_start: 0, char_end: 7 } },
+    ];
+    bound.statement = "第二条绑定引文";
+    saveBatch("b_bound", [bound]);
+
+    const roundTripped = loadTopicInsights(db, "t1").find((insight) => insight.id === "i_bound")!;
+    const grouped = groupDrillInsights([roundTripped], new Map());
+    expect(roundTripped.statement_citation_index).toBe(2);
+    expect(grouped[0]?.occurrences[0]?.quotes).toEqual(["第二条绑定引文"]);
+    expect(grouped[0]).toMatchObject({ headline: "第二条绑定引文", statement: "第二条绑定引文" });
+  });
+
+  it("空 audit 或与持久化 binding 错位时，图和 drill 均 fail-closed", () => {
+    const empty = mkInsight("empty-audit", [org("Empty"), org("Unsafe")]);
+    saveBatch("empty-audit", [empty]);
+    db.prepare("UPDATE display_coverage_audit SET decision = '{}' WHERE batch_id = ?").run("empty-audit");
+
+    const mismatched = mkInsight("mismatched-audit", [org("Mismatch"), org("Unsafe")]);
+    mismatched.statement_citation_index = 2;
+    mismatched.citations = [
+      { content_item_id: "ci-mismatch-1", citation_ref: "cite-mismatch-1", quote: "无关", locator: { paragraph_index: 0, char_start: 0, char_end: 2 } },
+      { content_item_id: "ci-mismatch-2", citation_ref: "cite-mismatch-2", quote: "绑定", locator: { paragraph_index: 0, char_start: 0, char_end: 2 } },
+    ];
+    saveBatch("mismatched-audit", [mismatched]);
+    db.prepare("UPDATE display_coverage_audit SET decision = ? WHERE batch_id = ?")
+      .run(JSON.stringify({ ...validAuditDecision(mismatched), statement_citation_index: 1, statement_citation_ref: "cite-mismatch-1", claims: [{ claim_id: "statement:1", field: "statement", kind: "factual", supports: true, citation_indexes: [1] }] }), "mismatched-audit");
+
+    const wrongRef = mkInsight("wrong-ref", [org("WrongRef"), org("Unsafe")]);
+    saveBatch("wrong-ref", [wrongRef]);
+    db.prepare("UPDATE display_coverage_audit SET decision = ? WHERE batch_id = ?")
+      .run(JSON.stringify({ ...validAuditDecision(wrongRef), statement_citation_ref: "cite-not-the-bound-citation" }), "wrong-ref");
+
+    expect(loadTopicInsights(db, "t1").map((insight) => insight.id)).toEqual([]);
+    expect(buildTopicGraph(db, "t1", { minEdgeWeight: 1 }).insightCount).toBe(0);
+    expect(insightsMentioningEntity(db, "t1", "Unsafe")).toEqual([]);
+  });
+
+  it("v6 读路径拒绝旧投影、statement/quote 不等或 audit hash 被篡改的记录", () => {
+    const legacyProjection = mkInsight("legacy-projection", [org("LegacyV6")]);
+    saveBatch("legacy-projection", [legacyProjection]);
+    db.prepare("UPDATE analysis_batch SET display_projection_version = 'legacy' WHERE id = ?").run("legacy-projection");
+
+    const mutatedText = mkInsight("mutated-text", [org("Mutated")]);
+    saveBatch("mutated-text", [mutatedText]);
+    db.prepare("UPDATE insight SET statement = ? WHERE id = ?").run("a rewritten reader statement", "mutated-text");
+
+    const mutatedHash = mkInsight("mutated-hash", [org("Hash")]);
+    saveBatch("mutated-hash", [mutatedHash]);
+    db.prepare("UPDATE display_coverage_audit SET decision = json_set(decision, '$.quote_sha256', 'wrong') WHERE batch_id = ?").run("mutated-hash");
+
+    expect(loadTopicInsights(db, "t1")).toEqual([]);
+    expect(buildTopicGraph(db, "t1", { minEdgeWeight: 1 }).insightCount).toBe(0);
   });
 
   it("只算 status='done' 的报告", () => {

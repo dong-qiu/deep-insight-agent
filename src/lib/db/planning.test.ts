@@ -21,10 +21,13 @@ describe("技术规划持久化", () => {
     const directions = listTopicDirections(db, { topic: topic.id });
     const candidates = deriveOpportunityCandidates([lead], directions, "2026-07-24T00:00:00Z");
     const [opportunity] = upsertTechnologyOpportunities(db, candidates, new Map([[lead.id, lead]]), "2026-07-24T00:00:00Z");
-    expect(listOpportunityLeads(db, opportunity.id)).toMatchObject([{ id: lead.id }]);
+    // The relation persists for audit/history, but an evidence-free lead is not a reader-visible
+    // opportunity input after the v6 cutover.
+    expect(listOpportunityLeads(db, opportunity.id)).toEqual([]);
     expect(setTechnologyOpportunityStatus(db, opportunity.id, "research_candidate")).toBe(true);
     upsertTechnologyOpportunities(db, candidates, new Map([[lead.id, lead]]), "2026-07-24T01:00:00Z");
-    expect(listTechnologyOpportunities(db)[0]).toMatchObject({ id: opportunity.id, status: "research_candidate", lane: "core" });
+    expect(listTechnologyOpportunities(db)).toEqual([]);
+    expect(db.prepare("SELECT id,status,lane FROM technology_opportunity WHERE id=?").get(opportunity.id)).toMatchObject({ id: opportunity.id, status: "research_candidate", lane: "core" });
   });
 
   it("词表更新递增版本并标记候选待复核；显式重投影不撤销人工研究状态", () => {
@@ -42,9 +45,10 @@ describe("技术规划持久化", () => {
     expect(previewTopicDirectionMapping([lead], direction, draft)).toMatchObject([{ lead_id: lead.id, before: { lane: "core" }, after: null }]);
     const updated = updateTopicDirection(db, draft, direction.version);
     expect(updated).toMatchObject({ kind: "updated", direction: { version: direction.version + 1 } });
-    expect(listTechnologyOpportunities(db)[0]).toMatchObject({ status: "research_candidate", mapping_state: "stale" });
+    expect(listTechnologyOpportunities(db)).toEqual([]);
+    expect(db.prepare("SELECT status,mapping_state FROM technology_opportunity WHERE id=?").get(opportunity.id)).toMatchObject({ status: "research_candidate", mapping_state: "stale" });
     expect(reprojectTopicDirection(db, direction.id)).toMatchObject({ kind: "done", refreshed: 0 });
-    expect(listTechnologyOpportunities(db)[0]).toMatchObject({ status: "research_candidate", mapping_state: "stale" });
+    expect(db.prepare("SELECT status,mapping_state FROM technology_opportunity WHERE id=?").get(opportunity.id)).toMatchObject({ status: "research_candidate", mapping_state: "stale" });
     expect(updateTopicDirection(db, draft, direction.version)).toMatchObject({ kind: "conflict" });
   });
 });

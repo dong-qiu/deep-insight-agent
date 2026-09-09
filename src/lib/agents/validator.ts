@@ -10,6 +10,7 @@ import {
   validatorRetries, validatorThinking,
 } from "../runtime/env.js";
 import { MODELS, callStructured } from "../runtime/llm.js";
+import { RelayUnavailableError, withRelayRecovery } from "../runtime/relay-recovery.js";
 import { compareKey } from "../runtime/text-normalize.js";
 import { isIncludableCheck, isValidationError } from "../utils/citation-verdict.js";
 import {
@@ -79,6 +80,7 @@ ${CONSISTENCY_LABEL_DECISION_TABLE}
 - 原文把**同一主体的同一属性、比较或身份**明确归给 A，claim 则把该属性明确归给不相同的 B；
 - 原文对**同一结果**明确限定在单一指标、条件或子集，claim 却把这个结果说成整体、端到端、所有场景或所有指标；
 - claim 使用“仅/不/全部/总是”等排他或全称表述，而原文明确陈述被排除的对象/行为实际存在，或明确给出相反的数值、方向或比较。
+- 原文明确了某系统/技术的实现机制或层次，claim 却把**同一机制**改成不相容的另一种实现。例如原文说“在 source level 自我改写”，claim 说“仅修改提示词和技能文件、不改源代码”；原文说技术“通过 bridge 重构为 few-shot 示例”，claim 说“通过加密提示词”。两者都是对已陈述机制的替换，判 not_support，而非“原文没提到”的 uncertain。
 
 不要把“原文只谈 A、没有谈 B”本身当成冲突：若原文只出现另一个基准、领域、模型、硬件、机制或对象，却**没有**对 claim 中的目标作出上述同一属性的明确相反断言，应判 uncertain。
 
@@ -209,6 +211,33 @@ ${list}
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
+function validatorRelayBaseUrl(): string | undefined {
+  const baseUrl = process.env.ANTHROPIC_BASE_URL?.trim();
+  return baseUrl ? baseUrl.replace(/\/+$/, "") : undefined;
+}
+
+/** Keep ordinary transient/model-output retry semantics, but let an explicit relay capacity
+ * outage enter the shared, bounded half-open recovery gate.  A recovered probe returns its own
+ * judgment; a budget-exhausted gate is deliberately surfaced as an error to the existing
+ * fail-closed caller path rather than being reclassified as a semantic verdict. */
+async function retryJudge<T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  const extra = validatorRetries();
+  const base = validatorBackoffMs();
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= extra; attempt++) {
+    try {
+      return await withRelayRecovery({ baseUrl: validatorRelayBaseUrl(), model: MODELS.validator }, operation, signal);
+    } catch (error) {
+      // The shared gate has already consumed its finite recovery budget. Fast per-call retries
+      // would reopen a thundering herd and turn one relay outage into many failed evaluations.
+      if (error instanceof RelayUnavailableError) throw error;
+      lastErr = error;
+      if (attempt < extra) await sleep(base * 2 ** attempt);
+    }
+  }
+  throw lastErr;
+}
+
 /** 批量判定带重试 + 退避（与 judgeWithRetry 同款抗瞬时抖动；整批一起重试，最终失败由调用方记校验失败）。 */
 export async function judgeBatchWithRetry(
   claims: string[],
@@ -217,18 +246,7 @@ export async function judgeBatchWithRetry(
   metadata?: SourceMetadata,
   quotes?: Array<string | undefined>,
 ): Promise<ConsistencyJudge[]> {
-  const extra = validatorRetries();
-  const base = validatorBackoffMs();
-  let lastErr: unknown;
-  for (let attempt = 0; attempt <= extra; attempt++) {
-    try {
-      return await judgeConsistencyBatch(claims, sourceText, onCost, metadata, quotes);
-    } catch (e) {
-      lastErr = e;
-      if (attempt < extra) await sleep(base * 2 ** attempt);
-    }
-  }
-  throw lastErr;
+  return retryJudge(() => judgeConsistencyBatch(claims, sourceText, onCost, metadata, quotes));
 }
 
 /** 一致性判定带重试 + 指数退避——抗中转站/LLM **瞬时**抖动（超时/限流/5xx/解析错）。
@@ -241,19 +259,9 @@ export async function judgeWithRetry(
   onCost?: (cost: Cost) => void,
   metadata?: SourceMetadata,
   quote?: string,
+  signal?: AbortSignal,
 ): Promise<ConsistencyJudge> {
-  const extra = validatorRetries();
-  const base = validatorBackoffMs();
-  let lastErr: unknown;
-  for (let attempt = 0; attempt <= extra; attempt++) {
-    try {
-      return await judgeConsistency(claim, sourceText, onCost, metadata, quote);
-    } catch (e) {
-      lastErr = e;
-      if (attempt < extra) await sleep(base * 2 ** attempt); // 800ms, 1600ms, …
-    }
-  }
-  throw lastErr;
+  return retryJudge(() => judgeConsistency(claim, sourceText, onCost, metadata, quote), signal);
 }
 
 /** 校验是否"大面积失败"（疑似 LLM/中转站抖动，非内容问题）：可达引用中"校验失败"占比 ≥ 阈值。
@@ -477,14 +485,38 @@ export async function validateBatch(
     const metadata = judgeMetadata(itemId);
     const cacheInput = cacheSource(itemId);
     for (const group of chunk(evidences, maxPer)) {
+      // A malformed batch response is transport/model-output degradation, not evidence about every
+      // claim in the group. Fall back to the established single-claim retry path before recording
+      // `not_evaluated`; individual failures remain visible and are never cached as successes.
+      const judgeIndividually = async (): Promise<JudgeOutcome[]> => {
+        const results: JudgeOutcome[] = [];
+        for (const evidence of group) {
+          try {
+            results.push(await judgeWithRetry(evidence.claim, body, onCost, metadata, evidence.quote));
+          } catch (error) {
+            console.warn(`  ⚠️ 一致性校验失败，记为校验失败（${(error as Error).message}）`);
+            results.push({ error: true });
+          }
+        }
+        return results;
+      };
       if (batchOn && group.length > 1) {
-        // 批量：源文发一遍，逐条独立判。整组失败（瞬时抖动/产出残缺）→ 本组全记校验失败（不静默漏）。
+        // 批量：源文发一遍，逐条独立判。整组失败（瞬时抖动/产出残缺）时退回逐条，
+        // 不能把一次 schema 漂移放大成整组引用都未评估。
         let results: JudgeOutcome[];
         try {
           results = await judgeBatchWithRetry(group.map((e) => e.claim), body, onCost, metadata, group.map((e) => e.quote));
-        } catch (e) {
-          console.warn(`  ⚠️ 批量一致性校验失败，本组 ${group.length} 条记为校验失败（${(e as Error).message}）`);
-          results = group.map(() => ({ error: true }));
+        } catch (error) {
+          if (error instanceof RelayUnavailableError) {
+            // A capacity outage is process-wide and already spent a shared recovery budget.
+            // Do not amplify one failed batch into N individual relay requests; keep every item
+            // not_evaluated so the standard reader fail-closed path and later retry can handle it.
+            console.warn(`  ⚠️ relay 容量恢复耗尽，本组 ${group.length} 条不扇出逐条复判，记为校验失败`);
+            results = group.map(() => ({ error: true }));
+          } else {
+            console.warn(`  ⚠️ 批量一致性校验失败，本组 ${group.length} 条退回逐条复判（${(error as Error).message}）`);
+            results = await judgeIndividually();
+          }
         }
         group.forEach((e, i) => {
           outcomes.set(pairKey(e.key, itemId), results[i]);
@@ -492,19 +524,11 @@ export async function validateBatch(
         });
       } else {
         // 逐条（单条组 / kill-switch 关）：沿用单条判定路径（与历史行为一致）。
-        for (const e of group) {
-          let out: JudgeOutcome;
-          try {
-            out = await judgeWithRetry(e.claim, body, onCost, metadata, e.quote);
-          } catch (e) {
-            // 调用失败（超时/限流/解析错）与「判官真说不确定」分开记账：记 consistency=not_evaluated
-            // （此组合专指「校验失败」），verdict 仍 flagged（不让未校验引用伪装已核实），进入重试队列且不得发布。
-            console.warn(`  ⚠️ 一致性校验失败，记为校验失败（${(e as Error).message}）`);
-            out = { error: true };
-          }
-          outcomes.set(pairKey(e.key, itemId), out);
-          remember(e.key, cacheInput, out);
-        }
+        const results = await judgeIndividually();
+        group.forEach((e, i) => {
+          outcomes.set(pairKey(e.key, itemId), results[i]);
+          remember(e.key, cacheInput, results[i]);
+        });
       }
     }
   }
