@@ -48,6 +48,10 @@ npm run typecheck   # tsc 类型检查
 `A1_DISPLAY_COVERAGE_LIMIT`、`A1_QUOTE_SELF_CONTAINED_LIMIT` 暂时限制相应集合。值为 `0`（默认）或不小于
 集合规模仍是全量；只有实际截断才会标为 `smoke`。smoke 运行永远不可更新 baseline、不可作 DCP 或发布质量结论。
 
+当全量 A1 在 `[分析]` 阶段长时间无产物时，先使用 `npm run eval:analyze-latency-ladder` 走真实 `analyze()` 路径，
+按 `A1_LADDER_ITEM_COUNTS=4,8,12,20` 逐级记录仅含 count/hash/耗时的 telemetry。诊断时建议显式设置
+`LLM_TIMEOUT_MS`、`LLM_MAX_RETRIES=0`、`LLM_TRANSIENT_RETRIES=0`；它不执行一致性 benchmark，也不能生成 baseline 或 DCP 结论。
+
 运行时须把 `VALIDATOR_THINKING` 与 `COVERAGE_THINKING` 分开显式配置。先对每个 relay/model
 运行 `npm run eval:canary-thinking`：它验证 A1 所用的 **thinking + forced structured tool** 组合，而不是
 只验证 API 可达。canary 成功后才可把 validator 设为 `1`；Coverage 模型须自行通过同一组合的 canary，
