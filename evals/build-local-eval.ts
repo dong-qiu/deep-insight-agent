@@ -23,6 +23,7 @@ function parsePositiveInt(raw: string | undefined, fallback: number, name: strin
 const out = process.env.EVAL_LOCAL_OUT ?? DEFAULT_OUT;
 const manifestOut = process.env.EVAL_SOURCE_COHORT_MANIFEST;
 const requiredSourceIds = parseSourceIds(process.env.EVAL_REQUIRED_SOURCE_IDS, "EVAL_REQUIRED_SOURCE_IDS");
+const requestedTopicIds = parseSourceIds(process.env.EVAL_TOPIC_IDS, "EVAL_TOPIC_IDS");
 const minBody = parsePositiveInt(process.env.EVAL_MIN_BODY, 800, "EVAL_MIN_BODY");
 const perSource = parsePositiveInt(process.env.EVAL_PER_SOURCE, 2, "EVAL_PER_SOURCE");
 const maxItems = parsePositiveInt(process.env.EVAL_MAX_ITEMS, 8, "EVAL_MAX_ITEMS");
@@ -32,8 +33,15 @@ const minimumSources = requiredSourceIds.length === 1 ? 1 : 2;
 const db = getDb();
 const now = Date.now();
 const window = { start: new Date(now - 7 * 24 * 3600_000).toISOString(), end: new Date(now).toISOString() };
+const availableTopics = listTopics(db, { enabledOnly: requestedTopicIds.length === 0 });
+const topics = requestedTopicIds.length
+  ? requestedTopicIds.map((id) => availableTopics.find((topic) => topic.id === id)).map((topic, index) => {
+    if (!topic) throw new Error(`EVAL_TOPIC_IDS 包含不存在的 topic：${requestedTopicIds[index]}`);
+    return topic;
+  })
+  : availableTopics;
 const result = buildLocalEvalCases(
-  listTopics(db, { enabledOnly: true }),
+  topics,
   (topicId) => listContentForTopic(db, topicId, { limit: 2000 }),
   window,
   { minBody, perSource, maxItems, requiredSourceIds, minimumSources },
@@ -52,7 +60,10 @@ for (const entry of result.cases) {
 const manifest = {
   generated_at: new Date().toISOString(),
   output: out,
-  options: { min_body: minBody, per_source: perSource, max_items: maxItems, minimum_sources: minimumSources, required_source_ids: requiredSourceIds },
+  options: {
+    min_body: minBody, per_source: perSource, max_items: maxItems, minimum_sources: minimumSources,
+    required_source_ids: requiredSourceIds, requested_topic_ids: requestedTopicIds,
+  },
   topics: result.cases.map((entry) => ({ topic_id: entry.topic.id, source_ids: [...new Set(entry.items.map((item) => item.source_id))], item_count: entry.items.length })),
   cohort: result.cohort,
 };

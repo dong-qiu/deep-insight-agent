@@ -12,6 +12,10 @@ const item = (sourceId: string, body = "x".repeat(500)): ContentItem => ({
   tags: [], body, body_kind: "article", raw_ref: "", content_hash: sourceId, fetch_status: "ok",
 });
 
+const secondTopic: Topic = {
+  ...topic, id: "t_agent_security", name: "Agent security",
+};
+
 describe("buildLocalEvalCases", () => {
   const window = { start: "2026-09-01T00:00:00.000Z", end: "2026-09-08T00:00:00.000Z" };
 
@@ -51,5 +55,28 @@ describe("buildLocalEvalCases", () => {
     expect(result.cases).toHaveLength(1);
     expect(result.cases[0].items).toHaveLength(2);
     expect(missingRequiredSources(result)).toEqual([]);
+  });
+
+  it("跨 topic 不复用同一 content id 或 URL 来虚增受控快照", () => {
+    const shared = item("src_a");
+    const sameUrlDifferentId = { ...item("src_b"), id: "other-id", url: shared.url };
+    const firstOnly = item("src_c");
+    const secondOnlyA = { ...item("src_d"), id: "second-a", url: "https://example.test/second-a" };
+    const secondOnlyB = { ...item("src_e"), id: "second-b", url: "https://example.test/second-b" };
+    const result = buildLocalEvalCases(
+      [topic, secondTopic],
+      (topicId) => topicId === topic.id
+        ? [shared, firstOnly]
+        : [shared, sameUrlDifferentId, secondOnlyA, secondOnlyB],
+      window,
+      { minBody: 400, perSource: 1, maxItems: 4, minimumSources: 2, requiredSourceIds: [] },
+    );
+
+    expect(result.cases).toHaveLength(2);
+    expect(result.cases[0].items.map((entry) => entry.id)).toEqual(["item-src_a", "item-src_c"]);
+    expect(result.cases[1].items.map((entry) => entry.id)).toEqual(["second-a", "second-b"]);
+    const allItems = result.cases.flatMap((entry) => entry.items);
+    expect(new Set(allItems.map((entry) => entry.id)).size).toBe(allItems.length);
+    expect(new Set(allItems.map((entry) => entry.url)).size).toBe(allItems.length);
   });
 });

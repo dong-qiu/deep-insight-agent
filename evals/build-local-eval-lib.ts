@@ -54,6 +54,10 @@ export function buildLocalEvalCases(
   );
   const cases: LocalEvalCase[] = [];
   const skipped: LocalEvalBuildResult["skipped"] = [];
+  // DCP 样本按整个 snapshot 计数，而不是每个 topic 各自计数。来源可以路由到宽、窄两个
+  // topic，但同一 content item/URL 只能服务其中一个 case，不能靠复制输入虚增样本量。
+  const selectedContentIds = new Set<string>();
+  const selectedUrls = new Set<string>();
 
   for (const topic of topics) {
     const pool = contentForTopic(topic.id).filter((item) => item.body.length >= options.minBody);
@@ -63,11 +67,17 @@ export function buildLocalEvalCases(
 
     const perSource = new Map<string, number>();
     const items: ContentItem[] = [];
+    const caseContentIds = new Set<string>();
+    const caseUrls = new Set<string>();
     const add = (item: ContentItem): boolean => {
       if (items.length >= options.maxItems) return false;
+      if (selectedContentIds.has(item.id) || selectedUrls.has(item.url)
+        || caseContentIds.has(item.id) || caseUrls.has(item.url)) return false;
       const count = perSource.get(item.source_id) ?? 0;
       if (count >= options.perSource) return false;
       perSource.set(item.source_id, count + 1);
+      caseContentIds.add(item.id);
+      caseUrls.add(item.url);
       items.push(item);
       return true;
     };
@@ -84,6 +94,10 @@ export function buildLocalEvalCases(
       continue;
     }
     cases.push({ topic, time_window: window, items });
+    for (const item of items) {
+      selectedContentIds.add(item.id);
+      selectedUrls.add(item.url);
+    }
     for (const sourceId of options.requiredSourceIds) {
       if (items.some((item) => item.source_id === sourceId)) {
         cohort[sourceId].selected++;

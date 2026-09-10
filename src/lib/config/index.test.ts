@@ -81,7 +81,11 @@ describe("loadStaticConfig + 播种 + 合并", () => {
 
     for (const candidate of expected) {
       expect(cfg.defaultSources.find((source) => source.id === candidate.id)).toMatchObject({
-        ...candidate, type: "rss", topic_ids: ["t_code_agents"], enabled: false,
+        ...candidate, type: "rss",
+        topic_ids: candidate.id === "src_openhands_releases"
+          ? ["t_code_agents"]
+          : ["t_code_agents", "t_coding_agent_platforms"],
+        enabled: false,
       });
     }
 
@@ -89,6 +93,23 @@ describe("loadStaticConfig + 播种 + 合并", () => {
     for (const candidate of expected) {
       expect(db.prepare("SELECT enabled FROM source WHERE id=?").get(candidate.id)).toEqual({ enabled: 0 });
     }
+  });
+
+  it("将 controlled-v2 新主题保持停用，并给其候选来源显式路由", () => {
+    const cfg = loadStaticConfig();
+    expect(cfg.defaultTopics.filter((topic) => topic.id === "t_coding_agent_platforms" || topic.id === "t_agent_security"))
+      .toMatchObject([
+        { id: "t_coding_agent_platforms", enabled: false, facets: ["domain:software-engineering", "lens:technical"] },
+        { id: "t_agent_security", enabled: false, facets: ["domain:security", "lens:technical"] },
+      ]);
+    expect(cfg.defaultSources.find((source) => source.id === "src_embracethered")?.topic_ids)
+      .toEqual(["t_prompt_injection", "t_agent_security"]);
+    expect(cfg.defaultSources.find((source) => source.id === "src_simonwillison_promptinj")?.topic_ids)
+      .toEqual(["t_prompt_injection", "t_agent_security"]);
+
+    seedDefaults(db, cfg);
+    expect(db.prepare("SELECT enabled FROM topic WHERE id=?").get("t_coding_agent_platforms")).toEqual({ enabled: 0 });
+    expect(db.prepare("SELECT enabled FROM topic WHERE id=?").get("t_agent_security")).toEqual({ enabled: 0 });
   });
 
   it("将已复审的信息源以预期默认值播种", () => {
