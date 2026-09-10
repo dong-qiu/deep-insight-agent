@@ -24,6 +24,32 @@ describe("source cohort collection", () => {
 
     expect(calls).toEqual(["src_a", "src_b"]);
     expect(results.map((entry) => entry.source_id)).toEqual(["src_a", "src_b"]);
+    expect(results.every((entry) => entry.status === "collected")).toBe(true);
+  });
+
+  it("单源失败后继续串行采集，并只保留脱敏失败证据", async () => {
+    const calls: string[] = [];
+    const db = {} as never;
+    const results = await collectCohort(db, [source("src_a"), source("src_b")], async (_db, current) => {
+      calls.push(current.id);
+      if (current.id === "src_a") {
+        throw Object.assign(new Error("https://example.test/?token=super-secret"), {
+          code: "UND_ERR_CONNECT_TIMEOUT",
+        });
+      }
+      return { runId: current.id, fetched: 1, inserted: 1, updated: 0, skipped: 0 };
+    });
+
+    expect(calls).toEqual(["src_a", "src_b"]);
+    expect(results).toEqual([
+      { source_id: "src_a", status: "failed", error: { kind: "Error", code: "UND_ERR_CONNECT_TIMEOUT" } },
+      {
+        source_id: "src_b",
+        status: "collected",
+        result: { runId: "src_b", fetched: 1, inserted: 1, updated: 0, skipped: 0 },
+      },
+    ]);
+    expect(JSON.stringify(results)).not.toContain("super-secret");
   });
 
   it("只允许指定隔离根中的 DB 与原文目录，并拒绝默认 .data", () => {
