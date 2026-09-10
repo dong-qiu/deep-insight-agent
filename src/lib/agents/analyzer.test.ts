@@ -50,9 +50,7 @@ describe("AnalyzerOutputSchema 的原子 citation claim", () => {
 });
 
 describe("analyze 的展示覆盖审计投影", () => {
-  it("本地 LLM 墙钟超时按基础设施失败上抛，绝不递归拆批放大请求", async () => {
-    vi.mocked(callStructured).mockReset();
-    vi.mocked(callStructured).mockRejectedValue(new Error("LLM stream exceeded wall-clock timeout of 30000ms"));
+  it("本地超时和 relay SSE 流序错误均按基础设施失败上抛，绝不递归拆批放大请求", async () => {
     const topic: Topic = { id: "t", name: "T", keywords: [], language: "en", brief_schedule: "daily", enabled: true };
     const items: ContentItem[] = ["one", "two"].map((id) => ({
       id, source_id: "s", url: `https://example.test/${id}`, title: "T", author: null, published_at: null,
@@ -60,8 +58,15 @@ describe("analyze 的展示覆盖审计投影", () => {
       body: `Source body ${id}.`, body_kind: "article" as const, raw_ref: "", content_hash: id, fetch_status: "ok" as const,
     }));
 
-    await expect(analyze(topic, items, { start: "2026-09-09", end: "2026-09-09" })).rejects.toThrow("wall-clock timeout");
-    expect(callStructured).toHaveBeenCalledTimes(1);
+    for (const errorMessage of [
+      "LLM stream exceeded wall-clock timeout of 30000ms",
+      'Unexpected event order, got message_start before receiving "message_stop"',
+    ]) {
+      vi.mocked(callStructured).mockReset();
+      vi.mocked(callStructured).mockRejectedValue(new Error(errorMessage));
+      await expect(analyze(topic, items, { start: "2026-09-09", end: "2026-09-09" })).rejects.toThrow(errorMessage);
+      expect(callStructured).toHaveBeenCalledTimes(1);
+    }
   });
 
   it("将审计前候选 ID 映射到最终 insight ID，并生成可持久化的 citation_ref/audit", async () => {
