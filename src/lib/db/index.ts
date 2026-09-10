@@ -10,6 +10,7 @@ import { seedDefaultDirections } from "./planning.js";
 import { assertProvenanceSchema } from "./provenance-migrations.js";
 import { assertDeploymentIdentity } from "./deployment.js";
 import { reconcileReportEffects } from "./reports.js";
+import { reconcileRawArchiveEffects } from "./raw-archive.js";
 import { SCHEMA_SQL } from "./schema.js";
 
 export type DB = Database.Database;
@@ -198,6 +199,7 @@ export function getDb(): DB {
     if (process.env.PROVENANCE_DEPLOYMENT_REQUIRED === "1" && process.env.PROVENANCE_DEPLOYMENT_WRITER !== "1") assertDeploymentIdentity(_db);
     // 文件 rename 与 SQLite 不能组成一个事务；启动时只发布 hash 完整的双 artifact，其余 fail-closed。
     reconcileReportEffects(_db);
+    reconcileRawArchiveEffects(_db);
     // 已有生产库会立即补齐方向档案；空库会安全跳过，待配置层播种 topic 后再补。
     seedDefaultDirections(_db);
   }

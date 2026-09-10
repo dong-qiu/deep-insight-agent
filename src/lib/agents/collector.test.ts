@@ -1,7 +1,7 @@
 /** collector 编排测试：① 标题党 RSS 全文回填（#82）② B族转写抓取（ADR-0007 6a）。
  *  mock fetchFromSource（共享 raws）+ fetchArticleBody（#82）+ fetchTranscript（6a）；内存 DB + 临时 DATA_DIR。 */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { existsSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type DB, openDb } from "../db/index.js";
@@ -76,7 +76,6 @@ afterEach(() => {
   delete process.env.ARTICLE_FETCH;
   delete process.env.TRANSCRIPT_FETCH;
   delete process.env.ARTICLE_FETCH_MAX_PER_RUN;
-  delete process.env.RAW_ARCHIVE_EFFECTS_ENABLED;
   raws.value = [];
   ctl.transcript = null;
   ctl.fetchError = null;
@@ -85,13 +84,15 @@ afterEach(() => {
 });
 
 describe("collector 标题党 RSS 全文回填（#82）", () => {
-  it("production forbids raw filesystem archive until raw_archive effects are implemented", async () => {
+  it("production commits a durable raw_archive effect and a readable raw_ref", async () => {
     vi.stubEnv("NODE_ENV", "production");
-    vi.stubEnv("RAW_ARCHIVE_EFFECTS_ENABLED", "1");
-    raws.value = [mkRaw("https://example.test/raw-gated", "body")];
+    raws.value = [{ ...mkRaw("https://example.test/raw-gated", "body"), raw: "original raw payload" }];
     await collectSource(db, sourcePod);
-    expect(db.prepare("SELECT raw_ref FROM content_item WHERE url=?").get("https://example.test/raw-gated")).toEqual({ raw_ref: "" });
-    expect(existsSync(join(process.env.DATA_DIR!, "raw"))).toBe(false);
+    const item = db.prepare("SELECT id,raw_ref FROM content_item WHERE url=?").get("https://example.test/raw-gated") as { id: string; raw_ref: string };
+    expect(item.raw_ref).toMatch(/^raw\/ci_[a-f0-9]{16}\.[a-f0-9]{64}\.txt$/);
+    expect(readFileSync(join(process.env.DATA_DIR!, item.raw_ref), "utf8")).toBe("original raw payload");
+    expect(db.prepare("SELECT kind,status,raw_content_id FROM generation_effect WHERE raw_content_id=?").get(item.id))
+      .toEqual({ kind: "raw_archive", status: "committed", raw_content_id: item.id });
   });
 
   it("开关关：空正文条目跳过、不抓全文、不入库", async () => {

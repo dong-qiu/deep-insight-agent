@@ -59,6 +59,10 @@ function expectCompletedFacts(traceId: string): void {
   expect(db.prepare(`SELECT COUNT(*) AS count FROM generation_entity_ref ref
     LEFT JOIN provenance_revision revision ON revision.entity_type=ref.entity_type AND revision.entity_key=ref.entity_key AND revision.revision=ref.revision
     WHERE ref.trace_id=? AND revision.entity_type IS NULL`).get(traceId)).toEqual({ count: 0 });
+  expect(db.prepare(`SELECT effect.trace_id,effect.event_id,effect.status,event.stage,event.event_type
+    FROM generation_effect effect JOIN generation_event event ON event.id=effect.event_id
+    WHERE effect.kind='raw_archive' AND effect.trace_id=?`).all(traceId))
+    .toEqual([expect.objectContaining({ trace_id: traceId, status: "committed", stage: "normalize", event_type: "started" })]);
 }
 
 beforeEach(() => {

@@ -336,6 +336,11 @@ const SOURCE_QUOTE_PROJECTION_SQL = `
 CREATE INDEX IF NOT EXISTS idx_analysis_batch_display_projection ON analysis_batch(display_projection_version, id);
 `;
 
+// generation_effect originally modelled only report_file and carried a required
+// report_id.  Rebuild it forward so raw_archive has the same durable intent
+// ledger without weakening report/anchor foreign keys or rewriting old rows.
+const RAW_ARCHIVE_EFFECT_SQL = "generation_effect raw_archive durable effect v1";
+
 const MIGRATIONS = [
   { version: "20260803_01_provenance_core", sql: CORE_SQL },
   { version: "20260803_02_report_lifecycle", sql: REPORT_LIFECYCLE_SQL },
@@ -393,6 +398,7 @@ DELETE FROM dashboard_cost_fact_v1 WHERE tenant_id='default' AND EXISTS (
   { version: "20260909_37_display_coverage_candidate_audit", sql: DISPLAY_COVERAGE_CANDIDATE_AUDIT_SQL },
   { version: "20260909_38_statement_citation_binding", sql: STATEMENT_CITATION_BINDING_SQL },
   { version: "20260909_39_source_quote_projection", sql: SOURCE_QUOTE_PROJECTION_SQL },
+  { version: "20260910_40_raw_archive_effect", sql: RAW_ARCHIVE_EFFECT_SQL },
 ];
 
 function hasColumn(db: DB, table: string, column: string): boolean {
@@ -454,6 +460,74 @@ function migrateReportLifecycle(db: DB): void {
   if (!hasColumn(db, "report", "failure")) db.exec("ALTER TABLE report ADD COLUMN failure TEXT");
 }
 
+function migrateRawArchiveEffect(db: DB): void {
+  db.exec(`
+    -- The anchor table has an FK to generation_effect.  Recreate the child in
+    -- the same exclusive migration so SQLite does not retain a reference to
+    -- the renamed legacy parent.
+    ALTER TABLE generation_anchor_effect RENAME TO generation_anchor_effect_legacy;
+    ALTER TABLE generation_effect RENAME TO generation_effect_legacy;
+    CREATE TABLE generation_effect (
+      id TEXT PRIMARY KEY,
+      trace_id TEXT REFERENCES generation_trace(id),
+      event_id TEXT REFERENCES generation_event(id),
+      report_id TEXT UNIQUE REFERENCES report(id),
+      raw_content_id TEXT REFERENCES content_item(id),
+      kind TEXT NOT NULL CHECK (kind IN ('report_file','raw_archive')),
+      idempotency_key TEXT NOT NULL UNIQUE,
+      artifact_manifest TEXT NOT NULL,
+      publication_payload TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('planned','attempted','committed','unknown','abandoned')),
+      error TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      CHECK ((kind='report_file' AND report_id IS NOT NULL AND raw_content_id IS NULL)
+        OR (kind='raw_archive' AND report_id IS NULL AND raw_content_id IS NOT NULL))
+    );
+    CREATE TABLE generation_anchor_effect (
+      id TEXT PRIMARY KEY,
+      generation_effect_id TEXT NOT NULL REFERENCES generation_effect(id),
+      tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),
+      report_id TEXT NOT NULL REFERENCES report(id),
+      artifact_id TEXT NOT NULL,
+      artifact_version TEXT NOT NULL,
+      manifest_hash TEXT NOT NULL,
+      manifest_canonical TEXT NOT NULL,
+      content_hash TEXT NOT NULL,
+      content_length INTEGER NOT NULL,
+      media_type TEXT NOT NULL,
+      anchor_idempotency_key TEXT NOT NULL UNIQUE,
+      object_key TEXT NOT NULL,
+      anchor_payload TEXT NOT NULL,
+      anchor_provider_version_id TEXT,
+      status TEXT NOT NULL CHECK(status IN ('planned','anchor_written','committed','unknown','failed')),
+      retry_count INTEGER NOT NULL DEFAULT 0,
+      error TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      manifest_signature TEXT,
+      manifest_key_id TEXT,
+      manifest_algorithm TEXT,
+      manifest_issued_at TEXT,
+      retain_until TEXT,
+      UNIQUE(generation_effect_id, artifact_id, artifact_version)
+    );
+    INSERT INTO generation_effect(id,trace_id,event_id,report_id,raw_content_id,kind,idempotency_key,artifact_manifest,publication_payload,status,error,created_at,updated_at)
+      SELECT id,trace_id,event_id,report_id,NULL,kind,idempotency_key,artifact_manifest,publication_payload,status,error,created_at,updated_at
+      FROM generation_effect_legacy;
+    INSERT INTO generation_anchor_effect(id,generation_effect_id,tenant_id,report_id,artifact_id,artifact_version,manifest_hash,manifest_canonical,content_hash,content_length,media_type,anchor_idempotency_key,object_key,anchor_payload,anchor_provider_version_id,status,retry_count,error,created_at,updated_at,manifest_signature,manifest_key_id,manifest_algorithm,manifest_issued_at,retain_until)
+      SELECT id,generation_effect_id,tenant_id,report_id,artifact_id,artifact_version,manifest_hash,manifest_canonical,content_hash,content_length,media_type,anchor_idempotency_key,object_key,anchor_payload,anchor_provider_version_id,status,retry_count,error,created_at,updated_at,manifest_signature,manifest_key_id,manifest_algorithm,manifest_issued_at,retain_until
+      FROM generation_anchor_effect_legacy;
+    DROP TABLE generation_anchor_effect_legacy;
+    DROP TABLE generation_effect_legacy;
+    CREATE INDEX idx_generation_effect_pending ON generation_effect(status, created_at);
+    CREATE INDEX idx_generation_effect_trace_event ON generation_effect(trace_id, event_id);
+    CREATE INDEX idx_generation_effect_raw_pending ON generation_effect(raw_content_id, status, created_at) WHERE kind='raw_archive';
+    CREATE INDEX idx_generation_anchor_effect_tenant_reconcile ON generation_anchor_effect(tenant_id,status,created_at);
+    CREATE UNIQUE INDEX idx_generation_anchor_effect_tenant_effect_artifact ON generation_anchor_effect(tenant_id,generation_effect_id,artifact_id,artifact_version);
+  `);
+}
+
 /** 只允许 migration runner 调用；重复运行验证 checksum，不会重复执行 DDL。 */
 export function applyProvenanceMigrations(db: DB): void {
   db.exec("CREATE TABLE IF NOT EXISTS schema_migration (version TEXT PRIMARY KEY, checksum TEXT NOT NULL, applied_at TEXT NOT NULL)");
@@ -468,7 +542,8 @@ export function applyProvenanceMigrations(db: DB): void {
     // 不会观察到半个 provenance schema。
     const rebuildReport = migration.version === "20260803_02_report_lifecycle" && !reportBodyPathIsNullable(db);
     const rebuildSourceCreditPrimaryKeys = migration.version === "20260823_13_source_credit_tenant_primary_keys";
-    if (rebuildReport || rebuildSourceCreditPrimaryKeys) db.pragma("foreign_keys = OFF");
+    const rebuildRawArchiveEffect = migration.version === "20260910_40_raw_archive_effect";
+    if (rebuildReport || rebuildSourceCreditPrimaryKeys || rebuildRawArchiveEffect) db.pragma("foreign_keys = OFF");
     db.exec("BEGIN EXCLUSIVE");
     try {
       if (migration.version === "20260803_01_provenance_core") {
@@ -504,6 +579,8 @@ export function applyProvenanceMigrations(db: DB): void {
           db.exec("ALTER TABLE analysis_batch ADD COLUMN display_projection_version TEXT NOT NULL DEFAULT 'legacy' CHECK (display_projection_version IN ('legacy','source_quote_v1'))");
         }
         db.exec(migration.sql);
+      } else if (migration.version === "20260910_40_raw_archive_effect") {
+        migrateRawArchiveEffect(db);
       } else if (migration.version === "20260825_31_integrity_daily_root_material_backfill") {
         backfillDailyRootMaterial(db);
       } else if (migration.version === "20260817_09_bounded_provenance_views" || migration.version === "20260817_10_bounded_provenance_view_index_fix" || migration.version === "20260820_11_effect_event_link" || migration.version === "20260823_12_source_credit_facts" || migration.version === "20260823_14_p1_metric_facts" || migration.version === "20260823_15_p1_metric_fact_contracts" || migration.version === "20260823_16_p1_metric_conflict_audit" || migration.version === "20260823_17_integrity_anchors" || migration.version === "20260823_18_integrity_anchor_immutability" || migration.version === "20260824_19_integrity_anchor_recovery_material" || migration.version === "20260824_20_integrity_anchor_hardening" || migration.version === "20260824_21_integrity_anchor_tenant_reconcile_index" || migration.version === "20260824_22_integrity_check_ledger" || migration.version === "20260824_23_integrity_check_key_revocation" || migration.version === "20260824_24_integrity_lifecycle" || migration.version === "20260824_25_integrity_lifecycle_purge" || migration.version === "20260825_26_integrity_lifecycle_completion_proof" || migration.version === "20260825_27_integrity_lifecycle_registry_proof" || migration.version === "20260825_28_integrity_lifecycle_hold_and_tombstone_retention" || migration.version === "20260825_29_integrity_lifecycle_hold_tombstone_snapshot" || migration.version === "20260825_30_integrity_lifecycle_external_hold" || migration.version === "20260825_32_integrity_maintenance_lease" || migration.version === "20260826_33_dashboard_trace_read_model_v1" || migration.version === "20260826_34_dashboard_cost_read_model_v1" || migration.version === "20260828_35_dashboard_late_visibility_and_dimensions") {
@@ -518,7 +595,7 @@ export function applyProvenanceMigrations(db: DB): void {
       try { db.exec("ROLLBACK"); } catch { /* transaction may already have been rolled back */ }
       throw error;
     } finally {
-      if (rebuildReport || rebuildSourceCreditPrimaryKeys) db.pragma("foreign_keys = ON");
+      if (rebuildReport || rebuildSourceCreditPrimaryKeys || rebuildRawArchiveEffect) db.pragma("foreign_keys = ON");
     }
   }
 }

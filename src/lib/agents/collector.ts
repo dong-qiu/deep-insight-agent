@@ -1,10 +1,9 @@
 /** collector —— 数据采集 agent（architecture 数据流第 1 步）。
  *  按 Source 抓取 → 归一化 ContentItem → 去重 → 存档原文 → 落库；统一经 Job Runner 记一条 ingest Run
  *  （与 analyze/validate/report-gen 一致：单调时钟耗时 + 失败捕获 + 可重试）。 */
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import { getContentByUrl, getContentItem, insertContentItem, setRunInserted, updateContentItem } from "../db/repos.js";
 import type { DB } from "../db/index.js";
+import { planRawArchive, writePlannedRawArchive } from "../db/raw-archive.js";
 import {
   assertSourceCollectClaim,
   bindSourceCollectRootRun,
@@ -35,20 +34,6 @@ export interface CollectResult {
  *  运行期读 env（非模块常量）：便于运行期调 + 单测可控。 */
 function articleFetchMaxPerRun(): number {
   return Number(process.env.ARTICLE_FETCH_MAX_PER_RUN) || 25;
-}
-
-/** Raw archival is disabled by default until raw_archive has the same durable
- * effect/reconciliation protocol as report_file.  A plain filesystem write
- * cannot safely survive a crash between write and DB commit. */
-function archiveRaw(id: string, raw: string): string {
-  // A future raw_archive effect worker may replace this. Until then a
-  // production process must never make the unaudited filesystem write.
-  if (process.env.NODE_ENV === "production" || process.env.RAW_ARCHIVE_EFFECTS_ENABLED !== "1") return "";
-  const dir = join(process.env.DATA_DIR ?? ".data", "raw");
-  mkdirSync(dir, { recursive: true });
-  const path = join(dir, `${id}.txt`);
-  writeFileSync(path, raw);
-  return path;
 }
 
 export async function collectSource(
@@ -121,6 +106,14 @@ export async function collectSource(
       });
     }
     stage = "normalize";
+    const rawArchiveProvenance = trace
+      ? (() => {
+        const event = db.prepare("SELECT id FROM generation_event WHERE trace_id=? AND stage='normalize' AND event_type='started'")
+          .get(trace.traceId) as { id: string } | undefined;
+        if (!event) throw new Error("raw_archive_normalize_event_missing");
+        return { traceId: trace.traceId, eventId: event.id };
+      })()
+      : undefined;
     const fetchedAt = new Date().toISOString();
     let inserted = 0;
     let updated = 0;
@@ -180,7 +173,7 @@ export async function collectSource(
         skipped++; // 同 URL + 同指纹 = 完全重复（AC2 ①）
         continue;
       }
-      item.raw_ref = archiveRaw(item.id, raw.raw);
+      let rawArchive: ReturnType<typeof planRawArchive> | null = null;
       let persistedItem: typeof item | null = null;
       let persistedOutputRef: EntityRef | null = null;
       // Content 的业务 upsert、实际持久化行的 snapshot 与 provenance revision 在同一 SQLite
@@ -189,6 +182,11 @@ export async function collectSource(
         assertWrite();
         if (existing) updateContentItem(db, item); // 同 URL 内容更新 → 原地更新、id 不变（AC2 ②）
         else insertContentItem(db, item); // 新 URL（AC2 ③）
+        // The ContentItem change and the raw archive intent are one SQLite
+        // transaction.  The external file is written only after this commits.
+        rawArchive = planRawArchive(db, { contentId: existing?.id ?? item.id, raw: raw.raw, ...rawArchiveProvenance });
+        item.raw_ref = rawArchive.rawRef;
+        updateContentItem(db, item);
         persistedItem = getContentItem(db, existing?.id ?? item.id);
         if (!persistedItem) throw new Error("content_item_write_not_found");
         persistedOutputRef = trace ? contentItemRef(persistedItem, "output") : null;
@@ -202,6 +200,8 @@ export async function collectSource(
         }
       })();
       if (!persistedItem) throw new Error("content_item_write_not_found");
+      if (!rawArchive) throw new Error("raw_archive_plan_not_created");
+      writePlannedRawArchive(db, rawArchive, raw.raw);
       // Optional P1 telemetry observes committed output only; it never feeds
       // report selection or citation validation.
       telemetry.recordCollector(db, { run_id: ctx.runId, item: persistedItem });
