@@ -43,6 +43,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   delete process.env.DATA_DIR;
+  vi.unstubAllEnvs();
   sources.value = [];
   raws.value = [];
 });
@@ -60,5 +61,19 @@ describe("scheduled source provenance", () => {
     expect(db.prepare("SELECT COUNT(*) AS count FROM generation_entity_ref WHERE trace_id=? AND entity_type='content_item' AND role='output'").get(traceId))
       .toEqual({ count: 1 });
     expect(db.prepare("SELECT COUNT(*) AS count FROM funnel_event").get()).toEqual({ count: 0 });
+  });
+
+  it("keeps P1 metrics dormant for production collection even when P1_LIFECYCLE=dev", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("P1_LIFECYCLE", "dev");
+
+    await expect(runCollectionCycle(db, { telemetry: NOOP_P1_TELEMETRY_SINK })).resolves.toMatchObject({ errors: [] });
+    expect(db.prepare(`SELECT
+      (SELECT COUNT(*) FROM funnel_event) AS funnel,
+      (SELECT COUNT(*) FROM cost_ledger) AS cost,
+      (SELECT COUNT(*) FROM validator_result_fact) AS validator,
+      (SELECT COUNT(*) FROM dashboard_trace_fact_v1) AS dashboard_trace,
+      (SELECT COUNT(*) FROM dashboard_cost_fact_v1) AS dashboard_cost`).get())
+      .toEqual({ funnel: 0, cost: 0, validator: 0, dashboard_trace: 0, dashboard_cost: 0 });
   });
 });

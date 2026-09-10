@@ -9,6 +9,7 @@ import { getDb } from "../../../lib/db/index.js";
 import { recoverOrphanedRuns } from "../../../lib/db/repos.js";
 import { deploymentAnchorPublicationIfEnabled } from "../../../lib/runtime/integrity-anchor-runtime.js";
 import { runLogger } from "../../../lib/runtime/logger.js";
+import { p1TelemetrySinkForApp } from "../../p1-telemetry-composition.js";
 
 export const dynamic = "force-dynamic";
 
@@ -37,6 +38,7 @@ export async function POST(req: Request): Promise<NextResponse> {
   try {
     log.info({ mode }, "定时任务触发");
     const db = getDb();
+    const telemetry = p1TelemetrySinkForApp();
     // 周期清扫孤儿 Run（Q2）：长驻 app 进程很少重启，openDb 的启动清扫不够；每日 cron 入口
     // 再扫一次 >staleMs 的孤儿。stale 阈值保证本轮即将创建的 run 不被误杀。
     const swept = recoverOrphanedRuns(db);
@@ -52,11 +54,11 @@ export async function POST(req: Request): Promise<NextResponse> {
       return NextResponse.json({ ok: true, mode, summary });
     }
     if (mode === "collect") {
-      const summary = await runCollectionCycle(db);
+      const summary = await runCollectionCycle(db, { telemetry });
       log.info({ collected: summary.collected.length, errors: summary.errors.length }, "定时采集完成");
       return NextResponse.json({ ok: true, mode, summary });
     }
-    const summary = await runScheduledPipeline(db, {});
+    const summary = await runScheduledPipeline(db, { telemetry });
     log.info({ topics: summary.topics.length, errors: summary.errors.length }, "定时管线完成");
     return NextResponse.json({ ok: true, mode, summary });
   } catch (e) {

@@ -9,7 +9,7 @@ import { NextResponse } from "next/server";
 import { collectSource } from "../../../../../../lib/agents/collector.js";
 import { getDb } from "../../../../../../lib/db/index.js";
 import { getRun, getSource } from "../../../../../../lib/db/repos.js";
-import { p1TelemetrySinkForRuntime } from "../../../../../../lib/runtime/p1-lifecycle.js";
+import { p1TelemetrySinkForApp } from "../../../../../p1-telemetry-composition.js";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -39,7 +39,7 @@ export async function POST(
       return NextResponse.json({ error: "source_deleted", source_id: sourceId }, { status: 410 });
     }
     try {
-      const out = await collectSource(db, source, { retryOf: id, telemetry: p1TelemetrySinkForRuntime() });
+      const out = await collectSource(db, source, { retryOf: id, telemetry: p1TelemetrySinkForApp() });
       return NextResponse.json({
         status: "done",
         new_run_id: out.runId,
