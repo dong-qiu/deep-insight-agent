@@ -29,7 +29,19 @@ v1 的样本口径容易只看到已进入机会池的信号，无法测量“�
 
 ## 2. 真实执行（仅 v2；50–100 行）
 
-v1 是历史记录，**不可执行、不可用于新增 dogfood 或评分**。每轮 v2 必须按 `evals/technology-opportunities/README.md` 的四步执行：只读、无上限的 qualified-TechLead attested snapshot → blind manifest → expected-only seal → 同一 snapshot/private mapping materialize actual → score。不得从机会池、500 行 UI view 或任何旧 v1 标签回填。每次累积 50–100 行，保留 manifest digest、expected commitment 和 score 输出。
+v1 是历史记录，**不可执行、不可用于新增 dogfood 或评分**。在隔离目录、使用独立的只读 DB 快照，唯一允许的顺序如下；不得从机会池、500 行 UI view 或任何旧 v1 标签回填：
+
+```bash
+npm run eval:opportunity-export -- qualified-snapshot.json <UTC>
+npm run eval:opportunity-sample -- qualified-snapshot.json blind-manifest.json <fixed-seed> <count>
+# 评审者此时按 labels.v2.template.json 的 expected-only 结构填写 expected-only.json
+npm run eval:opportunity-seal -- blind-manifest.json expected-only.json sealed.json <UTC>
+npm run eval:opportunity-mapping-export -- qualified-snapshot.json deterministic-mapping.json
+npm run eval:opportunity-materialize -- qualified-snapshot.json blind-manifest.json sealed.json deterministic-mapping.json labels.json <UTC>
+npm run eval:opportunity-map -- labels.json qualified-snapshot.json blind-manifest.json sealed.json deterministic-mapping.json
+```
+
+`expected-only.json` 必须从 `evals/technology-opportunities/labels.v2.template.json` 复制 manifest 行的 `sample_id`、topic/kind 与分桶字段，并且只填写 `expected_*`、`not_enough_evidence` 与 `exclusion_reason`；不能包含任何 `actual_*`。每次累积 50–100 行，保留 manifest digest、expected commitment、deterministic mapping export 和 score 输出。
 
 ## 3. 历史操作记录（不可作为当前执行手册）
 
@@ -52,17 +64,12 @@ v1 是历史记录，**不可执行、不可用于新增 dogfood 或评分**。�
 3. 用“预览影响”检查新增进入、通道迁移、不再匹配；确认后才“保存并重投影”。
 4. 重投影产生的 `stale` 候选必须逐条复核；既有人工状态不得因规则更新而回退。
 
-## 5. 人工标注与评分
+## 5. 人工盲标与评分（仅 v2）
 
-- 标签格式：`evals/technology-opportunities/labels.template.json`。
+- 标签模板仅为 expected-only 的 `evals/technology-opportunities/labels.v2.template.json`；实际值只能由第 2 节的 deterministic mapping export 后 materialize。
 - 标注者应独立于词项编写者；不复制原文全文、密钥或个人数据到标签文件。
-- 达到 50–100 条、覆盖三个主题和四个通道后，填写 `expected_*` 与系统的 `actual_*`，运行：
-
-  ```bash
-  npx tsx evals/score-opportunity-map.ts <labels.json>
-  ```
-
-- 记录 lane、direction、exact accuracy，并同时审阅“本应排除却进入候选池”的误报。低于人工认可门槛时，仅调整显式词项或继续人工处理；不得以自动立项绕过复核。
+- 达到 50–100 条、覆盖三个主题和四个通道后，必须使用第 2 节的完整六步命令评分；评分器不接受单个 labels 文件。
+- 记录 candidate precision/recall、direction/lane 混淆矩阵与错分归因，并同时审阅“本应排除却进入候选池”的误报。低于人工认可门槛时，仅调整显式词项或继续人工处理；不得以自动立项绕过复核。
 
 ## 6. 收口条件
 
