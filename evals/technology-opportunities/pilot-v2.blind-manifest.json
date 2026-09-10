@@ -7,6 +7,8 @@
   "selection_method": "deterministic-stratified-hash-v1",
   "seed": "pilot-v2-usability-2026-09-10",
   "population_digest": "fixture-only-no-production-population",
+  "snapshot_digest": "8a5f9d91dff23d713b4d427ac2c2bd87af5c0faf178f4641cfbe126a628eaa43",
+  "selection_digest": "7f7feb34244ced2ee114837ca77e4770e6bfd9f2e4655a9460e4395205d108b3",
   "pilot": true,
   "rows": [
     { "sample_id": "dogfood-v2-001", "topic_id": "t_code_agents", "lead_kind": "tool", "evidence_band": "2-3", "freshness_band": "0-48h" },
