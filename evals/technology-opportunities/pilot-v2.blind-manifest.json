@@ -1,0 +1,33 @@
+{
+  "protocol_version": "technology-opportunity-dogfood-v2",
+  "generated_at": "2026-09-10T00:00:00.000Z",
+  "population_source": "qualified_tech_leads",
+  "population_size": 20,
+  "sample_size": 20,
+  "selection_method": "deterministic-stratified-hash-v1",
+  "seed": "pilot-v2-usability-2026-09-10",
+  "population_digest": "fixture-only-no-production-population",
+  "pilot": true,
+  "rows": [
+    { "sample_id": "dogfood-v2-001", "topic_id": "t_code_agents", "lead_kind": "tool", "evidence_band": "2-3", "freshness_band": "0-48h" },
+    { "sample_id": "dogfood-v2-002", "topic_id": "t_code_agents", "lead_kind": "model", "evidence_band": "4+", "freshness_band": "0-48h" },
+    { "sample_id": "dogfood-v2-003", "topic_id": "t_code_agents", "lead_kind": "benchmark", "evidence_band": "1", "freshness_band": "49h-14d" },
+    { "sample_id": "dogfood-v2-004", "topic_id": "t_code_agents", "lead_kind": "security", "evidence_band": "2-3", "freshness_band": "49h-14d" },
+    { "sample_id": "dogfood-v2-005", "topic_id": "t_ai_safety", "lead_kind": "tool", "evidence_band": "4+", "freshness_band": "0-48h" },
+    { "sample_id": "dogfood-v2-006", "topic_id": "t_ai_safety", "lead_kind": "paper", "evidence_band": "1", "freshness_band": "14d+" },
+    { "sample_id": "dogfood-v2-007", "topic_id": "t_ai_safety", "lead_kind": "method", "evidence_band": "2-3", "freshness_band": "49h-14d" },
+    { "sample_id": "dogfood-v2-008", "topic_id": "t_ai_safety", "lead_kind": "model", "evidence_band": "4+", "freshness_band": "0-48h" },
+    { "sample_id": "dogfood-v2-009", "topic_id": "t_security", "lead_kind": "security", "evidence_band": "2-3", "freshness_band": "0-48h" },
+    { "sample_id": "dogfood-v2-010", "topic_id": "t_security", "lead_kind": "framework", "evidence_band": "1", "freshness_band": "49h-14d" },
+    { "sample_id": "dogfood-v2-011", "topic_id": "t_security", "lead_kind": "benchmark", "evidence_band": "4+", "freshness_band": "0-48h" },
+    { "sample_id": "dogfood-v2-012", "topic_id": "t_security", "lead_kind": "paper", "evidence_band": "2-3", "freshness_band": "14d+" },
+    { "sample_id": "dogfood-v2-013", "topic_id": "t_code_agents", "lead_kind": "framework", "evidence_band": "4+", "freshness_band": "49h-14d" },
+    { "sample_id": "dogfood-v2-014", "topic_id": "t_code_agents", "lead_kind": "method", "evidence_band": "1", "freshness_band": "0-48h" },
+    { "sample_id": "dogfood-v2-015", "topic_id": "t_ai_safety", "lead_kind": "security", "evidence_band": "4+", "freshness_band": "49h-14d" },
+    { "sample_id": "dogfood-v2-016", "topic_id": "t_ai_safety", "lead_kind": "benchmark", "evidence_band": "2-3", "freshness_band": "0-48h" },
+    { "sample_id": "dogfood-v2-017", "topic_id": "t_security", "lead_kind": "tool", "evidence_band": "1", "freshness_band": "14d+" },
+    { "sample_id": "dogfood-v2-018", "topic_id": "t_security", "lead_kind": "model", "evidence_band": "4+", "freshness_band": "49h-14d" },
+    { "sample_id": "dogfood-v2-019", "topic_id": "t_code_agents", "lead_kind": "paper", "evidence_band": "2-3", "freshness_band": "0-48h" },
+    { "sample_id": "dogfood-v2-020", "topic_id": "t_ai_safety", "lead_kind": "framework", "evidence_band": "1", "freshness_band": "14d+" }
+  ]
+}

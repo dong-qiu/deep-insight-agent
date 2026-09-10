@@ -1,7 +1,18 @@
 # 技术规划 Dogfood 记录（2026-07-24）
 
-> 状态：🟡 进行中（真实使用窗口：2026-07-24 ～ 2026-08-07）
+> 状态：🟡 协议 v2 已就绪；真实质量结论仍待独立人工盲标。
 > 目标：验证“已校验技术线索 → 技术机会 → 研究 / PoC / 立项候选”是否为人工规划带来有效输入；不以自动映射结果冒充人工标签。
+
+## 0. 协议 v2（2026-09-10）
+
+v1 的样本口径容易只看到已进入机会池的信号，无法测量“应排除却进入”和“应进入却未进入”。v2 改为从**合格 TechLead 全体**做固定、脱敏、带 UTC 时间戳的分层抽样；盲标清单不含实际映射结果，人工先填写 `expected_*`，封存后才回填 `actual_*`。
+
+- 标签：`expected_candidate` / `actual_candidate`、expected/actual `direction_id` 和 `lane`、`not_enough_evidence`、`exclusion_reason`；证据不足样本不进入分母，人工排除必须写原因。
+- 评分：candidate precision/recall、按 topic/kind/期望 lane 的覆盖、candidate/direction/lane 混淆矩阵、可回查 sample id 的错分归因。
+- 首个 20 条 fixture 只验证协议的抽样、盲标、排除与评分契约可运行，不来自生产快照，**不构成质量结论，也不替代 50–100 条真实独立标注**。
+- 边界不变：仅评估显式词项的确定性投影；不引入语义映射、自动立项、自动方向修改或生产写入。
+
+运行方式与脱敏字段见 `evals/technology-opportunities/README.md`。真实样本必须由只读快照在隔离目录生成。
 
 ## 1. 基线
 
