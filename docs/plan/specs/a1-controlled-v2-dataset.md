@@ -90,7 +90,8 @@ export EVAL_TOPIC_SOURCE_IDS='{"t_code_agents":["src_simonwillison","src_aider"]
 
 ```bash
 npm run eval:prepare-controlled-v2-snapshot -- \
-  evals/dataset/insight-quality-v2.local.jsonl /tmp/a1-v2-candidate a1-v2-candidate-20260910
+  evals/dataset/insight-quality-v2.local.jsonl /tmp/a1-v2-candidate a1-v2-candidate-20260910 \
+  /tmp/<isolated-root>/collection.json /tmp/<isolated-root>/dataset-v2-expanded.json
 ```
 
 ## 非功能要求

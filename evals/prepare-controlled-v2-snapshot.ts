@@ -3,11 +3,11 @@
  * local/ignored and is uploaded separately to controlled storage; this artifact makes the exact
  * item/URL/body-hash population auditable without copying source text into Git.
  *
- * Usage: tsx evals/prepare-controlled-v2-snapshot.ts <quality.local.jsonl> <out-dir> <snapshot-id>
+ * Usage: tsx evals/prepare-controlled-v2-snapshot.ts <quality.local.jsonl> <out-dir> <snapshot-id> [collector-or-builder-manifest...]
  */
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { basename, resolve } from "node:path";
 
 interface SnapshotItem {
   id?: unknown;
@@ -25,9 +25,9 @@ interface SnapshotCase {
 }
 
 const sha256 = (value: string | Buffer): string => createHash("sha256").update(value).digest("hex");
-const [qualityPath, outDir, snapshotId] = process.argv.slice(2);
+const [qualityPath, outDir, snapshotId, ...evidencePaths] = process.argv.slice(2);
 if (!qualityPath || !outDir || !snapshotId) {
-  console.error("用法：tsx evals/prepare-controlled-v2-snapshot.ts <quality.local.jsonl> <out-dir> <snapshot-id>");
+  console.error("用法：tsx evals/prepare-controlled-v2-snapshot.ts <quality.local.jsonl> <out-dir> <snapshot-id> [collector-or-builder-manifest...]");
   process.exit(2);
 }
 if (!/^[a-z0-9][a-z0-9-]{2,80}$/u.test(snapshotId)) {
@@ -46,6 +46,14 @@ const urls = new Set<string>();
 const sourceCounts = new Map<string, number>();
 const topicCounts = new Map<string, number>();
 const items: Array<Record<string, unknown>> = [];
+const evidenceNames = new Set<string>();
+const collection_evidence = evidencePaths.map((path) => {
+  const name = basename(path);
+  if (!name || evidenceNames.has(name)) throw new Error(`collector/builder evidence 文件名重复：${name}`);
+  evidenceNames.add(name);
+  const bytes = readFileSync(path);
+  return { name, sha256: sha256(bytes), byte_length: bytes.length };
+});
 
 for (const [caseIndex, entry] of quality.entries()) {
   const topicId = entry.topic?.id;
@@ -88,6 +96,7 @@ const manifest = {
   },
   source_counts: Object.fromEntries([...sourceCounts.entries()].sort(([a], [b]) => a.localeCompare(b))),
   topic_counts: Object.fromEntries([...topicCounts.entries()].sort(([a], [b]) => a.localeCompare(b))),
+  collection_evidence,
   dedupe_key: "content_item_id_or_url",
   license_and_retention: {
     status: "pending_source_terms_review",

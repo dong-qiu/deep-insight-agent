@@ -24,14 +24,17 @@ describe("controlled v2 source snapshot preparation", () => {
     const qualityPath = join(root, "quality.local.jsonl");
     const body = "source body must stay out of the manifest";
     writeFileSync(qualityPath, `${qualityLine("item-1", "https://example.test/one", body)}\n`);
+    const evidencePath = join(root, "collection.json");
+    writeFileSync(evidencePath, "{\"outcome\":\"collected\"}\n");
     const outDir = join(root, "candidate");
-    const result = runPrepare(qualityPath, outDir, "a1-v2-candidate");
+    const result = runPrepare(qualityPath, outDir, "a1-v2-candidate", evidencePath);
     expect(result.status).toBe(0);
     const text = readFileSync(join(outDir, "source-manifest.json"), "utf8");
     expect(text).not.toContain(body);
     expect(JSON.parse(text)).toMatchObject({
       status: "candidate_pending_labels",
       quality_input: { sha256: createHash("sha256").update(readFileSync(qualityPath)).digest("hex"), item_count: 1 },
+      collection_evidence: [{ name: "collection.json", sha256: createHash("sha256").update(readFileSync(evidencePath)).digest("hex") }],
       items: [{ content_item_id: "item-1", body_sha256: createHash("sha256").update(body).digest("hex") }],
     });
   });
