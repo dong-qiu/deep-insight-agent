@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { coverageThinking, coverageThinkingSource, llmMaxRetries, validatorThinking } from "./env.js";
+import { coverageThinking, coverageThinkingSource, llmMaxRetries, llmTransientRetries, llmTransientRetryBackoffMs, validatorThinking } from "./env.js";
 
 describe("llmMaxRetries", () => {
   const original = process.env.LLM_MAX_RETRIES;
@@ -19,6 +19,36 @@ describe("llmMaxRetries", () => {
     expect(llmMaxRetries()).toBe(2);
     process.env.LLM_MAX_RETRIES = "-1";
     expect(llmMaxRetries()).toBe(2);
+  });
+});
+
+describe("llmTransientRetries", () => {
+  const retriesOriginal = process.env.LLM_TRANSIENT_RETRIES;
+  const backoffOriginal = process.env.LLM_TRANSIENT_RETRY_BACKOFF_MS;
+
+  afterEach(() => {
+    if (retriesOriginal === undefined) delete process.env.LLM_TRANSIENT_RETRIES;
+    else process.env.LLM_TRANSIENT_RETRIES = retriesOriginal;
+    if (backoffOriginal === undefined) delete process.env.LLM_TRANSIENT_RETRY_BACKOFF_MS;
+    else process.env.LLM_TRANSIENT_RETRY_BACKOFF_MS = backoffOriginal;
+  });
+
+  it("默认仅补一次本地墙钟超时，并允许显式关闭", () => {
+    delete process.env.LLM_TRANSIENT_RETRIES;
+    expect(llmTransientRetries()).toBe(1);
+    process.env.LLM_TRANSIENT_RETRIES = "0";
+    expect(llmTransientRetries()).toBe(0);
+  });
+
+  it("限制额外尝试和退避，拒绝异常配置放大任务时延", () => {
+    process.env.LLM_TRANSIENT_RETRIES = "99";
+    expect(llmTransientRetries()).toBe(2);
+    process.env.LLM_TRANSIENT_RETRIES = "invalid";
+    expect(llmTransientRetries()).toBe(1);
+    process.env.LLM_TRANSIENT_RETRY_BACKOFF_MS = "99999";
+    expect(llmTransientRetryBackoffMs()).toBe(10_000);
+    process.env.LLM_TRANSIENT_RETRY_BACKOFF_MS = "-1";
+    expect(llmTransientRetryBackoffMs()).toBe(750);
   });
 });
 

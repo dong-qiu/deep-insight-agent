@@ -1,7 +1,7 @@
 /** coerceStringifiedFields 纯函数单测（6b 防御：模型偶发把 array/object 字段返成 JSON 字符串）。 */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod/v4";
-import { MODELS, anthropicBaseUrl, assertCoverageModelSeparation, coerceStringifiedFields, createRequestAbortSignal, getRoleCallTelemetry, recordRoleCallTelemetry, resetRoleCallTelemetry, structuredThinkingConfig } from "./llm.js";
+import { MODELS, anthropicBaseUrl, assertCoverageModelSeparation, coerceStringifiedFields, createRequestAbortSignal, getRoleCallTelemetry, recordRoleCallTelemetry, resetRoleCallTelemetry, retryTransientOperation, structuredThinkingConfig } from "./llm.js";
 
 const originalModels = { ...MODELS };
 
@@ -94,6 +94,54 @@ describe("createRequestAbortSignal（LLM 流硬超时）", () => {
     request.dispose();
     vi.advanceTimersByTime(120);
     expect(request.signal.reason).toBe(reason);
+  });
+});
+
+describe("retryTransientOperation（SSE 墙钟超时的有界应用层重试）", () => {
+  it("仅对瞬态墙钟超时重试，保留一次初始调用和一次额外尝试", async () => {
+    const calls: number[] = [];
+    const retries: number[] = [];
+    const sleeps: number[] = [];
+    const result = await retryTransientOperation(async () => {
+      calls.push(calls.length + 1);
+      if (calls.length === 1) throw new Error("LLM stream exceeded wall-clock timeout of 120000ms");
+      return "ok";
+    }, {
+      retries: 1,
+      backoffMs: 25,
+      onRetry: (_error, retryNumber) => retries.push(retryNumber),
+      sleep: async (delayMs) => { sleeps.push(delayMs); },
+    });
+
+    expect(result).toBe("ok");
+    expect(calls).toEqual([1, 2]);
+    expect(retries).toEqual([1]);
+    expect(sleeps).toEqual([25]);
+  });
+
+  it("拒答和 schema 类错误不重试，避免把内容错误扩大为额外模型调用", async () => {
+    const operation = vi.fn(async () => { throw new Error("结构化输出 schema 校验失败"); });
+    await expect(retryTransientOperation(operation, { retries: 2, backoffMs: 0 })).rejects.toThrow("schema");
+    expect(operation).toHaveBeenCalledTimes(1);
+  });
+
+  it("调用方取消优先，瞬态错误后不再发起下一次请求", async () => {
+    const caller = new AbortController();
+    const cancellation = new Error("cost limit reached");
+    const operation = vi.fn(async () => {
+      caller.abort(cancellation);
+      throw new Error("Connection error.");
+    });
+
+    await expect(retryTransientOperation(operation, { retries: 2, backoffMs: 0, signal: caller.signal })).rejects.toBe(cancellation);
+    expect(operation).toHaveBeenCalledTimes(1);
+  });
+
+  it("重试耗尽后原样抛出瞬态错误", async () => {
+    const timeout = new Error("LLM stream exceeded wall-clock timeout of 120000ms");
+    const operation = vi.fn(async () => { throw timeout; });
+    await expect(retryTransientOperation(operation, { retries: 99, backoffMs: 0 })).rejects.toBe(timeout);
+    expect(operation).toHaveBeenCalledTimes(3);
   });
 });
 

@@ -127,6 +127,10 @@ describe("analyze 的展示覆盖审计投影", () => {
       } } as unknown as Awaited<ReturnType<typeof callStructured>>)
       .mockResolvedValueOnce({ data: { verdicts: [{
         index: 1, kind: "factual", supports: false, citation_indexes: [], evidence_spans: [],
+      }] } } as unknown as Awaited<ReturnType<typeof callStructured>>)
+      // 展示审计即使主审拒绝，也必须留下独立 coverage 复核证据。
+      .mockResolvedValueOnce({ data: { verdicts: [{
+        index: 1, kind: "factual", supports: false, citation_indexes: [], evidence_spans: [],
       }] } } as unknown as Awaited<ReturnType<typeof callStructured>>);
     const topic: Topic = { id: "t", name: "T", keywords: [], language: "en", brief_schedule: "daily", enabled: true };
     const content = {
@@ -788,6 +792,24 @@ describe("filterByQuoteCoverage（展示 quote 覆盖门）", () => {
     await expect(filterByQuoteCoverage([row], undefined, undefined, (decision) => audits.push(decision))).resolves.toEqual([]);
     expect(vi.mocked(callStructured)).not.toHaveBeenCalled();
     expect(audits[0]?.claims[0]).toMatchObject({ reason: "statement_token_not_in_bound_quote", uncovered_tokens: ["Frontier"] });
+  });
+
+  it("来源元数据不在绑定 quote 时，不能被 claim 当作隐含主语", async () => {
+    const quote = "VLLM bfloat16 with the recommended setting achieved 65.3% accuracy.";
+    const audits: Array<{ claims: Array<{ reason: string; uncovered_tokens?: string[] }> }> = [];
+    const row = insight("Aider 的该配置准确率为 65.3%。", [{
+      content_item_id: "ci",
+      claim: "Aider 的该配置准确率为 65.3%",
+      quote,
+      locator: { paragraph_index: 0, char_start: 0, char_end: quote.length },
+    }]);
+
+    await expect(filterByQuoteCoverage([row], undefined, undefined, (decision) => audits.push(decision))).resolves.toEqual([]);
+    expect(vi.mocked(callStructured)).not.toHaveBeenCalled();
+    expect(audits[0]?.claims[0]).toMatchObject({
+      reason: "statement_token_not_in_bound_quote",
+      uncovered_tokens: ["Aider"],
+    });
   });
 
   it("稳定锚点不能由更长 token 的子串伪造", async () => {

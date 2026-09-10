@@ -12,7 +12,8 @@ import Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod/v4";
 import type { Cost } from "../types.js";
 import { FALLBACK_PRICING, costUSD, type TokenUsage } from "./cost.js";
-import { llmMaxRetries, llmTimeoutMs, promptCacheOn } from "./env.js";
+import { llmMaxRetries, llmTimeoutMs, llmTransientRetries, llmTransientRetryBackoffMs, promptCacheOn } from "./env.js";
+import { isTransientApiError } from "./errors.js";
 
 // 已警告过的未知模型集合（每模型仅警告一次，防日志刷屏）
 const warnedUnpriced = new Set<string>();
@@ -311,6 +312,64 @@ export function createRequestAbortSignal(
   };
 }
 
+export interface TransientRetryOptions {
+  /** Extra attempts after the initial call; the environment getter already bounds this to 2. */
+  retries: number;
+  backoffMs: number;
+  signal?: AbortSignal;
+  onRetry?: (error: unknown, retryNumber: number) => void;
+  sleep?: (delayMs: number, signal?: AbortSignal) => Promise<void>;
+}
+
+function abortableDelay(delayMs: number, signal?: AbortSignal): Promise<void> {
+  if (!delayMs) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason ?? new Error("LLM request aborted before retry"));
+      return;
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const cleanup = (): void => {
+      if (timer) clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+    };
+    const onAbort = (): void => {
+      cleanup();
+      reject(signal?.reason ?? new Error("LLM request aborted before retry"));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    timer = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, delayMs);
+  });
+}
+
+/**
+ * The SDK retries transport failures it owns, but an explicit SSE wall-clock abort is surfaced
+ * by our Promise.race and bypasses those retries. Retry only classified infrastructure failures;
+ * never turn a caller cancellation, refusal, or schema violation into extra model calls.
+ */
+export async function retryTransientOperation<T>(
+  operation: () => Promise<T>,
+  options: TransientRetryOptions,
+): Promise<T> {
+  const retries = Math.min(2, Math.max(0, options.retries));
+  const sleep = options.sleep ?? abortableDelay;
+  for (let attempt = 0; ; attempt++) {
+    if (options.signal?.aborted) throw options.signal.reason ?? new Error("LLM request aborted before start");
+    try {
+      return await operation();
+    } catch (error) {
+      if (options.signal?.aborted) throw options.signal.reason ?? error;
+      if (!isTransientApiError(error) || attempt >= retries) throw error;
+      const retryNumber = attempt + 1;
+      options.onRetry?.(error, retryNumber);
+      await sleep(options.backoffMs, options.signal);
+    }
+  }
+}
+
 export async function callStructured<T extends z.ZodType>(
   opts: StructuredCall<T>,
 ): Promise<StructuredResult<z.infer<T>>> {
@@ -389,10 +448,23 @@ export async function callStructured<T extends z.ZodType>(
     }
   };
 
-  let res = await streamFinalMessage();
+  const streamFinalMessageWithTransientRetry = (): Promise<Anthropic.Message> => retryTransientOperation(
+    streamFinalMessage,
+    {
+      retries: llmTransientRetries(),
+      backoffMs: llmTransientRetryBackoffMs(),
+      signal: opts.signal,
+      onRetry: (error, retryNumber) => {
+        const kind = error instanceof Error && error.name ? error.name : "UnknownError";
+        console.warn(`  ⚠️ LLM 瞬态失败，应用层重试 ${retryNumber}/${llmTransientRetries()}（role=${opts.role}，${kind}）`);
+      },
+    },
+  );
+
+  let res = await streamFinalMessageWithTransientRetry();
   account(res.usage);
   for (let attempt = 1; res.stop_reason === "refusal" && attempt < 3; attempt++) {
-    res = await streamFinalMessage();
+    res = await streamFinalMessageWithTransientRetry();
     account(res.usage);
   }
 

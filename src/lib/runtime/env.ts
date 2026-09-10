@@ -43,6 +43,21 @@ export const llmMaxRetries = (): number => {
   return Number.isFinite(value) && value >= 0 ? Math.floor(value) : 2;
 };
 
+/**
+ * SDK 无法重试本地 AbortController 触发的 SSE 墙钟超时；这是该类瞬态错误的应用层额外尝试次数。
+ * 上限 2，避免单条任务因 relay 持续异常无限占用分析槽位。
+ */
+export const llmTransientRetries = (): number => {
+  const value = Number(process.env.LLM_TRANSIENT_RETRIES ?? 1);
+  return Number.isFinite(value) && value >= 0 ? Math.min(2, Math.floor(value)) : 1;
+};
+
+/** 应用层瞬态重试的固定退避，限制在 10 秒内，避免把背压误伪装成任务卡死。 */
+export const llmTransientRetryBackoffMs = (): number => {
+  const value = Number(process.env.LLM_TRANSIENT_RETRY_BACKOFF_MS ?? 750);
+  return Number.isFinite(value) && value >= 0 ? Math.min(10_000, Math.floor(value)) : 750;
+};
+
 /** Prompt caching 开关：PROMPT_CACHE=0 关（治中转站只写不读的白付溢价）。 */
 export const promptCacheOn = (): boolean => process.env.PROMPT_CACHE !== "0";
 
