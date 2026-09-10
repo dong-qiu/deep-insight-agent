@@ -51,6 +51,16 @@
 6. 全量 A1 只能在 lock 验证为 `verified_v2`、无 smoke 截断、模型/Thinking 配置固定时作为自动证据。两次不同 run_id 的同 commit/config/lock automatic pass 才可形成可接受基线候选。
 7. 自动通过后，两位 reviewer 必须对同一 `review-queue` 全量盲评；第三位 reviewer 裁决所有分歧，并用 `review:receipt` 生成 `eligible_for_signoff`。该状态不代替 DCP owner/architect 签署。
 
+### AI 预标注与人工签署的隔离
+
+AI 可以承担三个**诊断性预标注者**，用于发现分歧、估算人工工作量和改进标注说明；它们不能替代两位独立人工标注者或第三位人工裁决者。每个预标注结果必须绑定同一 `run_id`、`dataset_lock_sha256`、`review-queue` hash、模型/Thinking 配置和 prompt hash，并单独保存为 `diagnostic_only` 产物。
+
+1. 三个预标注任务必须各自记录实际模型与配置；若共用模型、prompt 或上下文，它们是相关的辅助信号，不得写成“独立人工复核”或拿来计算人评一致性。
+2. 两位人工 reviewer 在各自提交完整、带 hash 的盲评前，拿到的输入不得包含 AI 标签、AI 理由、彼此标签或裁决建议。AI 预标注只能在两份人工提交都冻结后，作为分歧诊断材料揭示。
+3. 第三位**人工** adjudicator 只裁决两位人工 reviewer 的分歧；AI 结果可供查阅但不能覆盖、补齐或生成任何人工决定。
+4. `review:receipt` 明确要求 `reviewer_kind` 与 `adjudicator_kind` 均为 `human`。传入 `ai` 会生成 ineligible receipt；预标注文件绝不能被当作 receipt 输入。
+5. 预标注、人工盲评、裁决和最终 receipt 均保留独立的 artifact hash；没有两份完整人工盲评、第三人裁决和 DCP owner/architect 签署时，任何 AI 结果都不得形成可发布或可比基线结论。
+
 ### 2026-09-10 cohort preflight
 
 - 十来源的最终隔离采集使用生产 collector；上述十个来源均实际写入候选库。首次总采集中的 `src_simonwillison_promptinj` 曾因 `ENOTFOUND` 失败，随后在**同一隔离根**单源重试成功；两份 manifest 都必须随受控快照保存。
@@ -64,7 +74,7 @@
 - [ ] AC3: 构建器拒绝跨 topic 的重复 content ID 或 URL；相同来源允许提供不同 URL 的内容。
 - [ ] AC4: lock 校验 v2 样本具有至少 5 个唯一主题、100 组一致性对、40 个 `not_support` 和三种负例。
 - [ ] AC5: 全量 A1 产物的 `dcp_sample.reader_visible_by_topic` 每个主题均至少为 10，且不存在 duplicate statement+bound quote。
-- [ ] AC6: 两次同配置、同 lock、clean commit 的完整 automatic pass 以及完整的三方人工 receipt 均可回链；此前状态只能标为 incomplete/smoke/provisional，不得盖 `Eval-Gate: pass`。
+- [ ] AC6: 两次同配置、同 lock、clean commit 的完整 automatic pass 以及完整的三方人工 receipt 均可回链；AI 预标注须隔离为 `diagnostic_only`，不得参与 receipt；此前状态只能标为 incomplete/smoke/provisional，不得盖 `Eval-Gate: pass`。
 
 隔离构建必须显式传入五个主题（包括新增的停用主题），例如：
 

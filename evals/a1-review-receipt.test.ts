@@ -26,7 +26,7 @@ function binding() {
 
 function reviewer(id: string, b: ReturnType<typeof binding>, overrides: Partial<Record<string, Partial<{ non_obvious: boolean; hallucination: boolean; importance_reasonable: boolean }>>> = {}): BlindReviewerSubmission {
   return {
-    reviewer_id: id, blind_attestation: true,
+    reviewer_id: id, reviewer_kind: "human", blind_attestation: true,
     decisions: b.insights.map((insight) => ({
       insight_id: insight.id, insight_text_sha256: insight.text_sha256,
       non_obvious: true, hallucination: insight.id === "i-0", importance_reasonable: true,
@@ -55,8 +55,23 @@ describe("A1 review receipt", () => {
     const b = binding();
     const first = reviewer("r1", b); const second = reviewer("r2", b, { "i-1": { hallucination: true } });
     expect(verifyReviewReceipt(b, [first, second], []).issues.join(" ")).toContain("分歧项缺少 adjudication：i-1");
-    const receipt = verifyReviewReceipt(b, [first, second], [{ insight_id: "i-1", adjudicator_id: "r3", decision: { non_obvious: true, hallucination: false, importance_reasonable: true } }]);
+    const receipt = verifyReviewReceipt(b, [first, second], [{ insight_id: "i-1", adjudicator_id: "r3", adjudicator_kind: "human", decision: { non_obvious: true, hallucination: false, importance_reasonable: true } }]);
     expect(receipt.status).toBe("eligible_for_signoff");
+  });
+
+  it("rejects AI prelabels as either a blind reviewer or an adjudicator", () => {
+    const b = binding();
+    const aiReviewer = reviewer("ai-1", b); aiReviewer.reviewer_kind = "ai";
+    expect(verifyReviewReceipt(b, [aiReviewer, reviewer("r2", b)], []).issues.join(" ")).toContain("AI 预标注不得作为盲评签署证据");
+
+    const first = reviewer("r1", b);
+    const second = reviewer("r2", b, { "i-1": { hallucination: true } });
+    const receipt = verifyReviewReceipt(b, [first, second], [{
+      insight_id: "i-1", adjudicator_id: "ai-3", adjudicator_kind: "ai",
+      decision: { non_obvious: true, hallucination: false, importance_reasonable: true },
+    }]);
+    expect(receipt.status).toBe("ineligible");
+    expect(receipt.issues.join(" ")).toContain("AI 预标注不得作为裁决签署证据");
   });
 
   it("hashes the exact reader-visible text and fails closed when queue bytes differ from manifest", () => {

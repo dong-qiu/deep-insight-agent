@@ -66,7 +66,8 @@
 - [ ] 标注由**非生成者**完成（避免与 analyzer 同源偏差），最好双人交叉
 - [ ] 跑 `npm run eval:a1`，⚠️ 规模提示消失，自动门槛全 PASS
 - [ ] 不把仓内 legacy fixture 升为 DCP baseline。v2 数据必须放在受控不可变快照；提交 `dataset-lock`（输入哈希、source URL/ID manifest、采集时间、license/retention、topic 映射、去重规则与标签分布），而不是提交新的第三方全文。
-- [ ] 人评：两位独立盲评必须逐条覆盖同一 reader-visible population；对分歧由第三人 adjudicate，再运行 `npm run review:receipt -- <manifest.json> <review-queue.json> <blind-reviews.json>`。该 receipt 最多产生 `eligible_for_signoff`，不替代 DCP owner/architect 签署。n=50 时最多 1 条幻觉是样本点估计 ≤2%，并非总体保证；非显然与 importance 合理性记录为诊断指标（当前无 DCP 自动阈值）。
+- [ ] AI 预标注（可选）：使用 `ai-prelabel-handoff.template.json` 记录三个 `diagnostic_only` 预标注者的模型、Thinking、prompt 和产物 hash；不能将标签、理由或文件交给盲评 reviewer，也不能作为 `review:receipt` 输入。
+- [ ] 人评：两位独立盲评必须逐条覆盖同一 reader-visible population；`npm run review:csv` 会拒绝任何 AI 预标注参数。待两份人工提交冻结后，才可揭示预标注作诊断。对人工分歧由第三位**人工** adjudicate，再运行 `npm run review:receipt -- <manifest.json> <review-queue.json> <blind-reviews.json>`；submission 必须声明 `reviewer_kind: "human"`，adjudication 必须声明 `adjudicator_kind: "human"`。该 receipt 最多产生 `eligible_for_signoff`，不替代 DCP owner/architect 签署。n=50 时最多 1 条幻觉是样本点估计 ≤2%，并非总体保证；非显然与 importance 合理性记录为诊断指标（当前无 DCP 自动阈值）。
 
 ## 本仓自带数据集的来源与已知局限
 

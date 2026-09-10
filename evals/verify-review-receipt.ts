@@ -31,13 +31,18 @@ const validMark = (value: unknown): boolean => {
 const validReviewer = (value: unknown): boolean => {
   if (value == null || typeof value !== "object") return false;
   const reviewer = value as Record<string, unknown>;
-  return typeof reviewer.reviewer_id === "string" && reviewer.blind_attestation === true && Array.isArray(reviewer.decisions) && reviewer.decisions.every(validMark);
+  return typeof reviewer.reviewer_id === "string"
+    && (reviewer.reviewer_kind === "human" || reviewer.reviewer_kind === "ai")
+    && reviewer.blind_attestation === true
+    && Array.isArray(reviewer.decisions)
+    && reviewer.decisions.every(validMark);
 };
 const validAdjudication = (value: unknown): boolean => {
   if (value == null || typeof value !== "object") return false;
   const adjudication = value as Record<string, unknown>;
   return typeof adjudication.insight_id === "string"
     && typeof adjudication.adjudicator_id === "string"
+    && (adjudication.adjudicator_kind === "human" || adjudication.adjudicator_kind === "ai")
     && adjudication.decision != null
     && typeof adjudication.decision === "object"
     && typeof (adjudication.decision as Record<string, unknown>).non_obvious === "boolean"

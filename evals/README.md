@@ -40,6 +40,9 @@ npm run typecheck   # tsc 类型检查
 每次运行写入独立 `out/runs/<run-id>/`（`a1-run.json`、review queue/CSV、`manifest.json`）；
 `out/runs/latest-complete.json` 只是最近完成的指针，必须分别读取 `auto_gate`、`manual_review`、`dcp_eligibility`，不能当作 PASS 标记。
 `npm run review:csv` / `npm run review:sheet` 默认沿该指针读取隔离 run 的 review queue；也可显式传入某次 run 的路径。
+它们生成的是**不含 AI 预标注**的人工盲评输入。三个可选 AI 预标注只能以
+`dataset/ai-prelabel-handoff.template.json` 所示的 `diagnostic_only` 形式单独留存，待两份人工提交冻结后再揭示；
+它们不得进入 `review:receipt` 或充当第三位裁决者。
 
 排查 relay 或模型长尾时，可用 `A1_QUALITY_LIMIT`、`A1_CONSISTENCY_LIMIT`、
 `A1_DISPLAY_COVERAGE_LIMIT`、`A1_QUOTE_SELF_CONTAINED_LIMIT` 暂时限制相应集合。值为 `0`（默认）或不小于

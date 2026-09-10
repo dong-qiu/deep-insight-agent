@@ -20,6 +20,12 @@ export interface ReviewMark {
 
 export interface BlindReviewerSubmission {
   reviewer_id: string;
+  /**
+   * The verifier only permits human submissions in a sign-off receipt.  `ai` is accepted by
+   * the input shape solely to fail closed with an actionable diagnostic rather than letting a
+   * prelabel be mistaken for a blind review.
+   */
+  reviewer_kind: "human" | "ai";
   /** Human attestation: tooling can verify identity separation and order, not a person's view. */
   blind_attestation: true;
   decisions: ReviewMark[];
@@ -28,6 +34,8 @@ export interface BlindReviewerSubmission {
 export interface ReviewAdjudication {
   insight_id: string;
   adjudicator_id: string;
+  /** As with reviewer_kind, only a human adjudicator may contribute to a sign-off receipt. */
+  adjudicator_kind: "human" | "ai";
   decision: Omit<ReviewMark, "insight_id" | "insight_text_sha256">;
 }
 
@@ -125,6 +133,9 @@ export function bindReviewArtifacts(manifestPath: string, queuePath: string): A1
 function validateSubmission(binding: A1ReviewBinding, submission: BlindReviewerSubmission, label: string): string[] {
   const issues: string[] = [];
   if (!submission.reviewer_id.trim()) issues.push(`${label} 缺少 reviewer_id`);
+  if (submission.reviewer_kind !== "human") {
+    issues.push(`${label} 必须声明 reviewer_kind=human；AI 预标注不得作为盲评签署证据`);
+  }
   if (submission.blind_attestation !== true) issues.push(`${label} 未作 blind_attestation`);
   const expected = new Map(binding.insights.map((item) => [item.id, item.text_sha256]));
   const seen = new Set<string>();
@@ -176,6 +187,9 @@ export function verifyReviewReceipt(
     if (!disagreements.includes(adjudication.insight_id)) issues.push(`非分歧项不可 adjudicate：${adjudication.insight_id}`);
     if (!adjudication.adjudicator_id.trim() || adjudication.adjudicator_id === first.reviewer_id || adjudication.adjudicator_id === second.reviewer_id) {
       issues.push(`adjudicator 必须是不同于两位 reviewer 的第三人：${adjudication.insight_id}`);
+    }
+    if (adjudication.adjudicator_kind !== "human") {
+      issues.push(`adjudicator 必须声明 adjudicator_kind=human；AI 预标注不得作为裁决签署证据：${adjudication.insight_id}`);
     }
     if (typeof adjudication.decision.non_obvious !== "boolean" || typeof adjudication.decision.hallucination !== "boolean" || typeof adjudication.decision.importance_reasonable !== "boolean") {
       issues.push(`adjudication 结果必须全为布尔值：${adjudication.insight_id}`);
