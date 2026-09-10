@@ -84,6 +84,34 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      # P0 checks and the container-level fail-closed contract always run.
+      # The expensive P1 evidence generators additionally run for P1 code or
+      # a shared boundary; a P0-only edit must not make dormant P1 telemetry a
+      # hidden delivery dependency.
+      - name: classify P1 extended-gate scope
+        id: p1_scope
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" != "pull_request" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "P1 extended gates: main push"
+            exit 0
+          fi
+          changed="$RUNNER_TEMP/changed-files.txt"
+          git diff --name-only "$PR_BASE" "$PR_HEAD" > "$changed"
+          if grep -Eq '^(\.github/workflows/ci\.yml|Dockerfile|docker-compose\.yml|package(-lock)?\.json|src/lib/capabilities/|src/lib/agents/(collector|pipeline|scheduler)(\..*)?$|src/lib/db/(p1-|provenance-|schema|analysis)|src/lib/runtime/(p1-|integrity-)|src/app/api/admin/|evals/(p1-|provenance-))' "$changed"; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "P1 extended gates: P1 or shared boundary changed"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "P1 extended gates: skipped for P0-only change"
+          fi
       - uses: actions/setup-node@v7
         with:
           node-version: "24.19.0"
@@ -98,20 +126,24 @@ jobs:
       # 见 docs/plan/m3-plan.md M3-4、docs/launch/operations.md §13。
       - run: npm run test:coverage
       - name: P1 provenance integrity gate
+        if: steps.p1_scope.outputs.run == 'true'
         run: |
           npx tsx evals/provenance-dashboard-integrity-v1.ts > "$RUNNER_TEMP/provenance-dashboard-integrity-v1-evidence.json"
           node -e 'const evidence=JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")); for (const key of ["evaluation_schema_version","rule_version","checker_version","hash_key_version","executed_at_utc","dataset_sha256","expected_output","error_tolerance","execution_environment","actual_output"]) if (!(key in evidence)) throw new Error(`missing integrity evidence: ${key}`); if (JSON.stringify(evidence.actual_output)!==JSON.stringify(evidence.expected_output)) throw new Error("integrity output diverged from its fixed baseline")' "$RUNNER_TEMP/provenance-dashboard-integrity-v1-evidence.json"
       - name: upload P1 provenance integrity evidence
+        if: steps.p1_scope.outputs.run == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: provenance-dashboard-integrity-v1-evidence
           path: ${{ runner.temp }}/provenance-dashboard-integrity-v1-evidence.json
           if-no-files-found: error
       - name: P1 metrics capacity gate
+        if: steps.p1_scope.outputs.run == 'true'
         run: |
           npx tsx evals/p1-metrics-capacity-v4.ts --enforce > "$RUNNER_TEMP/p1-metrics-capacity-v4-evidence.json"
           node -e 'JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"))' "$RUNNER_TEMP/p1-metrics-capacity-v4-evidence.json"
       - name: upload P1 metrics capacity evidence
+        if: steps.p1_scope.outputs.run == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: p1-metrics-capacity-v4-evidence

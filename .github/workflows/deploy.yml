@@ -133,6 +133,18 @@ jobs:
             *) echo "P1_DASHBOARD_ENABLED 必须为 true/false/1/0" >&2; exit 1 ;;
           esac
 
+          # Lifecycle is composition policy only. Production is permanently
+          # dormant until a separately reviewed admission path exists; it may
+          # not bypass the independent anchor/dashboard guards above.
+          p1_lifecycle_count=\$(grep -c '^P1_LIFECYCLE=' "\$app_dir/.env.local" || true)
+          [[ "\$p1_lifecycle_count" -le 1 ]] || { echo "P1_LIFECYCLE 不可重复配置" >&2; exit 1; }
+          p1_lifecycle_raw=\$(sed -n -E 's/^P1_LIFECYCLE=(.*)$/\1/p' "\$app_dir/.env.local" | tail -n 1)
+          [[ "\$p1_lifecycle_raw" == "\${p1_lifecycle_raw//[[:space:]]/}" ]] || { echo "P1_LIFECYCLE 不可包含空白" >&2; exit 1; }
+          case "\$p1_lifecycle_raw" in
+            ""|dormant) echo "P1 lifecycle：dormant" ;;
+            *) echo "生产环境 P1_LIFECYCLE 只能为 dormant；生产准入另行评审" >&2; exit 1 ;;
+          esac
+
           docker pull "\$image"
           p1_dashboard_admission=\$(docker image inspect --format '{{ index .Config.Labels "org.insight-agent.p1-dashboard-admission" }}' "\$image")
           case "\$p1_dashboard_admission" in

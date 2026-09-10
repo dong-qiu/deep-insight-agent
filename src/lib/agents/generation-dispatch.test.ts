@@ -5,8 +5,19 @@ import { assertGenerationDispatchClaim, claimNextGenerationDispatch, createDeepD
 import { finishRun, insertContentItem, insertRun, insertSource, insertTopic } from "../db/repos.js";
 import { appendGenerationEvent, captureRevision, entityKey } from "../db/provenance-facts.js";
 import { contentItemRef } from "../db/provenance-revisions.js";
-import type { ContentItem, Report, Source } from "../types.js";
+import type { AnalysisBatch, ContentItem, Report, Source, ValidationResult } from "../types.js";
 import { runGenerationDispatchOnce } from "./generation-dispatch.js";
+import { NOOP_P1_TELEMETRY_SINK } from "../capabilities/p1-telemetry.js";
+
+const { runAnalysisMock, runValidationMock, runReportGenMock } = vi.hoisted(() => ({
+  runAnalysisMock: vi.fn(), runValidationMock: vi.fn(), runReportGenMock: vi.fn(),
+}));
+vi.mock("./pipeline.js", async (orig) => ({
+  ...(await orig<typeof import("./pipeline.js")>()),
+  runAnalysis: runAnalysisMock,
+  runValidation: runValidationMock,
+  runReportGen: runReportGenMock,
+}));
 
 describe("generation dispatch worker", () => {
   let db: DB;
@@ -14,6 +25,9 @@ describe("generation dispatch worker", () => {
   beforeEach(() => {
     db = openDb(":memory:");
     applyProvenanceMigrations(db);
+    runAnalysisMock.mockReset();
+    runValidationMock.mockReset();
+    runReportGenMock.mockReset();
     insertTopic(db, {
       id: "topic_a", name: "Topic A", keywords: [], language: "en", brief_schedule: "daily", enabled: true,
       archetype: "deep_vertical", facets: [],
@@ -23,6 +37,7 @@ describe("generation dispatch worker", () => {
   afterEach(() => {
     vi.useRealTimers();
     delete process.env.INTEGRITY_ANCHOR_ENABLED;
+    vi.unstubAllEnvs();
   });
 
   function accept(): { traceId: string } {
@@ -161,6 +176,81 @@ describe("generation dispatch worker", () => {
     expect(await runGenerationDispatchOnce(db)).toMatchObject({ claimed: true, traceId: accepted.traceId, status: "done" });
     expect(db.prepare("SELECT stage,event_type,reason_code FROM generation_event WHERE trace_id=?").all(accepted.traceId))
       .toEqual([{ stage: "select", event_type: "skipped", reason_code: "no_content" }]);
+  });
+
+  it("finishes a production P1-dev dispatch with no P1 metric facts", async () => {
+    const accepted = createScheduledTraceRequest(db, {
+      topicId: "topic_a", reportType: "brief", period: "2026-08-04", windowHours: 168, items: 15,
+    });
+    if (accepted.kind !== "accepted") throw new Error("expected accepted request");
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("P1_LIFECYCLE", "dev");
+
+    await expect(runGenerationDispatchOnce(db, undefined, { telemetry: NOOP_P1_TELEMETRY_SINK }))
+      .resolves.toMatchObject({ claimed: true, traceId: accepted.traceId, status: "done" });
+    expect(db.prepare(`SELECT
+      (SELECT COUNT(*) FROM funnel_event) AS funnel,
+      (SELECT COUNT(*) FROM cost_ledger) AS cost,
+      (SELECT COUNT(*) FROM validator_result_fact) AS validator,
+      (SELECT COUNT(*) FROM dashboard_trace_fact_v1) AS dashboard_trace,
+      (SELECT COUNT(*) FROM dashboard_cost_fact_v1) AS dashboard_cost`).get())
+      .toEqual({ funnel: 0, cost: 0, validator: 0, dashboard_trace: 0, dashboard_cost: 0 });
+  });
+
+  it("runs the non-empty production dispatch path with its injected no-op telemetry", async () => {
+    const source: Source = {
+      id: "source_p1_dormant", name: "P1 dormant", type: "rss", endpoint: "https://example.test/feed",
+      topic_ids: ["topic_a"], fetch_interval: "1h", backfill: null, enabled: true,
+    };
+    const item: ContentItem = {
+      id: "content_p1_dormant", source_id: source.id, url: "https://example.test/p1-dormant", title: "P1 dormant",
+      author: null, published_at: new Date().toISOString(), fetched_at: new Date().toISOString(), language: "en",
+      topic_ids: ["topic_a"], tags: [], body: "P1 dormant dispatch content", body_kind: "article", raw_ref: "raw",
+      content_hash: "p1-dormant-content", fetch_status: "ok",
+    };
+    insertSource(db, source);
+    insertContentItem(db, item);
+    const accepted = createScheduledTraceRequest(db, {
+      topicId: "topic_a", reportType: "brief", period: "2026-08-05", windowHours: 168, items: 1,
+    });
+    if (accepted.kind !== "accepted") throw new Error("expected accepted request");
+    let rootRunId = "";
+    const batch = { id: "batch_p1_dormant", topic_id: "topic_a", insights: [] } as unknown as AnalysisBatch;
+    const validation = { checks: [], report: { releasable: true } } as unknown as ValidationResult;
+    runAnalysisMock.mockImplementation(async (runDb, _topic, selected, _window, opts) => {
+      rootRunId = opts.rootRunId;
+      opts.telemetry.recordAnalysis(runDb, { batch, items: selected, run_id: rootRunId, costs: [] });
+      appendGenerationEvent(runDb, { trace_id: opts.traceId, run_id: rootRunId, stage: "analyze", event_type: "completed" });
+      return batch;
+    });
+    runValidationMock.mockImplementation(async (runDb, selectedBatch, selected, opts) => {
+      opts.telemetry.recordValidation(runDb, { batch: selectedBatch, validation, items: selected, run_id: "run_validate_p1_dormant", costs: [] });
+      insertRun(runDb, { id: "run_validate_p1_dormant", kind: "validate", target: {}, status: "running", started_at: new Date().toISOString(), ended_at: null, duration_ms: null, cost: null, error: null, retry_of: null, trace_id: opts.traceId });
+      appendGenerationEvent(runDb, { trace_id: opts.traceId, run_id: "run_validate_p1_dormant", stage: "validate", event_type: "completed" });
+      finishRun(runDb, "run_validate_p1_dormant", { status: "done", duration_ms: 1 });
+      return validation;
+    });
+    runReportGenMock.mockImplementation(async (runDb, input) => {
+      insertRun(runDb, { id: "run_report_p1_dormant", kind: "report-gen", target: {}, status: "running", started_at: new Date().toISOString(), ended_at: null, duration_ms: null, cost: null, error: null, retry_of: null, trace_id: input.traceId });
+      appendGenerationEvent(runDb, { trace_id: input.traceId, run_id: "run_report_p1_dormant", stage: "generate_report", event_type: "completed" });
+      finishRun(runDb, "run_report_p1_dormant", { status: "done", duration_ms: 1 });
+      finishRun(runDb, rootRunId, { status: "done", duration_ms: 1 });
+      return {} as Report;
+    });
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("P1_LIFECYCLE", "dev");
+
+    await expect(runGenerationDispatchOnce(db, undefined, { telemetry: NOOP_P1_TELEMETRY_SINK }))
+      .resolves.toMatchObject({ claimed: true, traceId: accepted.traceId, status: "done" });
+    expect(runAnalysisMock).toHaveBeenCalledWith(db, expect.any(Object), [expect.objectContaining({ id: item.id })], expect.any(Object), expect.objectContaining({ telemetry: NOOP_P1_TELEMETRY_SINK }));
+    expect(runValidationMock).toHaveBeenCalledWith(db, batch, [expect.objectContaining({ id: item.id })], expect.objectContaining({ telemetry: NOOP_P1_TELEMETRY_SINK }));
+    expect(db.prepare(`SELECT
+      (SELECT COUNT(*) FROM funnel_event) AS funnel,
+      (SELECT COUNT(*) FROM cost_ledger) AS cost,
+      (SELECT COUNT(*) FROM validator_result_fact) AS validator,
+      (SELECT COUNT(*) FROM dashboard_trace_fact_v1) AS dashboard_trace,
+      (SELECT COUNT(*) FROM dashboard_cost_fact_v1) AS dashboard_cost`).get())
+      .toEqual({ funnel: 0, cost: 0, validator: 0, dashboard_trace: 0, dashboard_cost: 0 });
   });
 
   it("rejects an old claim after its lease is taken over", () => {

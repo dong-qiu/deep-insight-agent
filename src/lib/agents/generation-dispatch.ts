@@ -9,6 +9,7 @@ import {
 } from "../db/provenance.js";
 import { runPipelineForTopic, runScheduledTopicPipeline, type GenerationExecutionOptions } from "./scheduler.js";
 import { deploymentAnchorPublicationIfEnabled } from "../runtime/integrity-anchor-runtime.js";
+import { NOOP_P1_TELEMETRY_SINK, type P1TelemetrySink } from "../capabilities/p1-telemetry.js";
 
 const HEARTBEAT_MS = 30_000;
 
@@ -17,6 +18,8 @@ const HEARTBEAT_MS = 30_000;
 export interface GenerationDispatchRuntime {
   heartbeat?: typeof heartbeatGenerationDispatch;
   heartbeatMs?: number;
+  /** Supplied by the worker composition root; core dispatch is dormant by default. */
+  telemetry?: P1TelemetrySink;
 }
 
 export async function runGenerationDispatchOnce(
@@ -49,6 +52,7 @@ export async function runGenerationDispatchOnce(
         if (lostLease) throw new Error("generation_fence_lost");
         assertGenerationDispatchClaim(db, claim);
       },
+      telemetry: runtime.telemetry ?? NOOP_P1_TELEMETRY_SINK,
     });
     if (lostLease || !finishGenerationDispatch(db, claim, { status: "done" })) {
       throw new Error("generation dispatch lease was lost before completion");
@@ -86,6 +90,6 @@ async function executeDispatch(
   if (opts.windowHours == null || opts.items == null) throw new Error("invalid_scheduled_dispatch_payload");
   return runScheduledTopicPipeline(db, topicId, {
     reportType: opts.reportType, windowHours: opts.windowHours, items: opts.items,
-    traceId: opts.traceId, rootRunId: opts.rootRunId, windowEnd: opts.windowEnd, assertWrite: opts.assertWrite, anchor,
+    traceId: opts.traceId, rootRunId: opts.rootRunId, windowEnd: opts.windowEnd, assertWrite: opts.assertWrite, anchor, telemetry: opts.telemetry,
   });
 }

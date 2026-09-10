@@ -3,7 +3,7 @@
  *  端到端需 ANTHROPIC_API_KEY，由团队/定时任务跑。 */
 import type { DB } from "../db/index.js";
 import { saveAnalysisBatch, saveValidationResult } from "../db/analysis.js";
-import { appendAnalysisMetricFacts, appendValidationMetricFacts } from "../db/p1-metrics-pipeline.js";
+import { NOOP_P1_TELEMETRY_SINK, type P1TelemetrySink } from "../capabilities/p1-telemetry.js";
 import {
   analysisCacheEnabled, analysisCacheReadEnabled, instantiateCachedInsights,
   isFullReanalyzeToday, lookupCachedInsights, recordAnalysisCache,
@@ -68,8 +68,9 @@ export async function runAnalysis(
   topic: Topic,
   items: ContentItem[],
   window: { start: string; end: string },
-  opts: { history?: HistoricalEvent[]; traceId?: string; rootRunId?: string; assertWrite?: () => void } = {},
+  opts: { history?: HistoricalEvent[]; traceId?: string; rootRunId?: string; assertWrite?: () => void; telemetry?: P1TelemetrySink } = {},
 ): Promise<AnalysisBatch> {
+  const telemetry = opts.telemetry ?? NOOP_P1_TELEMETRY_SINK;
   const inputs = opts.traceId ? contentRefs(items) : [];
   emitTrace(db, opts.traceId, { stage: "analyze", event_type: "started", input_refs: inputs }, opts.assertWrite);
   try {
@@ -110,7 +111,7 @@ export async function runAnalysis(
         } }, opts.assertWrite);
       });
     } else { opts.assertWrite?.(); saveAnalysisBatch(db, batch); }
-    appendAnalysisMetricFacts(db, { batch, items, run_id: ctx.runId, costs: metricCosts });
+    telemetry.recordAnalysis(db, { batch, items, run_id: ctx.runId, costs: metricCosts });
     // 写缓存（切片1，写路径默认开）：对全部 item 按键 upsert（命中++ 计度量 + 刷 last_seen），
     // insights_json 取**本轮真析产出**（miss 的新洞察；命中键 ON CONFLICT 不覆写、复用洞察不重记）。
     // recordAnalysisCache 内部全捕获、绝不连累管线。
@@ -132,8 +133,9 @@ export async function runValidation(
   db: DB,
   batch: AnalysisBatch,
   items: ContentItem[],
-  opts: { traceId?: string; assertWrite?: () => void } = {},
+  opts: { traceId?: string; assertWrite?: () => void; telemetry?: P1TelemetrySink } = {},
 ): Promise<ValidationResult> {
+  const telemetry = opts.telemetry ?? NOOP_P1_TELEMETRY_SINK;
   const batchRef: EntityRef = { type: "analysis_batch", locator: { kind: "id", id: batch.id }, revision: batch.id, role: "input" };
   const inputs = [batchRef, ...(opts.traceId ? contentRefs(items) : [])];
   emitTrace(db, opts.traceId, { stage: "validate", event_type: "started", input_refs: inputs }, opts.assertWrite);
@@ -159,7 +161,7 @@ export async function runValidation(
         } }, opts.assertWrite);
       });
     } else { opts.assertWrite?.(); saveValidationResult(db, batch.id, vr); }
-    appendValidationMetricFacts(db, { batch, validation: vr, items, run_id: ctx.runId, costs: metricCosts });
+    telemetry.recordValidation(db, { batch, validation: vr, items, run_id: ctx.runId, costs: metricCosts });
     // 抗抖告警：一致性调用大面积失败（疑似 LLM/中转站抖动）→ 主动告警，别让一整轮失败默默缺刊/记假数据。
     // 非致命：Run 仍 done（部分校验结果有效、已落库）；运维收到告警后重跑整管线即恢复（见 validator-uncertain-storms）。
     if (isValidationDegraded(vr.checks)) {

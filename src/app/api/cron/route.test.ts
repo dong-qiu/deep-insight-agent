@@ -46,7 +46,7 @@ describe("POST /api/cron", () => {
     const res = await call();
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ ok: true, mode: "pipeline" });
-    expect(pipelineMock).toHaveBeenCalledWith({ db: true }, {});
+    expect(pipelineMock).toHaveBeenCalledWith({ db: true }, { telemetry: expect.any(Object) });
     expect(collectionMock).not.toHaveBeenCalled();
   });
 

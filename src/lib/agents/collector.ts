@@ -14,7 +14,7 @@ import {
 } from "../db/provenance.js";
 import { appendGenerationEvent, captureRevision, entityKey, type EntityRef } from "../db/provenance-facts.js";
 import { contentItemRef, contentItemRevisionSnapshot, sourceConfigRef, sourceConfigSnapshot } from "../db/provenance-revisions.js";
-import { appendCollectorMetricFact } from "../db/p1-metrics-pipeline.js";
+import { NOOP_P1_TELEMETRY_SINK, type P1TelemetrySink } from "../capabilities/p1-telemetry.js";
 import { runJob } from "../runtime/jobs.js";
 import type { Source } from "../types.js";
 import { MIN_ARTICLE_CHARS, articleFetchEnabled, articleFetchKilled, fetchArticleBody } from "../sources/article.js";
@@ -49,8 +49,9 @@ function archiveRaw(id: string, raw: string): string {
 export async function collectSource(
   db: DB,
   source: Source,
-  opts: { retryOf?: string | null; probe?: boolean; traceClaim?: SourceCollectClaim } = {},
+  opts: { retryOf?: string | null; probe?: boolean; traceClaim?: SourceCollectClaim; telemetry?: P1TelemetrySink } = {},
 ): Promise<CollectResult> {
+  const telemetry = opts.telemetry ?? NOOP_P1_TELEMETRY_SINK;
   const trace = opts.traceClaim;
   const sourceRef = trace ? sourceConfigRef(source) : null;
   const outputs: EntityRef[] = [];
@@ -196,8 +197,9 @@ export async function collectSource(
         }
       })();
       if (!persistedItem) throw new Error("content_item_write_not_found");
-      // P1b-2 observes the committed collector output only; it never feeds report selection or citation validation.
-      appendCollectorMetricFact(db, { run_id: ctx.runId, item: persistedItem });
+      // Optional P1 telemetry observes committed output only; it never feeds
+      // report selection or citation validation.
+      telemetry.recordCollector(db, { run_id: ctx.runId, item: persistedItem });
       if (persistedOutputRef) outputs.push(persistedOutputRef);
       if (existing) updated++;
       else inserted++;

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { runGenerationDispatchOnce } from "../../../../lib/agents/generation-dispatch.js";
 import { getDb } from "../../../../lib/db/index.js";
 import { hasDispatchWorkerSecret } from "../../../../lib/runtime/dispatch-auth.js";
+import { p1TelemetrySinkForApp } from "../../../p1-telemetry-composition.js";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -13,6 +14,6 @@ export async function POST(req: Request): Promise<Response> {
   if (!hasDispatchWorkerSecret(req.headers.get("x-dispatch-worker-secret"), secret)) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
-  const result = await runGenerationDispatchOnce(getDb());
+  const result = await runGenerationDispatchOnce(getDb(), undefined, { telemetry: p1TelemetrySinkForApp() });
   return NextResponse.json(result);
 }
