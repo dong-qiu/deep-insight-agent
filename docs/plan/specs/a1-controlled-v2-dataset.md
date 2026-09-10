@@ -86,6 +86,13 @@ export EVAL_TOPIC_SOURCE_IDS='{"t_code_agents":["src_simonwillison","src_aider"]
 `EVAL_TOPIC_IDS` 只改变本地评测的读取范围，不启用 topic、不修改生产 SQLite，也不替代后续生产启用决策。
 `EVAL_TOPIC_SOURCE_IDS` 让指定来源对优先并且只能为各自 topic 补样；它不能与旧的全局 `EVAL_REQUIRED_SOURCE_IDS` 混用，从而避免共享 source route 先占用条目、使后续 topic 单源或空缺。
 
+构建成功后，先生成无正文的 candidate source manifest，再把质量 JSONL 与该 manifest 上传至受控 bucket；candidate 的 `pending_source_terms_review`/`candidate_pending_labels` 状态不构成 `verified_v2` lock：
+
+```bash
+npm run eval:prepare-controlled-v2-snapshot -- \
+  evals/dataset/insight-quality-v2.local.jsonl /tmp/a1-v2-candidate a1-v2-candidate-20260910
+```
+
 ## 非功能要求
 
 - 安全：采集和原文只位于 `EVAL_ISOLATED_ROOT` 或获授权的受控快照；采集错误 manifest 不记录 URL、正文或凭据。
