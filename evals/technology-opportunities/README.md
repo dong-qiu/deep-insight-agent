@@ -4,25 +4,25 @@
 
 ## 盲标与固定样本
 
-1. 从只读快照导出**全量合格 TechLead**（即仍有当前 `pass` 证据、未 dismissed 的 `listPlanningTechLeads` 语义），绝不能从 `TechnologyOpportunity` pool 倒推样本。输入必须是 `qualified-tech-leads-snapshot-v1`，明确声明 `source=listPlanningTechLeads`、`qualification=current_pass_evidence_and_not_dismissed`、`pagination=unbounded`、`total_count`，并逐行带 `status` 与 `pass_evidence_count`；500 行默认 view、截断、dismissed 或无 pass 的快照会被拒绝。
+1. 从只读快照导出**全量合格 TechLead**（即仍有当前 `pass` 证据、未 dismissed 的 `listPlanningTechLeads` 语义），绝不能从 `TechnologyOpportunity` pool 倒推样本。唯一可执行输入是 `qualified-tech-leads-snapshot-v2`，明确声明 `source=listPlanningTechLeads`、`qualification=current_pass_evidence_and_not_dismissed`、`pagination=unbounded`、`total_count`，并逐行带 `status`、`pass_evidence_count` 和确定性映射输入；500 行默认 view、截断、dismissed 或无 pass 的快照会被拒绝。v1 是历史格式，不可执行。
 2. 在隔离目录先运行 `npm run eval:opportunity-export -- qualified-snapshot.json <UTC>`，再运行：
 
    ```bash
-   npx tsx evals/build-opportunity-dogfood-v2-sample.ts qualified-leads.json blind-manifest.json <fixed-seed> 20
+   npm run eval:opportunity-sample -- qualified-snapshot.json blind-manifest.json <fixed-seed> 20
    ```
 
-   输入是 `{ "snapshot_at": "<ISO UTC>", "leads": [...] }`；输出以 `wx` 创建，避免静默覆盖。清单记录 UTC 时间、总体规模、固定 seed、总体摘要和分层抽样方法；每行只含不敏感的 sample id、topic、kind、证据/新鲜度分桶，不含 TechLead id、标题、quote、URL 或系统映射结果。
-3. 评审者先依据允许的证据填写只含 expected 字段的私有文件，并封存：`npm run eval:opportunity-seal -- blind-manifest.json expected-only.json sealed.json <UTC>`。sealed artifact 不含 lead id 或 actual。随后才用**同一 snapshot**及私有 lead-id→actual mapping 运行 `npm run eval:opportunity-materialize -- qualified-snapshot.json blind-manifest.json sealed.json actual-by-lead-id.json labels.json <UTC>`；任意 manifest 行重排、换 strata、改 expected、错快照或 actual 泄漏都会失败。
-4. 运行（labels 的同目录需有对应 blind manifest，或显式作为第二参数）：
+   快照还私有地保存确定性投影所需的 lead 输入和方向词表；blind manifest 不含 TechLead id、标题、quote、URL 或 actual。所有文件以 `wx` 创建，避免静默覆盖。`pilot` 仅可显式传入第 5 个参数 `true`，并且不可评分；20 条真实 dogfood 默认仍可评分。
+3. 评审者先依据允许的证据填写只含 expected 字段的私有文件，并封存：`npm run eval:opportunity-seal -- blind-manifest.json expected-only.json sealed.json <UTC>`。封存 schema 严格 expected-only，任何 `actual_*` 字段都会被拒绝。之后从**同一 snapshot**只读导出 actual：`npm run eval:opportunity-mapping-export -- qualified-snapshot.json deterministic-mapping.json`，再运行 `npm run eval:opportunity-materialize -- qualified-snapshot.json blind-manifest.json sealed.json deterministic-mapping.json labels.json <UTC>`。不接受自由 lead-id→actual 输入。
+4. 评分必须同时提供同一 snapshot、manifest、seal 和 deterministic mapping：
 
    ```bash
-   npm run eval:opportunity-map -- labels.v2.json
+   npm run eval:opportunity-map -- labels.json qualified-snapshot.json blind-manifest.json sealed.json deterministic-mapping.json
    ```
 
    输出 candidate precision/recall、按 topic/kind/期望 lane 的覆盖、candidate/direction/lane 混淆矩阵，以及带 sample id 的错分归因。
 
 ## 20 条 pilot
 
-`pilot-v2.blind-manifest.json` 与 `pilot-v2.labels.json` 是固定、脱敏的 20 行**协议可用性 fixture**：它覆盖候选、排除、horizon、错 lane / 错 direction、漏候选和 `not_enough_evidence` 的数据契约。它不是生产快照，不表达映射质量，也不能满足原先 50–100 条的质量收口条件。
+历史 `pilot-v2.*` 是固定、脱敏的协议 fixture，明确**不可评分、不可执行**；它没有 v2 snapshot/seal/mapping bind，不能作为 dogfood 或质量证据。
 
 标签不得包含原文全文、密钥或生产个人数据。实际 dogfood 样本的证据仍通过 TechLead 的 `pass` 引用链复核；仅在人工复核后才可讨论显式词项调整，不能以语义映射、自动立项或生产写入替代复核。

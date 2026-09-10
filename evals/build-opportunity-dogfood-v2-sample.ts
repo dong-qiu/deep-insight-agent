@@ -2,11 +2,12 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { createBlindSampleManifest, type QualifiedTechLeadSnapshot } from "./technology-opportunities/dogfood-v2.js";
 
-const [inputPath, outputPath, seed, countArg] = process.argv.slice(2);
+const [inputPath, outputPath, seed, countArg, pilotArg] = process.argv.slice(2);
 if (!inputPath || !outputPath || !seed) {
   throw new Error("Usage: tsx evals/build-opportunity-dogfood-v2-sample.ts <qualified-leads.json> <blind-manifest.json> <seed> [count=20]");
 }
 const input = JSON.parse(readFileSync(inputPath, "utf8")) as QualifiedTechLeadSnapshot;
 const count = countArg === undefined ? 20 : Number(countArg);
-const manifest = createBlindSampleManifest(input, { generatedAt: input.snapshot_at, seed, count, pilot: count === 20 });
+if (pilotArg !== undefined && pilotArg !== "true" && pilotArg !== "false") throw new Error("pilot must be true or false");
+const manifest = createBlindSampleManifest(input, { generatedAt: input.snapshot_at, seed, count, pilot: pilotArg === "true" });
 writeFileSync(outputPath, `${JSON.stringify(manifest, null, 2)}\n`, { encoding: "utf8", flag: "wx" });

@@ -30,6 +30,7 @@
     "eval:opportunity-map": "tsx evals/score-opportunity-map.ts",
     "eval:opportunity-sample": "tsx evals/build-opportunity-dogfood-v2-sample.ts",
     "eval:opportunity-export": "tsx evals/export-qualified-tech-leads-v2.ts",
+    "eval:opportunity-mapping-export": "tsx evals/export-opportunity-dogfood-v2-mapping.ts",
     "eval:opportunity-seal": "tsx evals/seal-opportunity-dogfood-v2.ts",
     "eval:opportunity-materialize": "tsx evals/materialize-opportunity-dogfood-v2.ts",
     "eval:build-local": "tsx evals/build-local-eval.ts",

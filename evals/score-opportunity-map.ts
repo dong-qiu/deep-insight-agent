@@ -1,11 +1,12 @@
 /** 离线评分：比较人工盲标与确定性机会映射，不调用模型或生产数据库。 */
 import { readFileSync } from "node:fs";
-import { scoreDogfoodLabels, type DogfoodLabelFile } from "./technology-opportunities/dogfood-v2.js";
+import { scoreDogfoodLabels, type BlindSampleManifest, type DeterministicMappingExport, type DogfoodLabelFile, type QualifiedTechLeadSnapshot, type SealedExpectedArtifact } from "./technology-opportunities/dogfood-v2.js";
 
-const path = process.argv[2];
-if (!path) throw new Error("Usage: tsx evals/score-opportunity-map.ts <labels.json>");
-const labels = JSON.parse(readFileSync(path, "utf8")) as DogfoodLabelFile;
-const manifestPath = process.argv[3] ?? path.replace(/\.labels\.json$/, ".blind-manifest.json");
-if (manifestPath === path) throw new Error("Usage: tsx evals/score-opportunity-map.ts <labels.json> [blind-manifest.json]");
-const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-console.log(JSON.stringify(scoreDogfoodLabels(labels, manifest), null, 2));
+const [labelsPath, snapshotPath, manifestPath, sealedPath, mappingPath] = process.argv.slice(2);
+if (!labelsPath || !snapshotPath || !manifestPath || !sealedPath || !mappingPath) throw new Error("Usage: tsx evals/score-opportunity-map.ts <labels.json> <qualified-snapshot.json> <blind-manifest.json> <sealed.json> <deterministic-mapping.json>");
+const labels = JSON.parse(readFileSync(labelsPath, "utf8")) as DogfoodLabelFile;
+const snapshot = JSON.parse(readFileSync(snapshotPath, "utf8")) as QualifiedTechLeadSnapshot;
+const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as BlindSampleManifest;
+const sealed = JSON.parse(readFileSync(sealedPath, "utf8")) as SealedExpectedArtifact;
+const mapping = JSON.parse(readFileSync(mappingPath, "utf8")) as DeterministicMappingExport;
+console.log(JSON.stringify(scoreDogfoodLabels(labels, snapshot, manifest, sealed, mapping), null, 2));
