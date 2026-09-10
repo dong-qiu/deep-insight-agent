@@ -16,7 +16,7 @@ import { analyze, ANALYZE_BATCH_CHARS, chunkByChars, type AnalyzeStageTelemetry 
 import { getCostReport, getRoleCallTelemetry, MODELS, type RoleCallTelemetry } from "../src/lib/runtime/llm.js";
 import { coverageThinking, llmMaxRetries, llmTimeoutMs, llmTransientRetries, validatorThinking } from "../src/lib/runtime/env.js";
 import type { ContentItem, Topic } from "../src/lib/types.js";
-import { parseLatencyLadderCounts, selectLatencyLadderCase } from "./analyze-latency-ladder-lib.js";
+import { parseLatencyLadderCounts, parseLatencyLadderOffset, selectLatencyLadderCase } from "./analyze-latency-ladder-lib.js";
 
 interface QualityCase {
   topic: Topic;
@@ -50,7 +50,8 @@ async function main(): Promise<void> {
   const qualityBytes = readFileSync(qualityPath);
   const cases = qualityBytes.toString("utf8").split("\n").map((line) => line.trim()).filter(Boolean).map((line) => JSON.parse(line) as QualityCase);
   const counts = parseLatencyLadderCounts(process.env.A1_LADDER_ITEM_COUNTS);
-  const selected = selectLatencyLadderCase<ContentItem, QualityCase>(cases, process.env.A1_LADDER_TOPIC_ID, counts);
+  const itemOffset = parseLatencyLadderOffset(process.env.A1_LADDER_ITEM_OFFSET);
+  const selected = selectLatencyLadderCase<ContentItem, QualityCase>(cases, process.env.A1_LADDER_TOPIC_ID, counts, itemOffset);
   const runId = `a1-ladder-${new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)}-${randomUUID().slice(0, 8)}`;
   const outPath = process.env.A1_LADDER_OUT ?? join("evals/out/ladders", `${runId}.json`);
   const results: LadderResult[] = [];
@@ -63,6 +64,7 @@ async function main(): Promise<void> {
       quality_sha256: hash(qualityBytes),
       topic_id: selected.topic.id,
       requested_item_counts: counts,
+      item_offset: itemOffset,
       available_items: selected.items.length,
     },
     config: {
@@ -86,7 +88,7 @@ async function main(): Promise<void> {
   console.log(`A1 analyze latency ladder — topic=${selected.topic.id}, batch=${ANALYZE_BATCH_CHARS}, timeout=${llmTimeoutMs()}ms`);
 
   for (const itemCount of counts) {
-    const items = selected.items.slice(0, itemCount);
+    const items = selected.items.slice(itemOffset, itemOffset + itemCount);
     const started = performance.now();
     const stages: LadderResult["stages"] = [];
     const result: LadderResult = {

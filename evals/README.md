@@ -53,6 +53,8 @@ npm run typecheck   # tsc 类型检查
 `LLM_TIMEOUT_MS`、`LLM_MAX_RETRIES=0`、`LLM_TRANSIENT_RETRIES=0`；它不执行一致性 benchmark，也不能生成 baseline 或 DCP 结论。
 每个 rung 会先以 `running` 状态落盘、并在 `model_output` 和 `display_coverage` 阶段完成时即时更新；阶段记录只含
 耗时、结果与按角色汇总的调用/请求计数，不含正文、URL、端点或凭据。
+若需精确重放某个失败 chunk，可显式设 `A1_LADDER_ITEM_OFFSET`（零起始，默认 `0`）；它只改变从同一 topic
+选择的连续窗口，仍以输入条目 ID 哈希记录，不得用来抽取或导出正文。
 
 运行时须把 `VALIDATOR_THINKING` 与 `COVERAGE_THINKING` 分开显式配置。先对每个 relay/model
 运行 `npm run eval:canary-thinking`：它验证 A1 所用的 **thinking + forced structured tool** 组合，而不是
