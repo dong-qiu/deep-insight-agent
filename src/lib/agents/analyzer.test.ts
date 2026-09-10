@@ -50,6 +50,20 @@ describe("AnalyzerOutputSchema 的原子 citation claim", () => {
 });
 
 describe("analyze 的展示覆盖审计投影", () => {
+  it("本地 LLM 墙钟超时按基础设施失败上抛，绝不递归拆批放大请求", async () => {
+    vi.mocked(callStructured).mockReset();
+    vi.mocked(callStructured).mockRejectedValue(new Error("LLM stream exceeded wall-clock timeout of 30000ms"));
+    const topic: Topic = { id: "t", name: "T", keywords: [], language: "en", brief_schedule: "daily", enabled: true };
+    const items: ContentItem[] = ["one", "two"].map((id) => ({
+      id, source_id: "s", url: `https://example.test/${id}`, title: "T", author: null, published_at: null,
+      fetched_at: "2026-09-09T00:00:00.000Z", language: "en" as const, topic_ids: ["t"], tags: [],
+      body: `Source body ${id}.`, body_kind: "article" as const, raw_ref: "", content_hash: id, fetch_status: "ok" as const,
+    }));
+
+    await expect(analyze(topic, items, { start: "2026-09-09", end: "2026-09-09" })).rejects.toThrow("wall-clock timeout");
+    expect(callStructured).toHaveBeenCalledTimes(1);
+  });
+
   it("将审计前候选 ID 映射到最终 insight ID，并生成可持久化的 citation_ref/audit", async () => {
     vi.mocked(callStructured).mockReset();
     vi.mocked(callStructured)

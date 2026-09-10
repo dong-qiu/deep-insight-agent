@@ -54,6 +54,7 @@ import type { CitationCheck, ContentItem, ImportanceReason, Insight, Topic } fro
 import { DISPLAY_PROJECTION_VERSION } from "../src/lib/utils/source-quote-projection.js";
 import { selectInsights } from "../src/lib/agents/report-gen.js";
 import { beginA1Run, finalizeA1Run, finalizeFailedA1Run, sha256File, writeJson, type A1RunWorkspace } from "./a1-artifacts.js";
+import { isA1Smoke, selectA1Cases } from "./a1-case-limit.js";
 import { sameEvalConfig, type EvalConfig } from "./a1-config.js";
 import { validateDatasetLock, type DatasetLockValidation } from "./a1-dataset-lock.js";
 import {
@@ -252,13 +253,6 @@ function currentEvalConfig(qualityFile: string, consistencyFile: string, dataset
     display_coverage_countercheck_prompt_version: DISPLAY_COVERAGE_COUNTERCHECK_PROMPT_VERSION,
     display_coverage_countercheck_prompt_sha256: DISPLAY_COVERAGE_COUNTERCHECK_PROMPT_HASH,
   };
-}
-
-function parseLimit(raw: string | undefined, name: string): number {
-  if (raw == null || raw === "") return 0;
-  const n = Number(raw);
-  if (!Number.isInteger(n) || n < 0) throw new Error(`${name} 必须是非负整数（0=全量）`);
-  return n;
 }
 
 function readJsonl<T>(path: string): T[] {
@@ -515,19 +509,33 @@ async function main(): Promise<void> {
   }
   assertCoverageModelSeparation();
   activeWorkspace = beginA1Run();
-  // 子集冒烟开关：A1_QUALITY_LIMIT / A1_CONSISTENCY_LIMIT 限制跑多少条（廉价验证链路+成本）
-  const qLimit = parseLimit(process.env.A1_QUALITY_LIMIT, "A1_QUALITY_LIMIT");
-  const cLimit = parseLimit(process.env.A1_CONSISTENCY_LIMIT, "A1_CONSISTENCY_LIMIT");
+  // 子集开关只服务于有界诊断。任一集合实际被截断都会成为不可晋升的 smoke run。
 
   // ── Part A：洞察提炼 + 引用双层校验（按 stratum 分组收集） ──
   // A1_QUALITY_FILE 可指向本地多源集（evals/dataset/*.local.jsonl，不入仓）；默认 arXiv 集
   const qualityFile = process.env.A1_QUALITY_FILE ?? "evals/dataset/insight-quality.jsonl";
   const qualityAll = readJsonl<QualityCase>(qualityFile);
-  const qualityCases = qLimit ? qualityAll.slice(0, qLimit) : qualityAll;
+  const qualitySelection = selectA1Cases(qualityAll, process.env.A1_QUALITY_LIMIT, "A1_QUALITY_LIMIT");
+  const qualityCases = qualitySelection.cases;
   // A1_CONSISTENCY_FILE 可指向分形态集（如 transcript 专集），默认 arXiv 标注集。
   const consistencyFile = process.env.A1_CONSISTENCY_FILE ?? "evals/dataset/citation-consistency.jsonl";
   const consistencyAll = readJsonl<ConsistencyCase>(consistencyFile);
-  const consistencyCases = cLimit ? consistencyAll.slice(0, cLimit) : consistencyAll;
+  const consistencySelection = selectA1Cases(consistencyAll, process.env.A1_CONSISTENCY_LIMIT, "A1_CONSISTENCY_LIMIT");
+  const consistencyCases = consistencySelection.cases;
+  const displayCoverageAll = readDisplayCoverageCases();
+  const displayCoverageSelection = selectA1Cases(
+    displayCoverageAll,
+    process.env.A1_DISPLAY_COVERAGE_LIMIT,
+    "A1_DISPLAY_COVERAGE_LIMIT",
+  );
+  const displayCoverageCases = displayCoverageSelection.cases;
+  const quoteSelfContainedAll = readQuoteSelfContainedCases();
+  const quoteSelfContainedSelection = selectA1Cases(
+    quoteSelfContainedAll,
+    process.env.A1_QUOTE_SELF_CONTAINED_LIMIT,
+    "A1_QUOTE_SELF_CONTAINED_LIMIT",
+  );
+  const quoteSelfContainedCases = quoteSelfContainedSelection.cases;
   const datasetLockPath = process.env.A1_DATASET_LOCK ?? DEFAULT_DATASET_LOCK;
   let datasetLock: DatasetLockValidation;
   try {
@@ -547,7 +555,12 @@ async function main(): Promise<void> {
     };
   }
   // 仅实际缩小样本时才是冒烟；上限大于数据集不能悄悄绕过全量质量门。
-  const smoke = qualityCases.length < qualityAll.length || consistencyCases.length < consistencyAll.length;
+  const smoke = isA1Smoke(
+    qualitySelection,
+    consistencySelection,
+    displayCoverageSelection,
+    quoteSelfContainedSelection,
+  );
   const evalConfig = currentEvalConfig(qualityFile, consistencyFile, datasetLock);
   activeRunContext = {
     config: evalConfig,
@@ -557,7 +570,13 @@ async function main(): Promise<void> {
       display_coverage_fixture: DISPLAY_COVERAGE_FIXTURE,
       dataset_lock: { path: datasetLockPath, ...datasetLock },
       quality_cases: qualityCases.length,
+      quality_cases_total: qualityAll.length,
       consistency_cases: consistencyCases.length,
+      consistency_cases_total: consistencyAll.length,
+      display_coverage_cases: displayCoverageCases.length,
+      display_coverage_cases_total: displayCoverageAll.length,
+      quote_self_contained_cases: quoteSelfContainedCases.length,
+      quote_self_contained_cases_total: quoteSelfContainedAll.length,
       smoke,
     },
     source: sourceState(),
@@ -570,7 +589,9 @@ async function main(): Promise<void> {
   if (smoke) {
     console.log(
       `⚠️ 子集冒烟模式：主题 ${qualityCases.length}/${qualityAll.length}` +
-        (cLimit ? `、一致性对上限 ${cLimit}` : "") +
+        `、一致性对 ${consistencyCases.length}/${consistencyAll.length}` +
+        `、展示覆盖 ${displayCoverageCases.length}/${displayCoverageAll.length}` +
+        `、quote 自足性 ${quoteSelfContainedCases.length}/${quoteSelfContainedAll.length}` +
         " —— 仅验证真模型链路与成本，不代表 A1 结论。\n",
     );
   }
@@ -713,7 +734,6 @@ async function main(): Promise<void> {
   // ── 展示级引用覆盖基准（P0，独立于 analyzer 的最终 yield）──
   // 手标 reject 的任何一条若被放行就是 unsafe_accept，硬门必须为 0；false reject 暂作
   // 信息量，避免在未建立足够样本前把“保守”误报成安全放行。
-  const displayCoverageCases = readDisplayCoverageCases();
   process.stdout.write(`[展示引用覆盖] ${displayCoverageCases.length} 条手标反例/正例… `);
   const displayCoverageResults = await runDisplayCoverageBenchmark(displayCoverageCases);
   const expectedRejects = displayCoverageResults.filter((result) => result.expected === "reject");
@@ -732,7 +752,6 @@ async function main(): Promise<void> {
   console.log(`${displayCoverageMetric.pass ? "✅" : "❌"} unsafe_accept ${unsafeAccepts.length}/${expectedRejects.length}；projection_violation ${projectionViolations.length}/${displayCoverageResults.length}；false_reject ${falseRejects.length}/${expectedAccepts.length}`);
 
   // ── Coverage 单角色校准（不能由主 validator 的先行拒绝代替）──
-  const quoteSelfContainedCases = readQuoteSelfContainedCases();
   process.stdout.write(`[Coverage quote-self-contained] ${quoteSelfContainedCases.length} 条手标 quote-only 用例… `);
   const quoteSelfContainedResults = await runQuoteSelfContainedBenchmark(quoteSelfContainedCases);
   const quoteExpectedRejects = quoteSelfContainedResults.filter((result) => result.expected === "reject");
@@ -789,8 +808,14 @@ async function main(): Promise<void> {
       dataset: {
         quality_file: qualityFile,
         quality_cases: qualityCases.length,
+        quality_cases_total: qualityAll.length,
         consistency_file: consistencyFile,
         consistency_cases: consistencyCases.length,
+        consistency_cases_total: consistencyAll.length,
+        display_coverage_cases: displayCoverageCases.length,
+        display_coverage_cases_total: displayCoverageAll.length,
+        quote_self_contained_cases: quoteSelfContainedCases.length,
+        quote_self_contained_cases_total: quoteSelfContainedAll.length,
         dataset_lock: { path: datasetLockPath, ...datasetLock },
         smoke,
       },
@@ -847,7 +872,8 @@ async function main(): Promise<void> {
   // ── 样本量提示 ──
   if (smoke) {
     console.log(
-      `\n⚠️ 子集冒烟：仅跑了主题 ${qualityCases.length}/${qualityAll.length}、一致性对 ${consistencyCases.length}/${consistencyAll.length}。\n` +
+      `\n⚠️ 子集冒烟：主题 ${qualityCases.length}/${qualityAll.length}、一致性对 ${consistencyCases.length}/${consistencyAll.length}` +
+        `、展示覆盖 ${displayCoverageCases.length}/${displayCoverageAll.length}、quote 自足性 ${quoteSelfContainedCases.length}/${quoteSelfContainedAll.length}。\n` +
         "   结果仅用于验证真模型链路 + 标定成本，不作 A1 / DCP 判定依据。去掉 A1_*_LIMIT 跑全量才出结论。",
     );
   } else if (samplePrerequisite) {

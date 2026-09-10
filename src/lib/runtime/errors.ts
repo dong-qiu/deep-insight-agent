@@ -12,5 +12,9 @@ export function isTransientApiError(e: unknown): boolean {
   if (e instanceof Anthropic.InternalServerError) return true;
   // 兜底：基于消息关键词（部分错误未走 SDK 类型 / 中转站包装不一致）
   const msg = e instanceof Error ? e.message : String(e ?? "");
-  return /Connection error|Request timed out|aborted|ETIMEDOUT|ECONNRESET|socket hang up|ENETUNREACH|EAI_AGAIN/i.test(msg);
+  // `callStructured` owns an additional wall-clock AbortController because an SSE relay may keep
+  // streaming heartbeats after the SDK timeout. Its explicit timeout is infrastructure evidence,
+  // never a content refusal: classifying it as a refusal makes analyzer recursively split one
+  // unavailable batch into many costly requests.
+  return /Connection error|Request timed out|\btimeout\b|aborted|ETIMEDOUT|ECONNRESET|socket hang up|ENETUNREACH|EAI_AGAIN/i.test(msg);
 }
