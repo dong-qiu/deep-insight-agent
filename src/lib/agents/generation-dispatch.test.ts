@@ -149,7 +149,10 @@ describe("generation dispatch worker", () => {
     expect(db.prepare("SELECT status FROM generation_trace WHERE id=?").get(accepted.traceId)).toEqual({ status: "failed" });
     expect(db.prepare("SELECT state FROM generation_dispatch WHERE trace_id=?").get(accepted.traceId)).toEqual({ state: "failed" });
     expect(db.prepare("SELECT status FROM run WHERE trace_id=?").get(accepted.traceId)).toEqual({ status: "failed" });
-    expect(db.prepare("SELECT stage,event_type,error FROM generation_event WHERE trace_id=? ORDER BY sequence").all(accepted.traceId)).toEqual([]);
+    expect(db.prepare("SELECT stage,event_type,reason_code,error FROM generation_event WHERE trace_id=? ORDER BY sequence").all(accepted.traceId)).toEqual([
+      { stage: "analyze", event_type: "started", reason_code: null, error: null },
+      { stage: "analyze", event_type: "failed", reason_code: "dispatch_failed", error: JSON.stringify({ reason_code: "dispatch_failed", retryable: true }) },
+    ]);
     expect(db.prepare("SELECT COUNT(*) AS count FROM analysis_batch").get()).toEqual({ count: 0 });
     expect(db.prepare("SELECT COUNT(*) AS count FROM run WHERE trace_id=?").get(accepted.traceId)).toEqual({ count: 1 });
   });
@@ -175,7 +178,10 @@ describe("generation dispatch worker", () => {
     if (accepted.kind !== "accepted") throw new Error("expected accepted request");
     expect(await runGenerationDispatchOnce(db)).toMatchObject({ claimed: true, traceId: accepted.traceId, status: "done" });
     expect(db.prepare("SELECT stage,event_type,reason_code FROM generation_event WHERE trace_id=?").all(accepted.traceId))
-      .toEqual([{ stage: "select", event_type: "skipped", reason_code: "no_content" }]);
+      .toEqual([
+        { stage: "analyze", event_type: "started", reason_code: null },
+        { stage: "select", event_type: "skipped", reason_code: "no_content" },
+      ]);
   });
 
   it("finishes a production P1-dev dispatch with no P1 metric facts", async () => {

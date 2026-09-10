@@ -37,8 +37,13 @@ function articleFetchMaxPerRun(): number {
   return Number(process.env.ARTICLE_FETCH_MAX_PER_RUN) || 25;
 }
 
-/** 原文存档到 FS（architecture：raw_ref 句柄，MVP 不清理），返回相对路径句柄。 */
+/** Raw archival is disabled by default until raw_archive has the same durable
+ * effect/reconciliation protocol as report_file.  A plain filesystem write
+ * cannot safely survive a crash between write and DB commit. */
 function archiveRaw(id: string, raw: string): string {
+  // A future raw_archive effect worker may replace this. Until then a
+  // production process must never make the unaudited filesystem write.
+  if (process.env.NODE_ENV === "production" || process.env.RAW_ARCHIVE_EFFECTS_ENABLED !== "1") return "";
   const dir = join(process.env.DATA_DIR ?? ".data", "raw");
   mkdirSync(dir, { recursive: true });
   const path = join(dir, `${id}.txt`);

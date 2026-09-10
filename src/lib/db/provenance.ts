@@ -53,6 +53,8 @@ export type SourceCollectTraceRequestResult =
   | { kind: "replayed"; traceId: string }
   | { kind: "conflict"; activeTraceId: string };
 
+export type SourceCollectTrigger = "cron" | "api" | "retry" | "probe";
+
 /** 同步 source_collect 不经过 dispatch worker，但仍先取 owned lease，所有业务写入均可 fencing。 */
 export interface SourceCollectClaim {
   traceId: string;
@@ -407,19 +409,23 @@ function sourceCollectScopeKey(sourceId: string, now: Date): string {
   return `source_collect:${sourceId}:${now.toISOString().slice(0, 13)}`;
 }
 
-/**
- * 定时来源采集的同步 trace factory。
- *
- * 每来源、每 UTC 小时只登记一个 logical request；执行前由 claimSourceCollectTrace 取得 owned lease，
- * 因此重入 cron 不会把同一来源的 Content 更新伪装成两条独立采集事实。
- */
-export function createScheduledSourceCollectTrace(
+/** Synchronous source-collection trace factory used by cron, API, retries and
+ * probes. Every caller must claim its returned reservation before collecting. */
+export function createSourceCollectTrace(
   db: DB,
-  input: { sourceId: string; now?: Date },
+  input: { sourceId: string; triggerKind?: SourceCollectTrigger; retryOfTraceId?: string; retryOfRunId?: string; now?: Date },
 ): SourceCollectTraceRequestResult {
   const now = input.now ?? new Date();
   const nowIso = now.toISOString();
-  const scopeKey = sourceCollectScopeKey(input.sourceId, now);
+  const triggerKind = input.triggerKind ?? "cron";
+  if (triggerKind === "retry" && (!input.retryOfTraceId || !input.retryOfRunId)) {
+    throw new Error("source_collect_retry_missing_provenance");
+  }
+  const scopeKey = triggerKind === "cron"
+    ? sourceCollectScopeKey(input.sourceId, now)
+    : triggerKind === "retry"
+      ? `source_collect_retry:${input.sourceId}:${input.retryOfRunId}`
+      : `source_collect:${triggerKind}:${input.sourceId}:${nowIso}`;
   const activeKey = `source_collect:${input.sourceId}`;
 
   return db.transaction((): SourceCollectTraceRequestResult => {
@@ -448,16 +454,24 @@ export function createScheduledSourceCollectTrace(
     const traceId = id("trace");
     const requestId = id("trace_req");
     const leaseId = id("lease");
+    if (input.retryOfTraceId) {
+      const parent = db.prepare("SELECT scope_kind,status FROM generation_trace WHERE id=?").get(input.retryOfTraceId) as { scope_kind: string; status: string } | undefined;
+      if (!parent || parent.scope_kind !== "source_collect" || !["done", "partial", "failed"].includes(parent.status)) {
+        throw new Error("source_collect_retry_parent_not_terminal");
+      }
+    }
     db.prepare(
       `INSERT INTO generation_trace
-       (id,scope_kind,trigger_kind,source_id,status,completion_policy,coverage,runtime_version,summary,started_at)
-       VALUES (@id,'source_collect','cron',@source_id,'running',@completion_policy,'complete',@runtime_version,'{}',@started_at)`,
+       (id,scope_kind,trigger_kind,source_id,status,completion_policy,coverage,runtime_version,summary,started_at,retry_of_trace_id)
+       VALUES (@id,'source_collect',@trigger_kind,@source_id,'running',@completion_policy,'complete',@runtime_version,'{}',@started_at,@retry_of_trace_id)`,
     ).run({
       id: traceId,
       source_id: input.sourceId,
+      trigger_kind: triggerKind,
       completion_policy: JSON.stringify(sourceCollectCompletionPolicy()),
       runtime_version: runtimeVersionAt(db, nowIso),
       started_at: nowIso,
+      retry_of_trace_id: input.retryOfTraceId ?? null,
     });
     db.prepare(
       `INSERT INTO generation_trace_request
@@ -473,14 +487,13 @@ export function createScheduledSourceCollectTrace(
   })();
 }
 
-/** 本地旧库/未执行 migration runner 的兼容探针。生产 writer 由 PROVENANCE_SCHEMA_REQUIRED fail-closed，
- * 此处只让历史单测与明确的非严格本地开发保留原有采集行为，绝不把“缺表”伪装成采集失败。 */
-export function sourceCollectTracingAvailable(db: DB): boolean {
-  const tables = db.prepare(`SELECT name FROM sqlite_master
-    WHERE type='table' AND name IN ('generation_trace_request','generation_lease','generation_event','provenance_revision')`).all() as { name: string }[];
-  if (tables.length !== 4) return false;
-  return (db.prepare("PRAGMA table_info(generation_trace)").all() as { name: string }[])
-    .some((column) => column.name === "source_id");
+/** Backwards-compatible cron factory. All production callers use the generic
+ * factory so API, retry and probe collection share the same request→lease path. */
+export function createScheduledSourceCollectTrace(
+  db: DB,
+  input: { sourceId: string; now?: Date },
+): SourceCollectTraceRequestResult {
+  return createSourceCollectTrace(db, input);
 }
 
 /** 同步采集取得 lease 后才允许创建 root ingest Run 或写任何 provenance/business fact。 */
@@ -673,6 +686,10 @@ export function claimNextGenerationDispatch(db: DB, now: Date = new Date()): Dis
         `INSERT INTO run(id,kind,target,status,started_at,trace_id) VALUES (@id,'analyze',@target,'running',@started_at,@trace_id)`,
       ).run({ id: rootRunId, target: JSON.stringify({ topic_id: payload.topic_id }), started_at: nowIso, trace_id: candidate.trace_id });
       db.prepare("UPDATE generation_trace SET root_run_id=? WHERE id=? AND root_run_id IS NULL").run(rootRunId, candidate.trace_id);
+      appendGenerationEvent(db, {
+        trace_id: candidate.trace_id, run_id: rootRunId, stage: "analyze", event_type: "started",
+        context_completeness: "partial", occurred_at: nowIso,
+      });
     }
     return {
       dispatchId: candidate.id, traceId: candidate.trace_id, ownerToken, claimEpoch, fencingEpoch,
@@ -717,6 +734,16 @@ export function finishGenerationDispatch(
         `UPDATE run SET status='failed',ended_at=@now,error=@error
          WHERE id=@id AND status='running'`,
       ).run({ id: claim.rootRunId, now: nowIso, error: JSON.stringify(outcome.error ?? {}) });
+      const terminalAnalyze = db.prepare(`SELECT 1 FROM generation_event
+        WHERE trace_id=? AND stage='analyze' AND event_type IN ('completed','failed','cancelled') LIMIT 1`).get(claim.traceId);
+      if (!terminalAnalyze) {
+        appendGenerationEvent(db, {
+          trace_id: claim.traceId, run_id: claim.rootRunId, stage: "analyze", event_type: "failed",
+          reason_code: outcome.error?.reason_code ?? "dispatch_failed",
+          error: { reason_code: outcome.error?.reason_code ?? "dispatch_failed", retryable: true },
+          context_completeness: "partial", occurred_at: nowIso,
+        });
+      }
     }
     db.prepare("UPDATE generation_trace SET summary=? WHERE id=?").run(JSON.stringify(outcome.error ?? {}), claim.traceId);
     const traceStatus = projectTrace(db, claim.traceId);

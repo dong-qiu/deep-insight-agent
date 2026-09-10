@@ -7,7 +7,7 @@ import { getEffectiveSources, loadStaticConfig } from "../config/index.js";
 import type { DB } from "../db/index.js";
 import { finishRun, getTopic, listTopics } from "../db/repos.js";
 import { NOOP_P1_TELEMETRY_SINK, type P1TelemetrySink } from "../capabilities/p1-telemetry.js";
-import { claimSourceCollectTrace, createScheduledSourceCollectTrace, createScheduledTraceRequest, sourceCollectTracingAvailable } from "../db/provenance.js";
+import { claimSourceCollectTrace, createSourceCollectTrace, createScheduledSourceCollectTrace, createScheduledTraceRequest } from "../db/provenance.js";
 import { appendGenerationEvent } from "../db/provenance-facts.js";
 import { listRecentPublishedInsightOccurrences, previousReportForTopic, topicHasReport, type ReportAnchorPublication } from "../db/reports.js";
 import { notifyBudget } from "../runtime/alert.js";
@@ -91,14 +91,8 @@ export async function runCollectionCycle(db: DB, opts: { telemetry?: P1Telemetry
   // P1 daily buckets are optional telemetry and cannot block P0 collection.
   telemetry.freezeDueDay(db, startedAt);
   const sources = getEffectiveSources(db, loadStaticConfig()).filter((s) => s.enabled);
-  const traceEnabled = sourceCollectTracingAvailable(db);
   for (const s of sources) {
     try {
-      if (!traceEnabled) {
-        const r = await collectSource(db, s, { telemetry });
-        summary.collected.push({ source: s.id, fetched: r.fetched, inserted: r.inserted, updated: r.updated });
-        continue;
-      }
       const accepted = createScheduledSourceCollectTrace(db, { sourceId: s.id });
       if (accepted.kind === "replayed") {
         summary.collected.push({ source: s.id, traceId: accepted.traceId, status: "replayed" });
@@ -121,7 +115,13 @@ export async function runCollectionCycle(db: DB, opts: { telemetry?: P1Telemetry
   const circuit = runCircuitCheck(db, sources);
   if (circuit.opened.length) summary.circuitOpened = circuit.opened;
   summary.errors.push(...circuit.errors);
-  const halfOpen = await runHalfOpenProbe(db, (probeDb, source, probeOpts) => collectSource(probeDb, source, { ...probeOpts, telemetry }));
+  const halfOpen = await runHalfOpenProbe(db, async (probeDb, source, probeOpts) => {
+    const accepted = createSourceCollectTrace(probeDb, { sourceId: source.id, triggerKind: "probe" });
+    if (accepted.kind !== "accepted") throw new Error(`source_collect_probe_${accepted.kind}`);
+    const claim = claimSourceCollectTrace(probeDb, accepted.traceId);
+    if (!claim) throw new Error("source_collect_probe_claim_lost");
+    return collectSource(probeDb, source, { ...probeOpts, traceClaim: claim, telemetry });
+  });
   if (halfOpen.revived.length) summary.circuitRevived = halfOpen.revived;
   summary.errors.push(...halfOpen.errors);
   const zeroYield = runZeroYieldWatch(db, sources);

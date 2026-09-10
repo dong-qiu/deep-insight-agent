@@ -1,13 +1,13 @@
 /** collector 编排测试：① 标题党 RSS 全文回填（#82）② B族转写抓取（ADR-0007 6a）。
  *  mock fetchFromSource（共享 raws）+ fetchArticleBody（#82）+ fetchTranscript（6a）；内存 DB + 临时 DATA_DIR。 */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type DB, openDb } from "../db/index.js";
 import { applyProvenanceMigrations } from "../db/provenance-migrations.js";
 import { SQLITE_P1_TELEMETRY_SINK } from "../capabilities/p1-telemetry-sqlite.js";
-import { claimSourceCollectTrace, createScheduledSourceCollectTrace, getGenerationTraceStatus } from "../db/provenance.js";
+import { claimSourceCollectTrace, createScheduledSourceCollectTrace, createSourceCollectTrace, getGenerationTraceStatus } from "../db/provenance.js";
 import { getContentByUrl, getContentItem, insertContentItem, insertSource } from "../db/repos.js";
 import { captureRevision, entityKey } from "../db/provenance-facts.js";
 import { contentItemRef, contentItemRevisionSnapshot } from "../db/provenance-revisions.js";
@@ -76,13 +76,24 @@ afterEach(() => {
   delete process.env.ARTICLE_FETCH;
   delete process.env.TRANSCRIPT_FETCH;
   delete process.env.ARTICLE_FETCH_MAX_PER_RUN;
+  delete process.env.RAW_ARCHIVE_EFFECTS_ENABLED;
   raws.value = [];
   ctl.transcript = null;
   ctl.fetchError = null;
+  vi.unstubAllEnvs();
   vi.clearAllMocks();
 });
 
 describe("collector 标题党 RSS 全文回填（#82）", () => {
+  it("production forbids raw filesystem archive until raw_archive effects are implemented", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("RAW_ARCHIVE_EFFECTS_ENABLED", "1");
+    raws.value = [mkRaw("https://example.test/raw-gated", "body")];
+    await collectSource(db, sourcePod);
+    expect(db.prepare("SELECT raw_ref FROM content_item WHERE url=?").get("https://example.test/raw-gated")).toEqual({ raw_ref: "" });
+    expect(existsSync(join(process.env.DATA_DIR!, "raw"))).toBe(false);
+  });
+
   it("开关关：空正文条目跳过、不抓全文、不入库", async () => {
     raws.value = [titleOnly("https://www.anquanke.com/post/id/1")];
     const r = await collectSource(db, sourceAnq);
@@ -245,6 +256,43 @@ describe("collector B族转写抓取（6a）", () => {
 });
 
 describe("collector P0b-1 source_collect provenance", () => {
+  it("table-drives API, probe and retry collection through request, owned lease, Run and terminal facts", async () => {
+    const completed = new Map<string, { traceId: string; runId: string }>();
+    const cases: Array<{ name: "api" | "probe" | "retry"; parent?: "api" }> = [
+      { name: "api" }, { name: "probe" }, { name: "retry", parent: "api" },
+    ];
+    for (const [index, entry] of cases.entries()) {
+      raws.value = [mkRaw(`https://pod/entry-${entry.name}`, `entry ${entry.name} ${index}`)];
+      const accepted = createSourceCollectTrace(db, {
+        sourceId: sourcePod.id, triggerKind: entry.name,
+        ...(entry.parent ? { retryOfTraceId: completed.get(entry.parent)!.traceId, retryOfRunId: completed.get(entry.parent)!.runId } : {}),
+      });
+      if (accepted.kind !== "accepted") throw new Error(`expected ${entry.name} trace accepted`);
+      const claim = claimSourceCollectTrace(db, accepted.traceId);
+      if (!claim) throw new Error(`expected ${entry.name} claim`);
+      const result = await collectSource(db, sourcePod, { traceClaim: claim, probe: entry.name === "probe", retryOf: entry.parent ? completed.get(entry.parent)!.runId : null });
+      completed.set(entry.name, { traceId: accepted.traceId, runId: result.runId });
+
+      expect(getGenerationTraceStatus(db, accepted.traceId)).toMatchObject({
+        trace_id: accepted.traceId, status: "done", root_run_id: result.runId, source_id: sourcePod.id,
+      });
+      expect(db.prepare("SELECT trace_id,retry_of FROM run WHERE id=?").get(result.runId)).toEqual({
+        trace_id: accepted.traceId, retry_of: entry.parent ? completed.get(entry.parent)!.runId : null,
+      });
+      expect(db.prepare("SELECT stage,event_type FROM generation_event WHERE trace_id=? ORDER BY sequence").all(accepted.traceId))
+        .toEqual(expect.arrayContaining([
+          { stage: "collect", event_type: "started" }, { stage: "normalize", event_type: "completed" },
+        ]));
+      const revisions = db.prepare("SELECT COUNT(*) AS count FROM provenance_revision WHERE entity_type='content_item'").get() as { count: number };
+      const refs = db.prepare("SELECT COUNT(*) AS count FROM generation_entity_ref WHERE trace_id=?").get(accepted.traceId) as { count: number };
+      expect(revisions.count).toBeGreaterThanOrEqual(1);
+      expect(refs.count).toBeGreaterThanOrEqual(2);
+    }
+    expect(db.prepare("SELECT retry_of_trace_id FROM generation_trace WHERE id=?").get(completed.get("retry")!.traceId)).toEqual({
+      retry_of_trace_id: completed.get("api")!.traceId,
+    });
+  });
+
   it("以 source scoped trace 固化 source / Content revision，并以同一 ingest Run 作为根", async () => {
     raws.value = [mkRaw("https://pod/provenance", "A durable, normalized item.")];
     const now = new Date();
