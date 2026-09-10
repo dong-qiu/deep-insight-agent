@@ -52,9 +52,13 @@ function expectCompletedFacts(traceId: string): void {
   expect(db.prepare("SELECT COUNT(*) AS count FROM run WHERE trace_id=? AND kind='ingest' AND status='done'").get(traceId)).toEqual({ count: 1 });
   expect(db.prepare("SELECT stage,event_type FROM generation_event WHERE trace_id=? ORDER BY sequence").all(traceId))
     .toEqual(expect.arrayContaining([{ stage: "collect", event_type: "started" }, { stage: "normalize", event_type: "completed" }]));
-  expect(db.prepare("SELECT COUNT(*) AS count FROM provenance_revision WHERE entity_type='content_item'").get()).toMatchObject({ count: expect.any(Number) });
+  const revisions = db.prepare("SELECT COUNT(*) AS count FROM provenance_revision WHERE entity_type='content_item'").get() as { count: number };
+  expect(revisions.count).toBeGreaterThanOrEqual(1);
   const refs = db.prepare("SELECT COUNT(*) AS count FROM generation_entity_ref WHERE trace_id=?").get(traceId) as { count: number };
   expect(refs.count).toBeGreaterThanOrEqual(2);
+  expect(db.prepare(`SELECT COUNT(*) AS count FROM generation_entity_ref ref
+    LEFT JOIN provenance_revision revision ON revision.entity_type=ref.entity_type AND revision.entity_key=ref.entity_key AND revision.revision=ref.revision
+    WHERE ref.trace_id=? AND revision.entity_type IS NULL`).get(traceId)).toEqual({ count: 0 });
 }
 
 beforeEach(() => {
@@ -98,6 +102,8 @@ describe("source collection production entries", () => {
     expect(getRun(db, body.new_run_id)).toMatchObject({ retry_of: originalRun.root_run_id, trace_id: body.trace_id });
     expect(db.prepare("SELECT retry_of_trace_id,trigger_kind FROM generation_trace WHERE id=?").get(body.trace_id))
       .toEqual({ retry_of_trace_id: original.traceId, trigger_kind: "retry" });
+    expect(db.prepare("SELECT DISTINCT actor_type FROM generation_event WHERE trace_id=?").all(body.trace_id))
+      .toEqual([{ actor_type: "system" }]);
   });
 
   it("half-open probe runs through the scheduler's claimed probe trace", async () => {
