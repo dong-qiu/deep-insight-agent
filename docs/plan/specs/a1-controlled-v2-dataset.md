@@ -46,7 +46,7 @@
 1. 对五个主题各指定至少两个来源，隔离 collector 必须逐源走生产采集、robots、正文提取和存储路径；任一失败记录脱敏 manifest 并使该 cohort 失败。
 2. 构建 quality case 时，按全局 `content_item_id` 与 URL 去重。若先处理的宽主题已占用文章，后续子主题必须换用另一篇合格文章；不能关闭去重或用相同正文补足数量。
 3. 每个主题最终须有至少 10 条 `reader-visible` 洞察；输入条目数、analyzer 草稿数或 blocked 候选均不得代替该计数。
-4. 受控快照必须冻结内容哈希、source URL/ID manifest、采集时间、license/retention、topic mapping、去重规则和标签分布。第三方全文只留在受控存储，不提交仓库。
+4. 受控快照必须冻结内容哈希、source URL/ID manifest、采集时间、license/retention、topic mapping、去重规则和标签分布。第三方全文只留在受控存储，不提交仓库。A1 v2 采用专用的私有 S3 bucket、独立 KMS key、versioning 和 Object Lock Compliance 90 天；第 91 天起才允许 lifecycle 受控清理，且不得复用 redaction registry 或 DR bucket。`ops/aws/setup-a1-eval-snapshot.sh` 是默认只读的核验/显式 `--apply` 配置器。
 5. 一致性集至少 100 对，`not_support` 至少 40 对并覆盖 exaggeration、out_of_context、misattribution；标签由非生成者的两位独立 reviewer 完成。
 6. 全量 A1 只能在 lock 验证为 `verified_v2`、无 smoke 截断、模型/Thinking 配置固定时作为自动证据。两次不同 run_id 的同 commit/config/lock automatic pass 才可形成可接受基线候选。
 7. 自动通过后，两位 reviewer 必须对同一 `review-queue` 全量盲评；第三位 reviewer 裁决所有分歧，并用 `review:receipt` 生成 `eligible_for_signoff`。该状态不代替 DCP owner/architect 签署。
@@ -80,9 +80,11 @@ AI 可以承担三个**诊断性预标注者**，用于发现分歧、估算人�
 
 ```bash
 export EVAL_TOPIC_IDS='t_code_agents,t_prompt_injection,t_ai_industry,t_coding_agent_platforms,t_agent_security'
+export EVAL_TOPIC_SOURCE_IDS='{"t_code_agents":["src_simonwillison","src_aider"],"t_prompt_injection":["src_trailofbits","src_anquanke"],"t_ai_industry":["src_semianalysis","src_techcrunch_ai"],"t_coding_agent_platforms":["src_openai_codex_releases","src_cursor_changelog"],"t_agent_security":["src_embracethered","src_simonwillison_promptinj"]}'
 ```
 
 `EVAL_TOPIC_IDS` 只改变本地评测的读取范围，不启用 topic、不修改生产 SQLite，也不替代后续生产启用决策。
+`EVAL_TOPIC_SOURCE_IDS` 让指定来源对优先并且只能为各自 topic 补样；它不能与旧的全局 `EVAL_REQUIRED_SOURCE_IDS` 混用，从而避免共享 source route 先占用条目、使后续 topic 单源或空缺。
 
 ## 非功能要求
 

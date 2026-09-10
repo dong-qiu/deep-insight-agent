@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildLocalEvalCases, missingRequiredSources } from "./build-local-eval-lib.js";
+import { buildLocalEvalCases, missingRequiredSources, missingRequiredSourcesByTopic, parseTopicSourceIds } from "./build-local-eval-lib.js";
 import type { ContentItem, Topic } from "../src/lib/types.js";
 
 const topic: Topic = {
@@ -78,5 +78,36 @@ describe("buildLocalEvalCases", () => {
     const allItems = result.cases.flatMap((entry) => entry.items);
     expect(new Set(allItems.map((entry) => entry.id)).size).toBe(allItems.length);
     expect(new Set(allItems.map((entry) => entry.url)).size).toBe(allItems.length);
+  });
+
+  it("按主题固定来源对，避免共享路由挤占后续 v2 topic", () => {
+    const platform = { ...topic, id: "t_coding_agent_platforms", name: "Coding platforms" };
+    const result = buildLocalEvalCases(
+      [topic, platform],
+      (topicId) => topicId === topic.id
+        ? [item("src_openai"), item("src_simon"), item("src_aider")]
+        : [item("src_openai", "x".repeat(600)), item("src_cursor")],
+      window,
+      {
+        minBody: 400, perSource: 1, maxItems: 3, minimumSources: 2,
+        requiredSourceIds: ["src_simon", "src_aider", "src_openai", "src_cursor"],
+        requiredSourceIdsByTopic: {
+          [topic.id]: ["src_simon", "src_aider"],
+          [platform.id]: ["src_openai", "src_cursor"],
+        },
+      },
+    );
+
+    expect(result.cases).toHaveLength(2);
+    expect(result.cases[0].items.map((entry) => entry.source_id)).toEqual(["src_simon", "src_aider"]);
+    expect(result.cases[1].items.map((entry) => entry.source_id)).toEqual(["src_openai", "src_cursor"]);
+    expect(missingRequiredSourcesByTopic(result, {
+      [topic.id]: ["src_simon", "src_aider"], [platform.id]: ["src_openai", "src_cursor"],
+    })).toEqual([]);
+  });
+
+  it("rejects malformed fixed-pair configuration rather than silently falling back to global sources", () => {
+    expect(() => parseTopicSourceIds('["src_a"]', "EVAL_TOPIC_SOURCE_IDS")).toThrow("JSON object");
+    expect(() => parseTopicSourceIds('{"topic":["src_a","src_a"]}', "EVAL_TOPIC_SOURCE_IDS")).toThrow("不可重复");
   });
 });

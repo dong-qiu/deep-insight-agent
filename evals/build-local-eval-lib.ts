@@ -5,6 +5,8 @@ export interface LocalEvalBuildOptions {
   perSource: number;
   maxItems: number;
   requiredSourceIds: string[];
+  /** A fixed source pair per topic prevents a shared route from starving a later v2 topic. */
+  requiredSourceIdsByTopic?: Record<string, readonly string[]>;
   minimumSources: number;
 }
 
@@ -36,6 +38,28 @@ export function parseSourceIds(raw: string | undefined, variableName: string): s
   return ids;
 }
 
+/** Parse a JSON object such as {"t_code_agents":["src_a","src_b"]}. */
+export function parseTopicSourceIds(raw: string | undefined, variableName: string): Record<string, string[]> {
+  if (!raw?.trim()) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error(`${variableName} 必须是 JSON object`);
+  }
+  if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`${variableName} 必须是 topic id 到 source id 数组的 JSON object`);
+  }
+  const result: Record<string, string[]> = {};
+  for (const [topicId, sourceIds] of Object.entries(parsed as Record<string, unknown>)) {
+    if (!/^[A-Za-z0-9_-]+$/.test(topicId) || !Array.isArray(sourceIds) || sourceIds.some((id) => typeof id !== "string")) {
+      throw new Error(`${variableName} 含无效 topic/source id`);
+    }
+    result[topicId] = parseSourceIds(sourceIds.join(","), `${variableName}.${topicId}`);
+  }
+  return result;
+}
+
 /**
  * 从按 topic 分组的本地 ContentItem 中构造 A1 输入。
  *
@@ -60,7 +84,13 @@ export function buildLocalEvalCases(
   const selectedUrls = new Set<string>();
 
   for (const topic of topics) {
-    const pool = contentForTopic(topic.id).filter((item) => item.body.length >= options.minBody);
+    const requiredForTopic = options.requiredSourceIdsByTopic?.[topic.id] ?? options.requiredSourceIds;
+    // A fixed v2 pair is an allowlist, not merely a priority hint: otherwise a shared route may
+    // consume a later topic's only viable source after its pair has already been selected.
+    const fixedPair = options.requiredSourceIdsByTopic?.[topic.id];
+    const pool = contentForTopic(topic.id)
+      .filter((item) => item.body.length >= options.minBody)
+      .filter((item) => !fixedPair || fixedPair.includes(item.source_id));
     for (const item of pool) {
       if (required.has(item.source_id)) cohort[item.source_id].eligible++;
     }
@@ -83,7 +113,7 @@ export function buildLocalEvalCases(
     };
 
     // Cohort members are selected first, in caller-declared order, so evidence is deterministic.
-    for (const sourceId of options.requiredSourceIds) {
+    for (const sourceId of requiredForTopic) {
       const candidate = pool.find((item) => item.source_id === sourceId);
       if (candidate) add(candidate);
     }
@@ -98,7 +128,7 @@ export function buildLocalEvalCases(
       selectedContentIds.add(item.id);
       selectedUrls.add(item.url);
     }
-    for (const sourceId of options.requiredSourceIds) {
+    for (const sourceId of requiredForTopic) {
       if (items.some((item) => item.source_id === sourceId)) {
         cohort[sourceId].selected++;
         cohort[sourceId].topics.push(topic.id);
@@ -113,4 +143,16 @@ export function missingRequiredSources(result: LocalEvalBuildResult): string[] {
   return Object.entries(result.cohort)
     .filter(([, stat]) => stat.selected === 0)
     .map(([sourceId]) => sourceId);
+}
+
+/** Return `topic_id:source_id` for every fixed pair member that did not enter that exact case. */
+export function missingRequiredSourcesByTopic(
+  result: LocalEvalBuildResult,
+  requiredSourceIdsByTopic: Record<string, readonly string[]>,
+): string[] {
+  const caseSources = new Map(result.cases.map((entry) => [entry.topic.id, new Set(entry.items.map((item) => item.source_id))]));
+  return Object.entries(requiredSourceIdsByTopic).flatMap(([topicId, sourceIds]) => {
+    const selected = caseSources.get(topicId) ?? new Set<string>();
+    return sourceIds.filter((sourceId) => !selected.has(sourceId)).map((sourceId) => `${topicId}:${sourceId}`);
+  });
 }

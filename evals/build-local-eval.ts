@@ -9,7 +9,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { getDb } from "../src/lib/db/index.js";
 import { listContentForTopic, listTopics } from "../src/lib/db/repos.js";
-import { buildLocalEvalCases, missingRequiredSources, parseSourceIds } from "./build-local-eval-lib.js";
+import { buildLocalEvalCases, missingRequiredSources, missingRequiredSourcesByTopic, parseSourceIds, parseTopicSourceIds } from "./build-local-eval-lib.js";
 
 const DEFAULT_OUT = "evals/dataset/insight-quality-multisource.local.jsonl";
 
@@ -23,12 +23,17 @@ function parsePositiveInt(raw: string | undefined, fallback: number, name: strin
 const out = process.env.EVAL_LOCAL_OUT ?? DEFAULT_OUT;
 const manifestOut = process.env.EVAL_SOURCE_COHORT_MANIFEST;
 const requiredSourceIds = parseSourceIds(process.env.EVAL_REQUIRED_SOURCE_IDS, "EVAL_REQUIRED_SOURCE_IDS");
+const requiredSourceIdsByTopic = parseTopicSourceIds(process.env.EVAL_TOPIC_SOURCE_IDS, "EVAL_TOPIC_SOURCE_IDS");
 const requestedTopicIds = parseSourceIds(process.env.EVAL_TOPIC_IDS, "EVAL_TOPIC_IDS");
 const minBody = parsePositiveInt(process.env.EVAL_MIN_BODY, 800, "EVAL_MIN_BODY");
 const perSource = parsePositiveInt(process.env.EVAL_PER_SOURCE, 2, "EVAL_PER_SOURCE");
 const maxItems = parsePositiveInt(process.env.EVAL_MAX_ITEMS, 8, "EVAL_MAX_ITEMS");
+if (requiredSourceIds.length && Object.keys(requiredSourceIdsByTopic).length) {
+  throw new Error("EVAL_REQUIRED_SOURCE_IDS 与 EVAL_TOPIC_SOURCE_IDS 不可同时指定");
+}
+const fixedSourceIds = [...new Set(Object.values(requiredSourceIdsByTopic).flat())];
 // 默认 A1 仍须多源；单一 staged source 的隔离验证可用同源两条内容验证真实采集→引文链路。
-const minimumSources = requiredSourceIds.length === 1 ? 1 : 2;
+const minimumSources = (fixedSourceIds.length ? fixedSourceIds : requiredSourceIds).length === 1 ? 1 : 2;
 
 const db = getDb();
 const now = Date.now();
@@ -44,7 +49,12 @@ const result = buildLocalEvalCases(
   topics,
   (topicId) => listContentForTopic(db, topicId, { limit: 2000 }),
   window,
-  { minBody, perSource, maxItems, requiredSourceIds, minimumSources },
+  {
+    minBody, perSource, maxItems,
+    requiredSourceIds: fixedSourceIds.length ? fixedSourceIds : requiredSourceIds,
+    requiredSourceIdsByTopic: Object.keys(requiredSourceIdsByTopic).length ? requiredSourceIdsByTopic : undefined,
+    minimumSources,
+  },
 );
 
 mkdirSync(dirname(out), { recursive: true });
@@ -62,7 +72,9 @@ const manifest = {
   output: out,
   options: {
     min_body: minBody, per_source: perSource, max_items: maxItems, minimum_sources: minimumSources,
-    required_source_ids: requiredSourceIds, requested_topic_ids: requestedTopicIds,
+    required_source_ids: requiredSourceIds,
+    required_source_ids_by_topic: requiredSourceIdsByTopic,
+    requested_topic_ids: requestedTopicIds,
   },
   topics: result.cases.map((entry) => ({ topic_id: entry.topic.id, source_ids: [...new Set(entry.items.map((item) => item.source_id))], item_count: entry.items.length })),
   cohort: result.cohort,
@@ -73,11 +85,13 @@ if (manifestOut) {
 }
 
 console.log(`\n已写 ${out}（${result.cases.length} 主题；本地、不入仓）。`);
-if (requiredSourceIds.length) {
-  const missing = missingRequiredSources(result);
+if (requiredSourceIds.length || fixedSourceIds.length) {
+  const missing = fixedSourceIds.length
+    ? missingRequiredSourcesByTopic(result, requiredSourceIdsByTopic)
+    : missingRequiredSources(result);
   if (missing.length) {
-    throw new Error(`source cohort 不完整：以下指定源没有进入任何评测 case：${missing.join(", ")}`);
+    throw new Error(`source cohort 不完整：以下指定源没有进入要求的评测 case：${missing.join(", ")}`);
   }
-  console.log(`source cohort 已覆盖：${requiredSourceIds.join(", ")}`);
+  console.log(`source cohort 已覆盖：${fixedSourceIds.length ? JSON.stringify(requiredSourceIdsByTopic) : requiredSourceIds.join(", ")}`);
 }
 console.log(`评测：A1_QUALITY_FILE=${out} npm run eval:a1`);
