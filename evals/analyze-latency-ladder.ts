@@ -12,7 +12,7 @@ import "./load-env.js";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { analyze, ANALYZE_BATCH_CHARS, chunkByChars } from "../src/lib/agents/analyzer.js";
+import { analyze, ANALYZE_BATCH_CHARS, chunkByChars, type AnalyzeStageTelemetry } from "../src/lib/agents/analyzer.js";
 import { getCostReport, MODELS } from "../src/lib/runtime/llm.js";
 import { coverageThinking, llmMaxRetries, llmTimeoutMs, llmTransientRetries, validatorThinking } from "../src/lib/runtime/env.js";
 import type { ContentItem, Topic } from "../src/lib/types.js";
@@ -34,6 +34,7 @@ interface LadderResult {
   display_coverage_audits?: number;
   error_name?: string;
   error_message?: string;
+  stages: AnalyzeStageTelemetry[];
 }
 
 const hash = (value: string | Buffer): string => createHash("sha256").update(value).digest("hex");
@@ -87,9 +88,10 @@ async function main(): Promise<void> {
   for (const itemCount of counts) {
     const items = selected.items.slice(0, itemCount);
     const started = performance.now();
+    const stages: AnalyzeStageTelemetry[] = [];
     process.stdout.write(`[${itemCount} items / ${chunkByChars(items).length} chunks] `);
     try {
-      const batch = await analyze(selected.topic, items, selected.time_window);
+      const batch = await analyze(selected.topic, items, selected.time_window, undefined, { onStage: (stage) => stages.push(stage) });
       const result: LadderResult = {
         item_count: itemCount,
         item_ids_sha256: hash(items.map((item) => item.id).join("\n")),
@@ -98,6 +100,7 @@ async function main(): Promise<void> {
         status: "completed",
         insights: batch.insights.length,
         display_coverage_audits: batch.display_coverage_audits?.length ?? 0,
+        stages,
       };
       results.push(result);
       console.log(`completed in ${result.duration_ms}ms (${result.insights} insights)`);
@@ -108,6 +111,7 @@ async function main(): Promise<void> {
         analyze_chunks: chunkByChars(items).length,
         duration_ms: Math.round(performance.now() - started),
         status: "failed",
+        stages,
         ...safeError(error),
       };
       results.push(result);

@@ -1402,6 +1402,16 @@ function renderHistory(events: HistoricalEvent[]): string {
  *  富正文一次性灌一个 analyze 会撑爆 prompt / 触发中转站超时；按预算切批，逐批分析后合并。 */
 export const ANALYZE_BATCH_CHARS = Number(process.env.ANALYZE_BATCH_CHARS) || 30_000;
 
+/** Optional, no-body timing hook for bounded liveness diagnostics. It must not influence output. */
+export interface AnalyzeStageTelemetry {
+  stage: "model_output" | "display_coverage";
+  item_count: number;
+  duration_ms: number;
+  status: "completed" | "failed";
+  error_name?: string;
+}
+export type AnalyzeStageSink = (telemetry: AnalyzeStageTelemetry) => void;
+
 /** 按累计正文字符预算把条目切成多批；单条超预算时独占一批（保证每批 ≥1 条）。纯函数，可测。 */
 export function chunkByChars(items: ContentItem[], budget: number = ANALYZE_BATCH_CHARS): ContentItem[][] {
   const chunks: ContentItem[][] = [];
@@ -1430,6 +1440,7 @@ async function analyzeChunk(
   history: HistoricalEvent[],
   onCost?: (cost: Cost) => void,
   onDecision?: CoverageAuditSink,
+  onStage?: AnalyzeStageSink,
 ): Promise<Insight[]> {
   const user = `主题：${topic.name}（关键词：${topic.keywords.join("、")}）
 时间窗：${timeWindow.start} ~ ${timeWindow.end}
@@ -1439,6 +1450,7 @@ async function analyzeChunk(
 
 ${renderItems(items, topic.keywords)}`;
 
+  const modelStarted = performance.now();
   const { data } = await callStructured({
     role: "analyzer",
     system: ANALYZER_SYSTEM,
@@ -1448,7 +1460,19 @@ ${renderItems(items, topic.keywords)}`;
     // 提到 12k 给足空间（已改流式，长输出不撑网关超时；真超时仍由 analyzeWithSplit 拆批兜底）。
     maxTokens: 12000,
     onCost,
-  });
+  }).then(
+    (result) => {
+      onStage?.({ stage: "model_output", item_count: items.length, duration_ms: Math.round(performance.now() - modelStarted), status: "completed" });
+      return result;
+    },
+    (error: unknown) => {
+      onStage?.({
+        stage: "model_output", item_count: items.length, duration_ms: Math.round(performance.now() - modelStarted), status: "failed",
+        error_name: error instanceof Error && error.name ? error.name : "UnknownError",
+      });
+      throw error;
+    },
+  );
   if (data.no_significant_event) return [];
 
   const byId = new Map(items.map((i) => [i.id, i]));
@@ -1526,7 +1550,20 @@ ${renderItems(items, topic.keywords)}`;
   // quote from the same already cited ContentItem, then must send the result through this full
   // display audit again. Keeping repairCoverage exported lets its future P1 work be tested
   // without turning a failed coverage decision into an unpublished mutation today.
-  const quoteCoveredInsights = await filterByQuoteCoverage(insights, onCost, byId, onDecision);
+  const coverageStarted = performance.now();
+  const quoteCoveredInsights = await filterByQuoteCoverage(insights, onCost, byId, onDecision).then(
+    (result) => {
+      onStage?.({ stage: "display_coverage", item_count: items.length, duration_ms: Math.round(performance.now() - coverageStarted), status: "completed" });
+      return result;
+    },
+    (error: unknown) => {
+      onStage?.({
+        stage: "display_coverage", item_count: items.length, duration_ms: Math.round(performance.now() - coverageStarted), status: "failed",
+        error_name: error instanceof Error && error.name ? error.name : "UnknownError",
+      });
+      throw error;
+    },
+  );
   // 残差告警（informational；report-gen 据已纳入引用外露 〔待补引〕）：供人评跟踪。
   for (const it of quoteCoveredInsights) {
     const gaps = coverageGaps(it.statement, (it.entities ?? []).map((e) => e.name), it.citations.map((c) => c.quote));
@@ -1550,10 +1587,11 @@ async function analyzeWithSplit(
   history: HistoricalEvent[],
   onCost?: (cost: Cost) => void,
   onDecision?: CoverageAuditSink,
+  onStage?: AnalyzeStageSink,
 ): Promise<Insight[]> {
   if (!items.length) return [];
   try {
-    return await analyzeChunk(topic, items, timeWindow, history, onCost, onDecision);
+    return await analyzeChunk(topic, items, timeWindow, history, onCost, onDecision, onStage);
   } catch (e) {
     // Coverage rejection/unavailability is a publication-integrity failure, not a model refusal
     // that can be hidden by recursively dropping source items and returning no_significant_event.
@@ -1565,8 +1603,8 @@ async function analyzeWithSplit(
     }
     const mid = Math.ceil(items.length / 2);
     console.warn(`  ⚠️ 拆批重试（${items.length} → ${mid}+${items.length - mid}，疑拒答/失败）`);
-    const left = await analyzeWithSplit(topic, items.slice(0, mid), timeWindow, history, onCost, onDecision);
-    const right = await analyzeWithSplit(topic, items.slice(mid), timeWindow, history, onCost, onDecision);
+    const left = await analyzeWithSplit(topic, items.slice(0, mid), timeWindow, history, onCost, onDecision, onStage);
+    const right = await analyzeWithSplit(topic, items.slice(mid), timeWindow, history, onCost, onDecision, onStage);
     return [...left, ...right];
   }
 }
@@ -1580,7 +1618,7 @@ export async function analyze(
   items: ContentItem[],
   timeWindow: TimeWindow,
   onCost?: (cost: Cost) => void,
-  opts: { history?: HistoricalEvent[]; onCoverageDecision?: CoverageAuditSink } = {},
+  opts: { history?: HistoricalEvent[]; onCoverageDecision?: CoverageAuditSink; onStage?: AnalyzeStageSink } = {},
 ): Promise<AnalysisBatch> {
   // Configuration errors must surface before any analyzer call.  If checked only in the
   // countercheck, analyzeWithSplit would mistake them for a content refusal and silently split
@@ -1595,7 +1633,7 @@ export async function analyze(
     opts.onCoverageDecision?.(decision);
   };
   for (const chunk of chunkByChars(items)) {
-    insights.push(...(await analyzeWithSplit(topic, chunk, timeWindow, history, onCost, recordCoverageDecision)));
+    insights.push(...(await analyzeWithSplit(topic, chunk, timeWindow, history, onCost, recordCoverageDecision, opts.onStage)));
   }
   // A single input chunk may legitimately yield only claims that the display gate rejects, while
   // another chunk for the same topic already yielded publishable evidence. Rejecting at chunk

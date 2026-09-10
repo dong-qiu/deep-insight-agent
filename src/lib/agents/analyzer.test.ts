@@ -11,7 +11,7 @@ vi.mock("../runtime/llm.js", () => ({
   MODELS: { analyzer: "test-analyzer", validator: "test-validator", coverage: "test-coverage" },
 }));
 import { callStructured } from "../runtime/llm.js";
-import { ANALYZE_BODY_CHARS, ANALYZER_SYSTEM, CITATION_CLAUSE_AUDIT, QuoteCoverageRejectedError, REPAIR_QUOTE_MIN_PREFIX, SELECT_SEPARATOR, analyze, canonicalizeInsightEvents, carveQuote, chunkByChars, chunkWindows, coverageGaps, filterByQuoteCoverage, isCompleteStatement, quoteCoverageClauses, renderImportanceBasis, repairCitationSource, repairCoverage, repairQuote, selectForAnalyze, specificClaims, truncateForAnalyze } from "./analyzer.js";
+import { ANALYZE_BODY_CHARS, ANALYZER_SYSTEM, CITATION_CLAUSE_AUDIT, QuoteCoverageRejectedError, REPAIR_QUOTE_MIN_PREFIX, SELECT_SEPARATOR, analyze, canonicalizeInsightEvents, carveQuote, chunkByChars, chunkWindows, coverageGaps, filterByQuoteCoverage, isCompleteStatement, quoteCoverageClauses, renderImportanceBasis, repairCitationSource, repairCoverage, repairQuote, selectForAnalyze, specificClaims, truncateForAnalyze, type AnalyzeStageTelemetry } from "./analyzer.js";
 import { AnalyzerOutputSchema } from "../types.js";
 
 describe("AnalyzerOutputSchema 的原子 citation claim", () => {
@@ -64,8 +64,14 @@ describe("analyze 的展示覆盖审计投影", () => {
     ]) {
       vi.mocked(callStructured).mockReset();
       vi.mocked(callStructured).mockRejectedValue(new Error(errorMessage));
-      await expect(analyze(topic, items, { start: "2026-09-09", end: "2026-09-09" })).rejects.toThrow(errorMessage);
+      const stages: AnalyzeStageTelemetry[] = [];
+      await expect(analyze(topic, items, { start: "2026-09-09", end: "2026-09-09" }, undefined, {
+        onStage: (stage) => stages.push(stage),
+      })).rejects.toThrow(errorMessage);
       expect(callStructured).toHaveBeenCalledTimes(1);
+      expect(stages).toEqual([expect.objectContaining({
+        stage: "model_output", item_count: 2, status: "failed", error_name: "Error",
+      })]);
     }
   });
 
@@ -96,7 +102,10 @@ describe("analyze 的展示覆盖审计投影", () => {
       body: "Fact is supported.", body_kind: "article", raw_ref: "", content_hash: "h", fetch_status: "ok",
     };
 
-    const batch = await analyze(topic, [content], { start: "2026-09-09", end: "2026-09-09" });
+    const stages: AnalyzeStageTelemetry[] = [];
+    const batch = await analyze(topic, [content], { start: "2026-09-09", end: "2026-09-09" }, undefined, {
+      onStage: (stage) => stages.push(stage),
+    });
     const [insight] = batch.insights;
     expect(insight.statement).toBe("Fact is supported.");
     expect(insight.id).toMatch(/^ins_batch_/);
@@ -111,6 +120,10 @@ describe("analyze 的展示覆盖审计投影", () => {
     expect(batch.display_coverage_candidate_audits).toMatchObject([{
       candidate_id: expect.stringMatching(/^ins_/), insight_id: insight.id, terminal_reason: "kept",
     }]);
+    expect(stages).toEqual([
+      expect.objectContaining({ stage: "model_output", item_count: 1, status: "completed" }),
+      expect.objectContaining({ stage: "display_coverage", item_count: 1, status: "completed" }),
+    ]);
   });
 
   it("所有候选被核心 statement 覆盖门拒绝时失败，不伪装为 no_significant_event", async () => {
