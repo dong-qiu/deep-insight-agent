@@ -13,7 +13,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { analyze, ANALYZE_BATCH_CHARS, chunkByChars, type AnalyzeStageTelemetry } from "../src/lib/agents/analyzer.js";
-import { getCostReport, MODELS } from "../src/lib/runtime/llm.js";
+import { getCostReport, getRoleCallTelemetry, MODELS, type RoleCallTelemetry } from "../src/lib/runtime/llm.js";
 import { coverageThinking, llmMaxRetries, llmTimeoutMs, llmTransientRetries, validatorThinking } from "../src/lib/runtime/env.js";
 import type { ContentItem, Topic } from "../src/lib/types.js";
 import { parseLatencyLadderCounts, selectLatencyLadderCase } from "./analyze-latency-ladder-lib.js";
@@ -29,12 +29,12 @@ interface LadderResult {
   item_ids_sha256: string;
   analyze_chunks: number;
   duration_ms: number;
-  status: "completed" | "failed";
+  status: "running" | "completed" | "failed";
   insights?: number;
   display_coverage_audits?: number;
   error_name?: string;
   error_message?: string;
-  stages: AnalyzeStageTelemetry[];
+  stages: Array<AnalyzeStageTelemetry & { role_telemetry_cumulative: Record<string, RoleCallTelemetry> }>;
 }
 
 const hash = (value: string | Buffer): string => createHash("sha256").update(value).digest("hex");
@@ -55,7 +55,7 @@ async function main(): Promise<void> {
   const outPath = process.env.A1_LADDER_OUT ?? join("evals/out/ladders", `${runId}.json`);
   const results: LadderResult[] = [];
   const telemetry = {
-    schema_version: "a1-analysis-latency-ladder-v1",
+    schema_version: "a1-analysis-latency-ladder-v2",
     run_id: runId,
     status: "running" as "running" | "completed" | "failed",
     started_at: new Date().toISOString(),
@@ -88,33 +88,38 @@ async function main(): Promise<void> {
   for (const itemCount of counts) {
     const items = selected.items.slice(0, itemCount);
     const started = performance.now();
-    const stages: AnalyzeStageTelemetry[] = [];
+    const stages: LadderResult["stages"] = [];
+    const result: LadderResult = {
+      item_count: itemCount,
+      item_ids_sha256: hash(items.map((item) => item.id).join("\n")),
+      analyze_chunks: chunkByChars(items).length,
+      duration_ms: 0,
+      status: "running",
+      stages,
+    };
+    // Persist an in-progress rung before any model call, then after every stage. A later process
+    // interruption remains distinguishable from an opaque "no results yet" state.
+    results.push(result);
+    persist();
     process.stdout.write(`[${itemCount} items / ${chunkByChars(items).length} chunks] `);
     try {
-      const batch = await analyze(selected.topic, items, selected.time_window, undefined, { onStage: (stage) => stages.push(stage) });
-      const result: LadderResult = {
-        item_count: itemCount,
-        item_ids_sha256: hash(items.map((item) => item.id).join("\n")),
-        analyze_chunks: chunkByChars(items).length,
+      const batch = await analyze(selected.topic, items, selected.time_window, undefined, { onStage: (stage) => {
+        stages.push({ ...stage, role_telemetry_cumulative: getRoleCallTelemetry() });
+        persist();
+      } });
+      Object.assign(result, {
         duration_ms: Math.round(performance.now() - started),
         status: "completed",
         insights: batch.insights.length,
         display_coverage_audits: batch.display_coverage_audits?.length ?? 0,
-        stages,
-      };
-      results.push(result);
+      });
       console.log(`completed in ${result.duration_ms}ms (${result.insights} insights)`);
     } catch (error) {
-      const result: LadderResult = {
-        item_count: itemCount,
-        item_ids_sha256: hash(items.map((item) => item.id).join("\n")),
-        analyze_chunks: chunkByChars(items).length,
+      Object.assign(result, {
         duration_ms: Math.round(performance.now() - started),
         status: "failed",
-        stages,
         ...safeError(error),
-      };
-      results.push(result);
+      });
       telemetry.status = "failed";
       persist();
       console.log(`failed in ${result.duration_ms}ms (${result.error_name})`);
