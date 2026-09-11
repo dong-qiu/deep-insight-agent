@@ -73,6 +73,7 @@ npm run dev
 | `npm run build` | 生成生产构建 |
 | `npm run eval:a1` | 运行 A1 AI 质量评测（需要模型配置） |
 | `npm run eval:opportunity-map` | 评估技术机会映射 |
+| `npm run eval:opportunity-export` → `eval:opportunity-sample` → `eval:opportunity-seal` → `eval:opportunity-mapping-export` → `eval:opportunity-materialize` → `eval:opportunity-map` | 离线、同快照的技术机会 dogfood 流程（详见 `evals/technology-opportunities/README.md`） |
 | `npm run db:snapshot` / `npm run db:restore` | 导出或恢复本地 SQLite 快照 |
 | `npm run branches:cleanup` | 只读列出可清理的已合并 PR 本地分支与 worktree |
 | `npm run branches:cleanup -- --apply` | 清理经审核的本地候选；远程分支由 GitHub 合并后自动删除 |

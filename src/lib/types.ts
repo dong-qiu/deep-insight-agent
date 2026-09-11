@@ -328,7 +328,9 @@ export interface ReportIndexEntry {
 }
 
 /** 可溯源技术线索：仅由成功校验洞察确定性派生，绝不作为绕过引用白名单的发布旁路。 */
-export type TechLeadKind = "model" | "framework" | "paper" | "benchmark" | "tool" | "method" | "security" | "other";
+/** The complete persisted/planning taxonomy. Keep the runtime schema and TypeScript type aligned. */
+export const TECH_LEAD_KINDS = ["model", "framework", "paper", "benchmark", "tool", "method", "security", "other"] as const;
+export type TechLeadKind = typeof TECH_LEAD_KINDS[number];
 export type TechLeadStatus = "recommended" | "watching" | "dismissed";
 export interface TechLeadScoreDetail {
   freshness: number;
