@@ -69,6 +69,12 @@ it("失败报告不计入", () => {
   expect(c.size).toBe(0);
 });
 
+it("已上报报告引用 raw-archive pending 内容时 fail-closed", () => {
+  db.prepare("UPDATE content_item SET reader_eligible=0 WHERE id=?").run("ci1");
+  saveReport(db, report("rep_pending", ["i1"], "done", "2026-06-20T08:00:00Z"), index("rep_pending"), { dir });
+  expect(sourceContribution(db, "2026-06-01T00:00:00Z").size).toBe(0);
+});
+
 it("窗口外（since 之前）的报告不计入", () => {
   saveReport(db, report("rep_old", ["i1"], "done", "2026-05-01T08:00:00Z"), index("rep_old"), { dir });
   expect(sourceContribution(db, "2026-06-01T00:00:00Z").size).toBe(0);

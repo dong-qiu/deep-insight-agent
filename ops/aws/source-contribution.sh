@@ -48,7 +48,7 @@ for (const r of db.prepare(
      FROM report r
      JOIN insight i ON instr(r.insight_ids, '"' || i.id || '"') > 0
      JOIN citation c ON c.insight_id = i.id
-     JOIN content_item ci ON ci.id = c.content_item_id
+     JOIN content_item ci ON ci.id = c.content_item_id AND ci.reader_eligible=1
     WHERE r.topic_id = ? AND r.status = 'done' AND r.generated_at >= ?
     GROUP BY ci.source_id`).all(T, since))
   if (!selected || selected.has(r.sid)) cited.set(r.sid, r);
