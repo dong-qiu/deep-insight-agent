@@ -9,7 +9,7 @@ import {
   isFullReanalyzeToday, lookupCachedInsights, recordAnalysisCache,
 } from "../db/analysis-cache.js";
 import { makeConsistencyCache } from "../db/consistency-cache.js";
-import { getContentItem, getSource } from "../db/repos.js";
+import { contentReaderEligibility, getContentItem, getSource } from "../db/repos.js";
 import { listRecentPublishedInsightOccurrences, saveFailedReport, saveReport, type ReportAnchorPublication } from "../db/reports.js";
 import { notifyBriefAcceptance, notifyFailure, notifyReport, notifyThinBrief } from "../runtime/alert.js";
 import { runJob } from "../runtime/jobs.js";
@@ -148,7 +148,11 @@ export async function runValidation(
     // 按 (模型+prompt) 版本隔离 + TTL（见 db/consistency-cache.ts）；CONSISTENCY_CACHE=0 可整体关闭（出事时的运维开关）。
     const cache =
       process.env.CONSISTENCY_CACHE === "0" ? undefined : makeConsistencyCache(db, consistencyCacheVersion());
-    const vr = await validateBatch(batch.insights, items, recordCost, cache);
+    // A collector can replace an archive after scheduler selection.  Re-read
+    // eligibility at the validation boundary so an in-memory stale item cannot
+    // validate a quote while its replacement raw file is still pending.
+    const readerItems = items.filter((item) => contentReaderEligibility(db, item.id) !== false);
+    const vr = await validateBatch(batch.insights, readerItems, recordCost, cache);
     if (opts.traceId) {
       const ref: EntityRef = { type: "validation_result", locator: { kind: "composite", key: { batch_id: batch.id } }, revision: batch.id, role: "output" };
       saveValidationResult(db, batch.id, vr, () => {
@@ -161,7 +165,7 @@ export async function runValidation(
         } }, opts.assertWrite);
       });
     } else { opts.assertWrite?.(); saveValidationResult(db, batch.id, vr); }
-    telemetry.recordValidation(db, { batch, validation: vr, items, run_id: ctx.runId, costs: metricCosts });
+    telemetry.recordValidation(db, { batch, validation: vr, items: readerItems, run_id: ctx.runId, costs: metricCosts });
     // 抗抖告警：一致性调用大面积失败（疑似 LLM/中转站抖动）→ 主动告警，别让一整轮失败默默缺刊/记假数据。
     // 非致命：Run 仍 done（部分校验结果有效、已落库）；运维收到告警后重跑整管线即恢复（见 validator-uncertain-storms）。
     if (isValidationDegraded(vr.checks)) {
@@ -276,6 +280,12 @@ export async function runReportGen(
     anchor?: ReportAnchorPublication;
   },
 ): Promise<Report> {
+  // Report generation can be retried after collection has updated a source.
+  // Refuse the whole reader derivative if any saved citation is now pending;
+  // its earlier validation result cannot grant that row reader eligibility.
+  for (const insight of opts.batch.insights) for (const citation of insight.citations) {
+    if (contentReaderEligibility(db, citation.content_item_id) === false) throw new Error("raw_archive_content_not_reader_eligible");
+  }
   const batchRef: EntityRef = { type: "analysis_batch", locator: { kind: "id", id: opts.batch.id }, revision: opts.batch.id, role: "input" };
   const validationRef: EntityRef = { type: "validation_result", locator: { kind: "composite", key: { batch_id: opts.batch.id } }, revision: opts.batch.id, role: "input" };
   const reportStarted = emitTrace(db, opts.traceId, { stage: "generate_report", event_type: "started", input_refs: [batchRef, validationRef] }, opts.assertWrite);

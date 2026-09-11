@@ -217,6 +217,11 @@ export function getContentItem(db: DB, id: string): ContentItem | null {
   const r = db.prepare("SELECT * FROM content_item WHERE id = ? AND reader_eligible=1").get(id) as Record<string, unknown> | undefined;
   return r ? rowToContentItem(r) : null;
 }
+/** null is legacy/missing; false is the explicit raw-archive reader gate. */
+export function contentReaderEligibility(db: DB, id: string): boolean | null {
+  const row = db.prepare("SELECT reader_eligible FROM content_item WHERE id=?").get(id) as { reader_eligible: number } | undefined;
+  return row ? row.reader_eligible === 1 : null;
+}
 /** Collection recovery is the sole reader of a raw-pending row. */
 export function getPendingOrEligibleContentItem(db: DB, id: string): ContentItem | null {
   const r = db.prepare("SELECT * FROM content_item WHERE id = ?").get(id) as Record<string, unknown> | undefined;
