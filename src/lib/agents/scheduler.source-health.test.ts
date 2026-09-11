@@ -7,6 +7,7 @@
  *  不插入任何 topic → per-topic 循环为空，聚焦源健康三段。 */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type DB, openDb } from "../db/index.js";
+import { applyProvenanceMigrations } from "../db/provenance-migrations.js";
 import { getSource, insertRun, insertSource, setCircuit, setRunInserted } from "../db/repos.js";
 import type { Run, Source } from "../types.js";
 
@@ -67,6 +68,9 @@ function seedCircuitOpen(id: string): void {
 
 beforeEach(() => {
   db = openDb(":memory:");
+  // Collection no longer permits a provenance-less fallback, including the
+  // scheduler's mocked health paths.
+  applyProvenanceMigrations(db);
   sources = [];
   collectSourceMock.mockReset().mockResolvedValue({ fetched: 0, inserted: 0, updated: 0 });
   notifyCircuitMock.mockReset();
@@ -205,7 +209,7 @@ describe("采集阶段接线", () => {
 
     const summary = await runScheduledPipeline(db);
 
-    expect(summary.collected).toContainEqual({ source: "s_good", fetched: 3, inserted: 2, updated: 1 });
+    expect(summary.collected).toContainEqual(expect.objectContaining({ source: "s_good", status: "done", traceId: expect.any(String), fetched: 3, inserted: 2, updated: 1 }));
     expect(summary.collected).toContainEqual({ source: "s_bad", error: "fetch failed" });
     expect(summary.errors).toContain("collect s_bad: fetch failed");
   });

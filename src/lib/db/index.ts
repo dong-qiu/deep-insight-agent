@@ -10,6 +10,7 @@ import { seedDefaultDirections } from "./planning.js";
 import { assertProvenanceSchema } from "./provenance-migrations.js";
 import { assertDeploymentIdentity } from "./deployment.js";
 import { reconcileReportEffects } from "./reports.js";
+import { reconcileRawArchiveEffects } from "./raw-archive.js";
 import { SCHEMA_SQL } from "./schema.js";
 
 export type DB = Database.Database;
@@ -119,6 +120,13 @@ function migrate(db: DB): void {
     "body_kind",
     "body_kind TEXT NOT NULL DEFAULT 'article' CHECK (body_kind IN ('article','show_notes','transcript'))",
   );
+  ensureColumn(
+    db,
+    "content_item",
+    "reader_eligible",
+    "reader_eligible INTEGER NOT NULL DEFAULT 1 CHECK (reader_eligible IN (0,1))",
+  );
+  db.exec("CREATE INDEX IF NOT EXISTS idx_content_reader_eligible ON content_item(reader_eligible, fetched_at DESC)");
   // 按源全文策略（ADR-0008 决定③）：旧库补列——存量源默认 'feed'（行为不变）、content_container NULL。
   // CHECK 随 ADD COLUMN 加（默认值 'feed' 满足约束，同 body_kind 实测）。
   ensureColumn(
@@ -198,6 +206,7 @@ export function getDb(): DB {
     if (process.env.PROVENANCE_DEPLOYMENT_REQUIRED === "1" && process.env.PROVENANCE_DEPLOYMENT_WRITER !== "1") assertDeploymentIdentity(_db);
     // 文件 rename 与 SQLite 不能组成一个事务；启动时只发布 hash 完整的双 artifact，其余 fail-closed。
     reconcileReportEffects(_db);
+    reconcileRawArchiveEffects(_db);
     // 已有生产库会立即补齐方向档案；空库会安全跳过，待配置层播种 topic 后再补。
     seedDefaultDirections(_db);
   }

@@ -1,16 +1,18 @@
 /** collector 编排测试：① 标题党 RSS 全文回填（#82）② B族转写抓取（ADR-0007 6a）。
  *  mock fetchFromSource（共享 raws）+ fetchArticleBody（#82）+ fetchTranscript（6a）；内存 DB + 临时 DATA_DIR。 */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type DB, openDb } from "../db/index.js";
 import { applyProvenanceMigrations } from "../db/provenance-migrations.js";
 import { SQLITE_P1_TELEMETRY_SINK } from "../capabilities/p1-telemetry-sqlite.js";
-import { claimSourceCollectTrace, createScheduledSourceCollectTrace, getGenerationTraceStatus } from "../db/provenance.js";
-import { getContentByUrl, getContentItem, insertContentItem, insertSource } from "../db/repos.js";
+import { claimSourceCollectTrace, createScheduledSourceCollectTrace, createSourceCollectTrace, getGenerationTraceStatus } from "../db/provenance.js";
+import { getContentByUrl, getContentItem, insertContentItem, insertSource, listContentForTopic } from "../db/repos.js";
 import { captureRevision, entityKey } from "../db/provenance-facts.js";
 import { contentItemRef, contentItemRevisionSnapshot } from "../db/provenance-revisions.js";
+import * as rawArchive from "../db/raw-archive.js";
+import { checkReachability } from "./validator.js";
 import { normalizeUrl, rawToContentItem } from "../sources/normalize.js";
 import type { RawItem } from "../sources/types.js";
 import type { Source } from "../types.js";
@@ -79,10 +81,22 @@ afterEach(() => {
   raws.value = [];
   ctl.transcript = null;
   ctl.fetchError = null;
+  vi.unstubAllEnvs();
   vi.clearAllMocks();
 });
 
 describe("collector 标题党 RSS 全文回填（#82）", () => {
+  it("production commits a durable raw_archive effect and a readable raw_ref", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    raws.value = [{ ...mkRaw("https://example.test/raw-gated", "body"), raw: "original raw payload" }];
+    await collectSource(db, sourcePod);
+    const item = db.prepare("SELECT id,raw_ref FROM content_item WHERE url=?").get("https://example.test/raw-gated") as { id: string; raw_ref: string };
+    expect(item.raw_ref).toMatch(/^raw\/ci_[a-f0-9]{16}\.[a-f0-9]{64}\.txt$/);
+    expect(readFileSync(join(process.env.DATA_DIR!, item.raw_ref), "utf8")).toBe("original raw payload");
+    expect(db.prepare("SELECT kind,status,raw_content_id FROM generation_effect WHERE raw_content_id=?").get(item.id))
+      .toEqual({ kind: "raw_archive", status: "committed", raw_content_id: item.id });
+  });
+
   it("开关关：空正文条目跳过、不抓全文、不入库", async () => {
     raws.value = [titleOnly("https://www.anquanke.com/post/id/1")];
     const r = await collectSource(db, sourceAnq);
@@ -245,6 +259,43 @@ describe("collector B族转写抓取（6a）", () => {
 });
 
 describe("collector P0b-1 source_collect provenance", () => {
+  it("table-drives API, probe and retry collection through request, owned lease, Run and terminal facts", async () => {
+    const completed = new Map<string, { traceId: string; runId: string }>();
+    const cases: Array<{ name: "api" | "probe" | "retry"; parent?: "api" }> = [
+      { name: "api" }, { name: "probe" }, { name: "retry", parent: "api" },
+    ];
+    for (const [index, entry] of cases.entries()) {
+      raws.value = [mkRaw(`https://pod/entry-${entry.name}`, `entry ${entry.name} ${index}`)];
+      const accepted = createSourceCollectTrace(db, {
+        sourceId: sourcePod.id, triggerKind: entry.name,
+        ...(entry.parent ? { retryOfTraceId: completed.get(entry.parent)!.traceId, retryOfRunId: completed.get(entry.parent)!.runId } : {}),
+      });
+      if (accepted.kind !== "accepted") throw new Error(`expected ${entry.name} trace accepted`);
+      const claim = claimSourceCollectTrace(db, accepted.traceId);
+      if (!claim) throw new Error(`expected ${entry.name} claim`);
+      const result = await collectSource(db, sourcePod, { traceClaim: claim, probe: entry.name === "probe", retryOf: entry.parent ? completed.get(entry.parent)!.runId : null });
+      completed.set(entry.name, { traceId: accepted.traceId, runId: result.runId });
+
+      expect(getGenerationTraceStatus(db, accepted.traceId)).toMatchObject({
+        trace_id: accepted.traceId, status: "done", root_run_id: result.runId, source_id: sourcePod.id,
+      });
+      expect(db.prepare("SELECT trace_id,retry_of FROM run WHERE id=?").get(result.runId)).toEqual({
+        trace_id: accepted.traceId, retry_of: entry.parent ? completed.get(entry.parent)!.runId : null,
+      });
+      expect(db.prepare("SELECT stage,event_type FROM generation_event WHERE trace_id=? ORDER BY sequence").all(accepted.traceId))
+        .toEqual(expect.arrayContaining([
+          { stage: "collect", event_type: "started" }, { stage: "normalize", event_type: "completed" },
+        ]));
+      const revisions = db.prepare("SELECT COUNT(*) AS count FROM provenance_revision WHERE entity_type='content_item'").get() as { count: number };
+      const refs = db.prepare("SELECT COUNT(*) AS count FROM generation_entity_ref WHERE trace_id=?").get(accepted.traceId) as { count: number };
+      expect(revisions.count).toBeGreaterThanOrEqual(1);
+      expect(refs.count).toBeGreaterThanOrEqual(2);
+    }
+    expect(db.prepare("SELECT retry_of_trace_id FROM generation_trace WHERE id=?").get(completed.get("retry")!.traceId)).toEqual({
+      retry_of_trace_id: completed.get("api")!.traceId,
+    });
+  });
+
   it("以 source scoped trace 固化 source / Content revision，并以同一 ingest Run 作为根", async () => {
     raws.value = [mkRaw("https://pod/provenance", "A durable, normalized item.")];
     const now = new Date();
@@ -335,5 +386,61 @@ describe("collector P0b-1 source_collect provenance", () => {
       rolled_back_output_ref_count: 1,
       unknown_output_ref_count: 0,
     });
+  });
+
+  it("archive write failure keeps the committed intent out of readers and records its unknown revision", async () => {
+    const now = new Date();
+    raws.value = [{ ...mkRaw("https://example.test/raw-write-failure", "body"), raw: "original raw payload" }];
+    const accepted = createScheduledSourceCollectTrace(db, { sourceId: sourcePod.id, now });
+    if (accepted.kind !== "accepted") throw new Error("expected source trace accepted");
+    const claim = claimSourceCollectTrace(db, accepted.traceId, now);
+    if (!claim) throw new Error("expected source trace claim");
+    const rawRoot = join(process.env.DATA_DIR!, "raw");
+    mkdirSync(rawRoot, { recursive: true });
+    chmodSync(rawRoot, 0o500);
+    try {
+      await expect(collectSource(db, sourcePod, { traceClaim: claim })).rejects.toThrow();
+    } finally {
+      chmodSync(rawRoot, 0o700);
+    }
+    const row = db.prepare("SELECT id,reader_eligible FROM content_item WHERE url=?").get("https://example.test/raw-write-failure") as { id: string; reader_eligible: number };
+    expect(row.reader_eligible).toBe(0);
+    expect(getContentItem(db, row.id)).toBeNull();
+    expect(checkReachability({ content_item_id: row.id, quote: "body" }, new Map()).reachability).toBe("fail");
+    expect(listContentForTopic(db, "t1")).not.toContainEqual(expect.objectContaining({ id: row.id }));
+    expect(db.prepare("SELECT status FROM generation_effect WHERE raw_content_id=?").get(row.id)).toEqual({ status: "unknown" });
+    const event = db.prepare("SELECT output_refs,metrics FROM generation_event WHERE trace_id=? AND stage='normalize' AND event_type='failed'")
+      .get(accepted.traceId) as { output_refs: string; metrics: string };
+    expect(JSON.parse(event.output_refs)).toEqual([expect.objectContaining({ locator: { kind: "id", id: row.id } })]);
+    expect(JSON.parse(event.metrics)).toMatchObject({
+      committed_output_ref_count: 0,
+      rolled_back_output_ref_count: 0,
+      unknown_output_ref_count: 1,
+    });
+  });
+
+  it("crash after the ContentItem/intent transaction is recorded as an unknown, non-reader output", async () => {
+    const now = new Date();
+    raws.value = [{ ...mkRaw("https://example.test/raw-crash", "body"), raw: "original raw payload" }];
+    const accepted = createScheduledSourceCollectTrace(db, { sourceId: sourcePod.id, now });
+    if (accepted.kind !== "accepted") throw new Error("expected source trace accepted");
+    const claim = claimSourceCollectTrace(db, accepted.traceId, now);
+    if (!claim) throw new Error("expected source trace claim");
+    const writer = vi.spyOn(rawArchive, "writePlannedRawArchive").mockImplementationOnce(() => {
+      throw new Error("injected_crash_after_intent_commit");
+    });
+    try {
+      await expect(collectSource(db, sourcePod, { traceClaim: claim })).rejects.toThrow("injected_crash_after_intent_commit");
+    } finally {
+      writer.mockRestore();
+    }
+    const row = db.prepare("SELECT id,reader_eligible FROM content_item WHERE url=?").get("https://example.test/raw-crash") as { id: string; reader_eligible: number };
+    expect(row.reader_eligible).toBe(0);
+    expect(getContentItem(db, row.id)).toBeNull();
+    expect(db.prepare("SELECT status FROM generation_effect WHERE raw_content_id=?").get(row.id)).toEqual({ status: "unknown" });
+    const event = db.prepare("SELECT output_refs,metrics FROM generation_event WHERE trace_id=? AND stage='normalize' AND event_type='failed'")
+      .get(accepted.traceId) as { output_refs: string; metrics: string };
+    expect(JSON.parse(event.output_refs)).toEqual([expect.objectContaining({ locator: { kind: "id", id: row.id } })]);
+    expect(JSON.parse(event.metrics)).toMatchObject({ committed_output_ref_count: 0, rolled_back_output_ref_count: 0, unknown_output_ref_count: 1 });
   });
 });

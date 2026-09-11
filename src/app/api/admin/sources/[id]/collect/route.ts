@@ -8,7 +8,8 @@
 import { NextResponse } from "next/server";
 import { collectSource } from "../../../../../../lib/agents/collector.js";
 import { getDb } from "../../../../../../lib/db/index.js";
-import { getSource, hasRunningRun } from "../../../../../../lib/db/repos.js";
+import { claimSourceCollectTrace, createSourceCollectTrace } from "../../../../../../lib/db/provenance.js";
+import { getSource } from "../../../../../../lib/db/repos.js";
 import { runLogger } from "../../../../../../lib/runtime/logger.js";
 import { p1TelemetrySinkForApp } from "../../../../../p1-telemetry-composition.js";
 
@@ -29,7 +30,8 @@ export async function POST(
       { status: 409 },
     );
   }
-  if (hasRunningRun(db, "ingest", "source_id", id)) {
+  const accepted = createSourceCollectTrace(db, { sourceId: id, triggerKind: "api" });
+  if (accepted.kind === "conflict") {
     return NextResponse.json(
       {
         error: "already_running",
@@ -38,6 +40,9 @@ export async function POST(
       { status: 409 },
     );
   }
+  if (accepted.kind === "replayed") return NextResponse.json({ status: "started", source_id: id, trace_id: accepted.traceId }, { status: 202 });
+  const traceClaim = claimSourceCollectTrace(db, accepted.traceId);
+  if (!traceClaim) return NextResponse.json({ error: "source_collect_claim_lost" }, { status: 409 });
 
   const startedAt = new Date().toISOString();
   const log = runLogger({ stage: "collect-ondemand" });
@@ -45,7 +50,7 @@ export async function POST(
 
   // fire-and-forget：collectSource 内部 runJob 立刻 INSERT Run，UI 可立即在 /admin 看到 running。
   // 失败由 runJob 标 failed + notifyFailure 兜底；这里 promise rejection 进 logger 不阻塞 response。
-  void collectSource(db, source, { telemetry: p1TelemetrySinkForApp() }).then(
+  void collectSource(db, source, { traceClaim, telemetry: p1TelemetrySinkForApp() }).then(
     (out) => log.info({ runId: out.runId, fetched: out.fetched, inserted: out.inserted }, "立即抓取完成"),
     (e) => log.error({ err: (e as Error).message }, "立即抓取失败（runJob 已落 failed Run）"),
   );
@@ -55,6 +60,7 @@ export async function POST(
       status: "started",
       source_id: id,
       source_name: source.name,
+      trace_id: accepted.traceId,
       started_at: startedAt,
       message: "抓取已启动；新条目落库后会通过 /admin 看板可见，下次管线会自动纳入分析。",
     },

@@ -79,7 +79,7 @@ function loadPptInput(
     insights.flatMap((x) => x.citationIndices.map((i) => x.insight.citations[i].content_item_id)),
   );
   for (const ciId of usedCi) {
-    const ciRow = db.prepare("SELECT source_id,url FROM content_item WHERE id = ?").get(ciId) as
+    const ciRow = db.prepare("SELECT source_id,url FROM content_item WHERE id = ? AND reader_eligible=1").get(ciId) as
       | { source_id: string; url: string }
       | undefined;
     if (!ciRow) continue;

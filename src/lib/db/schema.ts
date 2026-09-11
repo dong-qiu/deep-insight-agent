@@ -793,10 +793,13 @@ CREATE TABLE IF NOT EXISTS content_item (
   body         TEXT NOT NULL,
   body_kind    TEXT NOT NULL DEFAULT 'article' CHECK (body_kind IN ('article','show_notes','transcript')),
   raw_ref      TEXT NOT NULL,
+  -- External raw archives must verify before the row reaches any reader.
+  reader_eligible INTEGER NOT NULL DEFAULT 1 CHECK (reader_eligible IN (0,1)),
   content_hash TEXT NOT NULL,
   fetch_status TEXT NOT NULL CHECK (fetch_status IN ('ok','partial'))
 );
 CREATE INDEX IF NOT EXISTS idx_content_source ON content_item(source_id);
+CREATE INDEX IF NOT EXISTS idx_content_reader_eligible ON content_item(reader_eligible, fetched_at DESC);
 -- 规范化 url 唯一（data-collection AC2：同 URL 内容更新走原地 upsert、不新增；id 由 url 派生不变）
 DROP INDEX IF EXISTS idx_content_url_hash;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_content_url ON content_item(url);

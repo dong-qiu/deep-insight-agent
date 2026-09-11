@@ -12,6 +12,10 @@ vi.mock("../../../../../../lib/db/repos.js", () => ({
 vi.mock("../../../../../../lib/agents/collector.js", () => ({
   collectSource: vi.fn(),
 }));
+vi.mock("../../../../../../lib/db/provenance.js", () => ({
+  createSourceCollectTrace: vi.fn(() => ({ kind: "accepted", traceId: "trace_retry" })),
+  claimSourceCollectTrace: vi.fn(() => ({ traceId: "trace_retry", ownerToken: "owner", fencingEpoch: 1 })),
+}));
 
 import { collectSource } from "../../../../../../lib/agents/collector.js";
 import { getRun, getSource } from "../../../../../../lib/db/repos.js";
@@ -39,7 +43,7 @@ describe("POST /api/admin/runs/[id]/retry", () => {
 
   it("kind=ingest 失败 → 调 collectSource、返新 run id + 计数", async () => {
     // @ts-expect-error 测试 stub
-    vi.mocked(getRun).mockReturnValue({ id: "r1", kind: "ingest", target: { source_id: "s1" }, status: "failed" });
+    vi.mocked(getRun).mockReturnValue({ id: "r1", kind: "ingest", target: { source_id: "s1" }, status: "failed", trace_id: "trace_original" });
     // @ts-expect-error stub
     vi.mocked(getSource).mockReturnValue({ id: "s1", name: "x" });
     vi.mocked(collectSource).mockResolvedValue({
@@ -47,7 +51,7 @@ describe("POST /api/admin/runs/[id]/retry", () => {
     });
     const res = await call("r1");
     expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({ status: "done", new_run_id: "run_new", inserted: 3 });
+    expect(await res.json()).toMatchObject({ status: "done", trace_id: "trace_retry", new_run_id: "run_new", inserted: 3 });
   });
 
   it("kind=ingest + source 已删 → 410", async () => {
@@ -70,7 +74,7 @@ describe("POST /api/admin/runs/[id]/retry", () => {
 
   it("collectSource 抛错 → 502 + error 字符串", async () => {
     // @ts-expect-error 测试 stub
-    vi.mocked(getRun).mockReturnValue({ id: "r1", kind: "ingest", target: { source_id: "s1" }, status: "failed" });
+    vi.mocked(getRun).mockReturnValue({ id: "r1", kind: "ingest", target: { source_id: "s1" }, status: "failed", trace_id: "trace_original" });
     // @ts-expect-error stub
     vi.mocked(getSource).mockReturnValue({ id: "s1", name: "x" });
     vi.mocked(collectSource).mockRejectedValue(new Error("fetch failed: ECONNRESET"));

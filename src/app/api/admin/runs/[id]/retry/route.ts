@@ -8,6 +8,7 @@
 import { NextResponse } from "next/server";
 import { collectSource } from "../../../../../../lib/agents/collector.js";
 import { getDb } from "../../../../../../lib/db/index.js";
+import { claimSourceCollectTrace, createSourceCollectTrace } from "../../../../../../lib/db/provenance.js";
 import { getRun, getSource } from "../../../../../../lib/db/repos.js";
 import { p1TelemetrySinkForApp } from "../../../../../p1-telemetry-composition.js";
 
@@ -38,10 +39,19 @@ export async function POST(
     if (!source) {
       return NextResponse.json({ error: "source_deleted", source_id: sourceId }, { status: 410 });
     }
+    if (!orig.trace_id) return NextResponse.json({ error: "retry_provenance_unavailable" }, { status: 409 });
     try {
-      const out = await collectSource(db, source, { retryOf: id, telemetry: p1TelemetrySinkForApp() });
+      const accepted = createSourceCollectTrace(db, {
+        sourceId, triggerKind: "retry", retryOfTraceId: orig.trace_id, retryOfRunId: id,
+      });
+      if (accepted.kind === "conflict") return NextResponse.json({ error: "already_running", trace_id: accepted.activeTraceId }, { status: 409 });
+      if (accepted.kind === "replayed") return NextResponse.json({ status: "replayed", trace_id: accepted.traceId }, { status: 200 });
+      const traceClaim = claimSourceCollectTrace(db, accepted.traceId);
+      if (!traceClaim) return NextResponse.json({ error: "source_collect_claim_lost" }, { status: 409 });
+      const out = await collectSource(db, source, { retryOf: id, traceClaim, telemetry: p1TelemetrySinkForApp() });
       return NextResponse.json({
         status: "done",
+        trace_id: accepted.traceId,
         new_run_id: out.runId,
         fetched: out.fetched,
         inserted: out.inserted,

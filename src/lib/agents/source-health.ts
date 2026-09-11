@@ -51,7 +51,7 @@ export function runCircuitCheck(db: DB, sources: Source[]): { opened: string[]; 
  *  探测 silent（失败不刷告警）+ 单源超时 + 每轮上限。返回本轮复活的源 id + 兜底 error。 */
 export async function runHalfOpenProbe(
   db: DB,
-  collectSource: (db: DB, s: Source, opts?: { probe?: boolean }) => Promise<unknown>,
+  collectWithOwnedLease: (db: DB, s: Source, opts?: { probe?: boolean }) => Promise<unknown>,
 ): Promise<{ revived: string[]; errors: string[] }> {
   const revived: string[] = [];
   const errors: string[] = [];
@@ -65,7 +65,7 @@ export async function runHalfOpenProbe(
       try {
         // 单源超时：探测挂住不拖垮当天 brief（后台 fetch 自行结束，无害）。
         await Promise.race([
-          collectSource(db, s, { probe: true }),
+          collectWithOwnedLease(db, s, { probe: true }),
           new Promise((_, rej) => {
             timer = setTimeout(() => rej(new Error("probe timeout")), probeTimeoutMs);
           }),

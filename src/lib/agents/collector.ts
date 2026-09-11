@@ -1,10 +1,9 @@
 /** collector —— 数据采集 agent（architecture 数据流第 1 步）。
  *  按 Source 抓取 → 归一化 ContentItem → 去重 → 存档原文 → 落库；统一经 Job Runner 记一条 ingest Run
  *  （与 analyze/validate/report-gen 一致：单调时钟耗时 + 失败捕获 + 可重试）。 */
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { getContentByUrl, getContentItem, insertContentItem, setRunInserted, updateContentItem } from "../db/repos.js";
+import { getContentByUrl, getPendingOrEligibleContentItem, insertContentItem, setRunInserted, updateContentItem } from "../db/repos.js";
 import type { DB } from "../db/index.js";
+import { markRawArchiveUnknown, planRawArchive, writePlannedRawArchive } from "../db/raw-archive.js";
 import {
   assertSourceCollectClaim,
   bindSourceCollectRootRun,
@@ -37,15 +36,6 @@ function articleFetchMaxPerRun(): number {
   return Number(process.env.ARTICLE_FETCH_MAX_PER_RUN) || 25;
 }
 
-/** 原文存档到 FS（architecture：raw_ref 句柄，MVP 不清理），返回相对路径句柄。 */
-function archiveRaw(id: string, raw: string): string {
-  const dir = join(process.env.DATA_DIR ?? ".data", "raw");
-  mkdirSync(dir, { recursive: true });
-  const path = join(dir, `${id}.txt`);
-  writeFileSync(path, raw);
-  return path;
-}
-
 export async function collectSource(
   db: DB,
   source: Source,
@@ -55,6 +45,7 @@ export async function collectSource(
   const trace = opts.traceClaim;
   const sourceRef = trace ? sourceConfigRef(source) : null;
   const outputs: EntityRef[] = [];
+  const unknownOutputs: EntityRef[] = [];
   let stage: "collect" | "normalize" = "collect";
   let fetched = 0;
   let traceRunId: string | null = null;
@@ -116,6 +107,14 @@ export async function collectSource(
       });
     }
     stage = "normalize";
+    const rawArchiveProvenance = trace
+      ? (() => {
+        const event = db.prepare("SELECT id FROM generation_event WHERE trace_id=? AND stage='normalize' AND event_type='started'")
+          .get(trace.traceId) as { id: string } | undefined;
+        if (!event) throw new Error("raw_archive_normalize_event_missing");
+        return { traceId: trace.traceId, eventId: event.id };
+      })()
+      : undefined;
     const fetchedAt = new Date().toISOString();
     let inserted = 0;
     let updated = 0;
@@ -175,7 +174,7 @@ export async function collectSource(
         skipped++; // 同 URL + 同指纹 = 完全重复（AC2 ①）
         continue;
       }
-      item.raw_ref = archiveRaw(item.id, raw.raw);
+      let rawArchive: ReturnType<typeof planRawArchive> | null = null;
       let persistedItem: typeof item | null = null;
       let persistedOutputRef: EntityRef | null = null;
       // Content 的业务 upsert、实际持久化行的 snapshot 与 provenance revision 在同一 SQLite
@@ -184,7 +183,11 @@ export async function collectSource(
         assertWrite();
         if (existing) updateContentItem(db, item); // 同 URL 内容更新 → 原地更新、id 不变（AC2 ②）
         else insertContentItem(db, item); // 新 URL（AC2 ③）
-        persistedItem = getContentItem(db, existing?.id ?? item.id);
+        // The ContentItem change and the raw archive intent are one SQLite
+        // transaction.  The external file is written only after this commits.
+        rawArchive = planRawArchive(db, { contentId: existing?.id ?? item.id, raw: raw.raw, ...rawArchiveProvenance });
+        item.raw_ref = rawArchive.rawRef;
+        persistedItem = getPendingOrEligibleContentItem(db, existing?.id ?? item.id);
         if (!persistedItem) throw new Error("content_item_write_not_found");
         persistedOutputRef = trace ? contentItemRef(persistedItem, "output") : null;
         if (persistedOutputRef) {
@@ -197,10 +200,21 @@ export async function collectSource(
         }
       })();
       if (!persistedItem) throw new Error("content_item_write_not_found");
+      if (!rawArchive) throw new Error("raw_archive_plan_not_created");
+      const rawArchiveEffectId = (rawArchive as ReturnType<typeof planRawArchive>).effectId;
+      try {
+        writePlannedRawArchive(db, rawArchive, raw.raw);
+      } catch (error) {
+        // Its DB intent/revision committed but the archive did not verify.
+        // Keep that exact unknown revision visible in the failure event only.
+        markRawArchiveUnknown(db, rawArchiveEffectId, error instanceof Error ? error.message : "raw_archive_write_failed");
+        if (persistedOutputRef) unknownOutputs.push(persistedOutputRef);
+        throw error;
+      }
+      if (persistedOutputRef) outputs.push(persistedOutputRef);
       // Optional P1 telemetry observes committed output only; it never feeds
       // report selection or citation validation.
       telemetry.recordCollector(db, { run_id: ctx.runId, item: persistedItem });
-      if (persistedOutputRef) outputs.push(persistedOutputRef);
       if (existing) updated++;
       else inserted++;
     }
@@ -228,19 +242,19 @@ export async function collectSource(
     if (trace && !lostLease) {
       try {
         assertWrite();
-        // 逐条 upsert 已各自原子提交：此前成功的 Content revision 可明确列为 committed；
-        // 当前事务的失败会回滚，未知数量显式为 0，避免把不确定性藏进错误文本。
-        const outcome = outputs.length > 0 ? "committed" : "rolled_back";
+        // Finalized rows are committed.  A failed archive is durable but
+        // not-reader-eligible, so its exact revision/count is unknown.
+        const rolledBack = outputs.length === 0 && unknownOutputs.length === 0 ? 1 : 0;
         appendGenerationEvent(db, {
           trace_id: trace.traceId, run_id: traceRunId, stage, event_type: "failed",
-          input_refs: sourceRef ? [sourceRef] : [], output_refs: outputs,
+          input_refs: sourceRef ? [sourceRef] : [], output_refs: [...outputs, ...unknownOutputs],
           reason_code: error instanceof Error && error.message === "provenance_revision_conflict"
             ? "provenance_revision_conflict" : `${stage}_failed`,
           metrics: {
             fetched_count: fetched,
             committed_output_ref_count: outputs.length,
-            rolled_back_output_ref_count: outcome === "rolled_back" ? 1 : 0,
-            unknown_output_ref_count: 0,
+            rolled_back_output_ref_count: rolledBack,
+            unknown_output_ref_count: unknownOutputs.length,
           },
           version_context: sourceRef ? { source_config_revision: sourceRef.revision } : {},
           context_completeness: "partial",
@@ -250,8 +264,8 @@ export async function collectSource(
           summary: {
             failed_stage: stage,
             committed_output_ref_count: outputs.length,
-            rolled_back_output_ref_count: outcome === "rolled_back" ? 1 : 0,
-            unknown_output_ref_count: 0,
+            rolled_back_output_ref_count: rolledBack,
+            unknown_output_ref_count: unknownOutputs.length,
           },
         });
       } catch {

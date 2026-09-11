@@ -6,7 +6,10 @@ vi.mock("../../../../../../lib/db/index.js", () => ({
 }));
 vi.mock("../../../../../../lib/db/repos.js", () => ({
   getSource: vi.fn(),
-  hasRunningRun: vi.fn(() => false),
+}));
+vi.mock("../../../../../../lib/db/provenance.js", () => ({
+  createSourceCollectTrace: vi.fn(() => ({ kind: "accepted", traceId: "trace_collect" })),
+  claimSourceCollectTrace: vi.fn(() => ({ traceId: "trace_collect", ownerToken: "owner", fencingEpoch: 1 })),
 }));
 vi.mock("../../../../../../lib/agents/collector.js", () => ({
   // 立刻 resolve 一个 fake 结果（fire-and-forget 路径 .then 会消费它）
@@ -17,7 +20,8 @@ vi.mock("../../../../../../lib/runtime/logger.js", () => ({
 }));
 
 import { collectSource } from "../../../../../../lib/agents/collector.js";
-import { getSource, hasRunningRun } from "../../../../../../lib/db/repos.js";
+import { getSource } from "../../../../../../lib/db/repos.js";
+import { createSourceCollectTrace } from "../../../../../../lib/db/provenance.js";
 import { POST } from "./route.js";
 
 function call(id: string): Promise<Response> {
@@ -40,10 +44,10 @@ describe("POST /api/admin/sources/[id]/collect", () => {
     expect(j.message).toContain("启用后再抓取");
   });
 
-  it("已有 running ingest Run → 409 already_running（防并发 review #2）", async () => {
+  it("已有 owned source lease → 409 already_running", async () => {
     // @ts-expect-error stub
     vi.mocked(getSource).mockReturnValue({ id: "s1", name: "x", enabled: true });
-    vi.mocked(hasRunningRun).mockReturnValueOnce(true);
+    vi.mocked(createSourceCollectTrace).mockReturnValueOnce({ kind: "conflict", activeTraceId: "trace_running" });
     const res = await call("s1");
     expect(res.status).toBe(409);
     expect((await res.json()).error).toBe("already_running");
@@ -59,7 +63,9 @@ describe("POST /api/admin/sources/[id]/collect", () => {
     expect(j.status).toBe("started");
     expect(j.source_id).toBe("s1");
     expect(j.source_name).toBe("ArXiv");
+    expect(j.trace_id).toBe("trace_collect");
     expect(j.started_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
     expect(collectSource).toHaveBeenCalledTimes(1);
+    expect(collectSource).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.objectContaining({ traceClaim: expect.anything() }));
   });
 });

@@ -3,13 +3,13 @@ import { createHash, generateKeyPairSync } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import type { AnalysisBatch, Report, ReportIndexEntry, Topic, ValidationResult } from "../types.js";
+import type { AnalysisBatch, ContentItem, Report, ReportIndexEntry, Source, Topic, ValidationResult } from "../types.js";
 import { saveAnalysisBatch, saveValidationResult } from "./analysis.js";
 import { type DB, openDb } from "./index.js";
-import { chainTypesFor, distinctIndexValues, entityTrends, getReport, latestReportForTopicSince, listBlockedChecksForReport, listRecentBriefEvents, listRecentPublishedEventEvidence, listRecentPublishedInsightOccurrences, listRecentBriefSelectionDiagnostics, listRecentReports, previousReportForTopic, queryReportIndex, reconcileAnchoredReportEffects, reconcileReportEffects, reportNeighbors, reportStatusCounts, sanitizeFtsQuery, saveFailedReport, saveReport, searchReports, SNIPPET_CLOSE, SNIPPET_OPEN, topicEvolution, topicReportStats } from "./reports.js";
+import { chainTypesFor, distinctIndexValues, entityTrends, getReport, latestReportForTopicSince, listBlockedChecksForReport, listPassChecksForReport, listRecentBriefEvents, listRecentPublishedEventEvidence, listRecentPublishedInsightOccurrences, listRecentBriefSelectionDiagnostics, listRecentReports, previousReportForTopic, queryReportIndex, reconcileAnchoredReportEffects, reconcileReportEffects, reportNeighbors, reportStatusCounts, sanitizeFtsQuery, saveFailedReport, saveReport, searchReports, SNIPPET_CLOSE, SNIPPET_OPEN, topicEvolution, topicReportStats } from "./reports.js";
 import { applyProvenanceMigrations } from "./provenance-migrations.js";
 import { appendGenerationEvent } from "./provenance-facts.js";
-import { getTopic, insertSource, insertTopic } from "./repos.js";
+import { getTopic, insertContentItem, insertSource, insertTopic } from "./repos.js";
 import { type AnchorObject, type AnchorStore, MemoryAnchorStore } from "./integrity-anchors.js";
 
 const dir = mkdtempSync(join(tmpdir(), "ia-reports-"));
@@ -44,6 +44,19 @@ const index: ReportIndexEntry = {
 it("saveReport → getReport 往返（正文走 FS）", () => {
   saveReport(db, report, index, { dir });
   expect(getReport(db, "rep_test1")).toEqual(report);
+});
+
+it("report evidence excludes a raw-pending ContentItem", () => {
+  const source: Source = { id: "source_pending", name: "pending", type: "rss", endpoint: "https://pending.test", topic_ids: ["t1"], fetch_interval: "1h", backfill: null, enabled: true };
+  const content: ContentItem = { id: "content_pending", source_id: source.id, url: "https://pending.test/item", title: "pending", author: null, published_at: null, fetched_at: "2026-09-11T00:00:00.000Z", language: "en", topic_ids: ["t1"], tags: [], body: "pending quote", body_kind: "article", raw_ref: "raw/pending.txt", content_hash: "pending", fetch_status: "ok" };
+  insertSource(db, source); insertContentItem(db, content);
+  db.prepare("UPDATE content_item SET reader_eligible=0 WHERE id=?").run(content.id);
+  const batch: AnalysisBatch = { id: "batch_pending", topic_id: "t1", time_window: { start: "2026-09-11", end: "2026-09-11" }, status: "done", no_significant_event: false, insights: [{ id: "insight_pending", topic_id: "t1", type: "aggregation", event_id: null, statement: "pending", importance: 1, importance_basis: "test", source_count: 1, multi_source: false, time_window: { start: "2026-09-11", end: "2026-09-11" }, confidence: null, language: "en", citations: [{ content_item_id: content.id, quote: "pending quote", locator: { paragraph_index: 0, char_start: 0, char_end: 13 } }] }] };
+  saveAnalysisBatch(db, batch);
+  saveValidationResult(db, batch.id, { checks: [{ insight_id: "insight_pending", citation_index: 0, reachability: "pass", reachability_reason: "ok", consistency: "support", consistency_reason: "ok", verdict: "pass" }], report: { total: 1, pass: 1, blocked: 0, flagged: 0, errored: 0, consistency_failure_rate: 0, flagged_rate: 0, insights_total: 1, insights_includable: 1, releasable: true } });
+  const pendingReport = { ...report, id: "report_pending", insight_ids: ["insight_pending"] };
+  saveReport(db, pendingReport, { ...index, report_id: pendingReport.id }, { dir });
+  expect(listPassChecksForReport(db, pendingReport.id)).toEqual([]);
 });
 
 it("provenance 报告 effect 成对关联创建它的 trace 与 started event", () => {
