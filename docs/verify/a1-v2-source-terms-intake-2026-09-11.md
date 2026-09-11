@@ -37,6 +37,8 @@ This intake concerns only `a1-v2-candidate-20260910-8e23ecf` (100 internal A1 ev
 
 For each row, the data/legal owner must add: reviewed URL, observed/effective date, exact applicable licence or written permission, whether internal corpus storage and model evaluation are allowed, retention/deletion instruction, required attribution/notice, and reviewer identity. Any negative or unresolved decision requires a rebuilt candidate snapshot and new hashes; existing Object-Locked evidence must not be silently edited or relabelled.
 
+The required controlled sign-off fields, including the hard check that permitted retention reaches the candidate's Object-Lock date, are supplied in [the owner-decision template](./a1-v2-source-terms-owner-decision-template.md). That template is intentionally blank and does not alter this intake's `pending_owner_legal_review` status.
+
 ## External evidence used for the intake
 
 - [SemiAnalysis Terms and Conditions](https://semianalysis.com/terms-and-conditions/)

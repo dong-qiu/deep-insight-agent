@@ -26,6 +26,20 @@ export interface DatasetLock {
     source_manifest_reference?: string;
     source_manifest_sha256?: string;
     license_and_retention: string;
+    /** v2 snapshots must preserve the immutable retention boundary that the owner approved. */
+    object_lock_retain_until?: string;
+    /**
+     * An opaque, hashed record in controlled evidence.  The verifier cannot decide copyright
+     * terms; it can only refuse promotion unless the accountable owner recorded an all-source
+     * approval whose permitted retention covers the immutable body snapshot.
+     */
+    source_terms_decision?: {
+      record_id: string;
+      sha256: string;
+      status: "approved_all" | "blocked" | "pending";
+      approved_at: string;
+      permitted_retention_until: string;
+    };
   };
   files: {
     quality: LockedFile;
@@ -92,6 +106,17 @@ function nonEmpty(value: unknown): boolean {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+function sha256Hex(value: unknown): boolean {
+  return typeof value === "string" && /^[a-f0-9]{64}$/u.test(value);
+}
+
+/** The owner record and Object Lock dates are UTC instants so their order is unambiguous. */
+function utcInstant(value: unknown): number | null {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/u.test(value)) return null;
+  const epoch = Date.parse(value);
+  return Number.isNaN(epoch) ? null : epoch;
+}
+
 /**
  * Validate both bytes and the minimum semantic distribution.  The latter is intentionally
  * repeated here rather than inferred from a human checklist: a lock with 100 identical positive
@@ -110,6 +135,22 @@ export function validateDatasetLock(lockPath: string, files: DatasetFiles, root 
   }
   if (lock.tier === "controlled_snapshot_v2" && (!nonEmpty(lock.snapshot?.source_manifest_reference) || !nonEmpty(lock.snapshot?.source_manifest_sha256))) {
     issues.push("v2 dataset lock 必须绑定来源 URL/ID manifest 及其 sha256");
+  }
+  if (lock.tier === "controlled_snapshot_v2") {
+    const decision = lock.snapshot?.source_terms_decision;
+    const objectLockRetainUntil = utcInstant(lock.snapshot?.object_lock_retain_until);
+    if (objectLockRetainUntil === null) {
+      issues.push("v2 dataset lock 必须记录有效的 Object Lock 保留截止 UTC");
+    }
+    if (!decision || !nonEmpty(decision.record_id) || !sha256Hex(decision.sha256) || utcInstant(decision.approved_at) === null || utcInstant(decision.permitted_retention_until) === null) {
+      issues.push("v2 dataset lock 必须绑定完整且已哈希的来源条款 owner 决策");
+    } else {
+      if (decision.status !== "approved_all") issues.push("来源条款 owner 决策未获全部批准");
+      const permittedRetentionUntil = utcInstant(decision.permitted_retention_until);
+      if (objectLockRetainUntil !== null && permittedRetentionUntil !== null && permittedRetentionUntil < objectLockRetainUntil) {
+        issues.push("来源许可保留期早于 Object Lock 保留期");
+      }
+    }
   }
 
   const pairs: Array<[keyof DatasetLock["files"], string]> = [
