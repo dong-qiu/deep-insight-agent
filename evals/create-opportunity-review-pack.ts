@@ -11,4 +11,8 @@ if (!snapshotPath || !manifestPath || !seed || !outputPath) {
 const snapshot = JSON.parse(readFileSync(snapshotPath, "utf8")) as QualifiedTechLeadSnapshot;
 const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as BlindSampleManifest;
 const pack = createOwnerReviewPack(snapshot, manifest, seed);
-writeFileSync(outputPath, `${JSON.stringify(pack, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
+writeFileSync(outputPath, `${JSON.stringify(pack, null, 2)}\n`, {
+  encoding: "utf8",
+  flag: "wx",
+  mode: 0o600,
+});

@@ -5,8 +5,6 @@
     "lead_summary": "人工阅读的、已有 pass 引用支撑的技术线索摘要",
     "expected_direction_id": "dir_code_agent_reliability",
     "expected_lane": "core",
-    "actual_direction_id": "dir_code_agent_reliability",
-    "actual_lane": "core",
     "reviewer": "independent-reviewer",
     "notes": "历史 v1 模板；v2 请使用 labels.v2.template.json。"
   }

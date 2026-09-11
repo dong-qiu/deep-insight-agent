@@ -19,7 +19,7 @@
    ```
 
    该工件逐条给出 `sample_id`、稳定 `lead_id`、topic、kind、标题、摘要和证据计数，并只列出可选的 `direction_id`。Owner 使用既有管理界面按 `lead_id` 复核 `pass` 证据；工件不含方向词项或投影结果。仅向 Owner 交付，不能提交到 Git。封存 expected-only 文件前不得运行映射导出；review-pack 不是评分输入，也不会读取数据库或其他环境。
-4. 评审者先依据允许的证据填写只含 expected 字段的私有文件，并封存：`npm run eval:opportunity-seal -- blind-manifest.json expected-only.json sealed.json <UTC>`。封存 schema 严格 expected-only，任何 `actual_*` 字段都会被拒绝。之后从**同一 snapshot**只读导出 actual：`npm run eval:opportunity-mapping-export -- qualified-snapshot.json deterministic-mapping.json`，再运行 `npm run eval:opportunity-materialize -- qualified-snapshot.json blind-manifest.json sealed.json deterministic-mapping.json labels.json <UTC>`。不接受自由 lead-id→actual 输入。
+4. 评审者先依据允许的证据填写只含 expected 字段的私有文件，并封存：`npm run eval:opportunity-seal -- blind-manifest.json expected-only.json sealed.json <UTC>`。封存 schema 严格 expected-only，拒绝任何结果映射字段。之后从**同一 snapshot**只读导出确定性映射：`npm run eval:opportunity-mapping-export -- qualified-snapshot.json deterministic-mapping.json`，再运行 `npm run eval:opportunity-materialize -- qualified-snapshot.json blind-manifest.json sealed.json deterministic-mapping.json labels.json <UTC>`。不接受自由 lead-id→映射结果输入。
 5. 评分必须同时提供同一 snapshot、manifest、seal 和 deterministic mapping：
 
    ```bash

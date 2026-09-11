@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -56,7 +56,7 @@ describe("Owner review pack", () => {
     expect(() => createOwnerReviewPack(snapshot(), manifest, "wrong-seed")).toThrow("owner_review_pack_seed_mismatch");
   });
 
-  it("creates a private file once and keeps serialization and process output free of restricted fields", () => {
+  it("creates an Owner-only file once and keeps the complete Owner flow free of mapping fields and pack-content leaks", () => {
     const dir = mkdtempSync(join(tmpdir(), "owner-review-pack-"));
     try {
       const snapshotPath = join(dir, "snapshot.json");
@@ -70,19 +70,30 @@ describe("Owner review pack", () => {
       const created = run();
       expect(created.status).toBe(0);
       const artifact = readFileSync(outputPath, "utf8");
+      if (process.platform !== "win32") {
+        expect(statSync(outputPath).mode & 0o777).toBe(0o600);
+      }
       for (const name of restrictedNames) {
         expect(artifact).not.toContain(name);
         expect(created.stdout + created.stderr).not.toContain(name);
       }
       expect(artifact).not.toContain("private-direction-term");
+      for (const privateValue of ["alpha tool", "summary a", "private-direction-term"]) {
+        expect(created.stdout + created.stderr).not.toContain(privateValue);
+      }
       const protocol = readFileSync(join(process.cwd(), "evals/technology-opportunities/README.md"), "utf8");
-      const ownerSection = protocol.split("3. Owner")[1]?.split("4. ")[0] ?? "";
-      for (const name of restrictedNames) expect(ownerSection).not.toContain(name);
+      const verificationGuide = readFileSync(join(process.cwd(), "docs/verify/technology-planning-dogfood-2026-07-24.md"), "utf8");
+      const v1Template = readFileSync(join(process.cwd(), "evals/technology-opportunities/labels.template.json"), "utf8");
+      for (const ownerFlowDocument of [protocol, verificationGuide, v1Template]) {
+        for (const name of restrictedNames) expect(ownerFlowDocument).not.toContain(name);
+      }
 
       const existing = run();
       expect(existing.status).not.toBe(0);
       expect(readFileSync(outputPath, "utf8")).toBe(artifact);
-      for (const name of restrictedNames) expect(existing.stdout + existing.stderr).not.toContain(name);
+      for (const privateValue of [...restrictedNames, "alpha tool", "summary a", "private-direction-term"]) {
+        expect(existing.stdout + existing.stderr).not.toContain(privateValue);
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
