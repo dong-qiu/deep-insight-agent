@@ -340,7 +340,7 @@ CREATE INDEX IF NOT EXISTS idx_analysis_batch_display_projection ON analysis_bat
 // report_id.  Rebuild it forward so raw_archive has the same durable intent
 // ledger without weakening report/anchor foreign keys or rewriting old rows.
 const RAW_ARCHIVE_EFFECT_SQL = "generation_effect raw_archive durable effect v1";
-const CONTENT_READER_ELIGIBILITY_SQL = "content_item reader eligibility v1";
+const CONTENT_READER_ELIGIBILITY_SQL = "content_item reader eligibility v1: pending raw archives fail closed";
 
 const MIGRATIONS = [
   { version: "20260803_01_provenance_core", sql: CORE_SQL },
@@ -588,6 +588,15 @@ export function applyProvenanceMigrations(db: DB): void {
           db.exec("ALTER TABLE content_item ADD COLUMN reader_eligible INTEGER NOT NULL DEFAULT 1 CHECK (reader_eligible IN (0,1))");
         }
         db.exec("CREATE INDEX IF NOT EXISTS idx_content_reader_eligible ON content_item(reader_eligible, fetched_at DESC)");
+        // Existing planned/attempted/unknown archive effects were created by
+        // the prior release.  They must not be visible during this upgrade;
+        // startup reconciliation alone may restore visibility after hashing.
+        db.exec(`UPDATE content_item SET reader_eligible=0
+          WHERE EXISTS (
+            SELECT 1 FROM generation_effect effect
+            WHERE effect.kind='raw_archive' AND effect.raw_content_id=content_item.id
+              AND effect.status IN ('planned','attempted','unknown')
+          )`);
       } else if (migration.version === "20260825_31_integrity_daily_root_material_backfill") {
         backfillDailyRootMaterial(db);
       } else if (migration.version === "20260817_09_bounded_provenance_views" || migration.version === "20260817_10_bounded_provenance_view_index_fix" || migration.version === "20260820_11_effect_event_link" || migration.version === "20260823_12_source_credit_facts" || migration.version === "20260823_14_p1_metric_facts" || migration.version === "20260823_15_p1_metric_fact_contracts" || migration.version === "20260823_16_p1_metric_conflict_audit" || migration.version === "20260823_17_integrity_anchors" || migration.version === "20260823_18_integrity_anchor_immutability" || migration.version === "20260824_19_integrity_anchor_recovery_material" || migration.version === "20260824_20_integrity_anchor_hardening" || migration.version === "20260824_21_integrity_anchor_tenant_reconcile_index" || migration.version === "20260824_22_integrity_check_ledger" || migration.version === "20260824_23_integrity_check_key_revocation" || migration.version === "20260824_24_integrity_lifecycle" || migration.version === "20260824_25_integrity_lifecycle_purge" || migration.version === "20260825_26_integrity_lifecycle_completion_proof" || migration.version === "20260825_27_integrity_lifecycle_registry_proof" || migration.version === "20260825_28_integrity_lifecycle_hold_and_tombstone_retention" || migration.version === "20260825_29_integrity_lifecycle_hold_tombstone_snapshot" || migration.version === "20260825_30_integrity_lifecycle_external_hold" || migration.version === "20260825_32_integrity_maintenance_lease" || migration.version === "20260826_33_dashboard_trace_read_model_v1" || migration.version === "20260826_34_dashboard_cost_read_model_v1" || migration.version === "20260828_35_dashboard_late_visibility_and_dimensions") {

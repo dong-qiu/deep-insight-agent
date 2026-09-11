@@ -53,6 +53,20 @@ describe("provenance migration runner", () => {
     expect(db.prepare("SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='display_coverage_candidate_audit_batch_matches_insight'").get()).toBeTruthy();
   });
 
+  it("fails closed when upgrading an existing unresolved raw archive", () => {
+    const db = openDb(":memory:");
+    applyProvenanceMigrations(db);
+    db.prepare("INSERT INTO source(id,name,type,endpoint,topic_ids,fetch_interval,backfill,enabled) VALUES ('source_pending','pending','rss','https://pending.test','[]','1h',NULL,1)").run();
+    db.prepare(`INSERT INTO content_item(id,source_id,url,title,author,published_at,fetched_at,language,topic_ids,tags,body,body_kind,raw_ref,reader_eligible,content_hash,fetch_status)
+      VALUES ('content_pending','source_pending','https://pending.test/item','pending',NULL,NULL,'2026-09-11T00:00:00.000Z','en','[]','[]','body','article','raw/content_pending.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.txt',1,'hash','ok')`).run();
+    db.prepare(`INSERT INTO generation_effect(id,trace_id,event_id,report_id,raw_content_id,kind,idempotency_key,artifact_manifest,publication_payload,status,error,created_at,updated_at)
+      VALUES ('effect_pending',NULL,NULL,NULL,'content_pending','raw_archive','raw_archive:content_pending:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','[]','{}','unknown',NULL,'2026-09-11T00:00:00.000Z','2026-09-11T00:00:00.000Z')`).run();
+    db.prepare("DELETE FROM schema_migration WHERE version='20260911_41_content_reader_eligibility'").run();
+    applyProvenanceMigrations(db);
+    expect(db.prepare("SELECT reader_eligible FROM content_item WHERE id='content_pending'").get()).toEqual({ reader_eligible: 0 });
+    db.close();
+  });
+
   it("rejects a production writer when the runner has not applied the ledger", () => {
     const original = process.env.PROVENANCE_SCHEMA_REQUIRED;
     process.env.PROVENANCE_SCHEMA_REQUIRED = "1";

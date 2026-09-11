@@ -235,6 +235,7 @@ P1b-2 的指标写模型由 collector、analysis 与 validation 的已提交写�
 | `tags` | string[] | N | 标准化标签，可为空数组 |
 | `body` | text | Y | 抽取后的结构化正文 |
 | `raw_ref` | string | Y | 原始内容存档句柄 —— 校验反查原文用；MVP 阶段原文不清理 |
+| `reader_eligible` | bool | Y | 原文存档的 reader gate。创建/更新 raw archive intent 时为 `false`；仅最终文件 hash 验证成功后，与 effect `committed` 在同一 SQLite transaction 中设为 `true`。分析、校验、报告与读侧证据投影必须 fail-closed 排除 `false` 行；启动 reconciliation 同样只在验证成功后开放。 |
 | `content_hash` | string | Y | 内容指纹 = 对规范化后 `body` 取哈希；用于检测同 URL 内容更新 |
 | `fetch_status` | enum | Y | `ok`（完整抽取）/ `partial`（正文不完整 —— 截断 / 部分段落丢失，但 `body` 仍非空、`content_hash` 照常计算）；整源失败不产出条目 |
 
