@@ -791,7 +791,7 @@ export function listPassChecksForReport(db: DB, reportId: string): PassCheck[] {
     FROM report r JOIN insight i ON instr(r.insight_ids, '"' || i.id || '"') > 0
     JOIN citation_check cc ON cc.insight_id=i.id
     JOIN citation c ON c.insight_id=cc.insight_id AND c.citation_index=cc.citation_index
-    JOIN content_item ci ON ci.id=c.content_item_id
+    JOIN content_item ci ON ci.id=c.content_item_id AND ci.reader_eligible=1
     WHERE r.id=? AND r.status='done' AND cc.verdict='pass' AND cc.consistency='support'
     ORDER BY i.id,cc.citation_index`).all(reportId) as PassCheck[];
 }
@@ -826,10 +826,12 @@ export function listRecentPublishedInsightOccurrences(
   const asOf = opts.asOf ?? new Date().toISOString();
   const since = new Date(Date.parse(asOf) - (opts.sinceDays ?? 14) * 86_400_000).toISOString().slice(0, 10);
   const rows = db.prepare(`
-    SELECT r.id AS report_id,i.id AS insight_id,i.event_id,i.statement,i.type AS insight_type,ri.date,c.content_item_id,cc.verdict,cc.consistency
+    SELECT r.id AS report_id,i.id AS insight_id,i.event_id,i.statement,i.type AS insight_type,ri.date,
+      CASE WHEN ci.reader_eligible=0 THEN NULL ELSE c.content_item_id END AS content_item_id,cc.verdict,cc.consistency
     FROM report r JOIN report_index ri ON ri.report_id=r.id
     JOIN insight i ON instr(r.insight_ids, '"' || i.id || '"') > 0
     LEFT JOIN citation c ON c.insight_id=i.id
+    LEFT JOIN content_item ci ON ci.id=c.content_item_id
     LEFT JOIN citation_check cc ON cc.batch_id=i.batch_id AND cc.insight_id=c.insight_id AND cc.citation_index=c.citation_index
     WHERE ri.topic_id=? AND ri.type IN ('brief','initial_digest') AND r.status='done' AND ri.date>=? AND i.event_id IS NOT NULL
     ORDER BY ri.date DESC,r.generated_at DESC,r.id DESC,i.id ASC,c.citation_index ASC

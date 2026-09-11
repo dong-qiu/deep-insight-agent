@@ -60,6 +60,11 @@ export function planRawArchive(db: DB, input: { contentId: string; raw: string; 
     if (existing.raw_content_id !== input.contentId || artifact.target !== target || artifact.sha256 !== sha256 || artifact.size !== size) {
       throw new Error("raw_archive_idempotency_conflict");
     }
+    // A content revision may be updated while retaining identical raw bytes.
+    // Re-check the existing artifact before publishing that revision too.
+    const bound = db.prepare("UPDATE content_item SET raw_ref=?,reader_eligible=0 WHERE id=?")
+      .run(join("raw", target), input.contentId);
+    if (bound.changes !== 1) throw new Error("raw_archive_content_not_found");
     return { effectId: existing.id, rawRef: join("raw", target), target, sha256, size };
   }
   const effectId = `effect_raw_${randomUUID().replaceAll("-", "")}`;
@@ -72,6 +77,10 @@ export function planRawArchive(db: DB, input: { contentId: string; raw: string; 
     VALUES (@id,@trace_id,@event_id,NULL,@raw_content_id,'raw_archive',@idempotency_key,@artifact_manifest,'{}','planned',NULL,@now,@now)`)
     .run({ id: effectId, trace_id: input.traceId ?? null, event_id: input.eventId ?? null, raw_content_id: input.contentId, idempotency_key: idempotencyKey,
       artifact_manifest: JSON.stringify([{ target, sha256, size }]), now: new Date().toISOString() });
+  // Intent and this pending binding are one SQLite transaction in collector.
+  const bound = db.prepare("UPDATE content_item SET raw_ref=?,reader_eligible=0 WHERE id=?")
+    .run(join("raw", target), input.contentId);
+  if (bound.changes !== 1) throw new Error("raw_archive_content_not_found");
   return { effectId, rawRef: join("raw", target), target, sha256, size };
 }
 
@@ -88,6 +97,18 @@ function verify(path: string, artifact: RawArchiveArtifact): boolean {
 function markUnknown(db: DB, effectId: string, reasonCode: string): void {
   db.prepare("UPDATE generation_effect SET status='unknown',error=?,updated_at=? WHERE id=? AND status <> 'committed'")
     .run(JSON.stringify({ reason_code: reasonCode }), new Date().toISOString(), effectId);
+}
+
+/** Verify first; then publish the archive effect and reader eligibility together. */
+function finalize(db: DB, row: RawArchiveEffectRow, artifact: RawArchiveArtifact): void {
+  db.transaction(() => {
+    const committed = db.prepare("UPDATE generation_effect SET status='committed',error=NULL,updated_at=? WHERE id=? AND status <> 'committed'")
+      .run(new Date().toISOString(), row.id);
+    if (committed.changes !== 1 && row.status !== "committed") throw new Error("raw_archive_effect_finalize_lost");
+    const item = db.prepare("UPDATE content_item SET reader_eligible=1 WHERE id=? AND raw_ref=? AND reader_eligible=0")
+      .run(row.raw_content_id, join("raw", artifact.target));
+    if (item.changes !== 1) throw new Error("raw_archive_content_binding_missing");
+  })();
 }
 
 /** Performs the external write only after its intent exists. */
@@ -110,8 +131,7 @@ export function writePlannedRawArchive(db: DB, plan: RawArchivePlan, raw: string
     mkdirSync(finalRoot, { recursive: true });
     renameSync(staged, final);
     if (!verify(final, artifact)) throw new Error("raw_archive_final_hash_mismatch");
-    db.prepare("UPDATE generation_effect SET status='committed',error=NULL,updated_at=? WHERE id=? AND status IN ('planned','attempted')")
-      .run(new Date().toISOString(), row.id);
+    finalize(db, row, artifact);
   } catch (error) {
     const reason = error instanceof Error ? error.message : "raw_archive_write_failed";
     markUnknown(db, row.id, reason);
@@ -140,8 +160,7 @@ export function reconcileRawArchiveEffects(db: DB): { committed: number; failed:
         renameSync(staged, final);
       }
       if (!verify(final, artifact)) throw new Error("raw_archive_artifact_missing");
-      db.prepare("UPDATE generation_effect SET status='committed',error=NULL,updated_at=? WHERE id=? AND status <> 'committed'")
-        .run(new Date().toISOString(), row.id);
+      finalize(db, row, artifact);
       committed += 1;
     } catch (error) {
       markUnknown(db, row.id, error instanceof Error ? error.message : "raw_archive_reconcile_failed");

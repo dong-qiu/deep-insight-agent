@@ -158,7 +158,7 @@ export function listTechLeadEvidence(db: DB, leadId: string): TechLeadEvidence[]
     JOIN display_coverage_audit d ON d.batch_id=b.id AND d.insight_id=i.id
       AND d.terminal_reason IN ('kept', 'kept_degraded')
     JOIN citation_check cc ON cc.batch_id=b.id AND cc.insight_id=ci.insight_id AND cc.citation_index=ci.citation_index
-    JOIN content_item c ON c.id=ci.content_item_id JOIN source s ON s.id=c.source_id
+    JOIN content_item c ON c.id=ci.content_item_id AND c.reader_eligible=1 JOIN source s ON s.id=c.source_id
     WHERE e.lead_id=?
       AND b.status='done' AND b.display_coverage_state='audited' AND b.display_projection_version='source_quote_v1'
       AND e.citation_index=i.statement_citation_index - 1

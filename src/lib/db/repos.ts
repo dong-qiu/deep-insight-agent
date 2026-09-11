@@ -95,7 +95,7 @@ export function sourceContribution(db: DB, sinceIso: string): Map<string, number
        FROM report r
        JOIN insight i ON instr(r.insight_ids, '"' || i.id || '"') > 0
        JOIN citation c ON c.insight_id = i.id
-       JOIN content_item ci ON ci.id = c.content_item_id
+       JOIN content_item ci ON ci.id = c.content_item_id AND ci.reader_eligible=1
        WHERE r.status = 'done' AND r.generated_at >= @since
        GROUP BY ci.source_id`,
     )
@@ -214,6 +214,11 @@ export function insertContentItem(db: DB, c: ContentItem): void {
   });
 }
 export function getContentItem(db: DB, id: string): ContentItem | null {
+  const r = db.prepare("SELECT * FROM content_item WHERE id = ? AND reader_eligible=1").get(id) as Record<string, unknown> | undefined;
+  return r ? rowToContentItem(r) : null;
+}
+/** Collection recovery is the sole reader of a raw-pending row. */
+export function getPendingOrEligibleContentItem(db: DB, id: string): ContentItem | null {
   const r = db.prepare("SELECT * FROM content_item WHERE id = ?").get(id) as Record<string, unknown> | undefined;
   return r ? rowToContentItem(r) : null;
 }
@@ -254,7 +259,7 @@ export function listContentForTopic(
   topicId: string,
   opts: { since?: string; until?: string; limit?: number } = {},
 ): ContentItem[] {
-  const clauses = ["topic_ids LIKE @like"];
+  const clauses = ["topic_ids LIKE @like", "reader_eligible=1"];
   const params: Record<string, unknown> = { like: `%"${topicId}"%`, limit: opts.limit ?? 200 };
   if (opts.since) {
     // dogfood feedback：用 published_at（真发布时间，已归一化 ISO 8601）做窗口过滤——

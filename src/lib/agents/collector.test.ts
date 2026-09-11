@@ -1,14 +1,14 @@
 /** collector 编排测试：① 标题党 RSS 全文回填（#82）② B族转写抓取（ADR-0007 6a）。
  *  mock fetchFromSource（共享 raws）+ fetchArticleBody（#82）+ fetchTranscript（6a）；内存 DB + 临时 DATA_DIR。 */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type DB, openDb } from "../db/index.js";
 import { applyProvenanceMigrations } from "../db/provenance-migrations.js";
 import { SQLITE_P1_TELEMETRY_SINK } from "../capabilities/p1-telemetry-sqlite.js";
 import { claimSourceCollectTrace, createScheduledSourceCollectTrace, createSourceCollectTrace, getGenerationTraceStatus } from "../db/provenance.js";
-import { getContentByUrl, getContentItem, insertContentItem, insertSource } from "../db/repos.js";
+import { getContentByUrl, getContentItem, insertContentItem, insertSource, listContentForTopic } from "../db/repos.js";
 import { captureRevision, entityKey } from "../db/provenance-facts.js";
 import { contentItemRef, contentItemRevisionSnapshot } from "../db/provenance-revisions.js";
 import { normalizeUrl, rawToContentItem } from "../sources/normalize.js";
@@ -383,6 +383,36 @@ describe("collector P0b-1 source_collect provenance", () => {
       committed_output_ref_count: 0,
       rolled_back_output_ref_count: 1,
       unknown_output_ref_count: 0,
+    });
+  });
+
+  it("archive write failure keeps the committed intent out of readers and records its unknown revision", async () => {
+    const now = new Date();
+    raws.value = [{ ...mkRaw("https://example.test/raw-write-failure", "body"), raw: "original raw payload" }];
+    const accepted = createScheduledSourceCollectTrace(db, { sourceId: sourcePod.id, now });
+    if (accepted.kind !== "accepted") throw new Error("expected source trace accepted");
+    const claim = claimSourceCollectTrace(db, accepted.traceId, now);
+    if (!claim) throw new Error("expected source trace claim");
+    const rawRoot = join(process.env.DATA_DIR!, "raw");
+    mkdirSync(rawRoot, { recursive: true });
+    chmodSync(rawRoot, 0o500);
+    try {
+      await expect(collectSource(db, sourcePod, { traceClaim: claim })).rejects.toThrow();
+    } finally {
+      chmodSync(rawRoot, 0o700);
+    }
+    const row = db.prepare("SELECT id,reader_eligible FROM content_item WHERE url=?").get("https://example.test/raw-write-failure") as { id: string; reader_eligible: number };
+    expect(row.reader_eligible).toBe(0);
+    expect(getContentItem(db, row.id)).toBeNull();
+    expect(listContentForTopic(db, "t1")).not.toContainEqual(expect.objectContaining({ id: row.id }));
+    expect(db.prepare("SELECT status FROM generation_effect WHERE raw_content_id=?").get(row.id)).toEqual({ status: "unknown" });
+    const event = db.prepare("SELECT output_refs,metrics FROM generation_event WHERE trace_id=? AND stage='normalize' AND event_type='failed'")
+      .get(accepted.traceId) as { output_refs: string; metrics: string };
+    expect(JSON.parse(event.output_refs)).toEqual([expect.objectContaining({ locator: { kind: "id", id: row.id } })]);
+    expect(JSON.parse(event.metrics)).toMatchObject({
+      committed_output_ref_count: 0,
+      rolled_back_output_ref_count: 0,
+      unknown_output_ref_count: 1,
     });
   });
 });

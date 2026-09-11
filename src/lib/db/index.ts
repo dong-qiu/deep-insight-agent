@@ -120,6 +120,13 @@ function migrate(db: DB): void {
     "body_kind",
     "body_kind TEXT NOT NULL DEFAULT 'article' CHECK (body_kind IN ('article','show_notes','transcript'))",
   );
+  ensureColumn(
+    db,
+    "content_item",
+    "reader_eligible",
+    "reader_eligible INTEGER NOT NULL DEFAULT 1 CHECK (reader_eligible IN (0,1))",
+  );
+  db.exec("CREATE INDEX IF NOT EXISTS idx_content_reader_eligible ON content_item(reader_eligible, fetched_at DESC)");
   // 按源全文策略（ADR-0008 决定③）：旧库补列——存量源默认 'feed'（行为不变）、content_container NULL。
   // CHECK 随 ADD COLUMN 加（默认值 'feed' 满足约束，同 body_kind 实测）。
   ensureColumn(
