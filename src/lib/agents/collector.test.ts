@@ -11,6 +11,8 @@ import { claimSourceCollectTrace, createScheduledSourceCollectTrace, createSourc
 import { getContentByUrl, getContentItem, insertContentItem, insertSource, listContentForTopic } from "../db/repos.js";
 import { captureRevision, entityKey } from "../db/provenance-facts.js";
 import { contentItemRef, contentItemRevisionSnapshot } from "../db/provenance-revisions.js";
+import * as rawArchive from "../db/raw-archive.js";
+import { checkReachability } from "./validator.js";
 import { normalizeUrl, rawToContentItem } from "../sources/normalize.js";
 import type { RawItem } from "../sources/types.js";
 import type { Source } from "../types.js";
@@ -404,6 +406,7 @@ describe("collector P0b-1 source_collect provenance", () => {
     const row = db.prepare("SELECT id,reader_eligible FROM content_item WHERE url=?").get("https://example.test/raw-write-failure") as { id: string; reader_eligible: number };
     expect(row.reader_eligible).toBe(0);
     expect(getContentItem(db, row.id)).toBeNull();
+    expect(checkReachability({ content_item_id: row.id, quote: "body" }, new Map()).reachability).toBe("fail");
     expect(listContentForTopic(db, "t1")).not.toContainEqual(expect.objectContaining({ id: row.id }));
     expect(db.prepare("SELECT status FROM generation_effect WHERE raw_content_id=?").get(row.id)).toEqual({ status: "unknown" });
     const event = db.prepare("SELECT output_refs,metrics FROM generation_event WHERE trace_id=? AND stage='normalize' AND event_type='failed'")
@@ -414,5 +417,30 @@ describe("collector P0b-1 source_collect provenance", () => {
       rolled_back_output_ref_count: 0,
       unknown_output_ref_count: 1,
     });
+  });
+
+  it("crash after the ContentItem/intent transaction is recorded as an unknown, non-reader output", async () => {
+    const now = new Date();
+    raws.value = [{ ...mkRaw("https://example.test/raw-crash", "body"), raw: "original raw payload" }];
+    const accepted = createScheduledSourceCollectTrace(db, { sourceId: sourcePod.id, now });
+    if (accepted.kind !== "accepted") throw new Error("expected source trace accepted");
+    const claim = claimSourceCollectTrace(db, accepted.traceId, now);
+    if (!claim) throw new Error("expected source trace claim");
+    const writer = vi.spyOn(rawArchive, "writePlannedRawArchive").mockImplementationOnce(() => {
+      throw new Error("injected_crash_after_intent_commit");
+    });
+    try {
+      await expect(collectSource(db, sourcePod, { traceClaim: claim })).rejects.toThrow("injected_crash_after_intent_commit");
+    } finally {
+      writer.mockRestore();
+    }
+    const row = db.prepare("SELECT id,reader_eligible FROM content_item WHERE url=?").get("https://example.test/raw-crash") as { id: string; reader_eligible: number };
+    expect(row.reader_eligible).toBe(0);
+    expect(getContentItem(db, row.id)).toBeNull();
+    expect(db.prepare("SELECT status FROM generation_effect WHERE raw_content_id=?").get(row.id)).toEqual({ status: "unknown" });
+    const event = db.prepare("SELECT output_refs,metrics FROM generation_event WHERE trace_id=? AND stage='normalize' AND event_type='failed'")
+      .get(accepted.traceId) as { output_refs: string; metrics: string };
+    expect(JSON.parse(event.output_refs)).toEqual([expect.objectContaining({ locator: { kind: "id", id: row.id } })]);
+    expect(JSON.parse(event.metrics)).toMatchObject({ committed_output_ref_count: 0, rolled_back_output_ref_count: 0, unknown_output_ref_count: 1 });
   });
 });

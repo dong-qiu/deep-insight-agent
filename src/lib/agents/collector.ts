@@ -3,7 +3,7 @@
  *  （与 analyze/validate/report-gen 一致：单调时钟耗时 + 失败捕获 + 可重试）。 */
 import { getContentByUrl, getPendingOrEligibleContentItem, insertContentItem, setRunInserted, updateContentItem } from "../db/repos.js";
 import type { DB } from "../db/index.js";
-import { planRawArchive, writePlannedRawArchive } from "../db/raw-archive.js";
+import { markRawArchiveUnknown, planRawArchive, writePlannedRawArchive } from "../db/raw-archive.js";
 import {
   assertSourceCollectClaim,
   bindSourceCollectRootRun,
@@ -201,11 +201,13 @@ export async function collectSource(
       })();
       if (!persistedItem) throw new Error("content_item_write_not_found");
       if (!rawArchive) throw new Error("raw_archive_plan_not_created");
+      const rawArchiveEffectId = (rawArchive as ReturnType<typeof planRawArchive>).effectId;
       try {
         writePlannedRawArchive(db, rawArchive, raw.raw);
       } catch (error) {
         // Its DB intent/revision committed but the archive did not verify.
         // Keep that exact unknown revision visible in the failure event only.
+        markRawArchiveUnknown(db, rawArchiveEffectId, error instanceof Error ? error.message : "raw_archive_write_failed");
         if (persistedOutputRef) unknownOutputs.push(persistedOutputRef);
         throw error;
       }

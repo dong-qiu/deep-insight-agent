@@ -340,7 +340,8 @@ CREATE INDEX IF NOT EXISTS idx_analysis_batch_display_projection ON analysis_bat
 // report_id.  Rebuild it forward so raw_archive has the same durable intent
 // ledger without weakening report/anchor foreign keys or rewriting old rows.
 const RAW_ARCHIVE_EFFECT_SQL = "generation_effect raw_archive durable effect v1";
-const CONTENT_READER_ELIGIBILITY_SQL = "content_item reader eligibility v1: pending raw archives fail closed";
+const CONTENT_READER_ELIGIBILITY_SQL = "content_item reader eligibility v1";
+const PENDING_RAW_ARCHIVE_ELIGIBILITY_SQL = "content_item pending raw archive reader eligibility v1";
 
 const MIGRATIONS = [
   { version: "20260803_01_provenance_core", sql: CORE_SQL },
@@ -401,6 +402,7 @@ DELETE FROM dashboard_cost_fact_v1 WHERE tenant_id='default' AND EXISTS (
   { version: "20260909_39_source_quote_projection", sql: SOURCE_QUOTE_PROJECTION_SQL },
   { version: "20260910_40_raw_archive_effect", sql: RAW_ARCHIVE_EFFECT_SQL },
   { version: "20260911_41_content_reader_eligibility", sql: CONTENT_READER_ELIGIBILITY_SQL },
+  { version: "20260911_42_pending_raw_archive_reader_eligibility", sql: PENDING_RAW_ARCHIVE_ELIGIBILITY_SQL },
 ];
 
 function hasColumn(db: DB, table: string, column: string): boolean {
@@ -588,6 +590,7 @@ export function applyProvenanceMigrations(db: DB): void {
           db.exec("ALTER TABLE content_item ADD COLUMN reader_eligible INTEGER NOT NULL DEFAULT 1 CHECK (reader_eligible IN (0,1))");
         }
         db.exec("CREATE INDEX IF NOT EXISTS idx_content_reader_eligible ON content_item(reader_eligible, fetched_at DESC)");
+      } else if (migration.version === "20260911_42_pending_raw_archive_reader_eligibility") {
         // Existing planned/attempted/unknown archive effects were created by
         // the prior release.  They must not be visible during this upgrade;
         // startup reconciliation alone may restore visibility after hashing.

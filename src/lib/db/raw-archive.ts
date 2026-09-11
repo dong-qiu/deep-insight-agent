@@ -94,7 +94,8 @@ function verify(path: string, artifact: RawArchiveArtifact): boolean {
   return existsSync(path) && Buffer.byteLength(readFileSync(path, "utf8"), "utf8") === artifact.size
     && digest(readFileSync(path, "utf8")) === artifact.sha256;
 }
-function markUnknown(db: DB, effectId: string, reasonCode: string): void {
+/** A caller that observes an interrupted archive must close reader visibility. */
+export function markRawArchiveUnknown(db: DB, effectId: string, reasonCode: string): void {
   db.prepare("UPDATE generation_effect SET status='unknown',error=?,updated_at=? WHERE id=? AND status <> 'committed'")
     .run(JSON.stringify({ reason_code: reasonCode }), new Date().toISOString(), effectId);
 }
@@ -134,7 +135,7 @@ export function writePlannedRawArchive(db: DB, plan: RawArchivePlan, raw: string
     finalize(db, row, artifact);
   } catch (error) {
     const reason = error instanceof Error ? error.message : "raw_archive_write_failed";
-    markUnknown(db, row.id, reason);
+    markRawArchiveUnknown(db, row.id, reason);
     throw error;
   }
 }
@@ -163,7 +164,7 @@ export function reconcileRawArchiveEffects(db: DB): { committed: number; failed:
       finalize(db, row, artifact);
       committed += 1;
     } catch (error) {
-      markUnknown(db, row.id, error instanceof Error ? error.message : "raw_archive_reconcile_failed");
+      markRawArchiveUnknown(db, row.id, error instanceof Error ? error.message : "raw_archive_reconcile_failed");
       failed += 1;
     }
   }

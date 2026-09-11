@@ -9,7 +9,7 @@ describe("provenance migration runner", () => {
     applyProvenanceMigrations(db);
     applyProvenanceMigrations(db);
     expect(() => assertProvenanceSchema(db)).not.toThrow();
-    expect(db.prepare("SELECT COUNT(*) AS count FROM schema_migration").get()).toEqual({ count: 41 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM schema_migration").get()).toEqual({ count: 42 });
     expect((db.prepare("PRAGMA table_info(run)").all() as { name: string }[]).some((row) => row.name === "trace_id")).toBe(true);
     const reportColumns = db.prepare("PRAGMA table_info(report)").all() as { name: string; notnull: number }[];
     expect(reportColumns.find((column) => column.name === "body_path")?.notnull).toBe(0);
@@ -61,7 +61,7 @@ describe("provenance migration runner", () => {
       VALUES ('content_pending','source_pending','https://pending.test/item','pending',NULL,NULL,'2026-09-11T00:00:00.000Z','en','[]','[]','body','article','raw/content_pending.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.txt',1,'hash','ok')`).run();
     db.prepare(`INSERT INTO generation_effect(id,trace_id,event_id,report_id,raw_content_id,kind,idempotency_key,artifact_manifest,publication_payload,status,error,created_at,updated_at)
       VALUES ('effect_pending',NULL,NULL,NULL,'content_pending','raw_archive','raw_archive:content_pending:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','[]','{}','unknown',NULL,'2026-09-11T00:00:00.000Z','2026-09-11T00:00:00.000Z')`).run();
-    db.prepare("DELETE FROM schema_migration WHERE version='20260911_41_content_reader_eligibility'").run();
+    db.prepare("DELETE FROM schema_migration WHERE version='20260911_42_pending_raw_archive_reader_eligibility'").run();
     applyProvenanceMigrations(db);
     expect(db.prepare("SELECT reader_eligible FROM content_item WHERE id='content_pending'").get()).toEqual({ reader_eligible: 0 });
     db.close();
@@ -108,7 +108,7 @@ describe("provenance migration runner", () => {
     db.prepare("DELETE FROM schema_migration WHERE version IN ('20260823_12_source_credit_facts','20260823_13_source_credit_tenant_primary_keys')").run();
 
     applyProvenanceMigrations(db);
-    expect(db.prepare("SELECT COUNT(*) AS count FROM schema_migration").get()).toEqual({ count: 41 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM schema_migration").get()).toEqual({ count: 42 });
     expect(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='source_credit_event'").get()).toBeTruthy();
     expect(db.prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_source_credit_fact_tenant_source_event'").get()).toBeTruthy();
     for (const table of ["source_credit_conflict", "source_credit_late_reconciliation"]) {
