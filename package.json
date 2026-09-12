@@ -24,6 +24,8 @@
     "branches:cleanup:test": "node --test ops/cleanup-merged-branches.node-test.mjs",
     "multica:watch": "node ops/multica-task-watch.mjs",
     "multica:watch:test": "node --test ops/multica-task-watch.node-test.mjs",
+    "p0:observe": "node ops/p0-forward-observation.mjs",
+    "p0:observe:test": "node --test ops/p0-forward-observation.node-test.mjs",
     "eval:a1": "tsx evals/run-a1.ts",
     "eval:collect-source-cohort": "tsx evals/collect-source-cohort.ts",
     "eval:provenance-integrity": "tsx evals/provenance-dashboard-integrity-v1.ts",
@@ -45,7 +47,7 @@
     "typecheck": "npm run typecheck:ts7 && npm run typecheck:ts6",
     "typecheck:ts7": "node ./node_modules/@typescript/native/bin/tsc --noEmit",
     "typecheck:ts6": "node ./node_modules/typescript/bin/tsc --noEmit",
-    "test": "vitest run && node --test ops/multica-task-watch.node-test.mjs",
+    "test": "vitest run && node --test ops/multica-task-watch.node-test.mjs ops/p0-forward-observation.node-test.mjs",
     "test:e2e": "npm run build && vitest run --config vitest.e2e.config.ts",
     "test:coverage": "vitest run --coverage && node --test ops/multica-task-watch.node-test.mjs"
   },
