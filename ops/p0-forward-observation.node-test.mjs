@@ -37,7 +37,8 @@ test("remote aggregate rejects dismissed and audit-invalid evidence", async (t) 
     CREATE TABLE display_coverage_audit (batch_id TEXT,insight_id TEXT,terminal_reason TEXT,decision TEXT);
     CREATE TABLE citation (insight_id TEXT,citation_index INTEGER,content_item_id TEXT,citation_ref TEXT,quote TEXT);
     CREATE TABLE citation_check (batch_id TEXT,insight_id TEXT,citation_index INTEGER,verdict TEXT,consistency TEXT,reachability TEXT);
-    CREATE TABLE content_item (id TEXT PRIMARY KEY,reader_eligible INTEGER);`);
+    CREATE TABLE content_item (id TEXT PRIMARY KEY,reader_eligible INTEGER,source_id TEXT);
+    CREATE TABLE source (id TEXT PRIMARY KEY);`);
   const quote = "A source-quoted fact.";
   const hash = (value) => createHash("sha256").update(value, "utf8").digest("hex");
   const decision = (citationRef, quoteHash = hash(quote)) => JSON.stringify({
@@ -51,14 +52,20 @@ test("remote aggregate rejects dismissed and audit-invalid evidence", async (t) 
   const audit = db.prepare("INSERT INTO display_coverage_audit VALUES (?,?,?,?)");
   const citation = db.prepare("INSERT INTO citation VALUES (?,?,?,?,?)");
   const check = db.prepare("INSERT INTO citation_check VALUES (?,?,?,?,?,?)");
-  const content = db.prepare("INSERT INTO content_item VALUES (?,1)");
+  const content = db.prepare("INSERT INTO content_item VALUES (?,1,?)");
   db.prepare("INSERT INTO analysis_batch VALUES ('batch','done','audited','source_quote_v1')").run();
-  for (const [leadId, status, invalid] of [["accepted", "recommended", false], ["dismissed", "dismissed", false], ["invalid", "recommended", true]]) {
+  db.prepare("INSERT INTO source VALUES ('existing-source')").run();
+  for (const [leadId, status, invalid, sourceId] of [
+    ["accepted", "recommended", false, "existing-source"],
+    ["dismissed", "dismissed", false, "existing-source"],
+    ["invalid", "recommended", true, "existing-source"],
+    ["missing-source", "recommended", false, "missing-source"],
+  ]) {
     const insightId = `insight-${leadId}`;
     const citationRef = `ref-${leadId}`;
     insert.run(leadId, status); evidence.run(leadId, insightId);
     insight.run(insightId, "batch", quote, 1, "", "系统重要性判断：该结果可为工程选型提供参考。");
-    content.run(`content-${leadId}`); citation.run(insightId, 0, `content-${leadId}`, citationRef, quote);
+    content.run(`content-${leadId}`, sourceId); citation.run(insightId, 0, `content-${leadId}`, citationRef, quote);
     check.run("batch", insightId, 0, "pass", "support", "pass");
     audit.run("batch", insightId, "kept", decision(citationRef, invalid ? "wrong-hash" : hash(quote)));
   }
@@ -66,7 +73,7 @@ test("remote aggregate rejects dismissed and audit-invalid evidence", async (t) 
   const output = execFileSync(process.execPath, ["-e", remoteAggregateProgram()], {
     encoding: "utf8", env: { ...process.env, P0_OBSERVE_DB_PATH: databasePath },
   });
-  assert.deepEqual(JSON.parse(output), { total_tech_leads: 3, candidate_source_quote_v1: 1 });
+  assert.deepEqual(JSON.parse(output), { total_tech_leads: 4, candidate_source_quote_v1: 1 });
 });
 
 test("candidate threshold is explicitly not the human dogfood gate", () => {
