@@ -241,6 +241,18 @@ defaultSources:
     topic_ids: [t_code_agents]
     fetch_interval: 24h
     enabled: true
+    # ADR-0027：混合 newsletter/podcast 源必须先走 shadow，不可由全局开关直接拉全文。
+    transcript_mode: off
+  - id: src_chain_of_thought
+    name: Chain of Thought（播客 · 转写）
+    type: rss
+    endpoint: https://feeds.transistor.fm/chain-of-thought
+    topic_ids: [t_code_agents]
+    fetch_interval: 24h
+    enabled: true
+    # 官方 RSS 提供 Podcasting 2.0 text/plain transcript；先 observe 建立成本/质量基线。
+    transcript_mode: off
+    transcript_strategy: all
   - id: src_practical_ai
     name: Practical AI（播客 · 转写）
     type: rss

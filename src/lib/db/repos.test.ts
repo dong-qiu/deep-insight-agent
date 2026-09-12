@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { ContentItem, Run, Source, Topic } from "../types.js";
 import { type DB, openDb } from "./index.js";
 import {
+  appendTranscriptAcquisitionFact,
   clearCircuit, contentExists, finishRun, getContentByUrl, getContentItem, getRun, getSource,
   getSourceBodyKinds, getTopic, hasRunningRun, insertContentItem, insertRun, insertSource,
   insertTopic, listProbeCandidates, listRuns, listRunsForTopicSince, listSources, recoverOrphanedRuns,
@@ -24,6 +25,8 @@ const sampleSource: Source = {
   topic_ids: ["t1", "t2"], fetch_interval: "6h",
   backfill: { depth: "90d", max_cost: 5 }, enabled: true,
   fetch_mode: "feed", content_container: null,
+  transcript_mode: "off", transcript_strategy: "relevant_only", transcript_max_items_per_run: 5,
+  transcript_max_bytes_per_run: 5 * 1024 * 1024, transcript_timeout_budget_ms: 30_000, transcript_host_qps: 0.5,
   disabled_reason: null, disabled_at: null, circuit_reset_at: null, last_probe_at: null,
 };
 
@@ -95,6 +98,21 @@ describe("源熔断态（切片3b）", () => {
 it("Source 往返：JSON 数组 / backfill / bool", () => {
   insertSource(db, sampleSource);
   expect(getSource(db, "src_arxiv_swe")).toEqual(sampleSource);
+});
+
+it("transcript acquisition fact 幂等重放，冲突追加审计且不覆盖", () => {
+  insertSource(db, sampleSource);
+  const fact = {
+    id: "taf_1", source_id: sampleSource.id, episode_url: "https://pod.example/ep-1", candidate_hash: "candidate",
+    policy_version: "v1", adapter_version: "rss-v1", attempt: 0, decision: "fetch" as const,
+    outcome: "decision" as const, reason_code: "keyword_hit", bytes: null, duration_ms: null,
+    fallback_body_kind: null, content_item_id: null, occurred_at: "2026-09-13T00:00:00.000Z",
+  };
+  expect(appendTranscriptAcquisitionFact(db, fact)).toEqual({ replayed: false });
+  expect(appendTranscriptAcquisitionFact(db, fact)).toEqual({ replayed: true });
+  expect(() => appendTranscriptAcquisitionFact(db, { ...fact, outcome: "success" })).toThrow("transcript_acquisition_idempotency_conflict");
+  expect(db.prepare("SELECT COUNT(*) AS n FROM transcript_acquisition_conflict WHERE event_id='taf_1'").get()).toEqual({ n: 1 });
+  expect(() => db.prepare("DELETE FROM transcript_acquisition_fact WHERE id='taf_1'").run()).toThrow("append-only");
 });
 
 it("Topic 往返 + enabledOnly 过滤", () => {
