@@ -52,7 +52,7 @@
     "test:coverage": "vitest run --coverage && node --test ops/multica-task-watch.node-test.mjs"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "0.122.0",
+    "@anthropic-ai/sdk": "0.124.0",
     "@aws-sdk/client-kms": "3.1123.0",
     "@aws-sdk/client-s3": "3.1123.0",
     "@aws-sdk/client-secrets-manager": "3.1123.0",
@@ -76,10 +76,10 @@
     "@types/better-sqlite3": "^7.6.13",
     "@typescript/native": "npm:typescript@^7.0.2",
     "@types/d3-force": "3.0.10",
-    "@types/node": "^26.4.0",
+    "@types/node": "^26.5.0",
     "@types/nodemailer": "^8.0.1",
     "@types/react": "^19.2.18",
-    "@types/react-dom": "^19.2.5",
+    "@types/react-dom": "^19.2.7",
     "@vitest/coverage-v8": "^4.1.11",
     "eslint": "9.39.5",
     "eslint-config-next": "16.3.3",
