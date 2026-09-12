@@ -15,6 +15,10 @@ import { SCHEMA_SQL } from "./schema.js";
 
 export type DB = Database.Database;
 
+function tableExists(db: DB, table: string): boolean {
+  return Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table));
+}
+
 export function openDb(path: string, opts: { bootstrap?: boolean } = {}): DB {
   if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
   const db = new Database(path);
@@ -24,6 +28,10 @@ export function openDb(path: string, opts: { bootstrap?: boolean } = {}): DB {
   // 默认会立刻抛 SQLITE_BUSY；改为最多等 5s 让写串行化，而非直接失败。
   db.pragma("busy_timeout = 5000");
   if (opts.bootstrap !== false) {
+    // SCHEMA_SQL contains indexes over recently added columns. For an existing database,
+    // bring those columns forward before replaying the schema, otherwise SQLite rejects
+    // CREATE INDEX before migrate() gets a chance to add the column.
+    if (tableExists(db, "content_item")) migrate(db);
     db.exec(SCHEMA_SQL);
     migrate(db);
   }
