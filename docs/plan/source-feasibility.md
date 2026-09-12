@@ -100,7 +100,7 @@
 ### 9. The Pragmatic Engineer (Newsletter)
 
 - **可达性**: ✅ 实测 `https://newsletter.pragmaticengineer.com/feed` 有效 RSS（Substack），含播客和文字。
-- **接入方式**: **官方 RSS**。注意 Gergely 部分内容仅付费订阅者可见（feed 给摘要 + paywall 链接）；MVP 用 RSS 拿到的免费内容即可。
+- **接入方式**: **官方 RSS**。注意 Gergely 部分内容仅付费订阅者可见（feed 给摘要 + paywall 链接）；MVP 用 RSS 拿到的免费内容即可。播客单集与 newsletter 共用 feed，不能按 `/p/<slug>` URL 猜测；仅 audio/podcast 元数据证明的单集可在 `observe` 中尝试其公开的、同 canonical episode 绑定的 Substack transcript JSON，普通 newsletter 继续只消费 RSS。
 - **ToS / robots.txt**: Substack 公开 feed；商用场景需注意 paywall 内容不能跳过付费墙抓取。
 - **速率限制 / 成本**: 免费。如要付费内容需个人订阅 ($15/月) 后用授权 token。
 - **历史回填深度**: ~20 条近期。

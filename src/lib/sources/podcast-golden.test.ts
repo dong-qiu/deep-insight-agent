@@ -3,6 +3,7 @@ import type { Source } from "../types.js";
 import {
   applyGoldenSource,
   deriveLexTranscriptUrl,
+  derivePragmaticPodcastTranscriptUrl,
   titleMatchesAiSwe,
 } from "./podcast-golden.js";
 import type { RawItem } from "./types.js";
@@ -41,6 +42,19 @@ describe("deriveLexTranscriptUrl", () => {
   });
   it("非法 URL → undefined（不抛）", () => {
     expect(deriveLexTranscriptUrl("not a url")).toBeUndefined();
+  });
+});
+
+describe("derivePragmaticPodcastTranscriptUrl", () => {
+  it("只接受 parser 已证明为播客单集的官方 /p/<slug> 页面", () => {
+    expect(derivePragmaticPodcastTranscriptUrl(rawItem({
+      url: "https://newsletter.pragmaticengineer.com/p/building-codex?utm_source=rss", is_podcast_episode: true,
+    }))).toBe("https://newsletter.pragmaticengineer.com/p/building-codex?utm_source=rss");
+  });
+  it("同一 newsletter URL 模式不是播客证明，普通文章不得注入 transcript", () => {
+    expect(derivePragmaticPodcastTranscriptUrl(rawItem({
+      url: "https://newsletter.pragmaticengineer.com/p/a-newsletter", is_podcast_episode: false,
+    }))).toBeUndefined();
   });
 });
 
@@ -93,5 +107,15 @@ describe("applyGoldenSource", () => {
     const out = applyGoldenSource(src, items);
     expect(out).toHaveLength(2); // 不筛
     expect(out[0].transcript_url).toBeUndefined(); // 不注入
+  });
+
+  it("Pragmatic 混合 feed：只为 audio/podcast 单集注入受限 discovery adapter", () => {
+    const src = { ...lexSource(), endpoint: "https://newsletter.pragmaticengineer.com/feed" } as Source;
+    const newsletter = rawItem({ url: "https://newsletter.pragmaticengineer.com/p/newsletter", title: "Newsletter" });
+    const episode = rawItem({ url: "https://newsletter.pragmaticengineer.com/p/podcast", title: "Podcast", is_podcast_episode: true, body_kind: "show_notes" });
+    expect(applyGoldenSource(src, [newsletter, episode])).toEqual([
+      newsletter,
+      expect.objectContaining({ transcript_url: episode.url, transcript_adapter: "substack_episode_hydration" }),
+    ]);
   });
 });

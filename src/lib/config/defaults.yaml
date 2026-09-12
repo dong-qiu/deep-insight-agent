@@ -241,8 +241,15 @@ defaultSources:
     topic_ids: [t_code_agents]
     fetch_interval: 24h
     enabled: true
-    # ADR-0027：混合 newsletter/podcast 源必须先走 shadow，不可由全局开关直接拉全文。
-    transcript_mode: off
+    # ADR-0027：混合 newsletter/podcast 源。仅 parser 证明的 audio 单集会进入 observe；普通 newsletter 保持 article。
+    transcript_mode: observe
+    transcript_strategy: relevant_only
+    transcript_max_items_per_run: 1
+    # 2026-09 real episode probe: page + complete official JSON was 1.88 MiB.  Keep the
+    # canary narrow (one episode) but leave enough budget to observe a full acquisition.
+    transcript_max_bytes_per_run: 2097152
+    transcript_timeout_budget_ms: 20000
+    transcript_host_qps: 0.25
   - id: src_chain_of_thought
     name: Chain of Thought（播客 · 转写）
     type: rss

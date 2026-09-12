@@ -65,6 +65,16 @@ describe("loadStaticConfig + 播种 + 合并", () => {
         transcript_max_bytes_per_run: 2 * 1024 * 1024, transcript_timeout_budget_ms: 20_000, transcript_host_qps: 0.25 });
   });
 
+  it("将 Pragmatic 混合 newsletter/podcast 源以 observe/relevant_only 小配额播种", () => {
+    const cfg = loadStaticConfig();
+    const source = cfg.defaultSources.find((candidate) => candidate.id === "src_pragmatic_eng");
+    expect(source).toMatchObject({
+      endpoint: "https://newsletter.pragmaticengineer.com/feed", topic_ids: ["t_code_agents"],
+      transcript_mode: "observe", transcript_strategy: "relevant_only", transcript_max_items_per_run: 1,
+      transcript_max_bytes_per_run: 2 * 1024 * 1024, transcript_timeout_budget_ms: 20_000, transcript_host_qps: 0.25,
+    });
+  });
+
   it("将新增的 AI-SWE 官方来源保持为逐源启用前的 staged 候选", () => {
     const cfg = loadStaticConfig();
     const expected = [

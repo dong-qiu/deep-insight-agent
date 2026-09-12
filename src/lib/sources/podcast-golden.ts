@@ -8,6 +8,8 @@ import type { RawItem } from "./types.js";
 interface GoldenAdapter {
   /** 由单集 URL 推导转写页 URL；推不出（非单集页/异常）返 undefined。 */
   transcriptUrl(item: RawItem): string | undefined;
+  /** Direct Podcasting 2.0 is the default.  Multi-hop discovery must be explicit per source. */
+  transcriptAdapter?(item: RawItem): NonNullable<RawItem["transcript_adapter"]>;
   /** 标题筛子：true=保留、false=丢弃。省略=不筛（全保留）。 */
   titleAllowed?(title: string): boolean;
 }
@@ -56,11 +58,30 @@ export function deriveLexTranscriptUrl(episodeUrl: string): string | undefined {
   }
 }
 
+/** The Pragmatic Engineer uses a mixed Substack feed: newsletter articles and podcast episodes
+ * share `/p/<slug>` URLs.  Only parser-proven audio/podcast entries may enter the transcript
+ * discovery path; the adapter later requires an exact hydration binding to this same URL. */
+export function derivePragmaticPodcastTranscriptUrl(item: RawItem): string | undefined {
+  if (!item.is_podcast_episode) return undefined;
+  try {
+    const url = new URL(item.url);
+    if (url.hostname.replace(/^www\./, "") !== "newsletter.pragmaticengineer.com") return undefined;
+    if (!/^\/p\/[^/]+\/?$/.test(url.pathname)) return undefined;
+    return url.toString();
+  } catch {
+    return undefined;
+  }
+}
+
 /** 注册表：host → 适配器。新增金牌源播客只在此加一行。 */
 const REGISTRY: Record<string, GoldenAdapter> = {
   "lexfridman.com": {
     transcriptUrl: (item) => deriveLexTranscriptUrl(item.url),
     titleAllowed: titleMatchesAiSwe,
+  },
+  "newsletter.pragmaticengineer.com": {
+    transcriptUrl: derivePragmaticPodcastTranscriptUrl,
+    transcriptAdapter: () => "substack_episode_hydration",
   },
 };
 
@@ -85,7 +106,7 @@ export function applyGoldenSource(source: Source, items: RawItem[]): RawItem[] {
       continue;
     }
     const url = adapter.transcriptUrl(it);
-    out.push(url ? { ...it, transcript_url: url } : it);
+    out.push(url ? { ...it, transcript_url: url, ...(adapter.transcriptAdapter ? { transcript_adapter: adapter.transcriptAdapter(it) } : {}) } : it);
   }
   return out;
 }

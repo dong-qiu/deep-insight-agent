@@ -60,6 +60,10 @@ The Pragmatic Engineer 是 newsletter 与播客共用一个 Substack feed 的例
 
 无可靠 speaker map 的转写一律 `attribution=unknown`。该状态必须由结构化输出、验证和报告投影共同执行：未知状态禁止生成或渲染任何人物/角色发言归属，允许的表述只有“节目转写提到”。speaker 归属的后续开放必须提供 source segment、speaker ID 和稳定的人名映射。
 
+当前实现的确定性底线是：不把 segment 的 speaker/name/role 格式字段写入可分析正文；所有成功
+`TranscriptFetchResult` 和 evidence envelope 固化 `speaker_attribution=unknown`。原始标签仍仅在 raw archive
+中保存，以便日后提供可靠映射时重新处理；它们不进入 analyzer 输入。
+
 ## 指标与准入
 
 观测至少覆盖 source/day 的候选数、播客识别、决策、实际尝试、成功、回退原因、bytes、耗时、配额命中、分析入选、成功引用与已发布洞察。acquisition facts 是观察者，故障不能影响 P0 管线。

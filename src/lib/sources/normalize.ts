@@ -78,11 +78,20 @@ export function normalizeBody(body: string): string {
  *  要求行首时间戳，避免把口播里的 "A --> B" / 含箭头代码整行误删（评审 M2）。 */
 const CUE_TIMELINE = /^\d{1,2}:\d{2}(?::\d{2})?(?:[.,]\d{1,3})?\s*-->/;
 
+/** Formatting labels are not a verified speaker map.  Remove only conventional Host/Guest/role
+ * prefixes and Title-Case personal-name labels before model input; raw evidence remains archived. */
+export function stripTranscriptSpeakerLabel(textValue: string): string {
+  return textValue
+    .replace(/^(?:host|guest|speaker(?:\s+\d+)?|interviewer|interviewee|ceo|cto|founder)\s*:\s*/i, "")
+    .replace(/^[A-Z][A-Za-z.'’-]*(?:\s+[A-Z][A-Za-z.'’-]*){0,3}\s*:\s*/, "")
+    .trim();
+}
+
 /** 清洗转写稿（VTT / SRT / 纯文本）→ 干净正文（ADR-0007 切片2）：
  *  剥 WEBVTT 头、NOTE/STYLE/REGION 元数据块（延续到空行）、cue 时间轴行、SRT cue 序号（纯数字 + 后随时间轴）。
  *  **不误伤正文**：纯数字行仅在「下一行是时间轴」时才当 SRT 序号删（评审 M1）；时间轴按行首时间戳判（评审 M2）；
  *  NOTE/STYLE/REGION 按块删到空行（评审 M3）。HTML 形态转写交由下游 normalizeBody 的 stripHtml（两段清洗叠加、幂等）。
- *  保留说话人标签（如 "John: …"）：内容歧义大、剥除易误伤，analyzer 可直接消费。 */
+ *  常规说话人/角色标签会剥除：没有 source→speaker map 时不能让模型把排版当事实归属。 */
 export function stripTranscript(raw: string): string {
   const lines = raw.replace(/^﻿/, "").split(/\r?\n/); // 去 BOM
   const out: string[] = [];
@@ -107,34 +116,31 @@ export function stripTranscript(raw: string): string {
       while (j < lines.length && !lines[j].trim()) j++;
       if (CUE_TIMELINE.test((lines[j] ?? "").trim())) continue;
     }
-    out.push(l);
+    const spoken = stripTranscriptSpeakerLabel(l);
+    if (spoken) out.push(spoken);
   }
   return out.join(" ").replace(/\s+/g, " ").trim();
 }
 
-/** 从结构化 HTML 转写页抽取正文（ADR-0007 切片6d，金牌源）：针对 Lex Fridman 式标记——
- *  每段 `<span class="ts-name">说话人</span> <span class="ts-timestamp">…</span> <span class="ts-text">正文</span>`。
- *  **单次有序扫描** ts-name / ts-text：遇 name 更新「当前说话人」，遇 text 用当前说话人发一行 "说话人: 正文"。
- *  如此即便某段缺 ts-name 也不会错位（沿用上一说话人）——避免 index 配对在缺段时整体错位（review M1）。
- *  保留说话人标签（同 stripTranscript）；ts-text 内联标签交 stripHtml 剥；无 ts-text 则返空串——交调用方回退。 */
+/** 从结构化 HTML 转写页抽取正文（ADR-0007 切片6d，金牌源）：只消费每段的
+ * `<span class="ts-text">正文</span>`。`ts-name` 是显示标签、不是经验证的 source→speaker map，
+ * 故不进入可分析正文；ts-text 内联标签交 stripHtml 剥。 */
 const TS_SPAN = /<span[^>]*class="[^"]*\bts-(name|text)\b[^"]*"[^>]*>([\s\S]*?)<\/span>/gi;
 export function extractHtmlTranscript(html: string): string {
   const lines: string[] = [];
-  let speaker = "";
   for (const m of html.matchAll(TS_SPAN)) {
     const val = stripHtml(m[2]).replace(/\s+/g, " ").trim();
-    if (m[1].toLowerCase() === "name") speaker = val;
-    else if (val) lines.push(speaker ? `${speaker}: ${val}` : val); // ts-text，仅非空
+    if (m[1].toLowerCase() === "text" && val) lines.push(stripTranscriptSpeakerLabel(val));
   }
   return lines.join("\n").trim();
 }
 
 /** 从 `<cite>/<p>` 式 HTML 转写页抽取正文（Changelog 网络转写页，2026-06-26）：每段
- *  `<cite>说话人:</cite> <p>[00:00] 正文…</p>`。同 extractHtmlTranscript 的单次有序扫描——
- *  遇 <cite> 更新当前说话人（去尾冒号），遇 <p> 用当前说话人发一行 "说话人: 正文"（去首部 [时间戳]）。
+ *  `<cite>说话人:</cite> <p>[00:00] 正文…</p>`。只取 `<p>` 正文并去首部时间戳；`cite` 的显示标签
+ *  不是经验证的 source→speaker map，不能进入可分析正文。
  *  只扫 <body> 内（避开 <head>/<title>）；内联标签交 stripHtml 剥；无配对返空串——交调用方回退。
  *  **契约比 ts-text 版宽**：收 <body> 内**每个** <p>（非按 class 限定）。Changelog 转写页 body 即纯转写、
- *  cite/p 平衡无 chrome（2026-06-26 实测 15/15），故安全；若将来页面混入页脚 <p>，会带上一说话人名泄漏，
+ *  cite/p 平衡无 chrome（2026-06-26 实测 15/15），故安全；speaker 标签不进入模型输入，
  *  接新的 cite/p 源前须先核页结构（见 ops/aws/probe-podcast-transcripts.sh 的 sample 输出）。 */
 const CITE_OR_P = /<(cite|p)\b[^>]*>([\s\S]*?)<\/\1>/gi;
 const LEADING_TS = /^\[\d{1,2}:\d{2}(?::\d{2})?\]\s*/;
@@ -142,14 +148,11 @@ export function extractCiteTranscript(html: string): string {
   const body = html.match(/<body\b[^>]*>([\s\S]*?)<\/body>/i);
   const scope = body ? body[1] : html;
   const lines: string[] = [];
-  let speaker = "";
   for (const m of scope.matchAll(CITE_OR_P)) {
     const val = stripHtml(m[2]).replace(/\s+/g, " ").trim();
-    if (m[1].toLowerCase() === "cite") {
-      speaker = val.replace(/:\s*$/, ""); // 去说话人尾冒号
-    } else if (val) {
+    if (m[1].toLowerCase() === "p" && val) {
       const t = val.replace(LEADING_TS, "").trim(); // 去首部 [时间戳]
-      if (t) lines.push(speaker ? `${speaker}: ${t}` : t);
+      if (t) lines.push(stripTranscriptSpeakerLabel(t));
     }
   }
   return lines.join("\n").trim();

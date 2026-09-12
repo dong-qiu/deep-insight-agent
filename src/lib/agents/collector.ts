@@ -42,9 +42,16 @@ function articleFetchMaxPerRun(): number {
 }
 
 const PODCAST_TRANSCRIPT_ADAPTER_VERSION = "rss-podcast-transcript-v1";
+const SUBSTACK_EPISODE_ADAPTER_VERSION = "substack-episode-hydration-v1";
 
 function sha256(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+function transcriptAdapterVersion(raw: RawItem): string {
+  return raw.transcript_adapter === "substack_episode_hydration"
+    ? SUBSTACK_EPISODE_ADAPTER_VERSION
+    : PODCAST_TRANSCRIPT_ADAPTER_VERSION;
 }
 
 /** Archive the raw RSS fragment and the exact downloaded transcript together.  The fetch URL is
@@ -53,7 +60,7 @@ function sha256(value: string): string {
 function transcriptEvidenceEnvelope(raw: RawItem, result: Extract<TranscriptFetchResult, { outcome: "success" }>, fetchedAt: string): string {
   return JSON.stringify({
     schema_version: "podcast-transcript-evidence-v1",
-    adapter_version: PODCAST_TRANSCRIPT_ADAPTER_VERSION,
+    adapter_version: transcriptAdapterVersion(raw),
     fetched_at: fetchedAt,
     episode: {
       url: raw.url,
@@ -66,10 +73,19 @@ function transcriptEvidenceEnvelope(raw: RawItem, result: Extract<TranscriptFetc
       content_type: result.content_type,
       bytes: result.bytes,
       duration_ms: result.duration_ms,
+      speaker_attribution: result.speaker_attribution,
       raw_payload_sha256: sha256(result.raw_payload),
       cleaned_body_sha256: sha256(result.cleaned_body),
       raw_payload: result.raw_payload,
     },
+    ...(result.program_page ? {
+      program_page: {
+        stable_url: result.program_page.stable_url,
+        content_type: result.program_page.content_type,
+        raw_payload_sha256: sha256(result.program_page.raw_payload),
+        raw_payload: result.program_page.raw_payload,
+      },
+    } : {}),
   });
 }
 
@@ -93,6 +109,7 @@ function recordTranscriptFact(db: DB, fact: TranscriptAcquisitionFact): void {
 
 function makeTranscriptFact(input: {
   source: Source;
+  adapterVersion: string;
   episodeUrl: string;
   screen: PodcastScreeningDecision;
   attempt: number;
@@ -108,7 +125,7 @@ function makeTranscriptFact(input: {
   return {
     id: transcriptFactId(input.source.id, input.episodeUrl, input.screen.candidate_hash, input.attempt),
     source_id: input.source.id, episode_url: input.episodeUrl, candidate_hash: input.screen.candidate_hash,
-    policy_version: PODCAST_SCREENING_POLICY_VERSION, adapter_version: PODCAST_TRANSCRIPT_ADAPTER_VERSION,
+    policy_version: PODCAST_SCREENING_POLICY_VERSION, adapter_version: input.adapterVersion,
     attempt: input.attempt, decision: input.decision, outcome: input.outcome, reason_code: input.reasonCode,
     bytes: input.bytes ?? null, duration_ms: input.durationMs ?? null,
     fallback_body_kind: input.fallback ?? null, content_item_id: input.contentItemId ?? null,
@@ -257,12 +274,13 @@ export async function collectSource(
       let rawArchivePayload = raw.raw;
       const existing = getContentByUrl(db, item.url);
       const transcriptUrl = raw.transcript_url;
+      const adapterVersion = transcriptAdapterVersion(raw);
       const screening = transcriptMode !== "off" && raw.is_podcast_episode
         ? screenPodcastCandidate(raw, sourceTopics)
         : null;
       if (screening) {
         recordTranscriptFact(db, makeTranscriptFact({
-          source, episodeUrl: item.url, screen: screening, attempt: 0, outcome: "decision",
+          source, adapterVersion, episodeUrl: item.url, screen: screening, attempt: 0, outcome: "decision",
           decision: screening.decision, reasonCode: screening.reason_code, occurredAt: fetchedAt,
         }));
       }
@@ -276,7 +294,7 @@ export async function collectSource(
       // but must not silently replace a prior show-notes/transcript evidence version.
       if (screening && existing) {
         recordTranscriptFact(db, makeTranscriptFact({
-          source, episodeUrl: item.url, screen: screening, attempt: terminalAttempt, outcome: "existing_url",
+          source, adapterVersion, episodeUrl: item.url, screen: screening, attempt: terminalAttempt, outcome: "existing_url",
           decision: screening.decision, reasonCode: "existing_url", fallback: fallbackBodyKind(raw),
           contentItemId: existing.id, occurredAt: fetchedAt,
         }));
@@ -295,7 +313,7 @@ export async function collectSource(
         && (source.transcript_strategy === "all" || screening.decision !== "hard_negative");
       if (screening && !transcriptUrl) {
         recordTranscriptFact(db, makeTranscriptFact({
-          source, episodeUrl: item.url, screen: screening, attempt: terminalAttempt, outcome: "no_transcript",
+          source, adapterVersion, episodeUrl: item.url, screen: screening, attempt: terminalAttempt, outcome: "no_transcript",
           decision: screening.decision, reasonCode: "rss_transcript_url_absent", fallback: fallbackBodyKind(raw), occurredAt: fetchedAt,
         }));
       } else if (screening && transcriptMode === "enabled" && transcriptUrl && transcriptFetchEnabled()
@@ -313,7 +331,7 @@ export async function collectSource(
         const timeBudget = sourceTranscriptTimeBudget(source);
         if (transcriptFetches >= itemBudget || transcriptBytes >= byteBudget || elapsedBefore >= timeBudget) {
           recordTranscriptFact(db, makeTranscriptFact({
-            source, episodeUrl: item.url, screen: screening, attempt: terminalAttempt, outcome: "budget_limited",
+            source, adapterVersion, episodeUrl: item.url, screen: screening, attempt: terminalAttempt, outcome: "budget_limited",
             decision: screening.decision, reasonCode: transcriptFetches >= itemBudget ? "item_budget" : transcriptBytes >= byteBudget ? "byte_budget" : "time_budget",
             fallback: fallbackBodyKind(raw), occurredAt: fetchedAt,
           }));
@@ -326,7 +344,7 @@ export async function collectSource(
           const elapsedAfterThrottle = Date.now() - transcriptRunStartedAt;
           if (elapsedAfterThrottle >= timeBudget) {
             recordTranscriptFact(db, makeTranscriptFact({
-              source, episodeUrl: item.url, screen: screening, attempt: terminalAttempt, outcome: "budget_limited",
+              source, adapterVersion, episodeUrl: item.url, screen: screening, attempt: terminalAttempt, outcome: "budget_limited",
               decision: screening.decision, reasonCode: "time_budget", fallback: fallbackBodyKind(raw), occurredAt: fetchedAt,
             }));
           } else {
@@ -335,6 +353,7 @@ export async function collectSource(
             const transcript = await fetchTranscript(transcriptUrl, {
               maxBytes: Math.max(1, byteBudget - transcriptBytes),
               timeoutMs: Math.max(1, timeBudget - elapsedAfterThrottle),
+              adapter: raw.transcript_adapter ?? "direct",
             });
             transcriptBytes += transcript.bytes ?? 0;
             if (transcript.outcome === "success") {
@@ -343,7 +362,7 @@ export async function collectSource(
               successfulTranscript = transcript;
             } else {
               recordTranscriptFact(db, makeTranscriptFact({
-                source, episodeUrl: item.url, screen: screening, attempt: terminalAttempt, outcome: transcript.outcome,
+                source, adapterVersion, episodeUrl: item.url, screen: screening, attempt: terminalAttempt, outcome: transcript.outcome,
                 decision: screening.decision, reasonCode: transcript.reason_code, bytes: transcript.bytes,
                 durationMs: transcript.duration_ms, fallback: fallbackBodyKind(raw), occurredAt: fetchedAt,
               }));
@@ -399,7 +418,7 @@ export async function collectSource(
       if (persistedOutputRef) outputs.push(persistedOutputRef);
       if (screening && successfulTranscript) {
         recordTranscriptFact(db, makeTranscriptFact({
-          source, episodeUrl: item.url, screen: screening, attempt: terminalAttempt, outcome: "success",
+          source, adapterVersion, episodeUrl: item.url, screen: screening, attempt: terminalAttempt, outcome: "success",
           decision: screening.decision, reasonCode: null, bytes: successfulTranscript.bytes,
           durationMs: successfulTranscript.duration_ms, contentItemId: item.id, occurredAt: fetchedAt,
         }));

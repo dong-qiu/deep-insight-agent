@@ -14,7 +14,7 @@ const raw = (url: string, body = "notes"): RawItem => ({
 });
 const success: TranscriptFetchResult = {
   outcome: "success", stable_url: "https://pod.example/ep.txt", raw_payload: "raw transcript", cleaned_body: "clean body",
-  bytes: 14, duration_ms: 5, content_type: "text/plain",
+  speaker_attribution: "unknown", bytes: 14, duration_ms: 5, content_type: "text/plain",
 };
 
 describe("runPodcastTranscriptShadow", () => {
