@@ -11,6 +11,8 @@ import { collectSource, type CollectResult } from "../src/lib/agents/collector.j
 import { getEffectiveSources, loadStaticConfig, seedDefaults } from "../src/lib/config/index.js";
 import { getDb } from "../src/lib/db/index.js";
 import type { DB } from "../src/lib/db/index.js";
+import { applyProvenanceMigrations } from "../src/lib/db/provenance-migrations.js";
+import { initializeProvenanceMeta } from "../src/lib/db/provenance-facts.js";
 import type { Source } from "../src/lib/types.js";
 import { parseSourceIds } from "./build-local-eval-lib.js";
 
@@ -89,6 +91,10 @@ async function main(): Promise<void> {
   });
   const config = loadStaticConfig();
   const db = getDb();
+  // A cohort starts from a fresh SQLite file.  It must initialize the same provenance contract as
+  // production before collector attempts to plan its fail-closed raw archive effect.
+  applyProvenanceMigrations(db);
+  initializeProvenanceMeta(db);
   seedDefaults(db, config);
   const sources = resolveCohortSources(getEffectiveSources(db, config), sourceIds);
   const results = await collectCohort(db, sources);

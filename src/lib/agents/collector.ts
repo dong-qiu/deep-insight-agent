@@ -1,7 +1,7 @@
 /** collector —— 数据采集 agent（architecture 数据流第 1 步）。
  *  按 Source 抓取 → 归一化 ContentItem → 去重 → 存档原文 → 落库；统一经 Job Runner 记一条 ingest Run
  *  （与 analyze/validate/report-gen 一致：单调时钟耗时 + 失败捕获 + 可重试）。 */
-import { getContentByUrl, getPendingOrEligibleContentItem, insertContentItem, setRunInserted, updateContentItem } from "../db/repos.js";
+import { appendTranscriptAcquisitionFact, getContentByUrl, getPendingOrEligibleContentItem, insertContentItem, listTopics, nextTranscriptAcquisitionAttempt, setRunInserted, updateContentItem } from "../db/repos.js";
 import { createHash } from "node:crypto";
 import type { DB } from "../db/index.js";
 import { markRawArchiveUnknown, planRawArchive, writePlannedRawArchive } from "../db/raw-archive.js";
@@ -16,12 +16,15 @@ import { appendGenerationEvent, captureRevision, entityKey, type EntityRef } fro
 import { contentItemRef, contentItemRevisionSnapshot, sourceConfigRef, sourceConfigSnapshot } from "../db/provenance-revisions.js";
 import { NOOP_P1_TELEMETRY_SINK, type P1TelemetrySink } from "../capabilities/p1-telemetry.js";
 import { runJob } from "../runtime/jobs.js";
-import type { Source } from "../types.js";
+import type { Source, TranscriptAcquisitionFact, TranscriptAcquisitionOutcome } from "../types.js";
 import { MIN_ARTICLE_CHARS, articleFetchEnabled, articleFetchKilled, fetchArticleBody } from "../sources/article.js";
 import { fetchFromSource } from "../sources/index.js";
 import { normalizeUrl, rawToContentItem } from "../sources/normalize.js";
+import { PODCAST_SCREENING_POLICY_VERSION, screenPodcastCandidate, type PodcastScreeningDecision } from "../sources/podcast-screening.js";
 import { fetchTranscript, transcriptFetchEnabled } from "../sources/rss.js";
 import type { RawItem, TranscriptFetchResult } from "../sources/types.js";
+import { runPodcastTranscriptShadow } from "./podcast-shadow.js";
+import { createPodcastShadowStore, transcriptShadowFetchEnabled } from "./podcast-shadow-store.js";
 
 export interface CollectResult {
   runId: string;
@@ -69,6 +72,63 @@ function transcriptEvidenceEnvelope(raw: RawItem, result: Extract<TranscriptFetc
     },
   });
 }
+
+function transcriptFactId(sourceId: string, episodeUrl: string, candidateHash: string, attempt: number): string {
+  return `taf_${sha256(`${sourceId}\n${episodeUrl}\n${candidateHash}\n${PODCAST_SCREENING_POLICY_VERSION}\n${attempt}`).slice(0, 40)}`;
+}
+
+function fallbackBodyKind(raw: RawItem): "article" | "show_notes" | null {
+  return raw.body.trim() ? (raw.body_kind === "show_notes" ? "show_notes" : "article") : null;
+}
+
+/** Acquisition facts are observer-only. A broken diagnostic table or an idempotency conflict must
+ * not turn a healthy RSS run into a failed one or alter report eligibility. */
+function recordTranscriptFact(db: DB, fact: TranscriptAcquisitionFact): void {
+  try {
+    appendTranscriptAcquisitionFact(db, fact);
+  } catch (error) {
+    console.warn(`[transcript-acquisition] diagnostic fact not recorded: ${error instanceof Error ? error.message : "unknown_error"}`);
+  }
+}
+
+function makeTranscriptFact(input: {
+  source: Source;
+  episodeUrl: string;
+  screen: PodcastScreeningDecision;
+  attempt: number;
+  outcome: TranscriptAcquisitionOutcome;
+  decision: PodcastScreeningDecision["decision"] | null;
+  reasonCode: string | null;
+  bytes?: number | null;
+  durationMs?: number | null;
+  fallback?: "article" | "show_notes" | null;
+  contentItemId?: string | null;
+  occurredAt: string;
+}): TranscriptAcquisitionFact {
+  return {
+    id: transcriptFactId(input.source.id, input.episodeUrl, input.screen.candidate_hash, input.attempt),
+    source_id: input.source.id, episode_url: input.episodeUrl, candidate_hash: input.screen.candidate_hash,
+    policy_version: PODCAST_SCREENING_POLICY_VERSION, adapter_version: PODCAST_TRANSCRIPT_ADAPTER_VERSION,
+    attempt: input.attempt, decision: input.decision, outcome: input.outcome, reason_code: input.reasonCode,
+    bytes: input.bytes ?? null, duration_ms: input.durationMs ?? null,
+    fallback_body_kind: input.fallback ?? null, content_item_id: input.contentItemId ?? null,
+    occurred_at: input.occurredAt,
+  };
+}
+
+function sourceTranscriptItemBudget(source: Source): number {
+  return source.transcript_max_items_per_run ?? 5;
+}
+
+function sourceTranscriptByteBudget(source: Source): number {
+  return source.transcript_max_bytes_per_run ?? 5 * 1024 * 1024;
+}
+
+function sourceTranscriptTimeBudget(source: Source): number {
+  return source.transcript_timeout_budget_ms ?? 30_000;
+}
+
+const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 export async function collectSource(
   db: DB,
@@ -155,6 +215,12 @@ export async function collectSource(
     let skipped = 0;
     let articleFetches = 0; // 本轮已抓全文条数（绑首轮全量回填的串行规模，剩余留下轮）
     const articleBudget = articleFetchMaxPerRun();
+    const sourceTopics = listTopics(db, { enabledOnly: true }).filter((topic) => source.topic_ids.includes(topic.id));
+    const transcriptMode = source.transcript_mode ?? "off";
+    const transcriptRunStartedAt = Date.now();
+    let transcriptFetches = 0;
+    let transcriptBytes = 0;
+    const lastTranscriptStartAtByOrigin = new Map<string, number>();
     for (const raw of raws) {
       // ADR-0008 决定③ 按源全文策略：决定是否按 URL 抓文章页补全正文。
       //  - full_text 源：正文空或过短(<MIN) → 抓；只受应急熔断 ARTICLE_FETCH=0 约束（不受 legacy 默认关约束）。
@@ -187,30 +253,107 @@ export async function collectSource(
         }
         // 抓失败：full_text 短正文 → 保留原短摘要落库（回退）；空正文 → 落到下面判空跳过。
       }
-      if (!raw.body.trim()) {
-        skipped++; // 仍空（feed 模式空正文 / 全文抓取失败且原本就空）→ 不产出条目
-        continue;
-      }
       let item = rawToContentItem(raw, source, fetchedAt);
       let rawArchivePayload = raw.raw;
       const existing = getContentByUrl(db, item.url);
+      const transcriptUrl = raw.transcript_url;
+      const screening = transcriptMode !== "off" && raw.is_podcast_episode
+        ? screenPodcastCandidate(raw, sourceTopics)
+        : null;
+      if (screening) {
+        recordTranscriptFact(db, makeTranscriptFact({
+          source, episodeUrl: item.url, screen: screening, attempt: 0, outcome: "decision",
+          decision: screening.decision, reasonCode: screening.reason_code, occurredAt: fetchedAt,
+        }));
+      }
+      const terminalAttempt = screening
+        ? nextTranscriptAcquisitionAttempt(db, {
+          source_id: source.id, episode_url: item.url, candidate_hash: screening.candidate_hash,
+          policy_version: PODCAST_SCREENING_POLICY_VERSION,
+        })
+        : 0;
+      // Podcast evidence is immutable per episode URL.  A fresh feed pass may observe the URL,
+      // but must not silently replace a prior show-notes/transcript evidence version.
+      if (screening && existing) {
+        recordTranscriptFact(db, makeTranscriptFact({
+          source, episodeUrl: item.url, screen: screening, attempt: terminalAttempt, outcome: "existing_url",
+          decision: screening.decision, reasonCode: "existing_url", fallback: fallbackBodyKind(raw),
+          contentItemId: existing.id, occurredAt: fetchedAt,
+        }));
+        skipped++;
+        continue;
+      }
       // B族·不降级（6a）：已是 transcript 的 item 不被 show_notes/article 覆盖——防转写被降级 + 旧引用失效（Major6）。
       if (existing?.body_kind === "transcript" && item.body_kind !== "transcript") {
         skipped++;
         continue;
       }
-      // A global emergency switch can only further restrict a source policy.  A source must opt
-      // in explicitly; `observe` and `off` never make a production transcript request here.
-      // Existing URLs stay immutable so earlier citations retain their original evidence version.
-      if (!existing && raw.transcript_url && source.transcript_mode === "enabled" && transcriptFetchEnabled()) {
-        const transcript = await fetchTranscript(raw.transcript_url, {
-          maxBytes: source.transcript_max_bytes_per_run,
-          timeoutMs: source.transcript_timeout_budget_ms,
-        });
-        if (transcript.outcome === "success") {
-          item = rawToContentItem({ ...raw, body: transcript.cleaned_body, body_kind: "transcript" }, source, fetchedAt);
-          rawArchivePayload = transcriptEvidenceEnvelope(raw, transcript, fetchedAt);
+      let successfulTranscript: Extract<TranscriptFetchResult, { outcome: "success" }> | null = null;
+      // The global switch can only further restrict an explicit per-source `enabled` policy.
+      // `observe` records the same deterministic decision but never requests a production body.
+      const shouldRequest = screening && transcriptMode === "enabled" && transcriptUrl && transcriptFetchEnabled()
+        && (source.transcript_strategy === "all" || screening.decision !== "hard_negative");
+      if (screening && !transcriptUrl) {
+        recordTranscriptFact(db, makeTranscriptFact({
+          source, episodeUrl: item.url, screen: screening, attempt: terminalAttempt, outcome: "no_transcript",
+          decision: screening.decision, reasonCode: "rss_transcript_url_absent", fallback: fallbackBodyKind(raw), occurredAt: fetchedAt,
+        }));
+      } else if (screening && transcriptMode === "enabled" && transcriptUrl && transcriptFetchEnabled()
+        && source.transcript_strategy === "relevant_only" && screening.decision === "hard_negative") {
+        // This is an intentional policy decision, not a resource exhaustion. Keep it separate
+        // from budget_limited so the heldout recall review sees the real rejection rate.
+        recordTranscriptFact(db, makeTranscriptFact({
+          source, adapterVersion, episodeUrl: item.url, screen: screening, attempt: terminalAttempt, outcome: "policy_skipped",
+          decision: screening.decision, reasonCode: "hard_negative_by_strategy", fallback: fallbackBodyKind(raw), occurredAt: fetchedAt,
+        }));
+      } else if (shouldRequest) {
+        const elapsedBefore = Date.now() - transcriptRunStartedAt;
+        const itemBudget = sourceTranscriptItemBudget(source);
+        const byteBudget = sourceTranscriptByteBudget(source);
+        const timeBudget = sourceTranscriptTimeBudget(source);
+        if (transcriptFetches >= itemBudget || transcriptBytes >= byteBudget || elapsedBefore >= timeBudget) {
+          recordTranscriptFact(db, makeTranscriptFact({
+            source, episodeUrl: item.url, screen: screening, attempt: terminalAttempt, outcome: "budget_limited",
+            decision: screening.decision, reasonCode: transcriptFetches >= itemBudget ? "item_budget" : transcriptBytes >= byteBudget ? "byte_budget" : "time_budget",
+            fallback: fallbackBodyKind(raw), occurredAt: fetchedAt,
+          }));
+        } else {
+          let origin = "invalid";
+          try { origin = new URL(transcriptUrl).origin; } catch { /* fetchTranscript records the structured failure */ }
+          const qps = Math.max(source.transcript_host_qps ?? 0.5, 0.01);
+          const earliestStart = (lastTranscriptStartAtByOrigin.get(origin) ?? 0) + Math.ceil(1_000 / qps);
+          if (earliestStart > Date.now()) await wait(earliestStart - Date.now());
+          const elapsedAfterThrottle = Date.now() - transcriptRunStartedAt;
+          if (elapsedAfterThrottle >= timeBudget) {
+            recordTranscriptFact(db, makeTranscriptFact({
+              source, episodeUrl: item.url, screen: screening, attempt: terminalAttempt, outcome: "budget_limited",
+              decision: screening.decision, reasonCode: "time_budget", fallback: fallbackBodyKind(raw), occurredAt: fetchedAt,
+            }));
+          } else {
+            transcriptFetches++;
+            lastTranscriptStartAtByOrigin.set(origin, Date.now());
+            const transcript = await fetchTranscript(transcriptUrl, {
+              maxBytes: Math.max(1, byteBudget - transcriptBytes),
+              timeoutMs: Math.max(1, timeBudget - elapsedAfterThrottle),
+            });
+            transcriptBytes += transcript.bytes ?? 0;
+            if (transcript.outcome === "success") {
+              item = rawToContentItem({ ...raw, body: transcript.cleaned_body, body_kind: "transcript" }, source, fetchedAt);
+              rawArchivePayload = transcriptEvidenceEnvelope(raw, transcript, fetchedAt);
+              successfulTranscript = transcript;
+            } else {
+              recordTranscriptFact(db, makeTranscriptFact({
+                source, episodeUrl: item.url, screen: screening, attempt: terminalAttempt, outcome: transcript.outcome,
+                decision: screening.decision, reasonCode: transcript.reason_code, bytes: transcript.bytes,
+                durationMs: transcript.duration_ms, fallback: fallbackBodyKind(raw), occurredAt: fetchedAt,
+              }));
+            }
+          }
         }
+      }
+      if (!item.body.trim()) {
+        skipped++; // RSS 没有 notes 且没有可用 transcript：只留下 acquisition facts，不产出空 ContentItem。
+        continue;
       }
       if (existing && existing.content_hash === item.content_hash) {
         skipped++; // 同 URL + 同指纹 = 完全重复（AC2 ①）
@@ -254,11 +397,33 @@ export async function collectSource(
         throw error;
       }
       if (persistedOutputRef) outputs.push(persistedOutputRef);
+      if (screening && successfulTranscript) {
+        recordTranscriptFact(db, makeTranscriptFact({
+          source, episodeUrl: item.url, screen: screening, attempt: terminalAttempt, outcome: "success",
+          decision: screening.decision, reasonCode: null, bytes: successfulTranscript.bytes,
+          durationMs: successfulTranscript.duration_ms, contentItemId: item.id, occurredAt: fetchedAt,
+        }));
+      }
       // Optional P1 telemetry observes committed output only; it never feeds
       // report selection or citation validation.
       telemetry.recordCollector(db, { run_id: ctx.runId, item: persistedItem });
       if (existing) updated++;
       else inserted++;
+    }
+    // Observe samples have a separate explicit global gate and an entirely separate SQLite/archive.
+    // They are intentionally best-effort: failure must never make the RSS source unhealthy or
+    // alter the already-committed ContentItem path.
+    if (!opts.probe && transcriptMode === "observe" && transcriptShadowFetchEnabled()) {
+      try {
+        const shadow = createPodcastShadowStore();
+        try {
+          await runPodcastTranscriptShadow({ source, raws, topics: sourceTopics, sink: shadow.sink });
+        } finally {
+          shadow.close();
+        }
+      } catch (error) {
+        console.warn(`[transcript-shadow] source=${source.id} sample failed: ${error instanceof Error ? error.message : "unknown_error"}`);
+      }
     }
     if (!opts.probe) {
       assertWrite();

@@ -52,4 +52,31 @@ describe("buildLocalEvalCases", () => {
     expect(result.cases[0].items).toHaveLength(2);
     expect(missingRequiredSources(result)).toEqual([]);
   });
+
+  it("cohort 已保留的候选不在常规补齐阶段重复进入 case", () => {
+    const result = buildLocalEvalCases(
+      [topic],
+      () => [item("src_a"), item("src_b")],
+      window,
+      { minBody: 400, perSource: 2, maxItems: 4, minimumSources: 2, requiredSourceIds: ["src_a", "src_b"] },
+    );
+
+    expect(result.cases).toHaveLength(1);
+    expect(result.cases[0].items.map((entry) => entry.id)).toEqual(["item-src_a", "item-src_b"]);
+  });
+
+  it("指定全文 shape 时排除 show notes 与 article fallback", () => {
+    const result = buildLocalEvalCases(
+      [topic],
+      () => [
+        item("src_a"),
+        { ...item("src_a"), id: "item-src_a-transcript", url: "https://example.test/src_a-transcript", body_kind: "transcript" },
+        { ...item("src_b"), body_kind: "transcript" },
+      ],
+      window,
+      { minBody: 400, perSource: 1, maxItems: 2, minimumSources: 2, requiredSourceIds: ["src_a", "src_b"], bodyKind: "transcript" },
+    );
+
+    expect(result.cases[0].items.map((entry) => entry.body_kind)).toEqual(["transcript", "transcript"]);
+  });
 });

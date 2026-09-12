@@ -10,6 +10,8 @@ export interface RawItem {
   body_kind?: BodyKind; // 料源形态；播客单集的 RSS 正文必须显式为 show_notes
   /** 由适配器按 enclosure / iTunes / Podcast Namespace 元数据识别，不能由正文长短猜测。 */
   is_podcast_episode?: boolean;
+  /** iTunes 的标准 episodeType。只有 `trailer` 可作为已验证的低相关元数据特征。 */
+  podcast_episode_type?: "full" | "trailer" | "bonus";
   transcript_url?: string; // 播客转写稿 URL（parseRss 从 <podcast:transcript> 解析；fetchRss 不抓取）
   raw: string; // 原始片段（JSON 串），collector 存档供校验反查
 }

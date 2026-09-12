@@ -3,7 +3,7 @@
  * 增量1 覆盖 Source / Topic / ContentItem / Run；其余实体随后续增量加。
  */
 import { parseFacets } from "../topics/facets.js";
-import type { ContentItem, Cost, Run, Source, Topic, TranscriptAcquisitionFact } from "../types.js";
+import type { ContentItem, Cost, Run, Source, Topic, TranscriptAcquisitionFact, TranscriptAcquisitionFunnel } from "../types.js";
 import type { DB } from "./index.js";
 import { canonicalHash, projectTrace } from "./provenance-facts.js";
 
@@ -101,7 +101,7 @@ export function appendTranscriptAcquisitionFact(
     policy_version: fact.policy_version, adapter_version: fact.adapter_version, attempt: fact.attempt,
     decision: fact.decision, outcome: fact.outcome, reason_code: fact.reason_code, bytes: fact.bytes,
     duration_ms: fact.duration_ms, fallback_body_kind: fact.fallback_body_kind,
-    content_item_id: fact.content_item_id, occurred_at: fact.occurred_at,
+    content_item_id: fact.content_item_id,
   });
   const existing = db.prepare("SELECT semantic_payload_hash FROM transcript_acquisition_fact WHERE id=?").get(fact.id) as
     | { semantic_payload_hash: string }
@@ -119,6 +119,61 @@ export function appendTranscriptAcquisitionFact(
      VALUES (@id,@source_id,@episode_url,@candidate_hash,@policy_version,@adapter_version,@attempt,@decision,@outcome,@reason_code,@bytes,@duration_ms,@fallback_body_kind,@content_item_id,@occurred_at,@semantic_payload_hash)`,
   ).run({ ...fact, semantic_payload_hash });
   return { replayed: false };
+}
+
+/** The decision event is always attempt 0.  Terminal acquisition outcomes use a monotonically
+ * increasing attempt so a later retry is evidence, not a semantic conflict with its first error. */
+export function nextTranscriptAcquisitionAttempt(
+  db: DB,
+  input: Pick<TranscriptAcquisitionFact, "source_id" | "episode_url" | "candidate_hash" | "policy_version">,
+): number {
+  const row = db.prepare(`SELECT MAX(attempt) AS max_attempt FROM transcript_acquisition_fact
+    WHERE source_id=? AND episode_url=? AND candidate_hash=? AND policy_version=? AND outcome <> 'decision'`)
+    .get(input.source_id, input.episode_url, input.candidate_hash, input.policy_version) as { max_attempt: number | null };
+  return (row.max_attempt ?? 0) + 1;
+}
+
+/** Diagnostic-only read model.  It summarizes append-only facts and intentionally has no caller
+ * in publication paths. `since` is inclusive and uses the stored ISO occurrence timestamp. */
+export function getTranscriptAcquisitionFunnel(
+  db: DB,
+  input: { sourceId?: string; since?: string } = {},
+): TranscriptAcquisitionFunnel {
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+  if (input.sourceId) { conditions.push("source_id=?"); params.push(input.sourceId); }
+  if (input.since) { conditions.push("occurred_at>=?"); params.push(input.since); }
+  const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+  const row = db.prepare(`SELECT
+    COUNT(DISTINCT CASE WHEN outcome='decision' THEN candidate_hash END) AS candidates,
+    SUM(CASE WHEN outcome='decision' AND decision='fetch' THEN 1 ELSE 0 END) AS decision_fetch,
+    SUM(CASE WHEN outcome='decision' AND decision='unknown' THEN 1 ELSE 0 END) AS decision_unknown,
+    SUM(CASE WHEN outcome='decision' AND decision='hard_negative' THEN 1 ELSE 0 END) AS decision_hard_negative,
+    SUM(CASE WHEN outcome='no_transcript' THEN 1 ELSE 0 END) AS no_transcript,
+    SUM(CASE WHEN outcome IN ('success','robots_denied','http_error','size_limited','timeout','parse_empty','transient_error') THEN 1 ELSE 0 END) AS attempted,
+    SUM(CASE WHEN outcome='success' THEN 1 ELSE 0 END) AS succeeded,
+    SUM(CASE WHEN fallback_body_kind IS NOT NULL THEN 1 ELSE 0 END) AS fallback,
+    SUM(CASE WHEN outcome='budget_limited' THEN 1 ELSE 0 END) AS budget_limited,
+    SUM(CASE WHEN outcome='policy_skipped' THEN 1 ELSE 0 END) AS policy_skipped,
+    SUM(CASE WHEN outcome='existing_url' THEN 1 ELSE 0 END) AS existing_url,
+    COALESCE(SUM(bytes),0) AS bytes,
+    COALESCE(SUM(duration_ms),0) AS duration_ms
+    FROM transcript_acquisition_fact ${where}`).get(...params) as Record<string, number | null>;
+  return {
+    candidates: Number(row.candidates) || 0,
+    decision_fetch: Number(row.decision_fetch) || 0,
+    decision_unknown: Number(row.decision_unknown) || 0,
+    decision_hard_negative: Number(row.decision_hard_negative) || 0,
+    no_transcript: Number(row.no_transcript) || 0,
+    attempted: Number(row.attempted) || 0,
+    succeeded: Number(row.succeeded) || 0,
+    fallback: Number(row.fallback) || 0,
+    budget_limited: Number(row.budget_limited) || 0,
+    policy_skipped: Number(row.policy_skipped) || 0,
+    existing_url: Number(row.existing_url) || 0,
+    bytes: Number(row.bytes) || 0,
+    duration_ms: Number(row.duration_ms) || 0,
+  };
 }
 
 /** 系统熔断软停用（ADR-0008 决定②）：enabled=0 + 标 circuit_open + 锚定 circuit_reset_at。 */

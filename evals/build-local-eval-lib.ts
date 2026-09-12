@@ -6,6 +6,8 @@ export interface LocalEvalBuildOptions {
   maxItems: number;
   requiredSourceIds: string[];
   minimumSources: number;
+  /** Source cohorts can require an evidence shape instead of silently mixing show notes/article fallbacks. */
+  bodyKind?: ContentItem["body_kind"];
 }
 
 export interface LocalEvalCase {
@@ -56,18 +58,23 @@ export function buildLocalEvalCases(
   const skipped: LocalEvalBuildResult["skipped"] = [];
 
   for (const topic of topics) {
-    const pool = contentForTopic(topic.id).filter((item) => item.body.length >= options.minBody);
+    const pool = contentForTopic(topic.id).filter((item) =>
+      item.body.length >= options.minBody && (!options.bodyKind || item.body_kind === options.bodyKind),
+    );
     for (const item of pool) {
       if (required.has(item.source_id)) cohort[item.source_id].eligible++;
     }
 
     const perSource = new Map<string, number>();
     const items: ContentItem[] = [];
+    const selectedIds = new Set<string>();
     const add = (item: ContentItem): boolean => {
       if (items.length >= options.maxItems) return false;
+      if (selectedIds.has(item.id)) return false;
       const count = perSource.get(item.source_id) ?? 0;
       if (count >= options.perSource) return false;
       perSource.set(item.source_id, count + 1);
+      selectedIds.add(item.id);
       items.push(item);
       return true;
     };
