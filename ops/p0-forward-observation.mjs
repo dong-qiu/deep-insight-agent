@@ -84,27 +84,55 @@ function productionContext() {
 }
 
 export function remoteAggregateProgram() {
-  // This SQL is intentionally a *candidate* prefilter. The authoritative human-gate
-  // check remains eval:opportunity-export against a fresh private snapshot.
+  // This is deliberately equivalent to listTechLeadEvidence's live evidence gate.
+  // The authoritative human-gate check nevertheless remains eval:opportunity-export
+  // against a fresh private snapshot; this command only observes aggregate readiness.
   return `const Database=require('better-sqlite3');
-const db=new Database('/data/insight.db',{readonly:true});
-const result=db.prepare(\`SELECT
-  (SELECT COUNT(*) FROM tech_lead) AS total_tech_leads,
-  COUNT(DISTINCT CASE WHEN b.status='done'
-    AND b.display_coverage_state='audited'
-    AND b.display_projection_version='source_quote_v1'
-    AND d.terminal_reason IN ('kept','kept_degraded')
-    AND cc.verdict='pass' AND cc.consistency='support' AND cc.reachability='pass'
-    AND c.reader_eligible=1
-    AND e.citation_index=i.statement_citation_index-1
-    THEN e.lead_id END) AS candidate_source_quote_v1
-FROM tech_lead_evidence e
+const crypto=require('node:crypto');
+const db=new Database(process.env.P0_OBSERVE_DB_PATH||'/data/insight.db',{readonly:true});
+const rows=db.prepare(\`SELECT tl.id AS lead_id,tl.status,i.statement,i.statement_citation_index,i.headline,i.importance_basis,
+  ci.citation_ref,ci.quote,d.decision
+FROM tech_lead tl
+JOIN tech_lead_evidence e ON e.lead_id=tl.id
 JOIN insight i ON i.id=e.insight_id
 JOIN analysis_batch b ON b.id=i.batch_id
 JOIN display_coverage_audit d ON d.batch_id=b.id AND d.insight_id=i.id
 JOIN citation ci ON ci.insight_id=e.insight_id AND ci.citation_index=e.citation_index
 JOIN citation_check cc ON cc.batch_id=b.id AND cc.insight_id=ci.insight_id AND cc.citation_index=ci.citation_index
-JOIN content_item c ON c.id=ci.content_item_id\`).get();
+JOIN content_item c ON c.id=ci.content_item_id
+WHERE b.status='done'
+  AND b.display_coverage_state='audited'
+  AND b.display_projection_version='source_quote_v1'
+  AND d.terminal_reason IN ('kept','kept_degraded')
+  AND cc.verdict='pass' AND cc.consistency='support' AND cc.reachability='pass'
+  AND c.reader_eligible=1
+  AND e.citation_index=i.statement_citation_index-1\`).all();
+const sha=(value)=>crypto.createHash('sha256').update(value,'utf8').digest('hex');
+const safeBasis=new Set([
+  '系统重要性判断：该结果可为工程选型提供参考。',
+  '系统重要性判断：该结果可为安全审查提供参考。',
+  '系统重要性判断：该结果可为评测解读提供参考。',
+  '系统重要性判断：该结果可为研究跟踪提供参考。',
+]);
+const supportsBinding=(row)=>{
+  if(row.status==='dismissed'||!Number.isInteger(row.statement_citation_index)||row.statement_citation_index<1||!row.citation_ref) return false;
+  if(row.headline.trim()||!safeBasis.has(row.importance_basis)||row.statement!==row.quote) return false;
+  let decision; try{decision=JSON.parse(row.decision);}catch{return false;}
+  if(!decision||decision.statement_citation_index!==row.statement_citation_index||decision.statement_citation_ref!==row.citation_ref
+    ||decision.display_projection_version!=='source_quote_v1'||decision.statement_sha256!==sha(row.statement)||decision.quote_sha256!==sha(row.quote)
+    ||!Array.isArray(decision.claims)) return false;
+  const factual=decision.claims.filter((claim)=>claim&&typeof claim==='object'&&claim.kind==='factual');
+  if(!factual.length||factual.some((claim)=>claim.supports!==true||!Array.isArray(claim.citation_indexes)||claim.citation_indexes.some((index)=>!Number.isInteger(index)||index<1))) return false;
+  const required=new Set(factual.flatMap((claim)=>claim.citation_indexes));
+  const statements=factual.filter((claim)=>claim.claim_id==='statement:1'&&claim.field==='statement');
+  return required.has(row.statement_citation_index)
+    && statements.length===1
+    && statements[0].citation_indexes.length===1
+    && statements[0].citation_indexes[0]===row.statement_citation_index
+    && statements[0].countercheck?.supports===true;
+};
+const result={total_tech_leads:0,candidate_source_quote_v1:new Set(rows.filter(supportsBinding).map((row)=>row.lead_id)).size};
+result.total_tech_leads=db.prepare('SELECT COUNT(*) AS count FROM tech_lead').get().count;
 console.log(JSON.stringify(result));`;
 }
 
