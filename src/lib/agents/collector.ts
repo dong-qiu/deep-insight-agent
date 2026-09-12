@@ -2,6 +2,7 @@
  *  按 Source 抓取 → 归一化 ContentItem → 去重 → 存档原文 → 落库；统一经 Job Runner 记一条 ingest Run
  *  （与 analyze/validate/report-gen 一致：单调时钟耗时 + 失败捕获 + 可重试）。 */
 import { getContentByUrl, getPendingOrEligibleContentItem, insertContentItem, setRunInserted, updateContentItem } from "../db/repos.js";
+import { createHash } from "node:crypto";
 import type { DB } from "../db/index.js";
 import { markRawArchiveUnknown, planRawArchive, writePlannedRawArchive } from "../db/raw-archive.js";
 import {
@@ -20,6 +21,7 @@ import { MIN_ARTICLE_CHARS, articleFetchEnabled, articleFetchKilled, fetchArticl
 import { fetchFromSource } from "../sources/index.js";
 import { normalizeUrl, rawToContentItem } from "../sources/normalize.js";
 import { fetchTranscript, transcriptFetchEnabled } from "../sources/rss.js";
+import type { RawItem, TranscriptFetchResult } from "../sources/types.js";
 
 export interface CollectResult {
   runId: string;
@@ -34,6 +36,38 @@ export interface CollectResult {
  *  运行期读 env（非模块常量）：便于运行期调 + 单测可控。 */
 function articleFetchMaxPerRun(): number {
   return Number(process.env.ARTICLE_FETCH_MAX_PER_RUN) || 25;
+}
+
+const PODCAST_TRANSCRIPT_ADAPTER_VERSION = "rss-podcast-transcript-v1";
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+/** Archive the raw RSS fragment and the exact downloaded transcript together.  The fetch URL is
+ * intentionally represented only by the query-free stable URL: expiring provider signatures are
+ * transport details, not evidence consumers should replay. */
+function transcriptEvidenceEnvelope(raw: RawItem, result: Extract<TranscriptFetchResult, { outcome: "success" }>, fetchedAt: string): string {
+  return JSON.stringify({
+    schema_version: "podcast-transcript-evidence-v1",
+    adapter_version: PODCAST_TRANSCRIPT_ADAPTER_VERSION,
+    fetched_at: fetchedAt,
+    episode: {
+      url: raw.url,
+      title: raw.title,
+      published_at: raw.published_at,
+      rss_item: raw.raw,
+    },
+    transcript: {
+      stable_url: result.stable_url,
+      content_type: result.content_type,
+      bytes: result.bytes,
+      duration_ms: result.duration_ms,
+      raw_payload_sha256: sha256(result.raw_payload),
+      cleaned_body_sha256: sha256(result.cleaned_body),
+      raw_payload: result.raw_payload,
+    },
+  });
 }
 
 export async function collectSource(
@@ -158,17 +192,25 @@ export async function collectSource(
         continue;
       }
       let item = rawToContentItem(raw, source, fetchedAt);
+      let rawArchivePayload = raw.raw;
       const existing = getContentByUrl(db, item.url);
       // B族·不降级（6a）：已是 transcript 的 item 不被 show_notes/article 覆盖——防转写被降级 + 旧引用失效（Major6）。
       if (existing?.body_kind === "transcript" && item.body_kind !== "transcript") {
         skipped++;
         continue;
       }
-      // B族·只抓新（6a）：库里没有的 url + 有 transcript_url + 开关开 → 抓转写、重建为 transcript item。
-      // 「只对新 url 抓」既避免每轮全抓 50 集，又确保已入库 item 永不被原地从 show_notes 改成 transcript（根除 Major6）。
-      if (!existing && raw.transcript_url && transcriptFetchEnabled()) {
-        const transcript = await fetchTranscript(raw.transcript_url);
-        if (transcript) item = rawToContentItem({ ...raw, body: transcript, body_kind: "transcript" }, source, fetchedAt);
+      // A global emergency switch can only further restrict a source policy.  A source must opt
+      // in explicitly; `observe` and `off` never make a production transcript request here.
+      // Existing URLs stay immutable so earlier citations retain their original evidence version.
+      if (!existing && raw.transcript_url && source.transcript_mode === "enabled" && transcriptFetchEnabled()) {
+        const transcript = await fetchTranscript(raw.transcript_url, {
+          maxBytes: source.transcript_max_bytes_per_run,
+          timeoutMs: source.transcript_timeout_budget_ms,
+        });
+        if (transcript.outcome === "success") {
+          item = rawToContentItem({ ...raw, body: transcript.cleaned_body, body_kind: "transcript" }, source, fetchedAt);
+          rawArchivePayload = transcriptEvidenceEnvelope(raw, transcript, fetchedAt);
+        }
       }
       if (existing && existing.content_hash === item.content_hash) {
         skipped++; // 同 URL + 同指纹 = 完全重复（AC2 ①）
@@ -185,7 +227,7 @@ export async function collectSource(
         else insertContentItem(db, item); // 新 URL（AC2 ③）
         // The ContentItem change and the raw archive intent are one SQLite
         // transaction.  The external file is written only after this commits.
-        rawArchive = planRawArchive(db, { contentId: existing?.id ?? item.id, raw: raw.raw, ...rawArchiveProvenance });
+        rawArchive = planRawArchive(db, { contentId: existing?.id ?? item.id, raw: rawArchivePayload, ...rawArchiveProvenance });
         item.raw_ref = rawArchive.rawRef;
         persistedItem = getPendingOrEligibleContentItem(db, existing?.id ?? item.id);
         if (!persistedItem) throw new Error("content_item_write_not_found");
@@ -203,7 +245,7 @@ export async function collectSource(
       if (!rawArchive) throw new Error("raw_archive_plan_not_created");
       const rawArchiveEffectId = (rawArchive as ReturnType<typeof planRawArchive>).effectId;
       try {
-        writePlannedRawArchive(db, rawArchive, raw.raw);
+        writePlannedRawArchive(db, rawArchive, rawArchivePayload);
       } catch (error) {
         // Its DB intent/revision committed but the archive did not verify.
         // Keep that exact unknown revision visible in the failure event only.

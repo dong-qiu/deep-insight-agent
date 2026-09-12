@@ -14,14 +14,14 @@ import { contentItemRef, contentItemRevisionSnapshot } from "../db/provenance-re
 import * as rawArchive from "../db/raw-archive.js";
 import { checkReachability } from "./validator.js";
 import { normalizeUrl, rawToContentItem } from "../sources/normalize.js";
-import type { RawItem } from "../sources/types.js";
+import type { RawItem, TranscriptFetchResult } from "../sources/types.js";
 import type { Source } from "../types.js";
 
 // vi.hoisted：mock 工厂提升到 import 之上，用 hoisted 共享受控数据。
 const { raws, article, ctl } = vi.hoisted(() => ({
   raws: { value: [] as RawItem[] },
   article: { fn: vi.fn(async (_url: string) => null as string | null) },
-  ctl: { transcript: null as string | null, lastContainer: undefined as string | null | undefined, fetchError: null as Error | null },
+  ctl: { transcript: null as TranscriptFetchResult | null, lastContainer: undefined as string | null | undefined, fetchError: null as Error | null },
 }));
 vi.mock("../sources/index.js", () => ({ fetchFromSource: vi.fn(async () => {
   if (ctl.fetchError) throw ctl.fetchError;
@@ -37,7 +37,7 @@ vi.mock("../sources/article.js", () => ({
   },
 }));
 vi.mock("../sources/rss.js", () => ({
-  fetchTranscript: vi.fn(async () => ctl.transcript),
+  fetchTranscript: vi.fn(async () => ctl.transcript ?? ({ outcome: "transient_error", stable_url: "https://pod/unset", bytes: null, duration_ms: 0, reason_code: "unset" })),
   transcriptFetchEnabled: () => process.env.TRANSCRIPT_FETCH === "1",
 }));
 
@@ -49,7 +49,7 @@ const sourceAnq: Source = {
 };
 const sourcePod: Source = {
   id: "s1", name: "Pod", type: "rss", endpoint: "https://pod/feed",
-  topic_ids: ["t1"], fetch_interval: "1h", backfill: null, enabled: true,
+  topic_ids: ["t1"], fetch_interval: "1h", backfill: null, enabled: true, transcript_mode: "enabled",
 };
 const sourceFullText: Source = {
   id: "s_ft", name: "先知式", type: "rss", endpoint: "https://xz.example/feed",
@@ -61,8 +61,14 @@ const titleOnly = (url: string): RawItem => ({
 });
 const mkRaw = (url: string, body: string, transcript_url?: string): RawItem =>
   ({ url, title: "Ep", author: null, published_at: null, body, transcript_url, raw: "{}" });
+const mkPodcastRaw = (url: string, body: string, transcript_url?: string): RawItem =>
+  ({ ...mkRaw(url, body, transcript_url), body_kind: "show_notes", is_podcast_episode: true });
 const mkRawWithKind = (url: string, body: string, kind: RawItem["body_kind"]): RawItem =>
   ({ url, title: "Ep", author: null, published_at: null, body, body_kind: kind, raw: "{}" });
+const transcriptSuccess = (body: string, raw_payload = body): TranscriptFetchResult => ({
+  outcome: "success", stable_url: "https://pod/ep.txt", raw_payload, cleaned_body: body,
+  bytes: Buffer.byteLength(raw_payload, "utf8"), duration_ms: 12, content_type: "text/plain",
+});
 
 let db: DB;
 beforeEach(() => {
@@ -214,34 +220,50 @@ describe("collector 按源 fetch_mode 全文策略（ADR-0008 切片2）", () =>
   });
 });
 
-describe("collector B族转写抓取（6a）", () => {
-  it("开关开 + 新 url + transcript_url → 抓转写、存 body_kind=transcript", async () => {
+describe("collector B族转写抓取（ADR-0027）", () => {
+  it("源 enabled + 应急开关开 + 新 url + transcript_url → 抓转写、存 evidence envelope", async () => {
     process.env.TRANSCRIPT_FETCH = "1";
-    raws.value = [mkRaw("https://pod/ep1", "Show notes.", "https://pod/ep1.txt")];
-    ctl.transcript = "Real transcript body.";
+    raws.value = [mkPodcastRaw("https://pod/ep1", "Show notes.", "https://pod/ep1.txt")];
+    ctl.transcript = transcriptSuccess("Real transcript body.", "[00:00] Real transcript body.");
     await collectSource(db, sourcePod);
     const item = getContentItem(db, getContentByUrl(db, "https://pod/ep1")!.id)!;
     expect(item.body_kind).toBe("transcript");
     expect(item.body).toBe("Real transcript body.");
+    const archive = JSON.parse(readFileSync(join(process.env.DATA_DIR!, item.raw_ref), "utf8"));
+    expect(archive).toMatchObject({
+      schema_version: "podcast-transcript-evidence-v1",
+      episode: { url: "https://pod/ep1", rss_item: "{}" },
+      transcript: { stable_url: "https://pod/ep.txt", raw_payload: "[00:00] Real transcript body." },
+    });
   });
 
-  it("开关开 + 新 url + 抓取失败（返 null）→ 落 show notes（article），仍入库", async () => {
+  it("抓取失败是单集终态 → 回退 show_notes，仍入库", async () => {
     process.env.TRANSCRIPT_FETCH = "1";
-    raws.value = [mkRaw("https://pod/ep_fail", "Show notes.", "https://pod/ep_fail.txt")];
-    ctl.transcript = null;
+    raws.value = [mkPodcastRaw("https://pod/ep_fail", "Show notes.", "https://pod/ep_fail.txt")];
+    ctl.transcript = { outcome: "timeout", stable_url: "https://pod/ep_fail.txt", bytes: null, duration_ms: 30_000, reason_code: "request_timeout" };
     const res = await collectSource(db, sourcePod);
     expect(res.inserted).toBe(1);
     const item = getContentItem(db, getContentByUrl(db, "https://pod/ep_fail")!.id)!;
-    expect(item.body_kind).toBe("article");
+    expect(item.body_kind).toBe("show_notes");
     expect(item.body).toBe("Show notes.");
   });
 
-  it("开关关 → 新 url 不抓转写，存 show notes（body_kind=article 默认）", async () => {
-    raws.value = [mkRaw("https://pod/ep2", "Show notes.", "https://pod/ep2.txt")];
-    ctl.transcript = "should NOT be used";
+  it("全局应急开关关 → 新 url 不抓转写，存 show_notes", async () => {
+    raws.value = [mkPodcastRaw("https://pod/ep2", "Show notes.", "https://pod/ep2.txt")];
+    ctl.transcript = transcriptSuccess("should NOT be used");
     await collectSource(db, sourcePod);
     const item = getContentItem(db, getContentByUrl(db, "https://pod/ep2")!.id)!;
-    expect(item.body_kind).toBe("article");
+    expect(item.body_kind).toBe("show_notes");
+    expect(item.body).toBe("Show notes.");
+  });
+
+  it("即使全局开关开，源 off 也不抓 transcript", async () => {
+    process.env.TRANSCRIPT_FETCH = "1";
+    raws.value = [mkPodcastRaw("https://pod/ep_policy_off", "Show notes.", "https://pod/ep_policy_off.txt")];
+    ctl.transcript = transcriptSuccess("should NOT be used");
+    await collectSource(db, { ...sourcePod, transcript_mode: "off" });
+    const item = getContentItem(db, getContentByUrl(db, "https://pod/ep_policy_off")!.id)!;
+    expect(item.body_kind).toBe("show_notes");
     expect(item.body).toBe("Show notes.");
   });
 
