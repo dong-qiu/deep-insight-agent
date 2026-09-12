@@ -14,6 +14,13 @@ export const SourceConfigSchema = z.object({
   // ADR-0008 决定③ 按源全文策略（yaml 不填则默认 feed / 无容器覆盖）
   fetch_mode: z.enum(["feed", "full_text"]).default("feed"),
   content_container: z.string().nullable().default(null),
+  // ADR-0027：新源先关闭全文，只有逐源经过 shadow/eval 后才允许 enabled。
+  transcript_mode: z.enum(["off", "observe", "enabled"]).default("off"),
+  transcript_strategy: z.enum(["all", "relevant_only"]).default("relevant_only"),
+  transcript_max_items_per_run: z.number().int().positive().default(5),
+  transcript_max_bytes_per_run: z.number().int().positive().default(5 * 1024 * 1024),
+  transcript_timeout_budget_ms: z.number().int().positive().default(30_000),
+  transcript_host_qps: z.number().positive().default(0.5),
 });
 
 export const TopicConfigSchema = z.object({

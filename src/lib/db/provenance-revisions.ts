@@ -45,6 +45,12 @@ export function sourceConfigSnapshot(source: Source): Record<string, unknown> {
     enabled: source.enabled,
     fetch_mode: source.fetch_mode ?? "feed",
     content_container: source.content_container ?? null,
+    transcript_mode: source.transcript_mode ?? "off",
+    transcript_strategy: source.transcript_strategy ?? "relevant_only",
+    transcript_max_items_per_run: source.transcript_max_items_per_run ?? 5,
+    transcript_max_bytes_per_run: source.transcript_max_bytes_per_run ?? 5 * 1024 * 1024,
+    transcript_timeout_budget_ms: source.transcript_timeout_budget_ms ?? 30_000,
+    transcript_host_qps: String(source.transcript_host_qps ?? 0.5),
   };
 }
 

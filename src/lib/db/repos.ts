@@ -3,9 +3,9 @@
  * 增量1 覆盖 Source / Topic / ContentItem / Run；其余实体随后续增量加。
  */
 import { parseFacets } from "../topics/facets.js";
-import type { ContentItem, Cost, Run, Source, Topic } from "../types.js";
+import type { ContentItem, Cost, Run, Source, Topic, TranscriptAcquisitionFact } from "../types.js";
 import type { DB } from "./index.js";
-import { projectTrace } from "./provenance-facts.js";
+import { canonicalHash, projectTrace } from "./provenance-facts.js";
 
 const j = (v: unknown): string => JSON.stringify(v);
 const b = (v: boolean): number => (v ? 1 : 0);
@@ -13,13 +13,20 @@ const b = (v: boolean): number => (v ? 1 : 0);
 // ── Source ──
 export function insertSource(db: DB, s: Source): void {
   db.prepare(
-    `INSERT INTO source (id,name,type,endpoint,topic_ids,fetch_interval,backfill,enabled,fetch_mode,content_container)
-     VALUES (@id,@name,@type,@endpoint,@topic_ids,@fetch_interval,@backfill,@enabled,@fetch_mode,@content_container)`,
+    `INSERT INTO source (id,name,type,endpoint,topic_ids,fetch_interval,backfill,enabled,fetch_mode,content_container,
+      transcript_mode,transcript_strategy,transcript_max_items_per_run,transcript_max_bytes_per_run,transcript_timeout_budget_ms,transcript_host_qps)
+     VALUES (@id,@name,@type,@endpoint,@topic_ids,@fetch_interval,@backfill,@enabled,@fetch_mode,@content_container,
+      @transcript_mode,@transcript_strategy,@transcript_max_items_per_run,@transcript_max_bytes_per_run,@transcript_timeout_budget_ms,@transcript_host_qps)`,
   ).run({
     id: s.id, name: s.name, type: s.type, endpoint: s.endpoint,
     topic_ids: j(s.topic_ids), fetch_interval: s.fetch_interval,
     backfill: s.backfill ? j(s.backfill) : null, enabled: b(s.enabled),
     fetch_mode: s.fetch_mode ?? "feed", content_container: s.content_container ?? null,
+    transcript_mode: s.transcript_mode ?? "off", transcript_strategy: s.transcript_strategy ?? "relevant_only",
+    transcript_max_items_per_run: s.transcript_max_items_per_run ?? 5,
+    transcript_max_bytes_per_run: s.transcript_max_bytes_per_run ?? 5 * 1024 * 1024,
+    transcript_timeout_budget_ms: s.transcript_timeout_budget_ms ?? 30_000,
+    transcript_host_qps: s.transcript_host_qps ?? 0.5,
   });
 }
 export function getSource(db: DB, id: string): Source | null {
@@ -39,6 +46,12 @@ function rowToSource(r: Record<string, unknown>): Source {
     // 旧库行（ensureColumn 前查到的）可能无该字段 → 取默认；空串视为未设
     fetch_mode: r.fetch_mode === "full_text" ? "full_text" : "feed",
     content_container: r.content_container ? (r.content_container as string) : null,
+    transcript_mode: r.transcript_mode === "enabled" || r.transcript_mode === "observe" ? r.transcript_mode : "off",
+    transcript_strategy: r.transcript_strategy === "all" ? "all" : "relevant_only",
+    transcript_max_items_per_run: Number(r.transcript_max_items_per_run) || 5,
+    transcript_max_bytes_per_run: Number(r.transcript_max_bytes_per_run) || 5 * 1024 * 1024,
+    transcript_timeout_budget_ms: Number(r.transcript_timeout_budget_ms) || 30_000,
+    transcript_host_qps: Number(r.transcript_host_qps) || 0.5,
     disabled_reason: (r.disabled_reason as string) || null,
     disabled_at: (r.disabled_at as string) || null,
     circuit_reset_at: (r.circuit_reset_at as string) || null,
@@ -56,6 +69,9 @@ export function updateSource(db: DB, s: Source): number {
     `UPDATE source SET name=@name,type=@type,endpoint=@endpoint,
        topic_ids=@topic_ids,fetch_interval=@fetch_interval,backfill=@backfill,enabled=@enabled,
        fetch_mode=@fetch_mode,content_container=@content_container,
+       transcript_mode=@transcript_mode,transcript_strategy=@transcript_strategy,
+       transcript_max_items_per_run=@transcript_max_items_per_run,transcript_max_bytes_per_run=@transcript_max_bytes_per_run,
+       transcript_timeout_budget_ms=@transcript_timeout_budget_ms,transcript_host_qps=@transcript_host_qps,
        updated_at=datetime('now')
      WHERE id=@id`,
   ).run({
@@ -63,10 +79,46 @@ export function updateSource(db: DB, s: Source): number {
     topic_ids: j(s.topic_ids), fetch_interval: s.fetch_interval,
     backfill: s.backfill ? j(s.backfill) : null, enabled: b(s.enabled),
     fetch_mode: s.fetch_mode ?? "feed", content_container: s.content_container ?? null,
+    transcript_mode: s.transcript_mode ?? "off", transcript_strategy: s.transcript_strategy ?? "relevant_only",
+    transcript_max_items_per_run: s.transcript_max_items_per_run ?? 5,
+    transcript_max_bytes_per_run: s.transcript_max_bytes_per_run ?? 5 * 1024 * 1024,
+    transcript_timeout_budget_ms: s.transcript_timeout_budget_ms ?? 30_000,
+    transcript_host_qps: s.transcript_host_qps ?? 0.5,
   });
   // 人工拉回启用一个系统熔断源 → 清熔断态（写 circuit_reset_at 干净重数 consecutiveFails）
   if (s.enabled && prev?.disabled_reason === "circuit_open") clearCircuit(db, s.id);
   return r.changes;
+}
+
+/** Transcript diagnostics are idempotent observations. A conflicting replay is retained in its
+ * own append-only table and rejected instead of silently overwriting the original evidence. */
+export function appendTranscriptAcquisitionFact(
+  db: DB,
+  fact: TranscriptAcquisitionFact,
+): { replayed: boolean } {
+  const semantic_payload_hash = canonicalHash({
+    source_id: fact.source_id, episode_url: fact.episode_url, candidate_hash: fact.candidate_hash,
+    policy_version: fact.policy_version, adapter_version: fact.adapter_version, attempt: fact.attempt,
+    decision: fact.decision, outcome: fact.outcome, reason_code: fact.reason_code, bytes: fact.bytes,
+    duration_ms: fact.duration_ms, fallback_body_kind: fact.fallback_body_kind,
+    content_item_id: fact.content_item_id, occurred_at: fact.occurred_at,
+  });
+  const existing = db.prepare("SELECT semantic_payload_hash FROM transcript_acquisition_fact WHERE id=?").get(fact.id) as
+    | { semantic_payload_hash: string }
+    | undefined;
+  if (existing) {
+    if (existing.semantic_payload_hash === semantic_payload_hash) return { replayed: true };
+    db.prepare(
+      "INSERT INTO transcript_acquisition_conflict(id,event_id,existing_semantic_payload_hash,received_semantic_payload_hash,observed_at) VALUES (lower(hex(randomblob(16))),?,?,?,?)",
+    ).run(fact.id, existing.semantic_payload_hash, semantic_payload_hash, new Date().toISOString());
+    throw new Error("transcript_acquisition_idempotency_conflict");
+  }
+  db.prepare(
+    `INSERT INTO transcript_acquisition_fact
+      (id,source_id,episode_url,candidate_hash,policy_version,adapter_version,attempt,decision,outcome,reason_code,bytes,duration_ms,fallback_body_kind,content_item_id,occurred_at,semantic_payload_hash)
+     VALUES (@id,@source_id,@episode_url,@candidate_hash,@policy_version,@adapter_version,@attempt,@decision,@outcome,@reason_code,@bytes,@duration_ms,@fallback_body_kind,@content_item_id,@occurred_at,@semantic_payload_hash)`,
+  ).run({ ...fact, semantic_payload_hash });
+  return { replayed: false };
 }
 
 /** 系统熔断软停用（ADR-0008 决定②）：enabled=0 + 标 circuit_open + 锚定 circuit_reset_at。 */

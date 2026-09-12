@@ -736,6 +736,12 @@ CREATE TABLE IF NOT EXISTS source (
   enabled        INTEGER NOT NULL DEFAULT 1,
   fetch_mode     TEXT NOT NULL DEFAULT 'feed' CHECK (fetch_mode IN ('feed','full_text')),
   content_container TEXT,
+  transcript_mode TEXT NOT NULL DEFAULT 'off' CHECK (transcript_mode IN ('off','observe','enabled')),
+  transcript_strategy TEXT NOT NULL DEFAULT 'relevant_only' CHECK (transcript_strategy IN ('all','relevant_only')),
+  transcript_max_items_per_run INTEGER NOT NULL DEFAULT 5 CHECK (transcript_max_items_per_run > 0),
+  transcript_max_bytes_per_run INTEGER NOT NULL DEFAULT 5242880 CHECK (transcript_max_bytes_per_run > 0),
+  transcript_timeout_budget_ms INTEGER NOT NULL DEFAULT 30000 CHECK (transcript_timeout_budget_ms > 0),
+  transcript_host_qps REAL NOT NULL DEFAULT 0.5 CHECK (transcript_host_qps > 0),
   disabled_reason TEXT,
   disabled_at     TEXT,
   circuit_reset_at TEXT,
@@ -803,6 +809,40 @@ CREATE INDEX IF NOT EXISTS idx_content_reader_eligible ON content_item(reader_el
 -- 规范化 url 唯一（data-collection AC2：同 URL 内容更新走原地 upsert、不新增；id 由 url 派生不变）
 DROP INDEX IF EXISTS idx_content_url_hash;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_content_url ON content_item(url);
+
+-- ADR-0027: acquisition diagnostics are intentionally separate from the P1 funnel. A candidate
+-- may be skipped before it becomes a ContentItem, and fact-write failures must never affect P0.
+CREATE TABLE IF NOT EXISTS transcript_acquisition_fact (
+  id TEXT PRIMARY KEY,
+  source_id TEXT NOT NULL REFERENCES source(id),
+  episode_url TEXT NOT NULL,
+  candidate_hash TEXT NOT NULL,
+  policy_version TEXT NOT NULL,
+  adapter_version TEXT NOT NULL,
+  attempt INTEGER NOT NULL CHECK (attempt >= 0),
+  decision TEXT CHECK (decision IN ('fetch','unknown','hard_negative')),
+  outcome TEXT NOT NULL CHECK (outcome IN ('decision','success','no_transcript','robots_denied','http_error','size_limited','timeout','parse_empty','transient_error','budget_limited','existing_url')),
+  reason_code TEXT,
+  bytes INTEGER CHECK (bytes IS NULL OR bytes >= 0),
+  duration_ms INTEGER CHECK (duration_ms IS NULL OR duration_ms >= 0),
+  fallback_body_kind TEXT CHECK (fallback_body_kind IS NULL OR fallback_body_kind IN ('article','show_notes')),
+  content_item_id TEXT REFERENCES content_item(id),
+  occurred_at TEXT NOT NULL,
+  semantic_payload_hash TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_transcript_acquisition_source_time ON transcript_acquisition_fact(source_id, occurred_at DESC);
+CREATE INDEX IF NOT EXISTS idx_transcript_acquisition_episode ON transcript_acquisition_fact(source_id, episode_url, attempt);
+CREATE TABLE IF NOT EXISTS transcript_acquisition_conflict (
+  id TEXT PRIMARY KEY,
+  event_id TEXT NOT NULL,
+  existing_semantic_payload_hash TEXT NOT NULL,
+  received_semantic_payload_hash TEXT NOT NULL,
+  observed_at TEXT NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS transcript_acquisition_fact_no_update BEFORE UPDATE ON transcript_acquisition_fact BEGIN SELECT RAISE(ABORT, 'transcript_acquisition_fact is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS transcript_acquisition_fact_no_delete BEFORE DELETE ON transcript_acquisition_fact BEGIN SELECT RAISE(ABORT, 'transcript_acquisition_fact is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS transcript_acquisition_conflict_no_update BEFORE UPDATE ON transcript_acquisition_conflict BEGIN SELECT RAISE(ABORT, 'transcript_acquisition_conflict is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS transcript_acquisition_conflict_no_delete BEFORE DELETE ON transcript_acquisition_conflict BEGIN SELECT RAISE(ABORT, 'transcript_acquisition_conflict is append-only'); END;
 
 CREATE TABLE IF NOT EXISTS run (
   id          TEXT PRIMARY KEY,

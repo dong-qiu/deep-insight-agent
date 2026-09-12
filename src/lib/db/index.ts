@@ -144,6 +144,13 @@ function migrate(db: DB): void {
     "fetch_mode TEXT NOT NULL DEFAULT 'feed' CHECK (fetch_mode IN ('feed','full_text'))",
   );
   ensureColumn(db, "source", "content_container", "content_container TEXT");
+  // ADR-0027：按源播客全文策略。所有存量源默认 off；显式灰度前不改变其 RSS 采集或历史内容。
+  ensureColumn(db, "source", "transcript_mode", "transcript_mode TEXT NOT NULL DEFAULT 'off' CHECK (transcript_mode IN ('off','observe','enabled'))");
+  ensureColumn(db, "source", "transcript_strategy", "transcript_strategy TEXT NOT NULL DEFAULT 'relevant_only' CHECK (transcript_strategy IN ('all','relevant_only'))");
+  ensureColumn(db, "source", "transcript_max_items_per_run", "transcript_max_items_per_run INTEGER NOT NULL DEFAULT 5 CHECK (transcript_max_items_per_run > 0)");
+  ensureColumn(db, "source", "transcript_max_bytes_per_run", "transcript_max_bytes_per_run INTEGER NOT NULL DEFAULT 5242880 CHECK (transcript_max_bytes_per_run > 0)");
+  ensureColumn(db, "source", "transcript_timeout_budget_ms", "transcript_timeout_budget_ms INTEGER NOT NULL DEFAULT 30000 CHECK (transcript_timeout_budget_ms > 0)");
+  ensureColumn(db, "source", "transcript_host_qps", "transcript_host_qps REAL NOT NULL DEFAULT 0.5 CHECK (transcript_host_qps > 0)");
   // 技术规划工作台：旧方向从 version=1 起；映射词表变更只标 stale，不会改写人工决策。
   ensureColumn(db, "topic_direction", "version", "version INTEGER NOT NULL DEFAULT 1");
   ensureColumn(db, "technology_opportunity", "mapping_state", "mapping_state TEXT NOT NULL DEFAULT 'current' CHECK (mapping_state IN ('current','stale'))");
