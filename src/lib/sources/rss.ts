@@ -4,6 +4,7 @@ import { extractCiteTranscript, extractHtmlTranscript, stripTranscript } from ".
 import { UA, fetchRobots, isAllowed } from "./robots.js";
 import { MAX_RESPONSE_BYTES, fetchWithRetry, readTextCapped, safeFetch } from "./safe-fetch.js";
 import type { RawItem } from "./types.js";
+import type { TranscriptFetchResult } from "./types.js";
 import { asArray, text, xml } from "./xml.js";
 
 
@@ -26,6 +27,24 @@ function pickTranscriptUrl(node: any): string | undefined {
   if (!tags.length) return undefined;
   tags.sort((a, b) => mimeRank(a["@_type"]) - mimeRank(b["@_type"]));
   return text(tags[0]["@_url"]) || undefined;
+}
+
+/** A feed entry is a podcast episode only when it carries podcast-specific metadata or an audio
+ * enclosure.  Newsletter RSS items must retain the generic `article` fallback. */
+function isPodcastEpisode(item: any, links: any[] = []): boolean {
+  if (item["podcast:transcript"] || item["itunes:episode"] !== undefined || item["itunes:duration"] !== undefined
+    || item["itunes:season"] !== undefined || item["itunes:explicit"] !== undefined) return true;
+  const enclosures = [...asArray<any>(item.enclosure), ...links.filter((link) => link?.["@_rel"] === "enclosure")];
+  return enclosures.some((entry) => /^audio\//i.test(String(entry?.["@_type"] ?? entry?.type ?? "")));
+}
+
+function stableTranscriptUrl(input: string): string {
+  const url = new URL(input);
+  // Signed URLs are transport details, not durable citation evidence.  The original RSS fragment
+  // remains archived separately; consumers use this stable identity when diagnosing an attempt.
+  url.search = "";
+  url.hash = "";
+  return url.toString();
 }
 
 /** 把条目 URL 按 feed base 归一为绝对 URL（ADR-0008 决定⑤）：部分 feed 给**相对** link（如 `/post/1`），
@@ -102,15 +121,19 @@ export function parseRss(feedXml: string, baseUrl?: string): RawItem[] {
 
   // RSS 2.0
   if (doc?.rss?.channel) {
-    return asArray<any>(doc.rss.channel.item).map((it): RawItem => ({
+    return asArray<any>(doc.rss.channel.item).map((it): RawItem => {
+      const podcastEpisode = isPodcastEpisode(it);
+      return {
       url: itemUrl(it, baseUrl),
       title: text(it.title).replace(/\s+/g, " ").trim(),
       author: it.author ? text(it.author) : it["dc:creator"] ? text(it["dc:creator"]) : null,
       published_at: it.pubDate ? text(it.pubDate) : null,
       body: text(it["content:encoded"] ?? it.description).trim(),
+      ...(podcastEpisode ? { body_kind: "show_notes" as const, is_podcast_episode: true } : {}),
       transcript_url: pickTranscriptUrl(it["podcast:transcript"]),
       raw: JSON.stringify(it),
-    }));
+      };
+    });
   }
 
   // Atom
@@ -118,12 +141,14 @@ export function parseRss(feedXml: string, baseUrl?: string): RawItem[] {
     return asArray<any>(doc.feed.entry).map((e): RawItem => {
       const links = asArray<any>(e.link);
       const alt = links.find((l) => l["@_rel"] === "alternate")?.["@_href"] ?? links[0]?.["@_href"];
+      const podcastEpisode = isPodcastEpisode(e, links);
       return {
         url: resolveUrl(text(alt), baseUrl) || text(e.id),
         title: text(e.title).replace(/\s+/g, " ").trim(),
         author: e.author ? text(asArray<any>(e.author)[0]?.name ?? e.author) || null : null,
         published_at: text(e.published || e.updated) || null,
         body: text(e.content ?? e.summary).trim(),
+        ...(podcastEpisode ? { body_kind: "show_notes" as const, is_podcast_episode: true } : {}),
         transcript_url: pickTranscriptUrl(e["podcast:transcript"]),
         raw: JSON.stringify(e),
       };
@@ -163,14 +188,24 @@ export async function fetchRss(source: Source): Promise<RawItem[]> {
 /** 抓取并清洗单集转写稿：对其 origin **单独**查 robots（与 feed 常不同源，评审 Major 5）+ SSRF 安全出网
  *  + 大小封顶 + VTT/SRT 噪声清洗。任何失败（robots 禁止 / 非 2xx / 网络 / 超限 / 清洗后空）返 null。
  *  由 collector 在去重后对**新 url** 调用（6a）。 */
-export async function fetchTranscript(url: string): Promise<string | null> {
+export async function fetchTranscript(
+  url: string,
+  opts: { maxBytes?: number; timeoutMs?: number } = {},
+): Promise<TranscriptFetchResult> {
+  const started = Date.now();
+  let stableUrl = "";
   try {
+    stableUrl = stableTranscriptUrl(url);
     const { origin, pathname } = new URL(url);
     const rules = await fetchRobots(origin);
-    if (!isAllowed(rules, pathname)) return null;
-    const res = await safeFetch(url, { headers: { "user-agent": UA } });
-    if (!res.ok) return null;
-    const raw = await readTextCapped(res);
+    if (!isAllowed(rules, pathname)) {
+      return { outcome: "robots_denied", stable_url: stableUrl, bytes: null, duration_ms: Date.now() - started, reason_code: "robots_denied" };
+    }
+    const res = await safeFetch(url, { headers: { "user-agent": UA }, timeoutMs: opts.timeoutMs });
+    if (!res.ok) {
+      return { outcome: "http_error", stable_url: stableUrl, bytes: null, duration_ms: Date.now() - started, reason_code: `http_${res.status}` };
+    }
+    const raw = await readTextCapped(res, opts.maxBytes ?? MAX_RESPONSE_BYTES);
     // 结构化 HTML 转写页走专用抽取（抽空 → null，不灌垃圾）：Lex 式 .ts-text（6d）、Changelog 式 <cite>/<p>
     // （2026-06-26）；其余 VTT/SRT/纯文本走 stripTranscript。
     const cleaned = /class="[^"]*\bts-text\b/i.test(raw)
@@ -178,8 +213,23 @@ export async function fetchTranscript(url: string): Promise<string | null> {
       : /<cite\b[^>]*>/i.test(raw) && /<\/p>/i.test(raw)
         ? extractCiteTranscript(raw)
         : stripTranscript(raw);
-    return cleaned || null;
-  } catch {
-    return null;
+    if (!cleaned) {
+      return { outcome: "parse_empty", stable_url: stableUrl, bytes: Buffer.byteLength(raw, "utf8"), duration_ms: Date.now() - started, reason_code: "cleaned_body_empty" };
+    }
+    return {
+      outcome: "success", stable_url: stableUrl, raw_payload: raw, cleaned_body: cleaned,
+      bytes: Buffer.byteLength(raw, "utf8"), duration_ms: Date.now() - started,
+      content_type: res.headers?.get("content-type") ?? null,
+    };
+  } catch (error) {
+    // Keep categories stable for the acquisition facts; the original error string is not a
+    // durable contract and can contain provider-specific detail.
+    const message = error instanceof Error ? error.message : String(error);
+    const outcome = /响应体超过上限/i.test(message) ? "size_limited"
+      : /abort|timeout|timed out/i.test(message) ? "timeout" : "transient_error";
+    return {
+      outcome, stable_url: stableUrl ?? "", bytes: null, duration_ms: Date.now() - started,
+      reason_code: outcome === "size_limited" ? "response_size_limit" : outcome === "timeout" ? "request_timeout" : "request_error",
+    };
   }
 }

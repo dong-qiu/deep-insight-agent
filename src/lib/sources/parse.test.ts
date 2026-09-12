@@ -185,6 +185,8 @@ describe("parseRss", () => {
   it("无 <podcast:transcript> → transcript_url undefined（普通 feed 不受影响）", () => {
     expect(parseRss(RSS)[0].transcript_url).toBeUndefined();
     expect(parseRss(ATOM)[0].transcript_url).toBeUndefined();
+    expect(parseRss(RSS)[0].body_kind).toBeUndefined();
+    expect(parseRss(ATOM)[0].body_kind).toBeUndefined();
   });
 
   it("<podcast:transcript> 多格式：按 MIME 优先级选（plain>vtt），跳过 rel=captions", () => {
@@ -202,6 +204,8 @@ describe("parseRss", () => {
     const items = parseRss(feed);
     expect(items[0].body).toBe("Show notes."); // body 仍是 show notes（抓取在 fetchRss、按开关）
     expect(items[0].transcript_url).toBe("https://pod.example/ep1.txt"); // text/plain 优先、srt 因 captions 被跳
+    expect(items[0].body_kind).toBe("show_notes");
+    expect(items[0].is_podcast_episode).toBe(true);
   });
 
   it("Atom 分支也解析 <podcast:transcript>", () => {
@@ -211,7 +215,7 @@ describe("parseRss", () => {
     <podcast:transcript url="https://p/e.txt" type="text/plain"/>
   </entry>
 </feed>`;
-    expect(parseRss(feed)[0].transcript_url).toBe("https://p/e.txt");
+    expect(parseRss(feed)[0]).toMatchObject({ transcript_url: "https://p/e.txt", body_kind: "show_notes", is_podcast_episode: true });
   });
 
   it("<podcast:transcript> 仅 captions → 无可用转写 URL", () => {
@@ -221,6 +225,14 @@ describe("parseRss", () => {
     <podcast:transcript url="https://p/e.srt" type="application/x-subrip" rel="captions"/>
   </item>
 </channel></rss>`;
-    expect(parseRss(feed)[0].transcript_url).toBeUndefined();
+    expect(parseRss(feed)[0]).toMatchObject({ transcript_url: undefined, body_kind: "show_notes", is_podcast_episode: true });
+  });
+
+  it("音频 enclosure 也标记播客单集，即使 RSS 尚未声明 transcript", () => {
+    const feed = `<?xml version="1.0"?><rss version="2.0"><channel>
+      <item><title>Audio episode</title><link>https://p/e</link><description>notes</description>
+        <enclosure url="https://cdn.p/e.mp3" type="audio/mpeg" length="123"/>
+      </item></channel></rss>`;
+    expect(parseRss(feed)[0]).toMatchObject({ body_kind: "show_notes", is_podcast_episode: true, transcript_url: undefined });
   });
 });
