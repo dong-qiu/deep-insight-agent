@@ -1,8 +1,26 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { closeDb, getDb, openDb } from "./index.js";
 import { applyProvenanceMigrations, assertProvenanceSchema } from "./provenance-migrations.js";
 
 describe("provenance migration runner", () => {
+  it("upgrades legacy columns before replaying schema indexes", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ia-legacy-schema-"));
+    const path = join(dir, "insight.db");
+    const legacy = openDb(path);
+    legacy.exec("DROP INDEX idx_content_reader_eligible; ALTER TABLE content_item DROP COLUMN reader_eligible;");
+    legacy.close();
+
+    const upgraded = openDb(path);
+    const columns = upgraded.prepare("PRAGMA table_info(content_item)").all() as { name: string }[];
+    expect(columns.some((column) => column.name === "reader_eligible")).toBe(true);
+    expect(upgraded.prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_content_reader_eligible'").get()).toBeTruthy();
+    upgraded.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
   it("applies once, records its checksum, and is safe to rerun", () => {
     const db = openDb(":memory:");
     expect(() => assertProvenanceSchema(db)).toThrow("has not been applied");
