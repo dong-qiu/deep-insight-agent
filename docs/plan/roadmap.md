@@ -51,7 +51,7 @@
 
 ## M5 — Post-MVP：技术规划验证与研究入口
 
-- [~] P0 生成溯源与全链路可观测性 V1：以 `Run` / `audit_log` 为基础记录采集、分析、校验、报告、技术线索、方向映射和人工决策的实体—活动—执行者链路；P0a、P0b、P0c 已完成生产验收，优化驾驶舱仍待完成。见 `docs/plan/specs/generation-provenance.md`。
+- [x] P0 生成溯源与全链路可观测性 V1：以 `Run` / `audit_log` 为基础记录采集、分析、校验、报告、技术线索、方向映射和人工决策的实体—活动—执行者链路；P0a、P0b、P0c 与四项核心一致性契约均已完成验收。跨 trace 的优化驾驶舱与完整性锚定属于已隔离、功能关闭的 P1 候选，不是 P0 完成条件。见 `docs/plan/specs/generation-provenance.md` 与 INSI-174 / PR #328 的合入后验收记录。
   - [x] P0a 报告纵切已在生产 Deep Dive 与非空正常 Brief 验收通过（trace、实体引用、部署事实、admin/viewer 边界）；Brief 证据见 `docs/verify/p0a-brief-production-acceptance-2026-08-08.md`。
   - [x] P0b 采集与规划链路已在生产验收通过（自动 Opportunity → Lead / Direction revision / mapping lane / priority，以及人工 Direction 决定、审计与历史 revision）；证据见 `docs/verify/p0b-production-planning-acceptance-2026-08-12.md`。
   - [x] P0c 容量与受限视图已完成生产规模匿名测量、受限查询计划复验与性能门验收（2026-08-17）。证据见 `docs/verify/p0c-production-capacity-acceptance-2026-08-17.md`。

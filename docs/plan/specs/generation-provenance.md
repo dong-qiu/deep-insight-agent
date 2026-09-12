@@ -649,11 +649,11 @@ P0 的图查询采用硬预算：时间线最多 100 条事件一页，因果图
 - [x] P0b 后，切换点后生成或变更的任一技术机会可回溯 Lead、方向 revision、mapping lane、优先级明细和全部人工决定；复合实体
   引用可被唯一解析，历史快照不会被当前业务行覆盖。生产证据见
   `docs/verify/p0b-production-planning-acceptance-2026-08-12.md`。
-- [ ] 每个 trace 的 `completion_policy` 中所有阶段都具有终态或可解释的进行中状态；失败、跳过、空刊不可混淆。
-- [ ] 根 Run、子 Run 与 trace 的 `done` / `failed` / `partial` / `cancelled` 聚合符合 §4.1，且不反向改写既有 Run 状态。
-- [ ] SQLite 业务写入、event、revision、索引和 trace 投影要么一起提交，要么均不可见；文件等外部副作用通过
-  `generation_effect` 的 intent、staging、hash 校验和 reconciliation 达到可解释的至少一次处理，P0 不声称渠道成功。
-- [ ] 重试、重投影与人工决策都保留历史，不覆盖原记录；事件不含密钥、完整 prompt、原文副本或未授权信息。
+- [x] 每个 trace 的 `completion_policy` 中所有阶段都具有终态或可解释的进行中状态；失败、跳过、空刊不可混淆。INSI-174 / PR #328 的合入后验收已覆盖该契约。
+- [x] 根 Run、子 Run 与 trace 的 `done` / `failed` / `partial` / `cancelled` 聚合符合 §4.1，且不反向改写既有 Run 状态。INSI-174 / PR #328 的合入后验收已覆盖该契约。
+- [x] SQLite 业务写入、event、revision、索引和 trace 投影要么一起提交，要么均不可见；文件等外部副作用通过
+  `generation_effect` 的 intent、staging、hash 校验和 reconciliation 达到可解释的至少一次处理，P0 不声称渠道成功。INSI-174 / PR #328 的合入后验收已覆盖该契约。
+- [x] 重试、重投影与人工决策都保留历史，不覆盖原记录；事件不含密钥、完整 prompt、原文副本或未授权信息。INSI-174 / PR #328 的合入后验收已覆盖该契约。
 - [x] 在版本化 benchmark fixture、记录的机器/SQLite 配置、`page_size≤100`、图深度≤4 和图元素≤500 下，单产物链路页面
   P95 < 2 秒，单 trace 查询 P95 < 1 秒；关键查询的 query plan 命中规定索引。生产规模测量、受限查询计划复验与性能门证据见
   `docs/verify/p0c-production-capacity-acceptance-2026-08-17.md`。
