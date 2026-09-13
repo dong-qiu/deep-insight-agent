@@ -1,6 +1,5 @@
-/** fetchRss 只解析不抓（ADR-0007 6a：转写抓取已移到 collector 去重后、只对新 url 抓）。
- *  此处守住「fetchRss 不抓转写」不变量——即便开关开，fetchRss 也只解析 transcript_url、body 仍 show notes。
- *  B族抓取/不降级的实际行为在 collector.test 覆盖。 */
+/** RSS feed path only parses episode metadata. Transcript transport is covered separately through
+ * the real safeFetch → robots → cap path in rss-transcript.integration.test.ts. */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Source } from "../types.js";
 
@@ -26,7 +25,7 @@ vi.mock("./robots.js", () => ({
   isAllowed: vi.fn(() => true),
 }));
 
-const { fetchRss, fetchTranscript } = await import("./rss.js");
+const { fetchRss } = await import("./rss.js");
 
 const FEED = `<?xml version="1.0"?>
 <rss version="2.0" xmlns:podcast="https://podcastindex.org/namespace/1.0"><channel>
@@ -46,31 +45,13 @@ afterEach(() => {
 });
 
 describe("fetchRss 只解析不抓（ADR-0027）", () => {
-  it("只解析 transcript_url，body 仍 show notes、body_kind 明确为 show_notes——即便开关开也不抓（抓取在 collector）", async () => {
+  it("只解析 transcript_url，body 与 body_kind 均保持既有 RSS 语义——即便开关开也不抓（后续 worker 才会评估）", async () => {
     process.env.TRANSCRIPT_FETCH = "1"; // 开关开
     responses.set("https://pod/feed", { ok: true, text: FEED });
     // 不为 transcript URL 设响应——若 fetchRss 误抓会 throw "unmocked fetch"
     const items = await fetchRss(source);
     expect(items[0].body).toBe("Show notes.");
     expect(items[0].transcript_url).toBe("https://pod/ep.txt");
-    expect(items[0].body_kind).toBe("show_notes");
-    expect(items[0].is_podcast_episode).toBe(true);
-  });
-});
-
-describe("fetchTranscript structured result", () => {
-  it("成功时保留原始载荷、清洗正文、稳定 URL，且不把签名 query 带入证据身份", async () => {
-    responses.set("https://pod/ep.txt?sig=ephemeral", { ok: true, text: "00:00:01 Hello world" });
-    const result = await fetchTranscript("https://pod/ep.txt?sig=ephemeral");
-    expect(result).toMatchObject({
-      outcome: "success", stable_url: "https://pod/ep.txt", raw_payload: "00:00:01 Hello world",
-      cleaned_body: "00:00:01 Hello world",
-    });
-  });
-
-  it("HTTP 失败保留可观测终态，而不是返空字符串", async () => {
-    responses.set("https://pod/not-found.txt", { ok: false, text: "not found" });
-    const result = await fetchTranscript("https://pod/not-found.txt");
-    expect(result).toMatchObject({ outcome: "http_error", reason_code: "http_undefined" });
+    expect(items[0].body_kind).toBeUndefined();
   });
 });

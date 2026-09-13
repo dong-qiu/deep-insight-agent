@@ -109,8 +109,9 @@ Pragmatic 还需人工核验至少 10 集的 RSS item、节目页、转写 JSON 
 ## 实施切片
 
 1. 契约、迁移和默认关闭态。
-2. RSS 播客识别、结构化抓取结果、evidence envelope 和 body_kind 修复。
-3. 确定性预筛、shadow worker、事实和漏斗读模型。
+2. 结构化抓取结果、传输失败分类与 evidence envelope；此切片不得让生产 collector 请求 transcript，
+   也不得改变 RSS item 的 `body_kind`。
+3. RSS 播客识别与 `body_kind` 固化、确定性预筛、shadow worker、事实和漏斗读模型。
 4. Chain of Thought 的 `observe/all` 对照；共同门槛通过后另立批准变更，才可 `enabled/all`。
 5. Pragmatic 的播客识别和 `observe/relevant_only`；专属 heldout 门及 10 集人工核验通过后，才可
    小配额 `enabled/relevant_only`，连续观察 14 天后才允许扩容。
