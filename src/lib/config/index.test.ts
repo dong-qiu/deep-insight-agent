@@ -50,16 +50,19 @@ describe("loadStaticConfig + 播种 + 合并", () => {
     });
   });
 
-  it("将 Chain of Thought 以逐源关闭的 transcript 策略播种", () => {
+  it("将 Chain of Thought 以 observe/all 的小配额策略播种", () => {
     const cfg = loadStaticConfig();
     const source = cfg.defaultSources.find((candidate) => candidate.id === "src_chain_of_thought");
     expect(source).toMatchObject({
       endpoint: "https://feeds.transistor.fm/chain-of-thought", topic_ids: ["t_code_agents"],
-      transcript_mode: "off", transcript_strategy: "all", enabled: true,
+      transcript_mode: "observe", transcript_strategy: "all", transcript_max_items_per_run: 2,
+      transcript_max_bytes_per_run: 2 * 1024 * 1024, transcript_timeout_budget_ms: 20_000,
+      transcript_host_qps: 0.25, enabled: true,
     });
     seedDefaults(db, cfg);
-    expect(db.prepare("SELECT transcript_mode,transcript_strategy FROM source WHERE id=?").get("src_chain_of_thought"))
-      .toEqual({ transcript_mode: "off", transcript_strategy: "all" });
+    expect(db.prepare("SELECT transcript_mode,transcript_strategy,transcript_max_items_per_run,transcript_max_bytes_per_run,transcript_timeout_budget_ms,transcript_host_qps FROM source WHERE id=?").get("src_chain_of_thought"))
+      .toEqual({ transcript_mode: "observe", transcript_strategy: "all", transcript_max_items_per_run: 2,
+        transcript_max_bytes_per_run: 2 * 1024 * 1024, transcript_timeout_budget_ms: 20_000, transcript_host_qps: 0.25 });
   });
 
   it("将新增的 AI-SWE 官方来源保持为逐源启用前的 staged 候选", () => {

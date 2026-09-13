@@ -250,9 +250,13 @@ defaultSources:
     topic_ids: [t_code_agents]
     fetch_interval: 24h
     enabled: true
-    # 官方 RSS 提供 Podcasting 2.0 text/plain transcript；先 observe 建立成本/质量基线。
-    transcript_mode: off
+    # 官方 RSS 提供 Podcasting 2.0 text/plain transcript；observe 仅记录候选/决策，shadow 样本另存。
+    transcript_mode: observe
     transcript_strategy: all
+    transcript_max_items_per_run: 2
+    transcript_max_bytes_per_run: 2097152
+    transcript_timeout_budget_ms: 20000
+    transcript_host_qps: 0.25
   - id: src_practical_ai
     name: Practical AI（播客 · 转写）
     type: rss

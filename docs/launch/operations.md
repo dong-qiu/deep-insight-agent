@@ -114,7 +114,7 @@ curl -fsS -X POST http://127.0.0.1:3000/api/cron -H "authorization: Bearer $CRON
 | `COST_LIMIT_DAILY` | 否 | 日成本上限（**USD**）；触顶自动熔断定时管线（跳过剩余 topic）+ 告警。未设 = 不限（见 §14）|
 | `COST_LIMIT_MONTHLY` | 否 | 月成本上限（**USD**，自然月 UTC）；同上熔断 + 告警。未设 = 不限 |
 | `COST_ALERT_PCT` | 否 | 触顶前的告警阈值百分比，默认 80；任一维度达此比例发一次「接近上限」告警 |
-| `TRANSCRIPT_FETCH` | 否 | `1`=对带 `<podcast:transcript>` 的源抓全文转写做分析（ADR-0007）；空/`0`=只用 show notes。生产默认 `1`（gen-env.sh 写入，2026-06-20 上线）。属「生产手动配的运行时配置」，记得持久化进 `.env.local`（见 §8） |
+| `TRANSCRIPT_FETCH` | 否 | 全局**应急允许门**：`1` 仅允许 `source.transcript_mode=enabled` 的源抓取，绝不自行 opt-in；空/`0` 阻止所有全文请求。`observe` 仍只记决策，`off` 无记录/无请求。生产启用某源前须完成 ADR-0027 的 heldout、A1 与 14 天观察，不可只改此变量。 |
 | `DATA_DIR`/`DB_PATH`/`INSIGHT_CONFIG_PATH` | 容器已设 | 勿在本地 dev 设；Dockerfile 已指向 `/data` 与打包内 `defaults.yaml` |
 
 ## 4. ⚠️ 中转站（Opus-only）约束
