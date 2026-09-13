@@ -114,8 +114,33 @@ curl -fsS -X POST http://127.0.0.1:3000/api/cron -H "authorization: Bearer $CRON
 | `COST_LIMIT_DAILY` | 否 | 日成本上限（**USD**）；触顶自动熔断定时管线（跳过剩余 topic）+ 告警。未设 = 不限（见 §14）|
 | `COST_LIMIT_MONTHLY` | 否 | 月成本上限（**USD**，自然月 UTC）；同上熔断 + 告警。未设 = 不限 |
 | `COST_ALERT_PCT` | 否 | 触顶前的告警阈值百分比，默认 80；任一维度达此比例发一次「接近上限」告警 |
-| `TRANSCRIPT_FETCH` | 否 | `1`=对带 `<podcast:transcript>` 的源抓全文转写做分析（ADR-0007）；空/`0`=只用 show notes。生产默认 `1`（gen-env.sh 写入，2026-06-20 上线）。属「生产手动配的运行时配置」，记得持久化进 `.env.local`（见 §8） |
+| `TRANSCRIPT_FETCH` | 否 | **ADR-0027 的目标语义（仅 policy-aware 镜像）**：transcript 网络请求总熔断；空/`0` 禁止所有请求，`1` 仅允许 Source=`enabled` 的生产请求，或与 `TRANSCRIPT_SHADOW_FETCH=1` 共同允许 Source=`observe` 的隔离采样。新安装目标默认 `0`。旧镜像仍按 ADR-0007 的兼容行为解析，迁移前不得把该变量当作新源授权。 |
+| `TRANSCRIPT_SHADOW_FETCH` | 否 | **ADR-0027 的目标语义（仅 policy-aware 镜像）**：`1` 且 `TRANSCRIPT_FETCH=1` 时，才允许 Source=`observe` 受控请求并写隔离 shadow DB/archive；不写生产 ContentItem 或日报。默认 `0`。 |
 | `DATA_DIR`/`DB_PATH`/`INSIGHT_CONFIG_PATH` | 容器已设 | 勿在本地 dev 设；Dockerfile 已指向 `/data` 与打包内 `defaults.yaml` |
+
+### 3.1 播客全文策略迁移
+
+ADR-0007 中“`TRANSCRIPT_FETCH=1` 即对所有带 transcript 标签的源抓取”的描述是历史兼容行为；
+ADR-0027 以逐源策略取代它。**本说明 PR 不部署镜像或修改 AWS 配置。**在具备 policy-aware collector 的
+不可变镜像发布前，operator 不得依据本节打开新源。
+
+| 总熔断 | Source mode | 行为 |
+|---|---|---|
+| `TRANSCRIPT_FETCH=0` | 任意 | 禁止 transcript 网络请求；observe 可记录纯候选/决策，enabled 若记录必须是 `not_attempted/global_gate_off`，不是失败。 |
+| `TRANSCRIPT_FETCH=1` | `off` | 原 RSS 行为；不写 acquisition decision，不请求 transcript。 |
+| `TRANSCRIPT_FETCH=1`，`TRANSCRIPT_SHADOW_FETCH=0` | `observe` | 只写候选/预筛事实。 |
+| 两个开关均为 `1` | `observe` | 仅受控样本请求，并写隔离 shadow DB/archive；不得改变生产 ContentItem 或日报。 |
+| `TRANSCRIPT_FETCH=1` | `enabled` | 仅按该 Source 的策略、配额、“仅新 URL”和 evidence gate 抓取。 |
+
+迁移与回滚按以下顺序执行：
+
+1. 只读审计当前生产镜像、`TRANSCRIPT_FETCH` 值和实际已批准的 transcript Source；不得由全局为 `1` 推断白名单。
+2. 在隔离迁移中为所有 Source 建立默认 `off` 的逐源策略，并仅将审计通过的源明确写入 allowlist；seed 不得覆盖存量。
+3. 先发布含策略迁移的不可变镜像，保持两个全局开关关闭，核对 `off` 和 `observe` 的行为；observe 的网络采样需第二个开关和隔离 DB/archive。
+4. 每个 Source 依次 `off → observe → enabled`，并满足
+   [`podcast-transcript-acquisition.md`](../plan/specs/podcast-transcript-acquisition.md) 的策略专属准入门。回滚先设该 Source 为 `off`；紧急情况设 `TRANSCRIPT_FETCH=0`。
+
+不得通过 `deploy.sh` 覆盖生产 `.env.local` 来测试此迁移；部署前先按本手册的镜像与配置核验流程确认实际运行版本。
 
 ## 4. ⚠️ 中转站（Opus-only）约束
 
@@ -288,7 +313,7 @@ docker compose run --rm --no-deps migrate \
 
 > 验证别只看 `HTTP 200`（跨服务调用里 200 ≠ 成功，如飞书回 200+错误码）；用 `docker exec deep-insight-app-1 node /app/ops/probe-alert.mjs` 看渠道 + `code=0` + 真到达。
 
-> ⚠️ **运行时配置持久化（成本熔断 / 报告推送 / 转写采集 / 日报偏薄提醒）**：`COST_LIMIT_DAILY`/`COST_LIMIT_MONTHLY`/`COST_ALERT_PCT`/`REPORT_PUSH`/`PUBLIC_BASE_URL`/`TRANSCRIPT_FETCH`/`BRIEF_THIN_REPORT_ALERT`/`BRIEF_THIN_MIN_SELECTED`/`BRIEF_THIN_MAX_PUBLISHED` 这几个常在生产手动配。
+> ⚠️ **运行时配置持久化（成本熔断 / 报告推送 / 转写采集 / 日报偏薄提醒）**：`COST_LIMIT_DAILY`/`COST_LIMIT_MONTHLY`/`COST_ALERT_PCT`/`REPORT_PUSH`/`PUBLIC_BASE_URL`/`TRANSCRIPT_FETCH`/`TRANSCRIPT_SHADOW_FETCH`/`BRIEF_THIN_REPORT_ALERT`/`BRIEF_THIN_MIN_SELECTED`/`BRIEF_THIN_MAX_PUBLISHED` 这几个常在生产手动配。播客逐源策略是 SQLite 中的 Source 配置事实，不能用环境变量代替或由全局开关推断。
 > - **`ops/aws/deploy.sh` 路径**：scp **全量覆盖**远程 `.env.local`（源 = 本地 `.env.local`，仅剔除 `DB_PATH`/`DATA_DIR`）。故生产值必须落进**本地** `.env.local`，否则下次 deploy 静默抹掉熔断/推送。已加两道护栏：`gen-env.sh` 重生成时**继承**旧 `.env.local` 的这些值；`deploy.sh` 投递前**体检缺失即告警**。
 > - **`deploy.yml`（CD）路径**：只下载版本化 `docker-compose.yml` 并拉取 GHCR 镜像，绝不覆盖 `.env.local`；首次仍需由 operator 在服务器配置好该文件。
 > - 仅调这几个值时：直接编辑服务器 `.env.local` 后 `docker compose up -d --force-recreate`（§7），**别重跑 `deploy.sh`/`gen-env.sh` 以免连带覆盖**；同时把值同步回本地 `.env.local` 留底。教训见 `docs/verify/mvp-gap-2026-06-07.md` §2.1。

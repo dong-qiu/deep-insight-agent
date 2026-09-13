@@ -139,7 +139,28 @@ Source ─采集▶ ContentItem ─分析▶ AnalysisBatch(Insight+Citation) ─
 | `topic_ids` | string[] | Y | 关联主题 —— **也是源的「域」来源**：源的领域由其 topic 的 `facets` 派生（ADR-0010 Step2c：源不自存分类） |
 | `fetch_interval` | duration | Y | 增量抓取周期 |
 | `backfill` | object | N | 历史回填配置 `{depth, max_cost}`；缺省为不回填 |
+| `transcript_mode` | enum | N | `off` / `observe` / `enabled`；播客全文策略，缺省 `off`。仅 policy-aware collector 读取；既有 Source 必须经显式白名单迁移，不能由旧全局开关推导。 |
+| `transcript_strategy` | enum | N | `all` / `relevant_only`；仅 transcript mode 非 `off` 时适用。 |
+| `transcript_limits` | object | N | `{max_items, max_bytes, max_duration_ms, host_qps}`；只限制 transcript acquisition，不能暂停 RSS。 |
+| `transcript_policy_version` | string | N | 预筛与资源策略版本；写入 acquisition fact 的幂等/可审计键。 |
 | `enabled` | bool | Y | 启停 |
+
+### 播客全文采集事实 (TranscriptAcquisitionFact / TranscriptAcquisitionConflict)
+
+每个 Source 的播客候选、预筛决策、请求和终态是独立于 `ContentItem` 的追加式诊断事实；它们不是
+`SourceCreditFact`，也不参与源熔断、`reader_eligible`、分析、报告选择或引用白名单。SQLite DDL 的唯一
+事实源是 `src/lib/db/schema.ts`，迁移只复用该定义。当前 `Source` 是全局配置，不为本功能凭空新增
+tenant；未来 tenant 化必须与 Source、ContentItem 和全部 fact 的迁移一并设计。
+
+| 实体 | 主键 / 关键字段 | 不可变与可见性契约 |
+|---|---|---|
+| `TranscriptAcquisitionFact` | `event_key`；`source_id`、`canonical_episode_url`、`candidate_hash`、`transcript_policy_version`、`mode`、`strategy`、`execution_scope`、`stage`、`attempt`、`decision`、`reason_code`、`outcome`、`adapter_version`、`bytes`、`duration_ms`、`run_id`、`content_item_id`、`raw_ref`、`evidence_status`、`occurred_at`、`semantic_hash` | `event_key` 由 source、规范 URL、candidate hash、策略版本、执行范围、stage 和 attempt 确定性派生。`stage` 为 candidate / decision / attempt / terminal；attempt `0` 记录决策，网络尝试从 `1` 开始。`execution_scope` 为 `production_metadata` 或 `shadow`。同 key 且同 semantic hash 幂等；成功证据记录 raw-ref 验证状态。shadow fact 不得关联生产 ContentItem。 |
+| `TranscriptAcquisitionConflict` | `id`；`event_key`、原/新 semantic hash、`observed_at` | 同 event key 不同语义时只追加 conflict，原 fact 永不覆盖。 |
+
+两张表禁止 update/delete；最少索引为 `source_id, occurred_at`、`source_id, canonical_episode_url, attempt`
+及 `event_key, observed_at` 的 conflict 查询。MVP 不自动清理 acquisition fact；与 `raw_ref` 关联的成功
+fact 至少保留到相应 evidence archive 的保留期。任何未来的失败/决策事实清理都须先在迁移中声明期限、
+责任和 conflict 保留规则。`reader_eligible` 仍仅由 `ContentItem` 的已验证 raw archive 决定。
 
 ### 来源 credit 溯源事实 (SourceCreditEvent / SourceCreditFact)
 
