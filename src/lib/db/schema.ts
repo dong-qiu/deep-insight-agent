@@ -724,6 +724,138 @@ CREATE INDEX idx_dashboard_trace_fact_v1_dimension_window ON dashboard_trace_fac
 CREATE INDEX idx_dashboard_cost_fact_v1_dimension_window ON dashboard_cost_fact_v1(tenant_id,projection_version,topic_id,source_id,pipeline_version,occurred_at,entry_id);
 `;
 
+/** Kept as a reusable schema fragment so forward migrations cannot drift from the fresh-DB
+ * definition. `tableName` is an internal constant, never user input. */
+export function citationCheckTableSql(tableName = "citation_check"): string {
+  return `CREATE TABLE IF NOT EXISTS ${tableName} (
+  batch_id            TEXT NOT NULL REFERENCES analysis_batch(id),
+  insight_id          TEXT NOT NULL,
+  citation_index      INTEGER NOT NULL,
+  reachability        TEXT NOT NULL CHECK (reachability IN ('pass','fail')),
+  reachability_reason TEXT NOT NULL CHECK (reachability_reason IN ('ok','source_not_found','source_unreachable','quote_not_in_source')),
+  consistency         TEXT NOT NULL CHECK (consistency IN ('support','not_support','uncertain','not_evaluated')),
+  consistency_reason  TEXT NOT NULL CHECK (consistency_reason IN ('ok','out_of_context','exaggeration','misattribution','speaker_attribution_unknown','uncertain','not_evaluated')),
+  verdict             TEXT NOT NULL CHECK (verdict IN ('pass','blocked','flagged')),
+  PRIMARY KEY (batch_id, insight_id, citation_index)
+);`;
+}
+
+/** Podcast policy data is deliberately separate from P1 provenance facts. These tables and
+ * guards are shared by fresh bootstrap and the controlled production migration. */
+export const PODCAST_TRANSCRIPT_POLICY_VERSION_IMMUTABILITY_SQL = `
+CREATE TRIGGER IF NOT EXISTS source_transcript_policy_version_no_update
+BEFORE UPDATE ON source_transcript_policy_version
+BEGIN SELECT RAISE(ABORT, 'source_transcript_policy_version is immutable'); END;
+CREATE TRIGGER IF NOT EXISTS source_transcript_policy_version_no_delete
+BEFORE DELETE ON source_transcript_policy_version
+BEGIN SELECT RAISE(ABORT, 'source_transcript_policy_version is immutable'); END;
+`;
+
+export const PODCAST_TRANSCRIPT_CONTRACTS_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS source_transcript_policy_version (
+  -- A version is a durable semantic identity. Do not let a later source deletion erase it
+  -- and permit the same source id/version pair to be reused with different semantics.
+  source_id TEXT NOT NULL REFERENCES source(id) ON DELETE RESTRICT,
+  transcript_policy_version TEXT NOT NULL CHECK (length(trim(transcript_policy_version)) > 0),
+  recorded_at TEXT NOT NULL,
+  PRIMARY KEY (source_id, transcript_policy_version)
+);
+
+-- ADR-0027: acquisition diagnostics are intentionally separate from the P1 funnel. A candidate
+-- may be skipped before it becomes a ContentItem, and fact-write failures must never affect P0.
+CREATE TABLE IF NOT EXISTS transcript_acquisition_fact (
+  event_key TEXT PRIMARY KEY,
+  source_id TEXT NOT NULL REFERENCES source(id),
+  canonical_episode_url TEXT NOT NULL,
+  candidate_hash TEXT NOT NULL,
+  transcript_policy_version TEXT NOT NULL CHECK (length(trim(transcript_policy_version)) > 0),
+  mode TEXT NOT NULL CHECK (mode IN ('off','observe','enabled')) CHECK (mode <> 'off'),
+  strategy TEXT NOT NULL CHECK (strategy IN ('all','relevant_only')),
+  execution_scope TEXT NOT NULL CHECK (execution_scope IN ('production_metadata','shadow')),
+  stage TEXT NOT NULL CHECK (stage IN ('candidate','decision','attempt','terminal')),
+  adapter_version TEXT NOT NULL,
+  attempt INTEGER NOT NULL CHECK (
+    (stage IN ('candidate','decision') AND attempt = 0)
+    OR (stage IN ('attempt','terminal') AND attempt >= 1)
+  ),
+  decision TEXT CHECK (decision IN ('fetch','unknown','hard_negative')),
+  outcome TEXT NOT NULL CHECK (outcome IN ('decision','success','no_transcript','robots_denied','http_error','size_limited','timeout','parse_empty','transient_error','budget_limited','existing_url','not_attempted')),
+  reason_code TEXT,
+  bytes INTEGER CHECK (bytes IS NULL OR bytes >= 0),
+  duration_ms INTEGER CHECK (duration_ms IS NULL OR duration_ms >= 0),
+  fallback_body_kind TEXT CHECK (fallback_body_kind IS NULL OR fallback_body_kind IN ('article','show_notes')),
+  content_item_id TEXT REFERENCES content_item(id),
+  raw_ref TEXT,
+  evidence_status TEXT NOT NULL CHECK (evidence_status IN ('not_applicable','pending','verified','failed')),
+  run_id TEXT REFERENCES run(id),
+  occurred_at TEXT NOT NULL,
+  semantic_payload_hash TEXT NOT NULL,
+  CHECK (execution_scope = 'production_metadata' OR content_item_id IS NULL),
+  CHECK (evidence_status <> 'verified' OR raw_ref IS NOT NULL),
+  CHECK (outcome <> 'success' OR (raw_ref IS NOT NULL AND evidence_status = 'verified'))
+);
+CREATE INDEX IF NOT EXISTS idx_transcript_acquisition_source_time ON transcript_acquisition_fact(source_id, occurred_at DESC);
+CREATE INDEX IF NOT EXISTS idx_transcript_acquisition_episode ON transcript_acquisition_fact(source_id, canonical_episode_url, attempt);
+CREATE TABLE IF NOT EXISTS transcript_acquisition_conflict (
+  id TEXT PRIMARY KEY,
+  event_key TEXT NOT NULL,
+  existing_semantic_payload_hash TEXT NOT NULL,
+  received_semantic_payload_hash TEXT NOT NULL,
+  observed_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_transcript_acquisition_conflict_event ON transcript_acquisition_conflict(event_key, observed_at DESC);
+CREATE TRIGGER IF NOT EXISTS transcript_acquisition_fact_no_update BEFORE UPDATE ON transcript_acquisition_fact BEGIN SELECT RAISE(ABORT, 'transcript_acquisition_fact is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS transcript_acquisition_fact_no_delete BEFORE DELETE ON transcript_acquisition_fact BEGIN SELECT RAISE(ABORT, 'transcript_acquisition_fact is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS transcript_acquisition_fact_mode_guard_insert
+BEFORE INSERT ON transcript_acquisition_fact WHEN NEW.mode = 'off'
+BEGIN SELECT RAISE(ABORT, 'off_transcript_mode_cannot_emit_acquisition_fact'); END;
+CREATE TRIGGER IF NOT EXISTS transcript_acquisition_conflict_no_update BEFORE UPDATE ON transcript_acquisition_conflict BEGIN SELECT RAISE(ABORT, 'transcript_acquisition_conflict is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS transcript_acquisition_conflict_no_delete BEFORE DELETE ON transcript_acquisition_conflict BEGIN SELECT RAISE(ABORT, 'transcript_acquisition_conflict is append-only'); END;
+
+-- Existing databases cannot gain table CHECKs through ALTER TABLE. Keep direct SQL writers as
+-- fail-closed as repository writers, then retain every accepted non-off version per Source.
+CREATE TRIGGER IF NOT EXISTS source_transcript_policy_version_required_insert
+BEFORE INSERT ON source
+WHEN NEW.transcript_mode <> 'off' AND (NEW.transcript_policy_version IS NULL OR length(trim(NEW.transcript_policy_version)) = 0)
+BEGIN SELECT RAISE(ABORT, 'transcript_policy_version_required'); END;
+CREATE TRIGGER IF NOT EXISTS source_transcript_policy_version_required_update
+BEFORE UPDATE OF transcript_mode, transcript_policy_version ON source
+WHEN NEW.transcript_mode <> 'off' AND (NEW.transcript_policy_version IS NULL OR length(trim(NEW.transcript_policy_version)) = 0)
+BEGIN SELECT RAISE(ABORT, 'transcript_policy_version_required'); END;
+CREATE TRIGGER IF NOT EXISTS source_transcript_policy_semantics_requires_new_version
+BEFORE UPDATE OF transcript_mode, transcript_strategy, transcript_max_items_per_run, transcript_max_bytes_per_run, transcript_timeout_budget_ms, transcript_host_qps, transcript_policy_version, topic_ids ON source
+WHEN OLD.transcript_mode <> 'off' AND NEW.transcript_mode <> 'off'
+ AND NEW.transcript_policy_version = OLD.transcript_policy_version
+ AND (OLD.transcript_mode IS NOT NEW.transcript_mode OR OLD.transcript_strategy IS NOT NEW.transcript_strategy
+      OR OLD.transcript_max_items_per_run IS NOT NEW.transcript_max_items_per_run
+      OR OLD.transcript_max_bytes_per_run IS NOT NEW.transcript_max_bytes_per_run
+      OR OLD.transcript_timeout_budget_ms IS NOT NEW.transcript_timeout_budget_ms
+      OR OLD.transcript_host_qps IS NOT NEW.transcript_host_qps OR OLD.topic_ids IS NOT NEW.topic_ids)
+BEGIN SELECT RAISE(ABORT, 'transcript_policy_version_must_change'); END;
+CREATE TRIGGER IF NOT EXISTS source_transcript_policy_version_record_insert
+AFTER INSERT ON source WHEN NEW.transcript_mode <> 'off'
+BEGIN INSERT INTO source_transcript_policy_version(source_id,transcript_policy_version,recorded_at) VALUES (NEW.id,trim(NEW.transcript_policy_version),datetime('now')); END;
+CREATE TRIGGER IF NOT EXISTS source_transcript_policy_version_record_update
+AFTER UPDATE OF transcript_mode, transcript_policy_version ON source
+WHEN NEW.transcript_mode <> 'off' AND (OLD.transcript_mode = 'off' OR NEW.transcript_policy_version IS NOT OLD.transcript_policy_version)
+BEGIN INSERT INTO source_transcript_policy_version(source_id,transcript_policy_version,recorded_at) VALUES (NEW.id,trim(NEW.transcript_policy_version),datetime('now')); END;
+
+CREATE TRIGGER IF NOT EXISTS content_item_speaker_map_guard_insert
+BEFORE INSERT ON content_item
+WHEN (NEW.body_kind = 'transcript' AND NEW.speaker_map_status NOT IN ('unknown','verified'))
+  OR (NEW.body_kind <> 'transcript' AND (NEW.speaker_map_status <> 'not_applicable' OR NEW.speaker_map_ref IS NOT NULL))
+  OR (NEW.speaker_map_status = 'verified' AND NEW.speaker_map_ref IS NULL)
+  OR (NEW.speaker_map_status <> 'verified' AND NEW.speaker_map_ref IS NOT NULL)
+BEGIN SELECT RAISE(ABORT, 'invalid_speaker_map_contract'); END;
+CREATE TRIGGER IF NOT EXISTS content_item_speaker_map_guard_update
+BEFORE UPDATE OF body_kind, speaker_map_status, speaker_map_ref ON content_item
+WHEN (NEW.body_kind = 'transcript' AND NEW.speaker_map_status NOT IN ('unknown','verified'))
+  OR (NEW.body_kind <> 'transcript' AND (NEW.speaker_map_status <> 'not_applicable' OR NEW.speaker_map_ref IS NOT NULL))
+  OR (NEW.speaker_map_status = 'verified' AND NEW.speaker_map_ref IS NULL)
+  OR (NEW.speaker_map_status <> 'verified' AND NEW.speaker_map_ref IS NOT NULL)
+BEGIN SELECT RAISE(ABORT, 'invalid_speaker_map_contract'); END;
+`;
+
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS source (
   id             TEXT PRIMARY KEY,
@@ -736,12 +868,20 @@ CREATE TABLE IF NOT EXISTS source (
   enabled        INTEGER NOT NULL DEFAULT 1,
   fetch_mode     TEXT NOT NULL DEFAULT 'feed' CHECK (fetch_mode IN ('feed','full_text')),
   content_container TEXT,
+  transcript_mode TEXT NOT NULL DEFAULT 'off' CHECK (transcript_mode IN ('off','observe','enabled')),
+  transcript_strategy TEXT NOT NULL DEFAULT 'relevant_only' CHECK (transcript_strategy IN ('all','relevant_only')),
+  transcript_max_items_per_run INTEGER NOT NULL DEFAULT 5 CHECK (transcript_max_items_per_run > 0),
+  transcript_max_bytes_per_run INTEGER NOT NULL DEFAULT 5242880 CHECK (transcript_max_bytes_per_run > 0),
+  transcript_timeout_budget_ms INTEGER NOT NULL DEFAULT 30000 CHECK (transcript_timeout_budget_ms > 0),
+  transcript_host_qps REAL NOT NULL DEFAULT 0.5 CHECK (transcript_host_qps > 0),
+  transcript_policy_version TEXT,
   disabled_reason TEXT,
   disabled_at     TEXT,
   circuit_reset_at TEXT,
   last_probe_at   TEXT,
   created_at     TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
+  updated_at     TEXT NOT NULL DEFAULT (datetime('now')),
+  CHECK (transcript_mode = 'off' OR (transcript_policy_version IS NOT NULL AND length(trim(transcript_policy_version)) > 0))
 );
 
 -- 应用用户（多账号 · 受邀只读账号）：admin 在设置页增删；密码 scrypt 哈希存储。
@@ -792,11 +932,18 @@ CREATE TABLE IF NOT EXISTS content_item (
   tags         TEXT NOT NULL DEFAULT '[]',
   body         TEXT NOT NULL,
   body_kind    TEXT NOT NULL DEFAULT 'article' CHECK (body_kind IN ('article','show_notes','transcript')),
+  speaker_map_status TEXT NOT NULL DEFAULT 'not_applicable' CHECK (speaker_map_status IN ('not_applicable','unknown','verified')),
+  speaker_map_ref TEXT,
   raw_ref      TEXT NOT NULL,
   -- External raw archives must verify before the row reaches any reader.
   reader_eligible INTEGER NOT NULL DEFAULT 1 CHECK (reader_eligible IN (0,1)),
   content_hash TEXT NOT NULL,
-  fetch_status TEXT NOT NULL CHECK (fetch_status IN ('ok','partial'))
+  fetch_status TEXT NOT NULL CHECK (fetch_status IN ('ok','partial')),
+  CHECK (
+    (body_kind = 'transcript' AND speaker_map_status IN ('unknown','verified'))
+    OR (body_kind <> 'transcript' AND speaker_map_status = 'not_applicable' AND speaker_map_ref IS NULL)
+  ),
+  CHECK (speaker_map_status <> 'verified' OR speaker_map_ref IS NOT NULL)
 );
 CREATE INDEX IF NOT EXISTS idx_content_source ON content_item(source_id);
 CREATE INDEX IF NOT EXISTS idx_content_reader_eligible ON content_item(reader_eligible, fetched_at DESC);
@@ -823,6 +970,8 @@ CREATE INDEX IF NOT EXISTS idx_run_kind   ON run(kind);
 -- → started_at 加索引避免全表排序；复合 (kind,started_at) 同时覆盖按段筛选+排序。
 CREATE INDEX IF NOT EXISTS idx_run_started      ON run(started_at);
 CREATE INDEX IF NOT EXISTS idx_run_kind_started ON run(kind, started_at);
+
+${PODCAST_TRANSCRIPT_CONTRACTS_SCHEMA_SQL}
 
 CREATE TABLE IF NOT EXISTS analysis_batch (
   id                   TEXT PRIMARY KEY,
@@ -865,6 +1014,8 @@ CREATE TABLE IF NOT EXISTS citation (
   content_item_id TEXT NOT NULL,
   citation_ref    TEXT NOT NULL DEFAULT '',
   claim           TEXT NOT NULL DEFAULT '',
+  -- NULL is a legacy/missing value. A new analyzer writes an explicit JSON status, including none.
+  speaker_attribution TEXT,
   quote           TEXT NOT NULL,
   locator         TEXT NOT NULL,
   PRIMARY KEY (insight_id, citation_index)
@@ -912,17 +1063,7 @@ WHEN NEW.insight_id IS NOT NULL
  AND NOT EXISTS (SELECT 1 FROM insight WHERE id = NEW.insight_id AND batch_id = NEW.batch_id)
 BEGIN SELECT RAISE(ABORT, 'display coverage candidate audit insight belongs to another batch'); END;
 
-CREATE TABLE IF NOT EXISTS citation_check (
-  batch_id            TEXT NOT NULL REFERENCES analysis_batch(id),
-  insight_id          TEXT NOT NULL,
-  citation_index      INTEGER NOT NULL,
-  reachability        TEXT NOT NULL CHECK (reachability IN ('pass','fail')),
-  reachability_reason TEXT NOT NULL CHECK (reachability_reason IN ('ok','source_not_found','source_unreachable','quote_not_in_source')),
-  consistency         TEXT NOT NULL CHECK (consistency IN ('support','not_support','uncertain','not_evaluated')),
-  consistency_reason  TEXT NOT NULL CHECK (consistency_reason IN ('ok','out_of_context','exaggeration','misattribution','uncertain','not_evaluated')),
-  verdict             TEXT NOT NULL CHECK (verdict IN ('pass','blocked','flagged')),
-  PRIMARY KEY (batch_id, insight_id, citation_index)
-);
+${citationCheckTableSql()}
 
 CREATE TABLE IF NOT EXISTS validation_result (
   batch_id                 TEXT PRIMARY KEY REFERENCES analysis_batch(id),

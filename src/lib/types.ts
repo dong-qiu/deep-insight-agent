@@ -9,6 +9,29 @@ export type Language = "zh" | "en" | "mixed";
  *  transcript=播客全文转写。驱动选段/校验策略与人评区分；存量与默认均为 article。 */
 export type BodyKind = "article" | "show_notes" | "transcript";
 
+/** Per-source transcript acquisition is deliberately independent from RSS availability.
+ * `observe` writes only diagnostic decisions to the production DB; sampled bodies belong in an
+ * isolated shadow DB. */
+export type TranscriptMode = "off" | "observe" | "enabled";
+export type TranscriptStrategy = "all" | "relevant_only";
+export type TranscriptDecision = "fetch" | "unknown" | "hard_negative";
+export type TranscriptExecutionScope = "production_metadata" | "shadow";
+export type TranscriptAcquisitionStage = "candidate" | "decision" | "attempt" | "terminal";
+export type TranscriptEvidenceStatus = "not_applicable" | "pending" | "verified" | "failed";
+export type TranscriptAcquisitionOutcome =
+  | "decision"
+  | "success"
+  | "no_transcript"
+  | "robots_denied"
+  | "http_error"
+  | "size_limited"
+  | "timeout"
+  | "parse_empty"
+  | "transient_error"
+  | "budget_limited"
+  | "existing_url"
+  | "not_attempted";
+
 /** 数据源配置（architecture 数据模型 · Source）。
  *  分类（领域）不在源上存——源的「域」由其 topic_ids 对应 topic 的 facets 派生（ADR-0010 Step2c 砍 industry）。 */
 export interface Source {
@@ -24,6 +47,15 @@ export interface Source {
   //  设可选以免存量 fixture 与部分构造处全部改写；缺省即旧行为）：
   fetch_mode?: "feed" | "full_text"; // feed=仅用 feed 正文；full_text=正文空/过短时按 URL 抓文章页补全
   content_container?: string | null; // 正文容器 class/id token（非 CSS 选择器），覆盖全局猜测
+  // ADR-0027：播客转写策略；全部按源默认关闭，不能因全局 TRANSCRIPT_FETCH 意外启用新源。
+  transcript_mode?: TranscriptMode;
+  transcript_strategy?: TranscriptStrategy;
+  transcript_max_items_per_run?: number;
+  transcript_max_bytes_per_run?: number;
+  transcript_timeout_budget_ms?: number;
+  transcript_host_qps?: number;
+  /** Required for a policy-aware transcript mode. Changing policy semantics requires a new value. */
+  transcript_policy_version?: string | null;
   // ADR-0008 决定② 源健康自愈（可选，DB 行总有；缺省=未熔断）：
   disabled_reason?: string | null; // 'circuit_open'=系统熔断；NULL=人工停用或正常（区分系统 vs 人工，系统永不改人工停用）
   disabled_at?: string | null; // 系统熔断时间
@@ -65,9 +97,42 @@ export interface ContentItem {
   tags: string[];
   body: string;
   body_kind: BodyKind; // 料源形态（ADR-0007）；默认 article
+  /** Transcript speaker maps fail closed: only evidence-backed maps may be verified. */
+  speaker_map_status?: "not_applicable" | "unknown" | "verified";
+  speaker_map_ref?: string | null;
   raw_ref: string;
   content_hash: string;
   fetch_status: "ok" | "partial";
+}
+
+/** Append-only observation of a single podcast candidate or transcript request. It never drives
+ * report selection, source health circuits, or the validator allow-list. */
+export interface TranscriptAcquisitionFact {
+  /** Deterministic key; use transcriptAcquisitionEventKey() before appending. */
+  event_key: string;
+  source_id: string;
+  canonical_episode_url: string;
+  candidate_hash: string;
+  transcript_policy_version: string;
+  mode: TranscriptMode;
+  strategy: TranscriptStrategy;
+  execution_scope: TranscriptExecutionScope;
+  stage: TranscriptAcquisitionStage;
+  adapter_version: string;
+  attempt: number;
+  decision: TranscriptDecision | null;
+  outcome: TranscriptAcquisitionOutcome;
+  reason_code: string | null;
+  bytes: number | null;
+  duration_ms: number | null;
+  fallback_body_kind: Exclude<BodyKind, "transcript"> | null;
+  /** Shadow samples never become production ContentItems. */
+  content_item_id: string | null;
+  /** Raw transcript evidence, when an attempted acquisition has one. */
+  raw_ref: string | null;
+  evidence_status: TranscriptEvidenceStatus;
+  run_id: string | null;
+  occurred_at: string;
 }
 
 /** 可溯源最小单位（architecture 数据模型 · Citation） */
@@ -82,6 +147,12 @@ export interface Citation {
    * 保守回退为验证完整 statement，避免旧数据被静默放宽。
    */
   claim?: string;
+  /** Required by the analyzer for transcript citations; persisted for validator fail-closed checks. */
+  speaker_attribution?: {
+    status: "none" | "unknown" | "verified";
+    speaker_id?: string;
+    source_segment?: string;
+  };
 }
 
 /** Durable evidence for the reader-facing projection. `decision` intentionally preserves the
@@ -210,6 +281,7 @@ export interface CitationCheck {
     | "out_of_context"
     | "exaggeration"
     | "misattribution"
+    | "speaker_attribution_unknown"
     | "uncertain"
     | "not_evaluated";
   verdict: "pass" | "blocked" | "flagged";

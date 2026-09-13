@@ -2,7 +2,8 @@
 import { createHash } from "node:crypto";
 import type { DB } from "./index.js";
 import { merkleRoot } from "./integrity-anchors.js";
-import { INTEGRITY_ANCHOR_HARDENING_SCHEMA_SQL, INTEGRITY_ANCHOR_IMMUTABILITY_SQL, INTEGRITY_ANCHOR_LEGACY_SCHEMA_SQL, INTEGRITY_ANCHOR_RECOVERY_SCHEMA_SQL, INTEGRITY_CHECK_KEY_REVOCATION_SCHEMA_SQL, INTEGRITY_CHECK_SCHEMA_SQL, INTEGRITY_LIFECYCLE_COMPLETION_PROOF_SCHEMA_SQL, INTEGRITY_LIFECYCLE_DAILY_ROOT_MATERIAL_BACKFILL_SQL, INTEGRITY_LIFECYCLE_EXTERNAL_HOLD_SCHEMA_SQL, INTEGRITY_LIFECYCLE_HOLD_AND_TOMBSTONE_RETENTION_SCHEMA_SQL, INTEGRITY_LIFECYCLE_HOLD_TOMBSTONE_SNAPSHOT_SCHEMA_SQL, INTEGRITY_LIFECYCLE_PURGE_SCHEMA_SQL, INTEGRITY_LIFECYCLE_REGISTRY_PROOF_SCHEMA_SQL, INTEGRITY_LIFECYCLE_SCHEMA_SQL, INTEGRITY_MAINTENANCE_LEASE_SCHEMA_SQL, P1_DASHBOARD_COST_READ_MODEL_V1_SCHEMA_SQL, P1_DASHBOARD_READ_MODEL_V1_FOLLOWUP_SQL, P1_DASHBOARD_TRACE_READ_MODEL_V1_SCHEMA_SQL, P1_METRICS_CONFLICT_AUDIT_SCHEMA_SQL, P1_METRICS_FOLLOWUP_SCHEMA_SQL, P1_METRICS_SCHEMA_SQL } from "./schema.js";
+import { INTEGRITY_ANCHOR_HARDENING_SCHEMA_SQL, INTEGRITY_ANCHOR_IMMUTABILITY_SQL, INTEGRITY_ANCHOR_LEGACY_SCHEMA_SQL, INTEGRITY_ANCHOR_RECOVERY_SCHEMA_SQL, INTEGRITY_CHECK_KEY_REVOCATION_SCHEMA_SQL, INTEGRITY_CHECK_SCHEMA_SQL, INTEGRITY_LIFECYCLE_COMPLETION_PROOF_SCHEMA_SQL, INTEGRITY_LIFECYCLE_DAILY_ROOT_MATERIAL_BACKFILL_SQL, INTEGRITY_LIFECYCLE_EXTERNAL_HOLD_SCHEMA_SQL, INTEGRITY_LIFECYCLE_HOLD_AND_TOMBSTONE_RETENTION_SCHEMA_SQL, INTEGRITY_LIFECYCLE_HOLD_TOMBSTONE_SNAPSHOT_SCHEMA_SQL, INTEGRITY_LIFECYCLE_PURGE_SCHEMA_SQL, INTEGRITY_LIFECYCLE_REGISTRY_PROOF_SCHEMA_SQL, INTEGRITY_LIFECYCLE_SCHEMA_SQL, INTEGRITY_MAINTENANCE_LEASE_SCHEMA_SQL, P1_DASHBOARD_COST_READ_MODEL_V1_SCHEMA_SQL, P1_DASHBOARD_READ_MODEL_V1_FOLLOWUP_SQL, P1_DASHBOARD_TRACE_READ_MODEL_V1_SCHEMA_SQL, P1_METRICS_CONFLICT_AUDIT_SCHEMA_SQL, P1_METRICS_FOLLOWUP_SCHEMA_SQL, P1_METRICS_SCHEMA_SQL, PODCAST_TRANSCRIPT_POLICY_VERSION_IMMUTABILITY_SQL } from "./schema.js";
+import { migratePodcastTranscriptContracts } from "./podcast-transcript-migrations.js";
 
 const CORE_SQL = `
 ALTER TABLE run ADD COLUMN trace_id TEXT;
@@ -342,6 +343,7 @@ CREATE INDEX IF NOT EXISTS idx_analysis_batch_display_projection ON analysis_bat
 const RAW_ARCHIVE_EFFECT_SQL = "generation_effect raw_archive durable effect v1";
 const CONTENT_READER_ELIGIBILITY_SQL = "content_item reader eligibility v1";
 const PENDING_RAW_ARCHIVE_ELIGIBILITY_SQL = "content_item pending raw archive reader eligibility v1";
+const PODCAST_TRANSCRIPT_CONTRACTS_SQL = "podcast transcript contracts v1";
 
 const MIGRATIONS = [
   { version: "20260803_01_provenance_core", sql: CORE_SQL },
@@ -403,6 +405,8 @@ DELETE FROM dashboard_cost_fact_v1 WHERE tenant_id='default' AND EXISTS (
   { version: "20260910_40_raw_archive_effect", sql: RAW_ARCHIVE_EFFECT_SQL },
   { version: "20260911_41_content_reader_eligibility", sql: CONTENT_READER_ELIGIBILITY_SQL },
   { version: "20260911_42_pending_raw_archive_reader_eligibility", sql: PENDING_RAW_ARCHIVE_ELIGIBILITY_SQL },
+  { version: "20260913_43_podcast_transcript_contracts", sql: PODCAST_TRANSCRIPT_CONTRACTS_SQL },
+  { version: "20260913_44_podcast_transcript_policy_version_immutability", sql: PODCAST_TRANSCRIPT_POLICY_VERSION_IMMUTABILITY_SQL },
 ];
 
 function hasColumn(db: DB, table: string, column: string): boolean {
@@ -600,6 +604,10 @@ export function applyProvenanceMigrations(db: DB): void {
             WHERE effect.kind='raw_archive' AND effect.raw_content_id=content_item.id
               AND effect.status IN ('planned','attempted','unknown')
           )`);
+      } else if (migration.version === "20260913_43_podcast_transcript_contracts") {
+        migratePodcastTranscriptContracts(db, { includePolicyVersionImmutability: false });
+      } else if (migration.version === "20260913_44_podcast_transcript_policy_version_immutability") {
+        db.exec(migration.sql);
       } else if (migration.version === "20260825_31_integrity_daily_root_material_backfill") {
         backfillDailyRootMaterial(db);
       } else if (migration.version === "20260817_09_bounded_provenance_views" || migration.version === "20260817_10_bounded_provenance_view_index_fix" || migration.version === "20260820_11_effect_event_link" || migration.version === "20260823_12_source_credit_facts" || migration.version === "20260823_14_p1_metric_facts" || migration.version === "20260823_15_p1_metric_fact_contracts" || migration.version === "20260823_16_p1_metric_conflict_audit" || migration.version === "20260823_17_integrity_anchors" || migration.version === "20260823_18_integrity_anchor_immutability" || migration.version === "20260824_19_integrity_anchor_recovery_material" || migration.version === "20260824_20_integrity_anchor_hardening" || migration.version === "20260824_21_integrity_anchor_tenant_reconcile_index" || migration.version === "20260824_22_integrity_check_ledger" || migration.version === "20260824_23_integrity_check_key_revocation" || migration.version === "20260824_24_integrity_lifecycle" || migration.version === "20260824_25_integrity_lifecycle_purge" || migration.version === "20260825_26_integrity_lifecycle_completion_proof" || migration.version === "20260825_27_integrity_lifecycle_registry_proof" || migration.version === "20260825_28_integrity_lifecycle_hold_and_tombstone_retention" || migration.version === "20260825_29_integrity_lifecycle_hold_tombstone_snapshot" || migration.version === "20260825_30_integrity_lifecycle_external_hold" || migration.version === "20260825_32_integrity_maintenance_lease" || migration.version === "20260826_33_dashboard_trace_read_model_v1" || migration.version === "20260826_34_dashboard_cost_read_model_v1" || migration.version === "20260828_35_dashboard_late_visibility_and_dimensions") {

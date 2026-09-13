@@ -241,6 +241,20 @@ defaultSources:
     topic_ids: [t_code_agents]
     fetch_interval: 24h
     enabled: true
+    # ADR-0027 target state: this desired policy becomes an acquisition gate only with the
+    # policy-aware collector introduced by the following shadow-collection PR.
+    transcript_mode: off
+  - id: src_chain_of_thought
+    name: Chain of Thought（播客 · 转写）
+    type: rss
+    endpoint: https://feeds.transistor.fm/chain-of-thought
+    topic_ids: [t_code_agents]
+    fetch_interval: 24h
+    # 候选源先不进入生产 RSS 管线；待 shadow 收集器、评测和逐源白名单齐备后再启用。
+    enabled: false
+    # 官方 RSS 提供 Podcasting 2.0 text/plain transcript；禁止由旧全局开关提前抓取。
+    transcript_mode: off
+    transcript_strategy: all
   - id: src_practical_ai
     name: Practical AI（播客 · 转写）
     type: rss

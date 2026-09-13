@@ -35,7 +35,7 @@ function alertIfQuarantined(db: DB, kind: FactKind, id: string, occurredAt: stri
   if (isMetricLateEvent(db, kind, id)) notifyMetricLateFact({ factKind: kind, eventId: id, occurredAt });
 }
 function cents(cost: Cost): number { return Math.max(0, Math.round(cost.amount * 100)); }
-function checkReason(check: ValidationResult["checks"][number]): "source_not_found" | "source_unreachable" | "quote_not_in_source" | "out_of_context" | "exaggeration" | "misattribution" | "uncertain" | "not_evaluated" | "internal_error" {
+function checkReason(check: ValidationResult["checks"][number]): "source_not_found" | "source_unreachable" | "quote_not_in_source" | "out_of_context" | "exaggeration" | "misattribution" | "speaker_attribution_unknown" | "uncertain" | "not_evaluated" | "internal_error" {
   if (check.reachability_reason !== "ok") return check.reachability_reason;
   if (check.consistency_reason !== "ok") return check.consistency_reason === "not_evaluated" ? "internal_error" : check.consistency_reason;
   return "not_evaluated";

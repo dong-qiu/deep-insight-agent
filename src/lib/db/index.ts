@@ -11,7 +11,8 @@ import { assertProvenanceSchema } from "./provenance-migrations.js";
 import { assertDeploymentIdentity } from "./deployment.js";
 import { reconcileReportEffects } from "./reports.js";
 import { reconcileRawArchiveEffects } from "./raw-archive.js";
-import { SCHEMA_SQL } from "./schema.js";
+import { migratePodcastTranscriptContracts } from "./podcast-transcript-migrations.js";
+import { PODCAST_TRANSCRIPT_POLICY_VERSION_IMMUTABILITY_SQL, SCHEMA_SQL } from "./schema.js";
 
 export type DB = Database.Database;
 
@@ -24,6 +25,7 @@ export function openDb(path: string, opts: { bootstrap?: boolean } = {}): DB {
   const db = new Database(path);
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
+  const freshDatabase = !tableExists(db, "source");
   // 多写者（并行 worktree/容器共享同一卷、或 cron+web 同进程外）抢锁时，
   // 默认会立刻抛 SQLITE_BUSY；改为最多等 5s 让写串行化，而非直接失败。
   db.pragma("busy_timeout = 5000");
@@ -34,6 +36,9 @@ export function openDb(path: string, opts: { bootstrap?: boolean } = {}): DB {
     if (tableExists(db, "content_item")) migrate(db);
     db.exec(SCHEMA_SQL);
     migrate(db);
+    // A new local database has no migration ledger yet. Existing databases receive this v44
+    // contract only through the immutable provenance runner, never through schema replay.
+    if (freshDatabase) db.exec(PODCAST_TRANSCRIPT_POLICY_VERSION_IMMUTABILITY_SQL);
   }
   // review follow-up #1：进程重启后清扫上一次跑到一半被 SIGTERM 杀掉的孤儿 Run。
   // 单例 DB 第一次创建时触发；测试用 :memory: 时此操作 no-op（无 running Run 可清）。
@@ -144,6 +149,7 @@ function migrate(db: DB): void {
     "fetch_mode TEXT NOT NULL DEFAULT 'feed' CHECK (fetch_mode IN ('feed','full_text'))",
   );
   ensureColumn(db, "source", "content_container", "content_container TEXT");
+  migratePodcastTranscriptContracts(db);
   // 技术规划工作台：旧方向从 version=1 起；映射词表变更只标 stale，不会改写人工决策。
   ensureColumn(db, "topic_direction", "version", "version INTEGER NOT NULL DEFAULT 1");
   ensureColumn(db, "technology_opportunity", "mapping_state", "mapping_state TEXT NOT NULL DEFAULT 'current' CHECK (mapping_state IN ('current','stale'))");

@@ -50,6 +50,18 @@ describe("loadStaticConfig + 播种 + 合并", () => {
     });
   });
 
+  it("将 Chain of Thought 以逐源关闭的 transcript 策略播种", () => {
+    const cfg = loadStaticConfig();
+    const source = cfg.defaultSources.find((candidate) => candidate.id === "src_chain_of_thought");
+    expect(source).toMatchObject({
+      endpoint: "https://feeds.transistor.fm/chain-of-thought", topic_ids: ["t_code_agents"],
+      transcript_mode: "off", transcript_strategy: "all", enabled: false,
+    });
+    seedDefaults(db, cfg);
+    expect(db.prepare("SELECT transcript_mode,transcript_strategy FROM source WHERE id=?").get("src_chain_of_thought"))
+      .toEqual({ transcript_mode: "off", transcript_strategy: "all" });
+  });
+
   it("将新增的 AI-SWE 官方来源保持为逐源启用前的 staged 候选", () => {
     const cfg = loadStaticConfig();
     const expected = [
