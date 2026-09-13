@@ -1,7 +1,7 @@
 /** collector —— 数据采集 agent（architecture 数据流第 1 步）。
  *  按 Source 抓取 → 归一化 ContentItem → 去重 → 存档原文 → 落库；统一经 Job Runner 记一条 ingest Run
  *  （与 analyze/validate/report-gen 一致：单调时钟耗时 + 失败捕获 + 可重试）。 */
-import { getContentByUrl, getPendingOrEligibleContentItem, insertContentItem, setRunInserted, updateContentItem } from "../db/repos.js";
+import { appendTranscriptAcquisitionFact, getContentByUrl, getPendingOrEligibleContentItem, insertContentItem, listTopics, setRunInserted, transcriptAcquisitionEventKey, updateContentItem } from "../db/repos.js";
 import type { DB } from "../db/index.js";
 import { markRawArchiveUnknown, planRawArchive, writePlannedRawArchive } from "../db/raw-archive.js";
 import {
@@ -15,11 +15,15 @@ import { appendGenerationEvent, captureRevision, entityKey, type EntityRef } fro
 import { contentItemRef, contentItemRevisionSnapshot, sourceConfigRef, sourceConfigSnapshot } from "../db/provenance-revisions.js";
 import { NOOP_P1_TELEMETRY_SINK, type P1TelemetrySink } from "../capabilities/p1-telemetry.js";
 import { runJob } from "../runtime/jobs.js";
-import type { Source } from "../types.js";
+import type { Source, TranscriptAcquisitionFact } from "../types.js";
 import { articleFetchEnabled, articleFetchKilled, fetchArticle } from "../sources/article.js";
 import { fetchFromSource } from "../sources/index.js";
 import { normalizeUrl, rawToContentItem } from "../sources/normalize.js";
+import { screenPodcastCandidate } from "../sources/podcast-screening.js";
+import { transcriptFetchEnabled } from "../sources/rss.js";
 import type { RawItem } from "../sources/types.js";
+import { runPodcastTranscriptShadow } from "./podcast-shadow.js";
+import { createPodcastShadowStore, transcriptShadowFetchEnabled } from "./podcast-shadow-store.js";
 
 export interface CollectResult {
   runId: string;
@@ -56,6 +60,62 @@ function rawArchiveEnvelope(
     structured_body_sha256: item.content_hash,
   })}\n`;
 }
+
+const PODCAST_TRANSCRIPT_ADAPTER_VERSION = "rss-podcast-transcript-v1";
+
+/** Acquisition facts are diagnostic metadata. A failed fact write must not change the normal RSS
+ * collection, reader eligibility, or report path. */
+function recordTranscriptFact(db: DB, fact: Omit<TranscriptAcquisitionFact, "event_key">): void {
+  try {
+    appendTranscriptAcquisitionFact(db, { ...fact, event_key: transcriptAcquisitionEventKey(fact) });
+  } catch (error) {
+    console.warn(`[transcript-acquisition] diagnostic fact not recorded: ${error instanceof Error ? error.message : "unknown_error"}`);
+  }
+}
+
+function recordPodcastMetadataFacts(input: {
+  db: DB;
+  source: Source;
+  raw: RawItem;
+  runId: string;
+  topics: ReturnType<typeof listTopics>;
+  occurredAt: string;
+}): void {
+  const mode = input.source.transcript_mode ?? "off";
+  const policyVersion = input.source.transcript_policy_version?.trim();
+  if (mode === "off" || !policyVersion || !input.raw.is_podcast_episode) return;
+
+  const decision = screenPodcastCandidate(input.raw, input.topics);
+  const fallbackBodyKind: TranscriptAcquisitionFact["fallback_body_kind"] = input.raw.body.trim()
+    ? (input.raw.body_kind === "show_notes" ? "show_notes" : "article")
+    : null;
+  const common = {
+    source_id: input.source.id,
+    canonical_episode_url: input.raw.url,
+    candidate_hash: decision.candidate_hash,
+    transcript_policy_version: policyVersion,
+    mode,
+    strategy: input.source.transcript_strategy ?? "relevant_only",
+    execution_scope: "production_metadata" as const,
+    adapter_version: `${PODCAST_TRANSCRIPT_ADAPTER_VERSION}+${decision.policy_version}`,
+    decision: decision.decision,
+    bytes: null,
+    duration_ms: null,
+    fallback_body_kind: fallbackBodyKind,
+    content_item_id: null,
+    raw_ref: null,
+    evidence_status: "not_applicable" as const,
+    run_id: input.runId,
+    occurred_at: input.occurredAt,
+  };
+  recordTranscriptFact(input.db, {
+    ...common, stage: "candidate", attempt: 0, outcome: "not_attempted", reason_code: "podcast_metadata",
+  });
+  recordTranscriptFact(input.db, {
+    ...common, stage: "decision", attempt: 0, outcome: "decision", reason_code: decision.reason_code,
+  });
+}
+
 export async function collectSource(
   db: DB,
   source: Source,
@@ -141,21 +201,25 @@ export async function collectSource(
     let skipped = 0;
     let articleFetches = 0; // 本轮已抓全文条数（绑首轮全量回填的串行规模，剩余留下轮）
     const articleBudget = articleFetchMaxPerRun();
+    const transcriptMode = source.transcript_mode ?? "off";
+    const sourceTopics = transcriptMode === "off"
+      ? []
+      : listTopics(db, { enabledOnly: true }).filter((topic) => source.topic_ids.includes(topic.id));
     for (const raw of raws) {
       // full_text only accepts a page-derived body for a new URL. In particular, an emergency fetch
       // kill must not overwrite an already-complete article with the feed summary.
-      if (source.fetch_mode === "full_text" && getContentByUrl(db, normalizeUrl(raw.url))) {
+      if (!raw.is_podcast_episode && source.fetch_mode === "full_text" && getContentByUrl(db, normalizeUrl(raw.url))) {
         skipped++;
         continue;
       }
       // full_text 是完整性承诺，而不是 RSS 摘要长度的启发式：每个新 URL 都必须抓文章页。
       // feed 源（默认）仍只在正文为空且 legacy 开关开启时补抓，保持历史行为。
       const bodyLen = raw.body.trim().length;
-      const wantFullText =
+      const wantFullText = !raw.is_podcast_episode && (
         source.fetch_mode === "full_text"
           ? !articleFetchKilled()
-          : bodyLen === 0 && articleFetchEnabled();
-      let fullTextComplete = source.fetch_mode !== "full_text";
+          : bodyLen === 0 && articleFetchEnabled());
+      let fullTextComplete = source.fetch_mode !== "full_text" || raw.is_podcast_episode;
       let bodyOrigin: RawBodyOrigin = raw.body_kind === "transcript" ? "transcript" : "feed";
       let articleHtml: string | null = null;
       if (wantFullText) {
@@ -176,6 +240,9 @@ export async function collectSource(
         }
         // full_text 抓失败：保留 feed 摘要时必须标 partial；空摘要继续在下方丢弃。
       }
+      // Facts remain visible even when a podcast entry has no show notes and therefore does not
+      // become a ContentItem. They are diagnostics only and cannot influence the RSS run.
+      recordPodcastMetadataFacts({ db, source, raw, runId: ctx.runId, topics: sourceTopics, occurredAt: fetchedAt });
       if (!raw.body.trim()) {
         skipped++; // 仍空（feed 模式空正文 / 全文抓取失败且原本就空）→ 不产出条目
         continue;
@@ -239,6 +306,20 @@ export async function collectSource(
       telemetry.recordCollector(db, { run_id: ctx.runId, item: persistedItem });
       if (existing) updated++;
       else inserted++;
+    }
+    // Observe samples use a separate SQLite/archive. Any shadow error is diagnostic; it can
+    // never fail or mutate the production RSS collection.
+    if (!opts.probe && transcriptMode === "observe" && transcriptFetchEnabled() && transcriptShadowFetchEnabled()) {
+      try {
+        const shadow = createPodcastShadowStore(source);
+        try {
+          await runPodcastTranscriptShadow({ source, raws, topics: sourceTopics, sink: shadow.sink });
+        } finally {
+          shadow.close();
+        }
+      } catch (error) {
+        console.warn(`[transcript-shadow] source=${source.id} sample failed: ${error instanceof Error ? error.message : "unknown_error"}`);
+      }
     }
     if (!opts.probe) {
       assertWrite();

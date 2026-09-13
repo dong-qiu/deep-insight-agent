@@ -7,6 +7,8 @@ export interface LocalEvalBuildOptions {
   requiredSourceIds: string[];
   /** A fixed source pair per topic prevents a shared route from starving a later v2 topic. */
   requiredSourceIdsByTopic?: Record<string, readonly string[]>;
+  /** A transcript cohort must not silently admit show-notes/article fallbacks. */
+  bodyKind?: ContentItem["body_kind"];
   minimumSources: number;
 }
 
@@ -94,6 +96,7 @@ export function buildLocalEvalCases(
     const pool = contentForTopic(topic.id)
       .filter((item) => item.fetch_status === "ok" && Boolean(item.raw_ref.trim()))
       .filter((item) => item.body.length >= options.minBody)
+      .filter((item) => !options.bodyKind || item.body_kind === options.bodyKind)
       .filter((item) => !fixedPair || fixedPair.includes(item.source_id));
     for (const item of pool) {
       if (required.has(item.source_id)) cohort[item.source_id].eligible++;

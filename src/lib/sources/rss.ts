@@ -4,10 +4,20 @@ import { extractCiteTranscript, extractHtmlTranscript, stripTranscript } from ".
 import { stableEvidenceUrl } from "./podcast-evidence.js";
 import { UA, fetchRobots, isAllowed } from "./robots.js";
 import { MAX_RESPONSE_BYTES, ResponseSizeLimitError, fetchWithRetry, readTextCapped, safeFetch } from "./safe-fetch.js";
-import type { RawItem } from "./types.js";
-import type { TranscriptFetchResult } from "./types.js";
+import type { PodcastProgramPageFetchResult, RawItem, TranscriptFetchResult } from "./types.js";
 import { asArray, text, xml } from "./xml.js";
 
+/** Thrown by a source-level request gate once its shared acquisition deadline is exhausted. */
+export class PodcastRequestBudgetError extends Error {
+  constructor() { super("podcast_request_budget_exhausted"); this.name = "PodcastRequestBudgetError"; }
+}
+
+type PodcastFetchOptions = {
+  maxBytes?: number;
+  timeoutMs?: number;
+  /** Applied before both robots and payload transport by policy-aware callers. */
+  beforeRequest?: (url: string) => Promise<void>;
+};
 
 /** <podcast:transcript> 格式优先级：纯文本 > HTML > 字幕（vtt/srt）；未知 MIME 排最后。 */
 const TRANSCRIPT_MIME_RANK: Record<string, number> = {
@@ -28,6 +38,21 @@ function pickTranscriptUrl(node: any): string | undefined {
   if (!tags.length) return undefined;
   tags.sort((a, b) => mimeRank(a["@_type"]) - mimeRank(b["@_type"]));
   return text(tags[0]["@_url"]) || undefined;
+}
+
+/** Podcast classification relies exclusively on feed metadata. Newsletter RSS entries may have
+ * long bodies or links, but remain generic articles unless a podcast namespace/iTunes marker or
+ * an audio enclosure is present. */
+function isPodcastEpisode(item: any, links: any[] = []): boolean {
+  if (item["podcast:transcript"] || item["itunes:episode"] !== undefined || item["itunes:duration"] !== undefined
+    || item["itunes:season"] !== undefined || item["itunes:explicit"] !== undefined || item["itunes:episodeType"] !== undefined) return true;
+  const enclosures = [...asArray<any>(item.enclosure), ...links.filter((link) => link?.["@_rel"] === "enclosure")];
+  return enclosures.some((entry) => /^audio\//i.test(String(entry?.["@_type"] ?? entry?.type ?? "")));
+}
+
+function podcastEpisodeType(item: any): "full" | "trailer" | "bonus" | undefined {
+  const value = text(item["itunes:episodeType"]).trim().toLowerCase();
+  return value === "full" || value === "trailer" || value === "bonus" ? value : undefined;
 }
 
 /** 把条目 URL 按 feed base 归一为绝对 URL（ADR-0008 决定⑤）：部分 feed 给**相对** link（如 `/post/1`），
@@ -104,15 +129,20 @@ export function parseRss(feedXml: string, baseUrl?: string): RawItem[] {
 
   // RSS 2.0
   if (doc?.rss?.channel) {
-    return asArray<any>(doc.rss.channel.item).map((it): RawItem => ({
+    return asArray<any>(doc.rss.channel.item).map((it): RawItem => {
+      const podcastEpisode = isPodcastEpisode(it);
+      const episodeType = podcastEpisodeType(it);
+      return {
       url: itemUrl(it, baseUrl),
       title: text(it.title).replace(/\s+/g, " ").trim(),
       author: it.author ? text(it.author) : it["dc:creator"] ? text(it["dc:creator"]) : null,
       published_at: it.pubDate ? text(it.pubDate) : null,
       body: text(it["content:encoded"] ?? it.description).trim(),
+      ...(podcastEpisode ? { body_kind: "show_notes" as const, is_podcast_episode: true, ...(episodeType ? { podcast_episode_type: episodeType } : {}) } : {}),
       transcript_url: pickTranscriptUrl(it["podcast:transcript"]),
       raw: JSON.stringify(it),
-    }));
+      };
+    });
   }
 
   // Atom
@@ -120,12 +150,15 @@ export function parseRss(feedXml: string, baseUrl?: string): RawItem[] {
     return asArray<any>(doc.feed.entry).map((e): RawItem => {
       const links = asArray<any>(e.link);
       const alt = links.find((l) => l["@_rel"] === "alternate")?.["@_href"] ?? links[0]?.["@_href"];
+      const podcastEpisode = isPodcastEpisode(e, links);
+      const episodeType = podcastEpisodeType(e);
       return {
         url: resolveUrl(text(alt), baseUrl) || text(e.id),
         title: text(e.title).replace(/\s+/g, " ").trim(),
         author: e.author ? text(asArray<any>(e.author)[0]?.name ?? e.author) || null : null,
         published_at: text(e.published || e.updated) || null,
         body: text(e.content ?? e.summary).trim(),
+        ...(podcastEpisode ? { body_kind: "show_notes" as const, is_podcast_episode: true, ...(episodeType ? { podcast_episode_type: episodeType } : {}) } : {}),
         transcript_url: pickTranscriptUrl(e["podcast:transcript"]),
         raw: JSON.stringify(e),
       };
@@ -167,18 +200,20 @@ export async function fetchRss(source: Source): Promise<RawItem[]> {
  *  不调用它，后续 policy-aware acquisition/shadow worker 会在所有采集门通过后接入。 */
 export async function fetchTranscript(
   url: string,
-  opts: { maxBytes?: number; timeoutMs?: number } = {},
+  opts: PodcastFetchOptions = {},
 ): Promise<TranscriptFetchResult> {
   const started = Date.now();
+  const deadline = started + (opts.timeoutMs ?? 15_000);
+  const remaining = () => Math.max(1, deadline - Date.now());
   let stableUrl = "";
   try {
     stableUrl = stableEvidenceUrl(url);
     const { origin, pathname } = new URL(url);
-    const rules = await fetchRobots(origin);
+    const rules = await fetchRobots(origin, UA, { timeoutMs: remaining(), beforeRequest: opts.beforeRequest });
     if (!isAllowed(rules, pathname)) {
       return { outcome: "robots_denied", stable_url: stableUrl, bytes: null, duration_ms: Date.now() - started, reason_code: "robots_denied" };
     }
-    const res = await safeFetch(url, { headers: { "user-agent": UA }, timeoutMs: opts.timeoutMs });
+    const res = await safeFetch(url, { headers: { "user-agent": UA }, timeoutMs: remaining(), beforeRequest: opts.beforeRequest });
     if (!res.ok) {
       return { outcome: "http_error", stable_url: stableUrl, bytes: null, duration_ms: Date.now() - started, reason_code: `http_${res.status}` };
     }
@@ -201,11 +236,53 @@ export async function fetchTranscript(
   } catch (error) {
     // Keep categories stable for acquisition facts; error messages are not a durable API.
     const outcome = error instanceof ResponseSizeLimitError ? "size_limited"
+      : error instanceof PodcastRequestBudgetError ? "timeout"
       : error instanceof DOMException && (error.name === "AbortError" || error.name === "TimeoutError")
         ? "timeout" : "transient_error";
     return {
-      outcome, stable_url: stableUrl ?? "", bytes: null, duration_ms: Date.now() - started,
-      reason_code: outcome === "size_limited" ? "response_size_limit" : outcome === "timeout" ? "request_timeout" : "request_error",
+      outcome, stable_url: stableUrl ?? "", bytes: error instanceof ResponseSizeLimitError ? error.bytesRead : null, duration_ms: Date.now() - started,
+      reason_code: outcome === "size_limited" ? "response_size_limit" : error instanceof PodcastRequestBudgetError
+        ? "source_timeout_budget_exhausted" : outcome === "timeout" ? "request_timeout" : "request_error",
+    };
+  }
+}
+
+/** Fetch the public episode/program page as evidence, independently applying robots, SSRF and
+ * streaming limits. A transcript sample is evidence-complete only when this succeeds too. */
+export async function fetchPodcastProgramPage(
+  url: string,
+  opts: PodcastFetchOptions = {},
+): Promise<PodcastProgramPageFetchResult> {
+  const started = Date.now();
+  const deadline = started + (opts.timeoutMs ?? 15_000);
+  const remaining = () => Math.max(1, deadline - Date.now());
+  let stableUrl = "";
+  try {
+    stableUrl = stableEvidenceUrl(url);
+    const { origin, pathname } = new URL(url);
+    const rules = await fetchRobots(origin, UA, { timeoutMs: remaining(), beforeRequest: opts.beforeRequest });
+    if (!isAllowed(rules, pathname)) {
+      return { outcome: "robots_denied", stable_url: stableUrl, bytes: null, duration_ms: Date.now() - started, reason_code: "robots_denied" };
+    }
+    const res = await safeFetch(url, { headers: { "user-agent": UA }, timeoutMs: remaining(), beforeRequest: opts.beforeRequest });
+    if (!res.ok) {
+      return { outcome: "http_error", stable_url: stableUrl, bytes: null, duration_ms: Date.now() - started, reason_code: `http_${res.status}` };
+    }
+    const raw = await readTextCapped(res, opts.maxBytes ?? MAX_RESPONSE_BYTES);
+    return {
+      outcome: "success", stable_url: stableUrl, raw_payload: raw,
+      bytes: Buffer.byteLength(raw, "utf8"), duration_ms: Date.now() - started,
+      content_type: res.headers?.get("content-type") ?? null,
+    };
+  } catch (error) {
+    const outcome = error instanceof ResponseSizeLimitError ? "size_limited"
+      : error instanceof PodcastRequestBudgetError ? "timeout"
+      : error instanceof DOMException && (error.name === "AbortError" || error.name === "TimeoutError")
+        ? "timeout" : "transient_error";
+    return {
+      outcome, stable_url: stableUrl, bytes: error instanceof ResponseSizeLimitError ? error.bytesRead : null, duration_ms: Date.now() - started,
+      reason_code: outcome === "size_limited" ? "response_size_limit" : error instanceof PodcastRequestBudgetError
+        ? "source_timeout_budget_exhausted" : outcome === "timeout" ? "request_timeout" : "request_error",
     };
   }
 }

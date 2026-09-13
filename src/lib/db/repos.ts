@@ -171,8 +171,10 @@ function assertTranscriptAcquisitionFact(fact: TranscriptAcquisitionFact): void 
   }
 }
 
-/** Transcript diagnostics are idempotent observations. A conflicting replay is retained in its
- * own append-only table and rejected instead of silently overwriting the original evidence. */
+/** Transcript diagnostics are idempotent observations. `run_id` and `occurred_at` describe the
+ * delivery attempt rather than the immutable acquisition stage, so they are deliberately outside
+ * the semantic hash. A conflicting replay is retained in its own append-only table instead of
+ * silently overwriting the original evidence. */
 export function appendTranscriptAcquisitionFact(
   db: DB,
   fact: TranscriptAcquisitionFact,
@@ -189,7 +191,6 @@ export function appendTranscriptAcquisitionFact(
     decision: fact.decision, outcome: fact.outcome, reason_code: fact.reason_code, bytes: fact.bytes,
     duration_ms: fact.duration_ms, fallback_body_kind: fact.fallback_body_kind,
     content_item_id: fact.content_item_id, raw_ref: fact.raw_ref, evidence_status: fact.evidence_status,
-    run_id: fact.run_id, occurred_at: fact.occurred_at,
   });
   const existing = db.prepare("SELECT semantic_payload_hash FROM transcript_acquisition_fact WHERE event_key=?").get(fact.event_key) as
     | { semantic_payload_hash: string }

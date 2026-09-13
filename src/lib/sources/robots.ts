@@ -62,12 +62,22 @@ export function rulesForStatus(status: number, body: string, ua: string = UA): R
   return { disallow: [] };
 }
 
-export async function fetchRobots(origin: string, ua: string = UA): Promise<RobotsRules> {
+/** `beforeRequest` lets a source-level acquisition policy apply the same QPS/deadline gate to
+ * robots transport and content transport. Existing callers retain the safe default behavior. */
+export async function fetchRobots(
+  origin: string,
+  ua: string = UA,
+  opts: { timeoutMs?: number; beforeRequest?: (url: string) => Promise<void> } = {},
+): Promise<RobotsRules> {
+  const robotsUrl = new URL("/robots.txt", origin).toString();
   try {
-    const res = await safeFetch(new URL("/robots.txt", origin).toString(), { headers: { "user-agent": ua } });
+    const res = await safeFetch(robotsUrl, { headers: { "user-agent": ua }, timeoutMs: opts.timeoutMs, beforeRequest: opts.beforeRequest });
     const body = res.ok ? await res.text() : "";
     return rulesForStatus(res.status, body, ua);
-  } catch {
+  } catch (error) {
+    // A policy gate denial is intentional control flow, not an unavailable robots endpoint. It
+    // must reach the structured podcast outcome instead of falling through as fail-open rules.
+    if (error instanceof Error && error.name === "PodcastRequestBudgetError") throw error;
     return { disallow: [] }; // 网络不可达：瞬时错误不永久阻断（保守放行），记录留后续
   }
 }

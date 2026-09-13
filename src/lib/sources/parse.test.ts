@@ -225,4 +225,11 @@ describe("parseRss", () => {
 </channel></rss>`;
     expect(parseRss(feed)[0].transcript_url).toBeUndefined();
   });
+
+  it("标准 itunes:episodeType 作为播客元数据保留给确定性预筛", () => {
+    const feed = `<?xml version="1.0"?><rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd"><channel>
+      <item><title>Preview</title><link>https://p/preview</link><description>notes</description><itunes:episodeType>trailer</itunes:episodeType></item>
+    </channel></rss>`;
+    expect(parseRss(feed)[0]).toMatchObject({ is_podcast_episode: true, body_kind: "show_notes", podcast_episode_type: "trailer" });
+  });
 });

@@ -116,6 +116,9 @@ it("transcript acquisition fact 使用确定性 event_key 幂等重放，冲突�
   const fact = { ...factInput, event_key: transcriptAcquisitionEventKey(factInput) };
   expect(appendTranscriptAcquisitionFact(db, fact)).toEqual({ replayed: false });
   expect(appendTranscriptAcquisitionFact(db, fact)).toEqual({ replayed: true });
+  expect(appendTranscriptAcquisitionFact(db, {
+    ...fact, run_id: "run_later", occurred_at: "2026-09-14T00:00:00.000Z",
+  })).toEqual({ replayed: true });
   expect(() => appendTranscriptAcquisitionFact(db, { ...fact, reason_code: "different_decision" })).toThrow("transcript_acquisition_idempotency_conflict");
   expect(db.prepare("SELECT COUNT(*) AS n FROM transcript_acquisition_conflict WHERE event_key=?").get(fact.event_key)).toEqual({ n: 1 });
   expect(() => db.prepare("DELETE FROM transcript_acquisition_fact WHERE event_key=?").run(fact.event_key)).toThrow("append-only");
