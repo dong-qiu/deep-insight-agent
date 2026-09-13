@@ -22,6 +22,49 @@ describe("provenance migration runner", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  it("archives the incompatible pre-contract transcript fact tables before creating v43 indexes", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ia-podcast-fact-legacy-"));
+    const path = join(dir, "insight.db");
+    const legacy = openDb(path);
+    legacy.exec(`DROP TRIGGER transcript_acquisition_fact_no_update;
+      DROP TRIGGER transcript_acquisition_fact_no_delete;
+      DROP TRIGGER transcript_acquisition_fact_mode_guard_insert;
+      DROP TRIGGER transcript_acquisition_conflict_no_update;
+      DROP TRIGGER transcript_acquisition_conflict_no_delete;
+      DROP INDEX idx_transcript_acquisition_source_time;
+      DROP INDEX idx_transcript_acquisition_episode;
+      DROP INDEX idx_transcript_acquisition_conflict_event;
+      DROP TABLE transcript_acquisition_conflict;
+      DROP TABLE transcript_acquisition_fact;
+      CREATE TABLE transcript_acquisition_fact (
+        id TEXT PRIMARY KEY, source_id TEXT NOT NULL, episode_url TEXT NOT NULL, candidate_hash TEXT NOT NULL,
+        policy_version TEXT NOT NULL, adapter_version TEXT NOT NULL, attempt INTEGER NOT NULL, decision TEXT,
+        outcome TEXT NOT NULL, reason_code TEXT, bytes INTEGER, duration_ms INTEGER, fallback_body_kind TEXT,
+        content_item_id TEXT, occurred_at TEXT NOT NULL, semantic_payload_hash TEXT NOT NULL
+      );
+      CREATE INDEX idx_transcript_acquisition_source_time ON transcript_acquisition_fact(source_id, occurred_at DESC);
+      CREATE INDEX idx_transcript_acquisition_episode ON transcript_acquisition_fact(source_id, episode_url, attempt);
+      CREATE TRIGGER transcript_acquisition_fact_no_update BEFORE UPDATE ON transcript_acquisition_fact BEGIN SELECT RAISE(ABORT, 'legacy append-only'); END;
+      CREATE TABLE transcript_acquisition_conflict (id TEXT PRIMARY KEY, event_id TEXT NOT NULL, existing_semantic_payload_hash TEXT NOT NULL, received_semantic_payload_hash TEXT NOT NULL, observed_at TEXT NOT NULL);
+      CREATE TRIGGER transcript_acquisition_conflict_no_update BEFORE UPDATE ON transcript_acquisition_conflict BEGIN SELECT RAISE(ABORT, 'legacy append-only'); END;`);
+    legacy.prepare(`INSERT INTO transcript_acquisition_fact
+      (id,source_id,episode_url,candidate_hash,policy_version,adapter_version,attempt,outcome,occurred_at,semantic_payload_hash)
+      VALUES ('legacy_fact','source','https://pod.example/ep','candidate','old-v1','rss-v1',0,'decision','2026-09-13T00:00:00.000Z','hash')`).run();
+    legacy.close();
+
+    const upgraded = openDb(path);
+    expect((upgraded.prepare("PRAGMA table_info(transcript_acquisition_fact)").all() as { name: string }[])
+      .some((column) => column.name === "event_key")).toBe(true);
+    expect(upgraded.prepare("SELECT COUNT(*) AS n FROM transcript_acquisition_fact_legacy_v1").get()).toEqual({ n: 1 });
+    expect(upgraded.prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_transcript_acquisition_source_time'").get()).toBeTruthy();
+    expect(upgraded.prepare("SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='transcript_acquisition_fact_no_update'").get()).toBeTruthy();
+    expect((upgraded.prepare("PRAGMA table_info(transcript_acquisition_conflict)").all() as { name: string }[])
+      .some((column) => column.name === "event_key")).toBe(true);
+    expect(upgraded.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='transcript_acquisition_conflict_legacy_v1'").get()).toBeTruthy();
+    upgraded.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
   it("rebuilds the deployed citation_check constraint before speaker-attribution blocks are emitted", () => {
     const dir = mkdtempSync(join(tmpdir(), "ia-citation-check-"));
     const path = join(dir, "insight.db");
