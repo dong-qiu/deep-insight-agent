@@ -151,12 +151,33 @@ export function transcriptAcquisitionEventKey(
   })}`;
 }
 
+function assertTranscriptAcquisitionFact(fact: TranscriptAcquisitionFact): void {
+  if (fact.mode === "off") throw new Error("off_transcript_mode_cannot_emit_acquisition_fact");
+  if (!fact.transcript_policy_version.trim()) throw new Error("transcript_policy_version_required");
+  if ((fact.stage === "candidate" || fact.stage === "decision") && fact.attempt !== 0) {
+    throw new Error("transcript_acquisition_attempt_invalid");
+  }
+  if ((fact.stage === "attempt" || fact.stage === "terminal") && fact.attempt < 1) {
+    throw new Error("transcript_acquisition_attempt_invalid");
+  }
+  if (fact.execution_scope === "shadow" && fact.content_item_id) {
+    throw new Error("shadow_transcript_cannot_link_production_content");
+  }
+  if (fact.evidence_status === "verified" && !fact.raw_ref) {
+    throw new Error("verified_transcript_evidence_requires_raw_ref");
+  }
+  if (fact.outcome === "success" && (!fact.raw_ref || fact.evidence_status !== "verified")) {
+    throw new Error("successful_transcript_requires_verified_raw_evidence");
+  }
+}
+
 /** Transcript diagnostics are idempotent observations. A conflicting replay is retained in its
  * own append-only table and rejected instead of silently overwriting the original evidence. */
 export function appendTranscriptAcquisitionFact(
   db: DB,
   fact: TranscriptAcquisitionFact,
 ): { replayed: boolean } {
+  assertTranscriptAcquisitionFact(fact);
   if (fact.event_key !== transcriptAcquisitionEventKey(fact)) {
     throw new Error("transcript_acquisition_event_key_mismatch");
   }
@@ -248,7 +269,7 @@ export function reviveSource(db: DB, id: string): void {
     "UPDATE source SET enabled=1, disabled_reason=NULL, disabled_at=NULL, circuit_reset_at=datetime('now'), last_probe_at=NULL WHERE id=?",
   ).run(id);
 }
-/** 物理删 source；FK 违例（被 content_item 引用）由调用方 catch 返友好错。 */
+/** 物理删 source；被内容或已记录的 transcript policy 版本引用时，FK 会拒绝删除。 */
 export function deleteSource(db: DB, id: string): number {
   return db.prepare("DELETE FROM source WHERE id = ?").run(id).changes;
 }
@@ -325,7 +346,7 @@ function speakerMapForWrite(item: ContentItem): {
   speaker_map_ref: string | null;
 } {
   if (item.body_kind !== "transcript") {
-    if (item.speaker_map_status && item.speaker_map_status !== "not_applicable") {
+    if ((item.speaker_map_status && item.speaker_map_status !== "not_applicable") || item.speaker_map_ref?.trim()) {
       throw new Error("speaker_map_not_applicable_required");
     }
     return { speaker_map_status: "not_applicable", speaker_map_ref: null };

@@ -241,7 +241,8 @@ defaultSources:
     topic_ids: [t_code_agents]
     fetch_interval: 24h
     enabled: true
-    # ADR-0027：混合 newsletter/podcast 源必须先走 shadow，不可由全局开关直接拉全文。
+    # ADR-0027 target state: this desired policy becomes an acquisition gate only with the
+    # policy-aware collector introduced by the following shadow-collection PR.
     transcript_mode: off
   - id: src_chain_of_thought
     name: Chain of Thought（播客 · 转写）

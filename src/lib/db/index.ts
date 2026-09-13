@@ -11,7 +11,8 @@ import { assertProvenanceSchema } from "./provenance-migrations.js";
 import { assertDeploymentIdentity } from "./deployment.js";
 import { reconcileReportEffects } from "./reports.js";
 import { reconcileRawArchiveEffects } from "./raw-archive.js";
-import { citationCheckTableSql, SCHEMA_SQL } from "./schema.js";
+import { migratePodcastTranscriptContracts } from "./podcast-transcript-migrations.js";
+import { PODCAST_TRANSCRIPT_POLICY_VERSION_IMMUTABILITY_SQL, SCHEMA_SQL } from "./schema.js";
 
 export type DB = Database.Database;
 
@@ -24,6 +25,7 @@ export function openDb(path: string, opts: { bootstrap?: boolean } = {}): DB {
   const db = new Database(path);
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
+  const freshDatabase = !tableExists(db, "source");
   // 多写者（并行 worktree/容器共享同一卷、或 cron+web 同进程外）抢锁时，
   // 默认会立刻抛 SQLITE_BUSY；改为最多等 5s 让写串行化，而非直接失败。
   db.pragma("busy_timeout = 5000");
@@ -34,6 +36,9 @@ export function openDb(path: string, opts: { bootstrap?: boolean } = {}): DB {
     if (tableExists(db, "content_item")) migrate(db);
     db.exec(SCHEMA_SQL);
     migrate(db);
+    // A new local database has no migration ledger yet. Existing databases receive this v44
+    // contract only through the immutable provenance runner, never through schema replay.
+    if (freshDatabase) db.exec(PODCAST_TRANSCRIPT_POLICY_VERSION_IMMUTABILITY_SQL);
   }
   // review follow-up #1：进程重启后清扫上一次跑到一半被 SIGTERM 杀掉的孤儿 Run。
   // 单例 DB 第一次创建时触发；测试用 :memory: 时此操作 no-op（无 running Run 可清）。
@@ -55,24 +60,6 @@ function ensureColumn(db: DB, table: string, column: string, ddl: string): void 
 
 function columnExists(db: DB, table: string, column: string): boolean {
   return (db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).some((c) => c.name === column);
-}
-
-/** SQLite cannot alter a CHECK constraint in place. Rebuild this compact, append-only validation
- * projection from the schema fragment before a future validator may emit the new fail-closed
- * speaker-attribution reason. */
-function migrateCitationCheckReason(db: DB): void {
-  const current = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='citation_check'")
-    .get() as { sql: string } | undefined;
-  if (!current || current.sql.includes("speaker_attribution_unknown")) return;
-  db.transaction(() => {
-    db.exec("ALTER TABLE citation_check RENAME TO citation_check_legacy");
-    db.exec(citationCheckTableSql());
-    db.exec(`INSERT INTO citation_check
-      (batch_id,insight_id,citation_index,reachability,reachability_reason,consistency,consistency_reason,verdict)
-      SELECT batch_id,insight_id,citation_index,reachability,reachability_reason,consistency,consistency_reason,verdict
-      FROM citation_check_legacy`);
-    db.exec("DROP TABLE citation_check_legacy");
-  })();
 }
 
 function migrate(db: DB): void {
@@ -104,8 +91,6 @@ function migrate(db: DB): void {
   // 稳定 ref 与原子 claim，不能把旧数据误报成已审计。
   ensureColumn(db, "citation", "citation_ref", "citation_ref TEXT NOT NULL DEFAULT ''");
   ensureColumn(db, "citation", "claim", "claim TEXT NOT NULL DEFAULT ''");
-  ensureColumn(db, "citation", "speaker_attribution", "speaker_attribution TEXT NOT NULL DEFAULT '{\"status\":\"none\"}'");
-  migrateCitationCheckReason(db);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_citation_ref ON citation(citation_ref);
     CREATE TABLE IF NOT EXISTS display_coverage_audit (
       batch_id TEXT NOT NULL REFERENCES analysis_batch(id), insight_id TEXT NOT NULL REFERENCES insight(id),
@@ -164,22 +149,7 @@ function migrate(db: DB): void {
     "fetch_mode TEXT NOT NULL DEFAULT 'feed' CHECK (fetch_mode IN ('feed','full_text'))",
   );
   ensureColumn(db, "source", "content_container", "content_container TEXT");
-  // ADR-0027：按源播客全文策略。所有存量源默认 off；显式灰度前不改变其 RSS 采集或历史内容。
-  ensureColumn(db, "source", "transcript_mode", "transcript_mode TEXT NOT NULL DEFAULT 'off' CHECK (transcript_mode IN ('off','observe','enabled'))");
-  ensureColumn(db, "source", "transcript_strategy", "transcript_strategy TEXT NOT NULL DEFAULT 'relevant_only' CHECK (transcript_strategy IN ('all','relevant_only'))");
-  ensureColumn(db, "source", "transcript_max_items_per_run", "transcript_max_items_per_run INTEGER NOT NULL DEFAULT 5 CHECK (transcript_max_items_per_run > 0)");
-  ensureColumn(db, "source", "transcript_max_bytes_per_run", "transcript_max_bytes_per_run INTEGER NOT NULL DEFAULT 5242880 CHECK (transcript_max_bytes_per_run > 0)");
-  ensureColumn(db, "source", "transcript_timeout_budget_ms", "transcript_timeout_budget_ms INTEGER NOT NULL DEFAULT 30000 CHECK (transcript_timeout_budget_ms > 0)");
-  ensureColumn(db, "source", "transcript_host_qps", "transcript_host_qps REAL NOT NULL DEFAULT 0.5 CHECK (transcript_host_qps > 0)");
-  // Existing rows keep their historic, non-policy-aware mode. A new mode must carry an explicit
-  // version; repository writes enforce the same constraint for both old and fresh databases.
-  ensureColumn(db, "source", "transcript_policy_version", "transcript_policy_version TEXT");
-  db.exec("UPDATE source SET transcript_mode='off' WHERE transcript_mode <> 'off' AND (transcript_policy_version IS NULL OR trim(transcript_policy_version) = '')");
-  // Transcript speaker attribution is fail-closed. Historical text has no evidence envelope,
-  // so it remains not_applicable rather than being inferred as verified.
-  ensureColumn(db, "content_item", "speaker_map_status", "speaker_map_status TEXT NOT NULL DEFAULT 'not_applicable' CHECK (speaker_map_status IN ('not_applicable','unknown','verified'))");
-  ensureColumn(db, "content_item", "speaker_map_ref", "speaker_map_ref TEXT");
-  db.exec("UPDATE content_item SET speaker_map_status='unknown', speaker_map_ref=NULL WHERE body_kind='transcript' AND speaker_map_status='not_applicable'");
+  migratePodcastTranscriptContracts(db);
   // 技术规划工作台：旧方向从 version=1 起；映射词表变更只标 stale，不会改写人工决策。
   ensureColumn(db, "topic_direction", "version", "version INTEGER NOT NULL DEFAULT 1");
   ensureColumn(db, "technology_opportunity", "mapping_state", "mapping_state TEXT NOT NULL DEFAULT 'current' CHECK (mapping_state IN ('current','stale'))");

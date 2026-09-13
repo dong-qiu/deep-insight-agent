@@ -8,7 +8,7 @@ import { type DB, openDb } from "./index.js";
 import {
   appendTranscriptAcquisitionFact,
   transcriptAcquisitionEventKey,
-  clearCircuit, contentExists, finishRun, getContentByUrl, getContentItem, getRun, getSource,
+  clearCircuit, contentExists, deleteSource, finishRun, getContentByUrl, getContentItem, getRun, getSource,
   getSourceBodyKinds, getTopic, hasRunningRun, insertContentItem, insertRun, insertSource,
   insertTopic, listProbeCandidates, listRuns, listRunsForTopicSince, listSources, recoverOrphanedRuns,
   reviveSource, setCircuit, setLastProbe, setRunInserted, sumRunCostSince, updateContentItem, updateSource,
@@ -116,9 +116,12 @@ it("transcript acquisition fact 使用确定性 event_key 幂等重放，冲突�
   const fact = { ...factInput, event_key: transcriptAcquisitionEventKey(factInput) };
   expect(appendTranscriptAcquisitionFact(db, fact)).toEqual({ replayed: false });
   expect(appendTranscriptAcquisitionFact(db, fact)).toEqual({ replayed: true });
-  expect(() => appendTranscriptAcquisitionFact(db, { ...fact, outcome: "success" })).toThrow("transcript_acquisition_idempotency_conflict");
+  expect(() => appendTranscriptAcquisitionFact(db, { ...fact, reason_code: "different_decision" })).toThrow("transcript_acquisition_idempotency_conflict");
   expect(db.prepare("SELECT COUNT(*) AS n FROM transcript_acquisition_conflict WHERE event_key=?").get(fact.event_key)).toEqual({ n: 1 });
   expect(() => db.prepare("DELETE FROM transcript_acquisition_fact WHERE event_key=?").run(fact.event_key)).toThrow("append-only");
+  const off = { ...factInput, mode: "off" as const };
+  expect(() => appendTranscriptAcquisitionFact(db, { ...off, event_key: transcriptAcquisitionEventKey(off) }))
+    .toThrow("off_transcript_mode_cannot_emit_acquisition_fact");
 });
 
 it("policy-aware transcript Source 必须有版本，策略变更必须升级版本", () => {
@@ -129,6 +132,33 @@ it("policy-aware transcript Source 必须有版本，策略变更必须升级版
   expect(() => updateSource(db, { ...observed, transcript_max_items_per_run: 6 }))
     .toThrow("transcript_policy_version_must_change");
   expect(updateSource(db, { ...observed, transcript_max_items_per_run: 6, transcript_policy_version: "pod-v2" })).toBe(1);
+  expect(db.prepare("SELECT transcript_policy_version FROM source_transcript_policy_version WHERE source_id=? ORDER BY transcript_policy_version").all(sampleSource.id))
+    .toEqual([{ transcript_policy_version: "pod-v1" }, { transcript_policy_version: "pod-v2" }]);
+  updateSource(db, { ...getSource(db, sampleSource.id)!, transcript_mode: "off", transcript_policy_version: null });
+  expect(() => updateSource(db, { ...getSource(db, sampleSource.id)!, transcript_mode: "observe", transcript_policy_version: "pod-v1" }))
+    .toThrow(/UNIQUE constraint failed/);
+  expect(() => db.prepare("DELETE FROM source_transcript_policy_version WHERE source_id=? AND transcript_policy_version='pod-v1'").run(sampleSource.id))
+    .toThrow("source_transcript_policy_version is immutable");
+  expect(() => db.prepare("UPDATE source_transcript_policy_version SET recorded_at='2000-01-01T00:00:00.000Z' WHERE source_id=? AND transcript_policy_version='pod-v1'").run(sampleSource.id))
+    .toThrow("source_transcript_policy_version is immutable");
+  expect(() => deleteSource(db, sampleSource.id)).toThrow("FOREIGN KEY constraint failed");
+  expect(getSource(db, sampleSource.id)).toBeTruthy();
+});
+
+it("transcript acquisition 只把有已验证 raw evidence 的终态 success 记为成功", () => {
+  insertSource(db, sampleSource);
+  const input = {
+    source_id: sampleSource.id, canonical_episode_url: "https://pod.example/ep-2", candidate_hash: "candidate",
+    transcript_policy_version: "v1", mode: "observe" as const, strategy: "all" as const,
+    execution_scope: "shadow" as const, stage: "terminal" as const, adapter_version: "rss-v1", attempt: 1,
+    decision: "fetch" as const, outcome: "success" as const, reason_code: null, bytes: 12, duration_ms: 3,
+    fallback_body_kind: null, content_item_id: null, raw_ref: null, evidence_status: "failed" as const,
+    run_id: null, occurred_at: "2026-09-13T00:00:00.000Z",
+  };
+  expect(() => appendTranscriptAcquisitionFact(db, { ...input, event_key: transcriptAcquisitionEventKey(input) }))
+    .toThrow("successful_transcript_requires_verified_raw_evidence");
+  const verified = { ...input, raw_ref: "raw://shadow/ep-2", evidence_status: "verified" as const };
+  expect(appendTranscriptAcquisitionFact(db, { ...verified, event_key: transcriptAcquisitionEventKey(verified) })).toEqual({ replayed: false });
 });
 
 it("Topic 往返 + enabledOnly 过滤", () => {

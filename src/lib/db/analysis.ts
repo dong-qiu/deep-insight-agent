@@ -31,11 +31,12 @@ interface CitationRow {
   claim: string;
   quote: string;
   locator: string; // JSON
-  speaker_attribution: string;
+  speaker_attribution: string | null;
 }
 
-function speakerAttributionForWrite(citation: Insight["citations"][number]): string {
-  const attribution = citation.speaker_attribution ?? { status: "none" as const };
+function speakerAttributionForWrite(citation: Insight["citations"][number]): string | null {
+  const attribution = citation.speaker_attribution;
+  if (!attribution) return null; // legacy analyzer output; do not claim it chose `none`.
   if (attribution.status === "verified" && (!attribution.speaker_id || !attribution.source_segment)) {
     throw new Error("verified_speaker_attribution_evidence_required");
   }
@@ -45,10 +46,11 @@ function speakerAttributionForWrite(citation: Insight["citations"][number]): str
   return j(attribution);
 }
 
-function speakerAttributionFromRow(value: string): Insight["citations"][number]["speaker_attribution"] | undefined {
+function speakerAttributionFromRow(value: string | null): Insight["citations"][number]["speaker_attribution"] | undefined {
+  if (!value) return undefined;
   try {
     const attribution = JSON.parse(value) as Insight["citations"][number]["speaker_attribution"];
-    return attribution?.status && attribution.status !== "none" ? attribution : undefined;
+    return attribution?.status ? attribution : undefined;
   } catch {
     return undefined;
   }
@@ -70,12 +72,15 @@ export function rowToInsight(db: DB, r: InsightRow): Insight {
     headline: r.headline ?? "",
     importance: r.importance,
     importance_basis: r.importance_basis,
-    citations: cits.map((c) => ({
-      content_item_id: c.content_item_id, quote: c.quote, locator: JSON.parse(c.locator),
-      ...(c.citation_ref ? { citation_ref: c.citation_ref } : {}),
-      ...(c.claim ? { claim: c.claim } : {}),
-      ...(speakerAttributionFromRow(c.speaker_attribution) ? { speaker_attribution: speakerAttributionFromRow(c.speaker_attribution) } : {}),
-    })),
+    citations: cits.map((c) => {
+      const speaker_attribution = speakerAttributionFromRow(c.speaker_attribution);
+      return {
+        content_item_id: c.content_item_id, quote: c.quote, locator: JSON.parse(c.locator),
+        ...(c.citation_ref ? { citation_ref: c.citation_ref } : {}),
+        ...(c.claim ? { claim: c.claim } : {}),
+        ...(speaker_attribution ? { speaker_attribution } : {}),
+      };
+    }),
     source_count: r.source_count,
     multi_source: r.multi_source === 1,
     time_window: JSON.parse(r.time_window),

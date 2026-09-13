@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { closeDb, getDb, openDb } from "./index.js";
+import { migratePodcastTranscriptContracts } from "./podcast-transcript-migrations.js";
 import { applyProvenanceMigrations, assertProvenanceSchema } from "./provenance-migrations.js";
 
 describe("provenance migration runner", () => {
@@ -46,13 +47,156 @@ describe("provenance migration runner", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  it("writes podcast transcript contracts through the ledger before admitting a strict writer", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ia-podcast-v42-"));
+    const path = join(dir, "insight.db");
+    const v42 = openDb(path);
+    applyProvenanceMigrations(v42);
+    v42.exec(`
+      DROP TRIGGER source_transcript_policy_version_required_insert;
+      DROP TRIGGER source_transcript_policy_version_required_update;
+      DROP TRIGGER source_transcript_policy_semantics_requires_new_version;
+      DROP TRIGGER source_transcript_policy_version_record_insert;
+      DROP TRIGGER source_transcript_policy_version_record_update;
+      DROP TRIGGER content_item_speaker_map_guard_insert;
+      DROP TRIGGER content_item_speaker_map_guard_update;
+      DROP TRIGGER transcript_acquisition_fact_no_update;
+      DROP TRIGGER transcript_acquisition_fact_no_delete;
+      DROP TRIGGER transcript_acquisition_fact_mode_guard_insert;
+      DROP TRIGGER transcript_acquisition_conflict_no_update;
+      DROP TRIGGER transcript_acquisition_conflict_no_delete;
+      DROP TABLE transcript_acquisition_conflict;
+      DROP TABLE transcript_acquisition_fact;
+      DROP TABLE source_transcript_policy_version;
+      ALTER TABLE citation DROP COLUMN speaker_attribution;
+      PRAGMA foreign_keys = OFF;
+      PRAGMA legacy_alter_table = ON;
+      ALTER TABLE content_item RENAME TO content_item_v43;
+      ALTER TABLE source RENAME TO source_v43;
+      CREATE TABLE source (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL,
+        type TEXT NOT NULL CHECK (type IN ('rss','arxiv','api')),
+        endpoint TEXT NOT NULL, topic_ids TEXT NOT NULL DEFAULT '[]',
+        fetch_interval TEXT NOT NULL, backfill TEXT, enabled INTEGER NOT NULL DEFAULT 1,
+        fetch_mode TEXT NOT NULL DEFAULT 'feed' CHECK (fetch_mode IN ('feed','full_text')),
+        content_container TEXT, disabled_reason TEXT, disabled_at TEXT, circuit_reset_at TEXT,
+        last_probe_at TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE TABLE content_item (
+        id TEXT PRIMARY KEY, source_id TEXT NOT NULL REFERENCES source(id), url TEXT NOT NULL,
+        title TEXT NOT NULL, author TEXT, published_at TEXT, fetched_at TEXT NOT NULL,
+        language TEXT NOT NULL CHECK (language IN ('zh','en','mixed')),
+        topic_ids TEXT NOT NULL DEFAULT '[]', tags TEXT NOT NULL DEFAULT '[]', body TEXT NOT NULL,
+        body_kind TEXT NOT NULL DEFAULT 'article' CHECK (body_kind IN ('article','show_notes','transcript')),
+        raw_ref TEXT NOT NULL, reader_eligible INTEGER NOT NULL DEFAULT 1 CHECK (reader_eligible IN (0,1)),
+        content_hash TEXT NOT NULL, fetch_status TEXT NOT NULL CHECK (fetch_status IN ('ok','partial'))
+      );
+      DROP TABLE content_item_v43;
+      DROP TABLE source_v43;
+      CREATE INDEX idx_content_source ON content_item(source_id);
+      CREATE INDEX idx_content_reader_eligible ON content_item(reader_eligible, fetched_at DESC);
+      CREATE UNIQUE INDEX idx_content_url ON content_item(url);
+      PRAGMA legacy_alter_table = OFF;
+      PRAGMA foreign_keys = ON;
+      ALTER TABLE citation_check RENAME TO citation_check_v43;
+      CREATE TABLE citation_check (
+        batch_id TEXT NOT NULL REFERENCES analysis_batch(id), insight_id TEXT NOT NULL, citation_index INTEGER NOT NULL,
+        reachability TEXT NOT NULL CHECK (reachability IN ('pass','fail')),
+        reachability_reason TEXT NOT NULL CHECK (reachability_reason IN ('ok','source_not_found','source_unreachable','quote_not_in_source')),
+        consistency TEXT NOT NULL CHECK (consistency IN ('support','not_support','uncertain','not_evaluated')),
+        consistency_reason TEXT NOT NULL CHECK (consistency_reason IN ('ok','out_of_context','exaggeration','misattribution','uncertain','not_evaluated')),
+        verdict TEXT NOT NULL CHECK (verdict IN ('pass','blocked','flagged')),
+        PRIMARY KEY (batch_id, insight_id, citation_index)
+      );
+      DROP TABLE citation_check_v43;
+    `);
+    v42.prepare("DELETE FROM schema_migration WHERE version IN ('20260913_43_podcast_transcript_contracts','20260913_44_podcast_transcript_policy_version_immutability')").run();
+    v42.close();
+
+    const runner = openDb(path, { bootstrap: false });
+    applyProvenanceMigrations(runner);
+    expect(() => assertProvenanceSchema(runner)).not.toThrow();
+    expect((runner.prepare("PRAGMA table_info(source)").all() as { name: string }[]).map((column) => column.name))
+      .toEqual(expect.arrayContaining([
+        "transcript_mode", "transcript_strategy", "transcript_max_items_per_run",
+        "transcript_max_bytes_per_run", "transcript_timeout_budget_ms", "transcript_host_qps",
+        "transcript_policy_version",
+      ]));
+    expect((runner.prepare("PRAGMA table_info(content_item)").all() as { name: string }[]).map((column) => column.name))
+      .toEqual(expect.arrayContaining(["speaker_map_status", "speaker_map_ref"]));
+    expect((runner.prepare("PRAGMA table_info(citation)").all() as { name: string }[]).map((column) => column.name))
+      .toContain("speaker_attribution");
+    const objects = runner.prepare("SELECT name FROM sqlite_master WHERE type IN ('table','trigger')").all() as { name: string }[];
+    expect(objects.map((object) => object.name)).toEqual(expect.arrayContaining([
+      "source_transcript_policy_version", "transcript_acquisition_fact", "transcript_acquisition_conflict",
+      "source_transcript_policy_version_no_update", "source_transcript_policy_version_no_delete",
+      "transcript_acquisition_fact_no_update", "transcript_acquisition_fact_no_delete",
+      "transcript_acquisition_fact_mode_guard_insert", "transcript_acquisition_conflict_no_update",
+      "transcript_acquisition_conflict_no_delete", "source_transcript_policy_version_required_insert",
+      "source_transcript_policy_version_required_update", "source_transcript_policy_semantics_requires_new_version",
+      "source_transcript_policy_version_record_insert", "source_transcript_policy_version_record_update",
+      "content_item_speaker_map_guard_insert", "content_item_speaker_map_guard_update",
+    ]));
+    runner.prepare("INSERT INTO source(id,name,type,endpoint,topic_ids,fetch_interval) VALUES ('off_direct','off','rss','https://pod.example','[]','1h')").run();
+    expect(() => runner.prepare(`INSERT INTO transcript_acquisition_fact
+      (event_key,source_id,canonical_episode_url,candidate_hash,transcript_policy_version,mode,strategy,execution_scope,stage,adapter_version,attempt,outcome,evidence_status,occurred_at,semantic_payload_hash)
+      VALUES ('off_direct','off_direct','https://pod.example/ep','candidate','v1','off','all','shadow','candidate','rss-v1',0,'decision','not_applicable','2026-09-13T00:00:00.000Z','hash')`).run())
+      .toThrow("off_transcript_mode_cannot_emit_acquisition_fact");
+    runner.close();
+
+    const previousRequired = process.env.PROVENANCE_SCHEMA_REQUIRED;
+    const previousPath = process.env.DB_PATH;
+    process.env.PROVENANCE_SCHEMA_REQUIRED = "1";
+    process.env.DB_PATH = path;
+    closeDb();
+    expect(() => getDb()).not.toThrow();
+    closeDb();
+    if (previousRequired == null) delete process.env.PROVENANCE_SCHEMA_REQUIRED;
+    else process.env.PROVENANCE_SCHEMA_REQUIRED = previousRequired;
+    if (previousPath == null) delete process.env.DB_PATH;
+    else process.env.DB_PATH = previousPath;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("upgrades an already-ledgered v43 database with immutable transcript policy history", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ia-podcast-v43-"));
+    const path = join(dir, "insight.db");
+    const v43 = openDb(path);
+    applyProvenanceMigrations(v43);
+    v43.prepare(`INSERT INTO source
+      (id,name,type,endpoint,topic_ids,fetch_interval,transcript_mode,transcript_policy_version)
+      VALUES ('podcast_v43','podcast','rss','https://pod.example','[]','1h','observe','v1')`).run();
+    v43.exec(`DROP TRIGGER source_transcript_policy_version_no_update;
+      DROP TRIGGER source_transcript_policy_version_no_delete;`);
+    // v43's stable migration token must not acquire v44 DDL as a side effect.
+    migratePodcastTranscriptContracts(v43, { includePolicyVersionImmutability: false });
+    expect(v43.prepare("SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='source_transcript_policy_version_no_delete'").get()).toBeFalsy();
+    v43.prepare("DELETE FROM schema_migration WHERE version='20260913_44_podcast_transcript_policy_version_immutability'").run();
+    v43.close();
+
+    const compatibilityStartup = openDb(path);
+    expect(compatibilityStartup.prepare("SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='source_transcript_policy_version_no_delete'").get()).toBeFalsy();
+    compatibilityStartup.close();
+
+    const runner = openDb(path, { bootstrap: false });
+    applyProvenanceMigrations(runner);
+    expect(() => assertProvenanceSchema(runner)).not.toThrow();
+    expect(() => runner.prepare("DELETE FROM source_transcript_policy_version WHERE source_id='podcast_v43' AND transcript_policy_version='v1'").run())
+      .toThrow("source_transcript_policy_version is immutable");
+    expect(() => runner.prepare("UPDATE source_transcript_policy_version SET recorded_at='2000-01-01T00:00:00.000Z' WHERE source_id='podcast_v43' AND transcript_policy_version='v1'").run())
+      .toThrow("source_transcript_policy_version is immutable");
+    runner.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
   it("applies once, records its checksum, and is safe to rerun", () => {
     const db = openDb(":memory:");
     expect(() => assertProvenanceSchema(db)).toThrow("has not been applied");
     applyProvenanceMigrations(db);
     applyProvenanceMigrations(db);
     expect(() => assertProvenanceSchema(db)).not.toThrow();
-    expect(db.prepare("SELECT COUNT(*) AS count FROM schema_migration").get()).toEqual({ count: 42 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM schema_migration").get()).toEqual({ count: 44 });
     expect((db.prepare("PRAGMA table_info(run)").all() as { name: string }[]).some((row) => row.name === "trace_id")).toBe(true);
     const reportColumns = db.prepare("PRAGMA table_info(report)").all() as { name: string; notnull: number }[];
     expect(reportColumns.find((column) => column.name === "body_path")?.notnull).toBe(0);
@@ -151,7 +295,7 @@ describe("provenance migration runner", () => {
     db.prepare("DELETE FROM schema_migration WHERE version IN ('20260823_12_source_credit_facts','20260823_13_source_credit_tenant_primary_keys')").run();
 
     applyProvenanceMigrations(db);
-    expect(db.prepare("SELECT COUNT(*) AS count FROM schema_migration").get()).toEqual({ count: 42 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM schema_migration").get()).toEqual({ count: 44 });
     expect(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='source_credit_event'").get()).toBeTruthy();
     expect(db.prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_source_credit_fact_tenant_source_event'").get()).toBeTruthy();
     for (const table of ["source_credit_conflict", "source_credit_late_reconciliation"]) {

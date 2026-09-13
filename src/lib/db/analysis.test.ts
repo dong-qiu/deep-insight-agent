@@ -54,6 +54,9 @@ it("同一事务持久化 citation_ref/claim 与展示覆盖审计，读回不�
     ...audited.insights[0].citations[0], citation_ref: "cite_abc", claim: "S1 的原子事实",
     speaker_attribution: { status: "verified", speaker_id: "speaker_1", source_segment: "segment_1" },
   };
+  audited.insights[1].citations[0] = {
+    ...audited.insights[1].citations[0], speaker_attribution: { status: "none" },
+  };
   audited.display_coverage_audits = [{
     insight_id: "i1", candidate_id: "i1", gate_version: "display-coverage-v2", terminal_reason: "kept",
     prompt_version: "display-coverage-v2", input_hash: "input-sha", validator_model: "validator-test",
@@ -83,6 +86,8 @@ it("同一事务持久化 citation_ref/claim 与展示覆盖审计，读回不�
     citation_ref: "cite_abc", claim: "S1 的原子事实",
     speaker_attribution: '{"status":"verified","speaker_id":"speaker_1","source_segment":"segment_1"}',
   });
+  expect(db.prepare("SELECT speaker_attribution FROM citation WHERE insight_id = 'i2' AND citation_index=0").get())
+    .toEqual({ speaker_attribution: '{"status":"none"}' });
 });
 
 it("已审计但无保留洞察的缓存读回仍是 audited，不能退化为 legacy", () => {
