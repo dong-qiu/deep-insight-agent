@@ -26,7 +26,7 @@ vi.mock("./robots.js", () => ({
   isAllowed: vi.fn(() => true),
 }));
 
-const { fetchRss } = await import("./rss.js");
+const { fetchRss, fetchTranscript } = await import("./rss.js");
 
 const FEED = `<?xml version="1.0"?>
 <rss version="2.0" xmlns:podcast="https://podcastindex.org/namespace/1.0"><channel>
@@ -45,14 +45,32 @@ afterEach(() => {
   responses.clear();
 });
 
-describe("fetchRss 只解析不抓（6a）", () => {
-  it("只解析 transcript_url，body 仍 show notes、body_kind 未设——即便开关开也不抓（抓取在 collector）", async () => {
+describe("fetchRss 只解析不抓（ADR-0027）", () => {
+  it("只解析 transcript_url，body 仍 show notes、body_kind 明确为 show_notes——即便开关开也不抓（抓取在 collector）", async () => {
     process.env.TRANSCRIPT_FETCH = "1"; // 开关开
     responses.set("https://pod/feed", { ok: true, text: FEED });
     // 不为 transcript URL 设响应——若 fetchRss 误抓会 throw "unmocked fetch"
     const items = await fetchRss(source);
     expect(items[0].body).toBe("Show notes.");
     expect(items[0].transcript_url).toBe("https://pod/ep.txt");
-    expect(items[0].body_kind).toBeUndefined();
+    expect(items[0].body_kind).toBe("show_notes");
+    expect(items[0].is_podcast_episode).toBe(true);
+  });
+});
+
+describe("fetchTranscript structured result", () => {
+  it("成功时保留原始载荷、清洗正文、稳定 URL，且不把签名 query 带入证据身份", async () => {
+    responses.set("https://pod/ep.txt?sig=ephemeral", { ok: true, text: "00:00:01 Hello world" });
+    const result = await fetchTranscript("https://pod/ep.txt?sig=ephemeral");
+    expect(result).toMatchObject({
+      outcome: "success", stable_url: "https://pod/ep.txt", raw_payload: "00:00:01 Hello world",
+      cleaned_body: "00:00:01 Hello world",
+    });
+  });
+
+  it("HTTP 失败保留可观测终态，而不是返空字符串", async () => {
+    responses.set("https://pod/not-found.txt", { ok: false, text: "not found" });
+    const result = await fetchTranscript("https://pod/not-found.txt");
+    expect(result).toMatchObject({ outcome: "http_error", reason_code: "http_undefined" });
   });
 });
