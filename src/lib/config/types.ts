@@ -47,6 +47,15 @@ export const TopicConfigSchema = z.object({
   }),
 });
 
+/** 配置中不依赖模型凭据、可安全用于离线 source 工具的部分。
+ *
+ * 不能以此替代完整应用配置：应用启动仍必须经 AppConfigSchema 验证 models.apiKey。
+ */
+export const StaticSourceConfigSchema = z.object({
+  defaultTopics: z.array(TopicConfigSchema),
+  defaultSources: z.array(SourceConfigSchema),
+});
+
 export const AppConfigSchema = z.object({
   models: z.object({
     analyzer: z.string(),
@@ -61,3 +70,4 @@ export const AppConfigSchema = z.object({
 });
 
 export type AppConfig = z.infer<typeof AppConfigSchema>;
+export type StaticSourceConfig = z.infer<typeof StaticSourceConfigSchema>;

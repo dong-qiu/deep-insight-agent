@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { type DB, openDb } from "../db/index.js";
 import {
-  getEffectiveModels, getEffectiveSources, loadStaticConfig, resolveEnvRefs, seedDefaults,
+  getEffectiveModels, getEffectiveSources, loadStaticConfig, loadStaticSourceConfig, resolveEnvRefs, seedDefaults,
 } from "./index.js";
 
 describe("resolveEnvRefs", () => {
@@ -42,6 +42,21 @@ describe("loadStaticConfig + 播种 + 合并", () => {
     expect(cfg.defaultTopics.length).toBeGreaterThan(0);
     expect(cfg.defaultSources.length).toBeGreaterThan(0);
     expect(cfg.defaultSources[0].backfill).toBeNull(); // 未填 → 默认 null
+  });
+
+  it("source-only 配置不解析模型密钥，但仍校验 topics 与 sources", () => {
+    const prior = process.env.ANTHROPIC_API_KEY;
+    delete process.env.ANTHROPIC_API_KEY;
+    try {
+      const config = loadStaticSourceConfig();
+      expect(config.defaultTopics.length).toBeGreaterThan(0);
+      expect(config.defaultSources.find((source) => source.id === "src_chain_of_thought")).toMatchObject({
+        transcript_mode: "off", transcript_host_qps: 0.5,
+      });
+    } finally {
+      if (prior === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = prior;
+    }
   });
 
   it("将 GitHub Changelog 保持为显式启用前的 staged 候选", () => {

@@ -8,7 +8,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { collectSource, type CollectResult } from "../src/lib/agents/collector.js";
-import { getEffectiveSources, loadStaticConfig, seedDefaults } from "../src/lib/config/index.js";
+import { getEffectiveSources, loadStaticSourceConfig, seedDefaults } from "../src/lib/config/index.js";
 import { openDb, type DB } from "../src/lib/db/index.js";
 import { initializeProvenanceMeta } from "../src/lib/db/provenance-facts.js";
 import { applyProvenanceMigrations } from "../src/lib/db/provenance-migrations.js";
@@ -121,7 +121,9 @@ async function main(): Promise<void> {
     DATA_DIR: process.env.DATA_DIR,
     EVAL_ISOLATED_ROOT: process.env.EVAL_ISOLATED_ROOT,
   });
-  const config = loadStaticConfig();
+  // Source-only collection must not require a model credential. The isolated database below
+  // still receives the same provenance migrations as the production collector.
+  const config = loadStaticSourceConfig();
   const output = process.env.EVAL_COHORT_COLLECTION_MANIFEST;
   if (!output) throw new Error("必须设置 EVAL_COHORT_COLLECTION_MANIFEST，保留采集审计记录");
   const db = openIsolatedCohortDb(isolated);

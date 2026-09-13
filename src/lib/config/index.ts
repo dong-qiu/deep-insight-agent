@@ -10,7 +10,7 @@ import type { DB } from "../db/index.js";
 import { seedDefaultDirections } from "../db/planning.js";
 import { getSource, getTopic, insertSource, insertTopic, listSources } from "../db/repos.js";
 import type { Source } from "../types.js";
-import { type AppConfig, AppConfigSchema } from "./types.js";
+import { type AppConfig, AppConfigSchema, type StaticSourceConfig, StaticSourceConfigSchema } from "./types.js";
 
 // 默认相对编译产物定位 defaults.yaml；Next standalone 打包后该相对路径会失效，
 // 容器内用 INSIGHT_CONFIG_PATH 指向固定路径（见 Dockerfile）覆盖。
@@ -58,8 +58,23 @@ export function loadStaticConfig(path: string = DEFAULTS_PATH): AppConfig {
   return AppConfigSchema.parse(resolveEnvRefs(raw));
 }
 
+/**
+ * Load only the source/topic portion used by isolated collection tools.
+ *
+ * This intentionally does not resolve the `models` branch of defaults.yaml: a source-only
+ * preflight neither constructs a model client nor needs an API key. Full application startup
+ * continues to call loadStaticConfig() and therefore remains fail-closed for missing keys.
+ */
+export function loadStaticSourceConfig(path: string = DEFAULTS_PATH): StaticSourceConfig {
+  const raw = parseYaml(readFileSync(path, "utf8")) as Record<string, unknown>;
+  return StaticSourceConfigSchema.parse(resolveEnvRefs({
+    defaultTopics: raw.defaultTopics,
+    defaultSources: raw.defaultSources,
+  }));
+}
+
 /** 把默认 Topic/Source 幂等播种进 SQLite（已存在则跳过）。返回新增计数。 */
-export function seedDefaults(db: DB, config: AppConfig): { topics: number; sources: number } {
+export function seedDefaults(db: DB, config: StaticSourceConfig): { topics: number; sources: number } {
   let topics = 0;
   let sources = 0;
   for (const t of config.defaultTopics) {
@@ -88,7 +103,7 @@ export function getEffectiveModels(config: AppConfig): { analyzer: string; valid
 }
 
 /** 有效源：动态（SQLite）优先；库空则先播种默认再返回。 */
-export function getEffectiveSources(db: DB, config: AppConfig): Source[] {
+export function getEffectiveSources(db: DB, config: StaticSourceConfig): Source[] {
   let sources = listSources(db);
   if (sources.length === 0) {
     seedDefaults(db, config);
