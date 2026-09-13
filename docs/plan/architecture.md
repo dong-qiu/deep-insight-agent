@@ -140,9 +140,9 @@ Source ─采集▶ ContentItem ─分析▶ AnalysisBatch(Insight+Citation) ─
 | `fetch_interval` | duration | Y | 增量抓取周期 |
 | `backfill` | object | N | 历史回填配置 `{depth, max_cost}`；缺省为不回填 |
 | `transcript_mode` | enum | N | `off` / `observe` / `enabled`；播客全文策略，缺省 `off`。仅 policy-aware collector 读取；既有 Source 必须经显式白名单迁移，不能由旧全局开关推导。 |
-| `transcript_strategy` | enum | N | `all` / `relevant_only`；仅 transcript mode 非 `off` 时适用。 |
-| `transcript_limits` | object | N | `{max_items, max_bytes, max_duration_ms, host_qps}`；只限制 transcript acquisition，不能暂停 RSS。 |
-| `transcript_policy_version` | string | N | 预筛与资源策略版本；写入 acquisition fact 的幂等/可审计键。 |
+| `transcript_strategy` | enum | 条件 Y | `all` / `relevant_only`；`mode ∈ {observe, enabled}` 时必填。 |
+| `transcript_limits` | object | 条件 Y | `{max_items, max_bytes, max_duration_ms, host_qps}`；`mode ∈ {observe, enabled}` 时四项均必填，只限制 transcript acquisition，不能暂停 RSS。物理存储可拆列，但读写模型必须保持该逻辑对象。 |
+| `transcript_policy_version` | string | 条件 Y | `mode ∈ {observe, enabled}` 时为非空、不可复用的版本。任何 mode、strategy、限额、topic 关联、预筛规则或 adapter 的决策语义变更必须先升级该版本。 |
 | `enabled` | bool | Y | 启停 |
 
 ### 播客全文采集事实 (TranscriptAcquisitionFact / TranscriptAcquisitionConflict)
@@ -154,7 +154,7 @@ tenant；未来 tenant 化必须与 Source、ContentItem 和全部 fact 的迁�
 
 | 实体 | 主键 / 关键字段 | 不可变与可见性契约 |
 |---|---|---|
-| `TranscriptAcquisitionFact` | `event_key`；`source_id`、`canonical_episode_url`、`candidate_hash`、`transcript_policy_version`、`mode`、`strategy`、`execution_scope`、`stage`、`attempt`、`decision`、`reason_code`、`outcome`、`adapter_version`、`bytes`、`duration_ms`、`run_id`、`content_item_id`、`raw_ref`、`evidence_status`、`occurred_at`、`semantic_hash` | `event_key` 由 source、规范 URL、candidate hash、策略版本、执行范围、stage 和 attempt 确定性派生。`stage` 为 candidate / decision / attempt / terminal；attempt `0` 记录决策，网络尝试从 `1` 开始。`execution_scope` 为 `production_metadata` 或 `shadow`。同 key 且同 semantic hash 幂等；成功证据记录 raw-ref 验证状态。shadow fact 不得关联生产 ContentItem。 |
+| `TranscriptAcquisitionFact` | `event_key`；`source_id`、`canonical_episode_url`、`candidate_hash`、`transcript_policy_version`、`mode`、`strategy`、`execution_scope`、`stage`、`attempt`、`decision`、`reason_code`、`outcome`、`adapter_version`、`bytes`、`duration_ms`、`run_id`、`content_item_id`、`raw_ref`、`evidence_status`、`occurred_at`、`semantic_hash` | `event_key` 由 source、规范 URL、candidate hash、策略版本、mode、strategy、执行范围、stage 和 attempt 确定性派生。`stage` 为 candidate / decision / attempt / terminal；attempt `0` 记录候选或决策，网络尝试从 `1` 开始。`execution_scope` 为 `production_metadata` 或 `shadow`。同 key 且同 semantic hash 幂等；成功证据记录 raw-ref 验证状态。shadow fact 不得关联生产 ContentItem。 |
 | `TranscriptAcquisitionConflict` | `id`；`event_key`、原/新 semantic hash、`observed_at` | 同 event key 不同语义时只追加 conflict，原 fact 永不覆盖。 |
 
 两张表禁止 update/delete；最少索引为 `source_id, occurred_at`、`source_id, canonical_episode_url, attempt`
@@ -255,10 +255,13 @@ P1b-2 的指标写模型由 collector、analysis 与 validation 的已提交写�
 | `topic_ids` | string[] | Y | 主题归属 —— **采集层赋值，直接继承所属 `Source.topic_ids`**（源级粒度；条目级关键词命中后续迭代）；下游按此切片 |
 | `tags` | string[] | N | 标准化标签，可为空数组 |
 | `body` | text | Y | 抽取后的结构化正文 |
+| `body_kind` | enum | Y | `article` / `show_notes` / `transcript`；首次入库固定，既有 URL 不在正文形态间原地升级或降级。 |
 | `raw_ref` | string | Y | 原始内容存档句柄 —— 校验反查原文用；MVP 阶段原文不清理 |
 | `reader_eligible` | bool | Y | 原文存档的 reader gate。创建/更新 raw archive intent 时为 `false`；仅最终文件 hash 验证成功后，与 effect `committed` 在同一 SQLite transaction 中设为 `true`。分析、校验、报告与读侧证据投影必须 fail-closed 排除 `false` 行；启动 reconciliation 同样只在验证成功后开放。 |
 | `content_hash` | string | Y | 内容指纹 = 对规范化后 `body` 取哈希；用于检测同 URL 内容更新 |
 | `fetch_status` | enum | Y | `ok`（完整抽取）/ `partial`（正文不完整 —— 截断 / 部分段落丢失，但 `body` 仍非空、`content_hash` 照常计算）；整源失败不产出条目 |
+| `speaker_map_status` | enum | 条件 Y | `body_kind=transcript` 时为 `unknown` 或 `verified`；其他正文为 `not_applicable`。只有 evidence envelope 中可验证的 map 才能为 `verified`。 |
+| `speaker_map_ref` | string \| null | 条件 | `speaker_map_status=verified` 时必填，指向 evidence envelope 中的稳定 map；否则为 null。 |
 
 ### 引用 (Citation)
 
@@ -270,6 +273,14 @@ P1b-2 的指标写模型由 collector、analysis 与 validation 的已提交写�
 | `claim` | text | N | 该 citation 单独支撑的原子事实。新 analyzer 输出必填；旧数据可缺，validator 保守回退为完整 `Insight.statement` 校验 |
 | `quote` | text | Y | 被引原文片段（逐字摘录） |
 | `locator` | object | Y | 原文定位 `{paragraph_index, char_start, char_end}` |
+| `speaker_attribution` | object | 条件 Y | `body_kind=transcript` 时必填：`{status: none|unknown|verified, speaker_id?, source_segment?}`。非归属 claim 为 `none`；`unknown` 是不可发布的归属尝试；`verified` 必须有 `speaker_id`、稳定 `source_segment`，并与 ContentItem 的 verified map 对应。 |
+
+**说话人归属校验与投影**：任何人物/角色“说了什么”的原子 claim 必须由其 Citation 的
+`speaker_attribution` 表示，不能只藏在 `Insight.statement`。当 ContentItem 的 `speaker_map_status=unknown`
+时，只有 `speaker_attribution.status=none` 可继续一致性校验；`unknown` 或 `verified` 一律写
+`CitationCheck.consistency=not_support`、`consistency_reason=speaker_attribution_unknown`、`verdict=blocked`。
+当 map 为 verified 时，缺少或不匹配 `speaker_id` / `source_segment` 同样 blocked。报告投影只消费
+`verdict=pass` 的 Citation，且不得添加人物/角色发言归属。
 
 ### 洞察对象 (Insight)
 
@@ -318,7 +329,7 @@ P1b-2 的指标写模型由 collector、analysis 与 validation 的已提交写�
 | `reachability` | enum | Y | `pass` / `fail`（`retryable` 为重试中间态，不落最终值） |
 | `reachability_reason` | enum | Y | `ok` / `source_not_found` / `source_unreachable` / `quote_not_in_source` |
 | `consistency` | enum | Y | `support` / `not_support` / `uncertain` / `not_evaluated`（可达性 fail 时短路） |
-| `consistency_reason` | enum | Y | `ok` / `out_of_context` / `exaggeration` / `misattribution` / `uncertain` / `not_evaluated` |
+| `consistency_reason` | enum | Y | `ok` / `out_of_context` / `exaggeration` / `misattribution` / `speaker_attribution_unknown` / `uncertain` / `not_evaluated` |
 | `verdict` | enum | Y | `pass` / `blocked` / `flagged` |
 
 **整体校验报告 (ValidationReport)**
@@ -347,7 +358,7 @@ P1b-2 的指标写模型由 collector、analysis 与 validation 的已提交写�
 **`consistency_reason` 取值约束**（与 `consistency` 绑定，与 `verdict` 表共同形成全函数）：
 
 - `consistency = support` → `consistency_reason = ok`
-- `consistency = not_support` → 原文与 claim 有可判定冲突，或原文已有事实被断章取义、夸大、张冠李戴；`consistency_reason ∈ {out_of_context, exaggeration, misattribution}`
+- `consistency = not_support` → 原文与 claim 有可判定冲突，或原文已有事实被断章取义、夸大、张冠李戴，或 speaker attribution 未知/不匹配；`consistency_reason ∈ {out_of_context, exaggeration, misattribution, speaker_attribution_unknown}`
 - `consistency = uncertain` → 原文对 claim 的关键主体、数值、比较、范围或条件没有足够信息，既不能证实也不能反驳（仅仅“未提到”属于此类）；`consistency_reason = uncertain`
 - `consistency = not_evaluated`（短路） → `consistency_reason = not_evaluated`
 

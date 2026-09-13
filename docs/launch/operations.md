@@ -135,8 +135,8 @@ ADR-0027 以逐源策略取代它。**本说明 PR 不部署镜像或修改 AWS 
 迁移与回滚按以下顺序执行：
 
 1. 只读审计当前生产镜像、`TRANSCRIPT_FETCH` 值和实际已批准的 transcript Source；不得由全局为 `1` 推断白名单。
-2. 在隔离迁移中为所有 Source 建立默认 `off` 的逐源策略，并仅将审计通过的源明确写入 allowlist；seed 不得覆盖存量。
-3. 先发布含策略迁移的不可变镜像，保持两个全局开关关闭，核对 `off` 和 `observe` 的行为；observe 的网络采样需第二个开关和隔离 DB/archive。
+2. 先发布含 Source schema、策略迁移和 policy-aware collector 的不可变镜像，保持两个全局开关关闭，核对实际运行版本以及所有 Source 的默认 `off` 不影响 RSS/show-notes 采集。
+3. 仅在该镜像已运行后，以受控迁移为所有 Source 建立逐源策略；仅将步骤 1 审计通过的源明确写入 allowlist，seed 不得覆盖存量。`observe` 的网络采样仍需第二个开关和隔离 DB/archive。
 4. 每个 Source 依次 `off → observe → enabled`，并满足
    [`podcast-transcript-acquisition.md`](../plan/specs/podcast-transcript-acquisition.md) 的策略专属准入门。回滚先设该 Source 为 `off`；紧急情况设 `TRANSCRIPT_FETCH=0`。
 

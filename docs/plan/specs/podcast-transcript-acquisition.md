@@ -35,6 +35,10 @@ Source 是否采集：
 `eligible candidate` 指已由 RSS audio / podcast 元数据识别、且允许尝试公开 transcript 的播客单集。
 限额只暂停 transcript；RSS 采集不能被暂停或熔断。
 
+`off` 时上述策略字段可缺省且不得被读取；`observe` 或 `enabled` 时，strategy、四项限额及非空
+`transcript_policy_version` 均为必填。任何会改变候选、预筛决策或请求行为的变更（mode、strategy、
+限额、topic 关联、规则或 adapter）必须先升级 policy version，不能覆盖既有事实。
+
 ### 全局总熔断与逐源策略
 
 `TRANSCRIPT_FETCH` 是 transcript 网络请求的总熔断：为 `0` 时，任何模式均不得请求
@@ -76,7 +80,7 @@ The Pragmatic Engineer 是 newsletter 与播客共用一个 Substack feed 的例
 
 ## 说话人归属
 
-无可靠 speaker map 的转写一律 `attribution=unknown`。该状态必须由结构化输出、验证和报告投影共同执行：未知状态禁止生成或渲染任何人物/角色发言归属，允许的表述只有“节目转写提到”。这不改变 topic 路由、主题选段或 validator window，但新增跨层准入契约：在任一 Source 进入 `enabled` 前，analyzer 必须标注该状态，validator 必须 fail-closed 阻断人物/角色发言归属，报告投影不得绕过该阻断。speaker 归属的后续开放必须提供 source segment、speaker ID 和稳定的人名映射。
+无可靠 speaker map 的转写一律 `attribution=unknown`。该状态必须由结构化输出、验证和报告投影共同执行：未知状态禁止生成或渲染任何人物/角色发言归属，允许的表述只有“节目转写提到”。这不改变 topic 路由、主题选段或 validator window，但新增跨层准入契约：在任一 Source 进入 `enabled` 前，analyzer 必须按 `architecture.md` 的结构化 attribution 字段标注，validator 必须以 `speaker_attribution_unknown` fail-closed 阻断人物/角色发言归属，报告投影只能消费通过该规则的引用，不能重写或绕过该阻断。speaker 归属的后续开放必须提供 evidence 中的 speaker map、source segment、speaker ID 和稳定的人名映射。
 
 ## 指标与准入
 
@@ -89,6 +93,8 @@ The Pragmatic Engineer 是 newsletter 与播客共用一个 Substack feed 的例
 - 标为 `transcript` stratum 的 cohort 必须只含 `body_kind=transcript`；show notes 或 article fallback
   不能借该标签参与全文指标或基线对比。
 - 上述 `attribution=unknown` 的跨层 fail-closed 实现和测试已完成。
+  测试至少覆盖 unknown attribution 被 blocked 且不进入报告、verified attribution 缺 source segment/map
+  被 blocked、以及只有 `attribution=none` 的 transcript citation 可正常投影。
 
 `all` 是受配额保护的全取对照：它必须满足共同门槛，但不适用召回和降本门，且不得让
 `hard_negative` 跳过 eligible candidate。`relevant_only` 除共同门槛外，离线 heldout 还必须满足：
