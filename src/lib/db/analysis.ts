@@ -31,6 +31,27 @@ interface CitationRow {
   claim: string;
   quote: string;
   locator: string; // JSON
+  speaker_attribution: string;
+}
+
+function speakerAttributionForWrite(citation: Insight["citations"][number]): string {
+  const attribution = citation.speaker_attribution ?? { status: "none" as const };
+  if (attribution.status === "verified" && (!attribution.speaker_id || !attribution.source_segment)) {
+    throw new Error("verified_speaker_attribution_evidence_required");
+  }
+  if (attribution.status !== "verified" && (attribution.speaker_id || attribution.source_segment)) {
+    throw new Error("unverified_speaker_attribution_evidence_forbidden");
+  }
+  return j(attribution);
+}
+
+function speakerAttributionFromRow(value: string): Insight["citations"][number]["speaker_attribution"] | undefined {
+  try {
+    const attribution = JSON.parse(value) as Insight["citations"][number]["speaker_attribution"];
+    return attribution?.status && attribution.status !== "none" ? attribution : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** insight 行 + 其 citation → Insight 对象（单一来源；原 analysis/graph/ppt-export 四处拷贝收敛于此）。
@@ -53,6 +74,7 @@ export function rowToInsight(db: DB, r: InsightRow): Insight {
       content_item_id: c.content_item_id, quote: c.quote, locator: JSON.parse(c.locator),
       ...(c.citation_ref ? { citation_ref: c.citation_ref } : {}),
       ...(c.claim ? { claim: c.claim } : {}),
+      ...(speakerAttributionFromRow(c.speaker_attribution) ? { speaker_attribution: speakerAttributionFromRow(c.speaker_attribution) } : {}),
     })),
     source_count: r.source_count,
     multi_source: r.multi_source === 1,
@@ -83,8 +105,8 @@ export function saveAnalysisBatch(db: DB, batch: AnalysisBatch, afterSave?: () =
        VALUES (@id,@batch_id,@topic_id,@type,@event_id,@statement,@statement_citation_index,@headline,@importance,@importance_basis,@source_count,@multi_source,@time_window,@confidence,@language,@is_followup,@entities,@tags)`,
     );
     const citStmt = db.prepare(
-      `INSERT INTO citation (insight_id,citation_index,content_item_id,citation_ref,claim,quote,locator)
-       VALUES (@insight_id,@citation_index,@content_item_id,@citation_ref,@claim,@quote,@locator)`,
+      `INSERT INTO citation (insight_id,citation_index,content_item_id,citation_ref,claim,quote,locator,speaker_attribution)
+       VALUES (@insight_id,@citation_index,@content_item_id,@citation_ref,@claim,@quote,@locator,@speaker_attribution)`,
     );
     const auditStmt = db.prepare(
       `INSERT INTO display_coverage_audit
@@ -109,6 +131,7 @@ export function saveAnalysisBatch(db: DB, batch: AnalysisBatch, afterSave?: () =
         citStmt.run({
           insight_id: ins.id, citation_index: i, content_item_id: c.content_item_id,
           citation_ref: c.citation_ref ?? "", claim: c.claim ?? "", quote: c.quote, locator: j(c.locator),
+          speaker_attribution: speakerAttributionForWrite(c),
         }),
       );
     }

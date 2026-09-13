@@ -55,7 +55,7 @@ describe("loadStaticConfig + 播种 + 合并", () => {
     const source = cfg.defaultSources.find((candidate) => candidate.id === "src_chain_of_thought");
     expect(source).toMatchObject({
       endpoint: "https://feeds.transistor.fm/chain-of-thought", topic_ids: ["t_code_agents"],
-      transcript_mode: "off", transcript_strategy: "all", enabled: true,
+      transcript_mode: "off", transcript_strategy: "all", enabled: false,
     });
     seedDefaults(db, cfg);
     expect(db.prepare("SELECT transcript_mode,transcript_strategy FROM source WHERE id=?").get("src_chain_of_thought"))

@@ -14,7 +14,7 @@ const UTC_INSTANT = /^(\d{4}-\d{2}-\d{2})T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const FUNNEL_STAGES = ["received", "accepted", "processed", "validated", "published"] as const;
 const TERMINAL_STAGES = ["failed", "cancelled", "timed_out", "rejected"] as const;
-const REASON_CODES = new Set(["source_not_found", "source_unreachable", "quote_not_in_source", "out_of_context", "exaggeration", "misattribution", "uncertain", "not_evaluated", "event_conflict", "authorization_denied", "internal_error"]);
+const REASON_CODES = new Set(["source_not_found", "source_unreachable", "quote_not_in_source", "out_of_context", "exaggeration", "misattribution", "speaker_attribution_unknown", "uncertain", "not_evaluated", "event_conflict", "authorization_denied", "internal_error"]);
 type FunnelStage = (typeof FUNNEL_STAGES)[number] | (typeof TERMINAL_STAGES)[number];
 type EventType = "entered" | "terminal";
 

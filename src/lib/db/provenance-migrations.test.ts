@@ -21,6 +21,31 @@ describe("provenance migration runner", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  it("rebuilds the deployed citation_check constraint before speaker-attribution blocks are emitted", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ia-citation-check-"));
+    const path = join(dir, "insight.db");
+    const legacy = openDb(path);
+    legacy.pragma("foreign_keys = OFF");
+    legacy.exec(`DROP TABLE citation_check;
+      CREATE TABLE citation_check (
+        batch_id TEXT NOT NULL, insight_id TEXT NOT NULL, citation_index INTEGER NOT NULL,
+        reachability TEXT NOT NULL, reachability_reason TEXT NOT NULL, consistency TEXT NOT NULL,
+        consistency_reason TEXT NOT NULL CHECK (consistency_reason IN ('ok','out_of_context','exaggeration','misattribution','uncertain','not_evaluated')),
+        verdict TEXT NOT NULL, PRIMARY KEY (batch_id, insight_id, citation_index)
+      );`);
+    legacy.close();
+
+    const upgraded = openDb(path);
+    const ddl = (upgraded.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='citation_check'").get() as { sql: string }).sql;
+    expect(ddl).toContain("speaker_attribution_unknown");
+    upgraded.pragma("foreign_keys = OFF");
+    expect(() => upgraded.prepare(`INSERT INTO citation_check
+      (batch_id,insight_id,citation_index,reachability,reachability_reason,consistency,consistency_reason,verdict)
+      VALUES ('b','i',0,'pass','ok','not_support','speaker_attribution_unknown','blocked')`).run()).not.toThrow();
+    upgraded.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
   it("applies once, records its checksum, and is safe to rerun", () => {
     const db = openDb(":memory:");
     expect(() => assertProvenanceSchema(db)).toThrow("has not been applied");

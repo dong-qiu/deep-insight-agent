@@ -11,7 +11,7 @@ import { assertProvenanceSchema } from "./provenance-migrations.js";
 import { assertDeploymentIdentity } from "./deployment.js";
 import { reconcileReportEffects } from "./reports.js";
 import { reconcileRawArchiveEffects } from "./raw-archive.js";
-import { SCHEMA_SQL } from "./schema.js";
+import { citationCheckTableSql, SCHEMA_SQL } from "./schema.js";
 
 export type DB = Database.Database;
 
@@ -57,6 +57,24 @@ function columnExists(db: DB, table: string, column: string): boolean {
   return (db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).some((c) => c.name === column);
 }
 
+/** SQLite cannot alter a CHECK constraint in place. Rebuild this compact, append-only validation
+ * projection from the schema fragment before a future validator may emit the new fail-closed
+ * speaker-attribution reason. */
+function migrateCitationCheckReason(db: DB): void {
+  const current = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='citation_check'")
+    .get() as { sql: string } | undefined;
+  if (!current || current.sql.includes("speaker_attribution_unknown")) return;
+  db.transaction(() => {
+    db.exec("ALTER TABLE citation_check RENAME TO citation_check_legacy");
+    db.exec(citationCheckTableSql());
+    db.exec(`INSERT INTO citation_check
+      (batch_id,insight_id,citation_index,reachability,reachability_reason,consistency,consistency_reason,verdict)
+      SELECT batch_id,insight_id,citation_index,reachability,reachability_reason,consistency,consistency_reason,verdict
+      FROM citation_check_legacy`);
+    db.exec("DROP TABLE citation_check_legacy");
+  })();
+}
+
 function migrate(db: DB): void {
   // 洞察级护栏字段（round2）：旧库补列，已存在行取 DEFAULT 0（重跑管线即写入正确值）
   ensureColumn(db, "validation_result", "insights_total", "insights_total INTEGER NOT NULL DEFAULT 0");
@@ -86,6 +104,8 @@ function migrate(db: DB): void {
   // 稳定 ref 与原子 claim，不能把旧数据误报成已审计。
   ensureColumn(db, "citation", "citation_ref", "citation_ref TEXT NOT NULL DEFAULT ''");
   ensureColumn(db, "citation", "claim", "claim TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, "citation", "speaker_attribution", "speaker_attribution TEXT NOT NULL DEFAULT '{\"status\":\"none\"}'");
+  migrateCitationCheckReason(db);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_citation_ref ON citation(citation_ref);
     CREATE TABLE IF NOT EXISTS display_coverage_audit (
       batch_id TEXT NOT NULL REFERENCES analysis_batch(id), insight_id TEXT NOT NULL REFERENCES insight(id),
@@ -151,6 +171,15 @@ function migrate(db: DB): void {
   ensureColumn(db, "source", "transcript_max_bytes_per_run", "transcript_max_bytes_per_run INTEGER NOT NULL DEFAULT 5242880 CHECK (transcript_max_bytes_per_run > 0)");
   ensureColumn(db, "source", "transcript_timeout_budget_ms", "transcript_timeout_budget_ms INTEGER NOT NULL DEFAULT 30000 CHECK (transcript_timeout_budget_ms > 0)");
   ensureColumn(db, "source", "transcript_host_qps", "transcript_host_qps REAL NOT NULL DEFAULT 0.5 CHECK (transcript_host_qps > 0)");
+  // Existing rows keep their historic, non-policy-aware mode. A new mode must carry an explicit
+  // version; repository writes enforce the same constraint for both old and fresh databases.
+  ensureColumn(db, "source", "transcript_policy_version", "transcript_policy_version TEXT");
+  db.exec("UPDATE source SET transcript_mode='off' WHERE transcript_mode <> 'off' AND (transcript_policy_version IS NULL OR trim(transcript_policy_version) = '')");
+  // Transcript speaker attribution is fail-closed. Historical text has no evidence envelope,
+  // so it remains not_applicable rather than being inferred as verified.
+  ensureColumn(db, "content_item", "speaker_map_status", "speaker_map_status TEXT NOT NULL DEFAULT 'not_applicable' CHECK (speaker_map_status IN ('not_applicable','unknown','verified'))");
+  ensureColumn(db, "content_item", "speaker_map_ref", "speaker_map_ref TEXT");
+  db.exec("UPDATE content_item SET speaker_map_status='unknown', speaker_map_ref=NULL WHERE body_kind='transcript' AND speaker_map_status='not_applicable'");
   // 技术规划工作台：旧方向从 version=1 起；映射词表变更只标 stale，不会改写人工决策。
   ensureColumn(db, "topic_direction", "version", "version INTEGER NOT NULL DEFAULT 1");
   ensureColumn(db, "technology_opportunity", "mapping_state", "mapping_state TEXT NOT NULL DEFAULT 'current' CHECK (mapping_state IN ('current','stale'))");

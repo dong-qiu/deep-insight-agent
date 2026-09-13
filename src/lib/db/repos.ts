@@ -10,23 +10,66 @@ import { canonicalHash, projectTrace } from "./provenance-facts.js";
 const j = (v: unknown): string => JSON.stringify(v);
 const b = (v: boolean): number => (v ? 1 : 0);
 
+type TranscriptPolicy = Pick<Source,
+  "transcript_mode" | "transcript_strategy" | "transcript_max_items_per_run" |
+  "transcript_max_bytes_per_run" | "transcript_timeout_budget_ms" | "transcript_host_qps" |
+  "transcript_policy_version"
+>;
+
+/** Resolve optional legacy Source fields at the persistence boundary. `off` keeps its version
+ * empty; a policy-aware mode must be explicitly versioned before any collector may read it. */
+function transcriptPolicyForWrite(source: Source): Required<TranscriptPolicy> {
+  const transcript_mode = source.transcript_mode ?? "off";
+  const transcript_strategy = source.transcript_strategy ?? "relevant_only";
+  const transcript_max_items_per_run = source.transcript_max_items_per_run ?? 5;
+  const transcript_max_bytes_per_run = source.transcript_max_bytes_per_run ?? 5 * 1024 * 1024;
+  const transcript_timeout_budget_ms = source.transcript_timeout_budget_ms ?? 30_000;
+  const transcript_host_qps = source.transcript_host_qps ?? 0.5;
+  const transcript_policy_version = source.transcript_policy_version?.trim() || null;
+
+  if (transcript_mode !== "off" && !transcript_policy_version) {
+    throw new Error("transcript_policy_version_required");
+  }
+  if (
+    !Number.isInteger(transcript_max_items_per_run) || transcript_max_items_per_run <= 0 ||
+    !Number.isInteger(transcript_max_bytes_per_run) || transcript_max_bytes_per_run <= 0 ||
+    !Number.isInteger(transcript_timeout_budget_ms) || transcript_timeout_budget_ms <= 0 ||
+    !Number.isFinite(transcript_host_qps) || transcript_host_qps <= 0
+  ) {
+    throw new Error("invalid_transcript_policy_limits");
+  }
+  return {
+    transcript_mode, transcript_strategy, transcript_max_items_per_run,
+    transcript_max_bytes_per_run, transcript_timeout_budget_ms, transcript_host_qps,
+    transcript_policy_version: transcript_mode === "off" ? null : transcript_policy_version,
+  };
+}
+
+/** Only a policy version change can authorize a change to collector decision semantics. Adapter
+ * versions are emitted with each acquisition fact; their rollout code must likewise bump it. */
+function transcriptPolicySemantics(source: Source, policy: Required<TranscriptPolicy>): string {
+  return JSON.stringify({
+    mode: policy.transcript_mode, strategy: policy.transcript_strategy,
+    max_items: policy.transcript_max_items_per_run, max_bytes: policy.transcript_max_bytes_per_run,
+    timeout_ms: policy.transcript_timeout_budget_ms, host_qps: policy.transcript_host_qps,
+    topic_ids: [...source.topic_ids].sort(),
+  });
+}
+
 // ── Source ──
 export function insertSource(db: DB, s: Source): void {
+  const policy = transcriptPolicyForWrite(s);
   db.prepare(
     `INSERT INTO source (id,name,type,endpoint,topic_ids,fetch_interval,backfill,enabled,fetch_mode,content_container,
-      transcript_mode,transcript_strategy,transcript_max_items_per_run,transcript_max_bytes_per_run,transcript_timeout_budget_ms,transcript_host_qps)
+      transcript_mode,transcript_strategy,transcript_max_items_per_run,transcript_max_bytes_per_run,transcript_timeout_budget_ms,transcript_host_qps,transcript_policy_version)
      VALUES (@id,@name,@type,@endpoint,@topic_ids,@fetch_interval,@backfill,@enabled,@fetch_mode,@content_container,
-      @transcript_mode,@transcript_strategy,@transcript_max_items_per_run,@transcript_max_bytes_per_run,@transcript_timeout_budget_ms,@transcript_host_qps)`,
+      @transcript_mode,@transcript_strategy,@transcript_max_items_per_run,@transcript_max_bytes_per_run,@transcript_timeout_budget_ms,@transcript_host_qps,@transcript_policy_version)`,
   ).run({
     id: s.id, name: s.name, type: s.type, endpoint: s.endpoint,
     topic_ids: j(s.topic_ids), fetch_interval: s.fetch_interval,
     backfill: s.backfill ? j(s.backfill) : null, enabled: b(s.enabled),
     fetch_mode: s.fetch_mode ?? "feed", content_container: s.content_container ?? null,
-    transcript_mode: s.transcript_mode ?? "off", transcript_strategy: s.transcript_strategy ?? "relevant_only",
-    transcript_max_items_per_run: s.transcript_max_items_per_run ?? 5,
-    transcript_max_bytes_per_run: s.transcript_max_bytes_per_run ?? 5 * 1024 * 1024,
-    transcript_timeout_budget_ms: s.transcript_timeout_budget_ms ?? 30_000,
-    transcript_host_qps: s.transcript_host_qps ?? 0.5,
+    ...policy,
   });
 }
 export function getSource(db: DB, id: string): Source | null {
@@ -52,6 +95,8 @@ function rowToSource(r: Record<string, unknown>): Source {
     transcript_max_bytes_per_run: Number(r.transcript_max_bytes_per_run) || 5 * 1024 * 1024,
     transcript_timeout_budget_ms: Number(r.transcript_timeout_budget_ms) || 30_000,
     transcript_host_qps: Number(r.transcript_host_qps) || 0.5,
+    transcript_policy_version: typeof r.transcript_policy_version === "string" && r.transcript_policy_version.trim()
+      ? r.transcript_policy_version.trim() : null,
     disabled_reason: (r.disabled_reason as string) || null,
     disabled_at: (r.disabled_at as string) || null,
     circuit_reset_at: (r.circuit_reset_at as string) || null,
@@ -62,9 +107,15 @@ function rowToSource(r: Record<string, unknown>): Source {
  *  那由 setCircuit/clearCircuit 专管。但**人工把系统熔断源拉回 enabled=1 → 自动 clearCircuit**（ADR-0008 决定②，
  *  评审🔴：否则留 enabled=1∧reason=circuit_open 脏态 + consecutiveFails 反扑）。返 changes 数。 */
 export function updateSource(db: DB, s: Source): number {
-  const prev = db.prepare("SELECT disabled_reason FROM source WHERE id=?").get(s.id) as
-    | { disabled_reason: string | null }
-    | undefined;
+  const prev = getSource(db, s.id);
+  const policy = transcriptPolicyForWrite(s);
+  if (
+    prev && prev.transcript_mode !== "off" && policy.transcript_mode !== "off" &&
+    transcriptPolicySemantics(prev, transcriptPolicyForWrite(prev)) !== transcriptPolicySemantics(s, policy) &&
+    policy.transcript_policy_version === prev.transcript_policy_version
+  ) {
+    throw new Error("transcript_policy_version_must_change");
+  }
   const r = db.prepare(
     `UPDATE source SET name=@name,type=@type,endpoint=@endpoint,
        topic_ids=@topic_ids,fetch_interval=@fetch_interval,backfill=@backfill,enabled=@enabled,
@@ -72,6 +123,7 @@ export function updateSource(db: DB, s: Source): number {
        transcript_mode=@transcript_mode,transcript_strategy=@transcript_strategy,
        transcript_max_items_per_run=@transcript_max_items_per_run,transcript_max_bytes_per_run=@transcript_max_bytes_per_run,
        transcript_timeout_budget_ms=@transcript_timeout_budget_ms,transcript_host_qps=@transcript_host_qps,
+       transcript_policy_version=@transcript_policy_version,
        updated_at=datetime('now')
      WHERE id=@id`,
   ).run({
@@ -79,15 +131,24 @@ export function updateSource(db: DB, s: Source): number {
     topic_ids: j(s.topic_ids), fetch_interval: s.fetch_interval,
     backfill: s.backfill ? j(s.backfill) : null, enabled: b(s.enabled),
     fetch_mode: s.fetch_mode ?? "feed", content_container: s.content_container ?? null,
-    transcript_mode: s.transcript_mode ?? "off", transcript_strategy: s.transcript_strategy ?? "relevant_only",
-    transcript_max_items_per_run: s.transcript_max_items_per_run ?? 5,
-    transcript_max_bytes_per_run: s.transcript_max_bytes_per_run ?? 5 * 1024 * 1024,
-    transcript_timeout_budget_ms: s.transcript_timeout_budget_ms ?? 30_000,
-    transcript_host_qps: s.transcript_host_qps ?? 0.5,
+    ...policy,
   });
   // 人工拉回启用一个系统熔断源 → 清熔断态（写 circuit_reset_at 干净重数 consecutiveFails）
   if (s.enabled && prev?.disabled_reason === "circuit_open") clearCircuit(db, s.id);
   return r.changes;
+}
+
+/** Deterministic identity for a single acquisition stage. It deliberately excludes mutable
+ * outcome payload so a semantic mismatch becomes an append-only conflict instead of a new fact. */
+export function transcriptAcquisitionEventKey(
+  fact: Omit<TranscriptAcquisitionFact, "event_key">,
+): string {
+  return `taf_${canonicalHash({
+    source_id: fact.source_id, canonical_episode_url: fact.canonical_episode_url,
+    candidate_hash: fact.candidate_hash, transcript_policy_version: fact.transcript_policy_version,
+    mode: fact.mode, strategy: fact.strategy, execution_scope: fact.execution_scope,
+    stage: fact.stage, attempt: fact.attempt,
+  })}`;
 }
 
 /** Transcript diagnostics are idempotent observations. A conflicting replay is retained in its
@@ -96,27 +157,33 @@ export function appendTranscriptAcquisitionFact(
   db: DB,
   fact: TranscriptAcquisitionFact,
 ): { replayed: boolean } {
+  if (fact.event_key !== transcriptAcquisitionEventKey(fact)) {
+    throw new Error("transcript_acquisition_event_key_mismatch");
+  }
   const semantic_payload_hash = canonicalHash({
-    source_id: fact.source_id, episode_url: fact.episode_url, candidate_hash: fact.candidate_hash,
-    policy_version: fact.policy_version, adapter_version: fact.adapter_version, attempt: fact.attempt,
+    event_key: fact.event_key, source_id: fact.source_id, canonical_episode_url: fact.canonical_episode_url,
+    candidate_hash: fact.candidate_hash, transcript_policy_version: fact.transcript_policy_version,
+    mode: fact.mode, strategy: fact.strategy, execution_scope: fact.execution_scope, stage: fact.stage,
+    adapter_version: fact.adapter_version, attempt: fact.attempt,
     decision: fact.decision, outcome: fact.outcome, reason_code: fact.reason_code, bytes: fact.bytes,
     duration_ms: fact.duration_ms, fallback_body_kind: fact.fallback_body_kind,
-    content_item_id: fact.content_item_id, occurred_at: fact.occurred_at,
+    content_item_id: fact.content_item_id, raw_ref: fact.raw_ref, evidence_status: fact.evidence_status,
+    run_id: fact.run_id, occurred_at: fact.occurred_at,
   });
-  const existing = db.prepare("SELECT semantic_payload_hash FROM transcript_acquisition_fact WHERE id=?").get(fact.id) as
+  const existing = db.prepare("SELECT semantic_payload_hash FROM transcript_acquisition_fact WHERE event_key=?").get(fact.event_key) as
     | { semantic_payload_hash: string }
     | undefined;
   if (existing) {
     if (existing.semantic_payload_hash === semantic_payload_hash) return { replayed: true };
     db.prepare(
-      "INSERT INTO transcript_acquisition_conflict(id,event_id,existing_semantic_payload_hash,received_semantic_payload_hash,observed_at) VALUES (lower(hex(randomblob(16))),?,?,?,?)",
-    ).run(fact.id, existing.semantic_payload_hash, semantic_payload_hash, new Date().toISOString());
+      "INSERT INTO transcript_acquisition_conflict(id,event_key,existing_semantic_payload_hash,received_semantic_payload_hash,observed_at) VALUES (lower(hex(randomblob(16))),?,?,?,?)",
+    ).run(fact.event_key, existing.semantic_payload_hash, semantic_payload_hash, new Date().toISOString());
     throw new Error("transcript_acquisition_idempotency_conflict");
   }
   db.prepare(
     `INSERT INTO transcript_acquisition_fact
-      (id,source_id,episode_url,candidate_hash,policy_version,adapter_version,attempt,decision,outcome,reason_code,bytes,duration_ms,fallback_body_kind,content_item_id,occurred_at,semantic_payload_hash)
-     VALUES (@id,@source_id,@episode_url,@candidate_hash,@policy_version,@adapter_version,@attempt,@decision,@outcome,@reason_code,@bytes,@duration_ms,@fallback_body_kind,@content_item_id,@occurred_at,@semantic_payload_hash)`,
+      (event_key,source_id,canonical_episode_url,candidate_hash,transcript_policy_version,mode,strategy,execution_scope,stage,adapter_version,attempt,decision,outcome,reason_code,bytes,duration_ms,fallback_body_kind,content_item_id,raw_ref,evidence_status,run_id,occurred_at,semantic_payload_hash)
+     VALUES (@event_key,@source_id,@canonical_episode_url,@candidate_hash,@transcript_policy_version,@mode,@strategy,@execution_scope,@stage,@adapter_version,@attempt,@decision,@outcome,@reason_code,@bytes,@duration_ms,@fallback_body_kind,@content_item_id,@raw_ref,@evidence_status,@run_id,@occurred_at,@semantic_payload_hash)`,
   ).run({ ...fact, semantic_payload_hash });
   return { replayed: false };
 }
@@ -253,15 +320,34 @@ export function deleteTopic(db: DB, id: string): number {
 }
 
 // ── ContentItem ──
+function speakerMapForWrite(item: ContentItem): {
+  speaker_map_status: "not_applicable" | "unknown" | "verified";
+  speaker_map_ref: string | null;
+} {
+  if (item.body_kind !== "transcript") {
+    if (item.speaker_map_status && item.speaker_map_status !== "not_applicable") {
+      throw new Error("speaker_map_not_applicable_required");
+    }
+    return { speaker_map_status: "not_applicable", speaker_map_ref: null };
+  }
+  const speaker_map_status = item.speaker_map_status ?? "unknown";
+  const speaker_map_ref = item.speaker_map_ref?.trim() || null;
+  if (speaker_map_status === "not_applicable") throw new Error("transcript_speaker_map_status_required");
+  if (speaker_map_status === "verified" && !speaker_map_ref) throw new Error("verified_speaker_map_ref_required");
+  if (speaker_map_status !== "verified" && speaker_map_ref) throw new Error("unverified_speaker_map_ref_forbidden");
+  return { speaker_map_status, speaker_map_ref };
+}
+
 export function insertContentItem(db: DB, c: ContentItem): void {
+  const speakerMap = speakerMapForWrite(c);
   db.prepare(
     `INSERT INTO content_item
-       (id,source_id,url,title,author,published_at,fetched_at,language,topic_ids,tags,body,body_kind,raw_ref,content_hash,fetch_status)
-     VALUES (@id,@source_id,@url,@title,@author,@published_at,@fetched_at,@language,@topic_ids,@tags,@body,@body_kind,@raw_ref,@content_hash,@fetch_status)`,
+       (id,source_id,url,title,author,published_at,fetched_at,language,topic_ids,tags,body,body_kind,speaker_map_status,speaker_map_ref,raw_ref,content_hash,fetch_status)
+     VALUES (@id,@source_id,@url,@title,@author,@published_at,@fetched_at,@language,@topic_ids,@tags,@body,@body_kind,@speaker_map_status,@speaker_map_ref,@raw_ref,@content_hash,@fetch_status)`,
   ).run({
     id: c.id, source_id: c.source_id, url: c.url, title: c.title, author: c.author,
     published_at: c.published_at, fetched_at: c.fetched_at, language: c.language,
-    topic_ids: j(c.topic_ids), tags: j(c.tags), body: c.body, body_kind: c.body_kind, raw_ref: c.raw_ref,
+    topic_ids: j(c.topic_ids), tags: j(c.tags), body: c.body, body_kind: c.body_kind, ...speakerMap, raw_ref: c.raw_ref,
     content_hash: c.content_hash, fetch_status: c.fetch_status,
   });
 }
@@ -298,14 +384,16 @@ export function getContentByUrl(
 }
 /** 原地更新（data-collection AC2）：同 url 内容变化时刷新内容字段，保留 id / source_id / published_at。 */
 export function updateContentItem(db: DB, c: ContentItem): void {
+  const speakerMap = speakerMapForWrite(c);
   db.prepare(
     `UPDATE content_item
        SET title=@title, author=@author, fetched_at=@fetched_at, language=@language,
-           tags=@tags, body=@body, body_kind=@body_kind, raw_ref=@raw_ref, content_hash=@content_hash, fetch_status=@fetch_status
+           tags=@tags, body=@body, body_kind=@body_kind, speaker_map_status=@speaker_map_status, speaker_map_ref=@speaker_map_ref,
+           raw_ref=@raw_ref, content_hash=@content_hash, fetch_status=@fetch_status
      WHERE url=@url`,
   ).run({
     url: c.url, title: c.title, author: c.author, fetched_at: c.fetched_at, language: c.language,
-    tags: j(c.tags), body: c.body, body_kind: c.body_kind, raw_ref: c.raw_ref, content_hash: c.content_hash,
+    tags: j(c.tags), body: c.body, body_kind: c.body_kind, ...speakerMap, raw_ref: c.raw_ref, content_hash: c.content_hash,
     fetch_status: c.fetch_status,
   });
 }
@@ -340,13 +428,19 @@ export function listContentForTopic(
 }
 
 function rowToContentItem(r: Record<string, unknown>): ContentItem {
+  const body_kind = (r.body_kind as ContentItem["body_kind"]) ?? "article";
   return {
     id: r.id as string, source_id: r.source_id as string, url: r.url as string,
     title: r.title as string, author: (r.author as string) ?? null,
     published_at: (r.published_at as string) ?? null, fetched_at: r.fetched_at as string,
     language: r.language as ContentItem["language"], topic_ids: JSON.parse(r.topic_ids as string),
     tags: JSON.parse(r.tags as string), body: r.body as string,
-    body_kind: (r.body_kind as ContentItem["body_kind"]) ?? "article", raw_ref: r.raw_ref as string,
+    body_kind,
+    ...(body_kind === "transcript" ? {
+      speaker_map_status: r.speaker_map_status === "verified" ? "verified" : "unknown" as const,
+      speaker_map_ref: r.speaker_map_status === "verified" && r.speaker_map_ref ? r.speaker_map_ref as string : null,
+    } : {}),
+    raw_ref: r.raw_ref as string,
     content_hash: r.content_hash as string, fetch_status: r.fetch_status as ContentItem["fetch_status"],
   };
 }

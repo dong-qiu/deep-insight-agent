@@ -51,6 +51,7 @@ export function sourceConfigSnapshot(source: Source): Record<string, unknown> {
     transcript_max_bytes_per_run: source.transcript_max_bytes_per_run ?? 5 * 1024 * 1024,
     transcript_timeout_budget_ms: source.transcript_timeout_budget_ms ?? 30_000,
     transcript_host_qps: String(source.transcript_host_qps ?? 0.5),
+    transcript_policy_version: source.transcript_policy_version ?? null,
   };
 }
 
