@@ -65,9 +65,9 @@ const mkPodcastRaw = (url: string, body: string, transcript_url?: string): RawIt
   ({ ...mkRaw(url, body, transcript_url), body_kind: "show_notes", is_podcast_episode: true });
 const mkRawWithKind = (url: string, body: string, kind: RawItem["body_kind"]): RawItem =>
   ({ url, title: "Ep", author: null, published_at: null, body, body_kind: kind, raw: "{}" });
-const transcriptSuccess = (body: string, raw_payload = body): TranscriptFetchResult => ({
+const transcriptSuccess = (body: string, raw_payload = body): Extract<TranscriptFetchResult, { outcome: "success" }> => ({
   outcome: "success", stable_url: "https://pod/ep.txt", raw_payload, cleaned_body: body,
-  bytes: Buffer.byteLength(raw_payload, "utf8"), duration_ms: 12, content_type: "text/plain",
+  speaker_attribution: "unknown", bytes: Buffer.byteLength(raw_payload, "utf8"), duration_ms: 12, content_type: "text/plain",
 });
 
 let db: DB;
@@ -248,6 +248,23 @@ describe("collector B族转写抓取（ADR-0027）", () => {
     const item = getContentItem(db, getContentByUrl(db, "https://pod/ep_fail")!.id)!;
     expect(item.body_kind).toBe("show_notes");
     expect(item.body).toBe("Show notes.");
+  });
+
+  it("多跳转写的 evidence envelope 同时保存节目页、实际 JSON 与 unknown attribution", async () => {
+    process.env.TRANSCRIPT_FETCH = "1";
+    raws.value = [{ ...mkPodcastRaw("https://pod/ep_multihop", "Show notes.", "https://pod/ep_multihop"), transcript_adapter: "substack_episode_hydration" }];
+    ctl.transcript = {
+      ...transcriptSuccess("Transcript facts.", '[{"text":"Transcript facts."}]'),
+      stable_url: "https://substackcdn.com/video_upload/post/1/transcription.json",
+      program_page: { stable_url: "https://pod/ep_multihop", raw_payload: "<html>episode page</html>", content_type: "text/html" },
+    };
+    await collectSource(db, sourcePod);
+    const item = getContentItem(db, getContentByUrl(db, "https://pod/ep_multihop")!.id)!;
+    expect(JSON.parse(readFileSync(join(process.env.DATA_DIR!, item.raw_ref), "utf8"))).toMatchObject({
+      adapter_version: "substack-episode-hydration-v1",
+      transcript: { speaker_attribution: "unknown", raw_payload: '[{"text":"Transcript facts."}]' },
+      program_page: { stable_url: "https://pod/ep_multihop", raw_payload: "<html>episode page</html>" },
+    });
   });
 
   it("全局应急开关关 → 新 url 不抓转写，存 show_notes", async () => {

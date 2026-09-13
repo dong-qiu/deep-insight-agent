@@ -1,6 +1,6 @@
 /** RSS 2.0 + Atom 适配器；抓取前查 robots.txt。Source.endpoint = feed URL。 */
 import type { Source } from "../types.js";
-import { extractCiteTranscript, extractHtmlTranscript, stripTranscript } from "./normalize.js";
+import { extractCiteTranscript, extractHtmlTranscript, stripTranscript, stripTranscriptSpeakerLabel } from "./normalize.js";
 import { UA, fetchRobots, isAllowed } from "./robots.js";
 import { MAX_RESPONSE_BYTES, fetchWithRetry, readTextCapped, safeFetch } from "./safe-fetch.js";
 import type { RawItem } from "./types.js";
@@ -192,12 +192,192 @@ export async function fetchRss(source: Source): Promise<RawItem[]> {
   return parseRss(feedXml, source.endpoint).slice(0, RSS_MAX_ITEMS);
 }
 
+function stableUrlEquals(candidate: unknown, expected: string): boolean {
+  if (typeof candidate !== "string") return false;
+  try { return stableTranscriptUrl(candidate) === expected; } catch { return false; }
+}
+
+function trustedSubstackTranscriptUrl(candidate: unknown): string | null {
+  if (typeof candidate !== "string") return null;
+  try {
+    const url = new URL(candidate);
+    const host = url.hostname.toLowerCase();
+    if (url.protocol !== "https:" || !(host === "substackcdn.com" || host.endsWith(".substackcdn.com"))
+      || !url.pathname.endsWith("/transcription.json")) return null;
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+function parseSubstackHydrationDocuments(pageHtml: string): unknown[] {
+  const documents: unknown[] = [];
+  const add = (textValue: string) => {
+    for (const candidate of [textValue.trim(), textValue.replace(/\\"/g, '"').replace(/\\u0026/g, "&").trim()]) {
+      try {
+        const parsed: unknown = JSON.parse(candidate);
+        documents.push(parsed);
+        if (typeof parsed === "string") {
+          try { documents.push(JSON.parse(parsed)); } catch { /* not a nested JSON string */ }
+        }
+        return;
+      } catch { /* try the normalized variant */ }
+    }
+  };
+  for (const match of pageHtml.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi)) {
+    const script = match[1];
+    add(script);
+    // Current Substack hydration uses JSON.parse("…") inside a JavaScript loader.  Parse only
+    // a complete JSON string literal; never evaluate the script or arbitrary JS expressions.
+    for (const call of script.matchAll(/JSON\.parse\(\s*"/g)) {
+      const start = (call.index ?? 0) + call[0].length - 1;
+      let escaped = false;
+      let end = -1;
+      for (let index = start + 1; index < script.length; index++) {
+        const character = script[index];
+        if (!escaped && character === '"') {
+          end = index;
+          break;
+        }
+        escaped = !escaped && character === "\\";
+        if (character !== "\\") escaped = false;
+      }
+      if (end >= 0) add(script.slice(start, end + 1));
+    }
+  }
+  return documents;
+}
+
+/** Finds only a transcript URL co-located with the canonical URL of the requested episode.
+ * We reject an unbound “first cdn_url”: hydration can include recommended episodes, whose signed
+ * transcript is not evidence for the page being read. */
+export function extractSubstackEpisodeTranscriptUrl(pageHtml: string, episodeUrl: string): string | null {
+  let expected: string;
+  try { expected = stableTranscriptUrl(episodeUrl); } catch { return null; }
+  const urls = new Set<string>();
+  const walk = (value: unknown): void => {
+    if (Array.isArray(value)) { value.forEach(walk); return; }
+    if (!value || typeof value !== "object") return;
+    const record = value as Record<string, unknown>;
+    const post = record.post && typeof record.post === "object" ? record.post as Record<string, unknown> : null;
+    const recordBound = [record.canonical_url, record.canonicalUrl, record.url]
+      .some((candidate) => stableUrlEquals(candidate, expected));
+    const postBound = post != null && [post.canonical_url, post.canonicalUrl, post.url]
+      .some((candidate) => stableUrlEquals(candidate, expected));
+    const addTranscription = (container: Record<string, unknown>): void => {
+      const transcription = container.transcription && typeof container.transcription === "object"
+        ? container.transcription as Record<string, unknown>
+        : container.transcript && typeof container.transcript === "object" ? container.transcript as Record<string, unknown> : null;
+      const url = transcription && trustedSubstackTranscriptUrl(transcription.cdn_url ?? transcription.cdnUrl ?? transcription.url);
+      if (url) urls.add(url);
+    };
+    const addDirectMediaTranscription = (container: Record<string, unknown>): void => {
+      for (const field of ["podcastUpload", "podcast_upload"]) {
+        const media = container[field];
+        if (media && typeof media === "object") addTranscription(media as Record<string, unknown>);
+      }
+    };
+    if (recordBound || postBound) {
+      // A wrapper with `post: currentEpisode` may carry its transcript beside `post`, while the
+      // current Substack shape carries it in `post.podcastUpload`.  Do not inherit this binding
+      // into arbitrary descendants: those include recommended episodes.
+      addTranscription(record);
+      addDirectMediaTranscription(record);
+    }
+    if (postBound && post) {
+      addTranscription(post);
+      addDirectMediaTranscription(post);
+    }
+    Object.values(record).forEach(walk);
+  };
+  parseSubstackHydrationDocuments(pageHtml).forEach(walk);
+  return urls.size === 1 ? [...urls][0] : null;
+}
+
+/** Substack transcript JSON is an array of segments. Speaker fields/labels are deliberately not
+ * retained because this adapter cannot prove an identity mapping for a segment. */
+export function extractSubstackTranscriptText(raw: string): string {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return "";
+    return parsed.flatMap((segment) => {
+      if (!segment || typeof segment !== "object") return [];
+      const value = (segment as { text?: unknown }).text;
+      const cleaned = typeof value === "string" ? stripTranscriptSpeakerLabel(value) : "";
+      return cleaned ? [cleaned] : [];
+    }).join("\n");
+  } catch {
+    return "";
+  }
+}
+
+async function fetchSubstackEpisodeTranscript(input: {
+  page_url: string;
+  stable_page_url: string;
+  page_raw_payload: string;
+  page_content_type: string | null;
+  max_bytes: number;
+  timeout_ms: number | undefined;
+  started_at: number;
+}): Promise<TranscriptFetchResult> {
+  const pageBytes = Buffer.byteLength(input.page_raw_payload, "utf8");
+  let stableUrl = input.stable_page_url;
+  try {
+    const transcriptUrl = extractSubstackEpisodeTranscriptUrl(input.page_raw_payload, input.page_url);
+    if (!transcriptUrl) {
+      return { outcome: "parse_empty", stable_url: input.stable_page_url, bytes: pageBytes,
+        duration_ms: Date.now() - input.started_at, reason_code: "substack_episode_binding_missing" };
+    }
+    const stableTranscript = stableTranscriptUrl(transcriptUrl);
+    stableUrl = stableTranscript;
+    const remainingBytes = input.max_bytes - pageBytes;
+    if (remainingBytes <= 0) {
+      return { outcome: "size_limited", stable_url: stableTranscript, bytes: pageBytes,
+        duration_ms: Date.now() - input.started_at, reason_code: "response_size_limit" };
+    }
+    const { origin, pathname } = new URL(transcriptUrl);
+    const rules = await fetchRobots(origin);
+    if (!isAllowed(rules, pathname)) {
+      return { outcome: "robots_denied", stable_url: stableTranscript, bytes: pageBytes,
+        duration_ms: Date.now() - input.started_at, reason_code: "robots_denied" };
+    }
+    const elapsed = Date.now() - input.started_at;
+    const timeout = input.timeout_ms == null ? undefined : Math.max(1, input.timeout_ms - elapsed);
+    const response = await safeFetch(transcriptUrl, { headers: { "user-agent": UA }, timeoutMs: timeout });
+    if (!response.ok) {
+      return { outcome: "http_error", stable_url: stableTranscript, bytes: pageBytes,
+        duration_ms: Date.now() - input.started_at, reason_code: `http_${response.status}` };
+    }
+    const rawPayload = await readTextCapped(response, remainingBytes);
+    const cleaned = extractSubstackTranscriptText(rawPayload);
+    const bytes = pageBytes + Buffer.byteLength(rawPayload, "utf8");
+    if (!cleaned) {
+      return { outcome: "parse_empty", stable_url: stableTranscript, bytes,
+        duration_ms: Date.now() - input.started_at, reason_code: "substack_segment_text_missing" };
+    }
+    return {
+      outcome: "success", stable_url: stableTranscript, raw_payload: rawPayload, cleaned_body: cleaned,
+      speaker_attribution: "unknown", bytes, duration_ms: Date.now() - input.started_at,
+      content_type: response.headers?.get("content-type") ?? null,
+      program_page: { stable_url: input.stable_page_url, raw_payload: input.page_raw_payload, content_type: input.page_content_type },
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const outcome = /响应体超过上限/i.test(message) ? "size_limited"
+      : /abort|timeout|timed out/i.test(message) ? "timeout" : "transient_error";
+    return {
+      outcome, stable_url: stableUrl, bytes: pageBytes, duration_ms: Date.now() - input.started_at,
+      reason_code: outcome === "size_limited" ? "response_size_limit" : outcome === "timeout" ? "request_timeout" : "request_error",
+    };
+  }
+}
+
 /** 抓取并清洗单集转写稿：对其 origin **单独**查 robots（与 feed 常不同源，评审 Major 5）+ SSRF 安全出网
- *  + 大小封顶 + VTT/SRT 噪声清洗。任何失败（robots 禁止 / 非 2xx / 网络 / 超限 / 清洗后空）返 null。
+ *  + 大小封顶 + VTT/SRT 噪声清洗。所有失败都返回可观测 structured outcome。
  *  由 collector 在去重后对**新 url** 调用（6a）。 */
 export async function fetchTranscript(
   url: string,
-  opts: { maxBytes?: number; timeoutMs?: number } = {},
+  opts: { maxBytes?: number; timeoutMs?: number; adapter?: "direct" | "substack_episode_hydration" } = {},
 ): Promise<TranscriptFetchResult> {
   const started = Date.now();
   let stableUrl = "";
@@ -213,6 +393,13 @@ export async function fetchTranscript(
       return { outcome: "http_error", stable_url: stableUrl, bytes: null, duration_ms: Date.now() - started, reason_code: `http_${res.status}` };
     }
     const raw = await readTextCapped(res, opts.maxBytes ?? MAX_RESPONSE_BYTES);
+    if (opts.adapter === "substack_episode_hydration") {
+      return fetchSubstackEpisodeTranscript({
+        page_url: url, stable_page_url: stableUrl, page_raw_payload: raw,
+        page_content_type: res.headers?.get("content-type") ?? null,
+        max_bytes: opts.maxBytes ?? MAX_RESPONSE_BYTES, timeout_ms: opts.timeoutMs, started_at: started,
+      });
+    }
     // 结构化 HTML 转写页走专用抽取（抽空 → null，不灌垃圾）：Lex 式 .ts-text（6d）、Changelog 式 <cite>/<p>
     // （2026-06-26）；其余 VTT/SRT/纯文本走 stripTranscript。
     const cleaned = /class="[^"]*\bts-text\b/i.test(raw)
@@ -225,6 +412,7 @@ export async function fetchTranscript(
     }
     return {
       outcome: "success", stable_url: stableUrl, raw_payload: raw, cleaned_body: cleaned,
+      speaker_attribution: "unknown",
       bytes: Buffer.byteLength(raw, "utf8"), duration_ms: Date.now() - started,
       content_type: res.headers?.get("content-type") ?? null,
     };

@@ -115,6 +115,7 @@ curl -fsS -X POST http://127.0.0.1:3000/api/cron -H "authorization: Bearer $CRON
 | `COST_LIMIT_MONTHLY` | 否 | 月成本上限（**USD**，自然月 UTC）；同上熔断 + 告警。未设 = 不限 |
 | `COST_ALERT_PCT` | 否 | 触顶前的告警阈值百分比，默认 80；任一维度达此比例发一次「接近上限」告警 |
 | `TRANSCRIPT_FETCH` | 否 | 全局**应急允许门**：`1` 仅允许 `source.transcript_mode=enabled` 的源抓取，绝不自行 opt-in；空/`0` 阻止所有全文请求。`observe` 仍只记决策，`off` 无记录/无请求。生产启用某源前须完成 ADR-0027 的 heldout、A1 与 14 天观察，不可只改此变量。 |
+| `TRANSCRIPT_SHADOW_FETCH` | 否 | 隔离 shadow 采样门：`1` 时仅 `observe` 源在 `DATA_DIR/podcast-shadow/` 写独立 SQLite 与原始 archive；不创建 ContentItem，不能进入日报。空/`0` 不下载样本。 |
 | `DATA_DIR`/`DB_PATH`/`INSIGHT_CONFIG_PATH` | 容器已设 | 勿在本地 dev 设；Dockerfile 已指向 `/data` 与打包内 `defaults.yaml` |
 
 ## 4. ⚠️ 中转站（Opus-only）约束
@@ -288,7 +289,7 @@ docker compose run --rm --no-deps migrate \
 
 > 验证别只看 `HTTP 200`（跨服务调用里 200 ≠ 成功，如飞书回 200+错误码）；用 `docker exec deep-insight-app-1 node /app/ops/probe-alert.mjs` 看渠道 + `code=0` + 真到达。
 
-> ⚠️ **运行时配置持久化（成本熔断 / 报告推送 / 转写采集 / 日报偏薄提醒）**：`COST_LIMIT_DAILY`/`COST_LIMIT_MONTHLY`/`COST_ALERT_PCT`/`REPORT_PUSH`/`PUBLIC_BASE_URL`/`TRANSCRIPT_FETCH`/`BRIEF_THIN_REPORT_ALERT`/`BRIEF_THIN_MIN_SELECTED`/`BRIEF_THIN_MAX_PUBLISHED` 这几个常在生产手动配。
+> ⚠️ **运行时配置持久化（成本熔断 / 报告推送 / 转写采集 / 日报偏薄提醒）**：`COST_LIMIT_DAILY`/`COST_LIMIT_MONTHLY`/`COST_ALERT_PCT`/`REPORT_PUSH`/`PUBLIC_BASE_URL`/`TRANSCRIPT_FETCH`/`TRANSCRIPT_SHADOW_FETCH`/`BRIEF_THIN_REPORT_ALERT`/`BRIEF_THIN_MIN_SELECTED`/`BRIEF_THIN_MAX_PUBLISHED` 这几个常在生产手动配。
 > - **`ops/aws/deploy.sh` 路径**：scp **全量覆盖**远程 `.env.local`（源 = 本地 `.env.local`，仅剔除 `DB_PATH`/`DATA_DIR`）。故生产值必须落进**本地** `.env.local`，否则下次 deploy 静默抹掉熔断/推送。已加两道护栏：`gen-env.sh` 重生成时**继承**旧 `.env.local` 的这些值；`deploy.sh` 投递前**体检缺失即告警**。
 > - **`deploy.yml`（CD）路径**：只下载版本化 `docker-compose.yml` 并拉取 GHCR 镜像，绝不覆盖 `.env.local`；首次仍需由 operator 在服务器配置好该文件。
 > - 仅调这几个值时：直接编辑服务器 `.env.local` 后 `docker compose up -d --force-recreate`（§7），**别重跑 `deploy.sh`/`gen-env.sh` 以免连带覆盖**；同时把值同步回本地 `.env.local` 留底。教训见 `docs/verify/mvp-gap-2026-06-07.md` §2.1。

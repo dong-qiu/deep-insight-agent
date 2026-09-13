@@ -13,6 +13,8 @@ export interface RawItem {
   /** iTunes 的标准 episodeType。只有 `trailer` 可作为已验证的低相关元数据特征。 */
   podcast_episode_type?: "full" | "trailer" | "bonus";
   transcript_url?: string; // 播客转写稿 URL（parseRss 从 <podcast:transcript> 解析；fetchRss 不抓取）
+  /** A source-specific discovery protocol; direct is the Podcasting 2.0 default. */
+  transcript_adapter?: "direct" | "substack_episode_hydration";
   raw: string; // 原始片段（JSON 串），collector 存档供校验反查
 }
 
@@ -25,9 +27,13 @@ export type TranscriptFetchResult =
     stable_url: string;
     raw_payload: string;
     cleaned_body: string;
+    /** No source-specific speaker map was verified.  Text may support facts, never a speaker role. */
+    speaker_attribution: "unknown";
     bytes: number;
     duration_ms: number;
     content_type: string | null;
+    /** Multi-hop providers additionally preserve the episode page that bound this transcript. */
+    program_page?: { stable_url: string; raw_payload: string; content_type: string | null };
   }
   | {
     outcome: "robots_denied" | "http_error" | "size_limited" | "timeout" | "parse_empty" | "transient_error";

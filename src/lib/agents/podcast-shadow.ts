@@ -97,6 +97,7 @@ export async function runPodcastTranscriptShadow(input: {
     lastTranscriptStartAtByOrigin.set(origin, Date.now());
     const result = await fetcher(raw.transcript_url, {
       maxBytes: Math.max(1, byteBudget - bytes), timeoutMs: Math.max(1, timeBudget - (Date.now() - started)),
+      adapter: raw.transcript_adapter ?? "direct",
     });
     bytes += result.bytes ?? 0;
     if (result.outcome === "success") {

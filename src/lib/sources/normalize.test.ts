@@ -43,8 +43,8 @@ describe("stripTranscript（ADR-0007 切片2）", () => {
     expect(out).toBe("Plain transcript text.");
     expect(stripTranscript(out)).toBe(out); // 幂等
   });
-  it("保留说话人标签（不误剥）", () => {
-    expect(stripTranscript("00:00:01.000 --> 00:00:02.000\nJohn: hi there")).toBe("John: hi there");
+  it("移除未经验证的说话人标签，防止排版被当作人物/角色归属", () => {
+    expect(stripTranscript("00:00:01.000 --> 00:00:02.000\nJohn: hi there")).toBe("hi there");
   });
   it("不误删正文：独立数字行 + 含 --> 的台词保留（评审 M1/M2）", () => {
     // "42" 后随正文（非时间轴）→ 不当 SRT 序号删；含 --> 但非行首时间戳 → 不当时间轴删
@@ -184,18 +184,18 @@ describe("extractHtmlTranscript（ADR-0007 切片6d：Lex 式 .ts-segment）", (
 
   it("逐段抽 ts-text、配 ts-name 成 '说话人: 正文'", () => {
     const html = `<html><body>${seg("Lex Fridman", "Hello there.")}${seg("Guest", "Hi Lex.")}</body></html>`;
-    expect(extractHtmlTranscript(html)).toBe("Lex Fridman: Hello there.\nGuest: Hi Lex.");
+    expect(extractHtmlTranscript(html)).toBe("Hello there.\nHi Lex.");
   });
 
   it("ts-text 内联标签被剥（stripHtml）", () => {
     const html = seg("Lex", 'See <a href="x">this <strong>paper</strong></a> now.');
-    expect(extractHtmlTranscript(html)).toBe("Lex: See this paper now.");
+    expect(extractHtmlTranscript(html)).toBe("See this paper now.");
   });
 
   it("不混入 ts-text 之外的页面 chrome（赞助/导航）", () => {
     const html = `<nav>Sponsor: BetterHelp</nav>${seg("Lex", "Real content.")}<footer>© 2026</footer>`;
     const out = extractHtmlTranscript(html);
-    expect(out).toBe("Lex: Real content.");
+    expect(out).toBe("Real content.");
     expect(out).not.toContain("Sponsor");
   });
 
@@ -209,7 +209,7 @@ describe("extractHtmlTranscript（ADR-0007 切片6d：Lex 式 .ts-segment）", (
       `<span class="ts-text">Still Lex, no name span.</span>` + // 续段：缺 ts-name
       `<span class="ts-name">Guest</span><span class="ts-text">Guest now.</span>`;
     // 有序扫描：续段归到上一个说话人 Lex，Guest 仍正确——而非整体错位
-    expect(extractHtmlTranscript(html)).toBe("Lex: First.\nLex: Still Lex, no name span.\nGuest: Guest now.");
+    expect(extractHtmlTranscript(html)).toBe("First.\nStill Lex, no name span.\nGuest now.");
   });
 
   it("text 先于任何 name 出现 → 无前缀（不臆造说话人）", () => {
@@ -224,30 +224,30 @@ describe("extractCiteTranscript（Changelog 网络 <cite>/<p> 转写页，2026-0
       `<cite>Adam Stacoviak:</cite><p>[00:00] Welcome, friends.</p>` +
       `<cite>Jerod Santo:</cite><p>[01:23] Glad to be here.</p>` +
       `</body></html>`;
-    expect(extractCiteTranscript(html)).toBe("Adam Stacoviak: Welcome, friends.\nJerod Santo: Glad to be here.");
+    expect(extractCiteTranscript(html)).toBe("Welcome, friends.\nGlad to be here.");
   });
 
   it("同一说话人多个 <p>：各成一行、沿用当前说话人", () => {
     const html = `<body><cite>Host:</cite><p>One.</p><p>[1:02:03] Two.</p></body>`;
-    expect(extractCiteTranscript(html)).toBe("Host: One.\nHost: Two.");
+    expect(extractCiteTranscript(html)).toBe("One.\nTwo.");
   });
 
   it("只扫 <body>：<head>/<title> 里的 <p> 不入正文", () => {
     const html = `<head><p>nav junk</p></head><body><cite>A:</cite><p>real.</p></body>`;
-    expect(extractCiteTranscript(html)).toBe("A: real.");
+    expect(extractCiteTranscript(html)).toBe("real.");
   });
 
   it("内联标签交 stripHtml 剥（加粗/链接不污染）", () => {
     const html = `<body><cite>A:</cite><p>see <strong>this</strong> <a href="x">link</a> now.</p></body>`;
-    expect(extractCiteTranscript(html)).toBe("A: see this link now.");
+    expect(extractCiteTranscript(html)).toBe("see this link now.");
   });
 
   it("<p> 先于任何 <cite> → 无前缀（不臆造说话人）", () => {
-    expect(extractCiteTranscript("<body><p>Intro line.</p><cite>A:</cite><p>real.</p></body>")).toBe("Intro line.\nA: real.");
+    expect(extractCiteTranscript("<body><p>Intro line.</p><cite>A:</cite><p>real.</p></body>")).toBe("Intro line.\nreal.");
   });
 
   it("无 <body> 标签 → 回退整段扫描（防漏）", () => {
-    expect(extractCiteTranscript("<cite>A:</cite><p>no body wrapper.</p>")).toBe("A: no body wrapper.");
+    expect(extractCiteTranscript("<cite>A:</cite><p>no body wrapper.</p>")).toBe("no body wrapper.");
   });
 
   it("无 <cite>/<p> 配对 → 返空串（交调用方回退）", () => {
