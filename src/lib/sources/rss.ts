@@ -33,7 +33,7 @@ function pickTranscriptUrl(node: any): string | undefined {
  * enclosure.  Newsletter RSS items must retain the generic `article` fallback. */
 function isPodcastEpisode(item: any, links: any[] = []): boolean {
   if (item["podcast:transcript"] || item["itunes:episode"] !== undefined || item["itunes:duration"] !== undefined
-    || item["itunes:season"] !== undefined || item["itunes:explicit"] !== undefined) return true;
+    || item["itunes:season"] !== undefined || item["itunes:explicit"] !== undefined || item["itunes:episodeType"] !== undefined) return true;
   const enclosures = [...asArray<any>(item.enclosure), ...links.filter((link) => link?.["@_rel"] === "enclosure")];
   return enclosures.some((entry) => /^audio\//i.test(String(entry?.["@_type"] ?? entry?.type ?? "")));
 }
@@ -45,6 +45,11 @@ function stableTranscriptUrl(input: string): string {
   url.search = "";
   url.hash = "";
   return url.toString();
+}
+
+function podcastEpisodeType(item: any): "full" | "trailer" | "bonus" | undefined {
+  const value = text(item["itunes:episodeType"]).trim().toLowerCase();
+  return value === "full" || value === "trailer" || value === "bonus" ? value : undefined;
 }
 
 /** 把条目 URL 按 feed base 归一为绝对 URL（ADR-0008 决定⑤）：部分 feed 给**相对** link（如 `/post/1`），
@@ -123,13 +128,14 @@ export function parseRss(feedXml: string, baseUrl?: string): RawItem[] {
   if (doc?.rss?.channel) {
     return asArray<any>(doc.rss.channel.item).map((it): RawItem => {
       const podcastEpisode = isPodcastEpisode(it);
+      const episodeType = podcastEpisodeType(it);
       return {
       url: itemUrl(it, baseUrl),
       title: text(it.title).replace(/\s+/g, " ").trim(),
       author: it.author ? text(it.author) : it["dc:creator"] ? text(it["dc:creator"]) : null,
       published_at: it.pubDate ? text(it.pubDate) : null,
       body: text(it["content:encoded"] ?? it.description).trim(),
-      ...(podcastEpisode ? { body_kind: "show_notes" as const, is_podcast_episode: true } : {}),
+      ...(podcastEpisode ? { body_kind: "show_notes" as const, is_podcast_episode: true, ...(episodeType ? { podcast_episode_type: episodeType } : {}) } : {}),
       transcript_url: pickTranscriptUrl(it["podcast:transcript"]),
       raw: JSON.stringify(it),
       };
@@ -142,13 +148,14 @@ export function parseRss(feedXml: string, baseUrl?: string): RawItem[] {
       const links = asArray<any>(e.link);
       const alt = links.find((l) => l["@_rel"] === "alternate")?.["@_href"] ?? links[0]?.["@_href"];
       const podcastEpisode = isPodcastEpisode(e, links);
+      const episodeType = podcastEpisodeType(e);
       return {
         url: resolveUrl(text(alt), baseUrl) || text(e.id),
         title: text(e.title).replace(/\s+/g, " ").trim(),
         author: e.author ? text(asArray<any>(e.author)[0]?.name ?? e.author) || null : null,
         published_at: text(e.published || e.updated) || null,
         body: text(e.content ?? e.summary).trim(),
-        ...(podcastEpisode ? { body_kind: "show_notes" as const, is_podcast_episode: true } : {}),
+        ...(podcastEpisode ? { body_kind: "show_notes" as const, is_podcast_episode: true, ...(episodeType ? { podcast_episode_type: episodeType } : {}) } : {}),
         transcript_url: pickTranscriptUrl(e["podcast:transcript"]),
         raw: JSON.stringify(e),
       };

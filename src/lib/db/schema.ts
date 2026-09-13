@@ -821,7 +821,7 @@ CREATE TABLE IF NOT EXISTS transcript_acquisition_fact (
   adapter_version TEXT NOT NULL,
   attempt INTEGER NOT NULL CHECK (attempt >= 0),
   decision TEXT CHECK (decision IN ('fetch','unknown','hard_negative')),
-  outcome TEXT NOT NULL CHECK (outcome IN ('decision','success','no_transcript','robots_denied','http_error','size_limited','timeout','parse_empty','transient_error','budget_limited','existing_url')),
+  outcome TEXT NOT NULL CHECK (outcome IN ('decision','success','no_transcript','robots_denied','http_error','size_limited','timeout','parse_empty','transient_error','budget_limited','policy_skipped','existing_url')),
   reason_code TEXT,
   bytes INTEGER CHECK (bytes IS NULL OR bytes >= 0),
   duration_ms INTEGER CHECK (duration_ms IS NULL OR duration_ms >= 0),

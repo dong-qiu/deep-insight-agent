@@ -26,6 +26,7 @@ export type TranscriptAcquisitionOutcome =
   | "parse_empty"
   | "transient_error"
   | "budget_limited"
+  | "policy_skipped"
   | "existing_url";
 
 /** 数据源配置（architecture 数据模型 · Source）。
@@ -114,6 +115,24 @@ export interface TranscriptAcquisitionFact {
   fallback_body_kind: Exclude<BodyKind, "transcript"> | null;
   content_item_id: string | null;
   occurred_at: string;
+}
+
+/** Aggregate read model for transcript acquisition diagnostics.  It is never an input to source
+ * health, topic selection, validator status, or report publication. */
+export interface TranscriptAcquisitionFunnel {
+  candidates: number;
+  decision_fetch: number;
+  decision_unknown: number;
+  decision_hard_negative: number;
+  no_transcript: number;
+  attempted: number;
+  succeeded: number;
+  fallback: number;
+  budget_limited: number;
+  policy_skipped: number;
+  existing_url: number;
+  bytes: number;
+  duration_ms: number;
 }
 
 /** 可溯源最小单位（architecture 数据模型 · Citation） */

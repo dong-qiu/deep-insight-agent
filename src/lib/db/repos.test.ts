@@ -7,9 +7,9 @@ import type { ContentItem, Run, Source, Topic } from "../types.js";
 import { type DB, openDb } from "./index.js";
 import {
   appendTranscriptAcquisitionFact,
-  clearCircuit, contentExists, finishRun, getContentByUrl, getContentItem, getRun, getSource,
+  clearCircuit, contentExists, finishRun, getContentByUrl, getContentItem, getRun, getSource, getTranscriptAcquisitionFunnel,
   getSourceBodyKinds, getTopic, hasRunningRun, insertContentItem, insertRun, insertSource,
-  insertTopic, listProbeCandidates, listRuns, listRunsForTopicSince, listSources, recoverOrphanedRuns,
+  insertTopic, listProbeCandidates, listRuns, listRunsForTopicSince, listSources, nextTranscriptAcquisitionAttempt, recoverOrphanedRuns,
   reviveSource, setCircuit, setLastProbe, setRunInserted, sumRunCostSince, updateContentItem, updateSource,
   updateTopic,
 } from "./repos.js";
@@ -110,9 +110,38 @@ it("transcript acquisition fact 幂等重放，冲突追加审计且不覆盖", 
   };
   expect(appendTranscriptAcquisitionFact(db, fact)).toEqual({ replayed: false });
   expect(appendTranscriptAcquisitionFact(db, fact)).toEqual({ replayed: true });
+  expect(appendTranscriptAcquisitionFact(db, { ...fact, occurred_at: "2026-09-14T00:00:00.000Z" })).toEqual({ replayed: true });
   expect(() => appendTranscriptAcquisitionFact(db, { ...fact, outcome: "success" })).toThrow("transcript_acquisition_idempotency_conflict");
   expect(db.prepare("SELECT COUNT(*) AS n FROM transcript_acquisition_conflict WHERE event_id='taf_1'").get()).toEqual({ n: 1 });
   expect(() => db.prepare("DELETE FROM transcript_acquisition_fact WHERE id='taf_1'").run()).toThrow("append-only");
+});
+
+it("transcript acquisition 的终态重试分配单调 attempt，而不是覆盖首次失败", () => {
+  insertSource(db, sampleSource);
+  const key = { source_id: sampleSource.id, episode_url: "https://pod.example/retry", candidate_hash: "candidate", policy_version: "v1" };
+  expect(nextTranscriptAcquisitionAttempt(db, key)).toBe(1);
+  appendTranscriptAcquisitionFact(db, {
+    id: "taf_retry_1", ...key, adapter_version: "rss-v1", attempt: 1, decision: "unknown", outcome: "timeout",
+    reason_code: "request_timeout", bytes: null, duration_ms: 30_000, fallback_body_kind: null, content_item_id: null, occurred_at: "2026-09-13T00:00:00.000Z",
+  });
+  expect(nextTranscriptAcquisitionAttempt(db, key)).toBe(2);
+});
+
+it("transcript acquisition funnel 只读聚合候选、决策、尝试和回退", () => {
+  insertSource(db, sampleSource);
+  const base = {
+    source_id: sampleSource.id, episode_url: "https://pod.example/ep-1", candidate_hash: "candidate",
+    policy_version: "v1", adapter_version: "rss-v1", decision: null, reason_code: null,
+    fallback_body_kind: null, content_item_id: null, occurred_at: "2026-09-13T00:00:00.000Z",
+  };
+  appendTranscriptAcquisitionFact(db, { ...base, id: "taf_decision", attempt: 0, decision: "unknown", outcome: "decision", bytes: null, duration_ms: null });
+  appendTranscriptAcquisitionFact(db, { ...base, id: "taf_success", attempt: 1, outcome: "success", bytes: 123, duration_ms: 45 });
+  appendTranscriptAcquisitionFact(db, { ...base, id: "taf_budget", attempt: 2, outcome: "budget_limited", bytes: null, duration_ms: null, fallback_body_kind: "show_notes" });
+  expect(getTranscriptAcquisitionFunnel(db, { sourceId: sampleSource.id })).toEqual({
+    candidates: 1, decision_fetch: 0, decision_unknown: 1, decision_hard_negative: 0,
+    no_transcript: 0, attempted: 1, succeeded: 1, fallback: 1, budget_limited: 1, policy_skipped: 0,
+    existing_url: 0, bytes: 123, duration_ms: 45,
+  });
 });
 
 it("Topic 往返 + enabledOnly 过滤", () => {

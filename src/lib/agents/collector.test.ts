@@ -8,7 +8,7 @@ import { type DB, openDb } from "../db/index.js";
 import { applyProvenanceMigrations } from "../db/provenance-migrations.js";
 import { SQLITE_P1_TELEMETRY_SINK } from "../capabilities/p1-telemetry-sqlite.js";
 import { claimSourceCollectTrace, createScheduledSourceCollectTrace, createSourceCollectTrace, getGenerationTraceStatus } from "../db/provenance.js";
-import { getContentByUrl, getContentItem, insertContentItem, insertSource, listContentForTopic } from "../db/repos.js";
+import { getContentByUrl, getContentItem, getTranscriptAcquisitionFunnel, insertContentItem, insertSource, insertTopic, listContentForTopic } from "../db/repos.js";
 import { captureRevision, entityKey } from "../db/provenance-facts.js";
 import { contentItemRef, contentItemRevisionSnapshot } from "../db/provenance-revisions.js";
 import * as rawArchive from "../db/raw-archive.js";
@@ -78,11 +78,13 @@ beforeEach(() => {
   insertSource(db, sourceAnq);
   insertSource(db, sourcePod);
   insertSource(db, sourceFullText);
+  insertTopic(db, { id: "t1", name: "Agents", keywords: ["coding agent"], language: "en", brief_schedule: "daily", enabled: true, facets: [] });
   article.fn.mockReset();
 });
 afterEach(() => {
   delete process.env.ARTICLE_FETCH;
   delete process.env.TRANSCRIPT_FETCH;
+  delete process.env.TRANSCRIPT_SHADOW_FETCH;
   delete process.env.ARTICLE_FETCH_MAX_PER_RUN;
   raws.value = [];
   ctl.transcript = null;
@@ -265,6 +267,68 @@ describe("collector B族转写抓取（ADR-0027）", () => {
     const item = getContentItem(db, getContentByUrl(db, "https://pod/ep_policy_off")!.id)!;
     expect(item.body_kind).toBe("show_notes");
     expect(item.body).toBe("Show notes.");
+  });
+
+  it("observe 只写候选/决策事实，绝不抓取或替换生产 show_notes", async () => {
+    process.env.TRANSCRIPT_FETCH = "1";
+    raws.value = [mkPodcastRaw("https://pod/ep_observe", "Show notes.", "https://pod/ep_observe.txt")];
+    ctl.transcript = transcriptSuccess("should NOT be used");
+    await collectSource(db, { ...sourcePod, transcript_mode: "observe" });
+    const item = getContentItem(db, getContentByUrl(db, "https://pod/ep_observe")!.id)!;
+    expect(item).toMatchObject({ body_kind: "show_notes", body: "Show notes." });
+    expect(getTranscriptAcquisitionFunnel(db, { sourceId: sourcePod.id })).toMatchObject({
+      candidates: 1, decision_unknown: 1, attempted: 0, succeeded: 0,
+    });
+  });
+
+  it("observe 的显式 shadow 开关只写隔离 SQLite/archive，不进入生产 ContentItem", async () => {
+    process.env.TRANSCRIPT_SHADOW_FETCH = "1";
+    raws.value = [mkPodcastRaw("https://pod/ep_shadow", "Show notes.", "https://pod/ep_shadow.txt")];
+    ctl.transcript = transcriptSuccess("Shadow-only transcript.", "raw shadow transcript");
+    await collectSource(db, { ...sourcePod, transcript_mode: "observe" });
+    expect(getContentItem(db, getContentByUrl(db, "https://pod/ep_shadow")!.id)!).toMatchObject({ body_kind: "show_notes", body: "Show notes." });
+    const shadow = openDb(join(process.env.DATA_DIR!, "podcast-shadow", "shadow.db"));
+    const row = shadow.prepare("SELECT outcome,raw_ref FROM podcast_shadow_observation WHERE source_id=?").get(sourcePod.id) as { outcome: string; raw_ref: string };
+    shadow.close();
+    expect(row).toMatchObject({ outcome: "success" });
+    expect(readFileSync(join(process.env.DATA_DIR!, "podcast-shadow", row.raw_ref), "utf8")).toContain("raw shadow transcript");
+  });
+
+  it("relevant_only 的 hard_negative 是策略跳过，不伪装成配额耗尽", async () => {
+    process.env.TRANSCRIPT_FETCH = "1";
+    raws.value = [{ ...mkPodcastRaw("https://pod/ep_trailer", "Season preview.", "https://pod/ep_trailer.txt"), title: "Season preview", podcast_episode_type: "trailer" }];
+    await collectSource(db, { ...sourcePod, transcript_strategy: "relevant_only" });
+    expect(getTranscriptAcquisitionFunnel(db, { sourceId: sourcePod.id })).toMatchObject({
+      candidates: 1, decision_hard_negative: 1, attempted: 0, budget_limited: 0, policy_skipped: 1,
+    });
+  });
+
+  it("配额只停止 transcript：超出单轮 item 上限的单集保留 show_notes 并有 budget fact", async () => {
+    process.env.TRANSCRIPT_FETCH = "1";
+    raws.value = [
+      mkPodcastRaw("https://pod/ep_budget_1", "Show notes one.", "https://pod/ep_budget_1.txt"),
+      mkPodcastRaw("https://pod/ep_budget_2", "Show notes two.", "https://pod/ep_budget_2.txt"),
+    ];
+    ctl.transcript = transcriptSuccess("Real transcript body.");
+    const result = await collectSource(db, { ...sourcePod, transcript_max_items_per_run: 1 });
+    expect(result.inserted).toBe(2);
+    expect(getContentItem(db, getContentByUrl(db, "https://pod/ep_budget_1")!.id)!.body_kind).toBe("transcript");
+    expect(getContentItem(db, getContentByUrl(db, "https://pod/ep_budget_2")!.id)!).toMatchObject({ body_kind: "show_notes", body: "Show notes two." });
+    expect(getTranscriptAcquisitionFunnel(db, { sourceId: sourcePod.id })).toMatchObject({
+      candidates: 2, attempted: 1, succeeded: 1, budget_limited: 1, fallback: 1,
+    });
+  });
+
+  it("已有 show_notes 也是固定 evidence version，不会被新 transcript 原地升级", async () => {
+    process.env.TRANSCRIPT_FETCH = "1";
+    const existing = rawToContentItem(mkPodcastRaw("https://pod/ep_fixed", "Original notes.", "https://pod/ep_fixed.txt"), sourcePod, "2026-06-20T00:00:00Z");
+    insertContentItem(db, existing);
+    raws.value = [mkPodcastRaw("https://pod/ep_fixed", "Changed notes.", "https://pod/ep_fixed.txt")];
+    ctl.transcript = transcriptSuccess("should NOT be used");
+    const result = await collectSource(db, sourcePod);
+    expect(result.skipped).toBeGreaterThanOrEqual(1);
+    expect(getContentItem(db, existing.id)!).toMatchObject({ body_kind: "show_notes", body: "Original notes." });
+    expect(getTranscriptAcquisitionFunnel(db, { sourceId: sourcePod.id })).toMatchObject({ existing_url: 1, attempted: 0 });
   });
 
   it("不降级：已是 transcript 的 url 再采到 show notes → 跳过、保留 transcript", async () => {

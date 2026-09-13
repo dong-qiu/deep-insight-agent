@@ -9,6 +9,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { getDb } from "../src/lib/db/index.js";
 import { listContentForTopic, listTopics } from "../src/lib/db/repos.js";
+import type { ContentItem } from "../src/lib/types.js";
 import { buildLocalEvalCases, missingRequiredSources, parseSourceIds } from "./build-local-eval-lib.js";
 
 const DEFAULT_OUT = "evals/dataset/insight-quality-multisource.local.jsonl";
@@ -20,9 +21,26 @@ function parsePositiveInt(raw: string | undefined, fallback: number, name: strin
   return value;
 }
 
+function parseBodyKind(raw: string | undefined): ContentItem["body_kind"] | undefined {
+  if (!raw?.trim()) return undefined;
+  if (raw === "article" || raw === "show_notes" || raw === "transcript") return raw;
+  throw new Error("EVAL_BODY_KIND 只能是 article、show_notes 或 transcript");
+}
+
+function parseStratum(raw: string | undefined): "arxiv" | "transcript" | undefined {
+  if (!raw?.trim()) return undefined;
+  if (raw === "arxiv" || raw === "transcript") return raw;
+  throw new Error("EVAL_STRATUM 只能是 arxiv 或 transcript");
+}
+
 const out = process.env.EVAL_LOCAL_OUT ?? DEFAULT_OUT;
 const manifestOut = process.env.EVAL_SOURCE_COHORT_MANIFEST;
 const requiredSourceIds = parseSourceIds(process.env.EVAL_REQUIRED_SOURCE_IDS, "EVAL_REQUIRED_SOURCE_IDS");
+const bodyKind = parseBodyKind(process.env.EVAL_BODY_KIND);
+const stratum = parseStratum(process.env.EVAL_STRATUM);
+if (stratum === "transcript" && bodyKind !== "transcript") {
+  throw new Error("transcript stratum 必须设置 EVAL_BODY_KIND=transcript，避免将 fallback 伪装为全文");
+}
 const minBody = parsePositiveInt(process.env.EVAL_MIN_BODY, 800, "EVAL_MIN_BODY");
 const perSource = parsePositiveInt(process.env.EVAL_PER_SOURCE, 2, "EVAL_PER_SOURCE");
 const maxItems = parsePositiveInt(process.env.EVAL_MAX_ITEMS, 8, "EVAL_MAX_ITEMS");
@@ -36,11 +54,12 @@ const result = buildLocalEvalCases(
   listTopics(db, { enabledOnly: true }),
   (topicId) => listContentForTopic(db, topicId, { limit: 2000 }),
   window,
-  { minBody, perSource, maxItems, requiredSourceIds, minimumSources },
+  { minBody, perSource, maxItems, requiredSourceIds, minimumSources, bodyKind },
 );
 
 mkdirSync(dirname(out), { recursive: true });
-writeFileSync(out, result.cases.length ? `${result.cases.map((entry) => JSON.stringify(entry)).join("\n")}\n` : "");
+const serializedCases = result.cases.map((entry) => JSON.stringify({ ...entry, ...(stratum ? { stratum } : {}) })).join("\n");
+writeFileSync(out, serializedCases ? serializedCases + "\n" : "");
 for (const skipped of result.skipped) {
   console.log(`  ⚠️ ${skipped.topicId}：富内容不足（${skipped.items} 条 / ${skipped.sources} 源），跳过`);
 }
@@ -52,7 +71,8 @@ for (const entry of result.cases) {
 const manifest = {
   generated_at: new Date().toISOString(),
   output: out,
-  options: { min_body: minBody, per_source: perSource, max_items: maxItems, minimum_sources: minimumSources, required_source_ids: requiredSourceIds },
+  options: { min_body: minBody, per_source: perSource, max_items: maxItems, minimum_sources: minimumSources,
+    required_source_ids: requiredSourceIds, body_kind: bodyKind ?? null, stratum: stratum ?? null },
   topics: result.cases.map((entry) => ({ topic_id: entry.topic.id, source_ids: [...new Set(entry.items.map((item) => item.source_id))], item_count: entry.items.length })),
   cohort: result.cohort,
 };
