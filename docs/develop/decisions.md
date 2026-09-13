@@ -312,6 +312,9 @@ Sonnet 降本」阻塞（`roadmap.md:102③`），成本无空间。本 ADR 范�
 
 ### 切片化落地（2026-06-20）
 
+> **历史运维语义已取代（2026-09-13）**：本节对 `TRANSCRIPT_FETCH` 的默认值和“全局开关即授权”
+> 的描述只记录当时上线状态；ADR-0027 定义新的逐源策略、总熔断和迁移要求。
+
 ADR 实现拆为可独立合入的小 PR，`TRANSCRIPT_FETCH` 默认关贯穿前 5 刀（行为中性）：
 - **切片1**（#76）数据模型地基：`content_item` 加 `body_kind`。
 - **切片2**（#78）`rss.ts` 读 `<podcast:transcript>` + 抓取 + `stripTranscript`（开关默认关）。
@@ -320,7 +323,7 @@ ADR 实现拆为可独立合入的小 PR，`TRANSCRIPT_FETCH` 默认关贯穿前
 - **切片6**（✅ 已上线，「点亮」刀，2026-06-20）——开关仍关贯穿 6a/6b、6c 翻开关上线：
   - **6a B 族重构**（代码、开关关、行为中性）：转写抓取从 `fetchRss` **移到 collector 去重后**——`fetchRss` 只解析 `transcript_url`、不抓；collector 对**库里没有的 url** 才抓转写（`fetchTranscript` 提为 sources 导出 helper、`getContentByUrl` 多返 `body_kind`），并**不降级**（已是 transcript 的 item 不被 show_notes 覆盖）。一举解决 Major6（根除跨 kind 原地改 body）+ 性能（不再每轮抓 50 集）。代价：迟到的转写不收（边缘）。
   - **6b transcript eval 数据集 + baseline 段**（✅ #88）：`evals/dataset` 加 `stratum:"transcript"` 真实样本（2 集 Practical AI 真转写 + 5 一致性对），跑 transcript eval、`baseline.json` 开 `transcript:{}` 段。真机结果：可达 100% / judge 100% / yield 0.692（provisional 小样本，yield 略低于暂定门 0.7，待扩样重标）。analyzer 模型可达性已探明（中转站 opus-4-7/4-8 可用、sonnet-4-6 403）。
-  - **6c 翻开关 + 真机验证**（✅ go-live，2026-06-20）：`TRANSCRIPT_FETCH=1` 固化进 `gen-env.sh`（#89）+ 经 SSM 翻生产 `.env.local` 开关 + `force-recreate`；生产实抓真实转写 **HTTP 200 + 合法 VTT**（Practical AI 44KB / Darknet 52KB，AWS 新加坡 IP 未被拦）；红线由已部署 validator blocking 守。collector「只抓新条目」→ 从上线时刻起对新发布剧集生效。
+  - **6c 翻开关 + 真机验证**（✅ go-live，2026-06-20）：`TRANSCRIPT_FETCH=1` 固化进 `gen-env.sh`（#89）+ 经 SSM 翻生产 `.env.local` 开关 + `force-recreate`；生产实抓真实转写 **HTTP 200 + 合法 VTT**（Practical AI 44KB / Darknet 52KB，AWS 新加坡 IP 未被拦）；红线由已部署 validator blocking 守。collector「只抓新条目」→ 从上线时刻起对新发布剧集生效。此为历史上线记录；其“全局开关单独授权抓取”的运维语义已由 ADR-0027 取代。
   - **6d 金牌源专用适配器** ——**经 2026-06-20 实测，现有源不需要**：Practical AI（`feeds.transistor.fm/...`）feed 内带 `<podcast:transcript>` **280/362**、Darknet（`podcast.darknetdiaries.com/`）**172/175**，**走标准 6c 路径即可**，无需 Changelog GitHub / 官网 `/transcript/` 专用适配器（本 ADR 早先"这些不在 feed 放标签"的前提已被证伪）。Risky Business（`risky.biz/feeds/...`）**0/100 且 feed/单集页/站点均无转写**——6d 也无从抓起，正确维持 `show_notes`。**结论：6d 对当前 3 源全部 N/A，仅当未来接入"转写在 feed 之外"的播客才需要，本 ADR 范围内不做。**
 - **不做**：音频下载、ASR/转写生成、多模态音频输入——均留长尾兜底，本 ADR 不含。
 
@@ -1374,3 +1377,41 @@ P0 已满足当前产品的可追溯与可审计交付；P1 的指标、完整�
 ### 后果
 
 P0 可在不写 P1 指标的默认路径上继续发布。未来恢复 P1 时，先将任务从 `dormant` 转为有明确验收项的 `P1-dev`，再完成生产准入；不得把生命周期记录当作授权。恢复清单见 `docs/plan/p1-dormant-reentry.md`。
+
+---
+
+## ADR-0027: 播客全文采取“RSS 高召回预筛 + 前向不可变证据”策略
+
+- **日期**: 2026-09-13
+- **状态**: Accepted
+
+### 背景
+
+公开播客的 RSS show notes 适合发现新集，但不能支撑访谈细节；完整 transcript 又可能很长、混有离题节目，并给
+混合 newsletter/podcast 源带来不必要的抓取成本。现有实现会对有 transcript URL 的新条目直接抓取，且 raw archive
+只保存 RSS item，不能证明入库正文来自实际下载的 transcript。更不能用原地更新历史摘要解决这个问题，因为 citation
+只绑定 ContentItem，改写正文会破坏既有的证据含义。
+
+### 决定
+
+1. 每源配置 `off|observe|enabled` 的 transcript mode、策略与资源上限；全局开关只作为网络总熔断。
+   RSS 可用性和 transcript acquisition 健康分离，一集转写失败绝不熔断 RSS 源。既有源只可由审计后的
+   显式白名单迁移到逐源策略，不能从旧开关推导。
+2. 在 transcript 下载前，以 RSS 元数据进行纯确定性、高召回预筛。`all` 保留为全取对照；仅
+   `relevant_only` 允许 heldout 已证实的 hard-negative 跳过，且须满足其召回和降本门。初版不以 LLM
+   作为线上拒绝门。
+3. 成功的 transcript 以 evidence envelope 归档实际 RSS、节目页及原始 transcript response，且 raw archive
+   验证通过前继续 fail-closed。无转写的播客正文显式为 `show_notes`，不伪装网页 `article`。
+4. 保持“只抓新 URL、不降级”不变量。若要补齐历史摘要，另设计 ContentEvidence/ContentVariant 和 citation evidence
+   version；本决定不授权原地回填。
+5. 无可靠 speaker map 时，输出、验证和渲染均确定性禁止人物/角色发言归属。此限制不能仅由 prompt
+   承担，且在任一 Source `enabled` 前必须已有跨层 fail-closed 实现。
+
+### 后果
+
+采集链多出独立的 acquisition 观测事实和隔离 shadow 路径。topic 路由、主题选段、引用可达性与 validator window
+算法不改变；但 speaker attribution 新增 analyzer、validator 和报告投影的 fail-closed 契约。Chain of Thought
+先以 `observe/all` 建立对照，经过共同门槛后才可单独批准 `enabled/all`；Pragmatic 先走
+`observe/relevant_only`。规范性状态机、指标和运维优先级以
+[`podcast-transcript-acquisition.md`](../plan/specs/podcast-transcript-acquisition.md) 为准，避免在 ADR 重复。
+所有 source/collector 改动遵循 Eval-Gate；A1 不完整时不得作为全文日报上线证明。
