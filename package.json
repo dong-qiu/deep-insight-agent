@@ -52,7 +52,7 @@
     "test:coverage": "vitest run --coverage && node --test ops/multica-task-watch.node-test.mjs"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "0.122.0",
+    "@anthropic-ai/sdk": "0.125.0",
     "@aws-sdk/client-kms": "3.1123.0",
     "@aws-sdk/client-s3": "3.1123.0",
     "@aws-sdk/client-secrets-manager": "3.1123.0",
@@ -68,15 +68,15 @@
     "pptxgenjs": "4.0.1",
     "react": "19.2.8",
     "react-dom": "19.2.8",
-    "yaml": "2.9.0",
-    "zod": "4.5.4"
+    "yaml": "2.9.1",
+    "zod": "4.6.2"
   },
   "devDependencies": {
     "@eslint/eslintrc": "3.3.6",
     "@types/better-sqlite3": "^7.6.13",
     "@typescript/native": "npm:typescript@^7.0.2",
     "@types/d3-force": "3.0.10",
-    "@types/node": "^26.4.0",
+    "@types/node": "^26.5.1",
     "@types/nodemailer": "^8.0.1",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.5",
