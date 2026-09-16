@@ -1,4 +1,4 @@
-import { escapeCandidatePromptData, type CandidateIntent } from "./a1-consistency-label-candidate-plan.js";
+import { calibrationMatchesIntent, escapeCandidatePromptData, type CandidateIntent } from "./a1-consistency-label-candidate-plan.js";
 
 export const CALIBRATION_PROMPT_VERSION = "a1-v2-consistency-candidate-calibration-v2";
 
@@ -16,6 +16,20 @@ export interface CalibrationRetryFeedback {
   id: string;
   observed_intent: CandidateIntent;
   previous_statement: string;
+}
+
+export function candidateDraftId(candidateId: string, draftIndex: number): string {
+  return `${candidateId}#draft-${draftIndex + 1}`;
+}
+
+/** Select only a draft whose independently observed relation exactly matches the private intent. */
+export function selectExactCalibratedDraft(
+  candidateId: string,
+  intended: CandidateIntent,
+  drafts: readonly string[],
+  observed: ReadonlyMap<string, CandidateIntent>,
+): string | undefined {
+  return drafts.find((statement, draftIndex) => calibrationMatchesIntent(intended, observed.get(candidateDraftId(candidateId, draftIndex))!));
 }
 
 /**

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildCalibrationRetryInstruction, buildCandidateCalibrationUser } from "./a1-consistency-candidate-calibration.js";
+import { buildCalibrationRetryInstruction, buildCandidateCalibrationUser, selectExactCalibratedDraft } from "./a1-consistency-candidate-calibration.js";
 
 describe("consistency candidate calibration boundary", () => {
   it("keeps the requested generator intent out of the independent calibration input", () => {
@@ -21,5 +21,15 @@ describe("consistency candidate calibration boundary", () => {
     expect(instruction).toContain("Prior &lt;draft&gt; &amp; context.");
     expect(instruction).not.toContain("case-1");
     expect(buildCalibrationRetryInstruction([])).toBe("");
+  });
+
+  it("selects only a draft with an exact independently observed intent", () => {
+    const observed = new Map([
+      ["case-3#draft-1", "support" as const],
+      ["case-3#draft-2", "out_of_context" as const],
+      ["case-3#draft-3", "uncertain" as const],
+    ]);
+    expect(selectExactCalibratedDraft("case-3", "uncertain", ["first", "second", "third"], observed)).toBe("third");
+    expect(selectExactCalibratedDraft("case-3", "misattribution", ["first", "second", "third"], observed)).toBeUndefined();
   });
 });

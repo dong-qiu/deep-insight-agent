@@ -15,6 +15,7 @@ export interface CandidateCheckpointContext {
   calibration_prompt_version: string;
   calibration_prompt_sha256: string;
   calibration_max_generation_attempts: number;
+  calibration_drafts_per_attempt: number;
 }
 
 export interface CandidateCheckpointBatchPlan {
@@ -53,7 +54,8 @@ function sameContext(checkpoint: CandidateCheckpoint, context: CandidateCheckpoi
     && checkpoint.calibration_thinking === context.calibration_thinking
     && checkpoint.calibration_prompt_version === context.calibration_prompt_version
     && checkpoint.calibration_prompt_sha256 === context.calibration_prompt_sha256
-    && checkpoint.calibration_max_generation_attempts === context.calibration_max_generation_attempts;
+    && checkpoint.calibration_max_generation_attempts === context.calibration_max_generation_attempts
+    && checkpoint.calibration_drafts_per_attempt === context.calibration_drafts_per_attempt;
 }
 
 function isCandidate(value: unknown): value is { id: string; statement: string } {

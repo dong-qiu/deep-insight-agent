@@ -8,6 +8,8 @@ export const LABEL_CANDIDATE_TARGET_NEGATIVE_COUNT = 50;
  * exhausting this bounded budget fails the batch rather than admitting a mismatched pair.
  */
 export const LABEL_CANDIDATE_MAX_GENERATION_ATTEMPTS = 5;
+/** Generate several semantically distinct drafts before asking the independent verifier to select one. */
+export const LABEL_CANDIDATE_DRAFTS_PER_ATTEMPT = 3;
 /**
  * The generator may reduce this relay-facing request batch without changing the
  * 100-pair population or any planned intent.  Keep 20 as the ordinary setting;
