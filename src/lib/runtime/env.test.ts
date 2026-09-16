@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { coverageThinking, coverageThinkingSource, llmMaxRetries, llmTransientRetries, llmTransientRetryBackoffMs, validatorThinking } from "./env.js";
+import { coverageThinking, coverageThinkingSource, llmMaxRetries, llmTransientRetries, llmTransientRetryBackoffMs, validatorBatchOn, validatorThinking } from "./env.js";
 
 describe("llmMaxRetries", () => {
   const original = process.env.LLM_MAX_RETRIES;
@@ -82,5 +82,25 @@ describe("coverageThinking", () => {
     process.env.COVERAGE_THINKING = "1";
     expect(validatorThinking()).toBe(false);
     expect(coverageThinking()).toBe(true);
+  });
+});
+
+describe("validatorBatchOn", () => {
+  const original = process.env.VALIDATOR_BATCH;
+
+  afterEach(() => {
+    if (original === undefined) delete process.env.VALIDATOR_BATCH;
+    else process.env.VALIDATOR_BATCH = original;
+  });
+
+  it("defaults to the single-judge path and requires explicit opt-in", () => {
+    delete process.env.VALIDATOR_BATCH;
+    expect(validatorBatchOn()).toBe(false);
+    process.env.VALIDATOR_BATCH = "0";
+    expect(validatorBatchOn()).toBe(false);
+    process.env.VALIDATOR_BATCH = "unexpected";
+    expect(validatorBatchOn()).toBe(false);
+    process.env.VALIDATOR_BATCH = "1";
+    expect(validatorBatchOn()).toBe(true);
   });
 });

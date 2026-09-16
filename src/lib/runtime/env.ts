@@ -31,8 +31,11 @@ export const validatorBackoffMs = (): number => Math.max(0, Number(process.env.V
 /** 一致性大面积失败告警阈值（errored/total），默认 0.5。 */
 export const validationDegradedRate = (): number => Number(process.env.VALIDATION_DEGRADED_ALERT_RATE ?? 0.5);
 
-/** 批量校验开关（kill-switch）：VALIDATOR_BATCH=0 回退逐条（精度回归/排障）。 */
-export const validatorBatchOn = (): boolean => process.env.VALIDATOR_BATCH !== "0";
+/**
+ * 批量一致性校验是成本优化，不是发布前提；只有经当前配置的安全门验证后才允许显式启用。
+ * 缺失、`0` 与任何非 `1` 值均走逐条路径，避免配置遗漏把未经验证的批量语义带入生产。
+ */
+export const validatorBatchOn = (): boolean => process.env.VALIDATOR_BATCH === "1";
 
 /** LLM 单次调用超时 ms，默认 120000。 */
 export const llmTimeoutMs = (): number => Number(process.env.LLM_TIMEOUT_MS) || 120_000;

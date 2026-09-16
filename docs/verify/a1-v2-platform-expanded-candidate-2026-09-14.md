@@ -232,6 +232,7 @@ failed because batch regressed relative to the simultaneously measured single pa
 
 This contradicts the earlier one-run batch pass as a stable release signal; it does not, by
 itself, prove a code regression because the live model calls are not seeded and no validator
-semantic change was introduced by the main sync. Batch mode remains held from rollout pending a
-controlled repeatability check and root-cause analysis. This remains a scoped production-path
-diagnostic only, not A1, baseline, DCP, v2 lock, or Eval-Gate evidence.
+semantic change was introduced by the main sync. The production default was therefore changed to
+single-judge: batch mode now requires explicit `VALIDATOR_BATCH=1` opt-in after a controlled
+repeatability check and root-cause analysis. This remains a scoped production-path diagnostic
+only, not A1, baseline, DCP, v2 lock, or Eval-Gate evidence.

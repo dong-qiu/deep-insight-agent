@@ -90,7 +90,7 @@ curl -fsS -X POST http://127.0.0.1:3000/api/cron -H "authorization: Bearer $CRON
 | `COVERAGE_MODEL` | ✅ | 展示引用反扩写复核模型；须同时 ≠ analyzer、validator。缺失或任意同模型时 analyze fail-closed。若 relay 只支持 Opus，可使用三种不同版本（如 `claude-opus-4-6` / `-4-7` / `-4-8`） |
 | `VALIDATOR_THINKING` | 建议显式设 | 当前中转站/原型目标为 `0`。2026-09-16 在同一模型、提示、100-pair worklist 和 3072-token 预算下，`0` 完成 100/100；`1` 多次中继超时。`npm run eval:canary-thinking` 只验证 **thinking + forced tool_choice** 的接口兼容，不能证明长程稳定性。仅在稳定端点及独立人评质量比较完成后才可改为 `1`；改动后旧 A1 baseline 配置不可比。 |
 | `COVERAGE_THINKING` | 建议显式设 | 仅影响 quote-self-contained 的独立 coverage 反查角色；不可依赖 `VALIDATOR_THINKING` 的继承值来冻结 CI/生产基线。每个 coverage 模型也须独立 canary 后才可设为 `1`。 |
-| `VALIDATOR_BATCH` | 否 | 一致性判定**按源归并**（同一源被多条结论引用时，源文只发一遍、一次调用逐条独立判 → token 从 ~K×源文砍到 ~1×源文，成本最大杠杆）。默认开；`0` 回退逐条判定（精度回归排查 / 怀疑批量串扰时的运维开关）。判定语义与逐条一致、缓存共享 |
+| `VALIDATOR_BATCH` | 否 | 一致性判定**按源归并**（同一源被多条结论引用时，源文只发一遍、一次调用逐条独立判 → token 从 ~K×源文砍到 ~1×源文，成本最大杠杆）。默认关；仅显式设为 `1` 才启用，缺失、`0` 或无效值均回退逐条。2026-09-16 的 post-main-sync 诊断出现批量新增漏网负例，故在完成当前模型/提示/数据集的重复安全门前不得启用；缓存仍共享。 |
 | `CONSISTENCY_BATCH_MAX` | 否 | 单次批量调用最多判几条结论，默认 8。超出拆多次调用（源文各发一遍，仍远省于逐条）。调小=更稳的输出/更高精度但省得少，调大=更省但单调用输出更长、批内判定数更多 |
 | `AUTH_SECRET` | ✅ | NextAuth 密钥，`openssl rand -base64 32` |
 | `ADMIN_EMAIL` / `ADMIN_PASSWORD` | ✅ | **内置管理员**（bootstrap，role=admin、全权、不入库、不可删/锁死）。受邀的其他账号在**设置页 → 用户/访问**里增删（存 `app_user` 表、密码 scrypt 哈希，缺省 role=viewer——只读 Brief/报告/主题，不可进配置/管理、不可触发烧钱端点）。对外分享只需建 viewer 账号、把邮箱+密码发对方。鉴权拆 runtime-safe `auth.config.ts`（middleware 读 JWT 角色）/ Node `auth.ts`（查库验密码）；自托管 middleware 显式运行在 Node.js runtime。 |

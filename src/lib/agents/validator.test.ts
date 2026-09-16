@@ -516,7 +516,11 @@ describe("validateBatch（A 去重 + C 校验失败分账）", () => {
 });
 
 describe("validateBatch（B 按源归并批量判定 · 成本最大杠杆）", () => {
-  beforeEach(() => { process.env.VALIDATOR_RETRIES = "0"; process.env.VALIDATOR_RETRY_BACKOFF_MS = "0"; });
+  beforeEach(() => {
+    process.env.VALIDATOR_RETRIES = "0";
+    process.env.VALIDATOR_RETRY_BACKOFF_MS = "0";
+    process.env.VALIDATOR_BATCH = "1";
+  });
   afterEach(() => {
     vi.clearAllMocks();
     vi.restoreAllMocks();
