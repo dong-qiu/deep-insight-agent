@@ -13,9 +13,12 @@ describe("consistency candidate calibration boundary", () => {
     expect(prompt).not.toContain("out_of_context");
   });
 
-  it("gives retries only the failed candidate's independent observation", () => {
-    const instruction = buildCalibrationRetryInstruction([{ id: "case-2", observed_intent: "support" }]);
-    expect(instruction).toContain('candidate id="case-2" was observed as "support"');
+  it("gives retries only the failed candidate's independent observation and prior draft", () => {
+    const instruction = buildCalibrationRetryInstruction([{
+      id: "case-2", observed_intent: "support", previous_statement: "Prior <draft> & context.",
+    }]);
+    expect(instruction).toContain('candidate_id="case-2" observed_relation="support"');
+    expect(instruction).toContain("Prior &lt;draft&gt; &amp; context.");
     expect(instruction).not.toContain("case-1");
     expect(buildCalibrationRetryInstruction([])).toBe("");
   });

@@ -28,6 +28,7 @@ import {
   buildCandidateCalibrationUser,
   CALIBRATION_PROMPT_VERSION,
   CALIBRATION_SYSTEM,
+  type CalibrationRetryFeedback,
 } from "./a1-consistency-candidate-calibration.js";
 import {
   appendCandidateCheckpointBatch,
@@ -43,7 +44,7 @@ interface QualityCase { topic?: { id?: unknown }; items?: QualityItem[]; }
 interface CandidateInput { id: string; topic_id: string; source_id: string; source_text: string; source_body_sha256: string; intent: ReturnType<typeof plannedCandidateIntent>; }
 interface CandidateSelection { quality_input_item_count: number; selected_by_topic: Record<string, number>; selected_by_source: Record<string, number>; selected_item_ids_sha256: string; }
 
-const PROMPT_VERSION = "a1-v2-consistency-candidate-v3";
+const PROMPT_VERSION = "a1-v2-consistency-candidate-v4";
 const SYSTEM = `You create unlabeled, diagnostic-only candidate claims for independent human consistency annotation.
 For each source excerpt, return one concise English statement. The requested intent is private generator guidance only:
 - support: state one fact directly supported by the excerpt.
@@ -131,10 +132,14 @@ function exactStatements(
 async function generateCandidateStatements(
   batch: readonly CandidateInput[],
   attempt: number,
-  feedback: ReadonlyMap<string, CandidateIntent>,
+  feedback: ReadonlyMap<string, Omit<CalibrationRetryFeedback, "id">>,
 ): Promise<Map<string, string>> {
   const retryInstruction = attempt > 1
-    ? buildCalibrationRetryInstruction(batch.map((input) => ({ id: input.id, observed_intent: feedback.get(input.id)! })))
+    ? buildCalibrationRetryInstruction(batch.map((input) => ({
+      id: input.id,
+      observed_intent: feedback.get(input.id)!.observed_intent,
+      previous_statement: feedback.get(input.id)!.previous_statement,
+    })))
     : "";
   const user = `${retryInstruction}\n<candidate_sources>\n${batch.map((input) => [
     `<candidate id="${input.id}" intent="${input.intent}">`,
@@ -212,7 +217,7 @@ async function main(): Promise<void> {
     }
     const accepted = new Map<string, string>();
     let pending = [...batch];
-    let retryFeedback = new Map<string, CandidateIntent>();
+    let retryFeedback = new Map<string, Omit<CalibrationRetryFeedback, "id">>();
     for (let attempt = 1; attempt <= LABEL_CANDIDATE_MAX_GENERATION_ATTEMPTS && pending.length; attempt++) {
       if (attempt > 1) freshRetryCandidates += pending.length;
       const statements = await generateCandidateStatements(pending, attempt, retryFeedback);
@@ -220,18 +225,21 @@ async function main(): Promise<void> {
       const observed = await calibrateCandidateStatements(pending, statements, calibrationThinking);
       freshCalibrationCalls++;
       const rejected: CandidateInput[] = [];
-      retryFeedback = new Map<string, CandidateIntent>();
+      retryFeedback = new Map<string, Omit<CalibrationRetryFeedback, "id">>();
       for (const input of pending) {
         if (calibrationMatchesIntent(input.intent, observed.get(input.id)!)) accepted.set(input.id, statements.get(input.id)!);
         else {
           rejected.push(input);
-          retryFeedback.set(input.id, observed.get(input.id)!);
+          retryFeedback.set(input.id, {
+            observed_intent: observed.get(input.id)!,
+            previous_statement: statements.get(input.id)!,
+          });
         }
       }
       pending = rejected;
     }
     if (pending.length) {
-      throw new Error(`候选批 ${start / batchSize + 1} 在 ${LABEL_CANDIDATE_MAX_GENERATION_ATTEMPTS} 次生成后仍未通过独立 calibration：${pending.map((input) => `${input.id}:${input.intent}->${retryFeedback.get(input.id)}`).join(",")}`);
+      throw new Error(`候选批 ${start / batchSize + 1} 在 ${LABEL_CANDIDATE_MAX_GENERATION_ATTEMPTS} 次生成后仍未通过独立 calibration：${pending.map((input) => `${input.id}:${input.intent}->${retryFeedback.get(input.id)?.observed_intent}`).join(",")}`);
     }
     const generated = batch.map((input) => ({
       id: input.id,
@@ -277,7 +285,7 @@ async function main(): Promise<void> {
       fresh_generation_attempts: freshGenerationAttempts,
       fresh_calibration_calls: freshCalibrationCalls,
       fresh_retry_candidate_attempts: freshRetryCandidates,
-      retry_feedback: "rejected candidates receive only their independently observed relation in-process; it is never persisted with candidate pairs or shown to blind reviewers",
+      retry_feedback: "rejected candidates receive only their independently observed relation and prior draft in-process; neither is persisted with candidate pairs or shown to blind reviewers",
       checkpoint_boundary: "only batches whose every candidate matched its requested diagnostic intent are checkpointed",
       do_not_provide_to_human_reviewers: true,
     },

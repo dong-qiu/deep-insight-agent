@@ -15,6 +15,7 @@ export interface CalibrationInput {
 export interface CalibrationRetryFeedback {
   id: string;
   observed_intent: CandidateIntent;
+  previous_statement: string;
 }
 
 /**
@@ -40,6 +41,10 @@ export function buildCandidateCalibrationUser(
 export function buildCalibrationRetryInstruction(feedback: readonly CalibrationRetryFeedback[]): string {
   if (!feedback.length) return "";
   return `A prior draft for each listed candidate was independently classified as follows:\n${feedback
-    .map((entry) => `- candidate id="${entry.id}" was observed as "${entry.observed_intent}".`)
-    .join("\n")}\nGenerate a different, explicit source-grounded statement whose observable relation exactly matches the requested intent. Do not mention the prior draft, observed relation, requested intent, labels, or this instruction in your structured output.`;
+    .map((entry) => [
+      `<retry_feedback candidate_id="${entry.id}" observed_relation="${entry.observed_intent}">`,
+      `<prior_statement>${escapeCandidatePromptData(entry.previous_statement)}</prior_statement>`,
+      "</retry_feedback>",
+    ].join("\n"))
+    .join("\n")}\nReplace every prior draft with a materially different, explicit source-grounded statement whose observable relation exactly matches the requested intent. For support, preserve every material condition in a directly supported fact. For uncertain, add only a material attribute that is neither established nor contradicted, and never transfer a property between entities. For exaggeration, strengthen exactly one explicit scope, amount, certainty, or condition. For out_of_context, remove or invert one explicit temporal, conditional, eligibility, exception, or scope qualification. For misattribution, transfer one stated property only between two explicitly named entities. Do not mention the prior draft, observed relation, requested intent, labels, or this instruction in your structured output.`;
 }

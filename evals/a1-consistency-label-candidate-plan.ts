@@ -3,7 +3,11 @@ export const LABEL_CANDIDATE_SOURCE_CHARS = 2_400;
 export const LABEL_CANDIDATE_COUNT = 100;
 export const LABEL_CANDIDATES_PER_TOPIC = 20;
 export const LABEL_CANDIDATE_TARGET_NEGATIVE_COUNT = 50;
-export const LABEL_CANDIDATE_MAX_GENERATION_ATTEMPTS = 3;
+/**
+ * Initial drafting plus four targeted rewrites.  Each rewrite is independently re-calibrated;
+ * exhausting this bounded budget fails the batch rather than admitting a mismatched pair.
+ */
+export const LABEL_CANDIDATE_MAX_GENERATION_ATTEMPTS = 5;
 /**
  * The generator may reduce this relay-facing request batch without changing the
  * 100-pair population or any planned intent.  Keep 20 as the ordinary setting;
