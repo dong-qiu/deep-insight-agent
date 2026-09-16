@@ -8,6 +8,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
+import { contentHash, normalizeBody } from "../src/lib/sources/normalize.js";
 
 interface SnapshotItem {
   id?: unknown;
@@ -15,6 +16,8 @@ interface SnapshotItem {
   url?: unknown;
   body?: unknown;
   content_hash?: unknown;
+  raw_ref?: unknown;
+  fetch_status?: unknown;
   fetched_at?: unknown;
   published_at?: unknown;
 }
@@ -25,6 +28,58 @@ interface SnapshotCase {
 }
 
 const sha256 = (value: string | Buffer): string => createHash("sha256").update(value).digest("hex");
+
+interface RawArchive {
+  schema_version?: unknown;
+  source_body_origin?: unknown;
+  source_body?: unknown;
+  article_html?: unknown;
+  structured_body_sha256?: unknown;
+}
+
+/** Fail closed: a v2 candidate must prove the stored body is derivable from a retained source archive. */
+function verifySourceArchive(item: SnapshotItem, caseIndex: number, itemIndex: number) {
+  const label = `quality case ${caseIndex} item ${itemIndex}`;
+  if (item.fetch_status !== "ok") throw new Error(`${label} 的 fetch_status 必须为 ok`);
+  if (typeof item.content_hash !== "string" || !item.content_hash) throw new Error(`${label} 缺少 content_hash`);
+  if (typeof item.raw_ref !== "string" || !item.raw_ref || !existsSync(item.raw_ref)) {
+    throw new Error(`${label} 缺少可读取的 raw_ref`);
+  }
+  const rawBytes = readFileSync(item.raw_ref);
+  let archive: RawArchive;
+  try {
+    archive = JSON.parse(rawBytes.toString("utf8")) as RawArchive;
+  } catch {
+    throw new Error(`${label} 的 raw_ref 不是受控 raw archive`);
+  }
+  if (archive.schema_version !== "content-raw-archive-v1" || typeof archive.source_body !== "string"
+    || typeof archive.structured_body_sha256 !== "string") {
+    throw new Error(`${label} 的 raw archive 缺少可验证正文绑定`);
+  }
+  if (archive.source_body_origin !== "feed" && archive.source_body_origin !== "article_page" && archive.source_body_origin !== "transcript") {
+    throw new Error(`${label} 的 raw archive 含未知 source_body_origin`);
+  }
+  if (archive.source_body_origin === "article_page" && typeof archive.article_html !== "string") {
+    throw new Error(`${label} 的文章 archive 缺少 article_html`);
+  }
+  // `contentHash` normalizes its argument so it remains stable for consumers that pass source
+  // markup.  The stored body is already normalized, however, and some nested HTML entities make
+  // that normalization non-idempotent.  Prove derivation by comparing the one-pass normalized
+  // archive input to the stored body, then validate the stored body's declared content hash.
+  if (typeof item.body !== "string"
+    || normalizeBody(archive.source_body) !== item.body
+    || contentHash(item.body) !== item.content_hash
+    || archive.structured_body_sha256 !== item.content_hash
+  ) {
+    throw new Error(`${label} 的 body/content_hash/raw archive 绑定不一致`);
+  }
+  return {
+    raw_archive_sha256: sha256(rawBytes),
+    raw_archive_byte_length: rawBytes.length,
+    source_body_origin: archive.source_body_origin,
+  };
+}
+
 const [qualityPath, outDir, snapshotId, ...evidencePaths] = process.argv.slice(2);
 if (!qualityPath || !outDir || !snapshotId) {
   console.error("用法：tsx evals/prepare-controlled-v2-snapshot.ts <quality.local.jsonl> <out-dir> <snapshot-id> [collector-or-builder-manifest...]");
@@ -64,6 +119,7 @@ for (const [caseIndex, entry] of quality.entries()) {
       || typeof item.url !== "string" || !item.url || typeof item.body !== "string" || !item.body) {
       throw new Error(`quality case ${caseIndex} item ${itemIndex} 缺少 id/source_id/url/body`);
     }
+    const archiveEvidence = verifySourceArchive(item, caseIndex, itemIndex);
     if (itemIds.has(item.id) || urls.has(item.url)) throw new Error(`quality snapshot 含重复 content id 或 URL：${item.id}`);
     itemIds.add(item.id); urls.add(item.url);
     sourceCounts.set(item.source_id, (sourceCounts.get(item.source_id) ?? 0) + 1);
@@ -74,7 +130,8 @@ for (const [caseIndex, entry] of quality.entries()) {
       url: item.url,
       topic_id: topicId,
       body_sha256: sha256(item.body),
-      content_hash: typeof item.content_hash === "string" ? item.content_hash : null,
+      content_hash: item.content_hash,
+      ...archiveEvidence,
       fetched_at: typeof item.fetched_at === "string" ? item.fetched_at : null,
       published_at: typeof item.published_at === "string" ? item.published_at : null,
     });
@@ -83,7 +140,7 @@ for (const [caseIndex, entry] of quality.entries()) {
 
 mkdirSync(outDir, { recursive: false });
 const manifest = {
-  schema_version: "a1-controlled-source-snapshot-v1",
+  schema_version: "a1-controlled-source-snapshot-v2",
   status: "candidate_pending_labels",
   snapshot_id: snapshotId,
   generated_at: new Date().toISOString(),

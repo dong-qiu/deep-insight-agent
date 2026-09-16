@@ -88,7 +88,11 @@ export function buildLocalEvalCases(
     // A fixed v2 pair is an allowlist, not merely a priority hint: otherwise a shared route may
     // consume a later topic's only viable source after its pair has already been selected.
     const fixedPair = options.requiredSourceIdsByTopic?.[topic.id];
+    // A1 input cannot silently promote a collector fallback: a candidate must at least be marked
+    // complete and carry a raw archive handle. prepare-controlled-v2-snapshot performs the byte-level
+    // archive/body binding check before any controlled upload.
     const pool = contentForTopic(topic.id)
+      .filter((item) => item.fetch_status === "ok" && Boolean(item.raw_ref.trim()))
       .filter((item) => item.body.length >= options.minBody)
       .filter((item) => !fixedPair || fixedPair.includes(item.source_id));
     for (const item of pool) {

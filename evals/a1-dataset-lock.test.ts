@@ -55,7 +55,11 @@ function writeLock(root: string, overrides: Record<string, unknown> = {}): strin
     },
     quality_contract: { min_unique_topics: 5, dedupe_key: "content_item_id_or_url" },
     consistency_contract: { min_total: 100, min_not_support: 40, required_negative_types: ["exaggeration", "out_of_context", "misattribution"] },
-    topic_mapping_rule: "topic id", labeling_provenance: "two independent human labels",
+    topic_mapping_rule: "topic id",
+    labeling_provenance: {
+      receipt_reference: "s3://controlled/a1-v2/consistency-label-receipt.json?versionId=opaque",
+      receipt_sha256: "c".repeat(64), status: "eligible_for_lock",
+    },
     ...overrides,
   };
   const path = join(dataset, "lock.json");
@@ -75,6 +79,26 @@ describe("A1 dataset lock", () => {
   it("accepts only a byte-matched controlled v2 snapshot with the required distribution", () => {
     const root = fixtureRoot();
     const lock = writeLock(root);
+    expect(validateDatasetLock(lock, {
+      qualityFile: "evals/dataset/quality.jsonl", consistencyFile: "evals/dataset/consistency.jsonl", displayCoverageFixture: "evals/dataset/display.json",
+    }, root)).toMatchObject({ status: "verified_v2", promotion_eligible: true, issues: [] });
+  });
+
+  it("accepts the microsecond-precision UTC instant returned by S3 Object Lock", () => {
+    const root = fixtureRoot();
+    const lock = writeLock(root, {
+      snapshot: {
+        immutable_reference: "s3://controlled/a1-v2/manifest",
+        collected_at: "2026-09-10T00:00:00Z",
+        source_manifest_reference: "s3://controlled/a1-v2/sources.json",
+        source_manifest_sha256: "a".repeat(64), license_and_retention: "internal retention=90d",
+        object_lock_retain_until: "2026-12-09T00:00:00.960000Z",
+        source_terms_decision: {
+          record_id: "A1-V2-TERMS-001", sha256: "b".repeat(64), status: "approved_all",
+          approved_at: "2026-09-11T00:00:00Z", permitted_retention_until: "2026-12-09T00:00:00.960000Z",
+        },
+      },
+    });
     expect(validateDatasetLock(lock, {
       qualityFile: "evals/dataset/quality.jsonl", consistencyFile: "evals/dataset/consistency.jsonl", displayCoverageFixture: "evals/dataset/display.json",
     }, root)).toMatchObject({ status: "verified_v2", promotion_eligible: true, issues: [] });
@@ -169,5 +193,15 @@ describe("A1 dataset lock", () => {
     }, root);
     expect(result).toMatchObject({ status: "invalid", promotion_eligible: false });
     expect(result.issues.join(" ")).toContain("来源许可保留期早于 Object Lock 保留期");
+  });
+
+  it("rejects a prose-only, ineligible, or unhashed human-label claim for a v2 lock", () => {
+    const root = fixtureRoot();
+    const lock = writeLock(root, { labeling_provenance: "two independent human labels" });
+    const result = validateDatasetLock(lock, {
+      qualityFile: "evals/dataset/quality.jsonl", consistencyFile: "evals/dataset/consistency.jsonl", displayCoverageFixture: "evals/dataset/display.json",
+    }, root);
+    expect(result).toMatchObject({ status: "invalid", promotion_eligible: false });
+    expect(result.issues.join(" ")).toContain("双人标签 receipt");
   });
 });

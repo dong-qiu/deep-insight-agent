@@ -1,7 +1,7 @@
 # A1 v2 source-terms intake — 2026-09-11
 
-> Status: `pending_owner_legal_review`; this is a factual intake, **not legal advice or a licence determination**.
-> It does not change the candidate snapshot’s `pending_source_terms_review` status, authorize redistribution, or permit a `verified_v2` lock.
+> Status: factual intake retained for formal-release review; this is **not legal advice or a licence determination**.
+> On 2026-09-12, the prototype owner recorded `A1-V2-TERMS-PROTOTYPE-20260912` as `approved_all` for this exact candidate's internal A1 evaluation only. That controlled risk decision does not authorize redistribution, training, production publication, or replace the source-specific review required before formal release.
 
 ## Scope and handling boundary
 
@@ -29,15 +29,15 @@ This intake concerns only `a1-v2-candidate-20260910-8e23ecf` (100 internal A1 ev
 
 ## Gate outcome and next action
 
-`license_and_retention.status` remains `pending_source_terms_review`. The following are prohibited until every in-scope source has a documented decision:
+For formal release, source-specific terms/permission evidence and an independent recorder remain required. Until then, the following are prohibited despite the prototype owner decision:
 
-1. Creating `verified_v2` or a promotable `controlled_snapshot_v2` dataset lock.
-2. Treating any A1/liveness run over this candidate as comparable baseline, DCP, or publication evidence.
-3. Exporting/re-distributing candidate bodies, labels derived from bodies, or terms captures outside the authorized controlled store.
+1. Treating the prototype decision as external content permission, a legal conclusion, or a formal-release approval.
+2. Exporting/re-distributing candidate bodies, labels derived from bodies, or terms captures outside the authorized controlled store.
+3. Reusing this decision for a changed snapshot, publisher route, model/provider arrangement, training, or public release.
 
 For each row, the data/legal owner must add: reviewed URL, observed/effective date, exact applicable licence or written permission, whether internal corpus storage and model evaluation are allowed, retention/deletion instruction, required attribution/notice, and reviewer identity. Any negative or unresolved decision requires a rebuilt candidate snapshot and new hashes; existing Object-Locked evidence must not be silently edited or relabelled.
 
-The required controlled sign-off fields, including the hard check that permitted retention reaches the candidate's Object-Lock date, are supplied in [the owner-decision template](./a1-v2-source-terms-owner-decision-template.md). That template is intentionally blank and does not alter this intake's `pending_owner_legal_review` status.
+The required formal-release controlled sign-off fields, including the hard check that permitted retention reaches the candidate's Object-Lock date, are supplied in [the owner-decision template](./a1-v2-source-terms-owner-decision-template.md). That template is intentionally blank and does not alter this factual intake.
 
 ## External evidence used for the intake
 

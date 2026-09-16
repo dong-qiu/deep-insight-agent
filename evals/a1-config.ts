@@ -7,6 +7,8 @@ export interface EvalConfig {
   analyzer_output_version: number;
   analyzer_prompt_sha256: string;
   analyze_body_chars: number;
+  /** Analyzer chunking changes model context grouping and must be part of a comparable run. */
+  analyze_batch_chars: number;
   select_window_chars: number;
   validator_model: string;
   validator_contract_version: string;
@@ -34,17 +36,23 @@ export interface EvalConfig {
   display_projection_version: string;
   display_coverage_primary_prompt_version: string;
   display_coverage_primary_prompt_sha256: string;
+  /** Primary display-audit response allowance changes truncation risk and therefore outcomes. */
+  display_coverage_primary_response_budget_version: string;
+  display_coverage_primary_max_tokens: number;
+  /** Number of atomic claims in each primary display-audit request. */
+  display_coverage_primary_claims_per_call: number;
   display_coverage_countercheck_prompt_version: string;
   display_coverage_countercheck_prompt_sha256: string;
 }
 
 export const EVAL_CONFIG_KEYS: Array<keyof EvalConfig> = [
-  "analyzer_model", "analyzer_output_version", "analyzer_prompt_sha256", "analyze_body_chars", "select_window_chars",
+  "analyzer_model", "analyzer_output_version", "analyzer_prompt_sha256", "analyze_body_chars", "analyze_batch_chars", "select_window_chars",
   "validator_model", "validator_contract_version", "consistency_window_chars", "consistency_batch_max",
   "relay_recovery_policy_version", "relay_recovery_max_probes", "relay_recovery_max_backoff_wait_ms", "relay_recovery_exhausted_cooldown_ms",
   "coverage_model", "validator_thinking", "coverage_thinking", "coverage_thinking_source", "structured_thinking_transport_version", "validator_batch",
   "quality_dataset_sha256", "consistency_dataset_sha256", "dataset_lock_sha256", "dataset_lock_status", "display_coverage_dataset_sha256", "quote_self_contained_dataset_sha256",
   "display_coverage_gate_version", "display_projection_version", "display_coverage_primary_prompt_version", "display_coverage_primary_prompt_sha256",
+  "display_coverage_primary_response_budget_version", "display_coverage_primary_max_tokens", "display_coverage_primary_claims_per_call",
   "display_coverage_countercheck_prompt_version", "display_coverage_countercheck_prompt_sha256",
 ];
 

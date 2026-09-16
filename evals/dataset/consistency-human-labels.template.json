@@ -1,0 +1,41 @@
+{
+  "reviewers": [
+    {
+      "reviewer_id": "<controlled-human-reviewer-a>",
+      "reviewer_kind": "human",
+      "blind_attestation": true,
+      "decisions": [
+        {
+          "case_id": "<v2-stable-case-id>",
+          "pair_sha256": "<pair-text-sha256>",
+          "expected_consistency": "support",
+          "negative_type": null
+        }
+      ]
+    },
+    {
+      "reviewer_id": "<controlled-human-reviewer-b>",
+      "reviewer_kind": "human",
+      "blind_attestation": true,
+      "decisions": [
+        {
+          "case_id": "<v2-stable-case-id>",
+          "pair_sha256": "<pair-text-sha256>",
+          "expected_consistency": "support",
+          "negative_type": null
+        }
+      ]
+    }
+  ],
+  "adjudications": [
+    {
+      "case_id": "<only-a-disputed-case-id>",
+      "adjudicator_id": "<controlled-third-human>",
+      "adjudicator_kind": "human",
+      "decision": {
+        "expected_consistency": "not_support",
+        "negative_type": "exaggeration"
+      }
+    }
+  ]
+}

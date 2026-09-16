@@ -57,7 +57,12 @@ export interface DatasetLock {
   };
   /** The v2 selection/labeling rules are versioned with the bytes they governed. */
   topic_mapping_rule: string;
-  labeling_provenance: string;
+  /** Legacy fixtures retain a description; v2 must bind the final JSONL to a human-label receipt. */
+  labeling_provenance: string | {
+    receipt_reference: string;
+    receipt_sha256: string;
+    status: "eligible_for_lock" | "ineligible";
+  };
 }
 
 export interface DatasetFiles {
@@ -112,7 +117,9 @@ function sha256Hex(value: unknown): boolean {
 
 /** The owner record and Object Lock dates are UTC instants so their order is unambiguous. */
 function utcInstant(value: unknown): number | null {
-  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/u.test(value)) return null;
+  // S3 Object Lock returns RFC 3339 UTC instants with microseconds (for example `.960000Z`).
+  // Keep the exact evidence string in the lock rather than rounding its retention boundary.
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/u.test(value)) return null;
   const epoch = Date.parse(value);
   return Number.isNaN(epoch) ? null : epoch;
 }
@@ -150,6 +157,13 @@ export function validateDatasetLock(lockPath: string, files: DatasetFiles, root 
       if (objectLockRetainUntil !== null && permittedRetentionUntil !== null && permittedRetentionUntil < objectLockRetainUntil) {
         issues.push("来源许可保留期早于 Object Lock 保留期");
       }
+    }
+    const labels = lock.labeling_provenance;
+    if (labels == null || typeof labels !== "object" || Array.isArray(labels)
+      || !nonEmpty((labels as Record<string, unknown>).receipt_reference)
+      || !sha256Hex((labels as Record<string, unknown>).receipt_sha256)
+      || (labels as Record<string, unknown>).status !== "eligible_for_lock") {
+      issues.push("v2 dataset lock 必须绑定 eligible_for_lock 的双人标签 receipt 引用及 sha256");
     }
   }
 

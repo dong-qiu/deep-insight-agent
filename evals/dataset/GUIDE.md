@@ -60,10 +60,15 @@
 ## 产出 checklist
 
 - [ ] 最终运行产物：≥ 5 个唯一主题，`dcp_sample.reader_visible_by_topic` 中每个主题 ≥ 10 条 reader-visible 洞察；输入内容真实跨源，含 ≥ 1 个"无事件"窗口
-- [ ] `citation-consistency.jsonl`：≥ 100 组，正负均衡，负例覆盖 3 类（≥ 40 条负例）
+- [ ] `citation-consistency.jsonl`：≥ 100 组，正负均衡，负例覆盖 3 类（≥ 40 条负例）；受控 v2 版本还须有稳定 `id`
 - [ ] 两份文件均为合法 JSONL（每行可独立 `JSON.parse`）
 - [ ] `body` / `source_text` 为真实原文，未改写
 - [ ] 标注由**非生成者**完成（避免与 analyzer 同源偏差），最好双人交叉
+- [ ] 受控 v2 标签：两位独立 human reviewer 对同一 `id + statement + source_text` hash population 盲标；只把分歧交给第三位 human 裁决。用 `npm run labels:receipt -- <citation-consistency-v2.local.jsonl> <blind-labels.json> [receipt.json]` 生成无正文的 receipt；它会拒绝 AI reviewer、同一 reviewer、漏标、未裁决的分歧、最终 JSONL 与裁决不一致、少于 100 对、少于 40 个 `not_support` 或缺少任一负例类型。`consistency-human-labels.template.json` 只示意提交结构；实际提交和 receipt 留在受控存储。v2 `dataset-lock` 必须绑定该 receipt 的不可变引用和 SHA-256，不能只写“已双标”。
+- [ ] 可先运行 `npm run labels:prepare-candidates -- <quality-v2.local.jsonl> <candidates.local.jsonl>`：它从每条受控原文提取一个未定标签 pair，并把模型、prompt、planned mix 另存为 `diagnostic_only` manifest。候选 JSONL 不含预期标签；只把它交给两位盲标 human，**绝不**把相邻 diagnostic manifest 交给他们。human 裁决后的最终文件才可成为 `citation-consistency-v2.local.jsonl` 并进入 receipt。
+- [ ] 在分发前运行 `npm run labels:prepare-blind-worklist -- <candidates.local.jsonl> <worklist.local.jsonl>`：它剔除生成器元数据，仅保留 `id`、statement、source_text 与 receipt 所需的 `pair_sha256`。同一个受控 worklist 可分别提供给两位 human；任何带标签、intent 或 rationale 的输入都会被拒绝。
+- [ ] 若以表格完成盲标，分别运行 `npm run labels:prepare-csv -- <worklist.local.jsonl> <reviewer-a.local.csv>` 与 reviewer B 版本。CSV 会保护以公式前缀开头的第三方文本，且只留下两列可填写：`expected_consistency`、`negative_type`。每位 human 完成后，独立运行 `npm run labels:csv-to-submission -- <worklist.local.jsonl> <filled.local.csv> <opaque-human-id> <submission.local.json>`；转换器会拒绝漏标、标签/type 不匹配、pair hash 不匹配或 statement/source_text 被改动的表格。
+- [ ] 原型可选 AI-assisted 入口：对同一 worklist 依次运行 `npm run labels:ai-review -- <worklist.local.jsonl> validator <validator.local.json>` 与 `... coverage <coverage.local.json>`；它会使用当前两个不同模型（并记录 Thinking/prompt/输入 hash）。再运行 `npm run labels:ai-compare -- <worklist> <validator> <coverage> <disputes.local.jsonl> <receipt.local.json>`。human 只接收 `disputes.local.jsonl` 派生的 `npm run labels:ai-dispute-csv` 表格，绝不接收 AI 标签。裁决后使用 `labels:ai-dispute-to-adjudication` 和 `labels:ai-finalize` 生成暂定 JSONL。该 receipt 的 `lock_eligible=false`，不能代替上面的双 human receipt。
 - [ ] 跑 `npm run eval:a1`，⚠️ 规模提示消失，自动门槛全 PASS
 - [ ] 不把仓内 legacy fixture 升为 DCP baseline。v2 数据必须放在受控不可变快照；`dataset-lock` 必须绑定输入哈希、source URL/ID manifest、采集时间、topic 映射、去重规则、标签分布，以及 `object_lock_retain_until` 和受控 `source_terms_decision`（owner record ID、SHA-256、`approved_all`、批准时间、许可保留截止）。许可保留截止不得早于 Object Lock 截止；而不是提交新的第三方全文。
 - [ ] AI 预标注（可选）：使用 `ai-prelabel-handoff.template.json` 记录三个 `diagnostic_only` 预标注者的模型、Thinking、prompt 和产物 hash；不能将标签、理由或文件交给盲评 reviewer，也不能作为 `review:receipt` 输入。

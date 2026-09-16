@@ -5,8 +5,14 @@ import { readFileSync } from "node:fs";
 import { EVAL_CONFIG_KEYS, sameEvalConfig, type EvalConfig } from "./a1-config.js";
 
 export const BASELINE_REGISTRY_VERSION = "a1-baseline-registry-v1";
+/** Kept next to promotion so an operator cannot approve a partial hand-written metric map. */
+export const CANONICAL_METRIC_KEYS_BY_STRATUM = {
+  arxiv: ["reachability_pass", "consistency_ok", "consistency_failure", "flagged_rate", "judge_accuracy", "judge_neg_recall", "judge_completion"],
+  transcript: ["reachability_pass", "consistency_ok", "consistency_failure", "flagged_rate", "judge_accuracy", "judge_neg_recall", "judge_completion", "yield"],
+} as const;
 
 export type BaselineStatus = "legacy" | "provisional" | "dcp_accepted";
+export type BaselineMetrics = Record<string, number>;
 
 export interface BaselineCandidate {
   run_id: string;
@@ -14,6 +20,8 @@ export interface BaselineCandidate {
   manifest_sha256: string;
   a1_run_sha256: string;
   config: EvalConfig;
+  /** Per-stratum numeric rows from the hash-bound a1-run artifact. */
+  metrics: BaselineMetrics;
   source: { commit: string | null; dirty_fingerprint: string | null };
   smoke: boolean;
   status: "completed" | "failed";
@@ -30,6 +38,11 @@ export interface BaselinePromotion {
   reasons: string[];
 }
 
+export interface BaselineRegistry {
+  schema_version: typeof BASELINE_REGISTRY_VERSION;
+  strata: Record<string, BaselineRecord | { status?: unknown }>;
+}
+
 const sha256 = (value: Buffer | string): string => createHash("sha256").update(value).digest("hex");
 const sha = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 
@@ -37,6 +50,62 @@ export function isCompleteEvalConfig(value: unknown): value is EvalConfig {
   if (value == null || typeof value !== "object" || Array.isArray(value)) return false;
   const object = value as Record<string, unknown>;
   return EVAL_CONFIG_KEYS.every((key) => Object.hasOwn(object, key));
+}
+
+function isBaselineMetrics(value: unknown): value is BaselineMetrics {
+  return value != null && typeof value === "object" && !Array.isArray(value)
+    && Object.keys(value).length > 0
+    && Object.values(value).every((metric) => typeof metric === "number" && Number.isFinite(metric));
+}
+
+function hasCompleteCanonicalMetrics(stratum: string, metrics: unknown): boolean {
+  if (!isBaselineMetrics(metrics)) return false;
+  const expected = CANONICAL_METRIC_KEYS_BY_STRATUM[stratum as keyof typeof CANONICAL_METRIC_KEYS_BY_STRATUM];
+  return !!expected && Object.keys(metrics).length === expected.length
+    && expected.every((key) => Object.hasOwn(metrics, key) && Number.isFinite(metrics[key]));
+}
+
+/** Extract only the numeric score rows the run itself emitted for one stratum. */
+export function baselineMetricsFromA1Run(run: unknown, stratum: string): BaselineMetrics {
+  if (run == null || typeof run !== "object" || Array.isArray(run)) throw new Error("a1-run 缺少 metrics");
+  const metrics = (run as { metrics?: unknown }).metrics;
+  if (metrics == null || typeof metrics !== "object" || Array.isArray(metrics)) throw new Error("a1-run 缺少 metrics");
+  const rows = (metrics as Record<string, unknown>)[stratum];
+  if (!Array.isArray(rows) || !rows.length) throw new Error(`a1-run 缺少 ${stratum} 指标`);
+  const result: BaselineMetrics = {};
+  for (const row of rows) {
+    if (row == null || typeof row !== "object" || Array.isArray(row)) throw new Error("a1-run 指标行无效");
+    const { key, value } = row as { key?: unknown; value?: unknown };
+    if (typeof key !== "string" || !key || typeof value !== "number" || !Number.isFinite(value) || Object.hasOwn(result, key)) {
+      throw new Error("a1-run 指标行无效");
+    }
+    result[key] = value;
+  }
+  return result;
+}
+
+/** Only a reviewed two-run registry record may make a formal A1 comparison comparable. */
+export function comparableRegistryBaselineMetrics(
+  registry: unknown, stratum: string, config: EvalConfig, expectedMetricKeys: readonly string[],
+): BaselineMetrics | null {
+  if (registry == null || typeof registry !== "object" || Array.isArray(registry)) return null;
+  const document = registry as { schema_version?: unknown; strata?: unknown };
+  if (document.schema_version !== BASELINE_REGISTRY_VERSION || document.strata == null || typeof document.strata !== "object" || Array.isArray(document.strata)) return null;
+  const record = (document.strata as Record<string, unknown>)[stratum];
+  if (record == null || typeof record !== "object" || Array.isArray(record)) return null;
+  const candidate = record as Partial<BaselineRecord>;
+  if (candidate.status !== "dcp_accepted" || candidate.stratum !== stratum || !isCompleteEvalConfig(candidate.config)
+    || !sameEvalConfig(candidate.config as unknown as Record<string, unknown>, config) || !isBaselineMetrics(candidate.metrics)
+    || expectedMetricKeys.length === 0 || new Set(expectedMetricKeys).size !== expectedMetricKeys.length
+    || expectedMetricKeys.some((key) => !Object.hasOwn(candidate.metrics!, key) || !Number.isFinite(candidate.metrics![key]))) return null;
+  return candidate.metrics;
+}
+
+/** Automatic thresholds and formal baseline comparability are separate facts. */
+export function formalA1GateExitCode(
+  automaticThresholdsPass: boolean, activeStrataCount: number, baselineComparison: "comparable" | "incomparable",
+): number {
+  return automaticThresholdsPass && activeStrataCount > 0 && baselineComparison === "comparable" ? 0 : 1;
 }
 
 /** Ensure the copied `a1-run.json` is the artifact whose hash the manifest recorded. */
@@ -64,6 +133,7 @@ export function baselineCandidateFromArtifacts(manifestPath: string, a1RunPath: 
     manifest_sha256: sha256(manifestBytes),
     a1_run_sha256: sha256(a1RunBytes),
     config: manifest.config,
+    metrics: baselineMetricsFromA1Run(run, stratum),
     source,
     smoke: dataset.smoke,
     status: manifest.status as BaselineCandidate["status"],
@@ -79,6 +149,7 @@ function candidateIssues(candidate: BaselineCandidate): string[] {
   if (candidate.config.dataset_lock_status !== "verified_v2") issues.push("baseline candidate 必须使用 verified_v2 dataset lock");
   if (candidate.config.coverage_thinking_source !== "explicit") issues.push("baseline candidate 必须显式固定 COVERAGE_THINKING");
   if (!sha(candidate.manifest_sha256) || !sha(candidate.a1_run_sha256)) issues.push("baseline candidate 缺少已验证 artifact sha256");
+  if (!hasCompleteCanonicalMetrics(candidate.stratum, candidate.metrics)) issues.push("baseline candidate 缺少完整的规范分形态指标");
   return issues;
 }
 
@@ -96,6 +167,7 @@ export function promoteBaselineCandidate(candidate: BaselineCandidate, existing?
     return { next: null, reasons: ["该 stratum 已有 dcp_accepted baseline；新配置须从 provisional 重新开始"] };
   }
   if (existing.run_id === candidate.run_id) return { next: null, reasons: ["第二次运行必须是不同 run_id，首跑不能自证"] };
+  if (!hasCompleteCanonicalMetrics(existing.stratum, existing.metrics)) reasons.push("首跑缺少完整的规范分形态指标");
   if (existing.stratum !== candidate.stratum || existing.source.commit !== candidate.source.commit) reasons.push("第二次运行必须在同一 clean commit / stratum");
   if (!sameEvalConfig(existing.config as unknown as Record<string, unknown>, candidate.config)) reasons.push("第二次运行必须使用相同 EvalConfig");
   if (existing.config.dataset_lock_sha256 !== candidate.config.dataset_lock_sha256) reasons.push("第二次运行必须使用相同 dataset lock");

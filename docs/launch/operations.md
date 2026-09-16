@@ -88,7 +88,7 @@ curl -fsS -X POST http://127.0.0.1:3000/api/cron -H "authorization: Bearer $CRON
 | `ANALYZER_MODEL` | ✅ | 分析模型；中转站必须显式设为其支持的模型。须同时 ≠ validator、coverage |
 | `VALIDATOR_MODEL` | ✅ | 主校验模型；须同时 ≠ analyzer、coverage |
 | `COVERAGE_MODEL` | ✅ | 展示引用反扩写复核模型；须同时 ≠ analyzer、validator。缺失或任意同模型时 analyze fail-closed。若 relay 只支持 Opus，可使用三种不同版本（如 `claude-opus-4-6` / `-4-7` / `-4-8`） |
-| `VALIDATOR_THINKING` | 建议显式设 | 当前目标为 `1`。先用同一 relay/key/model 跑 `npm run eval:canary-thinking`，确认 **thinking + forced tool_choice** 结构化输出可用后才启用；未 canary 的 relay 保持 `0`。 |
+| `VALIDATOR_THINKING` | 建议显式设 | 当前中转站/原型目标为 `0`。2026-09-16 在同一模型、提示、100-pair worklist 和 3072-token 预算下，`0` 完成 100/100；`1` 多次中继超时。`npm run eval:canary-thinking` 只验证 **thinking + forced tool_choice** 的接口兼容，不能证明长程稳定性。仅在稳定端点及独立人评质量比较完成后才可改为 `1`；改动后旧 A1 baseline 配置不可比。 |
 | `COVERAGE_THINKING` | 建议显式设 | 仅影响 quote-self-contained 的独立 coverage 反查角色；不可依赖 `VALIDATOR_THINKING` 的继承值来冻结 CI/生产基线。每个 coverage 模型也须独立 canary 后才可设为 `1`。 |
 | `VALIDATOR_BATCH` | 否 | 一致性判定**按源归并**（同一源被多条结论引用时，源文只发一遍、一次调用逐条独立判 → token 从 ~K×源文砍到 ~1×源文，成本最大杠杆）。默认开；`0` 回退逐条判定（精度回归排查 / 怀疑批量串扰时的运维开关）。判定语义与逐条一致、缓存共享 |
 | `CONSISTENCY_BATCH_MAX` | 否 | 单次批量调用最多判几条结论，默认 8。超出拆多次调用（源文各发一遍，仍远省于逐条）。调小=更稳的输出/更高精度但省得少，调大=更省但单调用输出更长、批内判定数更多 |

@@ -31,6 +31,8 @@ export interface A1RunManifest {
   config: object;
   dataset: object;
   source: { commit: string | null; dirty_fingerprint: string | null; dirty_fingerprint_algorithm?: string };
+  /** A resumed execution binds the verified prior checkpoint by bytes, never by its local path. */
+  resumed_from_checkpoint_sha256?: string;
   /** A pass on automatic thresholds is not a comparable-baseline or DCP approval. */
   baseline_comparison?: "comparable" | "incomparable" | "not_evaluated";
   /** Auditable DCP population: exactly production selectInsights() output, by real topic id. */
@@ -53,12 +55,39 @@ export interface A1RunManifest {
     calls: number;
     failures: number;
     requests: number;
+    /** Includes successful-but-truncated `max_tokens` model responses. */
+    output_stop_reasons: Record<string, number>;
     latency_ms: { p50: number; p95: number; max: number };
+    /** Application-owned operation names distinguish validator phases without persisting prompts. */
+    by_operation: Record<string, {
+      calls: number;
+      failures: number;
+      requests: number;
+      output_stop_reasons: Record<string, number>;
+      latency_ms: { p50: number; p95: number; max: number };
+    }>;
   }>;
   insights: { count: number; ids_sha256: string };
   artifacts: Record<string, string>;
   review_artifact_error?: string;
   error?: string;
+}
+
+/**
+ * A small, redaction-safe checkpoint for a running A1 process. It intentionally contains only
+ * case coordinates and aggregate counts: never source bodies, prompts, model output, or secrets.
+ */
+export interface A1RunProgress {
+  run_id: string;
+  updated_at: string;
+  state: "running" | "failed" | "completed";
+  phase: "setup" | "quality" | "consistency" | "coverage_benchmark" | "finalizing";
+  topic_timeout_ms?: number;
+  current_case?: { index: number; total: number; topic_id?: string };
+  /** Analyzer-chunk coordinates are execution diagnostics only, never a reduced sample claim. */
+  current_chunk?: { index: number; total: number };
+  completed?: { quality_cases: number; consistency_cases: number };
+  last_failure?: { phase: string; case_index?: number; topic_id?: string; error: string };
 }
 
 export function beginA1Run(root = "evals/out/runs", startedAt = new Date().toISOString()): A1RunWorkspace {
@@ -90,6 +119,17 @@ export function writeJson(path: string, value: unknown): void {
   const temporary = `${path}.${process.pid}.${randomUUID().slice(0, 6)}.tmp`;
   writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`);
   renameSync(temporary, path);
+}
+
+export function writeA1RunProgress(
+  workspace: A1RunWorkspace,
+  progress: Omit<A1RunProgress, "run_id" | "updated_at">,
+): void {
+  writeJson(join(workspace.tempDir, "progress.json"), {
+    run_id: workspace.runId,
+    updated_at: new Date().toISOString(),
+    ...progress,
+  } satisfies A1RunProgress);
 }
 
 export function sha256File(path: string): string {

@@ -18,15 +18,20 @@
  * 仅含 arxiv 数据时（当前默认数据集），行为与分形态前一致——arxiv 那组的门槛/退出码逐项不变。
  */
 import "./load-env.js"; // 必须最先 import：载 .env.local，早于 MODELS（llm.ts 模块加载时求值）
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   analyze,
+  analyzeChunkInputSha256,
+  ANALYZE_BATCH_CHARS,
   ANALYZE_BODY_CHARS,
   ANALYZER_OUTPUT_VERSION,
+  DISPLAY_COVERAGE_PRIMARY_CLAIMS_PER_CALL,
   ANALYZER_SYSTEM,
+  DISPLAY_COVERAGE_PRIMARY_MAX_TOKENS,
+  DISPLAY_COVERAGE_PRIMARY_RESPONSE_BUDGET_VERSION,
   coverageGaps,
   DISPLAY_COVERAGE_COUNTERCHECK_PROMPT_HASH,
   DISPLAY_COVERAGE_COUNTERCHECK_PROMPT_VERSION,
@@ -34,6 +39,7 @@ import {
   DISPLAY_COVERAGE_PROMPT_HASH,
   DISPLAY_COVERAGE_PROMPT_VERSION,
   filterByQuoteCoverage,
+  chunkByChars,
   renderImportanceBasis,
   SELECT_WINDOW_CHARS,
   specificClaims,
@@ -50,12 +56,14 @@ import {
   RELAY_RECOVERY_POLICY_VERSION,
   relayRecoveryStats,
 } from "../src/lib/runtime/relay-recovery.js";
-import type { CitationCheck, ContentItem, ImportanceReason, Insight, Topic } from "../src/lib/types.js";
+import type { AnalysisBatch, CitationCheck, ContentItem, ImportanceReason, Insight, Topic, ValidationResult } from "../src/lib/types.js";
 import { DISPLAY_PROJECTION_VERSION } from "../src/lib/utils/source-quote-projection.js";
 import { selectInsights } from "../src/lib/agents/report-gen.js";
-import { beginA1Run, finalizeA1Run, finalizeFailedA1Run, sha256File, writeJson, type A1RunWorkspace } from "./a1-artifacts.js";
+import { beginA1Run, finalizeA1Run, finalizeFailedA1Run, sha256File, writeA1RunProgress, writeJson, type A1RunProgress, type A1RunWorkspace } from "./a1-artifacts.js";
 import { isA1Smoke, selectA1Cases } from "./a1-case-limit.js";
-import { sameEvalConfig, type EvalConfig } from "./a1-config.js";
+import { A1TopicDeadlineExceededError, a1TopicTimeoutMs, runA1TopicWithDeadline, terminalA1QualityCaseFailure } from "./a1-run-control.js";
+import { type EvalConfig } from "./a1-config.js";
+import { comparableRegistryBaselineMetrics, formalA1GateExitCode } from "./a1-baseline-promotion.js";
 import { validateDatasetLock, type DatasetLockValidation } from "./a1-dataset-lock.js";
 import {
   countReaderVisibleByTopic,
@@ -67,6 +75,18 @@ import {
   readerVisibleDuplicateEvidence,
 } from "./a1-dcp.js";
 import { DIRTY_SOURCE_FINGERPRINT_ALGORITHM, dirtyFingerprintFromSnapshot } from "./a1-source-state.js";
+import {
+  a1QualityCheckpointConfigSha256,
+  appendA1QualityCheckpointChunk,
+  completeA1QualityCheckpointCase,
+  createA1QualityCheckpoint,
+  loadA1QualityCheckpoint,
+  verifiedFailedA1CheckpointSha256,
+  writeA1QualityCheckpoint,
+  type A1QualityCheckpoint,
+  type A1QualityCheckpointContext,
+  type A1QualityCheckpointPlanCase,
+} from "./a1-quality-checkpoint.js";
 import {
   emptyJudgeStats,
   judgeAccuracy,
@@ -80,6 +100,9 @@ import {
 type Stratum = "arxiv" | "transcript";
 const STRATA: Stratum[] = ["arxiv", "transcript"];
 let activeWorkspace: A1RunWorkspace | null = null;
+let activeProgress: Omit<A1RunProgress, "run_id" | "updated_at"> | null = null;
+let activeQualityCheckpointPath: string | null = null;
+let activeResumeCheckpointSha256: string | null = null;
 /** Captured at startup so a long run cannot be attributed to a later checkout or dataset edit. */
 let activeRunContext: {
   config: object;
@@ -88,6 +111,78 @@ let activeRunContext: {
 } = {
   config: {}, dataset: {}, source: { commit: null, dirty_fingerprint: null },
 };
+
+function a1ErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.slice(0, 1000);
+}
+
+function updateA1Progress(progress: Omit<A1RunProgress, "run_id" | "updated_at">): void {
+  activeProgress = progress;
+  if (activeWorkspace) writeA1RunProgress(activeWorkspace, progress);
+}
+
+/** Always publish an interrupted/failed run as terminal evidence when a workspace exists. */
+function finalizeActiveA1Failure(error: unknown): void {
+  const workspace = activeWorkspace;
+  if (!workspace) return;
+  activeWorkspace = null;
+  const message = a1ErrorMessage(error);
+  const prior = activeProgress ?? { state: "running" as const, phase: "setup" as const };
+  try {
+    const failureProgress: Omit<A1RunProgress, "run_id" | "updated_at"> = {
+      ...prior,
+      state: "failed",
+      last_failure: {
+        phase: prior.phase,
+        ...(prior.current_case ? { case_index: prior.current_case.index, topic_id: prior.current_case.topic_id } : {}),
+        error: message,
+      },
+    };
+    activeProgress = failureProgress;
+    writeA1RunProgress(workspace, failureProgress);
+    const progressPath = join(workspace.tempDir, "progress.json");
+    finalizeFailedA1Run(workspace, {
+      run_id: workspace.runId,
+      status: "failed",
+      auto_gate: "not_evaluated",
+      manual_review: "not_generated",
+      dcp_eligibility: "not_evaluated",
+      started_at: workspace.startedAt,
+      ended_at: new Date().toISOString(),
+      config: activeRunContext.config,
+      dataset: activeRunContext.dataset,
+      source: activeRunContext.source,
+      insights: { count: 0, ids_sha256: createHash("sha256").update("").digest("hex") },
+      artifacts: {
+        ...(existsSync(progressPath) ? { "progress.json": sha256File(progressPath) } : {}),
+        ...(activeQualityCheckpointPath && existsSync(activeQualityCheckpointPath)
+          ? { "quality-checkpoint.json": sha256File(activeQualityCheckpointPath) }
+          : {}),
+      },
+      ...(activeResumeCheckpointSha256 ? { resumed_from_checkpoint_sha256: activeResumeCheckpointSha256 } : {}),
+      error: message,
+    });
+  } catch (artifactError) {
+    console.error("A1 失败产物记录也失败：", artifactError);
+  } finally {
+    activeProgress = null;
+    activeQualityCheckpointPath = null;
+    activeResumeCheckpointSha256 = null;
+  }
+}
+
+/** SIGTERM/SIGINT used to strand a private `.tmp` workspace in `running`; terminalize first. */
+function installA1InterruptionHandlers(): void {
+  for (const signal of ["SIGINT", "SIGTERM"] as const) {
+    process.once(signal, () => {
+      const error = new Error(`A1 run interrupted by ${signal}`);
+      console.error(error.message);
+      finalizeActiveA1Failure(error);
+      process.exit(1);
+    });
+  }
+}
 
 interface Thresholds {
   reachabilityPass: number;
@@ -134,6 +229,46 @@ interface QualityCase {
   time_window: { start: string; end: string };
   stratum?: Stratum; // 缺省 arxiv
 }
+
+function qualityCheckpointPlan(cases: readonly QualityCase[]): A1QualityCheckpointPlanCase[] {
+  return cases.map((entry, caseIndex) => ({
+    case_index: caseIndex,
+    topic_id: entry.topic.id,
+    stratum: entry.stratum ?? "arxiv",
+    chunk_input_sha256: chunkByChars(entry.items).map((chunk) => analyzeChunkInputSha256(
+      entry.topic, chunk, entry.time_window, [],
+    )),
+  }));
+}
+
+interface A1ResumeSource {
+  checkpoint: A1QualityCheckpoint;
+  checkpoint_sha256: string;
+}
+
+/**
+ * A checkpoint may only come from a terminal failed A1 run whose manifest hashes that exact file.
+ * This prevents a hand-edited temporary file from silently becoming model evidence on a new run.
+ */
+function loadA1ResumeSource(
+  raw: string | undefined,
+  context: A1QualityCheckpointContext,
+  plan: readonly A1QualityCheckpointPlanCase[],
+): A1ResumeSource | null {
+  const requested = raw?.trim();
+  if (!requested) return null;
+  let checkpointPath: string;
+  try {
+    checkpointPath = statSync(requested).isDirectory() ? join(requested, "quality-checkpoint.json") : requested;
+  } catch {
+    throw new Error("A1_RESUME_FROM 不存在或不可读取");
+  }
+  const manifestPath = join(dirname(checkpointPath), "manifest.json");
+  if (!existsSync(manifestPath)) throw new Error("A1_RESUME_FROM 缺少所属失败 run 的 manifest.json");
+  const checkpointSha256 = verifiedFailedA1CheckpointSha256(manifestPath, checkpointPath);
+  return { checkpoint: loadA1QualityCheckpoint(checkpointPath, context, plan), checkpoint_sha256: checkpointSha256 };
+}
+
 interface ConsistencyCase {
   statement: string;
   source_text: string;
@@ -225,6 +360,7 @@ function currentEvalConfig(qualityFile: string, consistencyFile: string, dataset
     analyzer_output_version: ANALYZER_OUTPUT_VERSION,
     analyzer_prompt_sha256: createHash("sha256").update(ANALYZER_SYSTEM).digest("hex"),
     analyze_body_chars: ANALYZE_BODY_CHARS,
+    analyze_batch_chars: ANALYZE_BATCH_CHARS,
     select_window_chars: SELECT_WINDOW_CHARS,
     validator_model: MODELS.validator,
     validator_contract_version: consistencyCacheVersion(),
@@ -250,6 +386,9 @@ function currentEvalConfig(qualityFile: string, consistencyFile: string, dataset
     display_projection_version: DISPLAY_PROJECTION_VERSION,
     display_coverage_primary_prompt_version: DISPLAY_COVERAGE_PROMPT_VERSION,
     display_coverage_primary_prompt_sha256: DISPLAY_COVERAGE_PROMPT_HASH,
+    display_coverage_primary_response_budget_version: DISPLAY_COVERAGE_PRIMARY_RESPONSE_BUDGET_VERSION,
+    display_coverage_primary_max_tokens: DISPLAY_COVERAGE_PRIMARY_MAX_TOKENS,
+    display_coverage_primary_claims_per_call: DISPLAY_COVERAGE_PRIMARY_CLAIMS_PER_CALL,
     display_coverage_countercheck_prompt_version: DISPLAY_COVERAGE_COUNTERCHECK_PROMPT_VERSION,
     display_coverage_countercheck_prompt_sha256: DISPLAY_COVERAGE_COUNTERCHECK_PROMPT_HASH,
   };
@@ -432,7 +571,7 @@ function insightManifest(insights: Insight[]) {
 const pct = (x: number) => `${(x * 100).toFixed(1)}%`;
 
 interface MetricRow {
-  key: string; // 对齐 baseline.json 各 stratum 段的键（回归对照用）
+  key: string; // 对齐 approved baseline-registry 各 stratum 的规范键（回归对照用）
   name: string;
   value: number;
   threshold: number;
@@ -508,7 +647,11 @@ async function main(): Promise<void> {
     );
   }
   assertCoverageModelSeparation();
-  activeWorkspace = beginA1Run();
+  activeWorkspace = beginA1Run(process.env.A1_RUNS_DIR?.trim() || undefined);
+  activeQualityCheckpointPath = join(activeWorkspace.tempDir, "quality-checkpoint.json");
+  installA1InterruptionHandlers();
+  updateA1Progress({ state: "running", phase: "setup" });
+  const topicTimeoutMs = a1TopicTimeoutMs();
   // 子集开关只服务于有界诊断。任一集合实际被截断都会成为不可晋升的 smoke run。
 
   // ── Part A：洞察提炼 + 引用双层校验（按 stratum 分组收集） ──
@@ -581,11 +724,26 @@ async function main(): Promise<void> {
     },
     source: sourceState(),
   };
+  const checkpointPlan = qualityCheckpointPlan(qualityCases);
+  const checkpointContext: A1QualityCheckpointContext = {
+    eval_config_sha256: a1QualityCheckpointConfigSha256(evalConfig),
+    quality_dataset_sha256: evalConfig.quality_dataset_sha256,
+  };
+  const resumeSource = loadA1ResumeSource(process.env.A1_RESUME_FROM, checkpointContext, checkpointPlan);
+  const qualityCheckpoint = resumeSource?.checkpoint ?? createA1QualityCheckpoint(checkpointContext);
+  activeResumeCheckpointSha256 = resumeSource?.checkpoint_sha256 ?? null;
+  writeA1QualityCheckpoint(activeQualityCheckpointPath, qualityCheckpoint);
+  if (activeResumeCheckpointSha256) {
+    activeRunContext.dataset = { ...activeRunContext.dataset, resumed_from_checkpoint_sha256: activeResumeCheckpointSha256 };
+    console.log("A1 将恢复已哈希绑定的完整 analyzer 分块；本次仍保留原始全量样本与自动门口径。\n");
+  }
+  updateA1Progress({ state: "running", phase: "setup", topic_timeout_ms: topicTimeoutMs });
   console.log(
     `A1 验证实跑\n模型：分析=${MODELS.analyzer} / 校验=${MODELS.validator} / 反扩写复核=${MODELS.coverage}` +
       `\n配置：validator thinking=${evalConfig.validator_thinking ? "on" : "off"} / coverage thinking=${evalConfig.coverage_thinking ? "on" : "off"} (${evalConfig.coverage_thinking_source}) / batch=${evalConfig.validator_batch ? "on" : "off"}` +
       `\n数据集锁：${datasetLock.status}（${datasetLock.promotion_eligible ? "可候选提升" : "不可提升"}）\n`,
   );
+  console.log(`A1 单主题截止：${topicTimeoutMs}ms（超时将终止整次运行并写入失败 artifact）\n`);
   if (smoke) {
     console.log(
       `⚠️ 子集冒烟模式：主题 ${qualityCases.length}/${qualityAll.length}` +
@@ -605,13 +763,57 @@ async function main(): Promise<void> {
   const qualityFailures: Array<{ case_index: number; topic_id: string; error: string }> = [];
   for (const [caseIndex, c] of qualityCases.entries()) {
     const stratum: Stratum = c.stratum ?? "arxiv";
+    updateA1Progress({
+      state: "running", phase: "quality", topic_timeout_ms: topicTimeoutMs,
+      current_case: { index: caseIndex, total: qualityCases.length, topic_id: c.topic.id },
+      completed: { quality_cases: qualitySucceeded, consistency_cases: 0 },
+    });
     process.stdout.write(`[分析] 主题「${c.topic.name}」(${stratum})… `);
     const coverageDecisions: CoverageDecision[] = [];
     try {
-      const batch = await analyze(c.topic, c.items, c.time_window, undefined, {
-        onCoverageDecision: (decision) => coverageDecisions.push(decision),
-      });
-      const vr = await validateBatch(batch.insights, c.items);
+      const savedCase = qualityCheckpoint.cases[caseIndex];
+      let batch: AnalysisBatch;
+      let vr: ValidationResult;
+      if (savedCase?.completed) {
+        // The checkpoint loader has already bound every chunk, the complete topic result and the
+        // source failed-run manifest to this exact EvalConfig + quality dataset.
+        batch = savedCase.completed.batch;
+        vr = savedCase.completed.validation;
+        coverageDecisions.push(...savedCase.chunks.flatMap((chunk) => chunk.coverage_decisions));
+        process.stdout.write("恢复完整主题… ");
+      } else {
+        const completedChunks = savedCase?.chunks ?? [];
+        ({ batch, vr } = await runA1TopicWithDeadline(c.topic.id, topicTimeoutMs, async (signal) => {
+          const batch = await analyze(c.topic, c.items, c.time_window, undefined, {
+            completed_chunks: completedChunks,
+            onCoverageDecision: (decision) => coverageDecisions.push(decision),
+            onChunkComplete: (completion) => {
+              // Promise.race may have already handed the deadline error to the outer runner even
+              // when a defective upstream transport settles late. Never recreate a published
+              // temporary workspace or append evidence after that terminal boundary.
+              if (signal.aborted) throw signal.reason ?? new Error("A1 topic cancelled");
+              appendA1QualityCheckpointChunk(qualityCheckpoint, checkpointPlan, caseIndex, {
+                input_sha256: completion.input_sha256,
+                insights: completion.insights,
+                coverage_decisions: completion.coverage_decisions,
+              });
+              writeA1QualityCheckpoint(activeQualityCheckpointPath!, qualityCheckpoint);
+              updateA1Progress({
+                state: "running", phase: "quality", topic_timeout_ms: topicTimeoutMs,
+                current_case: { index: caseIndex, total: qualityCases.length, topic_id: c.topic.id },
+                current_chunk: { index: completion.chunk_index + 1, total: completion.chunk_total },
+                completed: { quality_cases: qualitySucceeded, consistency_cases: 0 },
+              });
+            },
+            signal,
+          });
+          const vr = await validateBatch(batch.insights, c.items, undefined, undefined, signal);
+          if (signal.aborted) throw signal.reason ?? new Error("A1 topic cancelled");
+          return { batch, vr };
+        }));
+        completeA1QualityCheckpointCase(qualityCheckpoint, checkpointPlan, caseIndex, { batch, validation: vr });
+        writeA1QualityCheckpoint(activeQualityCheckpointPath!, qualityCheckpoint);
+      }
       // DCP counts the same reader-visible derivative as production, rather than raw analyzer
       // yield. A topic whose citations are all blocked/flagged therefore contributes zero.
       const readerVisible = selectInsights(batch, vr);
@@ -630,13 +832,34 @@ async function main(): Promise<void> {
         checks: vr.checks,
         coverage_decisions: coverageDecisions,
       });
+      updateA1Progress({
+        state: "running", phase: "quality", topic_timeout_ms: topicTimeoutMs,
+        current_case: { index: caseIndex, total: qualityCases.length, topic_id: c.topic.id },
+        completed: { quality_cases: qualitySucceeded, consistency_cases: 0 },
+      });
       console.log(`${batch.insights.length} 洞察 / ${vr.checks.length} 引用校验`);
     } catch (e) {
-      const error = (e as Error).message;
+      const error = a1ErrorMessage(e);
       qualityFailures.push({ case_index: caseIndex, topic_id: c.topic.id, error });
       coverageDecisionsByStratum[stratum].push(...coverageDecisions);
       qualityEvidence.push({ case_index: caseIndex, topic_id: c.topic.id, topic_name: c.topic.name, stratum, insight_count: 0, reader_visible_insight_count: 0, checks: [], coverage_decisions: coverageDecisions, error });
-      console.log(`失败，跳过该主题（${error}）`);
+      updateA1Progress({
+        // A complete quality population is mandatory evidence.  A request timeout, malformed
+        // structured response or any other execution error is terminal just like the outer
+        // deadline; continuing would silently skip this topic and make the final run unusable.
+        state: "failed",
+        phase: "quality",
+        topic_timeout_ms: topicTimeoutMs,
+        current_case: { index: caseIndex, total: qualityCases.length, topic_id: c.topic.id },
+        completed: { quality_cases: qualitySucceeded, consistency_cases: 0 },
+        last_failure: { phase: "quality", case_index: caseIndex, topic_id: c.topic.id, error },
+      });
+      if (e instanceof A1TopicDeadlineExceededError) {
+        console.log(`截止超时，终止本次 A1（${error}）`);
+        throw e;
+      }
+      console.log(`失败，终止本次 A1 并保留可恢复 checkpoint（${error}）`);
+      throw terminalA1QualityCaseFailure(caseIndex, c.topic.id, e);
     }
   }
 
@@ -646,10 +869,19 @@ async function main(): Promise<void> {
   const judgeEvidence: JudgeEvidence[] = [];
   let judgeSucceeded = 0;
   const judgeFailures: Array<{ case_index: number; error: string }> = [];
+  updateA1Progress({
+    state: "running", phase: "consistency", topic_timeout_ms: topicTimeoutMs,
+    completed: { quality_cases: qualitySucceeded, consistency_cases: 0 },
+  });
   process.stdout.write(`[校验器准召] ${consistencyCases.length} 组标注对… `);
   for (const [caseIndex, c] of consistencyCases.entries()) {
     const st = judgeByStratum[c.stratum ?? "arxiv"];
     const stratum = c.stratum ?? "arxiv";
+    updateA1Progress({
+      state: "running", phase: "consistency", topic_timeout_ms: topicTimeoutMs,
+      current_case: { index: caseIndex, total: consistencyCases.length },
+      completed: { quality_cases: qualitySucceeded, consistency_cases: judgeSucceeded },
+    });
     let j: Awaited<ReturnType<typeof judgeWithRetry>>;
     try {
       // 标注集是一条 claim 对一段 source_text，走生产单条路径的重试包装；直接调
@@ -666,6 +898,11 @@ async function main(): Promise<void> {
     judgeSucceeded++;
     matrixByStratum[stratum][c.expected_consistency][j.consistency]++;
     judgeEvidence.push({ case_index: caseIndex, stratum, expected: c.expected_consistency, predicted: j.consistency, rationale: j.rationale, error: null });
+    updateA1Progress({
+      state: "running", phase: "consistency", topic_timeout_ms: topicTimeoutMs,
+      current_case: { index: caseIndex, total: consistencyCases.length },
+      completed: { quality_cases: qualitySucceeded, consistency_cases: judgeSucceeded },
+    });
   }
   const judgedTotal = STRATA.reduce((n, s) => n + judgeByStratum[s].judged, 0);
   const errorsTotal = STRATA.reduce((n, s) => n + judgeByStratum[s].errors, 0);
@@ -884,43 +1121,37 @@ async function main(): Promise<void> {
   }
 
   // ── 回归门（eval-criteria：任一指标较基线降 >3pp 告警/阻断）。各 stratum 各比各的基线段。
-  // baseline.json：arxiv → `auto_metrics`（历史键，向后兼容）；transcript → `transcript`。 ──
+  // baseline-registry.json is the executable two-run approval source. The legacy aggregate
+  // baseline is historical context only and can never certify the changed contract. ──
   let regressed = false;
   let baselineComparison: "comparable" | "incomparable" | "not_evaluated" = "not_evaluated";
   if (!coreComplete) {
     console.log("\n（核心评测不完整，跳过 baseline 回归对照）");
-  } else try {
-    baselineComparison = "comparable";
-    const baseDoc = JSON.parse(readFileSync("evals/baseline.json", "utf8")) as Record<string, unknown>;
-    const configs = baseDoc.eval_configs;
-    const configsByStratum = configs && typeof configs === "object" && !Array.isArray(configs)
-      ? configs as Record<string, unknown>
-      : {};
-    const baseForStratum = (s: Stratum): Record<string, number> =>
-      ((s === "arxiv" ? baseDoc.auto_metrics : baseDoc[s]) ?? {}) as Record<string, number>;
+  } else {
+    let registryDoc: unknown = null;
+    try {
+      registryDoc = JSON.parse(readFileSync("evals/baseline-registry.json", "utf8"));
+    } catch {
+      console.log("\n（未读取到 baseline registry；正式回归对照不可比）");
+    }
+    baselineComparison = "incomparable";
     const TOL = 0.03;
+    let everyActiveStratumComparable = activeStrata.length > 0;
+    if (!activeStrata.length) console.log("\n回归对照：⚠️ 没有完成任何质量/一致性形态，不能作可比结论。");
     for (const s of activeStrata) {
-      const base = baseForStratum(s);
-      if (!Object.keys(base).length) {
-        baselineComparison = "incomparable";
-        console.log(`\n回归对照（${s} · vs baseline.json）：⚠️ 缺少该形态的基线指标，不能作回归结论。`);
+      const expectedMetricKeys = rowsByStratum[s].map((row) => row.key);
+      const base = comparableRegistryBaselineMetrics(registryDoc, s, evalConfig, expectedMetricKeys);
+      if (!base) {
+        everyActiveStratumComparable = false;
+        console.log(`\n回归对照（${s}）：⚠️ 缺少已批准、同配置的基线指标，不能作回归结论。`);
         continue;
       }
-      const baseConfig = configsByStratum[s];
-      const configCompatible = baseConfig && typeof baseConfig === "object" && !Array.isArray(baseConfig)
-        ? sameEvalConfig(baseConfig as Record<string, unknown>, evalConfig)
-        : false;
-      console.log(`\n回归对照（${s} · vs baseline.json）：`);
-      if (!configCompatible) {
-        baselineComparison = "incomparable";
-        console.log("  ⚠️ 此形态缺少同配置的结构化基线：仅展示指标，不作回归结论；请先全量重建该形态基线。");
-      }
+      console.log(`\n回归对照（${s} · vs baseline-registry.json）：`);
       for (const r of rowsByStratum[s]) {
         const b = base[r.key];
-        if (typeof b !== "number") continue;
         const delta = r.value - b;
         // info 指标仅打印漂移、不触回归门（其红线由 blocking 守，非本指标）
-        const isReg = configCompatible && r.op !== "info" && (r.op === ">=" ? delta < -TOL : delta > TOL);
+        const isReg = r.op !== "info" && (r.op === ">=" ? delta < -TOL : delta > TOL);
         if (isReg) regressed = true;
         console.log(
           `  ${r.name.padEnd(18)} ${pct(b)} → ${pct(r.value)}（Δ${delta >= 0 ? "+" : ""}${pct(delta)}）${isReg ? " ⚠️ 回归" : ""}`,
@@ -932,9 +1163,7 @@ async function main(): Promise<void> {
         "  ⚠️ 检测到 >3pp 回归。单次跑有非确定性噪声——标准全量跑下视为阻断；非标准数据集/冒烟仅供参考。",
       );
     }
-  } catch {
-    baselineComparison = "incomparable";
-    console.log("\n（无 baseline.json，跳过回归对照）");
+    if (everyActiveStratumComparable) baselineComparison = "comparable";
   }
 
   const failed = allRows.filter((r) => !r.pass);
@@ -964,9 +1193,14 @@ async function main(): Promise<void> {
       autoGate = "fail";
     }
   } else {
-    // 阈值 FAIL 或（配置可比的）>3pp 回归 → 非零退出（带 key 的 job/CI 可据此阻断合并）
-    exitCode = !allRows.length || failed.length || regressed ? 1 : 0;
-    autoGate = exitCode === 0 ? "pass" : "fail";
+    // A green automatic threshold result may be promoted into the two-run registry, but it is
+    // not an Eval-Gate pass until a comparable approved baseline exists.
+    const automaticThresholdsPass = activeStrata.length > 0 && Boolean(allRows.length) && failed.length === 0 && !regressed;
+    autoGate = automaticThresholdsPass ? "pass" : "fail";
+    exitCode = formalA1GateExitCode(automaticThresholdsPass, activeStrata.length, baselineComparison === "comparable" ? "comparable" : "incomparable");
+    if (automaticThresholdsPass && baselineComparison !== "comparable") {
+      console.log("❌ 自动阈值已通过，但缺少已批准的同配置 baseline；正式 Eval-Gate 仍阻断，不能据此合入。");
+    }
   }
 
   const dcpPrerequisites = [
@@ -981,8 +1215,14 @@ async function main(): Promise<void> {
   const artifactPaths = {
     "a1-run.json": a1RunPath,
     "review-queue.json": reviewQueuePath,
+    "quality-checkpoint.json": activeQualityCheckpointPath!,
     ...(reviewArtifactError ? {} : { "review.csv": reviewCsvPath }),
   };
+  updateA1Progress({
+    state: "completed", phase: "finalizing", topic_timeout_ms: topicTimeoutMs,
+    completed: { quality_cases: qualitySucceeded, consistency_cases: judgeSucceeded },
+  });
+  const progressPath = join(workspace.tempDir, "progress.json");
   finalizeA1Run(workspace, {
     run_id: workspace.runId,
     status: "completed",
@@ -994,42 +1234,28 @@ async function main(): Promise<void> {
     config: activeRunContext.config,
     dataset: activeRunContext.dataset,
     source: activeRunContext.source,
+    ...(activeResumeCheckpointSha256 ? { resumed_from_checkpoint_sha256: activeResumeCheckpointSha256 } : {}),
     baseline_comparison: baselineComparison,
     dcp_sample: dcpSample,
     dcp_prerequisites: dcpPrerequisites,
     relay_recovery: recovery,
     llm_role_telemetry: roleTelemetry,
     insights: insightManifest(allInsights),
-    artifacts: Object.fromEntries(Object.entries(artifactPaths).map(([name, path]) => [name, sha256File(path)])),
+    artifacts: {
+      ...Object.fromEntries(Object.entries(artifactPaths).map(([name, path]) => [name, sha256File(path)])),
+      "progress.json": sha256File(progressPath),
+    },
     ...(reviewArtifactError ? { review_artifact_error: reviewArtifactError } : {}),
   });
   activeWorkspace = null;
+  activeProgress = null;
+  activeQualityCheckpointPath = null;
+  activeResumeCheckpointSha256 = null;
   process.exit(exitCode);
 }
 
 main().catch((err) => {
   console.error("A1 验证运行出错：", err);
-  if (activeWorkspace) {
-    const workspace = activeWorkspace;
-    try {
-      finalizeFailedA1Run(workspace, {
-        run_id: workspace.runId,
-        status: "failed",
-        auto_gate: "not_evaluated",
-        manual_review: "not_generated",
-        dcp_eligibility: "not_evaluated",
-        started_at: workspace.startedAt,
-        ended_at: new Date().toISOString(),
-        config: activeRunContext.config,
-        dataset: activeRunContext.dataset,
-        source: activeRunContext.source,
-        insights: { count: 0, ids_sha256: createHash("sha256").update("").digest("hex") },
-        artifacts: {},
-        error: (err as Error).message,
-      });
-    } catch (artifactError) {
-      console.error("A1 失败产物记录也失败：", artifactError);
-    }
-  }
+  finalizeActiveA1Failure(err);
   process.exit(1);
 });

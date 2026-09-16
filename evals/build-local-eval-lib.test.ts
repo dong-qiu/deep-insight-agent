@@ -9,7 +9,7 @@ const topic: Topic = {
 const item = (sourceId: string, body = "x".repeat(500)): ContentItem => ({
   id: `item-${sourceId}`, source_id: sourceId, url: `https://example.test/${sourceId}`, title: sourceId,
   author: null, published_at: null, fetched_at: "2026-09-08T00:00:00.000Z", language: "en", topic_ids: [topic.id],
-  tags: [], body, body_kind: "article", raw_ref: "", content_hash: sourceId, fetch_status: "ok",
+  tags: [], body, body_kind: "article", raw_ref: `raw://${sourceId}`, content_hash: sourceId, fetch_status: "ok",
 });
 
 const secondTopic: Topic = {
@@ -42,6 +42,22 @@ describe("buildLocalEvalCases", () => {
     );
 
     expect(missingRequiredSources(result)).toEqual(["src_c"]);
+  });
+
+  it("partial 或缺 raw_ref 的条目不进入本地 A1 输入", () => {
+    const result = buildLocalEvalCases(
+      [topic],
+      () => [
+        { ...item("src_partial"), fetch_status: "partial" as const },
+        { ...item("src_missing_raw"), raw_ref: "" },
+        item("src_complete"),
+        item("src_other"),
+      ],
+      window,
+      { minBody: 400, perSource: 1, maxItems: 4, minimumSources: 1, requiredSourceIds: ["src_complete"] },
+    );
+    expect(result.cases[0]?.items.map((entry) => entry.source_id)).toEqual(["src_complete", "src_other"]);
+    expect(missingRequiredSources(result)).toEqual([]);
   });
 
   it("单一 staged source 可用两条同源内容构成隔离发布安全 case", () => {
