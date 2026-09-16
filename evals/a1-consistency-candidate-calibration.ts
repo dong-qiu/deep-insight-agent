@@ -1,4 +1,10 @@
-import { calibrationMatchesIntent, escapeCandidatePromptData, type CandidateIntent } from "./a1-consistency-label-candidate-plan.js";
+import {
+  calibrationMatchesIntent,
+  escapeCandidatePromptData,
+  LABEL_CANDIDATE_MAX_DRAFTS_PER_ATTEMPT,
+  LABEL_CANDIDATE_MIN_DRAFTS_PER_ATTEMPT,
+  type CandidateIntent,
+} from "./a1-consistency-label-candidate-plan.js";
 
 export const CALIBRATION_PROMPT_VERSION = "a1-v2-consistency-candidate-calibration-v2";
 
@@ -20,6 +26,12 @@ export interface CalibrationRetryFeedback {
 
 export function candidateDraftId(candidateId: string, draftIndex: number): string {
   return `${candidateId}#draft-${draftIndex + 1}`;
+}
+
+export function hasValidDistinctDrafts(drafts: readonly string[]): boolean {
+  return drafts.length >= LABEL_CANDIDATE_MIN_DRAFTS_PER_ATTEMPT
+    && drafts.length <= LABEL_CANDIDATE_MAX_DRAFTS_PER_ATTEMPT
+    && new Set(drafts).size === drafts.length;
 }
 
 /** Select only a draft whose independently observed relation exactly matches the private intent. */

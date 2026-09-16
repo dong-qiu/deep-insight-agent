@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { calibrationMatchesIntent, escapeCandidatePromptData, LABEL_CANDIDATE_DEFAULT_BATCH_SIZE, LABEL_CANDIDATE_DRAFTS_PER_ATTEMPT, LABEL_CANDIDATE_SOURCE_CHARS, LABEL_CANDIDATE_TARGET_NEGATIVE_COUNT, labelCandidateBatchSize, labelSourceWindow, plannedCandidateIntent, selectConsistencyCandidateItems } from "./a1-consistency-label-candidate-plan.js";
+import { calibrationMatchesIntent, escapeCandidatePromptData, LABEL_CANDIDATE_DEFAULT_BATCH_SIZE, LABEL_CANDIDATE_MAX_DRAFTS_PER_ATTEMPT, LABEL_CANDIDATE_MIN_DRAFTS_PER_ATTEMPT, LABEL_CANDIDATE_SOURCE_CHARS, LABEL_CANDIDATE_TARGET_NEGATIVE_COUNT, labelCandidateBatchSize, labelSourceWindow, plannedCandidateIntent, selectConsistencyCandidateItems } from "./a1-consistency-label-candidate-plan.js";
 
 describe("v2 consistency-label candidate plan", () => {
   it("plans 50 source-balanced diagnostic negative cases across all required types for 100 inputs", () => {
@@ -20,7 +20,8 @@ describe("v2 consistency-label candidate plan", () => {
   });
 
   it("keeps the ordinary 20-item generator batch by default, but bounds relay recovery batches", () => {
-    expect(LABEL_CANDIDATE_DRAFTS_PER_ATTEMPT).toBe(3);
+    expect(LABEL_CANDIDATE_MIN_DRAFTS_PER_ATTEMPT).toBe(3);
+    expect(LABEL_CANDIDATE_MAX_DRAFTS_PER_ATTEMPT).toBe(5);
     expect(labelCandidateBatchSize(undefined)).toBe(LABEL_CANDIDATE_DEFAULT_BATCH_SIZE);
     expect(labelCandidateBatchSize("5")).toBe(5);
     expect(() => labelCandidateBatchSize("0")).toThrow("1-20");

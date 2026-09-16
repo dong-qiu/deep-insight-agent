@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildCalibrationRetryInstruction, buildCandidateCalibrationUser, selectExactCalibratedDraft } from "./a1-consistency-candidate-calibration.js";
+import { buildCalibrationRetryInstruction, buildCandidateCalibrationUser, hasValidDistinctDrafts, selectExactCalibratedDraft } from "./a1-consistency-candidate-calibration.js";
 
 describe("consistency candidate calibration boundary", () => {
   it("keeps the requested generator intent out of the independent calibration input", () => {
@@ -31,5 +31,14 @@ describe("consistency candidate calibration boundary", () => {
     ]);
     expect(selectExactCalibratedDraft("case-3", "uncertain", ["first", "second", "third"], observed)).toBe("third");
     expect(selectExactCalibratedDraft("case-3", "misattribution", ["first", "second", "third"], observed)).toBeUndefined();
+  });
+
+  it("accepts three to five different drafts so a valid fourth draft is not rejected by schema shape", () => {
+    expect(hasValidDistinctDrafts(["one", "two", "three"])).toBe(true);
+    expect(hasValidDistinctDrafts(["one", "two", "three", "four"])).toBe(true);
+    expect(hasValidDistinctDrafts(["one", "two", "three", "four", "five"])).toBe(true);
+    expect(hasValidDistinctDrafts(["one", "two"])).toBe(false);
+    expect(hasValidDistinctDrafts(["one", "two", "three", "three"])).toBe(false);
+    expect(hasValidDistinctDrafts(["one", "two", "three", "four", "five", "six"])).toBe(false);
   });
 });
