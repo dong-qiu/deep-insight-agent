@@ -55,7 +55,13 @@ describe("report review package", () => {
     expect(getPublishedReportReview(db, "r")).toBeNull();
     expect(listPublishedReportReviewDecisions(db, "r", { limit: 50, offset: 0 })).toBeNull();
     publishReviewPackage(db, "r");
-    expect(getPublishedReportReview(db, "r")).toMatchObject({ report_id: "r", decision_count: 1 });
+    expect(getPublishedReportReview(db, "r")).toBeNull();
+    db.prepare("UPDATE report SET status='done' WHERE id='r'").run();
+    expect(getPublishedReportReview(db, "r")).toEqual(expect.objectContaining({
+      report_id: "r", report_type: "brief", report_title: "R", decision_count: 1,
+    }));
+    db.prepare("UPDATE report SET title=? WHERE id='r'").run("x".repeat(300));
+    expect(getPublishedReportReview(db, "r")?.report_title).toBe("x".repeat(240));
     expect(listPublishedReportReviewDecisions(db, "r", { limit: 1, offset: 0 })).toEqual({ total: 1, items: [{ insight_id: "i", decision: "published", reason_code: "selected_by_rule", published_rank: 1, supporting_citation_indices: [0], related_insight_id: null }] });
     expect(listPublishedReportReviewDecisions(db, "r", { limit: 1, offset: 1 })).toEqual({ total: 1, items: [] });
   });

@@ -310,12 +310,27 @@ describe("provenance migration runner", () => {
     }
   });
 
-  it("adds the report-review tables after main's v40-v44 migrations", () => {
-    const db = openDb(":memory:");
-    applyProvenanceMigrations(db);
-    expect((db.prepare("PRAGMA table_info(report_review_snapshot)").all() as { name: string }[]).map((column) => column.name))
-      .toContain("validate_started_event_id");
-    expect(db.prepare("SELECT 1 FROM schema_migration WHERE version='20260916_45_report_quality_review_trace_v1'").get()).toBeTruthy();
+  it("upgrades a physical v44 database to v45 only through the migration ledger", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ia-report-review-v44-"));
+    const path = join(dir, "insight.db");
+    const v44 = openDb(path);
+    applyProvenanceMigrations(v44);
+    v44.exec("DROP TABLE report_selection_decision; DROP TABLE report_review_snapshot;");
+    v44.prepare("DELETE FROM schema_migration WHERE version='20260916_45_report_quality_review_trace_v1'").run();
+    v44.close();
+
+    // Match the production migration runner's normal startup. Fresh-schema
+    // bootstrap must not pre-create these v45 objects on an already-v44 DB;
+    // the ledger migration below is their only upgrade path.
+    const runner = openDb(path);
+    expect(runner.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='report_review_snapshot'").get()).toBeFalsy();
+    applyProvenanceMigrations(runner);
+    expect((runner.prepare("PRAGMA table_info(report_review_snapshot)").all() as { name: string; notnull: number }[])
+      .find((column) => column.name === "validate_started_event_id")).toMatchObject({ notnull: 1 });
+    expect(runner.prepare("SELECT 1 FROM schema_migration WHERE version='20260916_45_report_quality_review_trace_v1'").get()).toBeTruthy();
+    expect(() => assertProvenanceSchema(runner)).not.toThrow();
+    runner.close();
+    rmSync(dir, { recursive: true, force: true });
   });
 
   it("upgrades the physical pre-display-coverage schema without treating it as audited", () => {

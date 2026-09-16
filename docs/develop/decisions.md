@@ -1435,3 +1435,25 @@ P0 可在不写 P1 指标的默认路径上继续发布。未来恢复 P1 时，
 ### 后果
 
 模型/提示词/数据锁改变均会使旧基线不可比；A1 必须保留 role-level calls、request attempts、failures 与 P95，之后才可把成本或 P95 用作比较标准。Coverage 模型实验与 validator thinking A/B 需先同配置 A/A，再至少三次重复；Analyzer 仅在 v2 错误终态稳定后才考虑调整，且不得放宽 fail-closed 或自动修复引用。
+
+---
+
+## ADR-0029: 报告质量复盘采用冻结迁移与发布边界索引
+
+- **日期**: 2026-09-16
+- **状态**: Accepted
+
+### 背景
+
+内部需要复盘一份已发布报告的真实输入、阶段配置、引用校验和最终选择，但把正文、原始抓取、prompt 或模型响应复制到新的管理页会扩大敏感数据面。历史报告又普遍缺少完整 trace、revision 或冻结配置，不能通过猜测回填成可审计记录。
+
+### 决定
+
+1. 以 `report_review_snapshot` 和 `report_selection_decision` 作为最小索引：只绑定既有 provenance event、batch、Insight、citation index 与受控 reason code，不复制正文、raw handle、prompt 或模型响应。
+2. 两表只由冻结的 v45 provenance migration 创建；不得放进启动期 `SCHEMA_SQL`，也不得从可变 fresh-schema 常量派生 migration checksum。这样物理 v44→v45 DDL 与 ledger 在同一 exclusive transaction 内完成，未来 fresh schema 调整不重写历史 migration 意义。
+3. 新报告在同一发布 intent 内先写 planned 快照与完整 decision 集；初次发布、普通恢复和 anchored 恢复都必须重验其 trace/event 精确绑定、输入与配置完整性、decision 完备性和 `pass + support` 白名单。失败不可将报告发布为 `done`。
+4. 只向 admin 暴露 `done + published + complete` 快照的分页、长度受限 DTO；非 admin、历史 legacy/partial、未发布或非 done 统一 404。历史数据不回填，不以“空复盘”伪装为完备记录。
+
+### 后果
+
+复盘可以支持质量判断而不扩大原文保存或模型重放范围；其数据模型和部署迁移需随发布一起验证。任何后续新增展示字段、复盘状态或 migration 变更都必须同时更新 architecture 契约、迁移测试和 admin reader 的 fail-closed 边界。

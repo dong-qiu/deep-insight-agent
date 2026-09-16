@@ -856,40 +856,6 @@ WHEN (NEW.body_kind = 'transcript' AND NEW.speaker_map_status NOT IN ('unknown',
 BEGIN SELECT RAISE(ABORT, 'invalid_speaker_map_contract'); END;
 `;
 
-/** Compact admin-only binding for a report quality review. It indexes existing
- * immutable provenance facts and intentionally stores neither bodies nor prompts. */
-export const REPORT_REVIEW_TRACE_V1_SCHEMA_SQL = `
-CREATE TABLE IF NOT EXISTS report_review_snapshot (
-  report_id TEXT PRIMARY KEY REFERENCES report(id) ON DELETE CASCADE,
-  trace_id TEXT NOT NULL REFERENCES generation_trace(id),
-  analysis_batch_id TEXT NOT NULL REFERENCES analysis_batch(id),
-  analyze_started_event_id TEXT NOT NULL REFERENCES generation_event(id),
-  analyze_completed_event_id TEXT NOT NULL REFERENCES generation_event(id),
-  validate_started_event_id TEXT NOT NULL REFERENCES generation_event(id),
-  validate_completed_event_id TEXT NOT NULL REFERENCES generation_event(id),
-  generate_report_started_event_id TEXT NOT NULL REFERENCES generation_event(id),
-  selection_rule_version TEXT NOT NULL,
-  review_trace_status TEXT NOT NULL CHECK (review_trace_status IN ('complete','partial','legacy')),
-  publication_state TEXT NOT NULL CHECK (publication_state IN ('planned','published')),
-  created_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_report_review_snapshot_trace ON report_review_snapshot(trace_id, created_at DESC);
-CREATE TABLE IF NOT EXISTS report_selection_decision (
-  report_id TEXT NOT NULL REFERENCES report(id) ON DELETE CASCADE,
-  insight_id TEXT NOT NULL REFERENCES insight(id),
-  decision TEXT NOT NULL CHECK (decision IN ('published','excluded')),
-  reason_code TEXT NOT NULL,
-  related_insight_id TEXT REFERENCES insight(id),
-  published_rank INTEGER,
-  supporting_citation_indices TEXT NOT NULL DEFAULT '[]',
-  selection_rule_version TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  PRIMARY KEY (report_id, insight_id),
-  CHECK ((decision='published' AND published_rank IS NOT NULL) OR (decision='excluded' AND published_rank IS NULL))
-);
-CREATE INDEX IF NOT EXISTS idx_report_selection_decision_report_rank ON report_selection_decision(report_id, decision, published_rank);
-`;
-
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS source (
   id             TEXT PRIMARY KEY,
@@ -1097,7 +1063,6 @@ WHEN NEW.insight_id IS NOT NULL
  AND NOT EXISTS (SELECT 1 FROM insight WHERE id = NEW.insight_id AND batch_id = NEW.batch_id)
 BEGIN SELECT RAISE(ABORT, 'display coverage candidate audit insight belongs to another batch'); END;
 
-${REPORT_REVIEW_TRACE_V1_SCHEMA_SQL}
 ${citationCheckTableSql()}
 
 CREATE TABLE IF NOT EXISTS validation_result (

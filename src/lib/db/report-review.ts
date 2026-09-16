@@ -201,16 +201,19 @@ export function publishReviewPackage(db: DB, reportId: string): void {
 }
 
 export interface ReportReviewRow {
-  report_id: string; trace_id: string; analysis_batch_id: string; selection_rule_version: string;
+  report_id: string; report_type: string; report_title: string;
+  trace_id: string; analysis_batch_id: string; selection_rule_version: string;
   created_at: string; decision_count: number;
 }
 
 /** Admin DTO source: a published snapshot only. Decision rows are deliberately
  * loaded through the bounded page helper below, never as an unbounded sidecar. */
 export function getPublishedReportReview(db: DB, reportId: string): ReportReviewRow | null {
-  return (db.prepare(`SELECT s.report_id,s.trace_id,s.analysis_batch_id,s.selection_rule_version,s.created_at,COUNT(d.insight_id) AS decision_count
-    FROM report_review_snapshot s LEFT JOIN report_selection_decision d ON d.report_id=s.report_id
-    WHERE s.report_id=? AND s.publication_state='published'
+  return (db.prepare(`SELECT s.report_id,r.type AS report_type,substr(r.title,1,240) AS report_title,
+      s.trace_id,s.analysis_batch_id,s.selection_rule_version,s.created_at,COUNT(d.insight_id) AS decision_count
+    FROM report_review_snapshot s JOIN report r ON r.id=s.report_id
+    LEFT JOIN report_selection_decision d ON d.report_id=s.report_id
+    WHERE s.report_id=? AND r.status='done' AND s.publication_state='published'
       AND s.review_trace_status='complete' AND s.validate_started_event_id IS NOT NULL
     GROUP BY s.report_id`).get(reportId) as ReportReviewRow | undefined) ?? null;
 }
@@ -225,8 +228,9 @@ export function listPublishedReportReviewDecisions(
 ): ReportReviewDecisionPage | null {
   const limit = Number.isSafeInteger(opts.limit) ? Math.max(1, Math.min(opts.limit, REVIEW_PAGE_LIMIT_MAX)) : REVIEW_PAGE_LIMIT_MAX;
   const offset = Number.isSafeInteger(opts.offset) ? Math.max(0, Math.min(opts.offset, 1_000_000)) : 0;
-  const published = db.prepare(`SELECT 1 FROM report_review_snapshot
-    WHERE report_id=? AND publication_state='published'
+  const published = db.prepare(`SELECT 1 FROM report_review_snapshot s
+    JOIN report r ON r.id=s.report_id
+    WHERE s.report_id=? AND r.status='done' AND s.publication_state='published'
       AND review_trace_status='complete' AND validate_started_event_id IS NOT NULL`).get(reportId);
   if (!published) return null;
   const total = (db.prepare("SELECT COUNT(*) AS count FROM report_selection_decision WHERE report_id=?").get(reportId) as { count: number }).count;

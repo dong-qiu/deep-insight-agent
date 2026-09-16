@@ -3,7 +3,6 @@ import { notFound } from "next/navigation";
 import { auth } from "../../../../../auth.js";
 import { getDb } from "../../../../../lib/db/index.js";
 import { getPublishedReportReview, listPublishedReportReviewDecisions } from "../../../../../lib/db/report-review.js";
-import { getReport } from "../../../../../lib/db/reports.js";
 import { safeExternalUrl } from "../../../../../lib/utils/safe-external-url.js";
 import { ProvenanceTimeline } from "../../../../reports/[id]/_components/provenance-timeline.js";
 
@@ -50,10 +49,8 @@ export default async function ReportQualityReviewPage({
   const { id } = await params;
   const query = await searchParams;
   const db = getDb();
-  const report = getReport(db, id);
-  if (!report) notFound();
   const review = getPublishedReportReview(db, id);
-  if (!review) return <section><p><Link href={`/reports/${id}`}>← 返回报告</Link></p><h1>质量复盘</h1><p className="muted">该历史报告没有完整的 V1 复盘包（legacy / partial），不会伪造回填。</p></section>;
+  if (!review) notFound();
 
   const inputPage = pageNumber(query.inputs_page);
   const decisionPage = pageNumber(query.decisions_page);
@@ -110,8 +107,8 @@ export default async function ReportQualityReviewPage({
   return <section>
     <p><Link href={`/reports/${id}`}>← 返回报告</Link></p>
     <h1>报告质量复盘</h1>
-    <p className="muted">{report.title} · 规则 {review.selection_rule_version} · 复盘包 {review.created_at}</p>
-    <ProvenanceTimeline traceId={review.trace_id} showBriefFunnel={report.type === "brief"} />
+    <p className="muted">{review.report_title} · 规则 {review.selection_rule_version} · 复盘包 {review.created_at}</p>
+    <ProvenanceTimeline traceId={review.trace_id} showBriefFunnel={review.report_type === "brief"} />
     <details className="audit" open><summary>分析输入快照 · 本页 {snapshots.length} / {inputCount}</summary>
       <table className="stats"><thead><tr><th>标题</th><th>来源</th><th>抓取</th><th>形态/状态</th><th>长度</th><th>内容哈希</th></tr></thead><tbody>
         {snapshots.map((item, index) => <tr key={`${String(item.content_hash)}-${index}`}><td>{item.href ? <a href={item.href} target="_blank" rel="noreferrer">{item.title || item.url}</a> : item.title || item.url}</td><td>{String(item.source_id ?? "")}</td><td>{String(item.published_at ?? item.fetched_at ?? "")}</td><td>{String(item.body_kind ?? "")} / {String(item.fetch_status ?? "")}</td><td>{String(item.body_length ?? "")}</td><td><code>{String(item.content_hash ?? "").slice(0, 16)}</code></td></tr>)}
