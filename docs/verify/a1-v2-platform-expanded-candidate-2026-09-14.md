@@ -206,3 +206,32 @@ The fixture is `verified_legacy`, and the target thinking setting differs from t
 baseline configuration.  It remains unsuitable for baseline comparison, formal v2 promotion,
 DCP, or release approval.  Those require the separately defined `verified_v2` dataset and
 two same-configuration full A1 runs.
+
+## Post-main-sync production batch-validator diagnostic — 2026-09-16
+
+After rebasing the production diagnostic and validator path onto the current main branch, the
+same explicit local configuration (`claude-opus-4-8`, `VALIDATOR_THINKING=0`, concurrency 6) was
+rerun against the same committed legacy fixture. It loaded 121 cases (60 `not_support`, 85 source
+texts), made 121 single and 85 grouped calls, and had no transport or parsing failures. This run
+exited nonzero because the batch safety gate detected a batch-only missed negative. No source body,
+claim, individual verdict, or rationale is retained in this record.
+
+| metric | single judge | grouped batch judge |
+| --- | ---: | ---: |
+| three-way accuracy against fixture labels | 93.4% | 91.7% |
+| `not_support` recall | 100.0% | 98.3% |
+| execution failures | 0 | 0 |
+| single/batch verdict disagreements | \- | 6 / 121 |
+| batch-only missed negative | \- | 1 |
+
+The 28 multi-claim source groups covered 64 cases. The sole new miss was fixture index 56:
+the single path returned `not_support`, while the grouped path returned `uncertain`. Its batch
+recall still exceeds the standalone 95% floor, but the stronger relative gate is deliberately
+failed because batch regressed relative to the simultaneously measured single path. Cost was USD
+1.9667.
+
+This contradicts the earlier one-run batch pass as a stable release signal; it does not, by
+itself, prove a code regression because the live model calls are not seeded and no validator
+semantic change was introduced by the main sync. Batch mode remains held from rollout pending a
+controlled repeatability check and root-cause analysis. This remains a scoped production-path
+diagnostic only, not A1, baseline, DCP, v2 lock, or Eval-Gate evidence.
