@@ -11,6 +11,8 @@ export const LABEL_CANDIDATE_MAX_GENERATION_ATTEMPTS = 5;
 /** Generate several semantically distinct drafts before asking the independent verifier to select one. */
 export const LABEL_CANDIDATE_MIN_DRAFTS_PER_ATTEMPT = 3;
 export const LABEL_CANDIDATE_MAX_DRAFTS_PER_ATTEMPT = 5;
+/** Tolerate a bounded over-return from structured generation, then deterministically trim before calibration. */
+export const LABEL_CANDIDATE_MAX_RETURNED_DRAFTS_PER_ATTEMPT = 12;
 /**
  * The generator may reduce this relay-facing request batch without changing the
  * 100-pair population or any planned intent.  Keep 20 as the ordinary setting;

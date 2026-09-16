@@ -34,6 +34,11 @@ export function hasValidDistinctDrafts(drafts: readonly string[]): boolean {
     && new Set(drafts).size === drafts.length;
 }
 
+/** Extra generated drafts are process-local; preserve only the first five distinct options for calibration. */
+export function boundedDistinctDrafts(drafts: readonly string[]): string[] {
+  return [...new Set(drafts)].slice(0, LABEL_CANDIDATE_MAX_DRAFTS_PER_ATTEMPT);
+}
+
 /** Select only a draft whose independently observed relation exactly matches the private intent. */
 export function selectExactCalibratedDraft(
   candidateId: string,

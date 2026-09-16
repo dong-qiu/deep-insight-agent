@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildCalibrationRetryInstruction, buildCandidateCalibrationUser, hasValidDistinctDrafts, selectExactCalibratedDraft } from "./a1-consistency-candidate-calibration.js";
+import { boundedDistinctDrafts, buildCalibrationRetryInstruction, buildCandidateCalibrationUser, hasValidDistinctDrafts, selectExactCalibratedDraft } from "./a1-consistency-candidate-calibration.js";
 
 describe("consistency candidate calibration boundary", () => {
   it("keeps the requested generator intent out of the independent calibration input", () => {
@@ -40,5 +40,10 @@ describe("consistency candidate calibration boundary", () => {
     expect(hasValidDistinctDrafts(["one", "two"])).toBe(false);
     expect(hasValidDistinctDrafts(["one", "two", "three", "three"])).toBe(false);
     expect(hasValidDistinctDrafts(["one", "two", "three", "four", "five", "six"])).toBe(false);
+  });
+
+  it("trims a bounded over-return before calibration instead of rejecting an otherwise valid response", () => {
+    expect(boundedDistinctDrafts(["one", "two", "two", "three", "four", "five", "six"]))
+      .toEqual(["one", "two", "three", "four", "five"]);
   });
 });
