@@ -45,7 +45,7 @@ export interface Source {
   enabled: boolean;
   // ADR-0008 决定③ 按源全文策略（可选：DB 行/validate/seed 总会填，缺省视为 feed/无容器覆盖——
   //  设可选以免存量 fixture 与部分构造处全部改写；缺省即旧行为）：
-  fetch_mode?: "feed" | "full_text"; // feed=仅用 feed 正文；full_text=正文空/过短时按 URL 抓文章页补全
+  fetch_mode?: "feed" | "full_text"; // feed=仅用 feed 正文；full_text=每个新 URL 必抓文章页，失败摘要只能标 partial
   content_container?: string | null; // 正文容器 class/id token（非 CSS 选择器），覆盖全局猜测
   // ADR-0027：播客转写策略；全部按源默认关闭，不能因全局 TRANSCRIPT_FETCH 意外启用新源。
   transcript_mode?: TranscriptMode;

@@ -1,5 +1,5 @@
-/** collector 编排测试：① 标题党 RSS 全文回填（#82）② B族转写抓取（ADR-0007 6a）。
- *  mock fetchFromSource（共享 raws）+ fetchArticleBody（#82）+ fetchTranscript（6a）；内存 DB + 临时 DATA_DIR。 */
+/** collector 编排测试：① 按源全文归档（#82）② B族转写抓取（ADR-0007 6a）。
+ *  mock fetchFromSource（共享 raws）+ fetchArticle（#82）+ fetchTranscript（6a）；内存 DB + 临时 DATA_DIR。 */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -20,7 +20,7 @@ import type { Source } from "../types.js";
 // vi.hoisted：mock 工厂提升到 import 之上，用 hoisted 共享受控数据。
 const { raws, article, ctl } = vi.hoisted(() => ({
   raws: { value: [] as RawItem[] },
-  article: { fn: vi.fn(async (_url: string) => null as string | null) },
+  article: { fn: vi.fn(async (_url: string) => null as { raw_html: string; body_html: string } | string | null) },
   ctl: { transcript: null as string | null, lastContainer: undefined as string | null | undefined, fetchError: null as Error | null },
 }));
 vi.mock("../sources/index.js", () => ({ fetchFromSource: vi.fn(async () => {
@@ -28,12 +28,12 @@ vi.mock("../sources/index.js", () => ({ fetchFromSource: vi.fn(async () => {
   return raws.value;
 }) }));
 vi.mock("../sources/article.js", () => ({
-  MIN_ARTICLE_CHARS: 200,
   articleFetchEnabled: () => process.env.ARTICLE_FETCH === "1",
   articleFetchKilled: () => process.env.ARTICLE_FETCH === "0" || process.env.ARTICLE_FETCH === "false",
-  fetchArticleBody: (url: string, container?: string | null) => {
+  fetchArticle: async (url: string, container?: string | null) => {
     ctl.lastContainer = container; // 捕获按源 container，供透传断言（不影响既有 toHaveBeenCalledWith(url)）
-    return article.fn(url);
+    const result = await article.fn(url);
+    return typeof result === "string" ? { raw_html: `<html><body>${result}</body></html>`, body_html: result } : result;
   },
 }));
 vi.mock("../sources/rss.js", () => ({
@@ -92,7 +92,12 @@ describe("collector 标题党 RSS 全文回填（#82）", () => {
     await collectSource(db, sourcePod);
     const item = db.prepare("SELECT id,raw_ref FROM content_item WHERE url=?").get("https://example.test/raw-gated") as { id: string; raw_ref: string };
     expect(item.raw_ref).toMatch(/^raw\/ci_[a-f0-9]{16}\.[a-f0-9]{64}\.txt$/);
-    expect(readFileSync(join(process.env.DATA_DIR!, item.raw_ref), "utf8")).toBe("original raw payload");
+    expect(JSON.parse(readFileSync(join(process.env.DATA_DIR!, item.raw_ref), "utf8"))).toMatchObject({
+      schema_version: "content-raw-archive-v1",
+      source_body_origin: "feed",
+      source_body: "body",
+      source_item_raw: "original raw payload",
+    });
     expect(db.prepare("SELECT kind,status,raw_content_id FROM generation_effect WHERE raw_content_id=?").get(item.id))
       .toEqual({ kind: "raw_archive", status: "committed", raw_content_id: item.id });
   });
@@ -170,6 +175,28 @@ describe("collector 按源 fetch_mode 全文策略（ADR-0008 切片2）", () =>
     expect(item.body).toContain("抓到的完整文章正文");
   });
 
+  it("full_text 源 + 很长 RSS 摘要仍必须抓文章页，并将响应与结构化正文共同归档", async () => {
+    const summary = "RSS 摘要看似已经很长，但不能证明它是文章全文。".repeat(30);
+    const articleHtml = `<html><body><article><p>${"完整文章正文。".repeat(80)}</p></article></body></html>`;
+    article.fn.mockResolvedValue({ raw_html: articleHtml, body_html: `<p>${"完整文章正文。".repeat(80)}</p>` });
+    raws.value = [{ ...mkRaw("https://xz.example/news/long-summary", summary) }];
+
+    await collectSource(db, sourceFullText);
+
+    expect(article.fn).toHaveBeenCalledWith("https://xz.example/news/long-summary");
+    const item = getContentItem(db, getContentByUrl(db, "https://xz.example/news/long-summary")!.id)!;
+    expect(item).toMatchObject({ fetch_status: "ok" });
+    expect(item.body).toContain("完整文章正文");
+    const archive = JSON.parse(readFileSync(join(process.env.DATA_DIR!, item.raw_ref), "utf8"));
+    expect(archive).toMatchObject({
+      schema_version: "content-raw-archive-v1",
+      source_body_origin: "article_page",
+      source_body: `<p>${"完整文章正文。".repeat(80)}</p>`,
+      article_html: articleHtml,
+      structured_body_sha256: item.content_hash,
+    });
+  });
+
   it("full_text 源 → 不需全局 ARTICLE_FETCH 开（按源声明优先、绕过 legacy 默认关）", async () => {
     delete process.env.ARTICLE_FETCH; // 全局关
     article.fn.mockResolvedValue("<p>足够长的文章正文内容供分析。</p>".repeat(3));
@@ -187,6 +214,22 @@ describe("collector 按源 fetch_mode 全文策略（ADR-0008 切片2）", () =>
     expect(r.skipped).toBe(1);
   });
 
+  it("应急熔断不会用 RSS 摘要覆盖已完整抓取的同 URL 正文", async () => {
+    const url = "https://xz.example/news/no-downgrade";
+    article.fn.mockResolvedValue("<p>已抓取的完整文章正文。</p>".repeat(20));
+    raws.value = [mkRaw(url, "首次看到的 RSS 摘要")];
+    await collectSource(db, sourceFullText);
+    process.env.ARTICLE_FETCH = "0";
+    article.fn.mockClear();
+    raws.value = [mkRaw(url, "稍后 feed 更新的摘要，不能覆盖完整正文")];
+    const result = await collectSource(db, sourceFullText);
+    const item = getContentItem(db, getContentByUrl(db, url)!.id)!;
+    expect(result).toMatchObject({ inserted: 0, updated: 0, skipped: 1 });
+    expect(article.fn).not.toHaveBeenCalled();
+    expect(item).toMatchObject({ fetch_status: "ok" });
+    expect(item.body).toContain("已抓取的完整文章正文");
+  });
+
   it("feed 源 + 短正文(非空) → 不抓、原样落库短摘要", async () => {
     raws.value = [{ ...mkRaw("https://x/short", shortSummary) }];
     const r = await collectSource(db, sourcePod);
@@ -196,15 +239,17 @@ describe("collector 按源 fetch_mode 全文策略（ADR-0008 切片2）", () =>
     expect(item.body).toBe(shortSummary);
   });
 
-  it("full_text 源 + 抓失败 + 原本短正文 → 回退落库短摘要（不丢条目）", async () => {
+  it("full_text 源 + 抓失败 + 原本短正文 → 回退落库短摘要并标 partial", async () => {
     article.fn.mockResolvedValue(null);
     raws.value = [{ ...mkRaw("https://xz.example/news/4", shortSummary) }];
     const r = await collectSource(db, sourceFullText);
     expect(article.fn).toHaveBeenCalledOnce();
     expect(r.inserted).toBe(1); // 短摘要回退入库
+    const item = getContentItem(db, getContentByUrl(db, "https://xz.example/news/4")!.id)!;
+    expect(item.fetch_status).toBe("partial");
   });
 
-  it("按源 content_container 透传到 fetchArticleBody（端到端）", async () => {
+  it("按源 content_container 透传到 fetchArticle（端到端）", async () => {
     article.fn.mockResolvedValue("<p>足够长的文章正文内容供分析使用。</p>".repeat(3));
     const src: Source = { ...sourceFullText, id: "s_ct", content_container: "js-article" };
     insertSource(db, src);

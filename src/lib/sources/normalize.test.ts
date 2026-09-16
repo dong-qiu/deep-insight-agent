@@ -159,6 +159,12 @@ describe("rawToContentItem 正文上限（AC9 partial）", () => {
     expect(item.fetch_status).toBe("ok");
   });
 
+  it("collector 识别到上游全文抓取不完整时，即使正文未超限也保留为 partial", () => {
+    const item = rawToContentItem(raw("feed summary"), SRC, "2026-05-26T00:00:00Z", { forcePartial: true });
+    expect(item.body).toBe("feed summary");
+    expect(item.fetch_status).toBe("partial");
+  });
+
   it("transcript 形态走更高上限：50k–300k 间不截断、标 ok（ADR-0007 按 kind 取值）", () => {
     const big = "y".repeat(MAX_BODY_CHARS + 100_000); // 150k：超 article 上限、未超 transcript 上限
     const tr = rawToContentItem({ ...raw(big), body_kind: "transcript" }, SRC, "2026-05-26T00:00:00Z");

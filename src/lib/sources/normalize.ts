@@ -176,8 +176,14 @@ export function contentItemId(url: string): string {
 }
 
 /** raw_ref 由 collector 归档后回填；topic_ids 继承 Source（源级粒度，见 architecture）。
- *  正文超 MAX_BODY_CHARS 则截断并标 partial（AC9）；指纹按截断后正文计（去重判定一致）。 */
-export function rawToContentItem(raw: RawItem, source: Source, fetchedAt: string): ContentItem {
+ *  正文超 MAX_BODY_CHARS 则截断并标 partial（AC9）；collector 也可在全文抓取失败时显式保留摘要并标 partial。
+ *  指纹按最终存储正文计（去重判定一致）。 */
+export function rawToContentItem(
+  raw: RawItem,
+  source: Source,
+  fetchedAt: string,
+  options: { forcePartial?: boolean } = {},
+): ContentItem {
   const full = normalizeBody(raw.body);
   const cap = bodyCapFor(raw.body_kind ?? "article"); // 按形态取上限：转写放宽（ADR-0007）
   const truncated = full.length > cap;
@@ -202,6 +208,6 @@ export function rawToContentItem(raw: RawItem, source: Source, fetchedAt: string
     body_kind: raw.body_kind ?? "article", // 适配器未标则默认 article（ADR-0007；transcript 由 rss 适配器在切片2 设）
     raw_ref: "",
     content_hash: hash,
-    fetch_status: truncated ? "partial" : "ok",
+    fetch_status: truncated || options.forcePartial ? "partial" : "ok",
   };
 }
