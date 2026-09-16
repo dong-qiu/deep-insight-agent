@@ -2,7 +2,7 @@
 
 > 状态：执行中（受控候选快照与原型内部使用决策已完成；human 标签、receipt、v2 lock 与 DCP 签署仍待完成）
 > Owner：dongqiu
-> 关联：ADR-0026、`docs/verify/eval-criteria.md`、`evals/dataset/GUIDE.md`
+> 关联：ADR-0028、`docs/verify/eval-criteria.md`、`evals/dataset/GUIDE.md`
 
 ## 背景与目标
 
