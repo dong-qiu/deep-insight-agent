@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { openDb } from "./index.js";
 import { openLocalBootstrapDb } from "./local-bootstrap.js";
 import { assertProvenanceSchema } from "./provenance-migrations.js";
@@ -23,6 +23,18 @@ describe("local development bootstrap", () => {
       dev.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses the local-only entrypoint in strict or production environments", () => {
+    try {
+      vi.stubEnv("PROVENANCE_SCHEMA_REQUIRED", "1");
+      expect(() => openLocalBootstrapDb(":memory:")).toThrow("local_bootstrap_forbidden_in_production");
+      vi.stubEnv("PROVENANCE_SCHEMA_REQUIRED", undefined);
+      vi.stubEnv("NODE_ENV", "production");
+      expect(() => openLocalBootstrapDb(":memory:")).toThrow("local_bootstrap_forbidden_in_production");
+    } finally {
+      vi.unstubAllEnvs();
     }
   });
 });

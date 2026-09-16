@@ -7,6 +7,9 @@ import { initializeProvenanceMeta } from "./provenance-facts.js";
 import { applyProvenanceMigrations } from "./provenance-migrations.js";
 
 export function openLocalBootstrapDb(path: string): DB {
+  if (process.env.PROVENANCE_SCHEMA_REQUIRED === "1" || process.env.NODE_ENV === "production") {
+    throw new Error("local_bootstrap_forbidden_in_production");
+  }
   const db = openDb(path);
   applyProvenanceMigrations(db);
   initializeProvenanceMeta(db);
