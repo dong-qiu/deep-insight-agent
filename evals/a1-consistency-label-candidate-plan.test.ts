@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { escapeCandidatePromptData, LABEL_CANDIDATE_SOURCE_CHARS, labelSourceWindow, plannedCandidateIntent, selectConsistencyCandidateItems } from "./a1-consistency-label-candidate-plan.js";
+import { escapeCandidatePromptData, LABEL_CANDIDATE_DEFAULT_BATCH_SIZE, LABEL_CANDIDATE_SOURCE_CHARS, labelCandidateBatchSize, labelSourceWindow, plannedCandidateIntent, selectConsistencyCandidateItems } from "./a1-consistency-label-candidate-plan.js";
 
 describe("v2 consistency-label candidate plan", () => {
   it("plans 40 diagnostic negative cases across all required types for 100 inputs", () => {
@@ -8,6 +8,14 @@ describe("v2 consistency-label candidate plan", () => {
     expect(planned.filter((intent) => intent === "out_of_context")).toHaveLength(15);
     expect(planned.filter((intent) => intent === "misattribution")).toHaveLength(10);
     expect(planned.filter((intent) => ["exaggeration", "out_of_context", "misattribution"].includes(intent))).toHaveLength(40);
+  });
+
+  it("keeps the ordinary 20-item generator batch by default, but bounds relay recovery batches", () => {
+    expect(labelCandidateBatchSize(undefined)).toBe(LABEL_CANDIDATE_DEFAULT_BATCH_SIZE);
+    expect(labelCandidateBatchSize("5")).toBe(5);
+    expect(() => labelCandidateBatchSize("0")).toThrow("1-20");
+    expect(() => labelCandidateBatchSize("21")).toThrow("1-20");
+    expect(() => labelCandidateBatchSize("five")).toThrow("1-20");
   });
 
   it("uses only an exact source prefix and prefers a complete sentence boundary", () => {

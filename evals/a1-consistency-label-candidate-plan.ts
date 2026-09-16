@@ -2,6 +2,13 @@
 export const LABEL_CANDIDATE_SOURCE_CHARS = 2_400;
 export const LABEL_CANDIDATE_COUNT = 100;
 export const LABEL_CANDIDATES_PER_TOPIC = 20;
+/**
+ * The generator may reduce this relay-facing request batch without changing the
+ * 100-pair population or any planned intent.  Keep 20 as the ordinary setting;
+ * lower values are a bounded transport recovery setting and are recorded in the
+ * diagnostic-only provenance.
+ */
+export const LABEL_CANDIDATE_DEFAULT_BATCH_SIZE = 20;
 export type CandidateIntent = "support" | "uncertain" | "exaggeration" | "out_of_context" | "misattribution";
 
 export interface CandidateSelectionItem {
@@ -21,6 +28,15 @@ const INTENTS_PER_TWENTY: readonly CandidateIntent[] = [
 
 export function plannedCandidateIntent(index: number): CandidateIntent {
   return INTENTS_PER_TWENTY[index % INTENTS_PER_TWENTY.length]!;
+}
+
+export function labelCandidateBatchSize(raw: string | undefined): number {
+  if (raw == null || raw.trim() === "") return LABEL_CANDIDATE_DEFAULT_BATCH_SIZE;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 1 || value > LABEL_CANDIDATE_DEFAULT_BATCH_SIZE) {
+    throw new Error(`LABEL_CANDIDATE_BATCH_SIZE 必须是 1-${LABEL_CANDIDATE_DEFAULT_BATCH_SIZE} 的整数`);
+  }
+  return value;
 }
 
 /**

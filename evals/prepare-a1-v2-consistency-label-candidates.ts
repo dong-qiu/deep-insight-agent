@@ -13,11 +13,20 @@ import { z } from "zod";
 import { MODELS, callStructured } from "../src/lib/runtime/llm.js";
 import {
   escapeCandidatePromptData,
+  labelCandidateBatchSize,
   LABEL_CANDIDATE_COUNT,
   labelSourceWindow,
   plannedCandidateIntent,
   selectConsistencyCandidateItems,
 } from "./a1-consistency-label-candidate-plan.js";
+import {
+  appendCandidateCheckpointBatch,
+  candidateCheckpointPath,
+  createCandidateCheckpoint,
+  loadCandidateCheckpoint,
+  writeCandidateCheckpoint,
+  type CandidateCheckpointBatchPlan,
+} from "./a1-consistency-candidate-checkpoint.js";
 
 interface QualityItem { id?: unknown; source_id?: unknown; body?: unknown; content_hash?: unknown; }
 interface QualityCase { topic?: { id?: unknown }; items?: QualityItem[]; }
@@ -43,6 +52,17 @@ const stable = (value: unknown): string => {
   const object = value as Record<string, unknown>;
   return `{${Object.keys(object).sort().map((key) => `${JSON.stringify(key)}:${stable(object[key])}`).join(",")}}`;
 };
+
+function candidateInputSha256(inputs: readonly CandidateInput[]): string {
+  return hash(stable(inputs.map((input) => ({
+    id: input.id,
+    topic_id: input.topic_id,
+    source_id: input.source_id,
+    source_body_sha256: input.source_body_sha256,
+    source_text_sha256: hash(input.source_text),
+    intent: input.intent,
+  }))));
+}
 
 function readInputs(path: string): { inputs: CandidateInput[]; selection: CandidateSelection } {
   const rows = readFileSync(path, "utf8").split("\n").map((line) => line.trim()).filter(Boolean)
@@ -93,9 +113,33 @@ async function main(): Promise<void> {
   if (!process.env.ANTHROPIC_API_KEY) throw new Error("缺少 ANTHROPIC_API_KEY，无法生成诊断候选");
   const { inputs, selection } = readInputs(qualityPath);
   if (inputs.length !== LABEL_CANDIDATE_COUNT) throw new Error(`v2 候选构建必须选出 ${LABEL_CANDIDATE_COUNT} 条受控输入，当前 ${inputs.length}`);
+  const batchSize = labelCandidateBatchSize(process.env.LABEL_CANDIDATE_BATCH_SIZE);
+  const qualityInputSha256 = hash(readFileSync(qualityPath));
+  const checkpointPlan: CandidateCheckpointBatchPlan[] = [];
+  for (let start = 0; start < inputs.length; start += batchSize) checkpointPlan.push({ start, ids: inputs.slice(start, start + batchSize).map((input) => input.id) });
+  const checkpointContext = {
+    quality_input_sha256: qualityInputSha256,
+    candidate_input_sha256: candidateInputSha256(inputs),
+    model: MODELS.analyzer,
+    prompt_version: PROMPT_VERSION,
+    prompt_sha256: hash(SYSTEM),
+    generator_batch_size: batchSize,
+  };
+  const checkpointPath = candidateCheckpointPath(outputPath);
+  const checkpoint = loadCandidateCheckpoint(checkpointPath, checkpointContext, checkpointPlan) ?? createCandidateCheckpoint(checkpointContext);
+  if (checkpoint.completed_batches.length) console.log(`从 candidate checkpoint 恢复 ${checkpoint.completed_batches.length}/${checkpointPlan.length} 个完整批次`);
   const output: Array<Record<string, unknown>> = [];
-  for (let start = 0; start < inputs.length; start += 20) {
-    const batch = inputs.slice(start, start + 20);
+  for (let start = 0; start < inputs.length; start += batchSize) {
+    const batch = inputs.slice(start, start + batchSize);
+    const saved = checkpoint.completed_batches.find((entry) => entry.start === start);
+    if (saved) {
+      const statements = new Map(saved.candidates.map((candidate) => [candidate.id, candidate.statement]));
+      output.push(...batch.map((input) => ({
+        id: input.id, topic_id: input.topic_id, source_id: input.source_id, source_body_sha256: input.source_body_sha256,
+        statement: statements.get(input.id), source_text: input.source_text,
+      })));
+      continue;
+    }
     const user = `<candidate_sources>\n${batch.map((input) => [
       `<candidate id="${input.id}" intent="${input.intent}">`,
       `<source_text>${escapeCandidatePromptData(input.source_text)}</source_text>`,
@@ -106,16 +150,22 @@ async function main(): Promise<void> {
     });
     const byId = new Map(data.candidates.map((candidate) => [candidate.id, candidate.statement.trim()]));
     if (byId.size !== batch.length || batch.some((input) => !byId.has(input.id))) {
-      throw new Error(`候选批 ${start / 20 + 1} 未返回与输入一一对应的 statement`);
+      throw new Error(`候选批 ${start / batchSize + 1} 未返回与输入一一对应的 statement`);
     }
-    output.push(...batch.map((input) => ({
+    const generated = batch.map((input) => ({
       id: input.id,
       topic_id: input.topic_id,
       source_id: input.source_id,
       source_body_sha256: input.source_body_sha256,
       statement: byId.get(input.id),
       source_text: input.source_text,
-    })));
+    }));
+    output.push(...generated);
+    appendCandidateCheckpointBatch(checkpoint, checkpointPlan, {
+      start,
+      candidates: generated.map((candidate) => ({ id: candidate.id, statement: candidate.statement! })),
+    });
+    writeCandidateCheckpoint(checkpointPath, checkpoint);
     console.log(`已生成 ${output.length}/${inputs.length} 条未定标签候选`);
   }
   mkdirSync(dirname(outputPath), { recursive: true });
@@ -125,9 +175,12 @@ async function main(): Promise<void> {
   const diagnostic = {
     schema_version: "a1-v2-consistency-candidate-diagnostic-v1",
     status: "diagnostic_only",
-    quality_input_sha256: hash(readFileSync(qualityPath)),
+    quality_input_sha256: qualityInputSha256,
     candidate_output_sha256: hash(outputBytes),
     candidate_count: output.length,
+    generator_batch_size: batchSize,
+    candidate_input_sha256: checkpointContext.candidate_input_sha256,
+    resumed_completed_batch_count: checkpoint.completed_batches.length,
     candidate_selection: selection,
     model: MODELS.analyzer,
     thinking: false,
