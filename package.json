@@ -53,6 +53,8 @@
     "labels:ai-dispute-csv": "tsx evals/prepare-a1-v2-ai-dispute-csv.ts",
     "labels:ai-dispute-to-adjudication": "tsx evals/convert-a1-v2-ai-dispute-csv.ts",
     "labels:ai-finalize": "tsx evals/finalize-a1-v2-ai-assisted-labels.ts",
+    "labels:ai-chat-to-adjudication": "tsx evals/convert-a1-v2-ai-assisted-chat-adjudication.ts",
+    "labels:ai-chat-finalize": "tsx evals/finalize-a1-v2-ai-assisted-chat-labels.ts",
     "eval:analyze-latency-ladder": "tsx evals/analyze-latency-ladder.ts",
     "benchmark:provenance-p0c": "tsx evals/provenance-p0c-benchmark.ts",
     "benchmark:report-reader-p0c": "tsx evals/report-reader-p0c-benchmark.ts --enforce",

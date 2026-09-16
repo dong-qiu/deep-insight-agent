@@ -2,8 +2,11 @@ import { describe, expect, it } from "vitest";
 import { consistencyPairHash, type ConsistencyLabel } from "./a1-consistency-label-receipt.js";
 import {
   AI_ASSISTED_ADJUDICATION_VERSION,
+  AI_ASSISTED_CHAT_ADJUDICATION_PROGRESS_VERSION,
   AI_ASSISTED_REVIEW_VERSION,
+  bindAiAssistedChatAdjudication,
   compareAiAssistedReviews,
+  finalizeAiAssistedChatReviews,
   finalizeAiAssistedReviews,
   pairPopulationSha,
   type AiAssistedReviewerSubmission,
@@ -70,5 +73,46 @@ describe("A1 prototype AI-assisted consistency labels", () => {
     });
     expect(completed.receipt).toMatchObject({ status: "prototype_ai_assisted", lock_eligible: false, final_distribution: { total: 3, not_support: 1 } });
     expect(completed.cases[1]).toMatchObject({ id: "b", expected_consistency: "not_support", negative_type: "out_of_context" });
+  });
+
+  it("binds explicitly AI-advised chat decisions separately and prevents them from claiming blind adjudication", () => {
+    const first = reviewer("ai-validator", "validator", "model-a", ["support", "not_support", "uncertain"]);
+    const second = reviewer("ai-coverage", "coverage", "model-b", ["support", "uncertain", "uncertain"]);
+    const dispute = worklist[1]!;
+    const chat = bindAiAssistedChatAdjudication([dispute], "d".repeat(64), {
+      schema_version: AI_ASSISTED_CHAT_ADJUDICATION_PROGRESS_VERSION as typeof AI_ASSISTED_CHAT_ADJUDICATION_PROGRESS_VERSION,
+      status: "complete_pending_provenance_safe_finalization",
+      adjudication_mode: "human_with_ai_advice",
+      blind_attestation: false,
+      dispute_worklist_sha256: "d".repeat(64),
+      decisions: [{
+        case_id: dispute.id, pair_sha256: dispute.pair_sha256, expected_consistency: "not_support", negative_type: "misattribution",
+        human_reason: "The displayed advisor recommendation was considered before this decision.",
+      }],
+    }, "human-chat");
+    const completed = finalizeAiAssistedChatReviews(worklist, worklistSha, first, second, chat);
+    expect(completed.receipt).toMatchObject({
+      status: "prototype_ai_assisted", lock_eligible: false,
+      human_adjudication_mode: "human_with_ai_advice", human_adjudication_blind_attestation: false,
+    });
+    expect(completed.cases[1]).toMatchObject({ id: "b", expected_consistency: "not_support", negative_type: "misattribution" });
+
+    const falselyBlind = finalizeAiAssistedReviews(worklist, worklistSha, first, second, chat as unknown as import("./a1-consistency-ai-assisted.js").AiAssistedHumanAdjudication);
+    expect(falselyBlind.receipt.status).toBe("ineligible");
+    expect(falselyBlind.receipt.issues.join(" ")).toContain("blind-attested");
+  });
+
+  it("rejects incomplete or falsely blind chat progress before an adjudication artifact is written", () => {
+    const dispute = worklist[1]!;
+    const progress = {
+      schema_version: AI_ASSISTED_CHAT_ADJUDICATION_PROGRESS_VERSION as typeof AI_ASSISTED_CHAT_ADJUDICATION_PROGRESS_VERSION,
+      status: "complete_pending_provenance_safe_finalization" as const,
+      adjudication_mode: "human_with_ai_advice" as const,
+      blind_attestation: false as const,
+      dispute_worklist_sha256: "d".repeat(64),
+      decisions: [{ case_id: dispute.id, pair_sha256: dispute.pair_sha256, expected_consistency: "support" as const, human_reason: "" }],
+    };
+    expect(() => bindAiAssistedChatAdjudication([dispute], "d".repeat(64), progress, "human-chat")).toThrow(/human_reason/);
+    expect(() => bindAiAssistedChatAdjudication([dispute], "d".repeat(64), { ...progress, blind_attestation: true } as unknown as typeof progress, "human-chat")).toThrow(/blind_attestation=false/);
   });
 });

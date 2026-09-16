@@ -71,6 +71,8 @@ AI 可以承担三个**诊断性预标注者**，用于发现分歧、估算人�
 
 这条路径的 receipt 状态只能是 `prototype_ai_assisted` 或 `ineligible`，且 `lock_eligible=false`。它可用于内部原型调试、比较模型分歧、生成暂定 consistency JSONL；不得输入正式 `labels:receipt`、不得创建 `verified_v2` lock、不得晋级 baseline 或构成 DCP/发布质量证据。正式双 human 路径仍由上节和 AC4 约束。
 
+若 human 在作出分歧裁决前，明确要求查看额外 AI 建议或理由，则必须改走 `human_with_ai_advice` 变体：输入 progress 和最终 adjudication 必须显式记录 `blind_attestation=false`、显示建议的事实和逐条 human reason。该变体只能使用独立的 `labels:ai-chat-to-adjudication` 与 `labels:ai-chat-finalize`，不得调用或伪装为盲裁决的 `labels:ai-dispute-to-adjudication` / `labels:ai-finalize`。其 receipt 继续是 `prototype_ai_assisted`、`lock_eligible=false`，并额外记录 `human_adjudication_mode=human_with_ai_advice`；正式 human receipt、v2 lock、baseline 和 DCP 验证器必须拒绝它。
+
 ### 2026-09-10 cohort preflight
 
 - 十来源的最终隔离采集使用生产 collector；上述十个来源均实际写入候选库。首次总采集中的 `src_simonwillison_promptinj` 曾因 `ENOTFOUND` 失败，随后在**同一隔离根**单源重试成功；两份 manifest 都必须随受控快照保存。
@@ -86,6 +88,7 @@ AI 可以承担三个**诊断性预标注者**，用于发现分歧、估算人�
 - [ ] AC5: 全量 A1 产物的 `dcp_sample.reader_visible_by_topic` 每个主题均至少为 10，且不存在 duplicate statement+bound quote。
 - [ ] AC6: 两次同配置、同 lock、clean commit 的完整 automatic pass 以及完整的三方人工 receipt 均可回链；AI 预标注须隔离为 `diagnostic_only`，不得参与 receipt；此前状态只能标为 incomplete/smoke/provisional，不得盖 `Eval-Gate: pass`。
 - [ ] AC7: 若走 prototype AI-assisted consistency flow，两个 AI submission 的模型和 role 不同，所有分歧且仅分歧均有 blind human adjudication；其 receipt 明确为 `prototype_ai_assisted` / `lock_eligible=false`，并被 v2 lock 拒绝。
+- [ ] AC7a: 若 human 在裁决前收到 AI advice，专用 chat 变体必须将 `blind_attestation=false` 和 `human_with_ai_advice` 写入 hash 绑定的 adjudication/receipt；盲裁决命令和正式 receipt 均拒绝该输入，最终产物仍不可晋级。
 - [ ] AC8: A1 本地构建不选取 `partial` 或缺 `raw_ref` 的条目；受控快照准备拒绝 `partial`、缺失/不可读 raw archive、旧格式归档、归档正文输入单次规范化后与存储正文不一致，或正文/归档声明的 `content_hash` 不一致的条目，且不创建候选 manifest。
 
 隔离构建必须显式传入五个主题（包括新增的停用主题），例如：
