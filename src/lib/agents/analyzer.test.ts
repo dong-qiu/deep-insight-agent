@@ -11,7 +11,7 @@ vi.mock("../runtime/llm.js", () => ({
   MODELS: { analyzer: "test-analyzer", validator: "test-validator", coverage: "test-coverage" },
 }));
 import { callStructured } from "../runtime/llm.js";
-import { ANALYZE_BODY_CHARS, ANALYZER_SYSTEM, CITATION_CLAUSE_AUDIT, QuoteCoverageRejectedError, REPAIR_QUOTE_MIN_PREFIX, SELECT_SEPARATOR, analyze, canonicalizeInsightEvents, carveQuote, chunkByChars, chunkWindows, coverageGaps, filterByQuoteCoverage, isCompleteStatement, quoteCoverageClauses, renderImportanceBasis, repairCitationSource, repairCoverage, repairQuote, selectForAnalyze, specificClaims, truncateForAnalyze, type AnalyzeStageTelemetry } from "./analyzer.js";
+import { ANALYZE_BODY_CHARS, ANALYZER_SYSTEM, CITATION_CLAUSE_AUDIT, DISPLAY_COVERAGE_PRIMARY_MAX_TOKENS, QuoteCoverageRejectedError, REPAIR_QUOTE_MIN_PREFIX, SELECT_SEPARATOR, analyze, canonicalizeInsightEvents, carveQuote, chunkByChars, chunkWindows, coverageGaps, filterByQuoteCoverage, isCompleteStatement, quoteCoverageClauses, renderImportanceBasis, repairCitationSource, repairCoverage, repairQuote, selectForAnalyze, specificClaims, truncateForAnalyze, verifyDisplayedQuoteCoverage, type AnalyzeChunkCheckpoint, type AnalyzeStageTelemetry } from "./analyzer.js";
 import { AnalyzerOutputSchema } from "../types.js";
 
 describe("AnalyzerOutputSchema 的原子 citation claim", () => {
@@ -50,6 +50,25 @@ describe("AnalyzerOutputSchema 的原子 citation claim", () => {
 });
 
 describe("analyze 的展示覆盖审计投影", () => {
+  it("passes an A1 topic deadline into the analyzer call and does not split after cancellation", async () => {
+    const topic: Topic = { id: "t", name: "T", keywords: [], language: "en", brief_schedule: "daily", enabled: true };
+    const content: ContentItem = {
+      id: "ci", source_id: "s", url: "https://example.test", title: "T", author: null, published_at: null,
+      fetched_at: "2026-09-09T00:00:00.000Z", language: "en", topic_ids: ["t"], tags: [],
+      body: "Source body.", body_kind: "article", raw_ref: "", content_hash: "h", fetch_status: "ok",
+    };
+    const controller = new AbortController();
+    vi.mocked(callStructured).mockImplementationOnce((request) => new Promise((_, reject) => {
+      request.signal?.addEventListener("abort", () => reject(request.signal?.reason), { once: true });
+    }) as ReturnType<typeof callStructured>);
+
+    const result = analyze(topic, [content], { start: "2026-09-09", end: "2026-09-09" }, undefined, { signal: controller.signal });
+    controller.abort(new Error("A1 topic deadline"));
+    await expect(result).rejects.toThrow("A1 topic deadline");
+    expect(vi.mocked(callStructured)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(callStructured)).toHaveBeenLastCalledWith(expect.objectContaining({ signal: controller.signal }));
+  });
+
   it("本地超时和 relay SSE 流序错误均按基础设施失败上抛，绝不递归拆批放大请求", async () => {
     const topic: Topic = { id: "t", name: "T", keywords: [], language: "en", brief_schedule: "daily", enabled: true };
     const items: ContentItem[] = ["one", "two"].map((id) => ({
@@ -209,6 +228,61 @@ describe("analyze 的展示覆盖审计投影", () => {
     expect(batch.insights.map((insight) => insight.statement)).toEqual(["Supported fact."]);
     expect(batch.no_significant_event).toBe(false);
     expect(decisions.map((decision) => decision.terminal_reason)).toEqual(["kept", "dropped_coverage"]);
+  });
+
+  it("从完成分块恢复时不重调模型，也不会重复或遗漏 topic 级聚合", async () => {
+    const topic: Topic = { id: "t", name: "T", keywords: [], language: "en", brief_schedule: "daily", enabled: true };
+    const padding = "x".repeat(30_000);
+    const items: ContentItem[] = ["one", "two"].map((id) => ({
+      id: `ci_${id}`, source_id: "s", url: `https://example.test/${id}`, title: id, author: null,
+      published_at: null, fetched_at: "2026-09-09T00:00:00.000Z", language: "en", topic_ids: ["t"], tags: [],
+      body: `Fact ${id}.${padding}`, body_kind: "article", raw_ref: "", content_hash: id, fetch_status: "ok",
+    }));
+    const modelOutput = (id: string) => ({ data: {
+      no_significant_event: false,
+      insights: [{
+        statement: `Fact ${id}.`, statement_citation_index: 1, headline: "", type: "aggregation", importance: 3,
+        importance_facts: [], importance_reason: "research_tracking", importance_reason_claim_indexes: [1],
+        confidence: null, event_id: null, is_followup: false, entities: [], tags: [],
+        citations: [{ content_item_id: `ci_${id}`, claim: `Fact ${id}.`, quote: `Fact ${id}.` }],
+      }],
+    } } as unknown as Awaited<ReturnType<typeof callStructured>>);
+    const supports = (quote: string) => ({ data: { verdicts: [{
+      index: 1, kind: "factual", supports: true, citation_indexes: [1],
+      evidence_spans: [{ citation_index: 1, quote_start: 0, quote_end: quote.length, evidence_excerpt: quote }],
+    }] } } as unknown as Awaited<ReturnType<typeof callStructured>>);
+
+    vi.mocked(callStructured).mockReset();
+    vi.mocked(callStructured)
+      .mockResolvedValueOnce(modelOutput("one"))
+      .mockResolvedValueOnce(supports("Fact one."))
+      .mockResolvedValueOnce(supports("Fact one."));
+    const controller = new AbortController();
+    const completed: AnalyzeChunkCheckpoint[] = [];
+    await expect(analyze(topic, items, { start: "2026-09-09", end: "2026-09-09" }, undefined, {
+      signal: controller.signal,
+      onChunkComplete: ({ input_sha256, insights, coverage_decisions }) => {
+        completed.push({ input_sha256, insights, coverage_decisions });
+        controller.abort(new Error("simulated A1 deadline"));
+      },
+    })).rejects.toThrow("simulated A1 deadline");
+    expect(completed).toHaveLength(1);
+    expect(vi.mocked(callStructured)).toHaveBeenCalledTimes(3);
+
+    vi.mocked(callStructured).mockReset();
+    vi.mocked(callStructured)
+      .mockResolvedValueOnce(modelOutput("two"))
+      .mockResolvedValueOnce(supports("Fact two."))
+      .mockResolvedValueOnce(supports("Fact two."));
+    const decisions: Array<{ terminal_reason: string }> = [];
+    const resumed = await analyze(topic, items, { start: "2026-09-09", end: "2026-09-09" }, undefined, {
+      completed_chunks: completed,
+      onCoverageDecision: (decision) => decisions.push(decision),
+    });
+
+    expect(vi.mocked(callStructured)).toHaveBeenCalledTimes(3);
+    expect(resumed.insights.map((insight) => insight.statement)).toEqual(["Fact one.", "Fact two."]);
+    expect(decisions.map((decision) => decision.terminal_reason)).toEqual(["kept", "kept"]);
   });
 });
 
@@ -666,6 +740,50 @@ describe("filterByQuoteCoverage（展示 quote 覆盖门）", () => {
     });
   });
 
+  it("主展示审计按原子 claim 分批，局部 index 映射回候选级审计", async () => {
+    const quote = "Frontier reduces latency error; Frontier decreases retry variance.";
+    const citations: Citation[] = [{
+      content_item_id: "ci", claim: quote, quote,
+      locator: { paragraph_index: 0, char_start: 0, char_end: quote.length },
+    }];
+    vi.mocked(callStructured)
+      .mockResolvedValueOnce(coverageVerdictsFor(quote, true))
+      .mockResolvedValueOnce(coverageVerdictsFor(quote, true))
+      .mockResolvedValueOnce(coverageVerdictsFor(quote, true));
+    const audit = await verifyDisplayedQuoteCoverage({ statement: quote, headline: "", importance_basis: "" }, citations, 1);
+
+    expect(vi.mocked(callStructured).mock.calls.map(([request]) => request.role)).toEqual(["validator", "validator", "coverage"]);
+    expect(vi.mocked(callStructured).mock.calls[0]?.[0].user).toContain("1. [statement] Frontier reduces latency error");
+    expect(vi.mocked(callStructured).mock.calls[0]?.[0].user).toContain("<atomic_claims>\n1. [statement] Frontier reduces latency error\n</atomic_claims>");
+    expect(vi.mocked(callStructured).mock.calls[1]?.[0].user).toContain("1. [statement] Frontier decreases retry variance");
+    expect(audit).toMatchObject({ covered: true, claims: [
+      { claim_id: "statement:1", supports: true },
+      { claim_id: "statement:2", supports: true },
+    ] });
+  });
+
+  it("反例：任一主审分批 verdict 缺失时拒绝整条候选", async () => {
+    const quote = "Frontier reduces latency error; Frontier decreases retry variance.";
+    const citations: Citation[] = [{
+      content_item_id: "ci", claim: quote, quote,
+      locator: { paragraph_index: 0, char_start: 0, char_end: quote.length },
+    }];
+    vi.mocked(callStructured)
+      .mockResolvedValueOnce(coverageVerdictsFor(quote, true))
+      .mockResolvedValueOnce({ data: { verdicts: [] } } as unknown as Awaited<ReturnType<typeof callStructured>>)
+      .mockResolvedValueOnce(coverageVerdictsFor(quote, true));
+    const audit = await verifyDisplayedQuoteCoverage({ statement: quote, headline: "", importance_basis: "" }, citations, 1);
+
+    expect(vi.mocked(callStructured).mock.calls.map(([request]) => request.role)).toEqual(["validator", "validator", "coverage"]);
+    expect(audit).toMatchObject({
+      covered: false,
+      claims: [
+        { reason: "primary_invalid_verdict_set", countercheck: { supports: true } },
+        { reason: "primary_invalid_verdict_set" },
+      ],
+    });
+  });
+
   it("主展示审计读取 validator thinking，quote-only countercheck 只读取 COVERAGE_THINKING", async () => {
     const oldValidator = process.env.VALIDATOR_THINKING;
     const oldCoverage = process.env.COVERAGE_THINKING;
@@ -674,7 +792,10 @@ describe("filterByQuoteCoverage（展示 quote 覆盖门）", () => {
     try {
       vi.mocked(callStructured).mockResolvedValue(coverageVerdicts(true));
       await expect(filterByQuoteCoverage([insight("被完整覆盖的结论。")])).resolves.toHaveLength(1);
-      expect(vi.mocked(callStructured).mock.calls[0]?.[0]).toMatchObject({ role: "validator", thinking: true });
+      expect(DISPLAY_COVERAGE_PRIMARY_MAX_TOKENS).toBe(2048);
+      expect(vi.mocked(callStructured).mock.calls[0]?.[0]).toMatchObject({
+        role: "validator", thinking: true, maxTokens: DISPLAY_COVERAGE_PRIMARY_MAX_TOKENS,
+      });
       expect(vi.mocked(callStructured).mock.calls[1]?.[0]).toMatchObject({ role: "coverage", thinking: false });
     } finally {
       if (oldValidator === undefined) delete process.env.VALIDATOR_THINKING;

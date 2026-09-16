@@ -183,6 +183,7 @@ export async function answerFollowup(db: DB, report: Report, question: string): 
   // ── 约束生成 ──
   const gen = await callStructured({
     role: "followup",
+    telemetryOperation: "followup_generation",
     system: buildSystem(report, pool),
     user: question,
     schema: FollowupAnswerSchema,

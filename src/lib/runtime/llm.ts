@@ -123,16 +123,75 @@ export interface CostReport {
   totalUSD: number;
 }
 
-export interface RoleCallTelemetry {
+/**
+ * Aggregate that is safe to persist in an A1 artifact: it contains no prompt, source body,
+ * endpoint or credential. The operation name is an application-owned constant, never model
+ * output or user data, so it is suitable for narrowing a stop reason to a pipeline phase.
+ */
+export interface CallTelemetryAggregate {
   calls: number;
   failures: number;
   /** Underlying relay requests; may exceed calls when refusal is retried. */
   requests: number;
+  /** Terminal reasons returned by completed model requests. `max_tokens` remains evidence even
+   * when the relay supplied a schema-valid tool use. */
+  output_stop_reasons: Record<string, number>;
   latency_ms: { p50: number; p95: number; max: number };
 }
 
+export interface RoleCallTelemetry extends CallTelemetryAggregate {
+  /** The role-level aggregate alone cannot identify which validator phase was truncated. */
+  by_operation: Record<string, CallTelemetryAggregate>;
+}
+
 const meter = new Map<string, ModelUsage>();
-const roleMeter = new Map<Role, { calls: number; failures: number; requests: number; latency: number[] }>();
+type MutableCallTelemetryAggregate = {
+  calls: number;
+  failures: number;
+  requests: number;
+  outputStopReasons: Map<string, number>;
+  latency: number[];
+};
+
+const roleMeter = new Map<Role, {
+  aggregate: MutableCallTelemetryAggregate;
+  byOperation: Map<string, MutableCallTelemetryAggregate>;
+}>();
+
+function emptyMutableCallTelemetry(): MutableCallTelemetryAggregate {
+  return { calls: 0, failures: 0, requests: 0, outputStopReasons: new Map<string, number>(), latency: [] };
+}
+
+function readonlyCallTelemetry(aggregate: MutableCallTelemetryAggregate): CallTelemetryAggregate {
+  return {
+    calls: aggregate.calls,
+    failures: aggregate.failures,
+    requests: aggregate.requests,
+    output_stop_reasons: Object.fromEntries([...aggregate.outputStopReasons.entries()].sort(([a], [b]) => a.localeCompare(b))),
+    latency_ms: {
+      p50: percentile(aggregate.latency, 0.5),
+      p95: percentile(aggregate.latency, 0.95),
+      max: aggregate.latency.length ? Math.max(...aggregate.latency) : 0,
+    },
+  };
+}
+
+function recordCallTelemetry(
+  aggregate: MutableCallTelemetryAggregate,
+  latencyMs: number,
+  requests: number,
+  failed: boolean,
+  outputStopReasons: readonly string[],
+): void {
+  aggregate.calls++;
+  aggregate.requests += requests;
+  if (failed) aggregate.failures++;
+  for (const reason of outputStopReasons) {
+    if (!reason) continue;
+    aggregate.outputStopReasons.set(reason, (aggregate.outputStopReasons.get(reason) ?? 0) + 1);
+  }
+  aggregate.latency.push(Math.max(0, latencyMs));
+}
 
 const percentile = (values: readonly number[], fraction: number): number => {
   if (!values.length) return 0;
@@ -142,23 +201,31 @@ const percentile = (values: readonly number[], fraction: number): number => {
 
 /** Exported for deterministic tests and non-LLM harnesses; production calls record it in
  * callStructured's finally block so failures and retries cannot disappear from A1 evidence. */
-export function recordRoleCallTelemetry(role: Role, latencyMs: number, requests: number, failed: boolean): void {
-  const aggregate = roleMeter.get(role) ?? { calls: 0, failures: 0, requests: 0, latency: [] };
-  aggregate.calls++;
-  aggregate.requests += requests;
-  if (failed) aggregate.failures++;
-  aggregate.latency.push(Math.max(0, latencyMs));
-  roleMeter.set(role, aggregate);
+export function recordRoleCallTelemetry(
+  role: Role,
+  latencyMs: number,
+  requests: number,
+  failed: boolean,
+  outputStopReasons: readonly string[] = [],
+  /** Use a code-owned, bounded operation identifier; omitted calls remain visibly unclassified. */
+  operation = "unclassified",
+): void {
+  const meter = roleMeter.get(role) ?? { aggregate: emptyMutableCallTelemetry(), byOperation: new Map<string, MutableCallTelemetryAggregate>() };
+  const operationMeter = meter.byOperation.get(operation) ?? emptyMutableCallTelemetry();
+  recordCallTelemetry(meter.aggregate, latencyMs, requests, failed, outputStopReasons);
+  recordCallTelemetry(operationMeter, latencyMs, requests, failed, outputStopReasons);
+  meter.byOperation.set(operation, operationMeter);
+  roleMeter.set(role, meter);
 }
 
 export function getRoleCallTelemetry(): Record<Role, RoleCallTelemetry> {
   return Object.fromEntries((["analyzer", "validator", "coverage", "followup"] as Role[]).map((role) => {
-    const aggregate = roleMeter.get(role) ?? { calls: 0, failures: 0, requests: 0, latency: [] };
+    const meter = roleMeter.get(role) ?? { aggregate: emptyMutableCallTelemetry(), byOperation: new Map<string, MutableCallTelemetryAggregate>() };
     return [role, {
-      calls: aggregate.calls,
-      failures: aggregate.failures,
-      requests: aggregate.requests,
-      latency_ms: { p50: percentile(aggregate.latency, 0.5), p95: percentile(aggregate.latency, 0.95), max: aggregate.latency.length ? Math.max(...aggregate.latency) : 0 },
+      ...readonlyCallTelemetry(meter.aggregate),
+      by_operation: Object.fromEntries([...meter.byOperation.entries()]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([operation, aggregate]) => [operation, readonlyCallTelemetry(aggregate)])),
     }];
   })) as Record<Role, RoleCallTelemetry>;
 }
@@ -217,6 +284,8 @@ function usageToCost(model: string, u: Anthropic.Usage): Cost {
 
 export interface StructuredCall<T extends z.ZodType> {
   role: Role;
+  /** Code-owned pipeline phase for redaction-safe stop-reason telemetry. */
+  telemetryOperation?: string;
   /** 稳定指令前缀 —— 命中 prompt cache */
   system: string;
   /** 每请求变化的内容 */
@@ -376,6 +445,7 @@ export async function callStructured<T extends z.ZodType>(
   const startedAt = performance.now();
   let underlyingRequests = 0;
   let succeeded = false;
+  const outputStopReasons: string[] = [];
   try {
   const model = MODELS[opts.role];
   const maxTokens = opts.maxTokens ?? 16000;
@@ -462,9 +532,11 @@ export async function callStructured<T extends z.ZodType>(
   );
 
   let res = await streamFinalMessageWithTransientRetry();
+  if (res.stop_reason) outputStopReasons.push(res.stop_reason);
   account(res.usage);
   for (let attempt = 1; res.stop_reason === "refusal" && attempt < 3; attempt++) {
     res = await streamFinalMessageWithTransientRetry();
+    if (res.stop_reason) outputStopReasons.push(res.stop_reason);
     account(res.usage);
   }
 
@@ -503,6 +575,13 @@ export async function callStructured<T extends z.ZodType>(
   succeeded = true;
   return { data: parsed.data, usage: res.usage, cost };
   } finally {
-    recordRoleCallTelemetry(opts.role, performance.now() - startedAt, underlyingRequests, !succeeded);
+    recordRoleCallTelemetry(
+      opts.role,
+      performance.now() - startedAt,
+      underlyingRequests,
+      !succeeded,
+      outputStopReasons,
+      opts.telemetryOperation,
+    );
   }
 }

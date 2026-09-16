@@ -16,10 +16,10 @@ import { runJob } from "../runtime/jobs.js";
 import type { AnalysisBatch, ContentItem, Cost, Report, TechLead, Topic, ValidationResult } from "../types.js";
 import { upsertTechLeads } from "../db/tech-leads.js";
 import { listTopicDirections, seedDefaultDirections, upsertTechnologyOpportunities } from "../db/planning.js";
-import { analyze, analyzerCacheVersion, canonicalizeInsightEvents, type HistoricalEvent } from "./analyzer.js";
-import { buildReport, reportHighlights, summarizeBriefSelection, type BriefFreshness, type CitationDisplay } from "./report-gen.js";
+import { analyze, analyzerCacheVersion, analyzerReviewVersionContext, canonicalizeInsightEvents, type HistoricalEvent } from "./analyzer.js";
+import { buildReport, persistedSelectionDecisions, reportHighlights, summarizeBriefSelection, type BriefFreshness, type CitationDisplay } from "./report-gen.js";
 import type { AnalysisSelectionDiagnostics } from "./analysis-selection.js";
-import { consistencyCacheVersion, isValidationDegraded, validateBatch } from "./validator.js";
+import { consistencyCacheVersion, isValidationDegraded, validateBatch, validatorReviewVersionContext } from "./validator.js";
 import { extractLeadCandidates } from "./tech-leads.js";
 import { deriveOpportunityCandidates } from "./opportunity-planning.js";
 import { appendGenerationEvent, captureRevision, entityKey, type EntityRef } from "../db/provenance-facts.js";
@@ -27,6 +27,7 @@ import {
   contentItemRef, contentItemRevisionSnapshot, techLeadRef, techLeadRevisionSnapshot,
   technologyOpportunityRef, technologyOpportunityRevisionSnapshot, topicDirectionRef, topicDirectionRevisionSnapshot,
 } from "../db/provenance-revisions.js";
+import { assertReviewPackageForPublish, persistReportReviewPackage, REPORT_SELECTION_RULE_VERSION } from "../db/report-review.js";
 
 function contentRefs(items: ContentItem[]): EntityRef[] {
   return items.map((item) => contentItemRef(item));
@@ -72,7 +73,12 @@ export async function runAnalysis(
 ): Promise<AnalysisBatch> {
   const telemetry = opts.telemetry ?? NOOP_P1_TELEMETRY_SINK;
   const inputs = opts.traceId ? contentRefs(items) : [];
-  emitTrace(db, opts.traceId, { stage: "analyze", event_type: "started", input_refs: inputs }, opts.assertWrite);
+  // Freeze this run's actual cache path before its started event. A cache
+  // enabled in configuration is not automatically a cache read: the periodic
+  // full re-analysis deliberately bypasses reads to retain cross-item joins.
+  const cacheReadActive = analysisCacheReadEnabled() && !isFullReanalyzeToday();
+  const cacheMode = !analysisCacheEnabled() ? "off" : cacheReadActive ? "read_write" : "write_only";
+  emitTrace(db, opts.traceId, { stage: "analyze", event_type: "started", input_refs: inputs, version_context: analyzerReviewVersionContext(cacheMode), context_completeness: "complete" }, opts.assertWrite);
   try {
   if (opts.traceId) captureContentRevisions(db, items, inputs, opts.assertWrite);
   const { result } = await runJob(db, { kind: "analyze", target: { topic_id: topic.id }, traceId: opts.traceId, existingRunId: opts.rootRunId, assertWrite: opts.assertWrite }, async (ctx) => {
@@ -82,12 +88,16 @@ export async function runAnalysis(
     const history = opts.history ?? [];
     let batch: AnalysisBatch;
     let newInsightsForCache: AnalysisBatch["insights"];
+    let cacheHitItemCount = 0;
+    let cacheMissItemCount = 0;
     // 切片2c：读路径已开 **且** 今天不是周期全析日 → 走增量；全析日临时绕过读路径全量析（兜底捞跨条综合）。
-    if (analysisCacheReadEnabled() && !isFullReanalyzeToday()) {
+    if (cacheReadActive) {
       // ADR-0009 切片2（据缓存跳过重析）：只把**未命中**（新 item / content_hash 变了）喂 analyzer；
       // 命中的复用缓存洞察、实例化进本 batch（重生 id + 按当前 history 重判 is_followup）。LLM 只跑 miss。
       // ⚠️ 跨条综合（新 item × 旧 item）会丢——靠周期性全析兜底（切片2c：FULL_REANALYZE 时关闭读路径全析）。
-      const { hits, missItems } = lookupCachedInsights(db, topic.id, items, version);
+      const { hits, missItems, hitItemCount } = lookupCachedInsights(db, topic.id, items, version);
+      cacheHitItemCount = hitItemCount;
+      cacheMissItemCount = missItems.length;
       batch = await analyze(topic, missItems, window, recordCost, { history });
       newInsightsForCache = [...batch.insights]; // 本轮真析产出（写缓存用），须在追加复用洞察前快照
       const instantiated = instantiateCachedInsights(hits, batch.id, history, batch.insights.length);
@@ -108,6 +118,9 @@ export async function runAnalysis(
         emitTrace(db, opts.traceId, { stage: "analyze", event_type: "completed", input_refs: inputs, output_refs: [ref], metrics: {
           input_content_count: items.length, analysis_insight_count: batch.insights.length,
           no_significant_event: batch.no_significant_event ? 1 : 0,
+          analysis_cache_hit_item_count: cacheHitItemCount,
+          analysis_cache_miss_item_count: cacheMissItemCount,
+          analysis_cache_read_bypassed: cacheReadActive ? 0 : 1,
         } }, opts.assertWrite);
       });
     } else { opts.assertWrite?.(); saveAnalysisBatch(db, batch); }
@@ -138,7 +151,10 @@ export async function runValidation(
   const telemetry = opts.telemetry ?? NOOP_P1_TELEMETRY_SINK;
   const batchRef: EntityRef = { type: "analysis_batch", locator: { kind: "id", id: batch.id }, revision: batch.id, role: "input" };
   const inputs = [batchRef, ...(opts.traceId ? contentRefs(items) : [])];
-  emitTrace(db, opts.traceId, { stage: "validate", event_type: "started", input_refs: inputs }, opts.assertWrite);
+  // Build once, then reuse this immutable value at completion. Re-reading env
+  // after a model call could make a trace claim a configuration that never ran.
+  const validatorContext = validatorReviewVersionContext();
+  emitTrace(db, opts.traceId, { stage: "validate", event_type: "started", input_refs: inputs, version_context: validatorContext, context_completeness: "complete" }, opts.assertWrite);
   try {
   if (opts.traceId) captureContentRevisions(db, items, inputs.slice(1), opts.assertWrite);
   const { result } = await runJob(db, { kind: "validate", target: { batch_id: batch.id }, traceId: opts.traceId, assertWrite: opts.assertWrite }, async (ctx) => {
@@ -158,7 +174,7 @@ export async function runValidation(
       saveValidationResult(db, batch.id, vr, () => {
         opts.assertWrite?.();
         captureRevision(db, { entity_type: ref.type, entity_key: entityKey(ref), revision: ref.revision, snapshot: { batch_id: batch.id, releasable: vr.report.releasable, total: vr.report.total, pass: vr.report.pass, blocked: vr.report.blocked, flagged: vr.report.flagged, checks: vr.checks.map(({ insight_id, citation_index, verdict }) => ({ insight_id, citation_index, verdict })) } });
-        emitTrace(db, opts.traceId, { stage: "validate", event_type: "completed", input_refs: inputs, output_refs: [ref], metrics: {
+        emitTrace(db, opts.traceId, { stage: "validate", event_type: "completed", input_refs: inputs, output_refs: [ref], version_context: validatorContext, context_completeness: "complete", metrics: {
           citation_total: vr.report.total, citation_pass: vr.report.pass, citation_blocked: vr.report.blocked,
           citation_flagged: vr.report.flagged, citation_errored: vr.report.errored,
           includable_insight_count: vr.report.insights_includable, releasable: vr.report.releasable ? 1 : 0,
@@ -288,7 +304,7 @@ export async function runReportGen(
   }
   const batchRef: EntityRef = { type: "analysis_batch", locator: { kind: "id", id: opts.batch.id }, revision: opts.batch.id, role: "input" };
   const validationRef: EntityRef = { type: "validation_result", locator: { kind: "composite", key: { batch_id: opts.batch.id } }, revision: opts.batch.id, role: "input" };
-  const reportStarted = emitTrace(db, opts.traceId, { stage: "generate_report", event_type: "started", input_refs: [batchRef, validationRef] }, opts.assertWrite);
+  const reportStarted = emitTrace(db, opts.traceId, { stage: "generate_report", event_type: "started", input_refs: [batchRef, validationRef], version_context: { report_selection_rule: REPORT_SELECTION_RULE_VERSION, report_renderer: "report-selection-v1" }, context_completeness: "complete" }, opts.assertWrite);
   // 为被引内容建展示元数据查找表：source_id / tags（派生 source_ids / tags）
   // + source_name / url / published_at（dogfood feedback：渲染时给用户可读源名 + 可点 quote）
   const contentLookup = new Map<string, CitationDisplay>();
@@ -353,6 +369,30 @@ export async function runReportGen(
         prevReportId: opts.prevReportId,
         included: selection.included,
       });
+      const reviewPackage = opts.traceId && reportStarted ? (() => {
+        const events = db.prepare(`SELECT id,sequence,attempt,stage,event_type,input_refs,output_refs FROM generation_event
+          WHERE trace_id=? AND (stage='analyze' OR stage='validate' OR stage='generate_report') ORDER BY sequence`).all(opts.traceId) as Array<{ id: string; sequence: number; attempt: number; stage: string; event_type: string; input_refs: string; output_refs: string }>;
+        const refs = (value: string) => JSON.parse(value) as EntityRef[];
+        const hasBatch = (value: string) => refs(value).some((ref) => ref.type === "analysis_batch" && ref.locator.kind === "id" && ref.locator.id === opts.batch.id && ref.revision === opts.batch.id);
+        const reportStarted = [...events].reverse().find((event) => event.stage === "generate_report" && event.event_type === "started");
+        const validateCompleted = [...events].reverse().find((event) => event.stage === "validate" && event.event_type === "completed" && hasBatch(event.input_refs));
+        const validateStarted = validateCompleted && [...events].reverse().find((event) => event.sequence < validateCompleted.sequence && event.stage === "validate" && event.event_type === "started" && event.attempt === validateCompleted.attempt && hasBatch(event.input_refs));
+        const analyzeCompleted = [...events].reverse().find((event) => event.stage === "analyze" && event.event_type === "completed" && hasBatch(event.output_refs));
+        const analyzeStarted = analyzeCompleted && [...events].reverse().find((event) => event.sequence < analyzeCompleted.sequence && event.stage === "analyze" && event.event_type === "started" && event.attempt === analyzeCompleted.attempt);
+        // A trace-backed report is a new V1 publication, never a compatibility
+        // fallback.  Historical completed reports stay legacy, but a new run
+        // missing either upstream terminal event must fail before its intent is
+        // written so no `done` report can lack a review package.
+        if (!analyzeStarted || !analyzeCompleted || !validateStarted || !validateCompleted || !reportStarted) throw new Error("report_review_trace_incomplete");
+        return {
+          report_id: report.id, trace_id: opts.traceId, analysis_batch_id: opts.batch.id,
+          analyze_started_event_id: analyzeStarted.id, analyze_completed_event_id: analyzeCompleted.id,
+          validate_started_event_id: validateStarted.id,
+          validate_completed_event_id: validateCompleted.id, generate_report_started_event_id: reportStarted.id,
+          selection_rule_version: REPORT_SELECTION_RULE_VERSION,
+          decisions: persistedSelectionDecisions(opts.batch, opts.validation, opts.type, selection.included, selection.decisions),
+        };
+      })() : undefined;
       let traceOutputCaptured = false;
       const emptyReason = report.insight_ids.length === 0
         ? opts.batch.no_significant_event
@@ -365,6 +405,8 @@ export async function runReportGen(
       await saveReport(db, report, index, {
         provenance: opts.traceId && reportStarted ? { traceId: opts.traceId, eventId: reportStarted.id } : undefined,
         anchor: opts.anchor,
+        beforePublish: reviewPackage ? () => persistReportReviewPackage(db, reviewPackage) : undefined,
+        assertPublish: reviewPackage ? () => assertReviewPackageForPublish(db, report.id, report.insight_ids) : undefined,
         afterPublish: opts.traceId ? () => {
           opts.assertWrite?.();
           const ref: EntityRef = { type: "report", locator: { kind: "id", id: report.id }, revision: report.id, role: "output", visibility_class: "public_evidence" };

@@ -124,7 +124,9 @@ export async function judgeConsistency(
   onCost?: (cost: Cost) => void,
   metadata?: SourceMetadata,
   quote?: string,
+  signal?: AbortSignal,
 ): Promise<ConsistencyJudge> {
+  if (signal?.aborted) throw signal.reason ?? new Error("validation cancelled");
   const user = `<untrusted_source>
 ${sourceText}
 </untrusted_source>
@@ -134,6 +136,7 @@ ${renderSourceMetadata(metadata)}${renderCitation(claim, quote)}
 判断 untrusted_source 是否支持 untrusted_citation 内的原子 claim。`;
   const { data } = await callStructured({
     role: "validator",
+    telemetryOperation: "citation_consistency_single",
     system: CONSISTENCY_SYSTEM,
     user,
     schema: ConsistencyJudgeSchema,
@@ -141,6 +144,7 @@ ${renderSourceMetadata(metadata)}${renderCitation(claim, quote)}
     thinking: validatorThinking(),
     maxTokens: 4096,
     onCost,
+    signal,
   });
   return data;
 }
@@ -177,7 +181,9 @@ export async function judgeConsistencyBatch(
   onCost?: (cost: Cost) => void,
   metadata?: SourceMetadata,
   quotes?: Array<string | undefined>,
+  signal?: AbortSignal,
 ): Promise<ConsistencyJudge[]> {
+  if (signal?.aborted) throw signal.reason ?? new Error("validation cancelled");
   const list = claims.map((claim, i) => renderCitation(claim, quotes?.[i], i + 1)).join("\n");
   const user = `<untrusted_source>
 ${sourceText}
@@ -189,6 +195,7 @@ ${list}
 对每一条输出 {index, consistency, consistency_reason}，index 等于 untrusted_citation 标签的 index，每条都要有。`;
   const { data } = await callStructured({
     role: "validator",
+    telemetryOperation: "citation_consistency_batch",
     system: CONSISTENCY_BATCH_SYSTEM,
     user,
     schema: ConsistencyBatchJudgeSchema,
@@ -196,6 +203,7 @@ ${list}
     // 输出随条数增长（每条 enum+短理由 + thinking 预算）；按条数放量，封顶防失控。
     maxTokens: Math.min(16000, 4096 + (claims.length - 1) * 768),
     onCost,
+    signal,
   });
   const byIndex = new Map<number, ConsistencyJudge>();
   for (const j of data.judgments) {
@@ -211,6 +219,11 @@ ${list}
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
+/** A caller deadline is an execution failure, never evidence that a claim was merely uncertain. */
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw signal.reason ?? new Error("validation cancelled");
+}
+
 function validatorRelayBaseUrl(): string | undefined {
   const baseUrl = process.env.ANTHROPIC_BASE_URL?.trim();
   return baseUrl ? baseUrl.replace(/\/+$/, "") : undefined;
@@ -225,14 +238,19 @@ async function retryJudge<T>(operation: () => Promise<T>, signal?: AbortSignal):
   const base = validatorBackoffMs();
   let lastErr: unknown;
   for (let attempt = 0; attempt <= extra; attempt++) {
+    throwIfAborted(signal);
     try {
       return await withRelayRecovery({ baseUrl: validatorRelayBaseUrl(), model: MODELS.validator }, operation, signal);
     } catch (error) {
+      throwIfAborted(signal);
       // The shared gate has already consumed its finite recovery budget. Fast per-call retries
       // would reopen a thundering herd and turn one relay outage into many failed evaluations.
       if (error instanceof RelayUnavailableError) throw error;
       lastErr = error;
-      if (attempt < extra) await sleep(base * 2 ** attempt);
+      if (attempt < extra) {
+        await sleep(base * 2 ** attempt);
+        throwIfAborted(signal);
+      }
     }
   }
   throw lastErr;
@@ -245,8 +263,9 @@ export async function judgeBatchWithRetry(
   onCost?: (cost: Cost) => void,
   metadata?: SourceMetadata,
   quotes?: Array<string | undefined>,
+  signal?: AbortSignal,
 ): Promise<ConsistencyJudge[]> {
-  return retryJudge(() => judgeConsistencyBatch(claims, sourceText, onCost, metadata, quotes));
+  return retryJudge(() => judgeConsistencyBatch(claims, sourceText, onCost, metadata, quotes, signal), signal);
 }
 
 /** 一致性判定带重试 + 指数退避——抗中转站/LLM **瞬时**抖动（超时/限流/5xx/解析错）。
@@ -261,7 +280,7 @@ export async function judgeWithRetry(
   quote?: string,
   signal?: AbortSignal,
 ): Promise<ConsistencyJudge> {
-  return retryJudge(() => judgeConsistency(claim, sourceText, onCost, metadata, quote), signal);
+  return retryJudge(() => judgeConsistency(claim, sourceText, onCost, metadata, quote, signal), signal);
 }
 
 /** 校验是否"大面积失败"（疑似 LLM/中转站抖动，非内容问题）：可达引用中"校验失败"占比 ≥ 阈值。
@@ -339,6 +358,15 @@ export function consistencyCacheVersion(): string {
   return `${MODELS.validator}|${promptHash}|${thinking}`;
 }
 
+export function validatorReviewVersionContext(): Record<string, string> {
+  return {
+    validator_model: MODELS.validator,
+    validator_prompt_hash: createHash("sha256").update(`${CONSISTENCY_SYSTEM}\x00${CONSISTENCY_BATCH_SYSTEM}`).digest("hex"),
+    validator_thinking: validatorThinking() ? "on" : "off",
+    validator_cache_mode: process.env.CONSISTENCY_CACHE === "0" ? "off" : "on",
+  };
+}
+
 /** 把数组切成每段 ≤size 的块（批量判定按 CONSISTENCY_BATCH_MAX 拆调用）。 */
 function chunk<T>(xs: T[], size: number): T[][] {
   const out: T[][] = [];
@@ -403,7 +431,9 @@ export async function validateBatch(
   items: ContentItem[],
   onCost?: (cost: Cost) => void,
   cache?: ConsistencyCache,
+  signal?: AbortSignal,
 ): Promise<ValidationResult> {
+  throwIfAborted(signal);
   const byId = new Map(items.map((i) => [i.id, i]));
   const batchOn = validatorBatchOn(); // kill-switch：回退逐条（精度回归/排障用）
   const maxPer = consistencyBatchMax();
@@ -481,10 +511,12 @@ export async function validateBatch(
   };
 
   for (const [itemId, evidences] of missByItem) {
+    throwIfAborted(signal);
     const body = judgeBody(itemId); // 决定⑤：transcript 喂窗口、其余全量（与缓存键同源）
     const metadata = judgeMetadata(itemId);
     const cacheInput = cacheSource(itemId);
     for (const group of chunk(evidences, maxPer)) {
+      throwIfAborted(signal);
       // A malformed batch response is transport/model-output degradation, not evidence about every
       // claim in the group. Fall back to the established single-claim retry path before recording
       // `not_evaluated`; individual failures remain visible and are never cached as successes.
@@ -492,8 +524,9 @@ export async function validateBatch(
         const results: JudgeOutcome[] = [];
         for (const evidence of group) {
           try {
-            results.push(await judgeWithRetry(evidence.claim, body, onCost, metadata, evidence.quote));
+            results.push(await judgeWithRetry(evidence.claim, body, onCost, metadata, evidence.quote, signal));
           } catch (error) {
+            throwIfAborted(signal);
             console.warn(`  ⚠️ 一致性校验失败，记为校验失败（${(error as Error).message}）`);
             results.push({ error: true });
           }
@@ -505,8 +538,9 @@ export async function validateBatch(
         // 不能把一次 schema 漂移放大成整组引用都未评估。
         let results: JudgeOutcome[];
         try {
-          results = await judgeBatchWithRetry(group.map((e) => e.claim), body, onCost, metadata, group.map((e) => e.quote));
+          results = await judgeBatchWithRetry(group.map((e) => e.claim), body, onCost, metadata, group.map((e) => e.quote), signal);
         } catch (error) {
+          throwIfAborted(signal);
           if (error instanceof RelayUnavailableError) {
             // A capacity outage is process-wide and already spent a shared recovery budget.
             // Do not amplify one failed batch into N individual relay requests; keep every item

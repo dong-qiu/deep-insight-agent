@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AnalysisBatch, ContentItem, Topic, ValidationResult } from "../types.js";
-import { BRIEF_SUPPLEMENTAL_MAX, buildReport, HIGHLIGHTS_MAX, inlineCitedStatement, isMilestoneInsight, KEY_MIN_IMPORTANCE, reportHighlights, selectBriefInsights, selectInsights, summarizeBriefSelection } from "./report-gen.js";
+import { BRIEF_SUPPLEMENTAL_MAX, buildReport, HIGHLIGHTS_MAX, inlineCitedStatement, isMilestoneInsight, KEY_MIN_IMPORTANCE, persistedSelectionDecisions, reportHighlights, selectBriefInsights, selectInsights, summarizeBriefSelection } from "./report-gen.js";
 import { flagLabel } from "../utils/citation-verdict.js";
 import { DISPLAY_PROJECTION_VERSION, sourceQuoteHash } from "../utils/source-quote-projection.js";
 
@@ -58,6 +58,23 @@ const validation: ValidationResult = {
   ],
   report: { total: 4, pass: 1, blocked: 2, flagged: 1, errored: 0, consistency_failure_rate: 0.25, flagged_rate: 0.25, insights_total: 3, insights_includable: 1, releasable: true },
 };
+
+it("selection ledger assigns exactly one terminal decision per insight without changing the whitelist", () => {
+  const selected = summarizeBriefSelection(batchOf(), validation, "deep_dive");
+  const decisions = persistedSelectionDecisions(batchOf(), validation, "deep_dive", selected.included);
+  expect(decisions).toEqual(expect.arrayContaining([
+    expect.objectContaining({ insight_id: "i1", decision: "published", published_rank: 1, supporting_citation_indices: [0] }),
+    expect.objectContaining({ insight_id: "i2", decision: "excluded", reason_code: "projection_or_citation_gate" }),
+    expect.objectContaining({ insight_id: "i3", decision: "excluded", reason_code: "projection_or_citation_gate" }),
+  ]));
+  expect(new Set(decisions.map((item) => item.insight_id)).size).toBe(batchOf().insights.length);
+});
+
+it("Brief 账本拒绝脱离真实 freshness / history 分支的笼统回退", () => {
+  const selected = summarizeBriefSelection(batchOf(), validation, "brief");
+  expect(() => persistedSelectionDecisions(batchOf(), validation, "brief", selected.included)).toThrow("brief_selection_decisions_required");
+  expect(selected.decisions).not.toEqual(expect.arrayContaining([expect.objectContaining({ reason_code: "brief_selection_gate" })]));
+});
 
 describe("inlineCitedStatement（方案 A · 行内引用锚定）", () => {
   it("[n] 放到其 quote 覆盖的数字/实体声明之后（逐个贴合）", () => {
@@ -342,6 +359,30 @@ describe("selectBriefInsights（Daily Brief 已发布证据去重）", () => {
       }],
     };
     expect(summarizeBriefSelection(duplicateEvent, duplicateChecks, "brief", [], freshness).included).toHaveLength(1);
+  });
+
+  it("同批补充候选的 event 去重记录确定的胜出洞察，而非泛化 gate", () => {
+    const batch = batchOf();
+    const duplicate = { ...batch.insights[0]!, id: "i_supplemental_duplicate", citations: [{ ...batch.insights[0]!.citations[0]!, content_item_id: "ci_old" }] };
+    batch.insights[0]!.citations[0] = { ...batch.insights[0]!.citations[0]!, content_item_id: "ci_old" };
+    batch.insights.push(duplicate);
+    batch.display_coverage_audits = [
+      ...batch.display_coverage_audits!,
+      { ...batch.display_coverage_audits![0]!, insight_id: duplicate.id, candidate_id: duplicate.id },
+    ];
+    const checks: ValidationResult = {
+      ...validation,
+      checks: [...validation.checks, {
+        insight_id: duplicate.id, citation_index: 0, reachability: "pass", reachability_reason: "ok",
+        consistency: "support", consistency_reason: "ok", verdict: "pass",
+      }],
+    };
+    const freshness = { since: "2026-05-06T00:00:00Z", content_item_ids: ["ci_new"], freshest_candidate_at: "2026-05-07T00:00:00Z" };
+    const selection = summarizeBriefSelection(batch, checks, "brief", [], freshness);
+    expect(selection.included.map((item) => item.insight.id)).toEqual(["i1"]);
+    expect(selection.decisions.find((decision) => decision.insight_id === duplicate.id)).toMatchObject({
+      decision: "excluded", reason_code: "supplemental_duplicate_event", related_insight_id: "i1",
+    });
   });
 
   it("遗留分裂 event 的旧 occurrence 不能通过补充发现路径绕过指纹闸门", () => {

@@ -91,7 +91,9 @@ export function recordAnalysisCache(
 /** 开关：切片2「据缓存跳过重析」的读路径。默认**关**（ANALYSIS_CACHE_READ=1 开）——
  *  与切片1（写路径 ANALYSIS_CACHE，默认开）解耦：读路径行为改变、过 eval 时序对照验证前不默认开。 */
 export function analysisCacheReadEnabled(): boolean {
-  return process.env.ANALYSIS_CACHE_READ === "1";
+  // ANALYSIS_CACHE is the master kill switch.  A stale READ=1 must never
+  // resurrect cached analysis after an operator has disabled the cache.
+  return analysisCacheEnabled() && process.env.ANALYSIS_CACHE_READ === "1";
 }
 
 /** 周期性全析日（切片2c 兜底安全网）：增量只析新 item、丢「新×旧」跨条综合；故每周一次**全窗 full re-analyze**

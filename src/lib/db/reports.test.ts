@@ -8,7 +8,8 @@ import { saveAnalysisBatch, saveValidationResult } from "./analysis.js";
 import { type DB, openDb } from "./index.js";
 import { chainTypesFor, distinctIndexValues, entityTrends, getReport, latestReportForTopicSince, listBlockedChecksForReport, listPassChecksForReport, listRecentBriefEvents, listRecentPublishedEventEvidence, listRecentPublishedInsightOccurrences, listRecentBriefSelectionDiagnostics, listRecentReports, previousReportForTopic, queryReportIndex, reconcileAnchoredReportEffects, reconcileReportEffects, reportNeighbors, reportStatusCounts, sanitizeFtsQuery, saveFailedReport, saveReport, searchReports, SNIPPET_CLOSE, SNIPPET_OPEN, topicEvolution, topicReportStats } from "./reports.js";
 import { applyProvenanceMigrations } from "./provenance-migrations.js";
-import { appendGenerationEvent } from "./provenance-facts.js";
+import { appendGenerationEvent, canonicalHash, captureRevision, entityKey, type EntityRef } from "./provenance-facts.js";
+import { persistReportReviewPackage, REPORT_SELECTION_RULE_VERSION } from "./report-review.js";
 import { getTopic, insertContentItem, insertSource, insertTopic } from "./repos.js";
 import { type AnchorObject, type AnchorStore, MemoryAnchorStore } from "./integrity-anchors.js";
 
@@ -41,6 +42,74 @@ const index: ReportIndexEntry = {
   entity_names: [], importance: 5, event_ids: ["e1"], milestone_count: 0,
 };
 
+/** Creates a complete review package, but returns a second real report-start
+ * event so publication tests can prove that the effect is bound to the exact
+ * snapshot event rather than merely any event in the trace. */
+function seedPlannedReviewPackage(reportId: string) {
+  const batchId = `batch_${reportId}`;
+  const insightId = `insight_${reportId}`;
+  const traceId = `trace_${reportId}`;
+  db.prepare("INSERT INTO analysis_batch(id,topic_id,time_window,status,display_coverage_state,display_projection_version) VALUES (?,?,?, 'done','audited','source_quote_v1')")
+    .run(batchId, topic.id, "{}");
+  db.prepare(`INSERT INTO insight(id,batch_id,topic_id,type,statement,importance,importance_basis,source_count,multi_source,time_window,language)
+    VALUES (?,?,?,'aggregation','S',3,'x',1,0,'{}','en')`).run(insightId, batchId, topic.id);
+  db.prepare("INSERT INTO citation(insight_id,citation_index,content_item_id,quote,locator) VALUES (?,0,'review_content','q','{}')").run(insightId);
+  db.prepare("INSERT INTO citation_check(batch_id,insight_id,citation_index,reachability,reachability_reason,consistency,consistency_reason,verdict) VALUES (?,?,0,'pass','ok','support','ok','pass')")
+    .run(batchId, insightId);
+  db.prepare(`INSERT INTO generation_trace(id,scope_kind,trigger_kind,status,completion_policy,coverage,runtime_version,summary,started_at)
+    VALUES (?,'topic_pipeline','api','running','{}','complete','{}','{}','2026-09-11T00:00:00Z')`).run(traceId);
+  const contentSnapshot = { url: "https://example.test/review", source_id: "review-source", title: "Review", published_at: null, fetched_at: "2026-09-11T00:00:00Z", body_kind: "article", fetch_status: "ok", body_length: 1, content_hash: "review-hash" };
+  const content: EntityRef = { type: "content_item", locator: { kind: "id", id: "review_content" }, revision: `content-v4:${canonicalHash(contentSnapshot)}`, role: "input" };
+  const batch: EntityRef = { type: "analysis_batch", locator: { kind: "id", id: batchId }, revision: batchId, role: "input" };
+  const validation: EntityRef = { type: "validation_result", locator: { kind: "composite", key: { batch_id: batchId } }, revision: batchId, role: "input" };
+  captureRevision(db, { entity_type: content.type, entity_key: entityKey(content), revision: content.revision, snapshot: contentSnapshot });
+  const analyzerContext = { analyzer_model: "analyzer", analyzer_prompt_hash: "a".repeat(64), analyzer_output_version: "v1", analyzer_cache_mode: "write_only", coverage_model: "disabled", coverage_prompt_hash: "b".repeat(64), coverage_thinking: "off", coverage_thinking_source: "explicit" };
+  const validatorContext = { validator_model: "validator", validator_prompt_hash: "c".repeat(64), validator_thinking: "on", validator_cache_mode: "on" };
+  const reportContext = { report_selection_rule: REPORT_SELECTION_RULE_VERSION, report_renderer: "report-selection-v1" };
+  const analyzeStarted = appendGenerationEvent(db, { trace_id: traceId, stage: "analyze", event_type: "started", input_refs: [content], version_context: analyzerContext, context_completeness: "complete" });
+  const analyzeCompleted = appendGenerationEvent(db, { trace_id: traceId, stage: "analyze", event_type: "completed", input_refs: [content], output_refs: [{ ...batch, role: "output" }] });
+  const validateStarted = appendGenerationEvent(db, { trace_id: traceId, stage: "validate", event_type: "started", input_refs: [batch, content], version_context: validatorContext, context_completeness: "complete" });
+  const validateCompleted = appendGenerationEvent(db, { trace_id: traceId, stage: "validate", event_type: "completed", input_refs: [batch, content], output_refs: [{ ...validation, role: "output" }], version_context: validatorContext, context_completeness: "complete" });
+  const reportStarted = appendGenerationEvent(db, { trace_id: traceId, stage: "generate_report", event_type: "started", input_refs: [batch, validation], version_context: reportContext, context_completeness: "complete" });
+  const wrongReportStarted = appendGenerationEvent(db, { trace_id: traceId, stage: "generate_report", event_type: "started", attempt: 2 });
+  return {
+    insightId, traceId, reportEventId: reportStarted.id, wrongEventId: wrongReportStarted.id,
+    persist: () => persistReportReviewPackage(db, {
+      report_id: reportId, trace_id: traceId, analysis_batch_id: batchId,
+      analyze_started_event_id: analyzeStarted.id, analyze_completed_event_id: analyzeCompleted.id,
+      validate_started_event_id: validateStarted.id, validate_completed_event_id: validateCompleted.id,
+      generate_report_started_event_id: reportStarted.id, selection_rule_version: REPORT_SELECTION_RULE_VERSION,
+      decisions: [{ insight_id: insightId, decision: "published", reason_code: "selected_by_rule", published_rank: 1, supporting_citation_indices: [0] }],
+    }),
+  };
+}
+
+function seedPendingReportEffect(
+  pending: Report, pendingIndex: ReportIndexEntry, effectId: string, traceId: string | null, eventId: string | null,
+): void {
+  db.prepare(`INSERT INTO report
+    (id,type,topic_id,status,generated_at,title,body_path,insight_ids,event_ids,prev_report_id,citation_count,cost,failure)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,NULL)`).run(
+    pending.id, pending.type, pending.topic_id, "generating", pending.generated_at, pending.title, null,
+    JSON.stringify(pending.insight_ids), JSON.stringify(pending.event_ids), pending.prev_report_id,
+    pending.citation_count, JSON.stringify(pending.cost),
+  );
+  const manifest = [
+    { target: `${pending.id}.md`, sha256: createHash("sha256").update(pending.body_md).digest("hex"), size: Buffer.byteLength(pending.body_md), report_id: pending.id },
+    { target: `${pending.id}.html`, sha256: createHash("sha256").update(pending.body_html).digest("hex"), size: Buffer.byteLength(pending.body_html), report_id: pending.id },
+  ];
+  db.prepare(`INSERT INTO generation_effect
+    (id,trace_id,event_id,report_id,kind,idempotency_key,artifact_manifest,publication_payload,status,error,created_at,updated_at)
+    VALUES (?,?,?,?,'report_file',?,?,?,'planned',NULL,?,?)`).run(
+    effectId, traceId, eventId, pending.id, `report_file:${pending.id}`,
+    JSON.stringify(manifest), JSON.stringify(pendingIndex), pending.generated_at, pending.generated_at,
+  );
+  const staging = join(dir, ".staging", effectId);
+  mkdirSync(staging, { recursive: true });
+  writeFileSync(join(staging, `${pending.id}.md`), pending.body_md);
+  writeFileSync(join(staging, `${pending.id}.html`), pending.body_html);
+}
+
 it("saveReport → getReport 往返（正文走 FS）", () => {
   saveReport(db, report, index, { dir });
   expect(getReport(db, "rep_test1")).toEqual(report);
@@ -59,24 +128,52 @@ it("report evidence excludes a raw-pending ContentItem", () => {
   expect(listPassChecksForReport(db, pendingReport.id)).toEqual([]);
 });
 
-it("provenance 报告 effect 成对关联创建它的 trace 与 started event", () => {
+it("trace-backed report without a review package is rejected at the publish boundary", () => {
   db.prepare(`INSERT INTO generation_trace(id,scope_kind,trigger_kind,status,completion_policy,coverage,runtime_version,summary,started_at)
     VALUES ('trace_report','topic_pipeline','api','running','{}','complete','{}','{}','2026-05-07T00:00:00Z')`).run();
   const event = appendGenerationEvent(db, {
     trace_id: "trace_report", stage: "generate_report", event_type: "started",
   });
 
-  saveReport(db, report, index, { dir, provenance: { traceId: "trace_report", eventId: event.id } });
+  expect(() => saveReport(db, report, index, { dir, provenance: { traceId: "trace_report", eventId: event.id } }))
+    .toThrow("report_review_package_missing_or_not_planned");
+  expect(db.prepare("SELECT 1 FROM report WHERE id=?").get(report.id)).toBeUndefined();
+});
 
-  expect(db.prepare("SELECT trace_id,event_id,status FROM generation_effect WHERE report_id=?").get(report.id))
-    .toEqual({ trace_id: "trace_report", event_id: event.id, status: "committed" });
+it("rejects an effect whose report-start event differs from its planned review package", () => {
+  const review = seedPlannedReviewPackage("rep_effect_binding");
+  const boundReport = { ...report, id: "rep_effect_binding", insight_ids: [review.insightId], citation_count: 1 };
+  const boundIndex = { ...index, report_id: boundReport.id };
+
+  expect(() => saveReport(db, boundReport, boundIndex, {
+    dir,
+    provenance: { traceId: review.traceId, eventId: review.wrongEventId },
+    beforePublish: review.persist,
+  })).toThrow("report_review_effect_binding_mismatch");
+  expect(db.prepare("SELECT 1 FROM report WHERE id=?").get(boundReport.id)).toBeUndefined();
+});
+
+it("trace-backed publication binds its effect to the reviewed report-start event", () => {
+  const review = seedPlannedReviewPackage("rep_effect_pair");
+  const reviewed = { ...report, id: "rep_effect_pair", insight_ids: [review.insightId], citation_count: 1 };
+  saveReport(db, reviewed, { ...index, report_id: reviewed.id }, {
+    dir,
+    provenance: { traceId: review.traceId, eventId: review.reportEventId },
+    beforePublish: review.persist,
+  });
+
+  expect(db.prepare("SELECT trace_id,event_id,status FROM generation_effect WHERE report_id=?").get(reviewed.id))
+    .toEqual({ trace_id: review.traceId, event_id: review.reportEventId, status: "committed" });
 });
 
 it("日报选择诊断从 P0 trace 聚合受控计数，legacy 报告不伪装为零", () => {
   db.prepare(`INSERT INTO generation_trace(id,scope_kind,trigger_kind,status,completion_policy,coverage,runtime_version,summary,started_at)
     VALUES ('trace_selection','topic_pipeline','api','running','{}','complete','{}','{}','2026-05-07T00:00:00Z')`).run();
   const started = appendGenerationEvent(db, { trace_id: "trace_selection", stage: "generate_report", event_type: "started" });
-  saveReport(db, report, index, { dir, provenance: { traceId: "trace_selection", eventId: started.id } });
+  db.prepare(`INSERT INTO report(id,type,topic_id,status,generated_at,title,body_path,insight_ids,event_ids,prev_report_id,citation_count,cost,failure)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,NULL)`).run(report.id, report.type, report.topic_id, "done", report.generated_at, report.title, null, JSON.stringify(report.insight_ids), JSON.stringify(report.event_ids), report.prev_report_id, report.citation_count, JSON.stringify(report.cost));
+  db.prepare(`INSERT INTO generation_effect(id,trace_id,event_id,report_id,kind,idempotency_key,artifact_manifest,publication_payload,status,error,created_at,updated_at)
+    VALUES ('effect_selection',?,?,?,'report_file','report_file:rep_test1','[]','{}','committed',NULL,?,?)`).run("trace_selection", started.id, report.id, report.generated_at, report.generated_at);
   appendGenerationEvent(db, { trace_id: "trace_selection", stage: "select", event_type: "completed", metrics: {
     candidate_content_count: 100, candidate_source_count: 8, selected_count: 15, selected_source_count: 5,
     fresh_candidate_count: 80, fresh_selected_count: 6,
@@ -125,6 +222,81 @@ it("report-level anchored reconciliation restores both artifacts and every reade
   expect(queryReportIndex(db, { topic: topic.id }).map((entry) => entry.report_id)).toContain(anchored.id);
 });
 
+it("anchored recovery refuses an effect event that differs from the review snapshot", async () => {
+  const keys = generateKeyPairSync("ed25519"); const store = new MemoryAnchorStore();
+  const review = seedPlannedReviewPackage("rep_anchor_binding");
+  const anchored = { ...report, id: "rep_anchor_binding", insight_ids: [review.insightId], citation_count: 1 };
+  const anchor = { store, signer: { key_id: "test-key-v1", private_key: keys.privateKey }, retainUntil: "2027-01-01T00:00:00Z", retentionEnds: ["2027-01-01T00:00:00Z", "2027-02-01T00:00:00Z", "2027-03-01T00:00:00Z"] as const, issuedAt: "2026-05-07T00:00:01Z" };
+  await expect(saveReport(db, anchored, { ...index, report_id: anchored.id }, {
+    dir, anchor, provenance: { traceId: review.traceId, eventId: review.reportEventId },
+    beforePublish: review.persist, afterPublish: () => { throw new Error("sqlite_commit_failure"); },
+  })).rejects.toThrow("sqlite_commit_failure");
+  db.prepare("UPDATE generation_effect SET event_id=? WHERE report_id=?").run(review.wrongEventId, anchored.id);
+
+  await expect(reconcileAnchoredReportEffects(db, anchor, { dir })).resolves.toEqual({ committed: 0, failed: 1 });
+  expect(getReport(db, anchored.id)).toBeNull();
+  expect(queryReportIndex(db, { topic: topic.id })).toEqual([]);
+  expect(db.prepare("SELECT status FROM generation_effect WHERE report_id=?").get(anchored.id)).toEqual({ status: "unknown" });
+  expect(db.prepare("SELECT DISTINCT status FROM generation_anchor_effect").all()).toEqual([{ status: "unknown" }]);
+  expect(db.prepare("SELECT publication_state FROM report_review_snapshot WHERE report_id=?").get(anchored.id))
+    .toEqual({ publication_state: "planned" });
+});
+
+it("anchored recovery terminalizes a missing review package instead of retrying its immutable anchors", async () => {
+  const keys = generateKeyPairSync("ed25519"); const store = new MemoryAnchorStore();
+  const review = seedPlannedReviewPackage("rep_anchor_missing_review");
+  const anchored = { ...report, id: "rep_anchor_missing_review", insight_ids: [review.insightId], citation_count: 1 };
+  const anchor = { store, signer: { key_id: "test-key-v1", private_key: keys.privateKey }, retainUntil: "2027-01-01T00:00:00Z", retentionEnds: ["2027-01-01T00:00:00Z", "2027-02-01T00:00:00Z", "2027-03-01T00:00:00Z"] as const, issuedAt: "2026-05-07T00:00:01Z" };
+  await expect(saveReport(db, anchored, { ...index, report_id: anchored.id }, {
+    dir, anchor, provenance: { traceId: review.traceId, eventId: review.reportEventId },
+    beforePublish: review.persist, afterPublish: () => { throw new Error("sqlite_commit_failure"); },
+  })).rejects.toThrow("sqlite_commit_failure");
+  db.prepare("DELETE FROM report_review_snapshot WHERE report_id=?").run(anchored.id);
+
+  await expect(reconcileAnchoredReportEffects(db, anchor, { dir })).resolves.toEqual({ committed: 0, failed: 1 });
+  expect(db.prepare("SELECT status,error FROM generation_effect WHERE report_id=?").get(anchored.id)).toEqual(expect.objectContaining({ status: "unknown", error: expect.stringContaining("report_review_package_missing_or_not_planned") }));
+  expect(db.prepare("SELECT DISTINCT status FROM generation_anchor_effect").all()).toEqual([{ status: "unknown" }]);
+  await expect(reconcileAnchoredReportEffects(db, anchor, { dir })).resolves.toEqual({ committed: 0, failed: 0 });
+});
+
+it("anchored recovery terminalizes a review snapshot whose bound report event has incomplete context", async () => {
+  const keys = generateKeyPairSync("ed25519"); const store = new MemoryAnchorStore();
+  const review = seedPlannedReviewPackage("rep_anchor_invalid_review");
+  const anchored = { ...report, id: "rep_anchor_invalid_review", insight_ids: [review.insightId], citation_count: 1 };
+  const anchor = { store, signer: { key_id: "test-key-v1", private_key: keys.privateKey }, retainUntil: "2027-01-01T00:00:00Z", retentionEnds: ["2027-01-01T00:00:00Z", "2027-02-01T00:00:00Z", "2027-03-01T00:00:00Z"] as const, issuedAt: "2026-05-07T00:00:01Z" };
+  await expect(saveReport(db, anchored, { ...index, report_id: anchored.id }, {
+    dir, anchor, provenance: { traceId: review.traceId, eventId: review.reportEventId },
+    beforePublish: review.persist, afterPublish: () => { throw new Error("sqlite_commit_failure"); },
+  })).rejects.toThrow("sqlite_commit_failure");
+  // Model a corrupted persisted binding without mutating append-only event evidence:
+  // both mutable pointers agree on a real but context-incomplete retry event.
+  db.prepare("UPDATE generation_effect SET event_id=? WHERE report_id=?").run(review.wrongEventId, anchored.id);
+  db.prepare("UPDATE report_review_snapshot SET generate_report_started_event_id=? WHERE report_id=?").run(review.wrongEventId, anchored.id);
+
+  await expect(reconcileAnchoredReportEffects(db, anchor, { dir })).resolves.toEqual({ committed: 0, failed: 1 });
+  expect(db.prepare("SELECT status,error FROM generation_effect WHERE report_id=?").get(anchored.id)).toEqual(expect.objectContaining({ status: "unknown", error: expect.stringContaining("report_review_trace_binding_invalid") }));
+  expect(db.prepare("SELECT DISTINCT status FROM generation_anchor_effect").all()).toEqual([{ status: "unknown" }]);
+  await expect(reconcileAnchoredReportEffects(db, anchor, { dir })).resolves.toEqual({ committed: 0, failed: 0 });
+});
+
+it("anchored recovery terminalizes a single-sided provenance binding", async () => {
+  const keys = generateKeyPairSync("ed25519"); const store = new MemoryAnchorStore();
+  const review = seedPlannedReviewPackage("rep_anchor_single_sided");
+  const anchored = { ...report, id: "rep_anchor_single_sided", insight_ids: [review.insightId], citation_count: 1 };
+  const anchor = { store, signer: { key_id: "test-key-v1", private_key: keys.privateKey }, retainUntil: "2027-01-01T00:00:00Z", retentionEnds: ["2027-01-01T00:00:00Z", "2027-02-01T00:00:00Z", "2027-03-01T00:00:00Z"] as const, issuedAt: "2026-05-07T00:00:01Z" };
+  await expect(saveReport(db, anchored, { ...index, report_id: anchored.id }, {
+    dir, anchor, provenance: { traceId: review.traceId, eventId: review.reportEventId },
+    beforePublish: review.persist, afterPublish: () => { throw new Error("sqlite_commit_failure"); },
+  })).rejects.toThrow("sqlite_commit_failure");
+  db.prepare("UPDATE generation_effect SET event_id=NULL WHERE report_id=?").run(anchored.id);
+
+  await expect(reconcileAnchoredReportEffects(db, anchor, { dir })).resolves.toEqual({ committed: 0, failed: 1 });
+  expect(getReport(db, anchored.id)).toBeNull();
+  expect(queryReportIndex(db, { topic: topic.id })).toEqual([]);
+  expect(db.prepare("SELECT status FROM generation_effect WHERE report_id=?").get(anchored.id)).toEqual({ status: "unknown" });
+  expect(db.prepare("SELECT DISTINCT status FROM generation_anchor_effect").all()).toEqual([{ status: "unknown" }]);
+});
+
 it("resumes a one-of-two anchor write using the original effect and idempotency keys", async () => {
   const keys = generateKeyPairSync("ed25519"); const objects = new Map<string, AnchorObject>(); let writes = 0;
   const store: AnchorStore = {
@@ -149,7 +321,7 @@ it("resumes a one-of-two anchor write using the original effect and idempotency 
   expect(getReport(db, partial.id)).toEqual(partial);
 });
 
-it("reconcile 从完整 staging 恢复时原子提交报告、effect 与终态 trace event", () => {
+it("reconcile 对带 trace 但缺复盘包的遗留 intent fail-closed", () => {
   const recovery = { ...report, id: "rep_recovered", title: "Recovered report" };
   const recoveryIndex = { ...index, report_id: recovery.id, title: recovery.title };
   db.prepare(`INSERT INTO generation_trace(id,scope_kind,trigger_kind,status,completion_policy,coverage,runtime_version,summary,started_at)
@@ -181,12 +353,37 @@ it("reconcile 从完整 staging 恢复时原子提交报告、effect 与终态 t
   writeFileSync(join(staging, `${recovery.id}.html`), recovery.body_html);
 
   const reconciled = reconcileReportEffects(db, { dir });
-  expect(db.prepare("SELECT error FROM generation_effect WHERE id=?").get(effectId)).toEqual({ error: null });
-  expect(reconciled).toEqual({ committed: 1, failed: 0 });
-  expect(db.prepare("SELECT status FROM generation_effect WHERE id=?").get(effectId)).toEqual({ status: "committed" });
-  expect(db.prepare("SELECT status FROM report WHERE id=?").get(recovery.id)).toEqual({ status: "done" });
-  expect(db.prepare(`SELECT event_type FROM generation_event WHERE trace_id='trace_recovery' ORDER BY sequence`).all())
-    .toEqual([{ event_type: "started" }, { event_type: "completed" }]);
+  expect(reconciled).toEqual({ committed: 0, failed: 1 });
+  expect(db.prepare("SELECT status FROM generation_effect WHERE id=?").get(effectId)).toEqual({ status: "unknown" });
+  expect(db.prepare("SELECT status FROM report WHERE id=?").get(recovery.id)).toEqual({ status: "failed" });
+});
+
+it("reconcile refuses a single-sided provenance binding rather than treating it as legacy", () => {
+  const recovery = { ...report, id: "rep_recovery_single_sided", title: "Single-sided recovery" };
+  const recoveryIndex = { ...index, report_id: recovery.id, title: recovery.title };
+  db.prepare(`INSERT INTO generation_trace(id,scope_kind,trigger_kind,status,completion_policy,coverage,runtime_version,summary,started_at)
+    VALUES ('trace_single_sided','topic_pipeline','api','running','{}','complete','{}','{}','2026-05-07T00:00:00Z')`).run();
+  seedPendingReportEffect(recovery, recoveryIndex, "effect_single_sided", "trace_single_sided", null);
+
+  expect(reconcileReportEffects(db, { dir })).toEqual({ committed: 0, failed: 1 });
+  expect(db.prepare("SELECT status FROM generation_effect WHERE id='effect_single_sided'").get()).toEqual({ status: "unknown" });
+  expect(getReport(db, recovery.id)).toBeNull();
+  expect(queryReportIndex(db, { topic: topic.id })).toEqual([]);
+});
+
+it("reconcile refuses an event that does not match an otherwise complete review package", () => {
+  const review = seedPlannedReviewPackage("rep_recovery_binding");
+  const recovery = { ...report, id: "rep_recovery_binding", title: "Bound recovery", insight_ids: [review.insightId], citation_count: 1 };
+  const recoveryIndex = { ...index, report_id: recovery.id, title: recovery.title };
+  seedPendingReportEffect(recovery, recoveryIndex, "effect_recovery_binding", review.traceId, review.wrongEventId);
+  review.persist();
+
+  expect(reconcileReportEffects(db, { dir })).toEqual({ committed: 0, failed: 1 });
+  expect(db.prepare("SELECT status FROM generation_effect WHERE id='effect_recovery_binding'").get()).toEqual({ status: "unknown" });
+  expect(getReport(db, recovery.id)).toBeNull();
+  expect(queryReportIndex(db, { topic: topic.id })).toEqual([]);
+  expect(db.prepare("SELECT publication_state FROM report_review_snapshot WHERE report_id=?").get(recovery.id))
+    .toEqual({ publication_state: "planned" });
 });
 
 it("failed Report 没有正文、索引或 FTS，普通 reader 不可见", () => {

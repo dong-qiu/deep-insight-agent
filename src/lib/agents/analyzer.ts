@@ -8,17 +8,16 @@
  */
 import { createHash, randomUUID } from "node:crypto";
 import { isTransientApiError } from "../runtime/errors.js";
-import { coverageBackfillOff, coverageThinking, validatorBackoffMs, validatorRetries, validatorThinking } from "../runtime/env.js";
+import { coverageBackfillOff, coverageThinking, coverageThinkingSource, validatorBackoffMs, validatorRetries, validatorThinking } from "../runtime/env.js";
 import { MODELS, assertCoverageModelSeparation, callStructured } from "../runtime/llm.js";
 import { collapseWithMap, compareKey } from "../runtime/text-normalize.js";
 import { insightFingerprint } from "../runtime/statement-fingerprint.js";
 import { entitiesMentionedInStatement } from "../utils/reader-visible-entities.js";
 import { DISPLAY_PROJECTION_VERSION, sourceQuoteHash } from "../utils/source-quote-projection.js";
 import {
-  AnalyzerOutputSchema,
+  AnalyzerOutputSchema, type AnalysisBatch,
   CoverageRepairSchema,
   QuoteCoverageSchema,
-  type AnalysisBatch,
   type Citation,
   type ContentItem,
   type Cost,
@@ -42,6 +41,11 @@ export const CITATION_CLAUSE_AUDIT = `
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** An explicit upper-layer cancellation is never a content-level refusal to split or downgrade. */
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw signal.reason ?? new Error("analysis cancelled");
+}
+
 /** Audit unavailability is an analysis failure, not an empty-news result. */
 export class QuoteCoverageAuditError extends Error {
   constructor(cause: unknown) {
@@ -63,6 +67,19 @@ export const QUOTE_COVERAGE_CONCURRENCY = 3;
 export const DISPLAY_COVERAGE_GATE_VERSION: "display-coverage-v6" = "display-coverage-v6";
 export const DISPLAY_COVERAGE_PROMPT_VERSION: "display-coverage-v6" = "display-coverage-v6";
 export const DISPLAY_COVERAGE_COUNTERCHECK_PROMPT_VERSION: "quote-self-contained-v3" = "quote-self-contained-v3";
+/**
+ * The primary display audit validates a variable number of claims while VALIDATOR_THINKING is
+ * enabled.  2k total tokens left only 1k after thinking and produced truncated tool output in a
+ * real A1 run.  Each primary request is deliberately bounded to one atomic claim, so a verbose
+ * verdict cannot starve later claims in the same structured response. Two thousand and
+ * forty-eight is sufficient for one factual verdict plus its evidence spans, while avoiding the
+ * long-tail latency of the former multi-claim 4k allowance; both the request budget and the
+ * claim batch size are recorded in EvalConfig.
+ */
+export const DISPLAY_COVERAGE_PRIMARY_RESPONSE_BUDGET_VERSION = "display-coverage-primary-claim-batch-1-output-2048-v3";
+export const DISPLAY_COVERAGE_PRIMARY_MAX_TOKENS = 2048;
+/** One claim per request prevents a max-token response from omitting later verdicts. */
+export const DISPLAY_COVERAGE_PRIMARY_CLAIMS_PER_CALL = 1;
 
 export const ANALYZER_SYSTEM = `你是行业洞察分析引擎。给定一个主题与一批已采集的多源内容，提炼围绕该主题的结构化洞察。
 
@@ -110,14 +127,37 @@ ${CITATION_CLAUSE_AUDIT}
 // stable-token necessary condition and removes free-form headline/importance-fact projection;
 // v18 projects every reader-facing statement to its exact bound source quote and requires an
 // independent self-contained-quote verdict; v19 aligns the LLM schema text with the final
-// source-quote projection so the model is not told a claim will be reader-visible.
-export const ANALYZER_OUTPUT_VERSION = 19;
+// source-quote projection so the model is not told a claim will be reader-visible; v20 expands
+// the primary display-audit response allowance; v21 limits each primary display-audit request
+// to one atomic claim, preventing a truncated verdict set from hiding later claims; v22 restores
+// a 2k per-request budget because the multi-claim reason for the 4k allowance no longer exists.
+export const ANALYZER_OUTPUT_VERSION = 22;
 
 /** 分析缓存版本（ADR-0009）：analyzer 模型 + SYSTEM prompt 哈希 + 输出契约版本——任一变 → 版本变 → 旧分析缓存
  *  自动失效（不复用陈旧 prompt/schema/派生的洞察）。镜像 validator.consistencyCacheVersion 的版本隔离口径。 */
 export function analyzerCacheVersion(): string {
   const promptHash = createHash("sha256").update(ANALYZER_SYSTEM).digest("hex").slice(0, 12);
   return `${MODELS.analyzer}|${promptHash}|v${ANALYZER_OUTPUT_VERSION}`;
+}
+
+/** Safe, exact execution context for the provenance ledger.  It is derived
+ * from the same module-level model config and call-time thinking getters used
+ * by analyze/coverage, never from raw env or prompts. */
+/** The cache mode is calculated by the orchestrator for this concrete run.
+ * Keeping it an enum prevents a reader-facing trace from becoming an env dump. */
+export type AnalyzerReviewCacheMode = "off" | "write_only" | "read_write";
+
+export function analyzerReviewVersionContext(cacheMode: AnalyzerReviewCacheMode = "write_only"): Record<string, string> {
+  return {
+    analyzer_model: MODELS.analyzer,
+    analyzer_prompt_hash: createHash("sha256").update(ANALYZER_SYSTEM).digest("hex"),
+    analyzer_output_version: `v${ANALYZER_OUTPUT_VERSION}`,
+    analyzer_cache_mode: cacheMode,
+    coverage_model: MODELS.coverage || "disabled",
+    coverage_prompt_hash: DISPLAY_COVERAGE_COUNTERCHECK_PROMPT_HASH,
+    coverage_thinking: coverageThinking() ? "on" : "off",
+    coverage_thinking_source: coverageThinkingSource(),
+  };
 }
 
 interface TimeWindow {
@@ -257,6 +297,7 @@ ${candidates.map((c, i) => `${i + 1}. 目标=「${c.token}」　引用「${c.quo
 </untrusted_source>`;
   const { data } = await callStructured({
     role: "validator",
+    telemetryOperation: "citation_repair_candidates",
     system: COVERAGE_VERIFY_SYSTEM,
     user,
     schema: CoverageRepairSchema,
@@ -658,7 +699,9 @@ function statementBindingFailureClaims(statement: string, reason: StatementBindi
 export async function verifyQuoteSelfContained(
   citation: Citation,
   onCost?: (cost: Cost) => void,
+  signal?: AbortSignal,
 ): Promise<CoverageCountercheck> {
+  throwIfAborted(signal);
   assertCoverageModelSeparation();
   const user = `<displayed_quote>\n${escapePromptData(citation.quote)}\n</displayed_quote>\n\n<locator>\n${citation.locator.paragraph_index}:${citation.locator.char_start}:${citation.locator.char_end}\n</locator>`;
   const input_hash = createHash("sha256")
@@ -682,13 +725,14 @@ export async function verifyQuoteSelfContained(
   for (let attempt = 0; attempt <= validatorRetries(); attempt++) {
     try {
       const result = await callStructured({
-        role: "coverage", system: QUOTE_COVERAGE_COUNTERCHECK_SYSTEM, user, schema: QuoteCoverageSchema,
+        role: "coverage", telemetryOperation: "display_quote_countercheck", system: QUOTE_COVERAGE_COUNTERCHECK_SYSTEM, user, schema: QuoteCoverageSchema,
         // 1024 is the minimum thinking budget, so the total response allowance must be larger.
-        thinking: coverageThinking(), maxTokens: 2048, onCost,
+        thinking: coverageThinking(), maxTokens: 2048, onCost, signal,
       });
       data = result.data as QuoteCoverage;
       break;
     } catch (error) {
+      throwIfAborted(signal);
       lastError = error;
       if (attempt < validatorRetries()) await sleep(validatorBackoffMs() * 2 ** attempt);
     }
@@ -731,12 +775,15 @@ export async function verifyQuoteSelfContained(
   };
 }
 
-async function verifyDisplayedQuoteCoverage(
+/** @internal Exported for deterministic coverage-gate tests; production entry point is filterByQuoteCoverage. */
+export async function verifyDisplayedQuoteCoverage(
   insight: Pick<Insight, "statement" | "headline" | "importance_basis" | "importance_facts" | "importance_reason" | "importance_reason_claim_indexes">,
   citations: Citation[],
   statementCitationIndex: number,
   onCost?: (cost: Cost) => void,
+  signal?: AbortSignal,
 ): Promise<CoverageVerification> {
+  throwIfAborted(signal);
   const checked_at = new Date().toISOString();
   const claims = displayedQuoteCoverageClaims(insight);
   if (!claims.length || !citations.length) return {
@@ -746,35 +793,58 @@ async function verifyDisplayedQuoteCoverage(
     prompt_hash: DISPLAY_COVERAGE_PROMPT_HASH,
     checked_at,
   };
-  const atomicClaims = claims.map(({ field, text }, i) => `${i + 1}. [${field}] ${escapePromptData(text)}`).join("\n");
   const evidence = citations.map((citation, i) => `${i + 1}.\ncitation_claim：${escapePromptData(citation.claim ?? "")}\ndisplayed_quote：${escapePromptData(citation.quote)}`).join("\n\n");
-  const user = `<atomic_claims>\n${atomicClaims}\n</atomic_claims>\n\n<citation_evidence>\n${evidence}\n</citation_evidence>`;
-  const input_hash = createHash("sha256").update(`${DISPLAY_COVERAGE_PROMPT_VERSION}\n${user}`).digest("hex");
-  let data: QuoteCoverage | undefined;
-  for (let attempt = 0; attempt <= validatorRetries(); attempt++) {
-    try {
-      const result = await callStructured({
-        role: "validator", system: QUOTE_COVERAGE_SYSTEM, user, schema: QuoteCoverageSchema,
-        thinking: validatorThinking(), maxTokens: 2048, onCost,
-      });
-      data = result.data as QuoteCoverage;
+  const inputHashes: string[] = [];
+  const byIndex = new Map<number, QuoteCoverage["verdicts"][number]>();
+  let primaryUnavailable = false;
+  let primaryInvalidVerdictSet = false;
+  // A complete verdict set is still required for every call.  Keeping local indices 1..N in
+  // each request makes the schema invariant unambiguous; `start` maps a valid local verdict
+  // back into the candidate-wide audit record.
+  for (let start = 0; start < claims.length; start += DISPLAY_COVERAGE_PRIMARY_CLAIMS_PER_CALL) {
+    const claimBatch = claims.slice(start, start + DISPLAY_COVERAGE_PRIMARY_CLAIMS_PER_CALL);
+    const atomicClaims = claimBatch.map(({ field, text }, i) => `${i + 1}. [${field}] ${escapePromptData(text)}`).join("\n");
+    const user = `<atomic_claims>\n${atomicClaims}\n</atomic_claims>\n\n<citation_evidence>\n${evidence}\n</citation_evidence>`;
+    inputHashes.push(createHash("sha256").update(`${DISPLAY_COVERAGE_PROMPT_VERSION}\n${user}`).digest("hex"));
+    let data: QuoteCoverage | undefined;
+    for (let attempt = 0; attempt <= validatorRetries(); attempt++) {
+      try {
+        const result = await callStructured({
+          role: "validator", telemetryOperation: "display_quote_primary", system: QUOTE_COVERAGE_SYSTEM, user, schema: QuoteCoverageSchema,
+          thinking: validatorThinking(), maxTokens: DISPLAY_COVERAGE_PRIMARY_MAX_TOKENS, onCost, signal,
+        });
+        data = result.data as QuoteCoverage;
+        break;
+      } catch {
+        throwIfAborted(signal);
+        if (attempt < validatorRetries()) await sleep(validatorBackoffMs() * 2 ** attempt);
+      }
+    }
+    if (!data) {
+      primaryUnavailable = true;
       break;
-    } catch {
-      if (attempt < validatorRetries()) await sleep(validatorBackoffMs() * 2 ** attempt);
+    }
+    if (!hasExactVerdictSet(data.verdicts, claimBatch.length)) {
+      primaryInvalidVerdictSet = true;
+      break;
+    }
+    for (const verdict of data.verdicts) {
+      const index = start + verdict.index;
+      byIndex.set(index, { ...verdict, index });
     }
   }
+  // The aggregate is bound to the exact sequence of per-claim request payloads. It cannot be
+  // mistaken for a hash of an earlier monolithic request, while still fitting the audit's single
+  // input_hash field.
+  const input_hash = createHash("sha256")
+    .update(`${DISPLAY_COVERAGE_PRIMARY_RESPONSE_BUDGET_VERSION}\n${inputHashes.join("\n")}`)
+    .digest("hex");
   // A primary outage is a candidate-level failed audit, not a model refusal. Keep the candidate
   // terminal record (and still collect the independent verdict) so A1 can distinguish an
   // infrastructure failure from a semantic rejection. Neither condition is publishable.
-  const primaryUnavailable = !data;
-  const validPrimaryVerdictSet = data !== undefined && hasExactVerdictSet(data.verdicts, claims.length);
-  const byIndex = new Map<number, QuoteCoverage["verdicts"][number]>();
-  if (data && validPrimaryVerdictSet) {
-    for (const verdict of data.verdicts) byIndex.set(verdict.index, verdict);
-  }
   const decisions = claims.map((claim, i): CoverageClaimDecision => {
     if (primaryUnavailable) return { claim_id: claim.id, field: claim.field, text: claim.text, kind: "factual", supports: false, citation_indexes: [], evidence_spans: [], reason: "primary_unavailable" };
-    if (!validPrimaryVerdictSet) return { claim_id: claim.id, field: claim.field, text: claim.text, kind: "factual", supports: false, citation_indexes: [], evidence_spans: [], reason: "primary_invalid_verdict_set" };
+    if (primaryInvalidVerdictSet) return { claim_id: claim.id, field: claim.field, text: claim.text, kind: "factual", supports: false, citation_indexes: [], evidence_spans: [], reason: "primary_invalid_verdict_set" };
     const verdict = byIndex.get(i + 1);
     if (!verdict) return { claim_id: claim.id, field: claim.field, text: claim.text, kind: "factual", supports: false, citation_indexes: [], evidence_spans: [], reason: "missing_or_duplicate_verdict" };
     const citationIndexes = verdict.citation_indexes;
@@ -813,7 +883,8 @@ async function verifyDisplayedQuoteCoverage(
   // Do not short-circuit when the primary validator rejects: the second model's verdict is part
   // of the audit record and lets A1 measure disagreement.  A missing/invalid countercheck is
   // deliberately a rejection, never a fallback to the primary verdict.
-  const countercheck = await verifyQuoteSelfContained(citations[statementCitationIndex - 1]!, onCost);
+  throwIfAborted(signal);
+  const countercheck = await verifyQuoteSelfContained(citations[statementCitationIndex - 1]!, onCost, signal);
   const statementDecision = decisions.find((decision) => decision.field === "statement");
   if (statementDecision) {
     statementDecision.countercheck = countercheck;
@@ -928,8 +999,10 @@ export async function filterByQuoteCoverage(
   onCost?: (cost: Cost) => void,
   itemsById?: ReadonlyMap<string, ContentItem>,
   onDecision?: CoverageAuditSink,
+  signal?: AbortSignal,
 ): Promise<Insight[]> {
   const auditOne = async (insight: Insight, candidateIndex: number): Promise<Insight | null> => {
+    throwIfAborted(signal);
     const candidate_id = citationCandidateId(insight, candidateIndex);
     // Compatibility rows may have no id yet. Retain the candidate id so analyze() can map this
     // audit record to its eventual `ins_<batch>_<n>` id; otherwise the audit table would silently
@@ -1086,7 +1159,7 @@ export async function filterByQuoteCoverage(
     // a valid original binding such as #2 becomes an out-of-range pointer after an invalid #1
     // is removed, and a later audit of the persisted row would reject it incorrectly.
     insight.statement_citation_index = boundDisplayCitationIndex;
-    const coverage = await verifyDisplayedQuoteCoverage(insight, displayableCitations, boundDisplayCitationIndex, onCost);
+    const coverage = await verifyDisplayedQuoteCoverage(insight, displayableCitations, boundDisplayCitationIndex, onCost, signal);
     const decisionBase = {
       candidate_id, gate_version: DISPLAY_COVERAGE_GATE_VERSION, pruned_citation_count,
       prompt_version: DISPLAY_COVERAGE_PROMPT_VERSION, prompt_hash: coverage.prompt_hash,
@@ -1143,6 +1216,7 @@ export async function filterByQuoteCoverage(
 
   const checked: Array<Insight | null> = [];
   for (let start = 0; start < insights.length; start += QUOTE_COVERAGE_CONCURRENCY) {
+    throwIfAborted(signal);
     checked.push(...await Promise.all(insights.slice(start, start + QUOTE_COVERAGE_CONCURRENCY)
       .map((insight, offset) => auditOne(insight, start + offset))));
   }
@@ -1412,6 +1486,56 @@ export interface AnalyzeStageTelemetry {
 }
 export type AnalyzeStageSink = (telemetry: AnalyzeStageTelemetry) => void;
 
+/**
+ * A fully completed analyzer input chunk that may be replayed by a trusted A1 checkpoint.
+ * It deliberately retains the post-audit candidate records: they are required to preserve the
+ * topic-level all-rejected guard and must not be inferred from final accepted insights.
+ */
+export interface AnalyzeChunkCheckpoint {
+  input_sha256: string;
+  insights: Insight[];
+  coverage_decisions: CoverageDecision[];
+}
+
+/** A callback fires only after the model output and its display-coverage audit both completed. */
+export interface AnalyzeChunkCompletion extends AnalyzeChunkCheckpoint {
+  chunk_index: number;
+  chunk_total: number;
+}
+
+export type AnalyzeChunkCompletionSink = (completion: AnalyzeChunkCompletion) => void;
+
+function stableCheckpointJson(value: unknown): string {
+  if (value == null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableCheckpointJson).join(",")}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableCheckpointJson(record[key])}`).join(",")}}`;
+}
+
+/**
+ * Hash every analyzer-visible input field, rather than trusting a chunk index or its item count.
+ * The digest is the only representation of the input that enters a resumable checkpoint.
+ */
+export function analyzeChunkInputSha256(
+  topic: Topic,
+  items: readonly ContentItem[],
+  timeWindow: TimeWindow,
+  history: readonly HistoricalEvent[],
+): string {
+  return createHash("sha256").update(stableCheckpointJson({ topic, items, time_window: timeWindow, history })).digest("hex");
+}
+
+export interface AnalyzeOptions {
+  history?: HistoricalEvent[];
+  onCoverageDecision?: CoverageAuditSink;
+  onStage?: AnalyzeStageSink;
+  signal?: AbortSignal;
+  /** Only a caller that has verified its own checkpoint binding may supply these completed chunks. */
+  completed_chunks?: readonly AnalyzeChunkCheckpoint[];
+  /** Used by A1 to atomically persist the result of each complete analyzer chunk. */
+  onChunkComplete?: AnalyzeChunkCompletionSink;
+}
+
 /** 按累计正文字符预算把条目切成多批；单条超预算时独占一批（保证每批 ≥1 条）。纯函数，可测。 */
 export function chunkByChars(items: ContentItem[], budget: number = ANALYZE_BATCH_CHARS): ContentItem[][] {
   const chunks: ContentItem[][] = [];
@@ -1441,7 +1565,9 @@ async function analyzeChunk(
   onCost?: (cost: Cost) => void,
   onDecision?: CoverageAuditSink,
   onStage?: AnalyzeStageSink,
+  signal?: AbortSignal,
 ): Promise<Insight[]> {
+  throwIfAborted(signal);
   const user = `主题：${topic.name}（关键词：${topic.keywords.join("、")}）
 时间窗：${timeWindow.start} ~ ${timeWindow.end}
 
@@ -1453,6 +1579,7 @@ ${renderItems(items, topic.keywords)}`;
   const modelStarted = performance.now();
   const { data } = await callStructured({
     role: "analyzer",
+    telemetryOperation: "analysis_generation",
     system: ANALYZER_SYSTEM,
     user,
     schema: AnalyzerOutputSchema,
@@ -1460,6 +1587,7 @@ ${renderItems(items, topic.keywords)}`;
     // 提到 12k 给足空间（已改流式，长输出不撑网关超时；真超时仍由 analyzeWithSplit 拆批兜底）。
     maxTokens: 12000,
     onCost,
+    signal,
   }).then(
     (result) => {
       onStage?.({ stage: "model_output", item_count: items.length, duration_ms: Math.round(performance.now() - modelStarted), status: "completed" });
@@ -1551,7 +1679,7 @@ ${renderItems(items, topic.keywords)}`;
   // display audit again. Keeping repairCoverage exported lets its future P1 work be tested
   // without turning a failed coverage decision into an unpublished mutation today.
   const coverageStarted = performance.now();
-  const quoteCoveredInsights = await filterByQuoteCoverage(insights, onCost, byId, onDecision).then(
+  const quoteCoveredInsights = await filterByQuoteCoverage(insights, onCost, byId, onDecision, signal).then(
     (result) => {
       onStage?.({ stage: "display_coverage", item_count: items.length, duration_ms: Math.round(performance.now() - coverageStarted), status: "completed" });
       return result;
@@ -1588,11 +1716,14 @@ async function analyzeWithSplit(
   onCost?: (cost: Cost) => void,
   onDecision?: CoverageAuditSink,
   onStage?: AnalyzeStageSink,
+  signal?: AbortSignal,
 ): Promise<Insight[]> {
   if (!items.length) return [];
+  throwIfAborted(signal);
   try {
-    return await analyzeChunk(topic, items, timeWindow, history, onCost, onDecision, onStage);
+    return await analyzeChunk(topic, items, timeWindow, history, onCost, onDecision, onStage, signal);
   } catch (e) {
+    throwIfAborted(signal);
     // Coverage rejection/unavailability is a publication-integrity failure, not a model refusal
     // that can be hidden by recursively dropping source items and returning no_significant_event.
     if (e instanceof QuoteCoverageAuditError || e instanceof QuoteCoverageRejectedError) throw e;
@@ -1603,8 +1734,8 @@ async function analyzeWithSplit(
     }
     const mid = Math.ceil(items.length / 2);
     console.warn(`  ⚠️ 拆批重试（${items.length} → ${mid}+${items.length - mid}，疑拒答/失败）`);
-    const left = await analyzeWithSplit(topic, items.slice(0, mid), timeWindow, history, onCost, onDecision, onStage);
-    const right = await analyzeWithSplit(topic, items.slice(mid), timeWindow, history, onCost, onDecision, onStage);
+    const left = await analyzeWithSplit(topic, items.slice(0, mid), timeWindow, history, onCost, onDecision, onStage, signal);
+    const right = await analyzeWithSplit(topic, items.slice(mid), timeWindow, history, onCost, onDecision, onStage, signal);
     return [...left, ...right];
   }
 }
@@ -1618,7 +1749,7 @@ export async function analyze(
   items: ContentItem[],
   timeWindow: TimeWindow,
   onCost?: (cost: Cost) => void,
-  opts: { history?: HistoricalEvent[]; onCoverageDecision?: CoverageAuditSink; onStage?: AnalyzeStageSink } = {},
+  opts: AnalyzeOptions = {},
 ): Promise<AnalysisBatch> {
   // Configuration errors must surface before any analyzer call.  If checked only in the
   // countercheck, analyzeWithSplit would mistake them for a content refusal and silently split
@@ -1632,8 +1763,39 @@ export async function analyze(
     coverageDecisions.push(decision);
     opts.onCoverageDecision?.(decision);
   };
-  for (const chunk of chunkByChars(items)) {
-    insights.push(...(await analyzeWithSplit(topic, chunk, timeWindow, history, onCost, recordCoverageDecision, opts.onStage)));
+  const chunks = chunkByChars(items);
+  const completedChunks = opts.completed_chunks ?? [];
+  if (completedChunks.length > chunks.length) {
+    throw new Error("A1 analyzer checkpoint 包含超出当前输入的分块");
+  }
+  for (const [chunkIndex, checkpoint] of completedChunks.entries()) {
+    const expectedInputSha256 = analyzeChunkInputSha256(topic, chunks[chunkIndex]!, timeWindow, history);
+    if (checkpoint.input_sha256 !== expectedInputSha256
+      || !Array.isArray(checkpoint.insights) || !Array.isArray(checkpoint.coverage_decisions)) {
+      throw new Error("A1 analyzer checkpoint 与当前 topic 输入不匹配");
+    }
+    insights.push(...checkpoint.insights);
+    for (const decision of checkpoint.coverage_decisions) recordCoverageDecision(decision);
+  }
+  for (let chunkIndex = completedChunks.length; chunkIndex < chunks.length; chunkIndex++) {
+    const chunk = chunks[chunkIndex]!;
+    throwIfAborted(opts.signal);
+    const chunkCoverageDecisions: CoverageDecision[] = [];
+    const recordChunkCoverageDecision: CoverageAuditSink = (decision) => {
+      chunkCoverageDecisions.push(decision);
+      recordCoverageDecision(decision);
+    };
+    const chunkInsights = await analyzeWithSplit(topic, chunk, timeWindow, history, onCost, recordChunkCoverageDecision, opts.onStage, opts.signal);
+    insights.push(...chunkInsights);
+    // A checkpoint never receives half an analyzer chunk.  This callback is synchronous so its
+    // caller can atomically persist the completed model + coverage result before the next call.
+    opts.onChunkComplete?.({
+      chunk_index: chunkIndex,
+      chunk_total: chunks.length,
+      input_sha256: analyzeChunkInputSha256(topic, chunk, timeWindow, history),
+      insights: chunkInsights,
+      coverage_decisions: chunkCoverageDecisions,
+    });
   }
   // A single input chunk may legitimately yield only claims that the display gate rejects, while
   // another chunk for the same topic already yielded publishable evidence. Rejecting at chunk

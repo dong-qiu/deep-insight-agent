@@ -201,6 +201,8 @@ export function requestReportDeletion(db: DB, input: { report_id: string; actor_
     // report row remains for controlled admin lifecycle operations.
     db.prepare("DELETE FROM report_index WHERE report_id=?").run(input.report_id);
     db.prepare("DELETE FROM report_fts WHERE report_id=?").run(input.report_id);
+    db.prepare("DELETE FROM report_review_snapshot WHERE report_id=?").run(input.report_id);
+    db.prepare("DELETE FROM report_selection_decision WHERE report_id=?").run(input.report_id);
     db.prepare("DELETE FROM ppt_polish_cache WHERE report_id=?").run(input.report_id);
     audit(db, input.report_id, "deletion_requested", "retention_delete_requested", now, input.actor_id);
   })();

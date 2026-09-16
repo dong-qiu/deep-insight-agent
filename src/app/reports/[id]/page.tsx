@@ -50,6 +50,7 @@ export default async function ReportPage({ params }: { params: Promise<{ id: str
       <p className="report-header muted">
         <Link href="/reports">← 报告库</Link>
         {isAdmin ? <ExportPptButton reportId={id} /> : null}
+        {isAdmin ? <Link href={`/admin/reports/${id}/review`} style={{ marginLeft: "0.75rem" }}>质量复盘</Link> : null}
       </p>
       <Markdown md={report.body_md} />
       <hr />

@@ -149,12 +149,35 @@ describe("role-level LLM telemetry", () => {
   afterEach(() => resetRoleCallTelemetry());
 
   it("records attempts, failures and percentile latency separately for each role", () => {
-    recordRoleCallTelemetry("coverage", 10, 1, false);
-    recordRoleCallTelemetry("coverage", 30, 3, true);
-    recordRoleCallTelemetry("validator", 20, 1, false);
+    recordRoleCallTelemetry("coverage", 10, 1, false, [], "display_quote_countercheck");
+    recordRoleCallTelemetry("coverage", 30, 3, true, ["max_tokens", "refusal", "max_tokens"], "display_quote_countercheck");
+    recordRoleCallTelemetry("validator", 20, 1, false, ["tool_use"], "citation_consistency_batch");
     expect(getRoleCallTelemetry()).toMatchObject({
-      coverage: { calls: 2, failures: 1, requests: 4, latency_ms: { p50: 10, p95: 30, max: 30 } },
-      validator: { calls: 1, failures: 0, requests: 1, latency_ms: { p50: 20, p95: 20, max: 20 } },
+      coverage: {
+        calls: 2, failures: 1, requests: 4, output_stop_reasons: { max_tokens: 2, refusal: 1 },
+        latency_ms: { p50: 10, p95: 30, max: 30 },
+        by_operation: {
+          display_quote_countercheck: {
+            calls: 2, failures: 1, requests: 4, output_stop_reasons: { max_tokens: 2, refusal: 1 },
+          },
+        },
+      },
+      validator: {
+        calls: 1, failures: 0, requests: 1, output_stop_reasons: { tool_use: 1 },
+        latency_ms: { p50: 20, p95: 20, max: 20 },
+        by_operation: { citation_consistency_batch: { calls: 1, output_stop_reasons: { tool_use: 1 } } },
+      },
+      analyzer: { output_stop_reasons: {}, by_operation: {} },
+    });
+  });
+
+  it("keeps omitted operation names explicit instead of silently merging them into a labelled phase", () => {
+    recordRoleCallTelemetry("validator", 10, 1, false, ["max_tokens"]);
+    recordRoleCallTelemetry("validator", 20, 1, false, ["tool_use"], "display_quote_primary");
+
+    expect(getRoleCallTelemetry().validator.by_operation).toMatchObject({
+      unclassified: { calls: 1, output_stop_reasons: { max_tokens: 1 } },
+      display_quote_primary: { calls: 1, output_stop_reasons: { tool_use: 1 } },
     });
   });
 });

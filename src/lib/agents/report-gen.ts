@@ -71,6 +71,16 @@ export interface IncludedInsight {
   source_quote_projection?: true;
 }
 
+export interface PersistedSelectionDecision {
+  insight_id: string;
+  decision: "published" | "excluded";
+  reason_code: string;
+  /** The winning peer for a deterministic same-batch duplicate, when any. */
+  related_insight_id?: string;
+  published_rank?: number;
+  supporting_citation_indices: number[];
+}
+
 /** 里程碑判定的重要性下限（ADR-0006）：可调常量——6/23 看真实里程碑数量再校准（太严=永远没有、太松=稀释）。 */
 export const MILESTONE_MIN_IMPORTANCE = 5;
 
@@ -171,6 +181,37 @@ export function selectInsights(batch: AnalysisBatch, validation: ValidationResul
   return out;
 }
 
+/** Converts the exact deterministic selection output into one terminal record
+ * per batch insight.  The reason is intentionally a coarse real gate family:
+ * V1 must not pretend it knows a more specific model decision than exists. */
+export function persistedSelectionDecisions(
+  batch: AnalysisBatch,
+  validation: ValidationResult,
+  type: Report["type"],
+  included: IncludedInsight[],
+  recorded?: PersistedSelectionDecision[],
+): PersistedSelectionDecision[] {
+  if (recorded) return recorded;
+  // A Brief has evidence-history and freshness branches that this fallback
+  // cannot reconstruct. Callers must pass summarizeBriefSelection().decisions
+  // rather than write a generic, unverifiable exclusion reason.
+  if (type === "brief") throw new Error("brief_selection_decisions_required");
+  const base = new Set(selectInsights(batch, validation).map((item) => item.insight.id));
+  const selected = new Map(included.map((item, index) => [item.insight.id, { item, rank: index + 1 }]));
+  return batch.insights.map((insight) => {
+    const published = selected.get(insight.id);
+    if (published) return {
+      insight_id: insight.id, decision: "published", reason_code: "selected_by_rule",
+      published_rank: published.rank, supporting_citation_indices: published.item.includableCitationIndices,
+    };
+    return {
+      insight_id: insight.id, decision: "excluded",
+      reason_code: base.has(insight.id) ? "selection_rule_excluded" : "projection_or_citation_gate",
+      supporting_citation_indices: [],
+    };
+  });
+}
+
 /** Daily Brief 硬去重：同 event 已发布且没有新增成功校验证据时，不得再次发布。
  * 缓存命中可继续节省 LLM 调用，但不能把旧 statement/citation 重新发给用户。 */
 export function summarizeBriefSelection(
@@ -179,7 +220,7 @@ export function summarizeBriefSelection(
   type: Report["type"],
   publishedEventEvidence: PublishedEventEvidence[] = [],
   freshness?: BriefFreshness,
-): { included: IncludedInsight[]; summary: BriefSelectionSummary } {
+): { included: IncludedInsight[]; summary: BriefSelectionSummary; decisions: PersistedSelectionDecision[] } {
   const included = selectInsights(batch, validation);
   if (type !== "brief") return {
     included,
@@ -190,6 +231,7 @@ export function summarizeBriefSelection(
       published_citation_count: included.reduce((total, x) => total + x.citationIndices.length, 0),
       batch_duplicate_filtered_count: 0, fingerprint_duplicate_filtered_count: 0,
     },
+    decisions: persistedSelectionDecisions(batch, validation, type, included),
   };
   // 有近期候选时，带近期成功校验证据的洞察走主通道。较早证据只可作为明确标注的、
   // 未发布 event 补充发现，不能被包装成“今日”内容（ADR-0021）。
@@ -236,50 +278,87 @@ export function summarizeBriefSelection(
     if (!hasNew && fingerprintAddsEvidence) fingerprintDuplicateFiltered += 1;
     return hasNew;
   };
-  const dedupeCurrent = (xs: IncludedInsight[]): { kept: IncludedInsight[]; filtered: number } => {
+  const dedupeCurrent = (xs: IncludedInsight[]): { kept: IncludedInsight[]; filtered: number; droppedBy: Map<string, string> } => {
     const ordered = [...xs].sort((a, b) => b.insight.importance - a.insight.importance || b.includableCitationIndices.length - a.includableCitationIndices.length || a.insight.id.localeCompare(b.insight.id));
-    const seen = new Set<string>();
+    const seen = new Map<string, string>();
+    const droppedBy = new Map<string, string>();
     const kept = ordered.filter((x) => {
       const key = x.insight.event_id ? `event:${x.insight.event_id}` : `statement:${insightFingerprint(x.insight.type, x.insight.statement)}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
+      const winner = seen.get(key);
+      if (winner) { droppedBy.set(x.insight.id, winner); return false; }
+      seen.set(key, x.insight.id);
       return true;
     });
-    return { kept, filtered: xs.length - kept.length };
+    return { kept, filtered: xs.length - kept.length, droppedBy };
   };
   const freshCandidates: IncludedInsight[] = [];
+  const exclusionReasons = new Map<string, { reason_code: string; related_insight_id?: string }>();
   let freshAlreadyPublished = 0;
   for (const item of freshIncluded) {
     if (hasNewPublishedEvidence(item)) freshCandidates.push(item);
-    else freshAlreadyPublished += 1;
+    else {
+      freshAlreadyPublished += 1;
+      const byEvent = item.insight.event_id ? evidenceByEvent.get(item.insight.event_id) : undefined;
+      const byFingerprint = evidenceByFingerprint.get(insightFingerprint(item.insight.type, item.insight.statement));
+      exclusionReasons.set(item.insight.id, { reason_code: !byEvent && byFingerprint ? "already_published_fingerprint" : "already_published_event" });
+    }
   }
   const freshDedupe = dedupeCurrent(freshCandidates);
+  for (const [id, winner] of freshDedupe.droppedBy) exclusionReasons.set(id, { reason_code: "batch_duplicate", related_insight_id: winner });
   const freshSelected = freshDedupe.kept;
   // “补充发现”必须是还没被发布过的稳定 event。即使旧 event 本轮有新增证据，也只允许在
   // 主通道（带近期证据）更新，避免把旧事件以不同材料重复推送。
-  const seenSupplementalEvents = new Set<string>();
+  const seenSupplementalEvents = new Map<string, string>();
   let supplementalAlreadyPublished = 0;
   const supplementalCandidates = olderIncluded.filter((x) => {
     const eventId = x.insight.event_id;
     const byEvent = eventId ? evidenceByEvent.get(eventId) : undefined;
     const byFingerprint = evidenceByFingerprint.get(insightFingerprint(x.insight.type, x.insight.statement));
-    if (!eventId || byEvent || byFingerprint || seenSupplementalEvents.has(eventId)) {
+    const priorSupplemental = eventId ? seenSupplementalEvents.get(eventId) : undefined;
+    if (!eventId || byEvent || byFingerprint || priorSupplemental) {
+      if (!eventId) exclusionReasons.set(x.insight.id, { reason_code: "supplemental_missing_event" });
+      else if (byEvent) exclusionReasons.set(x.insight.id, { reason_code: "already_published_event" });
+      else if (byFingerprint) exclusionReasons.set(x.insight.id, { reason_code: "already_published_fingerprint" });
+      else exclusionReasons.set(x.insight.id, { reason_code: "supplemental_duplicate_event", related_insight_id: priorSupplemental });
       if (eventId && (byEvent || byFingerprint)) {
         supplementalAlreadyPublished += 1;
         if (!byEvent && byFingerprint) fingerprintDuplicateFiltered += 1;
       }
       return false;
     }
-    seenSupplementalEvents.add(eventId);
+    seenSupplementalEvents.set(eventId, x.insight.id);
     return true;
   });
   const supplementalSelected = supplementalCandidates
     .sort((a, b) => b.insight.importance - a.insight.importance || b.includableCitationIndices.length - a.includableCitationIndices.length || a.insight.id.localeCompare(b.insight.id))
     .slice(0, BRIEF_SUPPLEMENTAL_MAX)
     .map((x) => ({ ...x, brief_inclusion: "supplemental" as const }));
+  for (const item of supplementalCandidates.slice(BRIEF_SUPPLEMENTAL_MAX)) exclusionReasons.set(item.insight.id, { reason_code: "supplemental_limit" });
   const alreadyPublishedFiltered = freshAlreadyPublished + supplementalAlreadyPublished;
   const selectedDedupe = dedupeCurrent([...freshSelected, ...supplementalSelected]);
+  for (const [id, winner] of selectedDedupe.droppedBy) exclusionReasons.set(id, { reason_code: "batch_duplicate", related_insight_id: winner });
   const selected = selectedDedupe.kept;
+  // These reason codes are assigned from the actual branch outputs above;
+  // they are not model explanations.  A later selected item always overrides
+  // an earlier provisional exclusion (for example, an older supplemental).
+  const selectedById = new Map(selected.map((item, index) => [item.insight.id, { item, rank: index + 1 }]));
+  const baseIds = new Set(included.map((item) => item.insight.id));
+  const freshIds = new Set(freshIncluded.map((item) => item.insight.id));
+  const freshCandidateIds = new Set(freshCandidates.map((item) => item.insight.id));
+  const supplementalCandidateIds = new Set(supplementalCandidates.map((item) => item.insight.id));
+  const supplementalSelectedIds = new Set(supplementalSelected.map((item) => item.insight.id));
+  const decisions = batch.insights.map((insight): PersistedSelectionDecision => {
+    const published = selectedById.get(insight.id);
+    if (published) return { insight_id: insight.id, decision: "published", reason_code: "selected_by_rule", published_rank: published.rank, supporting_citation_indices: published.item.includableCitationIndices };
+    if (!baseIds.has(insight.id)) return { insight_id: insight.id, decision: "excluded", reason_code: "projection_or_citation_gate", supporting_citation_indices: [] };
+    const recorded = exclusionReasons.get(insight.id);
+    if (recorded) return { insight_id: insight.id, decision: "excluded", ...recorded, supporting_citation_indices: [] };
+    if (freshIds.has(insight.id)) {
+      return { insight_id: insight.id, decision: "excluded", reason_code: !freshCandidateIds.has(insight.id) ? "already_published_event" : "batch_duplicate", supporting_citation_indices: [] };
+    }
+    if (!supplementalCandidateIds.has(insight.id)) return { insight_id: insight.id, decision: "excluded", reason_code: "supplemental_ineligible", supporting_citation_indices: [] };
+    return { insight_id: insight.id, decision: "excluded", reason_code: supplementalSelectedIds.has(insight.id) ? "batch_duplicate" : "supplemental_limit", supporting_citation_indices: [] };
+  });
   return {
     included: selected,
     summary: {
@@ -292,6 +371,7 @@ export function summarizeBriefSelection(
       batch_duplicate_filtered_count: freshDedupe.filtered + selectedDedupe.filtered,
       fingerprint_duplicate_filtered_count: fingerprintDuplicateFiltered,
     },
+    decisions,
   };
 }
 

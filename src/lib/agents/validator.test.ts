@@ -97,6 +97,27 @@ const items = new Map<string, ContentItem>([
   ["ci_1", item("ci_1", "The test-first loop reduced regressions by 38%.")],
 ]);
 
+describe("validation cancellation", () => {
+  beforeEach(() => { vi.resetAllMocks(); });
+  afterEach(() => { vi.resetAllMocks(); });
+
+  it("passes an A1 deadline signal into a direct validator call", async () => {
+    vi.mocked(callStructured).mockResolvedValueOnce({ data: {
+      consistency: "support", consistency_reason: "direct_quote", rationale: "ok",
+    } } as unknown as Awaited<ReturnType<typeof callStructured>>);
+    const controller = new AbortController();
+    await expect(judgeConsistency("claim", "source", undefined, undefined, undefined, controller.signal)).resolves.toMatchObject({ consistency: "support" });
+    expect(vi.mocked(callStructured)).toHaveBeenLastCalledWith(expect.objectContaining({ signal: controller.signal }));
+  });
+
+  it("does not turn a pre-aborted deadline into flagged validation output", async () => {
+    const controller = new AbortController();
+    controller.abort(new Error("A1 deadline"));
+    await expect(validateBatch([], [], undefined, undefined, controller.signal)).rejects.toThrow("A1 deadline");
+    expect(callStructured).not.toHaveBeenCalled();
+  });
+});
+
 describe("checkReachability", () => {
   it("逐字命中 → pass", () => {
     expect(

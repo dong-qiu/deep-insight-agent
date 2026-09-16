@@ -5,13 +5,22 @@
 import type { ContentItem, Source, TechLead, TechnologyOpportunity, TopicDirection } from "../types.js";
 import { canonicalHash, type EntityRef } from "./provenance-facts.js";
 
-const CONTENT_REVISION_V3 = "content-v3";
+/**
+ * v4 is the first content revision suitable for report-quality review.  It
+ * intentionally adds only display metadata that can otherwise change in the
+ * live row; source bodies and raw handles remain outside the snapshot.
+ */
+const CONTENT_REVISION_V4 = "content-v4";
 
 export function contentItemRevisionSnapshot(item: ContentItem): Record<string, unknown> {
   return {
     url: item.url,
     source_id: item.source_id,
+    title: item.title,
     published_at: item.published_at,
+    fetched_at: item.fetched_at,
+    body_kind: item.body_kind,
+    fetch_status: item.fetch_status,
     body_length: item.body.length,
     content_hash: item.content_hash,
   };
@@ -21,10 +30,11 @@ export function contentItemRevisionSnapshot(item: ContentItem): Record<string, u
  * v2 只以正文 hash 作为 revision，而 snapshot 还包含来源与发布时间。
  * 同一规范化 URL 被不同来源采集时，业务表会保留首次的来源元数据；因此 v2
  * 可能把候选来源的元数据登记到实际持久化条目之外。v3 将完整白名单 snapshot
- * 纳入 revision，既不改写既有 v2 事实，也保证新引用始终可由持久化条目复核。
+ * 纳入 revision；v4 再补齐可随 live row 漂移的展示元数据，既不改写既有事实，也
+ * 保证新引用始终可由持久化条目复核。
  */
 export function contentItemRevision(item: ContentItem): string {
-  return `${CONTENT_REVISION_V3}:${canonicalHash(contentItemRevisionSnapshot(item))}`;
+  return `${CONTENT_REVISION_V4}:${canonicalHash(contentItemRevisionSnapshot(item))}`;
 }
 
 export function contentItemRef(item: ContentItem, role: EntityRef["role"] = "input"): EntityRef {

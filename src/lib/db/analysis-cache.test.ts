@@ -5,6 +5,7 @@ import type { ContentItem, Insight } from "../types.js";
 import type { HistoricalEvent } from "../agents/analyzer.js";
 import {
   analysisCacheStats,
+  analysisCacheReadEnabled,
   computeAnalysisKey,
   instantiateCachedInsights,
   isFullReanalyzeToday,
@@ -123,6 +124,25 @@ describe("行为中性 / 健壮", () => {
   it("空 items → 不报错、零写入", () => {
     expect(recordAnalysisCache(db, "t1", [], [], "v1")).toEqual({ writes: 0, wouldHit: 0 });
     expect(analysisCacheStats(db)).toEqual({ distinctKeys: 0, totalAnalyses: 0, wouldHit: 0, wouldHitRate: 0 });
+  });
+});
+
+describe("analysisCacheReadEnabled（总开关优先）", () => {
+  const savedCache = process.env.ANALYSIS_CACHE;
+  const savedRead = process.env.ANALYSIS_CACHE_READ;
+  afterEach(() => {
+    if (savedCache === undefined) delete process.env.ANALYSIS_CACHE;
+    else process.env.ANALYSIS_CACHE = savedCache;
+    if (savedRead === undefined) delete process.env.ANALYSIS_CACHE_READ;
+    else process.env.ANALYSIS_CACHE_READ = savedRead;
+  });
+
+  it("即使 READ=1，主开关关闭时也不得读取缓存", () => {
+    process.env.ANALYSIS_CACHE = "0";
+    process.env.ANALYSIS_CACHE_READ = "1";
+    expect(analysisCacheReadEnabled()).toBe(false);
+    process.env.ANALYSIS_CACHE = "1";
+    expect(analysisCacheReadEnabled()).toBe(true);
   });
 });
 

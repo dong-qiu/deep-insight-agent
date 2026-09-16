@@ -28,6 +28,7 @@ export const GENERATION_EVENT_METRIC_KEYS = [
   "selected_count", "candidate_content_count", "candidate_source_count", "selected_source_count",
   "fresh_candidate_count", "fresh_selected_count", "cohort_candidate_content_count", "cohort_candidate_source_count",
   "cohort_selected_count", "cohort_selected_source_count", "input_content_count", "analysis_insight_count", "no_significant_event",
+  "analysis_cache_hit_item_count", "analysis_cache_miss_item_count", "analysis_cache_read_bypassed",
   "citation_total", "citation_pass", "citation_blocked", "citation_flagged", "citation_errored",
   "includable_insight_count", "releasable", "freshness_filtered_insight_count",
   "already_published_filtered_insight_count", "supplemental_candidate_count",
@@ -58,6 +59,24 @@ function validatedVersionContext(versionContext: Record<string, unknown> | undef
     if (key === "source_config_revision" && typeof value === "string" && /^source-v1:[a-f0-9]{64}$/.test(value)) {
       result[key] = value;
     } else if (key === "collection_mode" && (value === "feed" || value === "full_text")) {
+      result[key] = value;
+    } else if ((key === "analyzer_model" || key === "validator_model" || key === "coverage_model")
+      && typeof value === "string" && (value === "disabled" || /^[A-Za-z0-9._:-]{1,128}$/.test(value))) {
+      result[key] = value;
+    } else if ((key === "analyzer_prompt_hash" || key === "validator_prompt_hash" || key === "coverage_prompt_hash")
+      && typeof value === "string" && /^[a-f0-9]{64}$/.test(value)) {
+      result[key] = value;
+    } else if (key === "analyzer_output_version" && typeof value === "string" && /^v[1-9][0-9]*$/.test(value)) {
+      result[key] = value;
+    } else if (key === "analyzer_cache_mode" && (value === "off" || value === "write_only" || value === "read_write")) {
+      result[key] = value;
+    } else if (key === "validator_cache_mode" && (value === "on" || value === "off" || value === "enabled")) {
+      result[key] = value;
+    } else if ((key === "validator_thinking" || key === "coverage_thinking") && (value === "on" || value === "off")) {
+      result[key] = value;
+    } else if (key === "coverage_thinking_source" && (value === "explicit" || value === "inherited")) {
+      result[key] = value;
+    } else if ((key === "report_selection_rule" || key === "report_renderer") && value === "report-selection-v1") {
       result[key] = value;
     } else {
       throw new Error("generation_event_version_context_not_allowed");
