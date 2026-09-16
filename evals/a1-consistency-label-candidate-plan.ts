@@ -2,6 +2,8 @@
 export const LABEL_CANDIDATE_SOURCE_CHARS = 2_400;
 export const LABEL_CANDIDATE_COUNT = 100;
 export const LABEL_CANDIDATES_PER_TOPIC = 20;
+export const LABEL_CANDIDATE_TARGET_NEGATIVE_COUNT = 50;
+export const LABEL_CANDIDATE_MAX_GENERATION_ATTEMPTS = 3;
 /**
  * The generator may reduce this relay-facing request batch without changing the
  * 100-pair population or any planned intent.  Keep 20 as the ordinary setting;
@@ -17,17 +19,25 @@ export interface CandidateSelectionItem {
   source_id: string;
 }
 
-/** Each 20-item quality topic contributes eight diagnostic negative candidates, for 40/100 total. */
+/**
+ * Each 20-item topic contributes ten diagnostic negatives. The positions deliberately alternate
+ * across the first and second ten-item source blocks: the old tail-packed plan put all negatives
+ * on whichever source happened to sort last, and produced zero negatives for two sources.
+ */
 const INTENTS_PER_TWENTY: readonly CandidateIntent[] = [
-  "support", "support", "support", "support", "support", "support",
-  "uncertain", "uncertain", "uncertain", "uncertain", "uncertain", "uncertain",
-  "exaggeration", "exaggeration", "exaggeration",
-  "out_of_context", "out_of_context", "out_of_context",
-  "misattribution", "misattribution",
+  "support", "exaggeration", "uncertain", "out_of_context", "support",
+  "misattribution", "uncertain", "exaggeration", "support", "out_of_context",
+  "uncertain", "exaggeration", "support", "out_of_context", "uncertain",
+  "misattribution", "support", "exaggeration", "uncertain", "out_of_context",
 ];
 
 export function plannedCandidateIntent(index: number): CandidateIntent {
   return INTENTS_PER_TWENTY[index % INTENTS_PER_TWENTY.length]!;
+}
+
+/** Calibration succeeds only when an independent verifier observes the exact planned relation. */
+export function calibrationMatchesIntent(intent: CandidateIntent, observed: CandidateIntent): boolean {
+  return intent === observed;
 }
 
 export function labelCandidateBatchSize(raw: string | undefined): number {

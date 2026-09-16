@@ -15,6 +15,8 @@ import {
 const context: CandidateCheckpointContext = {
   quality_input_sha256: "quality", candidate_input_sha256: "inputs", model: "analyzer",
   prompt_version: "v1", prompt_sha256: "prompt", generator_batch_size: 5,
+  calibration_model: "validator", calibration_thinking: false, calibration_prompt_version: "v1",
+  calibration_prompt_sha256: "calibration", calibration_max_generation_attempts: 3,
 };
 const plan: CandidateCheckpointBatchPlan[] = [
   { start: 0, ids: ["one", "two"] },
@@ -34,6 +36,7 @@ describe("consistency candidate checkpoint", () => {
 
     expect(loadCandidateCheckpoint(path, context, plan)?.completed_batches).toHaveLength(1);
     expect(() => loadCandidateCheckpoint(path, { ...context, generator_batch_size: 10 }, plan)).toThrow("不匹配");
+    expect(() => loadCandidateCheckpoint(path, { ...context, calibration_model: "other-validator" }, plan)).toThrow("不匹配");
     expect(() => loadCandidateCheckpoint(path, context, [{ start: 0, ids: ["one", "other"] }, plan[1]!])).toThrow("连续完整前缀");
   });
 

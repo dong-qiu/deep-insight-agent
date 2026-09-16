@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 
-export const CONSISTENCY_CANDIDATE_CHECKPOINT_VERSION = "a1-v2-consistency-candidate-checkpoint-v1";
+export const CONSISTENCY_CANDIDATE_CHECKPOINT_VERSION = "a1-v2-consistency-candidate-checkpoint-v2";
 
 export interface CandidateCheckpointContext {
   quality_input_sha256: string;
@@ -10,6 +10,11 @@ export interface CandidateCheckpointContext {
   prompt_version: string;
   prompt_sha256: string;
   generator_batch_size: number;
+  calibration_model: string;
+  calibration_thinking: boolean;
+  calibration_prompt_version: string;
+  calibration_prompt_sha256: string;
+  calibration_max_generation_attempts: number;
 }
 
 export interface CandidateCheckpointBatchPlan {
@@ -43,7 +48,12 @@ function sameContext(checkpoint: CandidateCheckpoint, context: CandidateCheckpoi
     && checkpoint.model === context.model
     && checkpoint.prompt_version === context.prompt_version
     && checkpoint.prompt_sha256 === context.prompt_sha256
-    && checkpoint.generator_batch_size === context.generator_batch_size;
+    && checkpoint.generator_batch_size === context.generator_batch_size
+    && checkpoint.calibration_model === context.calibration_model
+    && checkpoint.calibration_thinking === context.calibration_thinking
+    && checkpoint.calibration_prompt_version === context.calibration_prompt_version
+    && checkpoint.calibration_prompt_sha256 === context.calibration_prompt_sha256
+    && checkpoint.calibration_max_generation_attempts === context.calibration_max_generation_attempts;
 }
 
 function isCandidate(value: unknown): value is { id: string; statement: string } {

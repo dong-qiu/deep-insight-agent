@@ -1,13 +1,22 @@
 import { describe, expect, it } from "vitest";
-import { escapeCandidatePromptData, LABEL_CANDIDATE_DEFAULT_BATCH_SIZE, LABEL_CANDIDATE_SOURCE_CHARS, labelCandidateBatchSize, labelSourceWindow, plannedCandidateIntent, selectConsistencyCandidateItems } from "./a1-consistency-label-candidate-plan.js";
+import { calibrationMatchesIntent, escapeCandidatePromptData, LABEL_CANDIDATE_DEFAULT_BATCH_SIZE, LABEL_CANDIDATE_SOURCE_CHARS, LABEL_CANDIDATE_TARGET_NEGATIVE_COUNT, labelCandidateBatchSize, labelSourceWindow, plannedCandidateIntent, selectConsistencyCandidateItems } from "./a1-consistency-label-candidate-plan.js";
 
 describe("v2 consistency-label candidate plan", () => {
-  it("plans 40 diagnostic negative cases across all required types for 100 inputs", () => {
+  it("plans 50 source-balanced diagnostic negative cases across all required types for 100 inputs", () => {
     const planned = Array.from({ length: 100 }, (_, index) => plannedCandidateIntent(index));
-    expect(planned.filter((intent) => intent === "exaggeration")).toHaveLength(15);
-    expect(planned.filter((intent) => intent === "out_of_context")).toHaveLength(15);
+    expect(planned.filter((intent) => intent === "exaggeration")).toHaveLength(20);
+    expect(planned.filter((intent) => intent === "out_of_context")).toHaveLength(20);
     expect(planned.filter((intent) => intent === "misattribution")).toHaveLength(10);
-    expect(planned.filter((intent) => ["exaggeration", "out_of_context", "misattribution"].includes(intent))).toHaveLength(40);
+    expect(planned.filter((intent) => ["exaggeration", "out_of_context", "misattribution"].includes(intent))).toHaveLength(LABEL_CANDIDATE_TARGET_NEGATIVE_COUNT);
+    for (let start = 0; start < planned.length; start += 10) {
+      expect(planned.slice(start, start + 10).filter((intent) => ["exaggeration", "out_of_context", "misattribution"].includes(intent))).toHaveLength(5);
+    }
+  });
+
+  it("requires an exact independent calibration match instead of treating a requested intent as evidence", () => {
+    expect(calibrationMatchesIntent("out_of_context", "out_of_context")).toBe(true);
+    expect(calibrationMatchesIntent("out_of_context", "exaggeration")).toBe(false);
+    expect(calibrationMatchesIntent("misattribution", "support")).toBe(false);
   });
 
   it("keeps the ordinary 20-item generator batch by default, but bounds relay recovery batches", () => {
