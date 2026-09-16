@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { boundedDistinctDrafts, buildCalibrationRetryInstruction, buildCandidateCalibrationUser, hasValidDistinctDrafts, selectExactCalibratedDraft } from "./a1-consistency-candidate-calibration.js";
+import { boundedDistinctDrafts, buildCalibrationRetryInstruction, buildCandidateCalibrationUser, CandidateDraftResponseSchema, hasValidDistinctDrafts, selectExactCalibratedDraft } from "./a1-consistency-candidate-calibration.js";
 
 describe("consistency candidate calibration boundary", () => {
   it("keeps the requested generator intent out of the independent calibration input", () => {
@@ -45,5 +45,20 @@ describe("consistency candidate calibration boundary", () => {
   it("trims a bounded over-return before calibration instead of rejecting an otherwise valid response", () => {
     expect(boundedDistinctDrafts(["one", "two", "two", "three", "four", "five", "six"]))
       .toEqual(["one", "two", "three", "four", "five"]);
+  });
+
+  it("normalizes provider-equivalent object draft entries before calibration", () => {
+    const parsed = CandidateDraftResponseSchema.parse({
+      candidates: [{ id: "case-4", statements: [
+        "First complete candidate statement.",
+        { statement: "Second complete candidate statement." },
+        "Third complete candidate statement.",
+      ] }],
+    });
+    expect(parsed.candidates[0]?.statements).toEqual([
+      "First complete candidate statement.",
+      "Second complete candidate statement.",
+      "Third complete candidate statement.",
+    ]);
   });
 });
