@@ -9,8 +9,9 @@ import { dirname, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { collectSource, type CollectResult } from "../src/lib/agents/collector.js";
 import { getEffectiveSources, loadStaticConfig, seedDefaults } from "../src/lib/config/index.js";
-import { getDb } from "../src/lib/db/index.js";
-import type { DB } from "../src/lib/db/index.js";
+import { openDb, type DB } from "../src/lib/db/index.js";
+import { initializeProvenanceMeta } from "../src/lib/db/provenance-facts.js";
+import { applyProvenanceMigrations } from "../src/lib/db/provenance-migrations.js";
 import type { Source } from "../src/lib/types.js";
 import { parseSourceIds } from "./build-local-eval-lib.js";
 
@@ -65,6 +66,16 @@ export function resolveIsolatedCohortPaths(
   return { dbPath, dataDir, isolatedRoot };
 }
 
+/** The cohort uses the production collector, including raw-archive effects.
+ * A fresh isolated SQLite database must therefore advance the immutable
+ * provenance ledger before collection; SCHEMA_SQL alone is not sufficient. */
+export function openIsolatedCohortDb(paths: Pick<ReturnType<typeof resolveIsolatedCohortPaths>, "dbPath">): DB {
+  const db = openDb(paths.dbPath);
+  applyProvenanceMigrations(db);
+  initializeProvenanceMeta(db);
+  return db;
+}
+
 export async function collectCohort(
   db: DB,
   sources: Source[],
@@ -111,28 +122,31 @@ async function main(): Promise<void> {
     EVAL_ISOLATED_ROOT: process.env.EVAL_ISOLATED_ROOT,
   });
   const config = loadStaticConfig();
-  const db = getDb();
-  seedDefaults(db, config);
-  const sources = resolveCohortSources(getEffectiveSources(db, config), sourceIds);
   const output = process.env.EVAL_COHORT_COLLECTION_MANIFEST;
   if (!output) throw new Error("必须设置 EVAL_COHORT_COLLECTION_MANIFEST，保留采集审计记录");
+  const db = openIsolatedCohortDb(isolated);
+  try {
+    seedDefaults(db, config);
+    const sources = resolveCohortSources(getEffectiveSources(db, config), sourceIds);
+    const results = await collectCohort(db, sources);
+    const failed = results.filter((entry) => entry.status === "failed");
+    const manifest = {
+      generated_at: new Date().toISOString(),
+      db_path: isolated.dbPath,
+      data_dir: isolated.dataDir,
+      source_ids: sourceIds,
+      collection_status: failed.length ? "partial_failed" : "completed",
+      results,
+    };
+    mkdirSync(dirname(output), { recursive: true });
+    writeFileSync(output, `${JSON.stringify(manifest, null, 2)}\n`);
+    console.log(`已完成 ${results.length} 个 source 的隔离采集；失败 ${failed.length} 个。`);
 
-  const results = await collectCohort(db, sources);
-  const failed = results.filter((entry) => entry.status === "failed");
-  const manifest = {
-    generated_at: new Date().toISOString(),
-    db_path: isolated.dbPath,
-    data_dir: isolated.dataDir,
-    source_ids: sourceIds,
-    collection_status: failed.length ? "partial_failed" : "completed",
-    results,
-  };
-  mkdirSync(dirname(output), { recursive: true });
-  writeFileSync(output, `${JSON.stringify(manifest, null, 2)}\n`);
-  console.log(`已完成 ${results.length} 个 source 的隔离采集；失败 ${failed.length} 个。`);
-
-  if (failed.length) {
-    throw new Error(`source cohort 采集失败：${failed.map((entry) => entry.source_id).join(", ")}`);
+    if (failed.length) {
+      throw new Error(`source cohort 采集失败：${failed.map((entry) => entry.source_id).join(", ")}`);
+    }
+  } finally {
+    db.close();
   }
 }
 

@@ -1,5 +1,9 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { collectCohort, resolveCohortSources, resolveIsolatedCohortPaths } from "./collect-source-cohort.js";
+import { collectCohort, openIsolatedCohortDb, resolveCohortSources, resolveIsolatedCohortPaths } from "./collect-source-cohort.js";
+import { assertProvenanceSchema } from "../src/lib/db/provenance-migrations.js";
 import type { Source } from "../src/lib/types.js";
 
 const source = (id: string): Source => ({
@@ -73,5 +77,19 @@ describe("source cohort collection", () => {
       DB_PATH: "/tmp/other/insight.db",
       DATA_DIR: "/tmp/insight-eval/data",
     }, "/workspace")).toThrow("必须位于 EVAL_ISOLATED_ROOT 内");
+  });
+
+  it("在 fresh isolated DB 上应用 raw-archive 所需的 provenance ledger", () => {
+    const root = mkdtempSync(join(tmpdir(), "ia-source-cohort-"));
+    try {
+      const db = openIsolatedCohortDb({ dbPath: join(root, "insight.db") });
+      expect(() => assertProvenanceSchema(db)).not.toThrow();
+      expect(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='generation_effect'").get()).toBeTruthy();
+      expect((db.prepare("PRAGMA table_info(generation_effect)").all() as { name: string }[]).map((column) => column.name))
+        .toContain("raw_content_id");
+      db.close();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
