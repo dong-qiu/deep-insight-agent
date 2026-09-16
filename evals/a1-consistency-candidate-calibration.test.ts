@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { boundedDistinctDrafts, buildCalibrationRetryInstruction, buildCandidateCalibrationUser, CandidateDraftResponseSchema, hasValidDistinctDrafts, selectExactCalibratedDraft } from "./a1-consistency-candidate-calibration.js";
+import { boundedDistinctDrafts, buildCalibrationRetryInstruction, buildCandidateCalibrationUser, CandidateDraftResponseSchema, hasValidDistinctDrafts, normalizeCandidateDraft, selectExactCalibratedDraft } from "./a1-consistency-candidate-calibration.js";
 
 describe("consistency candidate calibration boundary", () => {
   it("keeps the requested generator intent out of the independent calibration input", () => {
@@ -55,7 +55,7 @@ describe("consistency candidate calibration boundary", () => {
         "Third complete candidate statement.",
       ] }],
     });
-    expect(parsed.candidates[0]?.statements).toEqual([
+    expect(parsed.candidates[0]?.statements.map(normalizeCandidateDraft)).toEqual([
       "First complete candidate statement.",
       "Second complete candidate statement.",
       "Third complete candidate statement.",

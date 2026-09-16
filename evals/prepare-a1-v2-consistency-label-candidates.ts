@@ -34,6 +34,8 @@ import {
   CandidateDraftResponseSchema,
   hasValidDistinctDrafts,
   boundedDistinctDrafts,
+  normalizeCandidateDraft,
+  type CandidateDraftWire,
   selectExactCalibratedDraft,
   type CalibrationInput,
   type CalibrationRetryFeedback,
@@ -52,7 +54,7 @@ interface QualityCase { topic?: { id?: unknown }; items?: QualityItem[]; }
 interface CandidateInput { id: string; topic_id: string; source_id: string; source_text: string; source_body_sha256: string; intent: ReturnType<typeof plannedCandidateIntent>; }
 interface CandidateSelection { quality_input_item_count: number; selected_by_topic: Record<string, number>; selected_by_source: Record<string, number>; selected_item_ids_sha256: string; }
 
-const PROMPT_VERSION = "a1-v2-consistency-candidate-v8";
+const PROMPT_VERSION = "a1-v2-consistency-candidate-v9";
 const SYSTEM = `You create unlabeled, diagnostic-only candidate claims for independent human consistency annotation.
 For each source excerpt, return ${LABEL_CANDIDATE_MIN_DRAFTS_PER_ATTEMPT} to ${LABEL_CANDIDATE_MAX_DRAFTS_PER_ATTEMPT} materially different concise English statements. The requested intent is private generator guidance only:
 - support: state one fact directly supported by the excerpt.
@@ -125,9 +127,9 @@ function readInputs(path: string): { inputs: CandidateInput[]; selection: Candid
 
 function exactStatementDrafts(
   batch: readonly CandidateInput[],
-  candidates: readonly { id: string; statements: readonly string[] }[],
+  candidates: readonly { id: string; statements: readonly CandidateDraftWire[] }[],
 ): Map<string, readonly string[]> {
-  const drafts = new Map(candidates.map((candidate) => [candidate.id, boundedDistinctDrafts(candidate.statements.map((statement) => statement.trim()))]));
+  const drafts = new Map(candidates.map((candidate) => [candidate.id, boundedDistinctDrafts(candidate.statements.map((statement) => normalizeCandidateDraft(statement).trim()))]));
   if (drafts.size !== batch.length || batch.some((input) => !drafts.has(input.id))) {
     throw new Error("候选生成未返回与输入一一对应的 statements");
   }

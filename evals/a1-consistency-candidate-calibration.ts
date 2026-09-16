@@ -17,10 +17,16 @@ Do not infer, receive, or optimize for a generator-requested intent. Return only
 
 const CandidateDraftSchema = z.union([
   z.string().trim().min(10).max(700),
-  z.object({ statement: z.string().trim().min(10).max(700) }).transform((entry) => entry.statement),
+  z.object({ statement: z.string().trim().min(10).max(700) }),
 ]);
 
-/** Accept both provider-equivalent string and { statement } draft entries, then normalize to strings. */
+export type CandidateDraftWire = string | { statement: string };
+
+export function normalizeCandidateDraft(entry: CandidateDraftWire): string {
+  return typeof entry === "string" ? entry : entry.statement;
+}
+
+/** Accept provider-equivalent string and { statement } draft entries; normalize only after structured parsing. */
 export const CandidateDraftResponseSchema = z.object({
   candidates: z.array(z.object({
     id: z.string().min(1),
