@@ -372,7 +372,7 @@ ADR 实现拆为可独立合入的小 PR，`TRANSCRIPT_FETCH` 默认关贯穿前
 - 决定：`source` 表加两列——
   - `fetch_mode TEXT DEFAULT 'feed'`（`feed` = 仅用 feed 正文；`full_text` = 按条目 URL 抓全文）：把"要不要抓全文"从全局猜变成**按源声明**。保留、干净。
   - **`content_container TEXT`（评审修正，原 `content_selector`，可空）：按源覆盖正文容器，值为单个 `class`/`id` token（如 `js-article`、`rich_media_content`），不是 CSS 选择器。**——**理由（design-must-connect-to-code）**：`article.ts` 抽取引擎是**纯正则 + 同名标签深度配对、无 DOM**（注释三次强调极简无依赖）；用户填 CSS 组合选择器（`div.post > article .body`）这个引擎**执行不了、会静默失效**。收窄为单 token 可**直接喂现有 `CONTAINER_PATTERNS` 正则模板**（把该 token 加进容器定位的优先匹配），**零新依赖**。明确**不承诺 CSS 选择器、不引 cheerio**（引 DOM 解析器 = 破坏极简原则，否决）。无明显容器的站点（先知）手填一次 container token 即可，不靠全局白名单猜。
-  - 触发条件从「空正文」放宽为「`fetch_mode=full_text` 且正文短于阈值」覆盖短摘要源（先知 80 字），但**仅对声明了 `full_text` 的源**（不波及 feed-only 源、不误伤正常短摘要）。**阈值复用已有 `article.ts` 的 `MIN_ARTICLE_CHARS=200`（评审建议），不新增按源旋钮**——避免正文恰在阈值附近的源每轮抓/不抓抖动。
+  - **2026-09-13 证据完整性修正**：`fetch_mode=full_text` 是完整性承诺，不得再以 RSS 摘要长度推断全文；每个新 URL 都抓文章页。此前「短于 `MIN_ARTICLE_CHARS=200` 才抓」的规则会把长摘要静默保存为 `ok` 正文，已在 A1 隔离 cohort 中复现。只对声明 `full_text` 的源生效；feed-only 源保持原行为。页面抓取失败而保留摘要时，必须标 `fetch_status=partial`，并由受控评测快照拒绝。
   - **总闸交互（第二轮评审🟡——须明确，否则收益落空）**：`articleFetchEnabled()`（全局 `ARTICLE_FETCH`，默认关）与按源 `fetch_mode` 的关系——**决定：`fetch_mode=full_text` 的源不受全局总闸约束**（按源声明即抓），否则存量库默认 `ARTICLE_FETCH` 未开 → 决定③上线后先知仍不被抓、收益落空。`ARTICLE_FETCH` 总闸语义改为「**全局应急熔断**」（设 0 时连 `full_text` 源也停，用于一键止血），平时无需开。
   - **container token 注入须按源隔离（第二轮评审🟡）**：`CONTAINER_PATTERNS` 是**全局共用**正则数组，按源 token 若直接 OR 进全局模板（如某站泛 `content`）会**污染对其他站点的匹配**。**决定：抽取时按当前源的 `content_container` 动态构造一条最高优先级正则、置于全局模板之前**，不改全局数组、不跨源污染。
 - 对标 RSSHub 的 route 级配置：每源自带抓取/抽取策略，而非全局一刀切。
