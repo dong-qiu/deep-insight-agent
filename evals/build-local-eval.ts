@@ -6,7 +6,7 @@
  * 这只证明真实采集→analyzer→validator 路径的覆盖；小于 A1 的 5-topic 下限时，不能据此签 DCP。
  */
 import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { getDb } from "../src/lib/db/index.js";
 import { listContentForTopic, listTopics } from "../src/lib/db/repos.js";
 import { buildLocalEvalCases, missingRequiredSources, missingRequiredSourcesByTopic, parseSourceIds, parseTopicSourceIds } from "./build-local-eval-lib.js";
@@ -34,6 +34,19 @@ if (requiredSourceIds.length && Object.keys(requiredSourceIdsByTopic).length) {
 const fixedSourceIds = [...new Set(Object.values(requiredSourceIdsByTopic).flat())];
 // 默认 A1 仍须多源；单一 staged source 的隔离验证可用同源两条内容验证真实采集→引文链路。
 const minimumSources = (fixedSourceIds.length ? fixedSourceIds : requiredSourceIds).length === 1 ? 1 : 2;
+const dataDir = resolve(process.env.DATA_DIR ?? ".data");
+
+/** ContentItem stores a stable data-root-relative raw_ref.  The ignored local
+ * quality JSONL is a hand-off to the snapshot tool, so materialize that handle
+ * to a readable path without changing DB storage or the body-free manifest. */
+function localRawRef(rawRef: string): string {
+  const path = isAbsolute(rawRef) ? resolve(rawRef) : resolve(dataDir, rawRef);
+  const remainder = relative(dataDir, path);
+  if (remainder === ".." || remainder.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`)) {
+    throw new Error("评测 raw_ref 不得逃逸 DATA_DIR");
+  }
+  return path;
+}
 
 const db = getDb();
 const now = Date.now();
@@ -56,13 +69,17 @@ const result = buildLocalEvalCases(
     minimumSources,
   },
 );
+const qualityCases = result.cases.map((entry) => ({
+  ...entry,
+  items: entry.items.map((item) => ({ ...item, raw_ref: localRawRef(item.raw_ref) })),
+}));
 
 mkdirSync(dirname(out), { recursive: true });
-writeFileSync(out, result.cases.length ? `${result.cases.map((entry) => JSON.stringify(entry)).join("\n")}\n` : "");
+writeFileSync(out, qualityCases.length ? `${qualityCases.map((entry) => JSON.stringify(entry)).join("\n")}\n` : "");
 for (const skipped of result.skipped) {
   console.log(`  ⚠️ ${skipped.topicId}：富内容不足（${skipped.items} 条 / ${skipped.sources} 源），跳过`);
 }
-for (const entry of result.cases) {
+for (const entry of qualityCases) {
   const sourceIds = [...new Set(entry.items.map((item) => item.source_id))];
   console.log(`  ${entry.topic.id}：${entry.items.length} 条 / ${sourceIds.length} 源（${sourceIds.map((id) => id.replace("src_", "")).join(", ")}）`);
 }
@@ -76,7 +93,7 @@ const manifest = {
     required_source_ids_by_topic: requiredSourceIdsByTopic,
     requested_topic_ids: requestedTopicIds,
   },
-  topics: result.cases.map((entry) => ({ topic_id: entry.topic.id, source_ids: [...new Set(entry.items.map((item) => item.source_id))], item_count: entry.items.length })),
+  topics: qualityCases.map((entry) => ({ topic_id: entry.topic.id, source_ids: [...new Set(entry.items.map((item) => item.source_id))], item_count: entry.items.length })),
   cohort: result.cohort,
 };
 if (manifestOut) {
