@@ -72,4 +72,13 @@ describe("consistency candidate calibration boundary", () => {
     expect([...result.drafts.keys()]).toEqual(["case-5"]);
     expect(result.missing_ids).toEqual(["case-6", "case-7"]);
   });
+
+  it("parses an underspecified response so its ID can enter structural retry, but never accepts it", () => {
+    const parsed = CandidateDraftResponseSchema.parse({
+      candidates: [{ id: "case-8", statements: ["Only one complete statement."] }],
+    });
+    const result = collectUnambiguousCandidateDrafts(["case-8"], parsed.candidates);
+    expect(result.drafts.size).toBe(0);
+    expect(result.missing_ids).toEqual(["case-8"]);
+  });
 });

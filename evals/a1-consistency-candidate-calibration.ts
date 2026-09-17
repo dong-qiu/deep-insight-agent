@@ -32,7 +32,6 @@ export const CandidateDraftResponseSchema = z.object({
   candidates: z.array(z.object({
     id: z.string().min(1),
     statements: z.array(CandidateDraftSchema)
-      .min(LABEL_CANDIDATE_MIN_DRAFTS_PER_ATTEMPT)
       .max(LABEL_CANDIDATE_MAX_RETURNED_DRAFTS_PER_ATTEMPT),
   })),
 });
