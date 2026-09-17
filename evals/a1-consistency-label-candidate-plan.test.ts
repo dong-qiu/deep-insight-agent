@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assignFeasibleCandidateIntents, calibrationMatchesIntent, candidateIntentConstraint, escapeCandidatePromptData, LABEL_CANDIDATE_DEFAULT_BATCH_SIZE, LABEL_CANDIDATE_MAX_DRAFTS_PER_ATTEMPT, LABEL_CANDIDATE_MAX_RETURNED_DRAFTS_PER_ATTEMPT, LABEL_CANDIDATE_MIN_DRAFTS_PER_ATTEMPT, LABEL_CANDIDATE_SOURCE_CHARS, LABEL_CANDIDATE_TARGET_NEGATIVE_COUNT, labelCandidateBatchSize, labelSourceWindow, plannedCandidateIntent, plannedIntentCounts, plannedSourceIntentSlots, plannedSourceNegativeCounts, selectConsistencyCandidateItems, type CandidateFeasibilityEdge, type CandidateIntent } from "./a1-consistency-label-candidate-plan.js";
+import { assignFeasibleCandidateIntents, calibrationMatchesIntent, candidateIntentConstraint, escapeCandidatePromptData, LABEL_CANDIDATE_DEFAULT_BATCH_SIZE, LABEL_CANDIDATE_DEFAULT_GENERATOR_MAX_TOKENS, LABEL_CANDIDATE_MAX_DRAFTS_PER_ATTEMPT, LABEL_CANDIDATE_MAX_RETURNED_DRAFTS_PER_ATTEMPT, LABEL_CANDIDATE_MIN_DRAFTS_PER_ATTEMPT, LABEL_CANDIDATE_SOURCE_CHARS, LABEL_CANDIDATE_TARGET_NEGATIVE_COUNT, labelCandidateBatchSize, labelCandidateGeneratorMaxTokens, labelSourceWindow, plannedCandidateIntent, plannedIntentCounts, plannedSourceIntentSlots, plannedSourceNegativeCounts, selectConsistencyCandidateItems, type CandidateFeasibilityEdge, type CandidateIntent } from "./a1-consistency-label-candidate-plan.js";
 
 const digest = (seed: string): string => [...seed].reduce((sum, character) => (sum * 33 + character.charCodeAt(0)) >>> 0, 5381).toString(16).padStart(64, "0");
 const edge = (intent: CandidateIntent, statement = `A calibrated ${intent} statement.`): CandidateFeasibilityEdge => ({
@@ -122,6 +122,14 @@ describe("v2 consistency-label candidate plan", () => {
     expect(() => labelCandidateBatchSize("0")).toThrow("1-20");
     expect(() => labelCandidateBatchSize("21")).toThrow("1-20");
     expect(() => labelCandidateBatchSize("five")).toThrow("1-20");
+  });
+
+  it("keeps the historic generator response allowance by default, but bounds an explicit recovery allowance", () => {
+    expect(labelCandidateGeneratorMaxTokens(undefined)).toBe(LABEL_CANDIDATE_DEFAULT_GENERATOR_MAX_TOKENS);
+    expect(labelCandidateGeneratorMaxTokens("3072")).toBe(3072);
+    expect(() => labelCandidateGeneratorMaxTokens("1023")).toThrow("1024-8000");
+    expect(() => labelCandidateGeneratorMaxTokens("8001")).toThrow("1024-8000");
+    expect(() => labelCandidateGeneratorMaxTokens("three-thousand")).toThrow("1024-8000");
   });
 
   it("uses only an exact source prefix and prefers a complete sentence boundary", () => {

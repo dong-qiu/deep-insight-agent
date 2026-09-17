@@ -75,6 +75,7 @@ describe("consistency candidate checkpoint", () => {
     expect(() => loadCandidateCheckpoint(path, { ...context, calibration_response_schema_sha256: digest("other-calibration-schema") }, plan)).toThrow("不匹配");
     expect(() => loadCandidateCheckpoint(path, { ...context, structured_transport_version: "transport-v2" }, plan)).toThrow("不匹配");
     expect(() => loadCandidateCheckpoint(path, context, [{ start: 0, candidates: [coordinate("one"), coordinate("other")] }, plan[1]!])).toThrow("连续完整前缀");
+    expect(() => loadCandidateCheckpoint(path, { ...context, generator_max_tokens: 3072 }, plan)).toThrow("不匹配");
   });
 
   it("rejects a v2 checkpoint and skipped, incomplete, or uncalibrated probe batches", () => {

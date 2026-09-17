@@ -21,6 +21,7 @@ import {
   candidateIntentConstraint,
   escapeCandidatePromptData,
   labelCandidateBatchSize,
+  labelCandidateGeneratorMaxTokens,
   LABEL_CANDIDATE_COUNT,
   LABEL_CANDIDATE_MAX_DRAFTS_PER_ATTEMPT,
   LABEL_CANDIDATE_MAX_GENERATION_ATTEMPTS,
@@ -71,7 +72,6 @@ interface ProbeMetrics { generation_calls: number; structural_response_retries: 
 
 const PROMPT_VERSION = "a1-v2-consistency-candidate-v13-feasibility";
 const MAX_STRUCTURAL_RESPONSE_ATTEMPTS = 2;
-const GENERATOR_MAX_TOKENS = 8_000;
 const CALIBRATION_MAX_TOKENS = 5_000;
 const INTENTS: readonly CandidateIntent[] = ["support", "uncertain", "exaggeration", "out_of_context", "misattribution"];
 const SYSTEM = `You create unlabeled, diagnostic-only candidate claims for independent human consistency annotation.
@@ -171,6 +171,7 @@ async function generateCandidateStatements(
   batch: readonly ProbeInput[],
   attempt: number,
   feedback: ReadonlyMap<string, Omit<CalibrationRetryFeedback, "id">>,
+  generatorMaxTokens: number,
 ): Promise<{ drafts: Map<string, readonly string[]>; calls: number }> {
   const retryInstruction = attempt > 1
     ? buildCalibrationRetryInstruction(batch.map((input) => ({
@@ -193,7 +194,7 @@ async function generateCandidateStatements(
       "</candidate>",
     ].join("\n")).join("\n")}\n</candidate_sources>`;
     const { data } = await callStructured({
-      role: "analyzer", system: SYSTEM, user, schema: CandidateDraftResponseSchema, maxTokens: GENERATOR_MAX_TOKENS,
+      role: "analyzer", system: SYSTEM, user, schema: CandidateDraftResponseSchema, maxTokens: generatorMaxTokens,
     });
     calls++;
     const collected = collectUnambiguousCandidateDrafts(remaining.map((input) => input.probe_id), data.candidates);
@@ -244,6 +245,7 @@ function makeFeasibilityEdge(probe: ProbeInput, statement: string, context: Cand
 async function probeCandidateBatch(
   sourceBatch: readonly CandidateInput[],
   batchSize: number,
+  generatorMaxTokens: number,
   thinking: boolean,
   context: CandidateCheckpointContext,
 ): Promise<{ batch: CandidateCheckpointBatch["candidates"]; metrics: ProbeMetrics }> {
@@ -263,7 +265,7 @@ async function probeCandidateBatch(
           feedback.set(probe.probe_id, { observed_intent: previous.observed_intent, previous_statement: previous.statement });
         }
       }
-      const generated = await generateCandidateStatements(batch, attempt, feedback);
+      const generated = await generateCandidateStatements(batch, attempt, feedback, generatorMaxTokens);
       metrics.generation_calls += generated.calls;
       metrics.structural_response_retries += generated.calls - 1;
       const calibrationInputs: CalibrationInput[] = [];
@@ -336,6 +338,7 @@ async function main(): Promise<void> {
   const { inputs, selection } = readInputs(qualityPath);
   if (inputs.length !== LABEL_CANDIDATE_COUNT) throw new Error(`v2 候选构建必须选出 ${LABEL_CANDIDATE_COUNT} 条受控输入，当前 ${inputs.length}`);
   const batchSize = labelCandidateBatchSize(process.env.LABEL_CANDIDATE_BATCH_SIZE);
+  const generatorMaxTokens = labelCandidateGeneratorMaxTokens(process.env.LABEL_CANDIDATE_GENERATOR_MAX_TOKENS);
   const calibrationThinking = validatorThinking();
   const qualityInputSha256 = hash(readFileSync(qualityPath));
   const checkpointPlan: CandidateCheckpointBatchPlan[] = [];
@@ -358,7 +361,7 @@ async function main(): Promise<void> {
     generator_response_schema_sha256: schemaSha256(CandidateDraftResponseSchema),
     generator_thinking: false,
     generator_batch_size: batchSize,
-    generator_max_tokens: GENERATOR_MAX_TOKENS,
+    generator_max_tokens: generatorMaxTokens,
     calibration_model: MODELS.validator,
     calibration_thinking: calibrationThinking,
     calibration_prompt_version: CALIBRATION_PROMPT_VERSION,
@@ -380,7 +383,7 @@ async function main(): Promise<void> {
   }
   for (let start = 0; start < inputs.length; start += batchSize) {
     if (checkpoint.completed_batches.some((entry) => entry.start === start)) continue;
-    const probed = await probeCandidateBatch(inputs.slice(start, start + batchSize), batchSize, calibrationThinking, checkpointContext);
+    const probed = await probeCandidateBatch(inputs.slice(start, start + batchSize), batchSize, generatorMaxTokens, calibrationThinking, checkpointContext);
     appendCandidateCheckpointBatch(checkpoint, checkpointPlan, { start, candidates: probed.batch });
     addCandidateCheckpointProbeMetrics(checkpoint, probed.metrics);
     writeCandidateCheckpoint(checkpointPath, checkpoint);
@@ -449,7 +452,7 @@ async function main(): Promise<void> {
     candidate_selection: selection,
     generator: {
       model: MODELS.analyzer, thinking: false, prompt_version: PROMPT_VERSION, prompt_sha256: hash(SYSTEM),
-      response_schema_sha256: checkpointContext.generator_response_schema_sha256, batch_size: batchSize, max_tokens: GENERATOR_MAX_TOKENS,
+      response_schema_sha256: checkpointContext.generator_response_schema_sha256, batch_size: batchSize, max_tokens: generatorMaxTokens,
       maximum_returned_drafts_per_attempt: LABEL_CANDIDATE_MAX_RETURNED_DRAFTS_PER_ATTEMPT,
       maximum_structural_response_attempts: MAX_STRUCTURAL_RESPONSE_ATTEMPTS,
     },

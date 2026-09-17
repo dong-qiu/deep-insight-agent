@@ -22,6 +22,14 @@ export const LABEL_CANDIDATE_MAX_RETURNED_DRAFTS_PER_ATTEMPT = 12;
  * diagnostic-only provenance.
  */
 export const LABEL_CANDIDATE_DEFAULT_BATCH_SIZE = 20;
+/**
+ * Keep the historic response allowance by default, while permitting a bounded
+ * relay-capacity recovery without silently changing the checkpointed candidate
+ * generation configuration.  A too-small allowance fails closed when the
+ * structured response cannot contain every requested draft.
+ */
+export const LABEL_CANDIDATE_DEFAULT_GENERATOR_MAX_TOKENS = 8_000;
+export const LABEL_CANDIDATE_MIN_GENERATOR_MAX_TOKENS = 1_024;
 export type CandidateIntent = "support" | "uncertain" | "exaggeration" | "out_of_context" | "misattribution";
 
 export interface CandidateSelectionItem {
@@ -299,6 +307,20 @@ export function labelCandidateBatchSize(raw: string | undefined): number {
   const value = Number(raw);
   if (!Number.isInteger(value) || value < 1 || value > LABEL_CANDIDATE_DEFAULT_BATCH_SIZE) {
     throw new Error(`LABEL_CANDIDATE_BATCH_SIZE 必须是 1-${LABEL_CANDIDATE_DEFAULT_BATCH_SIZE} 的整数`);
+  }
+  return value;
+}
+
+/** A bounded relay recovery setting; the selected value is bound into the checkpoint and diagnostic. */
+export function labelCandidateGeneratorMaxTokens(raw: string | undefined): number {
+  if (raw == null || raw.trim() === "") return LABEL_CANDIDATE_DEFAULT_GENERATOR_MAX_TOKENS;
+  const value = Number(raw);
+  if (!Number.isInteger(value)
+    || value < LABEL_CANDIDATE_MIN_GENERATOR_MAX_TOKENS
+    || value > LABEL_CANDIDATE_DEFAULT_GENERATOR_MAX_TOKENS) {
+    throw new Error(
+      `LABEL_CANDIDATE_GENERATOR_MAX_TOKENS 必须是 ${LABEL_CANDIDATE_MIN_GENERATOR_MAX_TOKENS}-${LABEL_CANDIDATE_DEFAULT_GENERATOR_MAX_TOKENS} 的整数`,
+    );
   }
   return value;
 }
