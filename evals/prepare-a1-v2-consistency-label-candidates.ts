@@ -14,6 +14,7 @@ import { MODELS, callStructured } from "../src/lib/runtime/llm.js";
 import { validatorThinking } from "../src/lib/runtime/env.js";
 import {
   escapeCandidatePromptData,
+  candidateIntentConstraint,
   labelCandidateBatchSize,
   LABEL_CANDIDATE_COUNT,
   LABEL_CANDIDATE_MAX_DRAFTS_PER_ATTEMPT,
@@ -52,7 +53,7 @@ interface QualityCase { topic?: { id?: unknown }; items?: QualityItem[]; }
 interface CandidateInput { id: string; topic_id: string; source_id: string; source_text: string; source_body_sha256: string; intent: ReturnType<typeof plannedCandidateIntent>; }
 interface CandidateSelection { quality_input_item_count: number; selected_by_topic: Record<string, number>; selected_by_source: Record<string, number>; selected_item_ids_sha256: string; }
 
-const PROMPT_VERSION = "a1-v2-consistency-candidate-v11";
+const PROMPT_VERSION = "a1-v2-consistency-candidate-v12";
 const MAX_STRUCTURAL_RESPONSE_ATTEMPTS = 2;
 const SYSTEM = `You create unlabeled, diagnostic-only candidate claims for independent human consistency annotation.
 For each source excerpt, return ${LABEL_CANDIDATE_MIN_DRAFTS_PER_ATTEMPT} to ${LABEL_CANDIDATE_MAX_DRAFTS_PER_ATTEMPT} materially different concise English statements. The requested intent is private generator guidance only:
@@ -145,6 +146,7 @@ async function generateCandidateStatements(
       : "";
     const user = `${retryInstruction}\n${structuralRetry}\n<candidate_sources>\n${remaining.map((input) => [
       `<candidate id="${input.id}" intent="${input.intent}">`,
+      `<target_constraint>${candidateIntentConstraint(input.intent)}</target_constraint>`,
       `<source_text>${escapeCandidatePromptData(input.source_text)}</source_text>`,
       "</candidate>",
     ].join("\n")).join("\n")}\n</candidate_sources>`;

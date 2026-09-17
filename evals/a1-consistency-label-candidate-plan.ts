@@ -49,6 +49,22 @@ export function calibrationMatchesIntent(intent: CandidateIntent, observed: Cand
   return intent === observed;
 }
 
+/** Target-specific constraints make the requested relation observable to the independent verifier. */
+export function candidateIntentConstraint(intent: CandidateIntent): string {
+  switch (intent) {
+    case "support":
+      return "Write a complete fact directly supported by the excerpt; preserve every material subject, scope, degree, certainty, condition, and time qualifier.";
+    case "uncertain":
+      return "Add one material attribute absent from the excerpt without strengthening any stated scope, amount, certainty, or condition, and without moving a property between entities.";
+    case "exaggeration":
+      return "Strengthen exactly one explicit scope, amount, certainty, or condition. The resulting statement must no longer be directly supported.";
+    case "out_of_context":
+      return "Start from a fact with an explicit temporal, conditional, eligibility, exception, or scope qualifier in the excerpt, then omit or invert that qualifier. Never return a complete directly supported fact.";
+    case "misattribution":
+      return "Transfer exactly one stated property between two explicitly named, distinguishable entities; do not add an entity or property absent from the excerpt.";
+  }
+}
+
 export function labelCandidateBatchSize(raw: string | undefined): number {
   if (raw == null || raw.trim() === "") return LABEL_CANDIDATE_DEFAULT_BATCH_SIZE;
   const value = Number(raw);

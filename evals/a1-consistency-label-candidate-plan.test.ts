@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { calibrationMatchesIntent, escapeCandidatePromptData, LABEL_CANDIDATE_DEFAULT_BATCH_SIZE, LABEL_CANDIDATE_MAX_DRAFTS_PER_ATTEMPT, LABEL_CANDIDATE_MAX_RETURNED_DRAFTS_PER_ATTEMPT, LABEL_CANDIDATE_MIN_DRAFTS_PER_ATTEMPT, LABEL_CANDIDATE_SOURCE_CHARS, LABEL_CANDIDATE_TARGET_NEGATIVE_COUNT, labelCandidateBatchSize, labelSourceWindow, plannedCandidateIntent, selectConsistencyCandidateItems } from "./a1-consistency-label-candidate-plan.js";
+import { calibrationMatchesIntent, candidateIntentConstraint, escapeCandidatePromptData, LABEL_CANDIDATE_DEFAULT_BATCH_SIZE, LABEL_CANDIDATE_MAX_DRAFTS_PER_ATTEMPT, LABEL_CANDIDATE_MAX_RETURNED_DRAFTS_PER_ATTEMPT, LABEL_CANDIDATE_MIN_DRAFTS_PER_ATTEMPT, LABEL_CANDIDATE_SOURCE_CHARS, LABEL_CANDIDATE_TARGET_NEGATIVE_COUNT, labelCandidateBatchSize, labelSourceWindow, plannedCandidateIntent, selectConsistencyCandidateItems } from "./a1-consistency-label-candidate-plan.js";
 
 describe("v2 consistency-label candidate plan", () => {
   it("plans 50 source-balanced diagnostic negative cases across all required types for 100 inputs", () => {
@@ -17,6 +17,14 @@ describe("v2 consistency-label candidate plan", () => {
     expect(calibrationMatchesIntent("out_of_context", "out_of_context")).toBe(true);
     expect(calibrationMatchesIntent("out_of_context", "exaggeration")).toBe(false);
     expect(calibrationMatchesIntent("misattribution", "support")).toBe(false);
+  });
+
+  it("makes each requested diagnostic relation observable, especially out-of-context rather than direct support", () => {
+    expect(candidateIntentConstraint("support")).toContain("preserve every material");
+    expect(candidateIntentConstraint("uncertain")).toContain("absent from the excerpt");
+    expect(candidateIntentConstraint("exaggeration")).toContain("no longer be directly supported");
+    expect(candidateIntentConstraint("out_of_context")).toContain("Never return a complete directly supported fact");
+    expect(candidateIntentConstraint("misattribution")).toContain("two explicitly named");
   });
 
   it("keeps the ordinary 20-item generator batch by default, but bounds relay recovery batches", () => {
