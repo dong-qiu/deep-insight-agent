@@ -60,6 +60,7 @@ describe("A1 v2 consistency label receipt", () => {
     const receipt = verifyConsistencyLabelReceipt(b, [ai, reviewer("human-b", b)], []);
     expect(receipt.status).toBe("ineligible");
     expect(receipt.issues.join(" ")).toContain("AI 预标注不能作为 v2 标签证据");
+    expect(receipt.reviewers[0]).toMatchObject({ reviewer_kind: "ai", blind_attestation: true });
 
     const second = reviewer("human-b", b, { "case-0": "uncertain" });
     const withAiAdjudicator = verifyConsistencyLabelReceipt(b, [reviewer("human-a", b), second], [{

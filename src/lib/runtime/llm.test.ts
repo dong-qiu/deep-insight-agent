@@ -1,7 +1,7 @@
 /** coerceStringifiedFields 纯函数单测（6b 防御：模型偶发把 array/object 字段返成 JSON 字符串）。 */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod/v4";
-import { MODELS, anthropicBaseUrl, assertCoverageModelSeparation, coerceStringifiedFields, createRequestAbortSignal, getRoleCallTelemetry, recordRoleCallTelemetry, resetRoleCallTelemetry, retryTransientOperation, structuredThinkingConfig } from "./llm.js";
+import { MODELS, anthropicBaseUrl, assertCoverageModelSeparation, assertModelSeparation, coerceStringifiedFields, createRequestAbortSignal, getRoleCallTelemetry, recordRoleCallTelemetry, resetRoleCallTelemetry, retryTransientOperation, structuredThinkingConfig } from "./llm.js";
 
 const originalModels = { ...MODELS };
 
@@ -21,6 +21,13 @@ describe("assertCoverageModelSeparation", () => {
   it("拒绝任意同源的三个角色", () => {
     Object.assign(MODELS, { analyzer: "same", validator: "validator", coverage: "same" });
     expect(() => assertCoverageModelSeparation()).toThrow("必须独立于分析与主校验");
+  });
+});
+
+describe("assertModelSeparation", () => {
+  it("在任何 analyzer / validator 请求前拒绝同模型配置", () => {
+    Object.assign(MODELS, { analyzer: "same-model", validator: "same-model" });
+    expect(() => assertModelSeparation()).toThrow("同源偏差约束");
   });
 });
 

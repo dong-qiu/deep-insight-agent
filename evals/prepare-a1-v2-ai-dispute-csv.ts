@@ -5,7 +5,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { makeConsistencyBlindWorklist } from "./a1-consistency-label-blind-worklist.js";
+import { readConsistencyBlindWorklist } from "./a1-consistency-label-blind-worklist.js";
 import { makeBlindLabelCsv } from "./a1-consistency-label-csv.js";
 
 const [disputesPath, outputPath] = process.argv.slice(2);
@@ -16,7 +16,7 @@ if (!disputesPath || !outputPath) {
 if (!outputPath.endsWith(".local.csv")) throw new Error("human adjudication CSV 必须以 .local.csv 结尾");
 if (existsSync(outputPath)) throw new Error("human adjudication CSV 已存在，拒绝覆盖人工填写内容");
 const input = readFileSync(disputesPath, "utf8").split("\n").map((line) => line.trim()).filter(Boolean).map((line) => JSON.parse(line));
-const disputes = makeConsistencyBlindWorklist(input);
+const disputes = readConsistencyBlindWorklist(input);
 if (!disputes.length || input.some((row, index) => (row as { pair_sha256?: unknown }).pair_sha256 !== disputes[index]?.pair_sha256)) {
   throw new Error("AI dispute worklist 必须非空且未被修改");
 }

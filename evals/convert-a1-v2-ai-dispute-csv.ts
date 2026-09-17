@@ -5,7 +5,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { makeConsistencyBlindWorklist } from "./a1-consistency-label-blind-worklist.js";
+import { readConsistencyBlindWorklist } from "./a1-consistency-label-blind-worklist.js";
 import { blindLabelCsvToSubmission } from "./a1-consistency-label-csv.js";
 import { AI_ASSISTED_ADJUDICATION_VERSION, pairPopulationSha, type AiAssistedHumanAdjudication } from "./a1-consistency-ai-assisted.js";
 
@@ -17,7 +17,7 @@ if (!disputesPath || !csvPath || !adjudicatorId || !outputPath) {
 if (!csvPath.endsWith(".local.csv") || !outputPath.endsWith(".local.json")) throw new Error("CSV/裁决输出必须以 .local.csv/.local.json 结尾");
 if (existsSync(outputPath)) throw new Error("human adjudication 已存在，拒绝覆盖人工决定");
 const input = readFileSync(disputesPath, "utf8").split("\n").map((line) => line.trim()).filter(Boolean).map((line) => JSON.parse(line));
-const disputes = makeConsistencyBlindWorklist(input);
+const disputes = readConsistencyBlindWorklist(input);
 if (!disputes.length || input.some((row, index) => (row as { pair_sha256?: unknown }).pair_sha256 !== disputes[index]?.pair_sha256)) {
   throw new Error("AI dispute worklist 必须非空且未被修改");
 }

@@ -10,9 +10,10 @@ import { dirname } from "node:path";
 import { z } from "zod";
 import { coverageThinking, validatorThinking } from "../src/lib/runtime/env.js";
 import { callStructured, MODELS, STRUCTURED_THINKING_TRANSPORT_VERSION, type Role } from "../src/lib/runtime/llm.js";
-import { makeConsistencyBlindWorklist } from "./a1-consistency-label-blind-worklist.js";
+import { readConsistencyBlindWorklist } from "./a1-consistency-label-blind-worklist.js";
 import {
   AI_ASSISTED_REVIEW_VERSION,
+  assertAiAssistedReviewerModelSeparation,
   pairPopulationSha,
   type AiAssistedReviewerSubmission,
 } from "./a1-consistency-ai-assisted.js";
@@ -53,6 +54,9 @@ if (existsSync(outputPath)) throw new Error("AI reviewer 输出已存在，拒�
 if (!process.env.ANTHROPIC_API_KEY) throw new Error("缺少 ANTHROPIC_API_KEY，无法运行 AI reviewer");
 
 const role = reviewerRoleArg as Extract<Role, "validator" | "coverage">;
+// This is intentionally before input/checkpoint restore and any LLM call. A same-model pair
+// cannot become independent merely by assigning it two roles, so do not discover it at compare.
+assertAiAssistedReviewerModelSeparation(MODELS.validator, MODELS.coverage);
 const model = MODELS[role];
 if (!model) throw new Error(`缺少 ${role === "coverage" ? "COVERAGE_MODEL" : "VALIDATOR_MODEL"}，无法形成独立 AI reviewer`);
 const thinking = role === "validator" ? validatorThinking() : coverageThinking();
@@ -60,7 +64,7 @@ const maxTokens = aiReviewMaxTokens();
 const reviewerId = `ai-${role}`;
 const inputBytes = readFileSync(worklistPath);
 const input = inputBytes.toString("utf8").split("\n").map((line) => line.trim()).filter(Boolean).map((line) => JSON.parse(line));
-const worklist = makeConsistencyBlindWorklist(input);
+const worklist = readConsistencyBlindWorklist(input);
 if (worklist.length !== 100 || input.some((row, index) => (row as { pair_sha256?: unknown }).pair_sha256 !== worklist[index]?.pair_sha256)) {
   throw new Error("worklist 必须是完整、未修改的 100 条 blind worklist");
 }

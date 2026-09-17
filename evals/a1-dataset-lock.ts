@@ -6,6 +6,11 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
+import {
+  bindConsistencyLabelDataset,
+  CONSISTENCY_LABEL_RECEIPT_VERSION,
+  type ConsistencyLabelBinding,
+} from "./a1-consistency-label-receipt.js";
 
 export const DATASET_LOCK_VERSION = "a1-dataset-lock-v1";
 
@@ -69,6 +74,8 @@ export interface DatasetFiles {
   qualityFile: string;
   consistencyFile: string;
   displayCoverageFixture: string;
+  /** Local controlled copy of the receipt named by the immutable lock reference. Never needed for legacy fixtures. */
+  consistencyReceiptFile?: string;
 }
 
 export interface DatasetLockValidation {
@@ -113,6 +120,119 @@ function nonEmpty(value: unknown): boolean {
 
 function sha256Hex(value: unknown): boolean {
   return typeof value === "string" && /^[a-f0-9]{64}$/u.test(value);
+}
+
+function object(value: unknown): Record<string, unknown> | null {
+  return value != null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function equalBinding(value: unknown, binding: ConsistencyLabelBinding): boolean {
+  const received = object(value);
+  return received != null
+    && received.dataset_sha256 === binding.dataset_sha256
+    && received.case_ids_sha256 === binding.case_ids_sha256
+    && received.pair_texts_sha256 === binding.pair_texts_sha256;
+}
+
+function distributionMatchesBinding(value: unknown, binding: ConsistencyLabelBinding): boolean {
+  const received = object(value);
+  const receivedNegativeTypes = object(received?.negative_types);
+  const notSupport = binding.cases.filter((entry) => entry.expected_consistency === "not_support");
+  const expected = {
+    total: binding.cases.length,
+    not_support: notSupport.length,
+    negative_types: {
+      exaggeration: notSupport.filter((entry) => entry.negative_type === "exaggeration").length,
+      out_of_context: notSupport.filter((entry) => entry.negative_type === "out_of_context").length,
+      misattribution: notSupport.filter((entry) => entry.negative_type === "misattribution").length,
+    },
+  };
+  return received != null && received.total === expected.total && received.not_support === expected.not_support
+    && receivedNegativeTypes != null
+    && receivedNegativeTypes.exaggeration === expected.negative_types.exaggeration
+    && receivedNegativeTypes.out_of_context === expected.negative_types.out_of_context
+    && receivedNegativeTypes.misattribution === expected.negative_types.misattribution;
+}
+
+/**
+ * A v2 lock is a decision over actual receipt bytes, not a declaration containing a URL and a
+ * hash-shaped string. The receipt has no source body, so the controlled runner can inject it
+ * alongside the three locked fixture files without expanding raw-content exposure.
+ */
+function validateControlledLabelReceipt(
+  labels: Record<string, unknown>,
+  consistencyPath: string | undefined,
+  receiptFile: string | undefined,
+  root: string,
+): string[] {
+  const issues: string[] = [];
+  if (!consistencyPath) return ["v2 dataset lock 无法验证 consistency JSONL 与标签 receipt 绑定"];
+  const receiptPath = receiptFile && fixturePath(root, receiptFile);
+  if (!receiptPath) return ["v2 dataset lock 必须提供位于 evals/dataset/ 的实际 consistency label receipt 文件"];
+  let bytes: Buffer;
+  let receipt: Record<string, unknown> | null;
+  try {
+    bytes = readFileSync(receiptPath);
+    receipt = object(JSON.parse(bytes.toString("utf8")));
+  } catch {
+    return ["v2 dataset lock 的 consistency label receipt 不可读取或不是 JSON 对象"];
+  }
+  if (labels.receipt_sha256 !== sha256(bytes)) issues.push("consistency label receipt sha256 与 dataset lock 不一致");
+  if (!receipt || receipt.schema_version !== CONSISTENCY_LABEL_RECEIPT_VERSION) {
+    issues.push("consistency label receipt schema_version 不受支持；AI-assisted/prototype receipt 不可用于 v2 lock");
+    return issues;
+  }
+  if (receipt.status !== "eligible_for_lock" || !Array.isArray(receipt.issues) || receipt.issues.length !== 0) {
+    issues.push("consistency label receipt 未处于无问题的 eligible_for_lock 状态");
+  }
+  let binding: ConsistencyLabelBinding;
+  try {
+    binding = bindConsistencyLabelDataset(consistencyPath);
+  } catch {
+    return [...issues, "无法从 consistency JSONL 建立 receipt 校验绑定"];
+  }
+  if (!equalBinding(receipt.binding, binding)) issues.push("consistency label receipt 未绑定当前 consistency JSONL 的 bytes、ID 和原文对 hash");
+  if (!distributionMatchesBinding(receipt.distribution, binding)) issues.push("consistency label receipt 的分布与当前 consistency JSONL 不一致");
+
+  const reviewers = Array.isArray(receipt.reviewers) ? receipt.reviewers.map(object) : null;
+  const submissionHashes = Array.isArray(receipt.reviewer_submission_sha256) ? receipt.reviewer_submission_sha256 : null;
+  if (!reviewers || reviewers.length !== 2 || !submissionHashes || submissionHashes.length !== 2) {
+    issues.push("consistency label receipt 必须记录恰两位 human reviewer 及其提交 hash");
+  } else {
+    const ids = new Set<string>();
+    for (const [index, reviewer] of reviewers.entries()) {
+      if (!reviewer || !nonEmpty(reviewer.reviewer_id) || reviewer.reviewer_kind !== "human" || reviewer.blind_attestation !== true
+        || !sha256Hex(reviewer.submission_sha256) || reviewer.submission_sha256 !== submissionHashes[index]) {
+        issues.push(`consistency label receipt reviewer[${index}] 不是已绑定的独立 human 盲标提交`);
+      }
+      if (reviewer && nonEmpty(reviewer.reviewer_id)) {
+        if (ids.has(reviewer.reviewer_id as string)) issues.push("consistency label receipt 的两位 reviewer_id 不可相同");
+        ids.add(reviewer.reviewer_id as string);
+      }
+    }
+  }
+  const adjudicators = Array.isArray(receipt.adjudicators) ? receipt.adjudicators.map(object) : null;
+  if (!adjudicators) {
+    issues.push("consistency label receipt 缺少 adjudicator provenance");
+  } else {
+    const reviewerIds = new Set((reviewers ?? []).flatMap((reviewer) => reviewer && nonEmpty(reviewer.reviewer_id) ? [reviewer.reviewer_id] : []));
+    const ids = new Set<string>();
+    for (const [index, adjudicator] of adjudicators.entries()) {
+      if (!adjudicator || !nonEmpty(adjudicator.adjudicator_id) || adjudicator.adjudicator_kind !== "human"
+        || !Number.isSafeInteger(adjudicator.adjudication_count) || (adjudicator.adjudication_count as number) < 1) {
+        issues.push(`consistency label receipt adjudicator[${index}] 不是有效的 human provenance`);
+        continue;
+      }
+      const id = adjudicator.adjudicator_id as string;
+      if (reviewerIds.has(id) || ids.has(id)) issues.push("consistency label receipt adjudicator 必须是不同于 reviewer 的第三人");
+      ids.add(id);
+    }
+    if ((adjudicators.length === 0 && receipt.adjudication_sha256 !== null)
+      || (adjudicators.length > 0 && !sha256Hex(receipt.adjudication_sha256))) {
+      issues.push("consistency label receipt adjudication hash 与 provenance 不一致");
+    }
+  }
+  return issues;
 }
 
 /** The owner record and Object Lock dates are UTC instants so their order is unambiguous. */
@@ -215,6 +335,14 @@ export function validateDatasetLock(lockPath: string, files: DatasetFiles, root 
     }
   } catch {
     issues.push("consistency JSONL 无法解析");
+  }
+  if (lock.tier === "controlled_snapshot_v2" && object(lock.labeling_provenance)) {
+    issues.push(...validateControlledLabelReceipt(
+      object(lock.labeling_provenance)!,
+      resolvedFiles.consistency,
+      files.consistencyReceiptFile,
+      root,
+    ));
   }
 
   const valid = issues.length === 0;

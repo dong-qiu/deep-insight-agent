@@ -108,6 +108,16 @@ const validDecision = (mark: Pick<ConsistencyLabelMark, "expected_consistency" |
   validLabel(mark.expected_consistency) && (mark.expected_consistency === "not_support" ? validNegativeType(mark.negative_type) : mark.negative_type == null)
 );
 
+/** Fail before either expensive reviewer begins when their configured models are correlated. */
+export function assertAiAssistedReviewerModelSeparation(validatorModel: string, coverageModel: string): void {
+  if (!validatorModel.trim() || !coverageModel.trim()) {
+    throw new Error("AI double-review 要求同时显式配置 VALIDATOR_MODEL 与 COVERAGE_MODEL");
+  }
+  if (validatorModel === coverageModel) {
+    throw new Error("AI double-review 的 validator 与 coverage 必须使用不同模型；拒绝在比较阶段之前浪费 reviewer 调用");
+  }
+}
+
 export function pairPopulationSha(worklist: readonly Pick<BlindWorklistRow, "id" | "pair_sha256">[]): string {
   return hash(stable([...worklist].map(({ id, pair_sha256 }) => ({ id, pair_sha256 })).sort((a, b) => a.id.localeCompare(b.id))));
 }

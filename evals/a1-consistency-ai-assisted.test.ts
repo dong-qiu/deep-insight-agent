@@ -4,6 +4,7 @@ import {
   AI_ASSISTED_ADJUDICATION_VERSION,
   AI_ASSISTED_CHAT_ADJUDICATION_PROGRESS_VERSION,
   AI_ASSISTED_REVIEW_VERSION,
+  assertAiAssistedReviewerModelSeparation,
   bindAiAssistedChatAdjudication,
   compareAiAssistedReviews,
   finalizeAiAssistedChatReviews,
@@ -28,6 +29,12 @@ function reviewer(id: string, role: "validator" | "coverage", model: string, lab
 }
 
 describe("A1 prototype AI-assisted consistency labels", () => {
+  it("rejects correlated reviewer models before either reviewer can spend a call", () => {
+    expect(() => assertAiAssistedReviewerModelSeparation("same-model", "same-model")).toThrow(/比较阶段之前/);
+    expect(() => assertAiAssistedReviewerModelSeparation("validator", "")).toThrow(/同时显式配置/);
+    expect(() => assertAiAssistedReviewerModelSeparation("validator", "coverage")).not.toThrow();
+  });
+
   it("produces a no-label human dispute worklist and never makes it lock eligible", () => {
     const first = reviewer("ai-validator", "validator", "model-a", ["support", "not_support", "uncertain"]);
     const second = reviewer("ai-coverage", "coverage", "model-b", ["support", "uncertain", "uncertain"]);

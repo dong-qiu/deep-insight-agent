@@ -98,8 +98,10 @@ resume artifact 只写入本地受控目录，不能提交或外传。
 三分类标注口径：`support`=原文明确支持；`not_support`=原文与 claim 有可判定冲突，或原文已有事实被断章取义、夸大、张冠李戴；`uncertain`=原文对关键主体、数值、比较、范围或条件没有足够信息，既不能证实也不能反驳。原文仅仅未提到 claim 时标为 `uncertain`，而不是 `not_support`。
 
 受控 v2 的 consistency JSONL 每行另有稳定 `id`，并用 `npm run labels:receipt` 将最终标签与两份独立 human
-盲标、必要的第三人裁决绑定。该 receipt 不含原文；实际 JSONL、blind-label 提交和 receipt 都保留在受控环境。AI
-预标注可用于诊断，但会被 receipt 拒绝，不能充当 reviewer 或 adjudicator。
+盲标、必要的第三人裁决绑定。该 receipt 不含原文；实际 JSONL、blind-label 提交和 receipt 都保留在受控环境。v2
+lock 还须通过 `A1_CONSISTENCY_RECEIPT_FILE` 提供该不可变回执的受控本地副本，以校验回执 bytes、human
+blind-attestation provenance、最终 JSONL 的 bytes/ID/pair hash 绑定及分布。AI 预标注可用于诊断，但会被 receipt
+与 v2 lock 拒绝，不能充当 reviewer 或 adjudicator。
 
 ⚠️ A1 的真实 arXiv cohort 已按当前 `dataset/GUIDE.md` 维护；展示覆盖基准是独立的手标安全回归集，不计入 A1 的主题/引用对规模。作 DCP 判定前仍须满足 `eval-criteria.md` 的 **≥ 5 个唯一主题、最终 `reader_visible_by_topic` 中每个主题 ≥ 10 条洞察、≥ 100 组引用-结论对**，且使用 `source-feasibility.md` MVP 清单里的**真实采集内容**；计数以运行 `manifest.json` 的 `dcp_sample` 为准。
 

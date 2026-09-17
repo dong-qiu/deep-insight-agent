@@ -6,7 +6,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 
-export const CONSISTENCY_LABEL_RECEIPT_VERSION = "a1-consistency-label-receipt-v1";
+export const CONSISTENCY_LABEL_RECEIPT_VERSION = "a1-consistency-label-receipt-v2";
 export const CONSISTENCY_LABEL_MIN_TOTAL = 100;
 export const CONSISTENCY_LABEL_MIN_NOT_SUPPORT = 40;
 
@@ -53,6 +53,23 @@ export interface ConsistencyLabelReceipt {
   schema_version: typeof CONSISTENCY_LABEL_RECEIPT_VERSION;
   status: "eligible_for_lock" | "ineligible";
   binding: Omit<ConsistencyLabelBinding, "cases">;
+  /**
+   * Hashes alone cannot establish that the two inputs were independent human blind reviews.
+   * Keep the minimum non-content provenance needed by a dataset lock to verify that contract.
+   * Identities are opaque controlled-runner IDs; source text and individual decisions stay out.
+   */
+  reviewers: Array<{
+    reviewer_id: string;
+    reviewer_kind: "human" | "ai";
+    blind_attestation: boolean;
+    submission_sha256: string;
+  }>;
+  /** Empty when the two blind reviews agreed everywhere. */
+  adjudicators: Array<{
+    adjudicator_id: string;
+    adjudicator_kind: "human" | "ai";
+    adjudication_count: number;
+  }>;
   reviewer_submission_sha256: string[];
   adjudication_sha256: string | null;
   distribution: { total: number; not_support: number; negative_types: Record<NegativeType, number> };
@@ -178,6 +195,19 @@ function receipt(
       case_ids_sha256: binding.case_ids_sha256,
       pair_texts_sha256: binding.pair_texts_sha256,
     },
+    reviewers: reviewers.map((reviewer) => ({
+      reviewer_id: reviewer.reviewer_id,
+      // Preserve, rather than coerce, an invalid runtime value: an ineligible receipt must not
+      // ever make an AI reviewer look like a human reviewer in downstream inspection.
+      reviewer_kind: reviewer.reviewer_kind,
+      blind_attestation: reviewer.blind_attestation,
+      submission_sha256: hash(stable(reviewer)),
+    })),
+    adjudicators: [...new Map(adjudications.map((adjudication) => [adjudication.adjudicator_id, {
+      adjudicator_id: adjudication.adjudicator_id,
+      adjudicator_kind: adjudication.adjudicator_kind,
+      adjudication_count: adjudications.filter((entry) => entry.adjudicator_id === adjudication.adjudicator_id).length,
+    }])).values()],
     reviewer_submission_sha256: reviewers.map((reviewer) => hash(stable(reviewer))),
     adjudication_sha256: adjudications.length ? hash(stable(adjudications)) : null,
     distribution: stats,

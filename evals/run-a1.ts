@@ -686,6 +686,9 @@ async function main(): Promise<void> {
       qualityFile,
       consistencyFile,
       displayCoverageFixture: DISPLAY_COVERAGE_FIXTURE,
+      // Formal v2 locks additionally inspect the actual receipt bytes. Legacy fixtures remain
+      // runnable without this optional controlled-runner input.
+      consistencyReceiptFile: process.env.A1_CONSISTENCY_RECEIPT_FILE,
     });
   } catch (error) {
     // An unreadable lock cannot make a run comparable or promotable, but preserving the failed

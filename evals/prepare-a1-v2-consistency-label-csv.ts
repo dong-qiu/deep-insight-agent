@@ -6,7 +6,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { makeConsistencyBlindWorklist } from "./a1-consistency-label-blind-worklist.js";
+import { readConsistencyBlindWorklist } from "./a1-consistency-label-blind-worklist.js";
 import { makeBlindLabelCsv } from "./a1-consistency-label-csv.js";
 
 const hash = (value: string | Buffer): string => createHash("sha256").update(value).digest("hex");
@@ -18,7 +18,7 @@ if (!worklistPath || !outputPath) {
 if (!outputPath.endsWith(".local.csv")) throw new Error("标注表必须以 .local.csv 结尾，防止第三方原文进入 Git");
 if (existsSync(outputPath)) throw new Error("标注表已存在，拒绝覆盖人工填写内容");
 const input = readFileSync(worklistPath, "utf8").split("\n").map((line) => line.trim()).filter(Boolean).map((line) => JSON.parse(line));
-const worklist = makeConsistencyBlindWorklist(input);
+const worklist = readConsistencyBlindWorklist(input);
 if (worklist.length !== 100 || input.some((row, index) => (row as { pair_sha256?: unknown }).pair_sha256 !== worklist[index]?.pair_sha256)) {
   throw new Error("worklist 必须是完整、未修改的 100 条 blind worklist");
 }

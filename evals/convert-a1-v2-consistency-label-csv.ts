@@ -5,7 +5,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { makeConsistencyBlindWorklist } from "./a1-consistency-label-blind-worklist.js";
+import { readConsistencyBlindWorklist } from "./a1-consistency-label-blind-worklist.js";
 import { blindLabelCsvToSubmission } from "./a1-consistency-label-csv.js";
 
 const [worklistPath, csvPath, reviewerId, outputPath] = process.argv.slice(2);
@@ -18,7 +18,7 @@ if (!csvPath.endsWith(".local.csv") || !outputPath.endsWith(".local.json")) {
 }
 if (existsSync(outputPath)) throw new Error("提交文件已存在，拒绝覆盖已冻结的人类决定");
 const input = readFileSync(worklistPath, "utf8").split("\n").map((line) => line.trim()).filter(Boolean).map((line) => JSON.parse(line));
-const worklist = makeConsistencyBlindWorklist(input);
+const worklist = readConsistencyBlindWorklist(input);
 if (worklist.length !== 100 || input.some((row, index) => (row as { pair_sha256?: unknown }).pair_sha256 !== worklist[index]?.pair_sha256)) {
   throw new Error("worklist 必须是完整、未修改的 100 条 blind worklist");
 }
