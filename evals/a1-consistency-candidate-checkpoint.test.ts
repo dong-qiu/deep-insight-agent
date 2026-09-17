@@ -132,7 +132,7 @@ describe("consistency candidate checkpoint", () => {
     const path = candidateCheckpointPath(join(root, "candidates.local.jsonl"));
     const checkpoint = createCandidateCheckpoint(context);
     addCandidateCheckpointProbeMetrics(checkpoint, {
-      generation_calls: 17, structural_response_retries: 3, calibration_calls: 14, retry_probe_attempts: 9,
+      generation_calls: 17, structural_response_retries: 3, calibration_calls: 14, calibration_structural_response_retries: 2, retry_probe_attempts: 9,
     });
     writeCandidateCheckpoint(path, checkpoint);
     const restored = loadCandidateCheckpoint(path, context, plan)!;

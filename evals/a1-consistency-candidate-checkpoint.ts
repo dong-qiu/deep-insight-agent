@@ -81,6 +81,8 @@ export interface CandidateCheckpointProbeMetrics {
   generation_calls: number;
   structural_response_retries: number;
   calibration_calls: number;
+  /** Retries after a malformed calibration tool payload; never a semantic relabel. */
+  calibration_structural_response_retries?: number;
   retry_probe_attempts: number;
 }
 
@@ -177,7 +179,9 @@ function validProbeMetrics(value: unknown): value is CandidateCheckpointProbeMet
   if (value == null || typeof value !== "object") return false;
   const metrics = value as Partial<CandidateCheckpointProbeMetrics>;
   return [metrics.generation_calls, metrics.structural_response_retries, metrics.calibration_calls, metrics.retry_probe_attempts]
-    .every((count) => Number.isSafeInteger(count) && (count as number) >= 0);
+    .every((count) => Number.isSafeInteger(count) && (count as number) >= 0)
+    && (metrics.calibration_structural_response_retries == null
+      || (Number.isSafeInteger(metrics.calibration_structural_response_retries) && metrics.calibration_structural_response_retries >= 0));
 }
 
 /**
@@ -317,7 +321,7 @@ export function createCandidateCheckpoint(context: CandidateCheckpointContext): 
   assertCheckpointContext(context);
   return {
     schema_version: CONSISTENCY_CANDIDATE_CHECKPOINT_VERSION, ...context, completed_batches: [],
-    probe_metrics: { generation_calls: 0, structural_response_retries: 0, calibration_calls: 0, retry_probe_attempts: 0 },
+    probe_metrics: { generation_calls: 0, structural_response_retries: 0, calibration_calls: 0, calibration_structural_response_retries: 0, retry_probe_attempts: 0 },
   };
 }
 
@@ -439,6 +443,8 @@ export function addCandidateCheckpointProbeMetrics(
     generation_calls: checkpoint.probe_metrics.generation_calls + metrics.generation_calls,
     structural_response_retries: checkpoint.probe_metrics.structural_response_retries + metrics.structural_response_retries,
     calibration_calls: checkpoint.probe_metrics.calibration_calls + metrics.calibration_calls,
+    calibration_structural_response_retries: (checkpoint.probe_metrics.calibration_structural_response_retries ?? 0)
+      + (metrics.calibration_structural_response_retries ?? 0),
     retry_probe_attempts: checkpoint.probe_metrics.retry_probe_attempts + metrics.retry_probe_attempts,
   };
   if (!validProbeMetrics(checkpoint.probe_metrics)) throw new Error("candidate checkpoint 探测调用指标溢出");

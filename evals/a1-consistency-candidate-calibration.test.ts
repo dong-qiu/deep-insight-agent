@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { boundedDistinctDrafts, buildCalibrationRetryInstruction, buildCandidateCalibrationUser, CandidateDraftResponseSchema, collectUnambiguousCandidateDrafts, hasValidDistinctDrafts, normalizeCandidateDraft, selectExactCalibratedDraft } from "./a1-consistency-candidate-calibration.js";
+import { boundedDistinctDrafts, buildCalibrationRetryInstruction, buildCandidateCalibrationUser, CandidateDraftResponseSchema, collectUnambiguousCandidateDrafts, hasValidDistinctDrafts, isRetriableCandidateCalibrationStructuralError, normalizeCandidateDraft, selectExactCalibratedDraft } from "./a1-consistency-candidate-calibration.js";
 
 describe("consistency candidate calibration boundary", () => {
   it("keeps the requested generator intent out of the independent calibration input", () => {
@@ -80,5 +80,13 @@ describe("consistency candidate calibration boundary", () => {
     const result = collectUnambiguousCandidateDrafts(["case-8"], parsed.candidates);
     expect(result.drafts.size).toBe(0);
     expect(result.missing_ids).toEqual(["case-8"]);
+  });
+
+  it("retries only malformed calibration projections, not transport or authorization failures", () => {
+    expect(isRetriableCandidateCalibrationStructuralError(new Error("结构化输出 schema 校验失败: invalid enum"))).toBe(true);
+    expect(isRetriableCandidateCalibrationStructuralError(new Error("候选 calibration 未返回与输入一一对应的 observed_intent"))).toBe(true);
+    expect(isRetriableCandidateCalibrationStructuralError(new Error("LLM stream exceeded wall-clock timeout"))).toBe(false);
+    expect(isRetriableCandidateCalibrationStructuralError(new Error("401 unauthorized"))).toBe(false);
+    expect(isRetriableCandidateCalibrationStructuralError("结构化输出 schema 校验失败")).toBe(false);
   });
 });

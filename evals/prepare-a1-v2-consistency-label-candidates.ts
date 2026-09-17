@@ -43,6 +43,7 @@ import {
   CandidateDraftResponseSchema,
   hasValidDistinctDrafts,
   collectUnambiguousCandidateDrafts,
+  isRetriableCandidateCalibrationStructuralError,
   selectExactCalibratedDraft,
   type CalibrationInput,
   type CalibrationRetryFeedback,
@@ -68,7 +69,13 @@ interface QualityCase { topic?: { id?: unknown }; items?: QualityItem[]; }
 interface CandidateInput { id: string; topic_id: string; source_id: string; source_text: string; source_body_sha256: string; }
 interface ProbeInput extends CandidateInput { probe_id: string; intent: CandidateIntent; }
 interface CandidateSelection { quality_input_item_count: number; selected_by_topic: Record<string, number>; selected_by_source: Record<string, number>; selected_item_ids_sha256: string; }
-interface ProbeMetrics { generation_calls: number; structural_response_retries: number; calibration_calls: number; retry_probe_attempts: number; }
+interface ProbeMetrics {
+  generation_calls: number;
+  structural_response_retries: number;
+  calibration_calls: number;
+  calibration_structural_response_retries: number;
+  retry_probe_attempts: number;
+}
 
 const PROMPT_VERSION = "a1-v2-consistency-candidate-v13-feasibility";
 const MAX_STRUCTURAL_RESPONSE_ATTEMPTS = 2;
@@ -210,16 +217,27 @@ async function calibrateCandidateStatements(
   batch: readonly CalibrationInput[],
   statements: ReadonlyMap<string, string>,
   thinking: boolean,
-): Promise<Map<string, CandidateIntent>> {
+): Promise<{ observed: Map<string, CandidateIntent>; structuralResponseRetries: number }> {
   const user = buildCandidateCalibrationUser(batch, statements);
-  const { data } = await callStructured({
-    role: "validator", system: CALIBRATION_SYSTEM, user, schema: CalibrationSchema, maxTokens: CALIBRATION_MAX_TOKENS, thinking,
-  });
-  const observed = new Map(data.evaluations.map((entry) => [entry.id, entry.observed_intent]));
-  if (observed.size !== batch.length || batch.some((input) => !observed.has(input.id))) {
-    throw new Error("候选 calibration 未返回与输入一一对应的 observed_intent");
+  let lastError: unknown;
+  for (let structuralAttempt = 1; structuralAttempt <= MAX_STRUCTURAL_RESPONSE_ATTEMPTS; structuralAttempt++) {
+    try {
+      const { data } = await callStructured({
+        role: "validator", system: CALIBRATION_SYSTEM, user, schema: CalibrationSchema, maxTokens: CALIBRATION_MAX_TOKENS, thinking,
+      });
+      const observed = new Map(data.evaluations.map((entry) => [entry.id, entry.observed_intent]));
+      if (observed.size !== batch.length || batch.some((input) => !observed.has(input.id))) {
+        throw new Error("候选 calibration 未返回与输入一一对应的 observed_intent");
+      }
+      return { observed, structuralResponseRetries: structuralAttempt - 1 };
+    } catch (error) {
+      // Transport/auth/model errors retain their ordinary fail-closed behavior.  Only an invalid
+      // forced-tool payload or an incomplete calibration projection is safe to request again.
+      if (!isRetriableCandidateCalibrationStructuralError(error)) throw error;
+      lastError = error;
+    }
   }
-  return observed;
+  throw lastError;
 }
 
 function makeFeasibilityEdge(probe: ProbeInput, statement: string, context: CandidateCheckpointContext): CandidateFeasibilityEdge {
@@ -251,7 +269,10 @@ async function probeCandidateBatch(
 ): Promise<{ batch: CandidateCheckpointBatch["candidates"]; metrics: ProbeMetrics }> {
   const outcomes = new Map<string, CandidateProbeDiagnostic>();
   let pending = makeProbes(sourceBatch);
-  const metrics: ProbeMetrics = { generation_calls: 0, structural_response_retries: 0, calibration_calls: 0, retry_probe_attempts: 0 };
+  const metrics: ProbeMetrics = {
+    generation_calls: 0, structural_response_retries: 0, calibration_calls: 0,
+    calibration_structural_response_retries: 0, retry_probe_attempts: 0,
+  };
   for (let attempt = 1; attempt <= LABEL_CANDIDATE_MAX_GENERATION_ATTEMPTS && pending.length; attempt++) {
     if (attempt > 1) metrics.retry_probe_attempts += pending.length;
     const nextPending: ProbeInput[] = [];
@@ -277,14 +298,15 @@ async function probeCandidateBatch(
           calibrationStatements.set(draftId, statement);
         }
       }
-      const observed = await calibrateCandidateStatements(calibrationInputs, calibrationStatements, thinking);
+      const calibration = await calibrateCandidateStatements(calibrationInputs, calibrationStatements, thinking);
       metrics.calibration_calls++;
+      metrics.calibration_structural_response_retries += calibration.structuralResponseRetries;
       for (const probe of batch) {
         const statements = generated.drafts.get(probe.probe_id)!;
         const diagnostic = outcomes.get(probe.probe_id) ?? { probe_id: probe.probe_id, intent: probe.intent, attempts: [] };
-        diagnostic.attempts.push({ drafts: statements.map((statement, draftIndex) => ({ statement, observed_intent: observed.get(candidateDraftId(probe.probe_id, draftIndex))! })) });
+        diagnostic.attempts.push({ drafts: statements.map((statement, draftIndex) => ({ statement, observed_intent: calibration.observed.get(candidateDraftId(probe.probe_id, draftIndex))! })) });
         outcomes.set(probe.probe_id, diagnostic);
-        const matched = selectExactCalibratedDraft(probe.probe_id, probe.intent, statements, observed);
+        const matched = selectExactCalibratedDraft(probe.probe_id, probe.intent, statements, calibration.observed);
         if (matched) diagnostic.feasible_edge = makeFeasibilityEdge(probe, matched, context);
         else {
           nextPending.push(probe);

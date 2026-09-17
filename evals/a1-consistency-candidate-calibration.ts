@@ -118,6 +118,12 @@ export function buildCandidateCalibrationUser(
  * Retry feedback is diagnostic-only process state.  It is supplied only to the generator for
  * rejected candidates, never persisted in the candidate pair, blind worklist, or label receipt.
  */
+/** Only malformed forced-tool output or an incomplete local projection may be retried safely. */
+export function isRetriableCandidateCalibrationStructuralError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : "";
+  return message.includes("结构化输出 schema 校验失败") || message.includes("候选 calibration 未返回");
+}
+
 export function buildCalibrationRetryInstruction(feedback: readonly CalibrationRetryFeedback[]): string {
   if (!feedback.length) return "";
   return `A prior draft for each listed candidate was independently classified as follows:\n${feedback
