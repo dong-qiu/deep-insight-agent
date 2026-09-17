@@ -33,9 +33,7 @@ import {
   CALIBRATION_SYSTEM,
   CandidateDraftResponseSchema,
   hasValidDistinctDrafts,
-  boundedDistinctDrafts,
-  normalizeCandidateDraft,
-  type CandidateDraftWire,
+  collectUnambiguousCandidateDrafts,
   selectExactCalibratedDraft,
   type CalibrationInput,
   type CalibrationRetryFeedback,
@@ -54,7 +52,8 @@ interface QualityCase { topic?: { id?: unknown }; items?: QualityItem[]; }
 interface CandidateInput { id: string; topic_id: string; source_id: string; source_text: string; source_body_sha256: string; intent: ReturnType<typeof plannedCandidateIntent>; }
 interface CandidateSelection { quality_input_item_count: number; selected_by_topic: Record<string, number>; selected_by_source: Record<string, number>; selected_item_ids_sha256: string; }
 
-const PROMPT_VERSION = "a1-v2-consistency-candidate-v9";
+const PROMPT_VERSION = "a1-v2-consistency-candidate-v10";
+const MAX_STRUCTURAL_RESPONSE_ATTEMPTS = 2;
 const SYSTEM = `You create unlabeled, diagnostic-only candidate claims for independent human consistency annotation.
 For each source excerpt, return ${LABEL_CANDIDATE_MIN_DRAFTS_PER_ATTEMPT} to ${LABEL_CANDIDATE_MAX_DRAFTS_PER_ATTEMPT} materially different concise English statements. The requested intent is private generator guidance only:
 - support: state one fact directly supported by the excerpt.
@@ -125,25 +124,11 @@ function readInputs(path: string): { inputs: CandidateInput[]; selection: Candid
   };
 }
 
-function exactStatementDrafts(
-  batch: readonly CandidateInput[],
-  candidates: readonly { id: string; statements: readonly CandidateDraftWire[] }[],
-): Map<string, readonly string[]> {
-  const drafts = new Map(candidates.map((candidate) => [candidate.id, boundedDistinctDrafts(candidate.statements.map((statement) => normalizeCandidateDraft(statement).trim()))]));
-  if (drafts.size !== batch.length || batch.some((input) => !drafts.has(input.id))) {
-    throw new Error("候选生成未返回与输入一一对应的 statements");
-  }
-  if ([...drafts.values()].some((statements) => !hasValidDistinctDrafts(statements))) {
-    throw new Error("候选生成返回了重复 draft，无法进行独立选择");
-  }
-  return drafts;
-}
-
 async function generateCandidateStatements(
   batch: readonly CandidateInput[],
   attempt: number,
   feedback: ReadonlyMap<string, Omit<CalibrationRetryFeedback, "id">>,
-): Promise<Map<string, readonly string[]>> {
+): Promise<{ drafts: Map<string, readonly string[]>; calls: number }> {
   const retryInstruction = attempt > 1
     ? buildCalibrationRetryInstruction(batch.map((input) => ({
       id: input.id,
@@ -151,15 +136,29 @@ async function generateCandidateStatements(
       previous_statement: feedback.get(input.id)!.previous_statement,
     })))
     : "";
-  const user = `${retryInstruction}\n<candidate_sources>\n${batch.map((input) => [
-    `<candidate id="${input.id}" intent="${input.intent}">`,
-    `<source_text>${escapeCandidatePromptData(input.source_text)}</source_text>`,
-    "</candidate>",
-  ].join("\n")).join("\n")}\n</candidate_sources>`;
-  const { data } = await callStructured({
-    role: "analyzer", system: SYSTEM, user, schema: CandidateDraftResponseSchema, maxTokens: 8_000,
-  });
-  return exactStatementDrafts(batch, data.candidates);
+  const resolved = new Map<string, readonly string[]>();
+  let remaining = [...batch];
+  let calls = 0;
+  for (let structuralAttempt = 1; structuralAttempt <= MAX_STRUCTURAL_RESPONSE_ATTEMPTS && remaining.length; structuralAttempt++) {
+    const structuralRetry = structuralAttempt > 1
+      ? "Your prior response omitted, duplicated, or malformed one or more requested candidate IDs. Return one valid statements array for every remaining ID and no other IDs."
+      : "";
+    const user = `${retryInstruction}\n${structuralRetry}\n<candidate_sources>\n${remaining.map((input) => [
+      `<candidate id="${input.id}" intent="${input.intent}">`,
+      `<source_text>${escapeCandidatePromptData(input.source_text)}</source_text>`,
+      "</candidate>",
+    ].join("\n")).join("\n")}\n</candidate_sources>`;
+    const { data } = await callStructured({
+      role: "analyzer", system: SYSTEM, user, schema: CandidateDraftResponseSchema, maxTokens: 8_000,
+    });
+    calls++;
+    const collected = collectUnambiguousCandidateDrafts(remaining.map((input) => input.id), data.candidates);
+    for (const [id, drafts] of collected.drafts) resolved.set(id, drafts);
+    remaining = remaining.filter((input) => !resolved.has(input.id));
+  }
+  if (remaining.length) throw new Error(`候选生成未返回与输入一一对应的 statements：${remaining.map((input) => input.id).join(",")}`);
+  if ([...resolved.values()].some((statements) => !hasValidDistinctDrafts(statements))) throw new Error("候选生成返回了无效 draft，无法进行独立选择");
+  return { drafts: resolved, calls };
 }
 
 async function calibrateCandidateStatements(
@@ -208,12 +207,14 @@ async function main(): Promise<void> {
     calibration_max_generation_attempts: LABEL_CANDIDATE_MAX_GENERATION_ATTEMPTS,
     calibration_minimum_drafts_per_attempt: LABEL_CANDIDATE_MIN_DRAFTS_PER_ATTEMPT,
     generator_max_returned_drafts_per_attempt: LABEL_CANDIDATE_MAX_RETURNED_DRAFTS_PER_ATTEMPT,
+    generator_max_structural_response_attempts: MAX_STRUCTURAL_RESPONSE_ATTEMPTS,
   };
   const checkpointPath = candidateCheckpointPath(outputPath);
   const checkpoint = loadCandidateCheckpoint(checkpointPath, checkpointContext, checkpointPlan) ?? createCandidateCheckpoint(checkpointContext);
   if (checkpoint.completed_batches.length) console.log(`从 candidate checkpoint 恢复 ${checkpoint.completed_batches.length}/${checkpointPlan.length} 个完整批次`);
   const output: Array<Record<string, unknown>> = [];
-  let freshGenerationAttempts = 0;
+  let freshGenerationCalls = 0;
+  let freshStructuralResponseRetries = 0;
   let freshCalibrationCalls = 0;
   let freshRetryCandidates = 0;
   for (let start = 0; start < inputs.length; start += batchSize) {
@@ -232,8 +233,10 @@ async function main(): Promise<void> {
     let retryFeedback = new Map<string, Omit<CalibrationRetryFeedback, "id">>();
     for (let attempt = 1; attempt <= LABEL_CANDIDATE_MAX_GENERATION_ATTEMPTS && pending.length; attempt++) {
       if (attempt > 1) freshRetryCandidates += pending.length;
-      const drafts = await generateCandidateStatements(pending, attempt, retryFeedback);
-      freshGenerationAttempts++;
+      const generated = await generateCandidateStatements(pending, attempt, retryFeedback);
+      const drafts = generated.drafts;
+      freshGenerationCalls += generated.calls;
+      freshStructuralResponseRetries += generated.calls - 1;
       const calibrationInputs: CalibrationInput[] = [];
       const calibrationStatements = new Map<string, string>();
       for (const input of pending) {
@@ -308,7 +311,9 @@ async function main(): Promise<void> {
       minimum_drafts_per_generation_attempt: LABEL_CANDIDATE_MIN_DRAFTS_PER_ATTEMPT,
       maximum_drafts_per_generation_attempt: LABEL_CANDIDATE_MAX_DRAFTS_PER_ATTEMPT,
       maximum_returned_drafts_per_generation_attempt: LABEL_CANDIDATE_MAX_RETURNED_DRAFTS_PER_ATTEMPT,
-      fresh_generation_attempts: freshGenerationAttempts,
+      fresh_generation_calls: freshGenerationCalls,
+      max_structural_response_attempts: MAX_STRUCTURAL_RESPONSE_ATTEMPTS,
+      fresh_structural_response_retries: freshStructuralResponseRetries,
       fresh_calibration_calls: freshCalibrationCalls,
       fresh_retry_candidate_attempts: freshRetryCandidates,
       retry_feedback: "rejected candidates receive only their independently observed relation and one prior draft in-process; neither is persisted with candidate pairs or shown to blind reviewers",

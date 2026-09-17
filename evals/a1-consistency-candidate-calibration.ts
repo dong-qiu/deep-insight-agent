@@ -21,6 +21,7 @@ const CandidateDraftSchema = z.union([
 ]);
 
 export type CandidateDraftWire = string | { statement: string };
+export interface CandidateDraftResponseEntry { id: string; statements: readonly CandidateDraftWire[]; }
 
 export function normalizeCandidateDraft(entry: CandidateDraftWire): string {
   return typeof entry === "string" ? entry : entry.statement;
@@ -60,6 +61,32 @@ export function hasValidDistinctDrafts(drafts: readonly string[]): boolean {
 /** Extra generated drafts are process-local; preserve only the first five distinct options for calibration. */
 export function boundedDistinctDrafts(drafts: readonly string[]): string[] {
   return [...new Set(drafts)].slice(0, LABEL_CANDIDATE_MAX_DRAFTS_PER_ATTEMPT);
+}
+
+/**
+ * Keep only unambiguous, requested IDs. Missing, unknown, duplicate, or invalid responses are
+ * retried by the caller rather than guessed into a source/candidate pairing.
+ */
+export function collectUnambiguousCandidateDrafts(
+  requestedIds: readonly string[],
+  candidates: readonly CandidateDraftResponseEntry[],
+): { drafts: Map<string, readonly string[]>; missing_ids: string[] } {
+  const requested = new Set(requestedIds);
+  const drafts = new Map<string, readonly string[]>();
+  const seen = new Set<string>();
+  const duplicates = new Set<string>();
+  for (const candidate of candidates) {
+    if (!requested.has(candidate.id)) continue;
+    if (seen.has(candidate.id)) {
+      duplicates.add(candidate.id);
+      continue;
+    }
+    seen.add(candidate.id);
+    const normalized = boundedDistinctDrafts(candidate.statements.map((statement) => normalizeCandidateDraft(statement).trim()));
+    if (hasValidDistinctDrafts(normalized)) drafts.set(candidate.id, normalized);
+  }
+  for (const id of duplicates) drafts.delete(id);
+  return { drafts, missing_ids: requestedIds.filter((id) => !drafts.has(id)) };
 }
 
 /** Select only a draft whose independently observed relation exactly matches the private intent. */

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { boundedDistinctDrafts, buildCalibrationRetryInstruction, buildCandidateCalibrationUser, CandidateDraftResponseSchema, hasValidDistinctDrafts, normalizeCandidateDraft, selectExactCalibratedDraft } from "./a1-consistency-candidate-calibration.js";
+import { boundedDistinctDrafts, buildCalibrationRetryInstruction, buildCandidateCalibrationUser, CandidateDraftResponseSchema, collectUnambiguousCandidateDrafts, hasValidDistinctDrafts, normalizeCandidateDraft, selectExactCalibratedDraft } from "./a1-consistency-candidate-calibration.js";
 
 describe("consistency candidate calibration boundary", () => {
   it("keeps the requested generator intent out of the independent calibration input", () => {
@@ -60,5 +60,16 @@ describe("consistency candidate calibration boundary", () => {
       "Second complete candidate statement.",
       "Third complete candidate statement.",
     ]);
+  });
+
+  it("only retains requested IDs with one valid draft set and returns others for structural retry", () => {
+    const result = collectUnambiguousCandidateDrafts(["case-5", "case-6", "case-7"], [
+      { id: "case-5", statements: ["First complete statement.", "Second complete statement.", "Third complete statement."] },
+      { id: "case-6", statements: ["First complete statement.", "Second complete statement.", "Third complete statement."] },
+      { id: "case-6", statements: ["Conflicting complete statement.", "Another complete statement.", "Third alternative complete statement."] },
+      { id: "unknown", statements: ["First complete statement.", "Second complete statement.", "Third complete statement."] },
+    ]);
+    expect([...result.drafts.keys()]).toEqual(["case-5"]);
+    expect(result.missing_ids).toEqual(["case-6", "case-7"]);
   });
 });
