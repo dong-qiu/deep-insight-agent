@@ -29,6 +29,10 @@ function cookieHeader(jar: CookieJar): string {
   return [...jar].map(([name, value]) => `${name}=${value}`).join("; ");
 }
 
+function streamedText(body: string): string {
+  return body.replace(/<!--.*?-->/g, "");
+}
+
 async function unusedPort(): Promise<number> {
   return await new Promise((resolve, reject) => {
     const server = createServer();
@@ -91,18 +95,21 @@ function seedPublishedReview(): void {
   db.prepare(`INSERT INTO generation_trace(id,scope_kind,trigger_kind,status,completion_policy,coverage,runtime_version,summary,started_at)
     VALUES ('trace_review','topic_pipeline','api','completed','{}','complete','{}','{}','2026-09-20T00:00:00.000Z')`).run();
 
-  const contentSnapshot = { url: "https://example.test/review", source_id: "source_review", title: "Review input", published_at: null, fetched_at: "2026-09-20T00:00:00.000Z", body_kind: "article", fetch_status: "ok", body_length: 0, content_hash: "review-content-hash" };
-  const content: EntityRef = { type: "content_item", locator: { kind: "id", id: "content_review" }, revision: `content-v4:${canonicalHash(contentSnapshot)}`, role: "input" };
+  const contents: Array<{ ref: EntityRef; snapshot: Record<string, string | number | null> }> = Array.from({ length: 51 }, (_, offset) => {
+    const index = offset + 1;
+    const snapshot = { url: `https://example.test/review/${index}`, source_id: "source_review", title: `Review input ${index}`, published_at: null, fetched_at: "2026-09-20T00:00:00.000Z", body_kind: "article", fetch_status: "ok", body_length: 0, content_hash: `review-content-hash-${index}` };
+    return { ref: { type: "content_item", locator: { kind: "id", id: `content_review_${index}` }, revision: `content-v4:${canonicalHash(snapshot)}`, role: "input" }, snapshot };
+  });
   const batch: EntityRef = { type: "analysis_batch", locator: { kind: "id", id: "batch_review" }, revision: "batch_review", role: "input" };
   const validation: EntityRef = { type: "validation_result", locator: { kind: "composite", key: { batch_id: "batch_review" } }, revision: "batch_review", role: "input" };
-  captureRevision(db, { entity_type: content.type, entity_key: entityKey(content), revision: content.revision, snapshot: contentSnapshot });
+  for (const { ref, snapshot } of contents) captureRevision(db, { entity_type: ref.type, entity_key: entityKey(ref), revision: ref.revision, snapshot });
   const analyzerContext = { analyzer_model: "analyzer", analyzer_prompt_hash: "a".repeat(64), analyzer_output_version: "v1", analyzer_cache_mode: "write_only", coverage_model: "coverage", coverage_prompt_hash: "b".repeat(64), coverage_thinking: "off", coverage_thinking_source: "explicit" };
   const validatorContext = { validator_model: "validator", validator_prompt_hash: "c".repeat(64), validator_thinking: "off", validator_cache_mode: "on" };
   const reportContext = { report_selection_rule: REPORT_SELECTION_RULE_VERSION, report_renderer: REPORT_SELECTION_RULE_VERSION };
-  const analyzeStarted = appendGenerationEvent(db, { trace_id: "trace_review", stage: "analyze", event_type: "started", input_refs: [content], version_context: analyzerContext, context_completeness: "complete" });
-  const analyzeCompleted = appendGenerationEvent(db, { trace_id: "trace_review", stage: "analyze", event_type: "completed", input_refs: [content], output_refs: [{ ...batch, role: "output" }] });
-  const validateStarted = appendGenerationEvent(db, { trace_id: "trace_review", stage: "validate", event_type: "started", input_refs: [batch, content], version_context: validatorContext, context_completeness: "complete" });
-  const validateCompleted = appendGenerationEvent(db, { trace_id: "trace_review", stage: "validate", event_type: "completed", input_refs: [batch, content], output_refs: [{ ...validation, role: "output" }], version_context: validatorContext, context_completeness: "complete" });
+  const analyzeStarted = appendGenerationEvent(db, { trace_id: "trace_review", stage: "analyze", event_type: "started", input_refs: contents.map(({ ref }) => ref), version_context: analyzerContext, context_completeness: "complete" });
+  const analyzeCompleted = appendGenerationEvent(db, { trace_id: "trace_review", stage: "analyze", event_type: "completed", input_refs: contents.map(({ ref }) => ref), output_refs: [{ ...batch, role: "output" }] });
+  const validateStarted = appendGenerationEvent(db, { trace_id: "trace_review", stage: "validate", event_type: "started", input_refs: [batch, ...contents.map(({ ref }) => ref)], version_context: validatorContext, context_completeness: "complete" });
+  const validateCompleted = appendGenerationEvent(db, { trace_id: "trace_review", stage: "validate", event_type: "completed", input_refs: [batch, ...contents.map(({ ref }) => ref)], output_refs: [{ ...validation, role: "output" }], version_context: validatorContext, context_completeness: "complete" });
   const reportStarted = appendGenerationEvent(db, { trace_id: "trace_review", stage: "generate_report", event_type: "started", input_refs: [batch, validation], version_context: reportContext, context_completeness: "complete" });
   persistReportReviewPackage(db, {
     report_id: "report-review", trace_id: "trace_review", analysis_batch_id: "batch_review",
@@ -160,11 +167,16 @@ describe("report quality review live application", () => {
     const firstBody = await firstPage.text();
     expect(firstPage.status).toBe(200);
     expect(firstBody).toContain("报告质量复盘");
+    expect(streamedText(firstBody)).toContain("分析输入快照 · 本页 50 / 51");
+    const inputSecondPage = await fetch(`${baseUrl}${reviewPath}?inputs_page=2`, { headers });
+    expect(inputSecondPage.status).toBe(200);
+    const inputSecondBody = streamedText(await inputSecondPage.text());
+    expect(inputSecondBody).toContain("第 2 / 2 页（共 51 条）");
+    expect(inputSecondBody).toContain("Review input 51");
     const secondPage = await fetch(`${baseUrl}${reviewPath}?decisions_page=2`, { headers });
     expect(secondPage.status).toBe(200);
     const secondBody = await secondPage.text();
-    // React's streamed HTML may separate text nodes with comment markers.
-    expect(secondBody.replace(/<!--.*?-->/g, "")).toContain("第 2 / 2 页（共 51 条）");
+    expect(streamedText(secondBody)).toContain("第 2 / 2 页（共 51 条）");
     expect(secondBody).toContain("insight_51");
 
     await expect(fetch(`${baseUrl}/admin/reports/legacy-review/review`, { headers })).resolves.toMatchObject({ status: 404 });
