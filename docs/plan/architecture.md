@@ -396,6 +396,18 @@ P1b-2 的指标写模型由 collector、analysis 与 validation 的已提交写�
 仅 `status=done` 的 Report 可以拥有 `ReportIndexEntry` / FTS 条目或被任何公开读取路径返回；`failed` Report 仅可由
 admin 生命周期界面读取，且没有正文 artifact。
 
+### 报告质量复盘 (ReportReviewSnapshot / ReportSelectionDecision)
+
+内部质量复盘的有界索引，不复制报告正文、原文、`raw_ref`、prompt 或原始模型输出。它由不可变 provenance event、
+既有 `Insight` / `Citation` / `CitationCheck` 及确定性报告选择共同派生；表只由 v45 provenance migration 创建。
+
+| 实体 | 主键 / 关键字段 | 可见性与完整性契约 |
+|---|---|---|
+| `report_review_snapshot` | `report_id`；`trace_id`、`analysis_batch_id`、五个阶段 event ID、`selection_rule_version`、`review_trace_status`、`publication_state` | 每份启用后的报告至多一个快照。只有 `Report.status=done`、`publication_state=published`、`review_trace_status=complete` 且存在 `validate_started_event_id` 才能被 admin reader 返回。五个 event 必须属于同一 trace，并冻结分析、校验和报告选择的配置。 |
+| `report_selection_decision` | `(report_id, insight_id)`；`decision`、`reason_code`、`related_insight_id?`、`published_rank?`、支持 citation index | 每个 batch Insight 必有且仅有一个 `published` / `excluded` 终态；`published` 的有序集合必须精确等于 `Report.insight_ids`，其 citation 在发布边界重验为 `pass + support`。 |
+
+历史报告不回填 review 数据。复盘 reader 对非 admin、非 `done`、缺少已发布完整 snapshot 的记录统一 404；DTO 只返回分页、长度受限的元数据。
+
 ### 报告索引项 (ReportIndexEntry)
 
 支撑报告库的搜索 / 筛选 / 排序，落 SQLite 行 + FTS5 虚拟表（`title` / `body` / `summary`）。

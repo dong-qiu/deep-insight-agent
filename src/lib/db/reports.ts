@@ -10,6 +10,7 @@ import { anchorEnvelopeBytes, anchorMatchesManifest, manifestForArtifact, parseC
 import { assertAnchorPublicationKeyActive, commitAnchoredPublications, writePlannedAnchor } from "./integrity-publication.js";
 import { isReportReaderVisible, reportReaderVisibilitySql } from "./integrity-lifecycle.js";
 import { insightFingerprint } from "../runtime/statement-fingerprint.js";
+import { assertReviewPackageForPublish, isTerminalReviewPackageError, publishReviewPackage } from "./report-review.js";
 
 const j = (v: unknown): string => JSON.stringify(v);
 
@@ -24,11 +25,25 @@ function hasFailureColumn(db: DB): boolean {
 function hasReportEffectTable(db: DB): boolean {
   return !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='generation_effect'").get();
 }
-
 interface ReportArtifact { target: string; sha256: string; size: number; report_id: string }
 interface ReportEffectProvenance { traceId: string; eventId: string }
 export interface ReportAnchorPublication { store: AnchorStore; signer: AnchorSigner; retainUntil: string; retentionEnds: readonly [string, string, string]; issuedAt?: string }
 const digest = (body: string): string => createHash("sha256").update(body, "utf8").digest("hex");
+function assertEffectProvenanceBinding(provenance: ReportEffectProvenance | undefined): void {
+  if (provenance && (!provenance.traceId || !provenance.eventId)) {
+    throw new Error("generation_effect_provenance_binding_incomplete");
+  }
+}
+function effectProvenance(traceId: string | null, eventId: string | null): ReportEffectProvenance | undefined {
+  const hasTrace = !!traceId;
+  const hasEvent = !!eventId;
+  if (hasTrace !== hasEvent) throw new Error("generation_effect_provenance_binding_incomplete");
+  return hasTrace ? { traceId: traceId!, eventId: eventId! } : undefined;
+}
+function assertTraceReviewPackage(db: DB, report: Report, provenance: ReportEffectProvenance | undefined): void {
+  assertEffectProvenanceBinding(provenance);
+  if (provenance) assertReviewPackageForPublish(db, report.id, report.insight_ids, provenance);
+}
 function requiredAnchorRetention(anchor: ReportAnchorPublication, issuedAt: string): string {
   const minimum = new Date(Date.parse(issuedAt) + 100 * 24 * 60 * 60_000).toISOString();
   if (anchor.retentionEnds.length !== 3) throw new Error("integrity_anchor_retention_policy_required");
@@ -103,7 +118,7 @@ export function saveFailedReport(
 /** P0a 已迁移库的发布协议：意图 + manifest 先入库，双 artifact 通过 staging 原子换名后才公开索引。 */
 function saveReportWithEffect(
   db: DB, report: Report, index: ReportIndexEntry, dir: string,
-  provenance: ReportEffectProvenance | undefined, afterPublish?: () => void,
+  provenance: ReportEffectProvenance | undefined, beforePublish?: () => void, assertPublish?: () => void, afterPublish?: () => void,
 ): void {
   const root = resolve(dir);
   const effectId = `effect_${randomUUID().replaceAll("-", "")}`;
@@ -117,11 +132,14 @@ function saveReportWithEffect(
   }));
   // 先写 intent。publication_payload 仅存 index 元数据，正文只存在 staging/final artifact。
   db.transaction(() => {
+    assertEffectProvenanceBinding(provenance);
     if (provenance) {
       const event = db.prepare("SELECT 1 FROM generation_event WHERE id=? AND trace_id=?").get(provenance.eventId, provenance.traceId);
       if (!event) throw new Error("generation_effect_event_trace_mismatch");
     }
     insertReportMetadata(db, { ...report, status: "generating" }, null);
+    beforePublish?.();
+    assertTraceReviewPackage(db, report, provenance);
     db.prepare(`INSERT INTO generation_effect
       (id,trace_id,event_id,report_id,kind,idempotency_key,artifact_manifest,publication_payload,status,error,created_at,updated_at)
       VALUES (@id,@trace_id,@event_id,@report_id,'report_file',@idempotency_key,@artifact_manifest,@publication_payload,'planned',NULL,@now,@now)`)
@@ -150,6 +168,9 @@ function saveReportWithEffect(
           throw new Error(`report artifact is incomplete: ${artifact.target}`);
         }
       }
+      assertPublish?.();
+      assertTraceReviewPackage(db, report, provenance);
+      if (provenance) publishReviewPackage(db, report.id);
       const published = db.prepare("UPDATE report SET status='done',body_path=?,failure=NULL WHERE id=? AND status='generating'")
         .run(resolve(join(root, report.id)), report.id);
       if (published.changes !== 1) throw new Error(`report ${report.id} is no longer generating`);
@@ -178,14 +199,17 @@ function saveReportWithEffect(
  */
 async function saveAnchoredReportWithEffect(
   db: DB, report: Report, index: ReportIndexEntry, dir: string, anchor: ReportAnchorPublication,
-  provenance: ReportEffectProvenance | undefined, afterPublish?: () => void,
+  provenance: ReportEffectProvenance | undefined, beforePublish?: () => void, assertPublish?: () => void, afterPublish?: () => void,
 ): Promise<void> {
   const root = resolve(dir); const effectId = `effect_${randomUUID().replaceAll("-", "")}`; const created = new Date().toISOString();
   const artifacts: Array<{ target: string; body: string }> = [{ target: `${report.id}.md`, body: report.body_md }, { target: `${report.id}.html`, body: report.body_html }];
   const effectManifest: ReportArtifact[] = artifacts.map(({ target, body }) => ({ target, sha256: digest(body), size: Buffer.byteLength(body, "utf8"), report_id: report.id }));
   db.transaction(() => {
+    assertEffectProvenanceBinding(provenance);
     if (provenance && !db.prepare("SELECT 1 FROM generation_event WHERE id=? AND trace_id=?").get(provenance.eventId, provenance.traceId)) throw new Error("generation_effect_event_trace_mismatch");
     insertReportMetadata(db, { ...report, status: "generating" }, null);
+    beforePublish?.();
+    assertTraceReviewPackage(db, report, provenance);
     db.prepare(`INSERT INTO generation_effect(id,trace_id,event_id,report_id,kind,idempotency_key,artifact_manifest,publication_payload,status,error,created_at,updated_at)
       VALUES (@id,@trace_id,@event_id,@report_id,'report_file',@idempotency_key,@artifact_manifest,@publication_payload,'planned',NULL,@now,@now)`).run({
       id: effectId, trace_id: provenance?.traceId ?? null, event_id: provenance?.eventId ?? null, report_id: report.id,
@@ -209,6 +233,9 @@ async function saveAnchoredReportWithEffect(
     const written = await Promise.all(publications.map(({ manifest }) => writePlannedAnchor(db, anchor.store, { generation_effect_id: effectId, manifest, issued_at: issuedAt, retain_until: retainUntil }, anchor.signer)));
     commitAnchoredPublications(db, { generation_effect_id: effectId, publications: publications.map(({ manifest }, index) => ({ manifest, provider_version_id: written[index]!.provider_version_id })), finalize: () => {
       for (const artifact of effectManifest) { const finalPath = safeTarget(root, artifact.target); if (!existsSync(finalPath) || digest(readFileSync(finalPath, "utf8")) !== artifact.sha256) throw new Error(`report artifact is incomplete: ${artifact.target}`); }
+      assertPublish?.();
+      assertTraceReviewPackage(db, report, provenance);
+      if (provenance) publishReviewPackage(db, report.id);
       const published = db.prepare("UPDATE report SET status='done',body_path=?,failure=NULL WHERE id=? AND status='generating'").run(resolve(join(root, report.id)), report.id);
       if (published.changes !== 1) throw new Error(`report ${report.id} is no longer generating`);
       insertReportIndex(db, report, index); afterPublish?.();
@@ -232,7 +259,7 @@ export function saveReport(
   db: DB,
   report: Report,
   index: ReportIndexEntry,
-  opts: { dir?: string; provenance?: ReportEffectProvenance; afterPublish?: () => void; anchor?: ReportAnchorPublication } = {},
+  opts: { dir?: string; provenance?: ReportEffectProvenance; beforePublish?: () => void; assertPublish?: () => void; afterPublish?: () => void; anchor?: ReportAnchorPublication } = {},
 ): void | Promise<void> {
   if (report.status !== "done") {
     // lifecycle 的非发布态只记录元数据；禁止给 failed/generating 写正文、索引或 FTS。
@@ -247,10 +274,10 @@ export function saveReport(
   const dir = opts.dir ?? defaultBodyDir();
   if (opts.anchor) {
     if (!hasReportEffectTable(db)) throw new Error("integrity_anchor_schema_required");
-    return saveAnchoredReportWithEffect(db, report, index, dir, opts.anchor, opts.provenance, opts.afterPublish);
+    return saveAnchoredReportWithEffect(db, report, index, dir, opts.anchor, opts.provenance, opts.beforePublish, opts.assertPublish, opts.afterPublish);
   }
   if (hasReportEffectTable(db)) {
-    saveReportWithEffect(db, report, index, dir, opts.provenance, opts.afterPublish);
+    saveReportWithEffect(db, report, index, dir, opts.provenance, opts.beforePublish, opts.assertPublish, opts.afterPublish);
     return;
   }
   const prefix = resolve(join(dir, report.id));
@@ -258,12 +285,17 @@ export function saveReport(
   // 先持久化生成意图，任何文件/索引异常都会留下不可公开但可由 admin 生命周期页诊断的尝试。
   db.transaction(() => {
     insertReportMetadata(db, { ...report, status: "generating" }, null);
+    opts.beforePublish?.();
+    assertTraceReviewPackage(db, report, opts.provenance);
   })();
   try {
     mkdirSync(dir, { recursive: true });
     writeFileSync(`${prefix}.md`, report.body_md);
     writeFileSync(`${prefix}.html`, report.body_html);
     db.transaction(() => {
+      opts.assertPublish?.();
+      assertTraceReviewPackage(db, report, opts.provenance);
+      if (opts.provenance) publishReviewPackage(db, report.id);
       const published = db.prepare(
         lifecycleSchema
           ? "UPDATE report SET status='done', body_path=?, failure=NULL WHERE id=? AND status='generating'"
@@ -336,15 +368,20 @@ export function reconcileReportEffects(db: DB, opts: { dir?: string } = {}): { c
         insight_ids: JSON.parse(row.insight_ids), event_ids: JSON.parse(row.event_ids), prev_report_id: row.prev_report_id,
         citation_count: row.citation_count, cost: JSON.parse(row.cost),
       };
+      const provenance = effectProvenance(row.trace_id, row.event_id);
       db.transaction(() => {
+        if (provenance) {
+          assertReviewPackageForPublish(db, row.report_id, report.insight_ids, provenance);
+          publishReviewPackage(db, row.report_id);
+        }
         db.prepare("UPDATE report SET status='done',body_path=?,failure=NULL WHERE id=? AND status='generating'")
           .run(resolve(join(root, row.report_id)), row.report_id);
         insertReportIndex(db, report, index);
         db.prepare("UPDATE generation_effect SET status='committed',error=NULL,updated_at=? WHERE id=?")
           .run(new Date().toISOString(), row.effect_id);
-        if (row.trace_id && row.event_id) {
+        if (provenance) {
           const started = db.prepare("SELECT input_refs FROM generation_event WHERE id=? AND trace_id=?")
-            .get(row.event_id, row.trace_id) as { input_refs: string } | undefined;
+            .get(provenance.eventId, provenance.traceId) as { input_refs: string } | undefined;
           if (!started) throw new Error("generation_effect_event_trace_mismatch");
           const output: EntityRef = {
             type: "report", locator: { kind: "id", id: row.report_id }, revision: row.report_id,
@@ -355,7 +392,7 @@ export function reconcileReportEffects(db: DB, opts: { dir?: string } = {}): { c
             snapshot: { id: row.report_id, type: row.type, topic_id: row.topic_id, status: "done", insight_ids: report.insight_ids, citation_count: report.citation_count, event_ids: report.event_ids },
           });
           appendGenerationEvent(db, {
-            trace_id: row.trace_id, stage: "generate_report", event_type: "completed",
+            trace_id: provenance.traceId, stage: "generate_report", event_type: "completed",
             input_refs: JSON.parse(started.input_refs) as EntityRef[], output_refs: [output],
           });
         }
@@ -422,6 +459,7 @@ export async function reconcileAnchoredReportEffects(
         insight_ids: JSON.parse(effect.insight_ids), event_ids: JSON.parse(effect.event_ids), prev_report_id: effect.prev_report_id,
         citation_count: effect.citation_count, cost: JSON.parse(effect.cost),
       };
+      const provenance = effectProvenance(effect.trace_id, effect.event_id);
       const requiredTargets = new Set([`${report.id}.md`, `${report.id}.html`]);
       if (anchors.length !== fileManifest.length || fileManifest.length !== 2
         || fileManifest.some((artifact) => !requiredTargets.delete(artifact.target))) throw new Error("anchored_report_manifest_incomplete");
@@ -472,23 +510,31 @@ export async function reconcileAnchoredReportEffects(
       commitAnchoredPublications(db, {
         generation_effect_id: effect.effect_id, publications,
         finalize: () => {
+          if (provenance) {
+            assertReviewPackageForPublish(db, report.id, report.insight_ids, provenance);
+            publishReviewPackage(db, report.id);
+          }
           const published = db.prepare("UPDATE report SET status='done',body_path=?,failure=NULL WHERE id=? AND status='generating'")
             .run(resolve(join(root, report.id)), report.id);
           if (published.changes !== 1) throw new Error(`report ${report.id} is no longer generating`);
           insertReportIndex(db, report, index);
-          if (effect.trace_id && effect.event_id) {
-            const started = db.prepare("SELECT input_refs FROM generation_event WHERE id=? AND trace_id=?").get(effect.event_id, effect.trace_id) as { input_refs: string } | undefined;
+          if (provenance) {
+            const started = db.prepare("SELECT input_refs FROM generation_event WHERE id=? AND trace_id=?").get(provenance.eventId, provenance.traceId) as { input_refs: string } | undefined;
             if (!started) throw new Error("generation_effect_event_trace_mismatch");
             const output: EntityRef = { type: "report", locator: { kind: "id", id: report.id }, revision: report.id, role: "output", visibility_class: "public_evidence" };
             captureRevision(db, { entity_type: output.type, entity_key: entityKey(output), revision: output.revision, snapshot: { id: report.id, type: report.type, topic_id: report.topic_id, status: "done", insight_ids: report.insight_ids, citation_count: report.citation_count, event_ids: report.event_ids } });
-            appendGenerationEvent(db, { trace_id: effect.trace_id, stage: "generate_report", event_type: "completed", input_refs: JSON.parse(started.input_refs) as EntityRef[], output_refs: [output] });
+            appendGenerationEvent(db, { trace_id: provenance.traceId, stage: "generate_report", event_type: "completed", input_refs: JSON.parse(started.input_refs) as EntityRef[], output_refs: [output] });
           }
         },
       });
       committed += 1;
     } catch (error) {
       const message = error instanceof Error ? error.message.slice(0, 256) : String(error).slice(0, 256);
-      const terminal = ["orphan_anchor_conflict", "anchored_report_manifest_incomplete", "anchored_report_artifact_invalid", "anchored_report_idempotency_conflict", "anchor_signature_invalid", "anchor_verification_key_unavailable", "anchor_signing_key_revoked"].includes(message);
+      // A review package is written atomically with the planned report effect.  Its
+      // absence or a mismatched immutable trace cannot be repaired by retrying an
+      // anchor write; retrying would only keep an invalid report intent alive.
+      const terminal = ["orphan_anchor_conflict", "anchored_report_manifest_incomplete", "anchored_report_artifact_invalid", "anchored_report_idempotency_conflict", "anchor_signature_invalid", "anchor_verification_key_unavailable", "anchor_signing_key_revoked", "generation_effect_provenance_binding_incomplete"].includes(message)
+        || isTerminalReviewPackageError(message);
       db.transaction(() => {
         for (const row of anchors) {
           if (terminal) {

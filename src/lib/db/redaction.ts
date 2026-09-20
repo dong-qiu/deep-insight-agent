@@ -24,6 +24,8 @@ export function applyRedactionTombstone(db: DB, tombstone: RedactionTombstone): 
     db.prepare("UPDATE report SET status='deleted', body_path=NULL WHERE id=? AND status <> 'deleted'").run(reportId);
     db.prepare("DELETE FROM report_fts WHERE report_id=?").run(reportId);
     db.prepare("DELETE FROM report_index WHERE report_id=?").run(reportId);
+    db.prepare("DELETE FROM report_review_snapshot WHERE report_id=?").run(reportId);
+    db.prepare("DELETE FROM report_selection_decision WHERE report_id=?").run(reportId);
     db.prepare("DELETE FROM ppt_polish_cache WHERE report_id=?").run(reportId);
   }
 }

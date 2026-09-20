@@ -12,6 +12,7 @@ import { completeRetentionDestruction, destroyRetainedReport, isReportReaderVisi
 import { commitAnchoredPublication, writeDailyMerkleRoot, writePlannedAnchor } from "./integrity-publication.js";
 import { openDb, type DB } from "./index.js";
 import { applyProvenanceMigrations } from "./provenance-migrations.js";
+import { appendGenerationEvent } from "./provenance-facts.js";
 import { applyRedactionTombstone } from "./redaction.js";
 import { getReport, queryReportIndex } from "./reports.js";
 import { insertTopic } from "./repos.js";
@@ -92,15 +93,35 @@ function restorePreExternalHoldRootSchema(db: DB): void {
   db.prepare("DELETE FROM schema_migration WHERE version IN ('20260825_30_integrity_lifecycle_external_hold','20260825_31_integrity_daily_root_material_backfill')").run();
 }
 
+function seedReviewReaderRows(db: DB): void {
+  db.prepare("INSERT INTO analysis_batch(id,topic_id,time_window,status) VALUES ('review-batch','topic','{}','done')").run();
+  db.prepare(`INSERT INTO insight(id,batch_id,topic_id,type,statement,importance,importance_basis,source_count,multi_source,time_window,language)
+    VALUES ('review-insight','review-batch','topic','aggregation','S',1,'x',1,0,'{}','en')`).run();
+  db.prepare(`INSERT INTO generation_trace(id,scope_kind,trigger_kind,status,completion_policy,coverage,runtime_version,summary,started_at)
+    VALUES ('review-trace','topic_pipeline','api','running','{}','complete','{}','{}','2026-01-01T00:00:00Z')`).run();
+  const analyzeStart = appendGenerationEvent(db, { trace_id: "review-trace", stage: "analyze", event_type: "started" });
+  const analyzeComplete = appendGenerationEvent(db, { trace_id: "review-trace", stage: "analyze", event_type: "completed" });
+  const validateStart = appendGenerationEvent(db, { trace_id: "review-trace", stage: "validate", event_type: "started" });
+  const validateComplete = appendGenerationEvent(db, { trace_id: "review-trace", stage: "validate", event_type: "completed" });
+  const reportStart = appendGenerationEvent(db, { trace_id: "review-trace", stage: "generate_report", event_type: "started" });
+  db.prepare(`INSERT INTO report_review_snapshot(report_id,trace_id,analysis_batch_id,analyze_started_event_id,analyze_completed_event_id,validate_started_event_id,validate_completed_event_id,generate_report_started_event_id,selection_rule_version,review_trace_status,publication_state,created_at)
+    VALUES ('report','review-trace','review-batch',?,?,?,?,?,'report-selection-v1','complete','published','2026-01-01T00:00:00Z')`).run(analyzeStart.id, analyzeComplete.id, validateStart.id, validateComplete.id, reportStart.id);
+  db.prepare(`INSERT INTO report_selection_decision(report_id,insight_id,decision,reason_code,related_insight_id,published_rank,supporting_citation_indices,selection_rule_version,created_at)
+    VALUES ('report','review-insight','excluded','projection_or_citation_gate',NULL,NULL,'[]','report-selection-v1','2026-01-01T00:00:00Z')`).run();
+}
+
 describe("integrity retention lifecycle", () => {
   it("uses delete_pending as a reader-only withdrawal while keeping every verification material row", async () => {
     const { db } = await seeded();
+    seedReviewReaderRows(db);
     expect(requestReportDeletion(db, { report_id: "report", actor_id: "admin", readable_until: "2026-01-10T00:00:00.000Z", archive_until: "2026-01-11T00:00:00.000Z", now: "2026-01-02T00:00:00.000Z" })).toEqual({ kind: "delete_pending" });
     expect(isReportReaderVisible(db, "report")).toBe(false);
     expect(getReport(db, "report")).toBeNull();
     expect(queryReportIndex(db, { topic: "topic" })).toEqual([]);
     expect(db.prepare("SELECT COUNT(*) AS n FROM artifact_manifest WHERE report_id='report'").get()).toEqual({ n: 1 });
     expect(db.prepare("SELECT COUNT(*) AS n FROM integrity_signing_key").get()).toEqual({ n: 1 });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM report_review_snapshot WHERE report_id='report'").get()).toEqual({ n: 0 });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM report_selection_decision WHERE report_id='report'").get()).toEqual({ n: 0 });
   });
 
   it("rejects deletion and writes a locator-free audit while a legal hold is active", async () => {

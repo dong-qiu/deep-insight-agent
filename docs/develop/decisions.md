@@ -372,7 +372,7 @@ ADR 实现拆为可独立合入的小 PR，`TRANSCRIPT_FETCH` 默认关贯穿前
 - 决定：`source` 表加两列——
   - `fetch_mode TEXT DEFAULT 'feed'`（`feed` = 仅用 feed 正文；`full_text` = 按条目 URL 抓全文）：把"要不要抓全文"从全局猜变成**按源声明**。保留、干净。
   - **`content_container TEXT`（评审修正，原 `content_selector`，可空）：按源覆盖正文容器，值为单个 `class`/`id` token（如 `js-article`、`rich_media_content`），不是 CSS 选择器。**——**理由（design-must-connect-to-code）**：`article.ts` 抽取引擎是**纯正则 + 同名标签深度配对、无 DOM**（注释三次强调极简无依赖）；用户填 CSS 组合选择器（`div.post > article .body`）这个引擎**执行不了、会静默失效**。收窄为单 token 可**直接喂现有 `CONTAINER_PATTERNS` 正则模板**（把该 token 加进容器定位的优先匹配），**零新依赖**。明确**不承诺 CSS 选择器、不引 cheerio**（引 DOM 解析器 = 破坏极简原则，否决）。无明显容器的站点（先知）手填一次 container token 即可，不靠全局白名单猜。
-  - 触发条件从「空正文」放宽为「`fetch_mode=full_text` 且正文短于阈值」覆盖短摘要源（先知 80 字），但**仅对声明了 `full_text` 的源**（不波及 feed-only 源、不误伤正常短摘要）。**阈值复用已有 `article.ts` 的 `MIN_ARTICLE_CHARS=200`（评审建议），不新增按源旋钮**——避免正文恰在阈值附近的源每轮抓/不抓抖动。
+  - **2026-09-13 证据完整性修正**：`fetch_mode=full_text` 是完整性承诺，不得再以 RSS 摘要长度推断全文；每个新 URL 都抓文章页。此前「短于 `MIN_ARTICLE_CHARS=200` 才抓」的规则会把长摘要静默保存为 `ok` 正文，已在 A1 隔离 cohort 中复现。只对声明 `full_text` 的源生效；feed-only 源保持原行为。页面抓取失败而保留摘要时，必须标 `fetch_status=partial`，并由受控评测快照拒绝。
   - **总闸交互（第二轮评审🟡——须明确，否则收益落空）**：`articleFetchEnabled()`（全局 `ARTICLE_FETCH`，默认关）与按源 `fetch_mode` 的关系——**决定：`fetch_mode=full_text` 的源不受全局总闸约束**（按源声明即抓），否则存量库默认 `ARTICLE_FETCH` 未开 → 决定③上线后先知仍不被抓、收益落空。`ARTICLE_FETCH` 总闸语义改为「**全局应急熔断**」（设 0 时连 `full_text` 源也停，用于一键止血），平时无需开。
   - **container token 注入须按源隔离（第二轮评审🟡）**：`CONTAINER_PATTERNS` 是**全局共用**正则数组，按源 token 若直接 OR 进全局模板（如某站泛 `content`）会**污染对其他站点的匹配**。**决定：抽取时按当前源的 `content_container` 动态构造一条最高优先级正则、置于全局模板之前**，不改全局数组、不跨源污染。
 - 对标 RSSHub 的 route 级配置：每源自带抓取/抽取策略，而非全局一刀切。
@@ -1415,3 +1415,76 @@ P0 可在不写 P1 指标的默认路径上继续发布。未来恢复 P1 时，
 `observe/relevant_only`。规范性状态机、指标和运维优先级以
 [`podcast-transcript-acquisition.md`](../plan/specs/podcast-transcript-acquisition.md) 为准，避免在 ADR 重复。
 所有 source/collector 改动遵循 Eval-Gate；A1 不完整时不得作为全文日报上线证明。
+
+---
+
+## ADR-0028: A1 Coverage 校准与可比基线治理
+
+- **日期**: 2026-09-10
+- **状态**: Accepted
+
+### 决定
+
+1. `VALIDATOR_THINKING` 与 `COVERAGE_THINKING` 分离：主展示引用审计继续由 validator 读取前者；仅 quote-self-contained 的独立 coverage countercheck 读取后者。迁移期 Coverage 缺省继承 validator，但任何 CI/生产/DCP 基线必须显式冻结它并在 EvalConfig 记录有效值、来源和 transport 版本。
+2. 不把任一 Sonnet/relay 型号写死为 Coverage 结论。coverage 模型须与 analyzer、validator 两两不同，并先对实际 endpoint/key/model 跑 **thinking + forced tool_choice** canary。2026-09-10 当前 validator relay canary 已通过；Coverage 保持显式 thinking-off，直到其独立模型通过同一 canary。
+3. 端到端展示覆盖的 `unsafe_accept=0` 继续是发布 AND 门；另设 quote-only 手标 fixture，以测量 Coverage 自身对读者可见 quote+locator 的 `unsafe_accept=0`，不得由主 validator 先拒绝而掩盖。历史 27 个 reject 候选不可自动转作新的金标，须人工标注、去重后才能加入。
+4. 评测数据分为可回归的 repository legacy fixture 与可提升的受控 v2 snapshot。v2 不提交新的第三方全文，必须由不可变快照、source URL/ID manifest、license/retention、topic mapping、去重规则、标签分布和 dataset-lock 绑定；锁验证至少 100 consistency pairs、40 not_support 和三类负例齐全。
+5. 旧 baseline 因缺完整配置/lock 永远不可比。新的 baseline 首次 clean/full/pass/v2 run 仅为 `provisional`；同 commit/config/lock/stratum 的第二个不同 run 才可 `dcp_accepted`。自动状态不得替代 owner/architect DCP 签署。
+6. 人评 receipt 是绑定 manifest/queue/dataset lock/reader-visible insight text hashes 的加性证据。两份完整独立盲评、无漏项/重复、所有分歧第三人 adjudication 后才可 `eligible_for_signoff`；n=50 中至多 1 例幻觉只说明样本点估计 ≤2%，不外推为总体保证。非显然和 importance 合理性保持诊断指标。
+
+### 后果
+
+模型/提示词/数据锁改变均会使旧基线不可比；A1 必须保留 role-level calls、request attempts、failures 与 P95，之后才可把成本或 P95 用作比较标准。Coverage 模型实验与 validator thinking A/B 需先同配置 A/A，再至少三次重复；Analyzer 仅在 v2 错误终态稳定后才考虑调整，且不得放宽 fail-closed 或自动修复引用。
+
+---
+
+## ADR-0029: 报告质量复盘采用冻结迁移与发布边界索引
+
+- **日期**: 2026-09-16
+- **状态**: Accepted
+
+### 背景
+
+内部需要复盘一份已发布报告的真实输入、阶段配置、引用校验和最终选择，但把正文、原始抓取、prompt 或模型响应复制到新的管理页会扩大敏感数据面。历史报告又普遍缺少完整 trace、revision 或冻结配置，不能通过猜测回填成可审计记录。
+
+### 决定
+
+1. 以 `report_review_snapshot` 和 `report_selection_decision` 作为最小索引：只绑定既有 provenance event、batch、Insight、citation index 与受控 reason code，不复制正文、raw handle、prompt 或模型响应。
+2. 两表只由冻结的 v45 provenance migration 创建；不得放进启动期 `SCHEMA_SQL`，也不得从可变 fresh-schema 常量派生 migration checksum。这样物理 v44→v45 DDL 与 ledger 在同一 exclusive transaction 内完成，未来 fresh schema 调整不重写历史 migration 意义。
+3. 新报告在同一发布 intent 内先写 planned 快照与完整 decision 集；初次发布、普通恢复和 anchored 恢复都必须重验其 trace/event 精确绑定、输入与配置完整性、decision 完备性和 `pass + support` 白名单。失败不可将报告发布为 `done`。
+4. 只向 admin 暴露 `done + published + complete` 快照的分页、长度受限 DTO；非 admin、历史 legacy/partial、未发布或非 done 统一 404。历史数据不回填，不以“空复盘”伪装为完备记录。
+
+### 后果
+
+复盘可以支持质量判断而不扩大原文保存或模型重放范围；其数据模型和部署迁移需随发布一起验证。任何后续新增展示字段、复盘状态或 migration 变更都必须同时更新 architecture 契约、迁移测试和 admin reader 的 fail-closed 边界。
+
+---
+
+## ADR-0030: A1 v2 受控快照维持内部研究原型范围，延期正式提升
+
+- **日期**: 2026-09-20
+- **状态**: Accepted
+
+### 背景
+
+当前 `a1-v2-platform-expanded-140-20260913` 仅用于个人/内部的非商业研究实验。它已有
+`approved_all` 的**原型范围**决定，但尚未取得逐来源的正式条款/许可决定，也未完成正式 human
+双盲标签、v2 dataset lock、DCP 样本量或可比 baseline。
+
+### 决定
+
+1. 当前快照、其内部 A1 运行、AI-assisted diagnostic、人工分歧裁决和运行性能证据仅用于内部研究
+   与原型质量判断；继续禁止再分发原文、训练、生产发布、对外展示原文或将结果用于商业场景。
+2. 本阶段不要求补齐 source-specific formal owner decision，也不派发正式双 human 盲审；原型可以
+   使用已完成的 `prototype_ai_assisted` 产物，但必须保留 `lock_eligible=false`。
+3. 不创建 `verified_v2` lock，不更新/建立正式 baseline，不宣称 Eval-Gate 通过、DCP 通过或发布准入。
+   自动 full A1 仍可作为内部管线与安全诊断证据，smoke 仍只能作链路验证。
+4. 现有逐来源 owner precheck 与正式 100-pair blind worklist 均保持冻结，作为未来正式化的前置资料；
+   不因原型范围而把任一 `unresolved`/`needs_permission` 行改写成外部许可或 `approved`。
+5. 若未来需要商业、生产或对外发布，必须重新进入正式路径：逐来源条款/权限决定、必要时替换快照、
+   两位 human 盲标与第三人裁决、`verified_v2` lock、DCP 样本量，以及两次同配置 clean full A1。
+
+### 后果
+
+原型可继续以较低的人工作业成本迭代和评估结果，但其证据边界必须在产物、文档和任何演示中保持
+显式。该决定不是法律意见，也不将“内部/非商业”解释为自动取得第三方全文存储、模型评测或再利用许可。

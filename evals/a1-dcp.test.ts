@@ -8,6 +8,7 @@ import {
   DCP_MIN_READER_VISIBLE_INSIGHTS_PER_TOPIC,
   DCP_MIN_TOPICS,
   dcpSamplePrerequisite,
+  readerVisibleDuplicateEvidence,
 } from "./a1-dcp.js";
 
 const topicCounts = (counts: readonly number[]) => counts.map((count, index) => ({ topic_id: `topic-${index + 1}`, count }));
@@ -81,5 +82,27 @@ describe("A1 DCP sample prerequisite", () => {
       consistencyPairs: DCP_MIN_CONSISTENCY_PAIRS,
       readerVisibleInsightsByTopic: topicCounts(Array.from({ length: DCP_MIN_TOPICS }, () => DCP_MIN_READER_VISIBLE_INSIGHTS_PER_TOPIC)),
     })).toBeNull();
+  });
+
+  it("拒绝重复 insight id 和跨 topic 重复的 reader-visible statement+bound quote", () => {
+    const quote = "Frontier reduces latency error.";
+    const base = {
+      type: "aggregation" as const, event_id: null, statement: quote, statement_citation_index: 1,
+      importance: 3, importance_basis: "系统重要性判断：该结果可为工程选型提供参考。",
+      citations: [{ content_item_id: "ci", quote, locator: { paragraph_index: 0, char_start: 0, char_end: quote.length } }],
+      source_count: 1, multi_source: false, time_window: { start: "", end: "" }, confidence: null, language: "en",
+    };
+    const duplicated = readerVisibleDuplicateEvidence([
+      { ...base, id: "same-id", topic_id: "a" },
+      { ...base, id: "same-id", topic_id: "b" },
+      { ...base, id: "other-id", topic_id: "c" },
+    ] as Insight[]);
+    expect(duplicated).toEqual({ duplicate_insight_ids: ["same-id"], duplicate_statement_quote_keys: [`${quote}\u0000${quote}`] });
+    expect(dcpSamplePrerequisite({
+      topics: DCP_MIN_TOPICS, consistencyPairs: DCP_MIN_CONSISTENCY_PAIRS,
+      readerVisibleInsightsByTopic: topicCounts(Array.from({ length: DCP_MIN_TOPICS }, () => DCP_MIN_READER_VISIBLE_INSIGHTS_PER_TOPIC)),
+      duplicateInsightIds: duplicated.duplicate_insight_ids,
+      duplicateStatementQuoteKeys: duplicated.duplicate_statement_quote_keys,
+    })).toContain("重复 insight_id：same-id");
   });
 });

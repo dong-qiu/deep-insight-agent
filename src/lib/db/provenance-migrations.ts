@@ -5,6 +5,41 @@ import { merkleRoot } from "./integrity-anchors.js";
 import { INTEGRITY_ANCHOR_HARDENING_SCHEMA_SQL, INTEGRITY_ANCHOR_IMMUTABILITY_SQL, INTEGRITY_ANCHOR_LEGACY_SCHEMA_SQL, INTEGRITY_ANCHOR_RECOVERY_SCHEMA_SQL, INTEGRITY_CHECK_KEY_REVOCATION_SCHEMA_SQL, INTEGRITY_CHECK_SCHEMA_SQL, INTEGRITY_LIFECYCLE_COMPLETION_PROOF_SCHEMA_SQL, INTEGRITY_LIFECYCLE_DAILY_ROOT_MATERIAL_BACKFILL_SQL, INTEGRITY_LIFECYCLE_EXTERNAL_HOLD_SCHEMA_SQL, INTEGRITY_LIFECYCLE_HOLD_AND_TOMBSTONE_RETENTION_SCHEMA_SQL, INTEGRITY_LIFECYCLE_HOLD_TOMBSTONE_SNAPSHOT_SCHEMA_SQL, INTEGRITY_LIFECYCLE_PURGE_SCHEMA_SQL, INTEGRITY_LIFECYCLE_REGISTRY_PROOF_SCHEMA_SQL, INTEGRITY_LIFECYCLE_SCHEMA_SQL, INTEGRITY_MAINTENANCE_LEASE_SCHEMA_SQL, P1_DASHBOARD_COST_READ_MODEL_V1_SCHEMA_SQL, P1_DASHBOARD_READ_MODEL_V1_FOLLOWUP_SQL, P1_DASHBOARD_TRACE_READ_MODEL_V1_SCHEMA_SQL, P1_METRICS_CONFLICT_AUDIT_SCHEMA_SQL, P1_METRICS_FOLLOWUP_SCHEMA_SQL, P1_METRICS_SCHEMA_SQL, PODCAST_TRANSCRIPT_POLICY_VERSION_IMMUTABILITY_SQL } from "./schema.js";
 import { migratePodcastTranscriptContracts } from "./podcast-transcript-migrations.js";
 
+// Immutable migration input. This feature enters after main's v40-v44 ledger
+// entries, so its v45 DDL must never be derived from the mutable fresh-schema
+// bootstrap contract.
+const REPORT_REVIEW_TRACE_V1_FROZEN_SQL = `
+CREATE TABLE IF NOT EXISTS report_review_snapshot (
+  report_id TEXT PRIMARY KEY REFERENCES report(id) ON DELETE CASCADE,
+  trace_id TEXT NOT NULL REFERENCES generation_trace(id),
+  analysis_batch_id TEXT NOT NULL REFERENCES analysis_batch(id),
+  analyze_started_event_id TEXT NOT NULL REFERENCES generation_event(id),
+  analyze_completed_event_id TEXT NOT NULL REFERENCES generation_event(id),
+  validate_started_event_id TEXT NOT NULL REFERENCES generation_event(id),
+  validate_completed_event_id TEXT NOT NULL REFERENCES generation_event(id),
+  generate_report_started_event_id TEXT NOT NULL REFERENCES generation_event(id),
+  selection_rule_version TEXT NOT NULL,
+  review_trace_status TEXT NOT NULL CHECK (review_trace_status IN ('complete','partial','legacy')),
+  publication_state TEXT NOT NULL CHECK (publication_state IN ('planned','published')),
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_report_review_snapshot_trace ON report_review_snapshot(trace_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS report_selection_decision (
+  report_id TEXT NOT NULL REFERENCES report(id) ON DELETE CASCADE,
+  insight_id TEXT NOT NULL REFERENCES insight(id),
+  decision TEXT NOT NULL CHECK (decision IN ('published','excluded')),
+  reason_code TEXT NOT NULL,
+  related_insight_id TEXT REFERENCES insight(id),
+  published_rank INTEGER,
+  supporting_citation_indices TEXT NOT NULL DEFAULT '[]',
+  selection_rule_version TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (report_id, insight_id),
+  CHECK ((decision='published' AND published_rank IS NOT NULL) OR (decision='excluded' AND published_rank IS NULL))
+);
+CREATE INDEX IF NOT EXISTS idx_report_selection_decision_report_rank ON report_selection_decision(report_id, decision, published_rank);
+`;
+
 const CORE_SQL = `
 ALTER TABLE run ADD COLUMN trace_id TEXT;
 CREATE INDEX IF NOT EXISTS idx_run_trace ON run(trace_id);
@@ -407,6 +442,9 @@ DELETE FROM dashboard_cost_fact_v1 WHERE tenant_id='default' AND EXISTS (
   { version: "20260911_42_pending_raw_archive_reader_eligibility", sql: PENDING_RAW_ARCHIVE_ELIGIBILITY_SQL },
   { version: "20260913_43_podcast_transcript_contracts", sql: PODCAST_TRANSCRIPT_CONTRACTS_SQL },
   { version: "20260913_44_podcast_transcript_policy_version_immutability", sql: PODCAST_TRANSCRIPT_POLICY_VERSION_IMMUTABILITY_SQL },
+  // v40-v44 were already released on main. This feature was never released
+  // under its old branch-local v40/v41 numbers, so it enters as v45.
+  { version: "20260916_45_report_quality_review_trace_v1", sql: REPORT_REVIEW_TRACE_V1_FROZEN_SQL },
 ];
 
 function hasColumn(db: DB, table: string, column: string): boolean {
@@ -607,6 +645,8 @@ export function applyProvenanceMigrations(db: DB): void {
       } else if (migration.version === "20260913_43_podcast_transcript_contracts") {
         migratePodcastTranscriptContracts(db, { includePolicyVersionImmutability: false });
       } else if (migration.version === "20260913_44_podcast_transcript_policy_version_immutability") {
+        db.exec(migration.sql);
+      } else if (migration.version === "20260916_45_report_quality_review_trace_v1") {
         db.exec(migration.sql);
       } else if (migration.version === "20260825_31_integrity_daily_root_material_backfill") {
         backfillDailyRootMaterial(db);

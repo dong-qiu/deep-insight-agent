@@ -8,6 +8,8 @@ describe("isTransientApiError（中转站瞬时错误 vs 模型层错误）", ()
 
   it("超时/网络系统错误关键词 → true", () => {
     expect(isTransientApiError(new Error("Request timed out."))).toBe(true); // SDK 超时实际消息
+    expect(isTransientApiError(new Error("LLM stream exceeded wall-clock timeout of 30000ms"))).toBe(true); // 本地 SSE 墙钟兜底
+    expect(isTransientApiError(new Error('Unexpected event order, got message_start before receiving "message_stop"'))).toBe(true); // relay SSE 流序损坏
     expect(isTransientApiError(new Error("aborted due to timeout"))).toBe(true);
     expect(isTransientApiError(new Error("read ECONNRESET"))).toBe(true);
     expect(isTransientApiError(new Error("connect ETIMEDOUT 1.2.3.4:443"))).toBe(true);

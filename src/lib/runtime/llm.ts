@@ -12,7 +12,8 @@ import Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod/v4";
 import type { Cost } from "../types.js";
 import { FALLBACK_PRICING, costUSD, type TokenUsage } from "./cost.js";
-import { llmMaxRetries, llmTimeoutMs, promptCacheOn } from "./env.js";
+import { llmMaxRetries, llmTimeoutMs, llmTransientRetries, llmTransientRetryBackoffMs, promptCacheOn } from "./env.js";
+import { isTransientApiError } from "./errors.js";
 
 // 已警告过的未知模型集合（每模型仅警告一次，防日志刷屏）
 const warnedUnpriced = new Set<string>();
@@ -35,6 +36,11 @@ function fallbackCostUSD(model: string, u: TokenUsage): number {
 }
 
 export type Role = "analyzer" | "validator" | "coverage" | "followup";
+
+/** Admission-tested against the configured relay with forced tool_choice (2026-09-10). Any
+ * transport/budget change is part of EvalConfig because it changes validator behaviour. */
+export const STRUCTURED_THINKING_TRANSPORT_VERSION = "forced-tool-enabled-v1";
+export const STRUCTURED_THINKING_BUDGET_TOKENS = 1024;
 
 export const MODELS: Record<Role, string> = {
   analyzer: process.env.ANALYZER_MODEL ?? "claude-sonnet-4-6",
@@ -117,7 +123,116 @@ export interface CostReport {
   totalUSD: number;
 }
 
+/**
+ * Aggregate that is safe to persist in an A1 artifact: it contains no prompt, source body,
+ * endpoint or credential. The operation name is an application-owned constant, never model
+ * output or user data, so it is suitable for narrowing a stop reason to a pipeline phase.
+ */
+export interface CallTelemetryAggregate {
+  calls: number;
+  failures: number;
+  /** Underlying relay requests; may exceed calls when refusal is retried. */
+  requests: number;
+  /** Terminal reasons returned by completed model requests. `max_tokens` remains evidence even
+   * when the relay supplied a schema-valid tool use. */
+  output_stop_reasons: Record<string, number>;
+  latency_ms: { p50: number; p95: number; max: number };
+}
+
+export interface RoleCallTelemetry extends CallTelemetryAggregate {
+  /** The role-level aggregate alone cannot identify which validator phase was truncated. */
+  by_operation: Record<string, CallTelemetryAggregate>;
+}
+
 const meter = new Map<string, ModelUsage>();
+type MutableCallTelemetryAggregate = {
+  calls: number;
+  failures: number;
+  requests: number;
+  outputStopReasons: Map<string, number>;
+  latency: number[];
+};
+
+const roleMeter = new Map<Role, {
+  aggregate: MutableCallTelemetryAggregate;
+  byOperation: Map<string, MutableCallTelemetryAggregate>;
+}>();
+
+function emptyMutableCallTelemetry(): MutableCallTelemetryAggregate {
+  return { calls: 0, failures: 0, requests: 0, outputStopReasons: new Map<string, number>(), latency: [] };
+}
+
+function readonlyCallTelemetry(aggregate: MutableCallTelemetryAggregate): CallTelemetryAggregate {
+  return {
+    calls: aggregate.calls,
+    failures: aggregate.failures,
+    requests: aggregate.requests,
+    output_stop_reasons: Object.fromEntries([...aggregate.outputStopReasons.entries()].sort(([a], [b]) => a.localeCompare(b))),
+    latency_ms: {
+      p50: percentile(aggregate.latency, 0.5),
+      p95: percentile(aggregate.latency, 0.95),
+      max: aggregate.latency.length ? Math.max(...aggregate.latency) : 0,
+    },
+  };
+}
+
+function recordCallTelemetry(
+  aggregate: MutableCallTelemetryAggregate,
+  latencyMs: number,
+  requests: number,
+  failed: boolean,
+  outputStopReasons: readonly string[],
+): void {
+  aggregate.calls++;
+  aggregate.requests += requests;
+  if (failed) aggregate.failures++;
+  for (const reason of outputStopReasons) {
+    if (!reason) continue;
+    aggregate.outputStopReasons.set(reason, (aggregate.outputStopReasons.get(reason) ?? 0) + 1);
+  }
+  aggregate.latency.push(Math.max(0, latencyMs));
+}
+
+const percentile = (values: readonly number[], fraction: number): number => {
+  if (!values.length) return 0;
+  const ordered = [...values].sort((a, b) => a - b);
+  return ordered[Math.min(ordered.length - 1, Math.ceil(ordered.length * fraction) - 1)]!;
+};
+
+/** Exported for deterministic tests and non-LLM harnesses; production calls record it in
+ * callStructured's finally block so failures and retries cannot disappear from A1 evidence. */
+export function recordRoleCallTelemetry(
+  role: Role,
+  latencyMs: number,
+  requests: number,
+  failed: boolean,
+  outputStopReasons: readonly string[] = [],
+  /** Use a code-owned, bounded operation identifier; omitted calls remain visibly unclassified. */
+  operation = "unclassified",
+): void {
+  const meter = roleMeter.get(role) ?? { aggregate: emptyMutableCallTelemetry(), byOperation: new Map<string, MutableCallTelemetryAggregate>() };
+  const operationMeter = meter.byOperation.get(operation) ?? emptyMutableCallTelemetry();
+  recordCallTelemetry(meter.aggregate, latencyMs, requests, failed, outputStopReasons);
+  recordCallTelemetry(operationMeter, latencyMs, requests, failed, outputStopReasons);
+  meter.byOperation.set(operation, operationMeter);
+  roleMeter.set(role, meter);
+}
+
+export function getRoleCallTelemetry(): Record<Role, RoleCallTelemetry> {
+  return Object.fromEntries((["analyzer", "validator", "coverage", "followup"] as Role[]).map((role) => {
+    const meter = roleMeter.get(role) ?? { aggregate: emptyMutableCallTelemetry(), byOperation: new Map<string, MutableCallTelemetryAggregate>() };
+    return [role, {
+      ...readonlyCallTelemetry(meter.aggregate),
+      by_operation: Object.fromEntries([...meter.byOperation.entries()]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([operation, aggregate]) => [operation, readonlyCallTelemetry(aggregate)])),
+    }];
+  })) as Record<Role, RoleCallTelemetry>;
+}
+
+export function resetRoleCallTelemetry(): void {
+  roleMeter.clear();
+}
 
 function record(model: string, u: Anthropic.Usage): void {
   const agg = meter.get(model) ?? {
@@ -169,6 +284,8 @@ function usageToCost(model: string, u: Anthropic.Usage): Cost {
 
 export interface StructuredCall<T extends z.ZodType> {
   role: Role;
+  /** Code-owned pipeline phase for redaction-safe stop-reason telemetry. */
+  telemetryOperation?: string;
   /** 稳定指令前缀 —— 命中 prompt cache */
   system: string;
   /** 每请求变化的内容 */
@@ -189,6 +306,14 @@ export interface StructuredResult<T> {
   usage: Anthropic.Usage;
   /** 本次（含内部重试）累计成本 */
   cost: Cost;
+}
+
+export function structuredThinkingConfig(enabled: boolean, maxTokens: number): Anthropic.Messages.ThinkingConfigParam | undefined {
+  if (!enabled) return undefined;
+  if (maxTokens <= STRUCTURED_THINKING_BUDGET_TOKENS) {
+    throw new Error(`启用 thinking 时 maxTokens 必须大于 ${STRUCTURED_THINKING_BUDGET_TOKENS}`);
+  }
+  return { type: "enabled", budget_tokens: STRUCTURED_THINKING_BUDGET_TOKENS, display: "omitted" };
 }
 
 const STRUCTURED_TOOL_NAME = "respond_with_structured_output";
@@ -256,10 +381,74 @@ export function createRequestAbortSignal(
   };
 }
 
+export interface TransientRetryOptions {
+  /** Extra attempts after the initial call; the environment getter already bounds this to 2. */
+  retries: number;
+  backoffMs: number;
+  signal?: AbortSignal;
+  onRetry?: (error: unknown, retryNumber: number) => void;
+  sleep?: (delayMs: number, signal?: AbortSignal) => Promise<void>;
+}
+
+function abortableDelay(delayMs: number, signal?: AbortSignal): Promise<void> {
+  if (!delayMs) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason ?? new Error("LLM request aborted before retry"));
+      return;
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const cleanup = (): void => {
+      if (timer) clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+    };
+    const onAbort = (): void => {
+      cleanup();
+      reject(signal?.reason ?? new Error("LLM request aborted before retry"));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    timer = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, delayMs);
+  });
+}
+
+/**
+ * The SDK retries transport failures it owns, but an explicit SSE wall-clock abort is surfaced
+ * by our Promise.race and bypasses those retries. Retry only classified infrastructure failures;
+ * never turn a caller cancellation, refusal, or schema violation into extra model calls.
+ */
+export async function retryTransientOperation<T>(
+  operation: () => Promise<T>,
+  options: TransientRetryOptions,
+): Promise<T> {
+  const retries = Math.min(2, Math.max(0, options.retries));
+  const sleep = options.sleep ?? abortableDelay;
+  for (let attempt = 0; ; attempt++) {
+    if (options.signal?.aborted) throw options.signal.reason ?? new Error("LLM request aborted before start");
+    try {
+      return await operation();
+    } catch (error) {
+      if (options.signal?.aborted) throw options.signal.reason ?? error;
+      if (!isTransientApiError(error) || attempt >= retries) throw error;
+      const retryNumber = attempt + 1;
+      options.onRetry?.(error, retryNumber);
+      await sleep(options.backoffMs, options.signal);
+    }
+  }
+}
+
 export async function callStructured<T extends z.ZodType>(
   opts: StructuredCall<T>,
 ): Promise<StructuredResult<z.infer<T>>> {
+  const startedAt = performance.now();
+  let underlyingRequests = 0;
+  let succeeded = false;
+  const outputStopReasons: string[] = [];
+  try {
   const model = MODELS[opts.role];
+  const maxTokens = opts.maxTokens ?? 16000;
   // 默认对稳定 system 前缀打 prompt cache；PROMPT_CACHE=0 时关闭——某些第三方中转站只写不读，
   // 缓存从不命中却仍计写入开销（见 a1-runs），此时关闭更省。
   const useCache = promptCacheOn();
@@ -279,18 +468,16 @@ export async function callStructured<T extends z.ZodType>(
   ];
   const params = {
     model,
-    max_tokens: opts.maxTokens ?? 16000,
+    max_tokens: maxTokens,
     system: [
       { type: "text" as const, text: opts.system, ...(useCache ? { cache_control: { type: "ephemeral" as const } } : {}) },
     ],
     messages: [{ role: "user" as const, content: opts.user }],
     tools,
     tool_choice: { type: "tool" as const, name: STRUCTURED_TOOL_NAME },
-    // 中转站兼容性（2026-06-06）：yibuapi 新策略对"forced tool_choice + thinking"组合
-    // 返 400 "Thinking may not be enabled when tool_choice forces tool use"——但 Anthropic
-    // 直连允许。callStructured 必定 forced tool_choice，故无论 opts.thinking 真假都不发
-    // thinking 参数（否则所有 validator 调用 100% 失败）。等中转站放开或切直连再恢复。
-    // opts.thinking 字段保留：调用方语义层未变；以后改回时只需要把这一行加回来。
+    // 该 relay 的 exact endpoint/key/model 已经由 eval:canary-thinking 验证可以同时接受
+    // thinking + forced tool_choice；仍由每个 role 的显式开关控制，不把 thinking 传给 analyzer。
+    thinking: structuredThinkingConfig(Boolean(opts.thinking), maxTokens),
   };
 
   let cost: Cost = { tokens: 0, amount: 0 };
@@ -307,6 +494,7 @@ export async function callStructured<T extends z.ZodType>(
   // 每次流式调用同时受调用方取消和 LLM_TIMEOUT_MS 的硬性墙钟超时约束；无论 SSE 是否持续有
   // 心跳/分片数据，超时后都必须终止，避免中转站永不 finalMessage() 时卡住整个 Job。
   const streamFinalMessage = async (): Promise<Anthropic.Message> => {
+    underlyingRequests++;
     const request = createRequestAbortSignal(llmTimeoutMs(), opts.signal);
     let onAbort: (() => void) | undefined;
     try {
@@ -330,10 +518,25 @@ export async function callStructured<T extends z.ZodType>(
     }
   };
 
-  let res = await streamFinalMessage();
+  const streamFinalMessageWithTransientRetry = (): Promise<Anthropic.Message> => retryTransientOperation(
+    streamFinalMessage,
+    {
+      retries: llmTransientRetries(),
+      backoffMs: llmTransientRetryBackoffMs(),
+      signal: opts.signal,
+      onRetry: (error, retryNumber) => {
+        const kind = error instanceof Error && error.name ? error.name : "UnknownError";
+        console.warn(`  ⚠️ LLM 瞬态失败，应用层重试 ${retryNumber}/${llmTransientRetries()}（role=${opts.role}，${kind}）`);
+      },
+    },
+  );
+
+  let res = await streamFinalMessageWithTransientRetry();
+  if (res.stop_reason) outputStopReasons.push(res.stop_reason);
   account(res.usage);
   for (let attempt = 1; res.stop_reason === "refusal" && attempt < 3; attempt++) {
-    res = await streamFinalMessage();
+    res = await streamFinalMessageWithTransientRetry();
+    if (res.stop_reason) outputStopReasons.push(res.stop_reason);
     account(res.usage);
   }
 
@@ -359,6 +562,7 @@ export async function callStructured<T extends z.ZodType>(
     const retry = coerced != null ? opts.schema.safeParse(coerced) : null;
     if (retry?.success) {
       console.warn(`  ⚠️ 结构化输出字段被序列化成字符串、已定点 JSON.parse 修正（role=${opts.role}）`);
+      succeeded = true;
       return { data: retry.data, usage: res.usage, cost };
     }
     throw new Error(
@@ -368,5 +572,16 @@ export async function callStructured<T extends z.ZodType>(
         .join("; ")}`,
     );
   }
+  succeeded = true;
   return { data: parsed.data, usage: res.usage, cost };
+  } finally {
+    recordRoleCallTelemetry(
+      opts.role,
+      performance.now() - startedAt,
+      underlyingRequests,
+      !succeeded,
+      outputStopReasons,
+      opts.telemetryOperation,
+    );
+  }
 }

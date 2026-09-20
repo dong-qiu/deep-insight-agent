@@ -2,7 +2,7 @@ import { mkdtempSync, existsSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { beginA1Run, finalizeA1Run, sha256File } from "./a1-artifacts.js";
+import { beginA1Run, finalizeA1Run, sha256File, writeA1RunProgress } from "./a1-artifacts.js";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -79,6 +79,38 @@ describe("A1 isolated artifacts", () => {
     });
   });
 
+  it("persists phase-level stop reasons without persisting a prompt or source body", () => {
+    const runs = root();
+    const workspace = beginA1Run(runs, "2026-09-09T00:00:00.000Z");
+    finalizeA1Run(workspace, {
+      ...manifest(workspace.runId, "completed", "fail"),
+      llm_role_telemetry: {
+        validator: {
+          calls: 2, failures: 0, requests: 2, output_stop_reasons: { max_tokens: 1, tool_use: 1 },
+          latency_ms: { p50: 10, p95: 20, max: 20 },
+          by_operation: {
+            citation_consistency_batch: {
+              calls: 1, failures: 0, requests: 1, output_stop_reasons: { tool_use: 1 },
+              latency_ms: { p50: 10, p95: 10, max: 10 },
+            },
+            display_quote_primary: {
+              calls: 1, failures: 0, requests: 1, output_stop_reasons: { max_tokens: 1 },
+              latency_ms: { p50: 20, p95: 20, max: 20 },
+            },
+          },
+        },
+      },
+    });
+
+    expect(JSON.parse(readFileSync(join(workspace.finalDir, "manifest.json"), "utf8"))).toMatchObject({
+      llm_role_telemetry: {
+        validator: {
+          by_operation: { display_quote_primary: { output_stop_reasons: { max_tokens: 1 } } },
+        },
+      },
+    });
+  });
+
   it("records a failed run but never advances latest-complete", () => {
     const runs = root();
     const successful = beginA1Run(runs, "2026-09-09T00:00:00.000Z");
@@ -88,5 +120,28 @@ describe("A1 isolated artifacts", () => {
 
     expect(JSON.parse(readFileSync(join(runs, "latest-complete.json"), "utf8")).run_id).toBe(successful.runId);
     expect(JSON.parse(readFileSync(join(failed.finalDir, "manifest.json"), "utf8"))).toMatchObject({ status: "failed", error: "network" });
+  });
+
+  it("publishes the bounded progress checkpoint with a terminal failure", () => {
+    const runs = root();
+    const workspace = beginA1Run(runs, "2026-09-09T00:00:00.000Z");
+    writeA1RunProgress(workspace, {
+      state: "failed", phase: "quality", topic_timeout_ms: 600_000,
+      current_case: { index: 0, total: 5, topic_id: "topic-a" },
+      completed: { quality_cases: 0, consistency_cases: 0 },
+      last_failure: { phase: "quality", case_index: 0, topic_id: "topic-a", error: "deadline" },
+    });
+    const progress = join(workspace.tempDir, "progress.json");
+    finalizeA1Run(workspace, {
+      ...manifest(workspace.runId, "failed", "not_evaluated"),
+      artifacts: { "progress.json": sha256File(progress) }, error: "deadline",
+    });
+
+    expect(JSON.parse(readFileSync(join(workspace.finalDir, "progress.json"), "utf8"))).toMatchObject({
+      state: "failed", phase: "quality", current_case: { topic_id: "topic-a" },
+    });
+    expect(JSON.parse(readFileSync(join(workspace.finalDir, "manifest.json"), "utf8"))).toMatchObject({
+      artifacts: { "progress.json": sha256File(join(workspace.finalDir, "progress.json")) },
+    });
   });
 });

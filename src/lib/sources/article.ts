@@ -87,9 +87,17 @@ export function extractArticleHtml(html: string, container?: string | null): str
   return cleaned.slice(start, end);
 }
 
+export interface FetchedArticle {
+  /** The full HTTP response body, retained in the raw archive for source traceability. */
+  raw_html: string;
+  /** The extracted article fragment consumed by ContentItem normalization. */
+  body_html: string;
+}
+
 /** 按文章 URL 抓全文：origin 单独查 robots（文章页常与 feed 不同源）+ SSRF 安全出网 + 大小封顶 + 抽正文。
- *  失败（robots 禁止 / 非 2xx / 非 HTML / 网络 / 抽取后过短）一律返 null —— collector 视为抽取失败、跳过该条。 */
-export async function fetchArticleBody(url: string, container?: string | null): Promise<string | null> {
+ *  失败（robots 禁止 / 非 2xx / 非 HTML / 网络 / 抽取后过短）一律返 null。成功时同时保留文章响应，
+ *  使 collector 能把真正用于抽取的原文写入 raw archive。 */
+export async function fetchArticle(url: string, container?: string | null): Promise<FetchedArticle | null> {
   try {
     const { origin, pathname } = new URL(url);
     const rules = await fetchRobots(origin);
@@ -97,10 +105,16 @@ export async function fetchArticleBody(url: string, container?: string | null): 
     const res = await fetchWithRetry(url, { headers: { "user-agent": UA } }); // 切片3a：文章页瞬时失败退避重试
     if (!res.ok) return null;
     if (!/html/i.test(res.headers.get("content-type") ?? "")) return null; // 只处理 HTML 页
-    const main = extractArticleHtml(await readTextCapped(res), container);
-    if (normalizeBody(main).length < MIN_ARTICLE_CHARS) return null; // 抽取后过短 = 没抽到真正文
-    return main; // HTML 片段，下游统一 normalizeBody 剥标签
+    const raw_html = await readTextCapped(res);
+    const body_html = extractArticleHtml(raw_html, container);
+    if (normalizeBody(body_html).length < MIN_ARTICLE_CHARS) return null; // 抽取后过短 = 没抽到真正文
+    return { raw_html, body_html };
   } catch {
     return null;
   }
+}
+
+/** Legacy convenience wrapper. New collectors must use fetchArticle so raw archival stays bound to the response. */
+export async function fetchArticleBody(url: string, container?: string | null): Promise<string | null> {
+  return (await fetchArticle(url, container))?.body_html ?? null;
 }

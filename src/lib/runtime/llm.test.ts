@@ -1,7 +1,7 @@
 /** coerceStringifiedFields 纯函数单测（6b 防御：模型偶发把 array/object 字段返成 JSON 字符串）。 */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod/v4";
-import { MODELS, anthropicBaseUrl, assertCoverageModelSeparation, coerceStringifiedFields, createRequestAbortSignal } from "./llm.js";
+import { MODELS, anthropicBaseUrl, assertCoverageModelSeparation, assertModelSeparation, coerceStringifiedFields, createRequestAbortSignal, getRoleCallTelemetry, recordRoleCallTelemetry, resetRoleCallTelemetry, retryTransientOperation, structuredThinkingConfig } from "./llm.js";
 
 const originalModels = { ...MODELS };
 
@@ -21,6 +21,13 @@ describe("assertCoverageModelSeparation", () => {
   it("拒绝任意同源的三个角色", () => {
     Object.assign(MODELS, { analyzer: "same", validator: "validator", coverage: "same" });
     expect(() => assertCoverageModelSeparation()).toThrow("必须独立于分析与主校验");
+  });
+});
+
+describe("assertModelSeparation", () => {
+  it("在任何 analyzer / validator 请求前拒绝同模型配置", () => {
+    Object.assign(MODELS, { analyzer: "same-model", validator: "same-model" });
+    expect(() => assertModelSeparation()).toThrow("同源偏差约束");
   });
 });
 
@@ -94,5 +101,98 @@ describe("createRequestAbortSignal（LLM 流硬超时）", () => {
     request.dispose();
     vi.advanceTimersByTime(120);
     expect(request.signal.reason).toBe(reason);
+  });
+});
+
+describe("retryTransientOperation（SSE 墙钟超时的有界应用层重试）", () => {
+  it("仅对瞬态墙钟超时重试，保留一次初始调用和一次额外尝试", async () => {
+    const calls: number[] = [];
+    const retries: number[] = [];
+    const sleeps: number[] = [];
+    const result = await retryTransientOperation(async () => {
+      calls.push(calls.length + 1);
+      if (calls.length === 1) throw new Error("LLM stream exceeded wall-clock timeout of 120000ms");
+      return "ok";
+    }, {
+      retries: 1,
+      backoffMs: 25,
+      onRetry: (_error, retryNumber) => retries.push(retryNumber),
+      sleep: async (delayMs) => { sleeps.push(delayMs); },
+    });
+
+    expect(result).toBe("ok");
+    expect(calls).toEqual([1, 2]);
+    expect(retries).toEqual([1]);
+    expect(sleeps).toEqual([25]);
+  });
+
+  it("拒答和 schema 类错误不重试，避免把内容错误扩大为额外模型调用", async () => {
+    const operation = vi.fn(async () => { throw new Error("结构化输出 schema 校验失败"); });
+    await expect(retryTransientOperation(operation, { retries: 2, backoffMs: 0 })).rejects.toThrow("schema");
+    expect(operation).toHaveBeenCalledTimes(1);
+  });
+
+  it("调用方取消优先，瞬态错误后不再发起下一次请求", async () => {
+    const caller = new AbortController();
+    const cancellation = new Error("cost limit reached");
+    const operation = vi.fn(async () => {
+      caller.abort(cancellation);
+      throw new Error("Connection error.");
+    });
+
+    await expect(retryTransientOperation(operation, { retries: 2, backoffMs: 0, signal: caller.signal })).rejects.toBe(cancellation);
+    expect(operation).toHaveBeenCalledTimes(1);
+  });
+
+  it("重试耗尽后原样抛出瞬态错误", async () => {
+    const timeout = new Error("LLM stream exceeded wall-clock timeout of 120000ms");
+    const operation = vi.fn(async () => { throw timeout; });
+    await expect(retryTransientOperation(operation, { retries: 99, backoffMs: 0 })).rejects.toBe(timeout);
+    expect(operation).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe("role-level LLM telemetry", () => {
+  afterEach(() => resetRoleCallTelemetry());
+
+  it("records attempts, failures and percentile latency separately for each role", () => {
+    recordRoleCallTelemetry("coverage", 10, 1, false, [], "display_quote_countercheck");
+    recordRoleCallTelemetry("coverage", 30, 3, true, ["max_tokens", "refusal", "max_tokens"], "display_quote_countercheck");
+    recordRoleCallTelemetry("validator", 20, 1, false, ["tool_use"], "citation_consistency_batch");
+    expect(getRoleCallTelemetry()).toMatchObject({
+      coverage: {
+        calls: 2, failures: 1, requests: 4, output_stop_reasons: { max_tokens: 2, refusal: 1 },
+        latency_ms: { p50: 10, p95: 30, max: 30 },
+        by_operation: {
+          display_quote_countercheck: {
+            calls: 2, failures: 1, requests: 4, output_stop_reasons: { max_tokens: 2, refusal: 1 },
+          },
+        },
+      },
+      validator: {
+        calls: 1, failures: 0, requests: 1, output_stop_reasons: { tool_use: 1 },
+        latency_ms: { p50: 20, p95: 20, max: 20 },
+        by_operation: { citation_consistency_batch: { calls: 1, output_stop_reasons: { tool_use: 1 } } },
+      },
+      analyzer: { output_stop_reasons: {}, by_operation: {} },
+    });
+  });
+
+  it("keeps omitted operation names explicit instead of silently merging them into a labelled phase", () => {
+    recordRoleCallTelemetry("validator", 10, 1, false, ["max_tokens"]);
+    recordRoleCallTelemetry("validator", 20, 1, false, ["tool_use"], "display_quote_primary");
+
+    expect(getRoleCallTelemetry().validator.by_operation).toMatchObject({
+      unclassified: { calls: 1, output_stop_reasons: { max_tokens: 1 } },
+      display_quote_primary: { calls: 1, output_stop_reasons: { tool_use: 1 } },
+    });
+  });
+});
+
+describe("structured thinking transport", () => {
+  it("only sends an admission-tested thinking payload with room above the minimum budget", () => {
+    expect(structuredThinkingConfig(false, 1024)).toBeUndefined();
+    expect(structuredThinkingConfig(true, 2048)).toEqual({ type: "enabled", budget_tokens: 1024, display: "omitted" });
+    expect(() => structuredThinkingConfig(true, 1024)).toThrow("maxTokens");
   });
 });

@@ -1,0 +1,39 @@
+{
+  "schema_version": "a1-ai-prelabel-handoff-v1",
+  "status": "diagnostic_only",
+  "binding": {
+    "run_id": "<completed-a1-run-id>",
+    "dataset_lock_sha256": "<sha256>",
+    "review_queue_sha256": "<sha256>",
+    "insight_ids_sha256": "<sha256>",
+    "insight_texts_sha256": "<sha256>"
+  },
+  "prelabelers": [
+    {
+      "prelabeler_id": "ai-1",
+      "model": "<actual-model-id>",
+      "thinking": false,
+      "prompt_sha256": "<sha256>",
+      "decision_artifact_sha256": "<sha256>"
+    },
+    {
+      "prelabeler_id": "ai-2",
+      "model": "<actual-model-id>",
+      "thinking": false,
+      "prompt_sha256": "<sha256>",
+      "decision_artifact_sha256": "<sha256>"
+    },
+    {
+      "prelabeler_id": "ai-3",
+      "model": "<actual-model-id>",
+      "thinking": false,
+      "prompt_sha256": "<sha256>",
+      "decision_artifact_sha256": "<sha256>"
+    }
+  ],
+  "blindness": {
+    "human_reviewer_inputs_exclude_ai_prelabels": true,
+    "reveal_prelabels_only_after_two_human_submission_hashes": true
+  },
+  "not_for_review_receipt": true
+}

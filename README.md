@@ -57,7 +57,7 @@ npm run seed
 npm run dev
 ```
 
-打开 <http://localhost:3000>，使用 `.env.local` 中的管理员账号登录。`seed` 会写入默认主题和数据源；在“设置”中可继续调整主题、来源与收件人。
+打开 <http://localhost:3000>，使用 `.env.local` 中的管理员账号登录。`seed` 会先初始化本地数据库并应用 provenance ledger，再写入默认主题和数据源；在“设置”中可继续调整主题、来源与收件人。生产部署仍须在 app/worker 启动前显式运行 `npm run db:migrate`。
 
 环境变量说明、模型中转站限制和运行配置见 [.env.example](.env.example) 与[运维手册](docs/launch/operations.md)。不要提交 `.env.local`、API Key、生产数据库或个人数据。
 
@@ -66,7 +66,7 @@ npm run dev
 | 命令 | 用途 |
 |---|---|
 | `npm run dev` | 启动本地开发服务 |
-| `npm run seed` | 写入默认主题与数据源 |
+| `npm run seed` | 初始化本地数据库、应用 provenance ledger，并写入默认主题与数据源 |
 | `npm run typecheck` | TypeScript 类型检查 |
 | `npm test` | 运行单元与集成测试 |
 | `npm run test:coverage` | 生成测试覆盖率 |

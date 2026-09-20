@@ -18,15 +18,20 @@
  * 仅含 arxiv 数据时（当前默认数据集），行为与分形态前一致——arxiv 那组的门槛/退出码逐项不变。
  */
 import "./load-env.js"; // 必须最先 import：载 .env.local，早于 MODELS（llm.ts 模块加载时求值）
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   analyze,
+  analyzeChunkInputSha256,
+  ANALYZE_BATCH_CHARS,
   ANALYZE_BODY_CHARS,
   ANALYZER_OUTPUT_VERSION,
+  DISPLAY_COVERAGE_PRIMARY_CLAIMS_PER_CALL,
   ANALYZER_SYSTEM,
+  DISPLAY_COVERAGE_PRIMARY_MAX_TOKENS,
+  DISPLAY_COVERAGE_PRIMARY_RESPONSE_BUDGET_VERSION,
   coverageGaps,
   DISPLAY_COVERAGE_COUNTERCHECK_PROMPT_HASH,
   DISPLAY_COVERAGE_COUNTERCHECK_PROMPT_VERSION,
@@ -34,14 +39,16 @@ import {
   DISPLAY_COVERAGE_PROMPT_HASH,
   DISPLAY_COVERAGE_PROMPT_VERSION,
   filterByQuoteCoverage,
+  chunkByChars,
   renderImportanceBasis,
   SELECT_WINDOW_CHARS,
   specificClaims,
+  verifyQuoteSelfContained,
   type CoverageDecision,
 } from "../src/lib/agents/analyzer.js";
 import { consistencyBatchMax, consistencyCacheVersion, CONSISTENCY_WINDOW_CHARS, judgeWithRetry, validateBatch } from "../src/lib/agents/validator.js";
-import { anthropicBaseUrl, MODELS, assertCoverageModelSeparation, getCostReport } from "../src/lib/runtime/llm.js";
-import { validatorBatchOn, validatorThinking } from "../src/lib/runtime/env.js";
+import { anthropicBaseUrl, MODELS, assertCoverageModelSeparation, getCostReport, getRoleCallTelemetry, STRUCTURED_THINKING_TRANSPORT_VERSION } from "../src/lib/runtime/llm.js";
+import { coverageThinking, coverageThinkingSource, validatorBatchOn, validatorThinking } from "../src/lib/runtime/env.js";
 import {
   RELAY_RECOVERY_MAX_PROBES,
   RELAY_RECOVERY_MAX_BACKOFF_WAIT_MS,
@@ -49,11 +56,26 @@ import {
   RELAY_RECOVERY_POLICY_VERSION,
   relayRecoveryStats,
 } from "../src/lib/runtime/relay-recovery.js";
-import type { CitationCheck, ContentItem, ImportanceReason, Insight, Topic } from "../src/lib/types.js";
+import type { AnalysisBatch, CitationCheck, ContentItem, ImportanceReason, Insight, Topic, ValidationResult } from "../src/lib/types.js";
 import { DISPLAY_PROJECTION_VERSION } from "../src/lib/utils/source-quote-projection.js";
 import { selectInsights } from "../src/lib/agents/report-gen.js";
-import { beginA1Run, finalizeA1Run, finalizeFailedA1Run, sha256File, writeJson, type A1RunWorkspace } from "./a1-artifacts.js";
-import { sameEvalConfig, type EvalConfig } from "./a1-config.js";
+import { beginA1Run, finalizeA1Run, finalizeFailedA1Run, sha256File, writeA1RunProgress, writeJson, type A1RunProgress, type A1RunWorkspace } from "./a1-artifacts.js";
+import { a1SmokeMode, selectA1Cases } from "./a1-case-limit.js";
+import { isA1CoverageExecutionFailure } from "./a1-coverage-execution.js";
+import { a1IndependentCallConcurrency, mapA1IndependentCalls } from "./a1-independent-call-concurrency.js";
+import {
+  a1CoverageTimeoutMs,
+  A1TopicDeadlineExceededError,
+  a1JudgeTimeoutMs,
+  a1TopicTimeoutMs,
+  runA1CoverageWithDeadline,
+  runA1JudgeWithDeadline,
+  runA1TopicWithDeadline,
+  terminalA1QualityCaseFailure,
+} from "./a1-run-control.js";
+import { type EvalConfig } from "./a1-config.js";
+import { comparableRegistryBaselineMetrics, formalA1GateExitCode } from "./a1-baseline-promotion.js";
+import { validateDatasetLock, type DatasetLockValidation } from "./a1-dataset-lock.js";
 import {
   countReaderVisibleByTopic,
   DCP_MIN_CONSISTENCY_PAIRS,
@@ -61,8 +83,21 @@ import {
   DCP_MIN_TOPICS,
   DCP_SAMPLE_CONTRACT_VERSION,
   dcpSamplePrerequisite,
+  readerVisibleDuplicateEvidence,
 } from "./a1-dcp.js";
 import { DIRTY_SOURCE_FINGERPRINT_ALGORITHM, dirtyFingerprintFromSnapshot } from "./a1-source-state.js";
+import {
+  a1QualityCheckpointConfigSha256,
+  appendA1QualityCheckpointChunk,
+  completeA1QualityCheckpointCase,
+  createA1QualityCheckpoint,
+  loadA1QualityCheckpoint,
+  verifiedFailedA1CheckpointSha256,
+  writeA1QualityCheckpoint,
+  type A1QualityCheckpoint,
+  type A1QualityCheckpointContext,
+  type A1QualityCheckpointPlanCase,
+} from "./a1-quality-checkpoint.js";
 import {
   emptyJudgeStats,
   judgeAccuracy,
@@ -76,6 +111,9 @@ import {
 type Stratum = "arxiv" | "transcript";
 const STRATA: Stratum[] = ["arxiv", "transcript"];
 let activeWorkspace: A1RunWorkspace | null = null;
+let activeProgress: Omit<A1RunProgress, "run_id" | "updated_at"> | null = null;
+let activeQualityCheckpointPath: string | null = null;
+let activeResumeCheckpointSha256: string | null = null;
 /** Captured at startup so a long run cannot be attributed to a later checkout or dataset edit. */
 let activeRunContext: {
   config: object;
@@ -84,6 +122,78 @@ let activeRunContext: {
 } = {
   config: {}, dataset: {}, source: { commit: null, dirty_fingerprint: null },
 };
+
+function a1ErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.slice(0, 1000);
+}
+
+function updateA1Progress(progress: Omit<A1RunProgress, "run_id" | "updated_at">): void {
+  activeProgress = progress;
+  if (activeWorkspace) writeA1RunProgress(activeWorkspace, progress);
+}
+
+/** Always publish an interrupted/failed run as terminal evidence when a workspace exists. */
+function finalizeActiveA1Failure(error: unknown): void {
+  const workspace = activeWorkspace;
+  if (!workspace) return;
+  activeWorkspace = null;
+  const message = a1ErrorMessage(error);
+  const prior = activeProgress ?? { state: "running" as const, phase: "setup" as const };
+  try {
+    const failureProgress: Omit<A1RunProgress, "run_id" | "updated_at"> = {
+      ...prior,
+      state: "failed",
+      last_failure: {
+        phase: prior.phase,
+        ...(prior.current_case ? { case_index: prior.current_case.index, topic_id: prior.current_case.topic_id } : {}),
+        error: message,
+      },
+    };
+    activeProgress = failureProgress;
+    writeA1RunProgress(workspace, failureProgress);
+    const progressPath = join(workspace.tempDir, "progress.json");
+    finalizeFailedA1Run(workspace, {
+      run_id: workspace.runId,
+      status: "failed",
+      auto_gate: "not_evaluated",
+      manual_review: "not_generated",
+      dcp_eligibility: "not_evaluated",
+      started_at: workspace.startedAt,
+      ended_at: new Date().toISOString(),
+      config: activeRunContext.config,
+      dataset: activeRunContext.dataset,
+      source: activeRunContext.source,
+      insights: { count: 0, ids_sha256: createHash("sha256").update("").digest("hex") },
+      artifacts: {
+        ...(existsSync(progressPath) ? { "progress.json": sha256File(progressPath) } : {}),
+        ...(activeQualityCheckpointPath && existsSync(activeQualityCheckpointPath)
+          ? { "quality-checkpoint.json": sha256File(activeQualityCheckpointPath) }
+          : {}),
+      },
+      ...(activeResumeCheckpointSha256 ? { resumed_from_checkpoint_sha256: activeResumeCheckpointSha256 } : {}),
+      error: message,
+    });
+  } catch (artifactError) {
+    console.error("A1 失败产物记录也失败：", artifactError);
+  } finally {
+    activeProgress = null;
+    activeQualityCheckpointPath = null;
+    activeResumeCheckpointSha256 = null;
+  }
+}
+
+/** SIGTERM/SIGINT used to strand a private `.tmp` workspace in `running`; terminalize first. */
+function installA1InterruptionHandlers(): void {
+  for (const signal of ["SIGINT", "SIGTERM"] as const) {
+    process.once(signal, () => {
+      const error = new Error(`A1 run interrupted by ${signal}`);
+      console.error(error.message);
+      finalizeActiveA1Failure(error);
+      process.exit(1);
+    });
+  }
+}
 
 interface Thresholds {
   reachabilityPass: number;
@@ -121,6 +231,8 @@ const THRESHOLDS_BY_STRATUM: Record<Stratum, Thresholds> = {
   },
 };
 const DISPLAY_COVERAGE_FIXTURE = "evals/dataset/display-coverage-benchmark.json";
+const QUOTE_SELF_CONTAINED_FIXTURE = "evals/dataset/quote-self-contained-benchmark.json";
+const DEFAULT_DATASET_LOCK = "evals/dataset/dataset-lock.json";
 
 interface QualityCase {
   topic: Topic;
@@ -128,6 +240,46 @@ interface QualityCase {
   time_window: { start: string; end: string };
   stratum?: Stratum; // 缺省 arxiv
 }
+
+function qualityCheckpointPlan(cases: readonly QualityCase[]): A1QualityCheckpointPlanCase[] {
+  return cases.map((entry, caseIndex) => ({
+    case_index: caseIndex,
+    topic_id: entry.topic.id,
+    stratum: entry.stratum ?? "arxiv",
+    chunk_input_sha256: chunkByChars(entry.items).map((chunk) => analyzeChunkInputSha256(
+      entry.topic, chunk, entry.time_window, [],
+    )),
+  }));
+}
+
+interface A1ResumeSource {
+  checkpoint: A1QualityCheckpoint;
+  checkpoint_sha256: string;
+}
+
+/**
+ * A checkpoint may only come from a terminal failed A1 run whose manifest hashes that exact file.
+ * This prevents a hand-edited temporary file from silently becoming model evidence on a new run.
+ */
+function loadA1ResumeSource(
+  raw: string | undefined,
+  context: A1QualityCheckpointContext,
+  plan: readonly A1QualityCheckpointPlanCase[],
+): A1ResumeSource | null {
+  const requested = raw?.trim();
+  if (!requested) return null;
+  let checkpointPath: string;
+  try {
+    checkpointPath = statSync(requested).isDirectory() ? join(requested, "quality-checkpoint.json") : requested;
+  } catch {
+    throw new Error("A1_RESUME_FROM 不存在或不可读取");
+  }
+  const manifestPath = join(dirname(checkpointPath), "manifest.json");
+  if (!existsSync(manifestPath)) throw new Error("A1_RESUME_FROM 缺少所属失败 run 的 manifest.json");
+  const checkpointSha256 = verifiedFailedA1CheckpointSha256(manifestPath, checkpointPath);
+  return { checkpoint: loadA1QualityCheckpoint(checkpointPath, context, plan), checkpoint_sha256: checkpointSha256 };
+}
+
 interface ConsistencyCase {
   statement: string;
   source_text: string;
@@ -174,6 +326,23 @@ interface DisplayCoverageResult {
   rendered_statement: string | null;
   projection_matches_expected: boolean;
   decisions: CoverageDecision[];
+  latency_ms: number;
+  error: string | null;
+}
+
+interface QuoteSelfContainedCase {
+  id: string;
+  expected: "accept" | "reject";
+  quote: string;
+  locator: string;
+}
+
+interface QuoteSelfContainedResult {
+  id: string;
+  expected: "accept" | "reject";
+  actual: "accept" | "reject";
+  reason: string;
+  latency_ms: number;
   error: string | null;
 }
 
@@ -183,6 +352,17 @@ interface JudgeEvidence {
   expected: ConsistencyLabel;
   predicted: ConsistencyLabel | null;
   rationale: string | null;
+  /** End-to-end time including all nested SDK/application retry attempts. */
+  latency_ms: number;
+  error: string | null;
+}
+
+interface IndependentJudgeResult {
+  case_index: number;
+  stratum: Stratum;
+  case: ConsistencyCase;
+  judgment: Awaited<ReturnType<typeof judgeWithRetry>> | null;
+  latency_ms: number;
   error: string | null;
 }
 
@@ -198,41 +378,45 @@ function datasetDigest(path: string): string {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
 
-function currentEvalConfig(qualityFile: string, consistencyFile: string): EvalConfig {
+function currentEvalConfig(qualityFile: string, consistencyFile: string, datasetLock: DatasetLockValidation): EvalConfig {
   return {
     analyzer_model: MODELS.analyzer,
     analyzer_output_version: ANALYZER_OUTPUT_VERSION,
     analyzer_prompt_sha256: createHash("sha256").update(ANALYZER_SYSTEM).digest("hex"),
     analyze_body_chars: ANALYZE_BODY_CHARS,
+    analyze_batch_chars: ANALYZE_BATCH_CHARS,
     select_window_chars: SELECT_WINDOW_CHARS,
     validator_model: MODELS.validator,
     validator_contract_version: consistencyCacheVersion(),
     consistency_window_chars: CONSISTENCY_WINDOW_CHARS,
     consistency_batch_max: consistencyBatchMax(),
+    independent_call_concurrency: a1IndependentCallConcurrency(),
     relay_recovery_policy_version: RELAY_RECOVERY_POLICY_VERSION,
     relay_recovery_max_probes: RELAY_RECOVERY_MAX_PROBES,
     relay_recovery_max_backoff_wait_ms: RELAY_RECOVERY_MAX_BACKOFF_WAIT_MS,
     relay_recovery_exhausted_cooldown_ms: RELAY_RECOVERY_EXHAUSTED_COOLDOWN_MS,
     coverage_model: MODELS.coverage,
     validator_thinking: validatorThinking(),
+    coverage_thinking: coverageThinking(),
+    coverage_thinking_source: coverageThinkingSource(),
+    structured_thinking_transport_version: STRUCTURED_THINKING_TRANSPORT_VERSION,
     validator_batch: validatorBatchOn(),
     quality_dataset_sha256: datasetDigest(qualityFile),
     consistency_dataset_sha256: datasetDigest(consistencyFile),
+    dataset_lock_sha256: datasetLock.lock_sha256,
+    dataset_lock_status: datasetLock.status,
     display_coverage_dataset_sha256: datasetDigest(DISPLAY_COVERAGE_FIXTURE),
+    quote_self_contained_dataset_sha256: datasetDigest(QUOTE_SELF_CONTAINED_FIXTURE),
     display_coverage_gate_version: DISPLAY_COVERAGE_GATE_VERSION,
     display_projection_version: DISPLAY_PROJECTION_VERSION,
     display_coverage_primary_prompt_version: DISPLAY_COVERAGE_PROMPT_VERSION,
     display_coverage_primary_prompt_sha256: DISPLAY_COVERAGE_PROMPT_HASH,
+    display_coverage_primary_response_budget_version: DISPLAY_COVERAGE_PRIMARY_RESPONSE_BUDGET_VERSION,
+    display_coverage_primary_max_tokens: DISPLAY_COVERAGE_PRIMARY_MAX_TOKENS,
+    display_coverage_primary_claims_per_call: DISPLAY_COVERAGE_PRIMARY_CLAIMS_PER_CALL,
     display_coverage_countercheck_prompt_version: DISPLAY_COVERAGE_COUNTERCHECK_PROMPT_VERSION,
     display_coverage_countercheck_prompt_sha256: DISPLAY_COVERAGE_COUNTERCHECK_PROMPT_HASH,
   };
-}
-
-function parseLimit(raw: string | undefined, name: string): number {
-  if (raw == null || raw === "") return 0;
-  const n = Number(raw);
-  if (!Number.isInteger(n) || n < 0) throw new Error(`${name} 必须是非负整数（0=全量）`);
-  return n;
 }
 
 function readJsonl<T>(path: string): T[] {
@@ -246,6 +430,14 @@ function readJsonl<T>(path: string): T[] {
 function readDisplayCoverageCases(path = DISPLAY_COVERAGE_FIXTURE): DisplayCoverageCase[] {
   const parsed = JSON.parse(readFileSync(path, "utf8")) as { cases?: DisplayCoverageCase[] };
   if (!Array.isArray(parsed.cases) || !parsed.cases.length) throw new Error(`${path} 缺少 display coverage cases`);
+  return parsed.cases;
+}
+
+function readQuoteSelfContainedCases(path = QUOTE_SELF_CONTAINED_FIXTURE): QuoteSelfContainedCase[] {
+  const parsed = JSON.parse(readFileSync(path, "utf8")) as { version?: string; cases?: QuoteSelfContainedCase[] };
+  if (parsed.version !== "quote-self-contained-v1" || !Array.isArray(parsed.cases) || !parsed.cases.length) {
+    throw new Error(`${path} 缺少 quote-self-contained-v1 cases`);
+  }
   return parsed.cases;
 }
 
@@ -278,9 +470,21 @@ function coveragePipelineSummary(decisions: CoverageDecision[]) {
   };
 }
 
-async function runDisplayCoverageBenchmark(cases: DisplayCoverageCase[]): Promise<DisplayCoverageResult[]> {
-  const results: DisplayCoverageResult[] = [];
-  for (const c of cases) {
+function hasCoverageExecutionError(decisions: CoverageDecision[]): boolean {
+  return decisions.some((decision) => decision.claims.some((claim) => (
+    isA1CoverageExecutionFailure(claim.reason)
+    || claim.countercheck?.error != null
+    || (claim.countercheck != null && isA1CoverageExecutionFailure(claim.countercheck.reason))
+  )));
+}
+
+async function runDisplayCoverageBenchmark(
+  cases: DisplayCoverageCase[],
+  concurrency: number,
+  timeoutMs: number,
+): Promise<DisplayCoverageResult[]> {
+  return mapA1IndependentCalls(cases, concurrency, async (c) => {
+    const startedAt = Date.now();
     const controlled = c.importance_reason != null || c.importance_facts != null || c.importance_reason_claim_indexes != null;
     const facts = c.importance_facts ?? [];
     const reason = c.importance_reason;
@@ -314,23 +518,72 @@ async function runDisplayCoverageBenchmark(cases: DisplayCoverageCase[]): Promis
     };
     const decisions: CoverageDecision[] = [];
     try {
-      const kept = await filterByQuoteCoverage([insight], undefined, undefined, (decision) => decisions.push(decision));
+      const kept = await runA1CoverageWithDeadline(
+        c.id,
+        timeoutMs,
+        (signal) => filterByQuoteCoverage([insight], undefined, undefined, (decision) => decisions.push(decision), signal),
+      );
       const rendered_statement = kept[0]?.statement ?? null;
-      results.push({
+      return {
         id: c.id, expected: c.expected, field: c.field, facets: c.facets,
         actual: kept.length ? "accept" : "reject", rendered_statement,
         projection_matches_expected: c.expected_statement == null || rendered_statement === c.expected_statement,
-        decisions, error: null,
-      });
+        decisions, latency_ms: Date.now() - startedAt,
+        // The production gate rejects an unavailable countercheck. The evaluation must expose
+        // that infrastructure gap instead of treating the conservative rejection as a pass.
+        error: hasCoverageExecutionError(decisions) ? "coverage audit unavailable or invalid" : null,
+      };
     } catch (error) {
-      results.push({
+      return {
         id: c.id, expected: c.expected, field: c.field, facets: c.facets, actual: "reject",
         rendered_statement: null, projection_matches_expected: c.expected_statement == null,
-        decisions, error: (error as Error).message,
-      });
+        decisions, latency_ms: Date.now() - startedAt, error: a1ErrorMessage(error),
+      };
     }
-  }
-  return results;
+  });
+}
+
+/** Coverage is evaluated without the primary validator in this fixture.  Keeping this separate
+ * prevents the end-to-end AND gate from masking an unsafe independent countercheck. */
+async function runQuoteSelfContainedBenchmark(
+  cases: QuoteSelfContainedCase[],
+  concurrency: number,
+  timeoutMs: number,
+): Promise<QuoteSelfContainedResult[]> {
+  return mapA1IndependentCalls(cases, concurrency, async (c) => {
+    const startedAt = Date.now();
+    const [paragraph, start, end] = c.locator.split(":").map(Number);
+    try {
+      const decision = await runA1CoverageWithDeadline(
+        c.id,
+        timeoutMs,
+        (signal) => verifyQuoteSelfContained({
+          content_item_id: `quote-benchmark_${c.id}`,
+          quote: c.quote,
+          locator: { paragraph_index: paragraph!, char_start: start!, char_end: end! },
+        }, undefined, signal),
+      );
+      return {
+        id: c.id,
+        expected: c.expected,
+        actual: decision.supports ? "accept" : "reject",
+        reason: decision.reason,
+        latency_ms: Date.now() - startedAt,
+        error: decision.error || isA1CoverageExecutionFailure(decision.reason)
+          ? "coverage countercheck unavailable or invalid"
+          : null,
+      };
+    } catch (error) {
+      return {
+        id: c.id,
+        expected: c.expected,
+        actual: "reject",
+        reason: "countercheck_threw",
+        latency_ms: Date.now() - startedAt,
+        error: a1ErrorMessage(error),
+      };
+    }
+  });
 }
 
 function gitValue(args: string[]): string | null {
@@ -378,7 +631,7 @@ function insightManifest(insights: Insight[]) {
 const pct = (x: number) => `${(x * 100).toFixed(1)}%`;
 
 interface MetricRow {
-  key: string; // 对齐 baseline.json 各 stratum 段的键（回归对照用）
+  key: string; // 对齐 approved baseline-registry 各 stratum 的规范键（回归对照用）
   name: string;
   value: number;
   threshold: number;
@@ -454,44 +707,127 @@ async function main(): Promise<void> {
     );
   }
   assertCoverageModelSeparation();
-  activeWorkspace = beginA1Run();
-  // 子集冒烟开关：A1_QUALITY_LIMIT / A1_CONSISTENCY_LIMIT 限制跑多少条（廉价验证链路+成本）
-  const qLimit = parseLimit(process.env.A1_QUALITY_LIMIT, "A1_QUALITY_LIMIT");
-  const cLimit = parseLimit(process.env.A1_CONSISTENCY_LIMIT, "A1_CONSISTENCY_LIMIT");
+  activeWorkspace = beginA1Run(process.env.A1_RUNS_DIR?.trim() || undefined);
+  activeQualityCheckpointPath = join(activeWorkspace.tempDir, "quality-checkpoint.json");
+  installA1InterruptionHandlers();
+  updateA1Progress({ state: "running", phase: "setup" });
+  const topicTimeoutMs = a1TopicTimeoutMs();
+  const judgeTimeoutMs = a1JudgeTimeoutMs();
+  const coverageTimeoutMs = a1CoverageTimeoutMs();
+  // 子集开关只服务于有界诊断。任何非零 A1_*_LIMIT（即使当前 fixture 恰好未被截断）
+  // 都会成为不可晋升的 smoke run，避免未来 fixture 扩容后静默改变全量证据范围。
 
   // ── Part A：洞察提炼 + 引用双层校验（按 stratum 分组收集） ──
   // A1_QUALITY_FILE 可指向本地多源集（evals/dataset/*.local.jsonl，不入仓）；默认 arXiv 集
   const qualityFile = process.env.A1_QUALITY_FILE ?? "evals/dataset/insight-quality.jsonl";
   const qualityAll = readJsonl<QualityCase>(qualityFile);
-  const qualityCases = qLimit ? qualityAll.slice(0, qLimit) : qualityAll;
+  const qualitySelection = selectA1Cases(qualityAll, process.env.A1_QUALITY_LIMIT, "A1_QUALITY_LIMIT");
+  const qualityCases = qualitySelection.cases;
   // A1_CONSISTENCY_FILE 可指向分形态集（如 transcript 专集），默认 arXiv 标注集。
   const consistencyFile = process.env.A1_CONSISTENCY_FILE ?? "evals/dataset/citation-consistency.jsonl";
   const consistencyAll = readJsonl<ConsistencyCase>(consistencyFile);
-  const consistencyCases = cLimit ? consistencyAll.slice(0, cLimit) : consistencyAll;
-  // 仅实际缩小样本时才是冒烟；上限大于数据集不能悄悄绕过全量质量门。
-  const smoke = qualityCases.length < qualityAll.length || consistencyCases.length < consistencyAll.length;
-  const evalConfig = currentEvalConfig(qualityFile, consistencyFile);
+  const consistencySelection = selectA1Cases(consistencyAll, process.env.A1_CONSISTENCY_LIMIT, "A1_CONSISTENCY_LIMIT");
+  const consistencyCases = consistencySelection.cases;
+  const displayCoverageAll = readDisplayCoverageCases();
+  const displayCoverageSelection = selectA1Cases(
+    displayCoverageAll,
+    process.env.A1_DISPLAY_COVERAGE_LIMIT,
+    "A1_DISPLAY_COVERAGE_LIMIT",
+  );
+  const displayCoverageCases = displayCoverageSelection.cases;
+  const quoteSelfContainedAll = readQuoteSelfContainedCases();
+  const quoteSelfContainedSelection = selectA1Cases(
+    quoteSelfContainedAll,
+    process.env.A1_QUOTE_SELF_CONTAINED_LIMIT,
+    "A1_QUOTE_SELF_CONTAINED_LIMIT",
+  );
+  const quoteSelfContainedCases = quoteSelfContainedSelection.cases;
+  const datasetLockPath = process.env.A1_DATASET_LOCK ?? DEFAULT_DATASET_LOCK;
+  let datasetLock: DatasetLockValidation;
+  try {
+    datasetLock = validateDatasetLock(datasetLockPath, {
+      qualityFile,
+      consistencyFile,
+      displayCoverageFixture: DISPLAY_COVERAGE_FIXTURE,
+      // Formal v2 locks additionally inspect the actual receipt bytes. Legacy fixtures remain
+      // runnable without this optional controlled-runner input.
+      consistencyReceiptFile: process.env.A1_CONSISTENCY_RECEIPT_FILE,
+    });
+  } catch (error) {
+    // An unreadable lock cannot make a run comparable or promotable, but preserving the failed
+    // inspection in artifacts is more useful than hiding a genuine model run behind setup noise.
+    datasetLock = {
+      lock_sha256: "unavailable",
+      status: "invalid",
+      promotion_eligible: false,
+      issues: [`dataset lock 不可读取：${error instanceof Error ? error.message : String(error)}`],
+    };
+  }
+  // 任何非零 A1_*_LIMIT 都是冒烟；上限大于当前数据集也不能悄悄绕过全量质量门。
+  const smoke = a1SmokeMode(
+    process.env.A1_FORCE_SMOKE,
+    qualitySelection,
+    consistencySelection,
+    displayCoverageSelection,
+    quoteSelfContainedSelection,
+  );
+  const evalConfig = currentEvalConfig(qualityFile, consistencyFile, datasetLock);
   activeRunContext = {
     config: evalConfig,
     dataset: {
       quality_file: qualityFile,
       consistency_file: consistencyFile,
       display_coverage_fixture: DISPLAY_COVERAGE_FIXTURE,
+      dataset_lock: { path: datasetLockPath, ...datasetLock },
       quality_cases: qualityCases.length,
+      quality_cases_total: qualityAll.length,
       consistency_cases: consistencyCases.length,
+      consistency_cases_total: consistencyAll.length,
+      display_coverage_cases: displayCoverageCases.length,
+      display_coverage_cases_total: displayCoverageAll.length,
+      quote_self_contained_cases: quoteSelfContainedCases.length,
+      quote_self_contained_cases_total: quoteSelfContainedAll.length,
+      judge_timeout_ms: judgeTimeoutMs,
+      coverage_timeout_ms: coverageTimeoutMs,
+      smoke_forced: process.env.A1_FORCE_SMOKE === "1",
       smoke,
     },
     source: sourceState(),
   };
+  const checkpointPlan = qualityCheckpointPlan(qualityCases);
+  const checkpointContext: A1QualityCheckpointContext = {
+    eval_config_sha256: a1QualityCheckpointConfigSha256(evalConfig),
+    quality_dataset_sha256: evalConfig.quality_dataset_sha256,
+  };
+  const resumeSource = loadA1ResumeSource(process.env.A1_RESUME_FROM, checkpointContext, checkpointPlan);
+  const qualityCheckpoint = resumeSource?.checkpoint ?? createA1QualityCheckpoint(checkpointContext);
+  activeResumeCheckpointSha256 = resumeSource?.checkpoint_sha256 ?? null;
+  writeA1QualityCheckpoint(activeQualityCheckpointPath, qualityCheckpoint);
+  if (activeResumeCheckpointSha256) {
+    activeRunContext.dataset = { ...activeRunContext.dataset, resumed_from_checkpoint_sha256: activeResumeCheckpointSha256 };
+    console.log("A1 将恢复已哈希绑定的完整 analyzer 分块；本次仍保留原始全量样本与自动门口径。\n");
+  }
+  updateA1Progress({
+    state: "running", phase: "setup", topic_timeout_ms: topicTimeoutMs,
+    judge_timeout_ms: judgeTimeoutMs, coverage_timeout_ms: coverageTimeoutMs,
+  });
   console.log(
     `A1 验证实跑\n模型：分析=${MODELS.analyzer} / 校验=${MODELS.validator} / 反扩写复核=${MODELS.coverage}` +
-      `\n配置：thinking=${evalConfig.validator_thinking ? "on" : "off"} / batch=${evalConfig.validator_batch ? "on" : "off"}\n`,
+      `\n配置：validator thinking=${evalConfig.validator_thinking ? "on" : "off"} / coverage thinking=${evalConfig.coverage_thinking ? "on" : "off"} (${evalConfig.coverage_thinking_source}) / batch=${evalConfig.validator_batch ? "on" : "off"} / independent calls=${evalConfig.independent_call_concurrency}` +
+      `\n数据集锁：${datasetLock.status}（${datasetLock.promotion_eligible ? "可候选提升" : "不可提升"}）\n`,
+  );
+  console.log(
+    `A1 单主题截止：${topicTimeoutMs}ms（超时将终止整次运行并写入失败 artifact）` +
+      `\nA1 单条一致性判定截止：${judgeTimeoutMs}ms（覆盖 SDK 与应用重试；超时记为评测不完整）` +
+      `\nA1 单条 Coverage 基准截止：${coverageTimeoutMs}ms（超时记为评测不完整）\n`,
   );
   if (smoke) {
     console.log(
       `⚠️ 子集冒烟模式：主题 ${qualityCases.length}/${qualityAll.length}` +
-        (cLimit ? `、一致性对上限 ${cLimit}` : "") +
-        " —— 仅验证真模型链路与成本，不代表 A1 结论。\n",
+        `、一致性对 ${consistencyCases.length}/${consistencyAll.length}` +
+        `、展示覆盖 ${displayCoverageCases.length}/${displayCoverageAll.length}` +
+        `、quote 自足性 ${quoteSelfContainedCases.length}/${quoteSelfContainedAll.length}` +
+        `${process.env.A1_FORCE_SMOKE === "1" ? "（已强制标记为 smoke）" : ""} —— 仅验证真模型链路与成本，不代表 A1 结论。\n`,
     );
   }
   const checksByStratum: Record<Stratum, CitationCheck[]> = { arxiv: [], transcript: [] };
@@ -504,13 +840,59 @@ async function main(): Promise<void> {
   const qualityFailures: Array<{ case_index: number; topic_id: string; error: string }> = [];
   for (const [caseIndex, c] of qualityCases.entries()) {
     const stratum: Stratum = c.stratum ?? "arxiv";
+    updateA1Progress({
+      state: "running", phase: "quality", topic_timeout_ms: topicTimeoutMs,
+      judge_timeout_ms: judgeTimeoutMs, coverage_timeout_ms: coverageTimeoutMs,
+      current_case: { index: caseIndex, total: qualityCases.length, topic_id: c.topic.id },
+      completed: { quality_cases: qualitySucceeded, consistency_cases: 0 },
+    });
     process.stdout.write(`[分析] 主题「${c.topic.name}」(${stratum})… `);
     const coverageDecisions: CoverageDecision[] = [];
     try {
-      const batch = await analyze(c.topic, c.items, c.time_window, undefined, {
-        onCoverageDecision: (decision) => coverageDecisions.push(decision),
-      });
-      const vr = await validateBatch(batch.insights, c.items);
+      const savedCase = qualityCheckpoint.cases[caseIndex];
+      let batch: AnalysisBatch;
+      let vr: ValidationResult;
+      if (savedCase?.completed) {
+        // The checkpoint loader has already bound every chunk, the complete topic result and the
+        // source failed-run manifest to this exact EvalConfig + quality dataset.
+        batch = savedCase.completed.batch;
+        vr = savedCase.completed.validation;
+        coverageDecisions.push(...savedCase.chunks.flatMap((chunk) => chunk.coverage_decisions));
+        process.stdout.write("恢复完整主题… ");
+      } else {
+        const completedChunks = savedCase?.chunks ?? [];
+        ({ batch, vr } = await runA1TopicWithDeadline(c.topic.id, topicTimeoutMs, async (signal) => {
+          const batch = await analyze(c.topic, c.items, c.time_window, undefined, {
+            completed_chunks: completedChunks,
+            onCoverageDecision: (decision) => coverageDecisions.push(decision),
+            onChunkComplete: (completion) => {
+              // Promise.race may have already handed the deadline error to the outer runner even
+              // when a defective upstream transport settles late. Never recreate a published
+              // temporary workspace or append evidence after that terminal boundary.
+              if (signal.aborted) throw signal.reason ?? new Error("A1 topic cancelled");
+              appendA1QualityCheckpointChunk(qualityCheckpoint, checkpointPlan, caseIndex, {
+                input_sha256: completion.input_sha256,
+                insights: completion.insights,
+                coverage_decisions: completion.coverage_decisions,
+              });
+              writeA1QualityCheckpoint(activeQualityCheckpointPath!, qualityCheckpoint);
+              updateA1Progress({
+                state: "running", phase: "quality", topic_timeout_ms: topicTimeoutMs,
+                judge_timeout_ms: judgeTimeoutMs, coverage_timeout_ms: coverageTimeoutMs,
+                current_case: { index: caseIndex, total: qualityCases.length, topic_id: c.topic.id },
+                current_chunk: { index: completion.chunk_index + 1, total: completion.chunk_total },
+                completed: { quality_cases: qualitySucceeded, consistency_cases: 0 },
+              });
+            },
+            signal,
+          });
+          const vr = await validateBatch(batch.insights, c.items, undefined, undefined, signal);
+          if (signal.aborted) throw signal.reason ?? new Error("A1 topic cancelled");
+          return { batch, vr };
+        }));
+        completeA1QualityCheckpointCase(qualityCheckpoint, checkpointPlan, caseIndex, { batch, validation: vr });
+        writeA1QualityCheckpoint(activeQualityCheckpointPath!, qualityCheckpoint);
+      }
       // DCP counts the same reader-visible derivative as production, rather than raw analyzer
       // yield. A topic whose citations are all blocked/flagged therefore contributes zero.
       const readerVisible = selectInsights(batch, vr);
@@ -529,13 +911,37 @@ async function main(): Promise<void> {
         checks: vr.checks,
         coverage_decisions: coverageDecisions,
       });
+      updateA1Progress({
+        state: "running", phase: "quality", topic_timeout_ms: topicTimeoutMs,
+        judge_timeout_ms: judgeTimeoutMs, coverage_timeout_ms: coverageTimeoutMs,
+        current_case: { index: caseIndex, total: qualityCases.length, topic_id: c.topic.id },
+        completed: { quality_cases: qualitySucceeded, consistency_cases: 0 },
+      });
       console.log(`${batch.insights.length} 洞察 / ${vr.checks.length} 引用校验`);
     } catch (e) {
-      const error = (e as Error).message;
+      const error = a1ErrorMessage(e);
       qualityFailures.push({ case_index: caseIndex, topic_id: c.topic.id, error });
       coverageDecisionsByStratum[stratum].push(...coverageDecisions);
       qualityEvidence.push({ case_index: caseIndex, topic_id: c.topic.id, topic_name: c.topic.name, stratum, insight_count: 0, reader_visible_insight_count: 0, checks: [], coverage_decisions: coverageDecisions, error });
-      console.log(`失败，跳过该主题（${error}）`);
+      updateA1Progress({
+        // A complete quality population is mandatory evidence.  A request timeout, malformed
+        // structured response or any other execution error is terminal just like the outer
+        // deadline; continuing would silently skip this topic and make the final run unusable.
+        state: "failed",
+        phase: "quality",
+        topic_timeout_ms: topicTimeoutMs,
+        judge_timeout_ms: judgeTimeoutMs,
+        coverage_timeout_ms: coverageTimeoutMs,
+        current_case: { index: caseIndex, total: qualityCases.length, topic_id: c.topic.id },
+        completed: { quality_cases: qualitySucceeded, consistency_cases: 0 },
+        last_failure: { phase: "quality", case_index: caseIndex, topic_id: c.topic.id, error },
+      });
+      if (e instanceof A1TopicDeadlineExceededError) {
+        console.log(`截止超时，终止本次 A1（${error}）`);
+        throw e;
+      }
+      console.log(`失败，终止本次 A1 并保留可恢复 checkpoint（${error}）`);
+      throw terminalA1QualityCaseFailure(caseIndex, c.topic.id, e);
     }
   }
 
@@ -544,33 +950,75 @@ async function main(): Promise<void> {
   const matrixByStratum: Record<Stratum, ConfusionMatrix> = { arxiv: emptyMatrix(), transcript: emptyMatrix() };
   const judgeEvidence: JudgeEvidence[] = [];
   let judgeSucceeded = 0;
-  const judgeFailures: Array<{ case_index: number; error: string }> = [];
+  const judgeFailures: Array<{ case_index: number; error: string; latency_ms: number }> = [];
+  updateA1Progress({
+    state: "running", phase: "consistency", topic_timeout_ms: topicTimeoutMs,
+    judge_timeout_ms: judgeTimeoutMs, coverage_timeout_ms: coverageTimeoutMs,
+    completed: { quality_cases: qualitySucceeded, consistency_cases: 0 },
+  });
   process.stdout.write(`[校验器准召] ${consistencyCases.length} 组标注对… `);
-  for (const [caseIndex, c] of consistencyCases.entries()) {
-    const st = judgeByStratum[c.stratum ?? "arxiv"];
-    const stratum = c.stratum ?? "arxiv";
-    let j: Awaited<ReturnType<typeof judgeWithRetry>>;
-    try {
-      // 标注集是一条 claim 对一段 source_text，走生产单条路径的重试包装；直接调
-      // judgeConsistency 会把瞬态/结构化输出抖动伪装成“跳过样本”。批量路径另由
-      // validate-batch-judge.ts 覆盖，不能用本循环替代其验证。
-      j = await judgeWithRetry(c.statement, c.source_text);
-    } catch (e) {
-      judgeFailures.push({ case_index: caseIndex, error: (e as Error).message });
+  // These single-claim judges do not share model context. The mapper preserves the original
+  // dataset order so evidence, matrices and artifacts remain deterministic even when the
+  // reviewed c=2 experiment is explicitly selected. Analyzer work is intentionally not here.
+  const independentJudgeResults = await mapA1IndependentCalls<ConsistencyCase, IndependentJudgeResult>(
+    consistencyCases,
+    evalConfig.independent_call_concurrency,
+    async (c, caseIndex) => {
+      const stratum = c.stratum ?? "arxiv";
+      const startedAt = Date.now();
+      try {
+        // 标注集是一条 claim 对一段 source_text，走生产单条路径的重试包装；直接调
+        // judgeConsistency 会把瞬态/结构化输出抖动伪装成“跳过样本”。批量路径另由
+        // validate-batch-judge.ts 覆盖，不能用本循环替代其验证。
+        const judgment = await runA1JudgeWithDeadline(
+          caseIndex,
+          judgeTimeoutMs,
+          (signal) => judgeWithRetry(c.statement, c.source_text, undefined, undefined, undefined, signal),
+        );
+        return { case_index: caseIndex, stratum, case: c, judgment, latency_ms: Date.now() - startedAt, error: null };
+      } catch (error) {
+        return {
+          case_index: caseIndex,
+          stratum,
+          case: c,
+          judgment: null,
+          latency_ms: Date.now() - startedAt,
+          error: a1ErrorMessage(error),
+        };
+      }
+    },
+  );
+  for (const result of independentJudgeResults) {
+    const { case_index: caseIndex, stratum, case: c, judgment, latency_ms, error } = result;
+    const st = judgeByStratum[stratum];
+    updateA1Progress({
+      state: "running", phase: "consistency", topic_timeout_ms: topicTimeoutMs,
+      judge_timeout_ms: judgeTimeoutMs, coverage_timeout_ms: coverageTimeoutMs,
+      current_case: { index: caseIndex, total: consistencyCases.length },
+      completed: { quality_cases: qualitySucceeded, consistency_cases: judgeSucceeded },
+    });
+    if (!judgment) {
+      judgeFailures.push({ case_index: caseIndex, error: error ?? "未知校验器错误", latency_ms });
       recordJudgeAttempt(st, c.expected_consistency, null);
-      judgeEvidence.push({ case_index: caseIndex, stratum, expected: c.expected_consistency, predicted: null, rationale: null, error: (e as Error).message });
+      judgeEvidence.push({ case_index: caseIndex, stratum, expected: c.expected_consistency, predicted: null, rationale: null, latency_ms, error: error ?? "未知校验器错误" });
       continue;
     }
-    recordJudgeAttempt(st, c.expected_consistency, j.consistency);
+    recordJudgeAttempt(st, c.expected_consistency, judgment.consistency);
     judgeSucceeded++;
-    matrixByStratum[stratum][c.expected_consistency][j.consistency]++;
-    judgeEvidence.push({ case_index: caseIndex, stratum, expected: c.expected_consistency, predicted: j.consistency, rationale: j.rationale, error: null });
+    matrixByStratum[stratum][c.expected_consistency][judgment.consistency]++;
+    judgeEvidence.push({ case_index: caseIndex, stratum, expected: c.expected_consistency, predicted: judgment.consistency, rationale: judgment.rationale, latency_ms, error: null });
+    updateA1Progress({
+      state: "running", phase: "consistency", topic_timeout_ms: topicTimeoutMs,
+      judge_timeout_ms: judgeTimeoutMs, coverage_timeout_ms: coverageTimeoutMs,
+      current_case: { index: caseIndex, total: consistencyCases.length },
+      completed: { quality_cases: qualitySucceeded, consistency_cases: judgeSucceeded },
+    });
   }
   const judgedTotal = STRATA.reduce((n, s) => n + judgeByStratum[s].judged, 0);
   const errorsTotal = STRATA.reduce((n, s) => n + judgeByStratum[s].errors, 0);
   console.log(`done（完成 ${judgedTotal}/${consistencyCases.length}${errorsTotal ? `，重试耗尽 ${errorsTotal}（计未命中）` : ""}）`);
-  const coreComplete = qualityFailures.length === 0 && judgeFailures.length === 0;
-  if (!coreComplete) {
+  const qualityAndJudgeComplete = qualityFailures.length === 0 && judgeFailures.length === 0;
+  if (!qualityAndJudgeComplete) {
     console.log(
       `❌ 核心评测不完整：分析主题失败 ${qualityFailures.length} 个，校验标注对失败 ${judgeFailures.length} 个。` +
         " 不会将部分样本与基线比较或宣称自动门通过。",
@@ -595,10 +1043,13 @@ async function main(): Promise<void> {
   // insights—not pre-validation analyzer candidates retained below for informational coverage.
   const allInsights = STRATA.flatMap((s) => readerVisibleInsightsByStratum[s]);
   const readerVisibleByTopic = countReaderVisibleByTopic(dcpTopicIds, allInsights);
+  const readerVisibleDuplicates = readerVisibleDuplicateEvidence(allInsights);
   const samplePrerequisite = dcpSamplePrerequisite({
     topics: dcpTopicIds.length,
     consistencyPairs: consistencyAll.length,
     readerVisibleInsightsByTopic: readerVisibleByTopic,
+    duplicateInsightIds: readerVisibleDuplicates.duplicate_insight_ids,
+    duplicateStatementQuoteKeys: readerVisibleDuplicates.duplicate_statement_quote_keys,
   });
   const dcpSample = {
     contract_version: DCP_SAMPLE_CONTRACT_VERSION,
@@ -608,6 +1059,8 @@ async function main(): Promise<void> {
     unique_topic_count: dcpTopicIds.length,
     reader_visible_total: allInsights.length,
     reader_visible_by_topic: Object.fromEntries(readerVisibleByTopic.map(({ topic_id, count }) => [topic_id, count])),
+    duplicate_insight_ids: readerVisibleDuplicates.duplicate_insight_ids,
+    duplicate_statement_quote_count: readerVisibleDuplicates.duplicate_statement_quote_keys.length,
   };
   let claimsTotal = 0;
   let claimsCovered = 0;
@@ -628,9 +1081,17 @@ async function main(): Promise<void> {
   // ── 展示级引用覆盖基准（P0，独立于 analyzer 的最终 yield）──
   // 手标 reject 的任何一条若被放行就是 unsafe_accept，硬门必须为 0；false reject 暂作
   // 信息量，避免在未建立足够样本前把“保守”误报成安全放行。
-  const displayCoverageCases = readDisplayCoverageCases();
+  updateA1Progress({
+    state: "running", phase: "coverage_benchmark", topic_timeout_ms: topicTimeoutMs,
+    judge_timeout_ms: judgeTimeoutMs, coverage_timeout_ms: coverageTimeoutMs,
+    completed: { quality_cases: qualitySucceeded, consistency_cases: judgeSucceeded },
+  });
   process.stdout.write(`[展示引用覆盖] ${displayCoverageCases.length} 条手标反例/正例… `);
-  const displayCoverageResults = await runDisplayCoverageBenchmark(displayCoverageCases);
+  const displayCoverageResults = await runDisplayCoverageBenchmark(
+    displayCoverageCases,
+    evalConfig.independent_call_concurrency,
+    coverageTimeoutMs,
+  );
   const expectedRejects = displayCoverageResults.filter((result) => result.expected === "reject");
   const expectedAccepts = displayCoverageResults.filter((result) => result.expected === "accept");
   // An accepted case whose rendered text differs from its manually pinned bound quote is also a
@@ -646,9 +1107,48 @@ async function main(): Promise<void> {
   allRows.push(displayCoverageMetric);
   console.log(`${displayCoverageMetric.pass ? "✅" : "❌"} unsafe_accept ${unsafeAccepts.length}/${expectedRejects.length}；projection_violation ${projectionViolations.length}/${displayCoverageResults.length}；false_reject ${falseRejects.length}/${expectedAccepts.length}`);
 
+  // ── Coverage 单角色校准（不能由主 validator 的先行拒绝代替）──
+  process.stdout.write(`[Coverage quote-self-contained] ${quoteSelfContainedCases.length} 条手标 quote-only 用例… `);
+  const quoteSelfContainedResults = await runQuoteSelfContainedBenchmark(
+    quoteSelfContainedCases,
+    evalConfig.independent_call_concurrency,
+    coverageTimeoutMs,
+  );
+  const quoteExpectedRejects = quoteSelfContainedResults.filter((result) => result.expected === "reject");
+  const quoteUnsafeAccepts = quoteExpectedRejects.filter((result) => result.actual === "accept");
+  const quoteFalseRejects = quoteSelfContainedResults.filter((result) => result.expected === "accept" && result.actual === "reject");
+  const quoteUnsafeAcceptRate = quoteExpectedRejects.length ? quoteUnsafeAccepts.length / quoteExpectedRejects.length : 1;
+  const quoteSelfContainedMetric = metric("quote_self_contained_unsafe_accept", "Coverage quote-self-contained unsafe_accept", quoteUnsafeAcceptRate, 0, "<=", "publish_safety");
+  allRows.push(quoteSelfContainedMetric);
+  console.log(`${quoteSelfContainedMetric.pass ? "✅" : "❌"} unsafe_accept ${quoteUnsafeAccepts.length}/${quoteExpectedRejects.length}；false_reject ${quoteFalseRejects.length}/${quoteSelfContainedResults.filter((result) => result.expected === "accept").length}`);
+  const coverageBenchmarkFailures = [
+    ...displayCoverageResults.filter((result) => result.error != null).map((result) => ({
+      benchmark: "display_coverage" as const, case_id: result.id, latency_ms: result.latency_ms, error: result.error!,
+    })),
+    ...quoteSelfContainedResults.filter((result) => result.error != null).map((result) => ({
+      benchmark: "quote_self_contained" as const, case_id: result.id, latency_ms: result.latency_ms, error: result.error!,
+    })),
+  ];
+  const coreComplete = qualityAndJudgeComplete && coverageBenchmarkFailures.length === 0;
+  if (coverageBenchmarkFailures.length) {
+    console.log(
+      `❌ Coverage 基准不完整：${coverageBenchmarkFailures.length} 条基础设施失败或超时。` +
+        " 保守拒绝不等于该手标安全测试完成；不会比较基线或宣称自动门通过。",
+    );
+  }
+
   // ── 成本（估算，A5 成本可控） ──
   const cost = getCostReport();
+  const roleTelemetry = getRoleCallTelemetry();
   const checksTotal = STRATA.reduce((n, s) => n + checksByStratum[s].length, 0);
+  console.log("\n角色调用观测：");
+  for (const [role, telemetry] of Object.entries(roleTelemetry)) {
+    if (!telemetry.calls) continue;
+    console.log(`  ${role}：${telemetry.calls} calls / ${telemetry.requests} requests / ${telemetry.failures} failures · p95 ${telemetry.latency_ms.p95.toFixed(0)}ms`);
+    for (const [operation, operationTelemetry] of Object.entries(telemetry.by_operation)) {
+      console.log(`    └ ${operation}：${operationTelemetry.calls} calls / ${operationTelemetry.requests} requests / ${operationTelemetry.failures} failures · p95 ${operationTelemetry.latency_ms.p95.toFixed(0)}ms`);
+    }
+  }
   console.log("\n本次运行成本（估算）：");
   for (const m of cost.byModel) {
     const cache = m.cacheRead || m.cacheWrite ? ` · cache r/w ${m.cacheRead}/${m.cacheWrite}` : "";
@@ -683,7 +1183,23 @@ async function main(): Promise<void> {
       run_id: workspace.runId,
       generated_at: reviewGeneratedAt,
       config: evalConfig,
-      dataset: { quality_file: qualityFile, quality_cases: qualityCases.length, consistency_file: consistencyFile, consistency_cases: consistencyCases.length, smoke },
+      dataset: {
+        quality_file: qualityFile,
+        quality_cases: qualityCases.length,
+        quality_cases_total: qualityAll.length,
+        consistency_file: consistencyFile,
+        consistency_cases: consistencyCases.length,
+        consistency_cases_total: consistencyAll.length,
+        display_coverage_cases: displayCoverageCases.length,
+        display_coverage_cases_total: displayCoverageAll.length,
+        quote_self_contained_cases: quoteSelfContainedCases.length,
+        quote_self_contained_cases_total: quoteSelfContainedAll.length,
+        judge_timeout_ms: judgeTimeoutMs,
+        coverage_timeout_ms: coverageTimeoutMs,
+        smoke_forced: process.env.A1_FORCE_SMOKE === "1",
+        dataset_lock: { path: datasetLockPath, ...datasetLock },
+        smoke,
+      },
       completion: {
         core_complete: coreComplete,
         quality_succeeded: qualitySucceeded,
@@ -692,6 +1208,7 @@ async function main(): Promise<void> {
         judge_succeeded: judgeSucceeded,
         judge_total: consistencyCases.length,
         judge_failures: judgeFailures,
+        coverage_benchmark_failures: coverageBenchmarkFailures,
       },
       dcp_sample: dcpSample,
       quality_cases: qualityEvidence,
@@ -707,7 +1224,15 @@ async function main(): Promise<void> {
         false_reject: { count: falseRejects.length, total: expectedAccepts.length },
         results: displayCoverageResults,
       },
+      quote_self_contained_coverage: {
+        fixture: QUOTE_SELF_CONTAINED_FIXTURE,
+        fixture_sha256: evalConfig.quote_self_contained_dataset_sha256,
+        unsafe_accept: { count: quoteUnsafeAccepts.length, total: quoteExpectedRejects.length, rate: quoteUnsafeAcceptRate },
+        false_reject: { count: quoteFalseRejects.length, total: quoteSelfContainedResults.filter((result) => result.expected === "accept").length },
+        results: quoteSelfContainedResults,
+      },
       pipeline_coverage: pipelineCoverage,
+      llm_role_telemetry: roleTelemetry,
       relay_recovery: recovery,
     },
   );
@@ -729,7 +1254,8 @@ async function main(): Promise<void> {
   // ── 样本量提示 ──
   if (smoke) {
     console.log(
-      `\n⚠️ 子集冒烟：仅跑了主题 ${qualityCases.length}/${qualityAll.length}、一致性对 ${consistencyCases.length}/${consistencyAll.length}。\n` +
+      `\n⚠️ 子集冒烟：主题 ${qualityCases.length}/${qualityAll.length}、一致性对 ${consistencyCases.length}/${consistencyAll.length}` +
+        `、展示覆盖 ${displayCoverageCases.length}/${displayCoverageAll.length}、quote 自足性 ${quoteSelfContainedCases.length}/${quoteSelfContainedAll.length}。\n` +
         "   结果仅用于验证真模型链路 + 标定成本，不作 A1 / DCP 判定依据。去掉 A1_*_LIMIT 跑全量才出结论。",
     );
   } else if (samplePrerequisite) {
@@ -740,43 +1266,37 @@ async function main(): Promise<void> {
   }
 
   // ── 回归门（eval-criteria：任一指标较基线降 >3pp 告警/阻断）。各 stratum 各比各的基线段。
-  // baseline.json：arxiv → `auto_metrics`（历史键，向后兼容）；transcript → `transcript`。 ──
+  // baseline-registry.json is the executable two-run approval source. The legacy aggregate
+  // baseline is historical context only and can never certify the changed contract. ──
   let regressed = false;
   let baselineComparison: "comparable" | "incomparable" | "not_evaluated" = "not_evaluated";
   if (!coreComplete) {
     console.log("\n（核心评测不完整，跳过 baseline 回归对照）");
-  } else try {
-    baselineComparison = "comparable";
-    const baseDoc = JSON.parse(readFileSync("evals/baseline.json", "utf8")) as Record<string, unknown>;
-    const configs = baseDoc.eval_configs;
-    const configsByStratum = configs && typeof configs === "object" && !Array.isArray(configs)
-      ? configs as Record<string, unknown>
-      : {};
-    const baseForStratum = (s: Stratum): Record<string, number> =>
-      ((s === "arxiv" ? baseDoc.auto_metrics : baseDoc[s]) ?? {}) as Record<string, number>;
+  } else {
+    let registryDoc: unknown = null;
+    try {
+      registryDoc = JSON.parse(readFileSync("evals/baseline-registry.json", "utf8"));
+    } catch {
+      console.log("\n（未读取到 baseline registry；正式回归对照不可比）");
+    }
+    baselineComparison = "incomparable";
     const TOL = 0.03;
+    let everyActiveStratumComparable = activeStrata.length > 0;
+    if (!activeStrata.length) console.log("\n回归对照：⚠️ 没有完成任何质量/一致性形态，不能作可比结论。");
     for (const s of activeStrata) {
-      const base = baseForStratum(s);
-      if (!Object.keys(base).length) {
-        baselineComparison = "incomparable";
-        console.log(`\n回归对照（${s} · vs baseline.json）：⚠️ 缺少该形态的基线指标，不能作回归结论。`);
+      const expectedMetricKeys = rowsByStratum[s].map((row) => row.key);
+      const base = comparableRegistryBaselineMetrics(registryDoc, s, evalConfig, expectedMetricKeys);
+      if (!base) {
+        everyActiveStratumComparable = false;
+        console.log(`\n回归对照（${s}）：⚠️ 缺少已批准、同配置的基线指标，不能作回归结论。`);
         continue;
       }
-      const baseConfig = configsByStratum[s];
-      const configCompatible = baseConfig && typeof baseConfig === "object" && !Array.isArray(baseConfig)
-        ? sameEvalConfig(baseConfig as Record<string, unknown>, evalConfig)
-        : false;
-      console.log(`\n回归对照（${s} · vs baseline.json）：`);
-      if (!configCompatible) {
-        baselineComparison = "incomparable";
-        console.log("  ⚠️ 此形态缺少同配置的结构化基线：仅展示指标，不作回归结论；请先全量重建该形态基线。");
-      }
+      console.log(`\n回归对照（${s} · vs baseline-registry.json）：`);
       for (const r of rowsByStratum[s]) {
         const b = base[r.key];
-        if (typeof b !== "number") continue;
         const delta = r.value - b;
         // info 指标仅打印漂移、不触回归门（其红线由 blocking 守，非本指标）
-        const isReg = configCompatible && r.op !== "info" && (r.op === ">=" ? delta < -TOL : delta > TOL);
+        const isReg = r.op !== "info" && (r.op === ">=" ? delta < -TOL : delta > TOL);
         if (isReg) regressed = true;
         console.log(
           `  ${r.name.padEnd(18)} ${pct(b)} → ${pct(r.value)}（Δ${delta >= 0 ? "+" : ""}${pct(delta)}）${isReg ? " ⚠️ 回归" : ""}`,
@@ -788,9 +1308,7 @@ async function main(): Promise<void> {
         "  ⚠️ 检测到 >3pp 回归。单次跑有非确定性噪声——标准全量跑下视为阻断；非标准数据集/冒烟仅供参考。",
       );
     }
-  } catch {
-    baselineComparison = "incomparable";
-    console.log("\n（无 baseline.json，跳过回归对照）");
+    if (everyActiveStratumComparable) baselineComparison = "comparable";
   }
 
   const failed = allRows.filter((r) => !r.pass);
@@ -820,15 +1338,21 @@ async function main(): Promise<void> {
       autoGate = "fail";
     }
   } else {
-    // 阈值 FAIL 或（配置可比的）>3pp 回归 → 非零退出（带 key 的 job/CI 可据此阻断合并）
-    exitCode = !allRows.length || failed.length || regressed ? 1 : 0;
-    autoGate = exitCode === 0 ? "pass" : "fail";
+    // A green automatic threshold result may be promoted into the two-run registry, but it is
+    // not an Eval-Gate pass until a comparable approved baseline exists.
+    const automaticThresholdsPass = activeStrata.length > 0 && Boolean(allRows.length) && failed.length === 0 && !regressed;
+    autoGate = automaticThresholdsPass ? "pass" : "fail";
+    exitCode = formalA1GateExitCode(automaticThresholdsPass, activeStrata.length, baselineComparison === "comparable" ? "comparable" : "incomparable");
+    if (automaticThresholdsPass && baselineComparison !== "comparable") {
+      console.log("❌ 自动阈值已通过，但缺少已批准的同配置 baseline；正式 Eval-Gate 仍阻断，不能据此合入。");
+    }
   }
 
   const dcpPrerequisites = [
     ...(baselineComparison !== "comparable" ? ["缺少同配置的可比 baseline"] : []),
     ...(smoke ? ["当前为 smoke 子集运行"] : []),
     ...(samplePrerequisite ? [samplePrerequisite] : []),
+    ...(!datasetLock.promotion_eligible ? [`dataset lock 不具备 v2 提升资格：${datasetLock.issues.join("；") || datasetLock.status}`] : []),
     "人工 review queue 尚未完成",
   ];
   const dcpEligibleForManualReview = autoGate === "pass" && dcpPrerequisites.length === 1;
@@ -836,8 +1360,15 @@ async function main(): Promise<void> {
   const artifactPaths = {
     "a1-run.json": a1RunPath,
     "review-queue.json": reviewQueuePath,
+    "quality-checkpoint.json": activeQualityCheckpointPath!,
     ...(reviewArtifactError ? {} : { "review.csv": reviewCsvPath }),
   };
+  updateA1Progress({
+    state: "completed", phase: "finalizing", topic_timeout_ms: topicTimeoutMs,
+    judge_timeout_ms: judgeTimeoutMs, coverage_timeout_ms: coverageTimeoutMs,
+    completed: { quality_cases: qualitySucceeded, consistency_cases: judgeSucceeded },
+  });
+  const progressPath = join(workspace.tempDir, "progress.json");
   finalizeA1Run(workspace, {
     run_id: workspace.runId,
     status: "completed",
@@ -849,41 +1380,28 @@ async function main(): Promise<void> {
     config: activeRunContext.config,
     dataset: activeRunContext.dataset,
     source: activeRunContext.source,
+    ...(activeResumeCheckpointSha256 ? { resumed_from_checkpoint_sha256: activeResumeCheckpointSha256 } : {}),
     baseline_comparison: baselineComparison,
     dcp_sample: dcpSample,
     dcp_prerequisites: dcpPrerequisites,
     relay_recovery: recovery,
+    llm_role_telemetry: roleTelemetry,
     insights: insightManifest(allInsights),
-    artifacts: Object.fromEntries(Object.entries(artifactPaths).map(([name, path]) => [name, sha256File(path)])),
+    artifacts: {
+      ...Object.fromEntries(Object.entries(artifactPaths).map(([name, path]) => [name, sha256File(path)])),
+      "progress.json": sha256File(progressPath),
+    },
     ...(reviewArtifactError ? { review_artifact_error: reviewArtifactError } : {}),
   });
   activeWorkspace = null;
+  activeProgress = null;
+  activeQualityCheckpointPath = null;
+  activeResumeCheckpointSha256 = null;
   process.exit(exitCode);
 }
 
 main().catch((err) => {
   console.error("A1 验证运行出错：", err);
-  if (activeWorkspace) {
-    const workspace = activeWorkspace;
-    try {
-      finalizeFailedA1Run(workspace, {
-        run_id: workspace.runId,
-        status: "failed",
-        auto_gate: "not_evaluated",
-        manual_review: "not_generated",
-        dcp_eligibility: "not_evaluated",
-        started_at: workspace.startedAt,
-        ended_at: new Date().toISOString(),
-        config: activeRunContext.config,
-        dataset: activeRunContext.dataset,
-        source: activeRunContext.source,
-        insights: { count: 0, ids_sha256: createHash("sha256").update("").digest("hex") },
-        artifacts: {},
-        error: (err as Error).message,
-      });
-    } catch (artifactError) {
-      console.error("A1 失败产物记录也失败：", artifactError);
-    }
-  }
+  finalizeActiveA1Failure(err);
   process.exit(1);
 });

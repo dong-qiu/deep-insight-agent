@@ -19,21 +19,10 @@ if (!existsSync(inPath)) {
 const queue = JSON.parse(readFileSync(inPath, "utf8")) as { run_id?: string; generated_at: string; insights: Insight[] };
 const insights = queue.insights;
 
-// 可选：AI 预评 JSON（argv[4]，id → {non_obvious, hallucination, note}），合并成「AI预评」列作人评起点
-interface Prejudge {
-  id: string;
-  non_obvious: string;
-  hallucination: string;
-  note: string;
+if (process.argv[4]) {
+  console.error("review:csv 只生成盲评表，不能传入 AI 预标注。请把 diagnostic_only 预标注与两位人工提交分开保存，并在人工提交冻结后再揭示。");
+  process.exit(2);
 }
-const prejudgePath = process.argv[4];
-if (prejudgePath && !existsSync(prejudgePath)) {
-  console.error(`找不到预评文件 ${prejudgePath}`);
-  process.exit(1);
-}
-const prejudge = prejudgePath
-  ? new Map((JSON.parse(readFileSync(prejudgePath, "utf8")) as Prejudge[]).map((j) => [j.id, j]))
-  : null;
 
 /** Spreadsheet formula injection is a data-integrity problem: reader-facing source text must
  * remain literal even when an evaluator opens the CSV in Excel or Sheets. */
@@ -43,12 +32,10 @@ const literalCell = (v: string | number): string => {
 };
 const esc = (v: string | number): string => `"${literalCell(v).replace(/"/g, '""')}"`;
 
-const aiCols = prejudge ? ["AI预评·非显然", "AI预评·幻觉", "AI预评·理由"] : [];
 const headers = [
   "run_id", "queue_generated_at", "序号", "id", "主题", "类型", "重要性", "结论", "引用",
   "statement_citation_index", "statement_citation_claim",
   "可定位", "截断",
-  ...aiCols,
   "非显然(是/否)", "幻觉(有/无)", "importance合理(是/否)", "备注",
 ];
 const rows = [headers.map(esc).join(",")];
@@ -58,13 +45,10 @@ insights.forEach((it, i) => {
   const boundCitation = it.statement_citation_index == null ? undefined : it.citations[it.statement_citation_index - 1];
   const locatable = it.citations.every((c) => c.locator.char_start >= 0) ? "是" : "否";
   const truncated = isCompleteStatement(it.statement) ? "" : "是";
-  const j = prejudge?.get(it.id);
-  const aiCells = prejudge ? [j?.non_obvious ?? "", j?.hallucination ?? "", j?.note ?? ""] : [];
   rows.push(
     [
       queue.run_id ?? "legacy", queue.generated_at, i + 1, it.id, it.topic_id, it.type, it.importance,
       it.statement, quotes, it.statement_citation_index ?? "", boundCitation?.claim ?? "", locatable, truncated,
-      ...aiCells,
       "", "", "", "",
     ].map(esc).join(","),
   );

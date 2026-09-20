@@ -30,7 +30,7 @@ vi.mock("./robots.js", () => ({
   isAllowed: vi.fn((rules: { disallow: string[] }, path: string) => !rules.disallow.some((d) => path.startsWith(d))),
 }));
 
-const { extractArticleHtml, fetchArticleBody, articleFetchEnabled } = await import("./article.js");
+const { extractArticleHtml, fetchArticle, fetchArticleBody, articleFetchEnabled } = await import("./article.js");
 
 afterEach(() => {
   responses.clear();
@@ -96,6 +96,15 @@ describe("fetchArticleBody（编排 + 失败兜底）", () => {
     expect(out).not.toBeNull();
     expect(out).toContain(longBody.slice(0, 12));
     expect(out).not.toContain("菜单");
+  });
+
+  it("成功时保留完整 HTTP 响应，供 collector 归档并将结构化正文回链", async () => {
+    const response = page(longBody);
+    responses.set("https://site/post/1", { ok: true, text: response });
+    const out = await fetchArticle("https://site/post/1");
+    expect(out).toMatchObject({ raw_html: response });
+    expect(out?.body_html).toContain(longBody.slice(0, 12));
+    expect(out?.body_html).not.toContain("菜单");
   });
 
   it("robots 禁止 → null（不抓）", async () => {

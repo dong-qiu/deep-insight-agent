@@ -60,7 +60,7 @@ export function verdictFor(
  * 三分类的边界表同时供单条与批量 judge 使用。
  *
  * 不要把「原文没有提到」和「引用把已有的限定事实改写成另一件事」混为一谈：后者会使
- * 发布层错误放行，必须是 not_support。它来自 2026-09 A1 错例审计，且与
+ * 发布层错误放行，必须是 not_support。它来自 2026-09 A1 边界复核，且与
  * citation-validation spec 的范围/条件扩大规则保持一致。
  */
 export const CONSISTENCY_LABEL_DECISION_TABLE = `
@@ -68,6 +68,14 @@ export const CONSISTENCY_LABEL_DECISION_TABLE = `
 1. 只有原文直接覆盖 claim 的关键主体、数值、比较、范围和条件时才判 support；claim 省略不改变该事实的辅助步骤，不单独构成冲突。
 2. 判 not_support：原文已有明确事实却被 claim 改写为相反主体/数值/比较，或把**已有的限定范围或条件**扩大、替换为不相容范围/条件或全称断言。即使原文没有另行写出“该扩大后的说法为假”，这种改写仍是夸大或断章取义。例如：原文只说“多步任务”却 claim “单步任务也成立”；原文只说“评测中的群聊注入”却 claim “所有输入面、所有模型”；原文只说“分类性能”却 claim “所有指标”。原文点名 A，claim 把同一已陈述事实归给不相同的 B，也判 not_support。
 3. 判 uncertain：原文只是完全没有提及 claim 的基准、产品、领域、主体或属性，且没有可判定的相反事实；不得用外部常识补全或反驳。仅仅“没有提到”不是 not_support。
+
+先做两步，不可跳过：
+A. 把 claim 拆成已有原文锚点的断言与额外断言；再问额外断言是否复用了原文明确给出的同一主体/属性/条件并把它改成另一件事。
+B. 若只是新增独立属性，原文既没有确认也没有给出明确相反或排他边界，判 uncertain；不要因为新增属性看起来不太可能、原文列举了别的措施，或原文只展示了一个实例，就擅自判 not_support。
+
+以下是 **uncertain**：原文说功能向所有付费套餐推出，但没有说其 beta 定价是否已包含在订阅中；原文列举若干补救措施但没有说“仅限这些”，claim 又新增身份监测服务；原文只展示一个 pre-release 条目却没有完整发布历史，claim 谈所有发布。它们都缺关键事实，不能仅凭沉默当作反证。
+
+以下是 **not_support**：原文说第三方测试已公开版本，claim 改成该第三方参与产品开发或发布前审阅（改变角色/时间语境）；原文的“独立实现”被 claim 改成“独立认证的设施”（错误归因）；原文明确供应链准备 8-hi，claim 改成供应链准备 4-hi（错误归因）；原文说“seems/可能”，claim 改成确定事实，或原文说“不是”而 claim 说“是”（删除明确限定并夸大）。
 `;
 
 const CONSISTENCY_DECISION_RULES = `
@@ -83,6 +91,8 @@ ${CONSISTENCY_LABEL_DECISION_TABLE}
 - 原文明确了某系统/技术的实现机制或层次，claim 却把**同一机制**改成不相容的另一种实现。例如原文说“在 source level 自我改写”，claim 说“仅修改提示词和技能文件、不改源代码”；原文说技术“通过 bridge 重构为 few-shot 示例”，claim 说“通过加密提示词”。两者都是对已陈述机制的替换，判 not_support，而非“原文没提到”的 uncertain。
 
 不要把“原文只谈 A、没有谈 B”本身当成冲突：若原文只出现另一个基准、领域、模型、硬件、机制或对象，却**没有**对 claim 中的目标作出上述同一属性的明确相反断言，应判 uncertain。
+
+支持可以是对**同一连续论证链**的忠实压缩，不要求每个词都在同一句：若原文先说明 AI 工具使漏洞挖掘标准化/自动化，随后说明实战经验可被蒸馏为提示词、工具链与自动化剧本并规模化复制攻击能力，把这些已陈述环节概括为攻击能力被标准化、自动化和放大，判 support；不得把相邻段落机械地拆成互不相关的事实。
 
 判定倾向：**宁误杀勿漏网** —— 不确定时不要判 support。`;
 
@@ -124,7 +134,9 @@ export async function judgeConsistency(
   onCost?: (cost: Cost) => void,
   metadata?: SourceMetadata,
   quote?: string,
+  signal?: AbortSignal,
 ): Promise<ConsistencyJudge> {
+  if (signal?.aborted) throw signal.reason ?? new Error("validation cancelled");
   const user = `<untrusted_source>
 ${sourceText}
 </untrusted_source>
@@ -134,6 +146,7 @@ ${renderSourceMetadata(metadata)}${renderCitation(claim, quote)}
 判断 untrusted_source 是否支持 untrusted_citation 内的原子 claim。`;
   const { data } = await callStructured({
     role: "validator",
+    telemetryOperation: "citation_consistency_single",
     system: CONSISTENCY_SYSTEM,
     user,
     schema: ConsistencyJudgeSchema,
@@ -141,6 +154,7 @@ ${renderSourceMetadata(metadata)}${renderCitation(claim, quote)}
     thinking: validatorThinking(),
     maxTokens: 4096,
     onCost,
+    signal,
   });
   return data;
 }
@@ -170,14 +184,18 @@ export function consistencyBatchMax(): number {
 
 /** 批量一致性 LLM 评判：源文发一遍 + 结论清单，返回与输入**同序**的判定数组。
  *  严格对齐：1..K 每个序号都须有且仅有一条判定，否则视为产出残缺而抛错——交 retry / 最终记校验失败，
- *  **绝不把缺失判定默认成 support**（安全红线"宁误杀勿漏网"）。 */
+ *  **绝不把缺失判定默认成 support**（安全红线"宁误杀勿漏网"）。batch 的 uncertain 已是失败关闭
+ *  （不会进入报告）；不得以另一次随机单条调用将它覆盖成 not_support，否则会把“原文不足以确认”的
+ *  边界项误写成存在矛盾。 */
 export async function judgeConsistencyBatch(
   claims: string[],
   sourceText: string,
   onCost?: (cost: Cost) => void,
   metadata?: SourceMetadata,
   quotes?: Array<string | undefined>,
+  signal?: AbortSignal,
 ): Promise<ConsistencyJudge[]> {
+  if (signal?.aborted) throw signal.reason ?? new Error("validation cancelled");
   const list = claims.map((claim, i) => renderCitation(claim, quotes?.[i], i + 1)).join("\n");
   const user = `<untrusted_source>
 ${sourceText}
@@ -189,6 +207,7 @@ ${list}
 对每一条输出 {index, consistency, consistency_reason}，index 等于 untrusted_citation 标签的 index，每条都要有。`;
   const { data } = await callStructured({
     role: "validator",
+    telemetryOperation: "citation_consistency_batch",
     system: CONSISTENCY_BATCH_SYSTEM,
     user,
     schema: ConsistencyBatchJudgeSchema,
@@ -196,6 +215,7 @@ ${list}
     // 输出随条数增长（每条 enum+短理由 + thinking 预算）；按条数放量，封顶防失控。
     maxTokens: Math.min(16000, 4096 + (claims.length - 1) * 768),
     onCost,
+    signal,
   });
   const byIndex = new Map<number, ConsistencyJudge>();
   for (const j of data.judgments) {
@@ -211,6 +231,11 @@ ${list}
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
+/** A caller deadline is an execution failure, never evidence that a claim was merely uncertain. */
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw signal.reason ?? new Error("validation cancelled");
+}
+
 function validatorRelayBaseUrl(): string | undefined {
   const baseUrl = process.env.ANTHROPIC_BASE_URL?.trim();
   return baseUrl ? baseUrl.replace(/\/+$/, "") : undefined;
@@ -225,14 +250,19 @@ async function retryJudge<T>(operation: () => Promise<T>, signal?: AbortSignal):
   const base = validatorBackoffMs();
   let lastErr: unknown;
   for (let attempt = 0; attempt <= extra; attempt++) {
+    throwIfAborted(signal);
     try {
       return await withRelayRecovery({ baseUrl: validatorRelayBaseUrl(), model: MODELS.validator }, operation, signal);
     } catch (error) {
+      throwIfAborted(signal);
       // The shared gate has already consumed its finite recovery budget. Fast per-call retries
       // would reopen a thundering herd and turn one relay outage into many failed evaluations.
       if (error instanceof RelayUnavailableError) throw error;
       lastErr = error;
-      if (attempt < extra) await sleep(base * 2 ** attempt);
+      if (attempt < extra) {
+        await sleep(base * 2 ** attempt);
+        throwIfAborted(signal);
+      }
     }
   }
   throw lastErr;
@@ -245,8 +275,9 @@ export async function judgeBatchWithRetry(
   onCost?: (cost: Cost) => void,
   metadata?: SourceMetadata,
   quotes?: Array<string | undefined>,
+  signal?: AbortSignal,
 ): Promise<ConsistencyJudge[]> {
-  return retryJudge(() => judgeConsistencyBatch(claims, sourceText, onCost, metadata, quotes));
+  return retryJudge(() => judgeConsistencyBatch(claims, sourceText, onCost, metadata, quotes, signal), signal);
 }
 
 /** 一致性判定带重试 + 指数退避——抗中转站/LLM **瞬时**抖动（超时/限流/5xx/解析错）。
@@ -261,7 +292,7 @@ export async function judgeWithRetry(
   quote?: string,
   signal?: AbortSignal,
 ): Promise<ConsistencyJudge> {
-  return retryJudge(() => judgeConsistency(claim, sourceText, onCost, metadata, quote), signal);
+  return retryJudge(() => judgeConsistency(claim, sourceText, onCost, metadata, quote, signal), signal);
 }
 
 /** 校验是否"大面积失败"（疑似 LLM/中转站抖动，非内容问题）：可达引用中"校验失败"占比 ≥ 阈值。
@@ -339,6 +370,15 @@ export function consistencyCacheVersion(): string {
   return `${MODELS.validator}|${promptHash}|${thinking}`;
 }
 
+export function validatorReviewVersionContext(): Record<string, string> {
+  return {
+    validator_model: MODELS.validator,
+    validator_prompt_hash: createHash("sha256").update(`${CONSISTENCY_SYSTEM}\x00${CONSISTENCY_BATCH_SYSTEM}`).digest("hex"),
+    validator_thinking: validatorThinking() ? "on" : "off",
+    validator_cache_mode: process.env.CONSISTENCY_CACHE === "0" ? "off" : "on",
+  };
+}
+
 /** 把数组切成每段 ≤size 的块（批量判定按 CONSISTENCY_BATCH_MAX 拆调用）。 */
 function chunk<T>(xs: T[], size: number): T[][] {
   const out: T[][] = [];
@@ -403,7 +443,9 @@ export async function validateBatch(
   items: ContentItem[],
   onCost?: (cost: Cost) => void,
   cache?: ConsistencyCache,
+  signal?: AbortSignal,
 ): Promise<ValidationResult> {
+  throwIfAborted(signal);
   const byId = new Map(items.map((i) => [i.id, i]));
   const batchOn = validatorBatchOn(); // kill-switch：回退逐条（精度回归/排障用）
   const maxPer = consistencyBatchMax();
@@ -481,10 +523,12 @@ export async function validateBatch(
   };
 
   for (const [itemId, evidences] of missByItem) {
+    throwIfAborted(signal);
     const body = judgeBody(itemId); // 决定⑤：transcript 喂窗口、其余全量（与缓存键同源）
     const metadata = judgeMetadata(itemId);
     const cacheInput = cacheSource(itemId);
     for (const group of chunk(evidences, maxPer)) {
+      throwIfAborted(signal);
       // A malformed batch response is transport/model-output degradation, not evidence about every
       // claim in the group. Fall back to the established single-claim retry path before recording
       // `not_evaluated`; individual failures remain visible and are never cached as successes.
@@ -492,8 +536,9 @@ export async function validateBatch(
         const results: JudgeOutcome[] = [];
         for (const evidence of group) {
           try {
-            results.push(await judgeWithRetry(evidence.claim, body, onCost, metadata, evidence.quote));
+            results.push(await judgeWithRetry(evidence.claim, body, onCost, metadata, evidence.quote, signal));
           } catch (error) {
+            throwIfAborted(signal);
             console.warn(`  ⚠️ 一致性校验失败，记为校验失败（${(error as Error).message}）`);
             results.push({ error: true });
           }
@@ -505,8 +550,9 @@ export async function validateBatch(
         // 不能把一次 schema 漂移放大成整组引用都未评估。
         let results: JudgeOutcome[];
         try {
-          results = await judgeBatchWithRetry(group.map((e) => e.claim), body, onCost, metadata, group.map((e) => e.quote));
+          results = await judgeBatchWithRetry(group.map((e) => e.claim), body, onCost, metadata, group.map((e) => e.quote), signal);
         } catch (error) {
+          throwIfAborted(signal);
           if (error instanceof RelayUnavailableError) {
             // A capacity outage is process-wide and already spent a shared recovery budget.
             // Do not amplify one failed batch into N individual relay requests; keep every item

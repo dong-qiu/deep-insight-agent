@@ -1,0 +1,35 @@
+{
+  "schema_version": "a1-dataset-lock-v1",
+  "id": "repository-fixture-2026-05-24",
+  "tier": "legacy_repository_fixture",
+  "snapshot": {
+    "immutable_reference": "git:evals/dataset@repository-fixture-2026-05-24",
+    "collected_at": "2026-05-24T00:00:00Z",
+    "license_and_retention": "Repository regression fixture only; do not promote this embedded third-party text as a v2 DCP snapshot."
+  },
+  "files": {
+    "quality": {
+      "path": "evals/dataset/insight-quality.jsonl",
+      "sha256": "ce284f10d469ffc0d20924e0fc1bf52df29818e25b37de7d7b9282a3a3a84e00"
+    },
+    "consistency": {
+      "path": "evals/dataset/citation-consistency.jsonl",
+      "sha256": "0879cbcd63e5b9a65d947a23d09f36d9e13c873144a5ddf9297046acda65b8f7"
+    },
+    "display_coverage": {
+      "path": "evals/dataset/display-coverage-benchmark.json",
+      "sha256": "05552c40dae013cfaceea0990b7d4864b8fb9c5f85a9f83525820e1eb1e3e9b8"
+    }
+  },
+  "quality_contract": {
+    "min_unique_topics": 5,
+    "dedupe_key": "content_item_id_or_url"
+  },
+  "consistency_contract": {
+    "min_total": 100,
+    "min_not_support": 40,
+    "required_negative_types": ["exaggeration", "out_of_context", "misattribution"]
+  },
+  "topic_mapping_rule": "The fixture's topic.id is the report topic used for reader-visible DCP counting.",
+  "labeling_provenance": "Legacy AI-constructed labels; requires controlled v2 human-label provenance before DCP promotion."
+}

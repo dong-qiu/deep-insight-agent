@@ -42,6 +42,10 @@ ANTHROPIC_API_KEY=sk-xxx ADMIN_PASSWORD=xxx ./gen-env.sh
 #    （在容器内每日备份 ops/backup-db.mjs 之上多一层异地副本；成本 ≈ $0，见脚本头注）
 ./setup-dr.sh
 
+# 7) A1 v2 受控快照专用 bucket（默认仅核验；--apply 会创建 Object Lock/KMS/S3 资源）
+./setup-a1-eval-snapshot.sh --check
+./setup-a1-eval-snapshot.sh --apply
+
 # 止费（释放所有 EC2 资源，账单归零；注：DR 的 S3 桶不在此清理，需手动 aws s3 rb）
 ./destroy.sh
 ```
@@ -58,6 +62,7 @@ ANTHROPIC_API_KEY=sk-xxx ADMIN_PASSWORD=xxx ./gen-env.sh
 | `deploy.sh` | 首次 bootstrap：rsync 代码 + `docker compose up` + Caddy + 健康检查；日常发布改用 GitHub Actions | SSH 私钥 |
 | `setup-dr.sh` | off-box DR：建 S3 桶（加固）+ 实例角色挂最小 S3 策略 + 经 SSM 装 awscli/写 host cron 每日异地同步 | 需 `aws`（建桶/IAM/SSM） |
 | `setup-redaction-registry.sh` | P0a 独立 Object-Lock redaction registry + KMS + app/recovery 最小策略；默认只读检查，`--apply` 才变更 | 需 `aws`、预建 HMAC secret 与独立 recovery role |
+| `setup-a1-eval-snapshot.sh` | A1 v2 原文快照专用 bucket：私有、versioning、专用 KMS、Object Lock Compliance 90 天、到期 lifecycle；不接入生产 app role | 需 `aws`；仅由经授权 evaluator 上传 |
 | `destroy.sh` | 终止实例 + 删安全组/密钥，止费 | 需 `aws` |
 
 ## 设计要点 / 安全

@@ -2,7 +2,7 @@
  *  幂等：已存在则跳过。用法：npm run seed */
 import { existsSync, readFileSync } from "node:fs";
 import { loadStaticConfig, seedDefaults } from "../src/lib/config/index.js";
-import { getDb } from "../src/lib/db/index.js";
+import { openLocalBootstrapDb } from "../src/lib/db/local-bootstrap.js";
 
 // 加载 .env.local（loadStaticConfig 需 ANTHROPIC_API_KEY 解析 ${VAR}）
 if (existsSync(".env.local")) {
@@ -12,6 +12,9 @@ if (existsSync(".env.local")) {
   }
 }
 
-const result = seedDefaults(getDb(), loadStaticConfig());
+const dbPath = process.env.DB_PATH ?? ".data/insight.db";
+const db = openLocalBootstrapDb(dbPath);
+const result = seedDefaults(db, loadStaticConfig());
+db.close();
 console.log(`已播种默认配置 → ${process.env.DB_PATH ?? ".data/insight.db"}`);
 console.log(`  新增主题 ${result.topics} · 新增数据源 ${result.sources}`);

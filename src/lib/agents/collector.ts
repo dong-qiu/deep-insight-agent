@@ -16,10 +16,11 @@ import { contentItemRef, contentItemRevisionSnapshot, sourceConfigRef, sourceCon
 import { NOOP_P1_TELEMETRY_SINK, type P1TelemetrySink } from "../capabilities/p1-telemetry.js";
 import { runJob } from "../runtime/jobs.js";
 import type { Source } from "../types.js";
-import { MIN_ARTICLE_CHARS, articleFetchEnabled, articleFetchKilled, fetchArticleBody } from "../sources/article.js";
+import { articleFetchEnabled, articleFetchKilled, fetchArticle } from "../sources/article.js";
 import { fetchFromSource } from "../sources/index.js";
 import { normalizeUrl, rawToContentItem } from "../sources/normalize.js";
 import { fetchTranscript, transcriptFetchEnabled } from "../sources/rss.js";
+import type { RawItem } from "../sources/types.js";
 
 export interface CollectResult {
   runId: string;
@@ -36,6 +37,26 @@ function articleFetchMaxPerRun(): number {
   return Number(process.env.ARTICLE_FETCH_MAX_PER_RUN) || 25;
 }
 
+type RawBodyOrigin = "feed" | "article_page" | "transcript";
+
+/** The raw-archive effect owns filesystem writes.  Its payload is an envelope so the body that
+ * was normalized into ContentItem is bound to the feed item and, where applicable, page HTML. */
+function rawArchiveEnvelope(
+  raw: RawItem,
+  item: { content_hash: string },
+  bodyOrigin: RawBodyOrigin,
+  articleHtml: string | null,
+): string {
+  return `${JSON.stringify({
+    schema_version: "content-raw-archive-v1",
+    source_body_origin: bodyOrigin,
+    source_body: raw.body,
+    source_body_kind: raw.body_kind ?? "article",
+    source_item_raw: raw.raw,
+    ...(articleHtml == null ? {} : { article_html: articleHtml }),
+    structured_body_sha256: item.content_hash,
+  })}\n`;
+}
 export async function collectSource(
   db: DB,
   source: Source,
@@ -122,23 +143,23 @@ export async function collectSource(
     let articleFetches = 0; // 本轮已抓全文条数（绑首轮全量回填的串行规模，剩余留下轮）
     const articleBudget = articleFetchMaxPerRun();
     for (const raw of raws) {
-      // ADR-0008 决定③ 按源全文策略：决定是否按 URL 抓文章页补全正文。
-      //  - full_text 源：正文空或过短(<MIN) → 抓；只受应急熔断 ARTICLE_FETCH=0 约束（不受 legacy 默认关约束）。
-      //  - feed 源（默认）：仅全局 ARTICLE_FETCH 开 + 正文为空 → 抓（向后兼容安全客等切片2 前旧配置）。
+      // full_text only accepts a page-derived body for a new URL. In particular, an emergency fetch
+      // kill must not overwrite an already-complete article with the feed summary.
+      if (source.fetch_mode === "full_text" && getContentByUrl(db, normalizeUrl(raw.url))) {
+        skipped++;
+        continue;
+      }
+      // full_text 是完整性承诺，而不是 RSS 摘要长度的启发式：每个新 URL 都必须抓文章页。
+      // feed 源（默认）仍只在正文为空且 legacy 开关开启时补抓，保持历史行为。
       const bodyLen = raw.body.trim().length;
       const wantFullText =
         source.fetch_mode === "full_text"
-          ? bodyLen < MIN_ARTICLE_CHARS && !articleFetchKilled()
+          ? !articleFetchKilled()
           : bodyLen === 0 && articleFetchEnabled();
+      let fullTextComplete = source.fetch_mode !== "full_text";
+      let bodyOrigin: RawBodyOrigin = raw.body_kind === "transcript" ? "transcript" : "feed";
+      let articleHtml: string | null = null;
       if (wantFullText) {
-        // **抓前去重 = 每 URL 一次性抓取**：已采过该 URL → 跳过、不重抓（只抓新文章，避免每轮 cron hammer 源）。
-        // 取舍（ADR-0008 决定③ / 评审）：full_text 源若首轮文章页**临时**失败 → 回退落库短摘要后**永不重试**全文，
-        // 该条永久停在短摘要。**有意为之**——替代方案「库里现有 <MIN 就重抓」会让**真正短的文章**
-        // （fetchArticleBody 因抽取 <MIN 返 null）每轮无限重抓、hammer 源，更糟。临时失败罕见且短摘要非空（仍有内容），可接受。
-        if (getContentByUrl(db, normalizeUrl(raw.url))) {
-          skipped++;
-          continue;
-        }
         // 单轮全文抓取硬上限：串行抓 robots+page 各有超时，首轮一个 feed 全是新文时防阻塞 collectSource
         // 太久。超限的留到下一轮（抓前去重保证不重抓已采，新文逐轮被消化）。
         if (articleFetches >= articleBudget) {
@@ -146,18 +167,22 @@ export async function collectSource(
           continue;
         }
         articleFetches++;
-        const body = await fetchArticleBody(raw.url, source.content_container);
-        if (body) {
-          raw.body = body;
+        const article = await fetchArticle(raw.url, source.content_container);
+        if (article) {
+          raw.body = article.body_html;
           raw.body_kind = "article";
+          articleHtml = article.raw_html;
+          bodyOrigin = "article_page";
+          fullTextComplete = true;
         }
-        // 抓失败：full_text 短正文 → 保留原短摘要落库（回退）；空正文 → 落到下面判空跳过。
+        // full_text 抓失败：保留 feed 摘要时必须标 partial；空摘要继续在下方丢弃。
       }
       if (!raw.body.trim()) {
         skipped++; // 仍空（feed 模式空正文 / 全文抓取失败且原本就空）→ 不产出条目
         continue;
       }
-      let item = rawToContentItem(raw, source, fetchedAt);
+      const forcePartial = source.fetch_mode === "full_text" && !fullTextComplete;
+      let item = rawToContentItem(raw, source, fetchedAt, { forcePartial });
       const existing = getContentByUrl(db, item.url);
       // B族·不降级（6a）：已是 transcript 的 item 不被 show_notes/article 覆盖——防转写被降级 + 旧引用失效（Major6）。
       if (existing?.body_kind === "transcript" && item.body_kind !== "transcript") {
@@ -168,13 +193,19 @@ export async function collectSource(
       // 「只对新 url 抓」既避免每轮全抓 50 集，又确保已入库 item 永不被原地从 show_notes 改成 transcript（根除 Major6）。
       if (!existing && raw.transcript_url && transcriptFetchEnabled()) {
         const transcript = await fetchTranscript(raw.transcript_url);
-        if (transcript) item = rawToContentItem({ ...raw, body: transcript, body_kind: "transcript" }, source, fetchedAt);
+        if (transcript) {
+          raw.body = transcript;
+          raw.body_kind = "transcript";
+          bodyOrigin = "transcript";
+          item = rawToContentItem(raw, source, fetchedAt, { forcePartial });
+        }
       }
       if (existing && existing.content_hash === item.content_hash) {
         skipped++; // 同 URL + 同指纹 = 完全重复（AC2 ①）
         continue;
       }
       let rawArchive: ReturnType<typeof planRawArchive> | null = null;
+      const rawArchivePayload = rawArchiveEnvelope(raw, item, bodyOrigin, articleHtml);
       let persistedItem: typeof item | null = null;
       let persistedOutputRef: EntityRef | null = null;
       // Content 的业务 upsert、实际持久化行的 snapshot 与 provenance revision 在同一 SQLite
@@ -185,7 +216,7 @@ export async function collectSource(
         else insertContentItem(db, item); // 新 URL（AC2 ③）
         // The ContentItem change and the raw archive intent are one SQLite
         // transaction.  The external file is written only after this commits.
-        rawArchive = planRawArchive(db, { contentId: existing?.id ?? item.id, raw: raw.raw, ...rawArchiveProvenance });
+        rawArchive = planRawArchive(db, { contentId: existing?.id ?? item.id, raw: rawArchivePayload, ...rawArchiveProvenance });
         item.raw_ref = rawArchive.rawRef;
         persistedItem = getPendingOrEligibleContentItem(db, existing?.id ?? item.id);
         if (!persistedItem) throw new Error("content_item_write_not_found");
@@ -203,7 +234,7 @@ export async function collectSource(
       if (!rawArchive) throw new Error("raw_archive_plan_not_created");
       const rawArchiveEffectId = (rawArchive as ReturnType<typeof planRawArchive>).effectId;
       try {
-        writePlannedRawArchive(db, rawArchive, raw.raw);
+        writePlannedRawArchive(db, rawArchive, rawArchivePayload);
       } catch (error) {
         // Its DB intent/revision committed but the archive did not verify.
         // Keep that exact unknown revision visible in the failure event only.

@@ -66,6 +66,28 @@ defaultTopics:
     enabled: true
     archetype: horizontal_pulse  # ADR-0010：态势感知型——相关性硬下限砍纯噪声
     facets: [domain:foundation-models, lens:business]  # 基础模型域 + 产业视角（lens 把产业视角从 domain 解放）
+  # A1 controlled-v2 的新增真实订阅主题。先保持停用：隔离 cohort、不可变快照与人工标注
+  # 完成前，不得借 fresh seed 或重部署把它们带入生产 topic pipeline。
+  - id: t_coding_agent_platforms
+    name: AI 编码 Agent 平台演进
+    keywords:
+      [Codex, Cursor, OpenHands, Coding Agent, Code Agent, release, changelog, agent platform,
+       IDE integration, tool calling, agent workflow, 编码智能体, 变更日志, 开发者工具]
+    language: zh
+    brief_schedule: daily
+    enabled: false
+    archetype: deep_vertical
+    facets: [domain:software-engineering, lens:technical]
+  - id: t_agent_security
+    name: AI Agent 攻防与提示注入
+    keywords:
+      [Prompt Injection, Indirect Prompt Injection, Agent Security, Tool Poisoning, Data Exfiltration,
+       Agentic Security, MCP Security, AI Agent Attack, AI Agent Defense, 提示注入, 数据外泄, 工具投毒]
+    language: zh
+    brief_schedule: daily
+    enabled: false
+    archetype: deep_vertical
+    facets: [domain:security, lens:technical]
 
 # MVP 首版接入清单（source-feasibility.md 末节，17 ✅ 推荐源 → 23 feed）。
 # 全部走现有 rss / arxiv 适配器（GitHub Atom、播客 RSS 均由 rss 适配器的 Atom/RSS 分支处理）。
@@ -197,7 +219,7 @@ defaultSources:
     name: OpenAI Codex Releases
     type: rss
     endpoint: https://github.com/openai/codex/releases.atom
-    topic_ids: [t_code_agents]
+    topic_ids: [t_code_agents, t_coding_agent_platforms]
     fetch_interval: 12h
     enabled: false
     # GitHub's Atom entry only has a short title; the release page passed the production
@@ -208,7 +230,7 @@ defaultSources:
     name: Cursor Changelog
     type: rss
     endpoint: https://cursor.com/changelog/rss.xml
-    topic_ids: [t_code_agents]
+    topic_ids: [t_code_agents, t_coding_agent_platforms]
     fetch_interval: 12h
     enabled: false
     # The official RSS already carries about 2.1k chars in its current entries; fetching the
@@ -428,7 +450,7 @@ defaultSources:
     endpoint: https://embracethered.com/blog/index.xml
     # 实战 LLM/agent 攻击（注入/数据外泄/agent 越权），AI-安全关键词命中 1069（最高）、标题全同频。
     # feed 仅短摘要 → full_text 抓文章页（Hugo 服务端渲染，无具名容器回退 <body>）。
-    topic_ids: [t_prompt_injection]
+    topic_ids: [t_prompt_injection, t_agent_security]
     fetch_interval: 24h
     enabled: true
     fetch_mode: full_text
@@ -463,7 +485,7 @@ defaultSources:
     # "prompt injection" 一词提出者；用 prompt-injection tag feed（实测命中密度 960，远胜 everything/llms/security
     # 全量 feed 的 datasette/dev 噪声）。link-blog 短评全文在 atom，无需 full_text。
     endpoint: https://simonwillison.net/tags/prompt-injection.atom
-    topic_ids: [t_prompt_injection]
+    topic_ids: [t_prompt_injection, t_agent_security]
     fetch_interval: 12h
     enabled: true
   # 2026-06-20 直接 seed 进生产、未回流本配置（config 漂移）；2026-06-27 审计实证有效（采 25 / 被引 14 /

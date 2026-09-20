@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { llmMaxRetries } from "./env.js";
+import { coverageThinking, coverageThinkingSource, llmMaxRetries, llmTransientRetries, llmTransientRetryBackoffMs, validatorBatchOn, validatorThinking } from "./env.js";
 
 describe("llmMaxRetries", () => {
   const original = process.env.LLM_MAX_RETRIES;
@@ -19,5 +19,88 @@ describe("llmMaxRetries", () => {
     expect(llmMaxRetries()).toBe(2);
     process.env.LLM_MAX_RETRIES = "-1";
     expect(llmMaxRetries()).toBe(2);
+  });
+});
+
+describe("llmTransientRetries", () => {
+  const retriesOriginal = process.env.LLM_TRANSIENT_RETRIES;
+  const backoffOriginal = process.env.LLM_TRANSIENT_RETRY_BACKOFF_MS;
+
+  afterEach(() => {
+    if (retriesOriginal === undefined) delete process.env.LLM_TRANSIENT_RETRIES;
+    else process.env.LLM_TRANSIENT_RETRIES = retriesOriginal;
+    if (backoffOriginal === undefined) delete process.env.LLM_TRANSIENT_RETRY_BACKOFF_MS;
+    else process.env.LLM_TRANSIENT_RETRY_BACKOFF_MS = backoffOriginal;
+  });
+
+  it("默认仅补一次本地墙钟超时，并允许显式关闭", () => {
+    delete process.env.LLM_TRANSIENT_RETRIES;
+    expect(llmTransientRetries()).toBe(1);
+    process.env.LLM_TRANSIENT_RETRIES = "0";
+    expect(llmTransientRetries()).toBe(0);
+  });
+
+  it("限制额外尝试和退避，拒绝异常配置放大任务时延", () => {
+    process.env.LLM_TRANSIENT_RETRIES = "99";
+    expect(llmTransientRetries()).toBe(2);
+    process.env.LLM_TRANSIENT_RETRIES = "invalid";
+    expect(llmTransientRetries()).toBe(1);
+    process.env.LLM_TRANSIENT_RETRY_BACKOFF_MS = "99999";
+    expect(llmTransientRetryBackoffMs()).toBe(10_000);
+    process.env.LLM_TRANSIENT_RETRY_BACKOFF_MS = "-1";
+    expect(llmTransientRetryBackoffMs()).toBe(750);
+  });
+});
+
+describe("coverageThinking", () => {
+  const validatorOriginal = process.env.VALIDATOR_THINKING;
+  const coverageOriginal = process.env.COVERAGE_THINKING;
+
+  afterEach(() => {
+    if (validatorOriginal === undefined) delete process.env.VALIDATOR_THINKING;
+    else process.env.VALIDATOR_THINKING = validatorOriginal;
+    if (coverageOriginal === undefined) delete process.env.COVERAGE_THINKING;
+    else process.env.COVERAGE_THINKING = coverageOriginal;
+  });
+
+  it("inherits the validator setting only while the dedicated setting is absent", () => {
+    delete process.env.COVERAGE_THINKING;
+    process.env.VALIDATOR_THINKING = "0";
+    expect(coverageThinking()).toBe(false);
+    expect(coverageThinkingSource()).toBe("inherited");
+    process.env.VALIDATOR_THINKING = "1";
+    expect(coverageThinking()).toBe(true);
+  });
+
+  it("lets the dedicated setting override validator thinking without mutating it", () => {
+    process.env.VALIDATOR_THINKING = "1";
+    process.env.COVERAGE_THINKING = "0";
+    expect(validatorThinking()).toBe(true);
+    expect(coverageThinking()).toBe(false);
+    expect(coverageThinkingSource()).toBe("explicit");
+    process.env.VALIDATOR_THINKING = "0";
+    process.env.COVERAGE_THINKING = "1";
+    expect(validatorThinking()).toBe(false);
+    expect(coverageThinking()).toBe(true);
+  });
+});
+
+describe("validatorBatchOn", () => {
+  const original = process.env.VALIDATOR_BATCH;
+
+  afterEach(() => {
+    if (original === undefined) delete process.env.VALIDATOR_BATCH;
+    else process.env.VALIDATOR_BATCH = original;
+  });
+
+  it("defaults to the single-judge path and requires explicit opt-in", () => {
+    delete process.env.VALIDATOR_BATCH;
+    expect(validatorBatchOn()).toBe(false);
+    process.env.VALIDATOR_BATCH = "0";
+    expect(validatorBatchOn()).toBe(false);
+    process.env.VALIDATOR_BATCH = "unexpected";
+    expect(validatorBatchOn()).toBe(false);
+    process.env.VALIDATOR_BATCH = "1";
+    expect(validatorBatchOn()).toBe(true);
   });
 });

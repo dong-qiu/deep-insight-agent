@@ -11,7 +11,7 @@ vi.mock("../runtime/llm.js", () => ({
   MODELS: { analyzer: "test-analyzer", validator: "test-validator", coverage: "test-coverage" },
 }));
 import { callStructured } from "../runtime/llm.js";
-import { ANALYZE_BODY_CHARS, ANALYZER_SYSTEM, CITATION_CLAUSE_AUDIT, QuoteCoverageRejectedError, REPAIR_QUOTE_MIN_PREFIX, SELECT_SEPARATOR, analyze, canonicalizeInsightEvents, carveQuote, chunkByChars, chunkWindows, coverageGaps, filterByQuoteCoverage, isCompleteStatement, quoteCoverageClauses, renderImportanceBasis, repairCitationSource, repairCoverage, repairQuote, selectForAnalyze, specificClaims, truncateForAnalyze } from "./analyzer.js";
+import { ANALYZE_BODY_CHARS, ANALYZER_SYSTEM, CITATION_CLAUSE_AUDIT, DISPLAY_COVERAGE_PRIMARY_MAX_TOKENS, QuoteCoverageRejectedError, REPAIR_QUOTE_MIN_PREFIX, SELECT_SEPARATOR, analyze, canonicalizeInsightEvents, carveQuote, chunkByChars, chunkWindows, coverageGaps, filterByQuoteCoverage, isCompleteStatement, quoteCoverageClauses, renderImportanceBasis, repairCitationSource, repairCoverage, repairQuote, selectForAnalyze, specificClaims, truncateForAnalyze, verifyDisplayedQuoteCoverage, type AnalyzeChunkCheckpoint, type AnalyzeStageTelemetry } from "./analyzer.js";
 import { AnalyzerOutputSchema } from "../types.js";
 
 describe("AnalyzerOutputSchema 的原子 citation claim", () => {
@@ -50,6 +50,50 @@ describe("AnalyzerOutputSchema 的原子 citation claim", () => {
 });
 
 describe("analyze 的展示覆盖审计投影", () => {
+  it("passes an A1 topic deadline into the analyzer call and does not split after cancellation", async () => {
+    const topic: Topic = { id: "t", name: "T", keywords: [], language: "en", brief_schedule: "daily", enabled: true };
+    const content: ContentItem = {
+      id: "ci", source_id: "s", url: "https://example.test", title: "T", author: null, published_at: null,
+      fetched_at: "2026-09-09T00:00:00.000Z", language: "en", topic_ids: ["t"], tags: [],
+      body: "Source body.", body_kind: "article", raw_ref: "", content_hash: "h", fetch_status: "ok",
+    };
+    const controller = new AbortController();
+    vi.mocked(callStructured).mockImplementationOnce((request) => new Promise((_, reject) => {
+      request.signal?.addEventListener("abort", () => reject(request.signal?.reason), { once: true });
+    }) as ReturnType<typeof callStructured>);
+
+    const result = analyze(topic, [content], { start: "2026-09-09", end: "2026-09-09" }, undefined, { signal: controller.signal });
+    controller.abort(new Error("A1 topic deadline"));
+    await expect(result).rejects.toThrow("A1 topic deadline");
+    expect(vi.mocked(callStructured)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(callStructured)).toHaveBeenLastCalledWith(expect.objectContaining({ signal: controller.signal }));
+  });
+
+  it("本地超时和 relay SSE 流序错误均按基础设施失败上抛，绝不递归拆批放大请求", async () => {
+    const topic: Topic = { id: "t", name: "T", keywords: [], language: "en", brief_schedule: "daily", enabled: true };
+    const items: ContentItem[] = ["one", "two"].map((id) => ({
+      id, source_id: "s", url: `https://example.test/${id}`, title: "T", author: null, published_at: null,
+      fetched_at: "2026-09-09T00:00:00.000Z", language: "en" as const, topic_ids: ["t"], tags: [],
+      body: `Source body ${id}.`, body_kind: "article" as const, raw_ref: "", content_hash: id, fetch_status: "ok" as const,
+    }));
+
+    for (const errorMessage of [
+      "LLM stream exceeded wall-clock timeout of 30000ms",
+      'Unexpected event order, got message_start before receiving "message_stop"',
+    ]) {
+      vi.mocked(callStructured).mockReset();
+      vi.mocked(callStructured).mockRejectedValue(new Error(errorMessage));
+      const stages: AnalyzeStageTelemetry[] = [];
+      await expect(analyze(topic, items, { start: "2026-09-09", end: "2026-09-09" }, undefined, {
+        onStage: (stage) => stages.push(stage),
+      })).rejects.toThrow(errorMessage);
+      expect(callStructured).toHaveBeenCalledTimes(1);
+      expect(stages).toEqual([expect.objectContaining({
+        stage: "model_output", item_count: 2, status: "failed", error_name: "Error",
+      })]);
+    }
+  });
+
   it("将审计前候选 ID 映射到最终 insight ID，并生成可持久化的 citation_ref/audit", async () => {
     vi.mocked(callStructured).mockReset();
     vi.mocked(callStructured)
@@ -77,7 +121,10 @@ describe("analyze 的展示覆盖审计投影", () => {
       body: "Fact is supported.", body_kind: "article", raw_ref: "", content_hash: "h", fetch_status: "ok",
     };
 
-    const batch = await analyze(topic, [content], { start: "2026-09-09", end: "2026-09-09" });
+    const stages: AnalyzeStageTelemetry[] = [];
+    const batch = await analyze(topic, [content], { start: "2026-09-09", end: "2026-09-09" }, undefined, {
+      onStage: (stage) => stages.push(stage),
+    });
     const [insight] = batch.insights;
     expect(insight.statement).toBe("Fact is supported.");
     expect(insight.id).toMatch(/^ins_batch_/);
@@ -92,6 +139,10 @@ describe("analyze 的展示覆盖审计投影", () => {
     expect(batch.display_coverage_candidate_audits).toMatchObject([{
       candidate_id: expect.stringMatching(/^ins_/), insight_id: insight.id, terminal_reason: "kept",
     }]);
+    expect(stages).toEqual([
+      expect.objectContaining({ stage: "model_output", item_count: 1, status: "completed" }),
+      expect.objectContaining({ stage: "display_coverage", item_count: 1, status: "completed" }),
+    ]);
   });
 
   it("所有候选被核心 statement 覆盖门拒绝时失败，不伪装为 no_significant_event", async () => {
@@ -106,6 +157,10 @@ describe("analyze 的展示覆盖审计投影", () => {
           citations: [{ content_item_id: "ci", claim: "different fact", quote: "Source quote." }],
         }],
       } } as unknown as Awaited<ReturnType<typeof callStructured>>)
+      .mockResolvedValueOnce({ data: { verdicts: [{
+        index: 1, kind: "factual", supports: false, citation_indexes: [], evidence_spans: [],
+      }] } } as unknown as Awaited<ReturnType<typeof callStructured>>)
+      // 展示审计即使主审拒绝，也必须留下独立 coverage 复核证据。
       .mockResolvedValueOnce({ data: { verdicts: [{
         index: 1, kind: "factual", supports: false, citation_indexes: [], evidence_spans: [],
       }] } } as unknown as Awaited<ReturnType<typeof callStructured>>);
@@ -173,6 +228,61 @@ describe("analyze 的展示覆盖审计投影", () => {
     expect(batch.insights.map((insight) => insight.statement)).toEqual(["Supported fact."]);
     expect(batch.no_significant_event).toBe(false);
     expect(decisions.map((decision) => decision.terminal_reason)).toEqual(["kept", "dropped_coverage"]);
+  });
+
+  it("从完成分块恢复时不重调模型，也不会重复或遗漏 topic 级聚合", async () => {
+    const topic: Topic = { id: "t", name: "T", keywords: [], language: "en", brief_schedule: "daily", enabled: true };
+    const padding = "x".repeat(30_000);
+    const items: ContentItem[] = ["one", "two"].map((id) => ({
+      id: `ci_${id}`, source_id: "s", url: `https://example.test/${id}`, title: id, author: null,
+      published_at: null, fetched_at: "2026-09-09T00:00:00.000Z", language: "en", topic_ids: ["t"], tags: [],
+      body: `Fact ${id}.${padding}`, body_kind: "article", raw_ref: "", content_hash: id, fetch_status: "ok",
+    }));
+    const modelOutput = (id: string) => ({ data: {
+      no_significant_event: false,
+      insights: [{
+        statement: `Fact ${id}.`, statement_citation_index: 1, headline: "", type: "aggregation", importance: 3,
+        importance_facts: [], importance_reason: "research_tracking", importance_reason_claim_indexes: [1],
+        confidence: null, event_id: null, is_followup: false, entities: [], tags: [],
+        citations: [{ content_item_id: `ci_${id}`, claim: `Fact ${id}.`, quote: `Fact ${id}.` }],
+      }],
+    } } as unknown as Awaited<ReturnType<typeof callStructured>>);
+    const supports = (quote: string) => ({ data: { verdicts: [{
+      index: 1, kind: "factual", supports: true, citation_indexes: [1],
+      evidence_spans: [{ citation_index: 1, quote_start: 0, quote_end: quote.length, evidence_excerpt: quote }],
+    }] } } as unknown as Awaited<ReturnType<typeof callStructured>>);
+
+    vi.mocked(callStructured).mockReset();
+    vi.mocked(callStructured)
+      .mockResolvedValueOnce(modelOutput("one"))
+      .mockResolvedValueOnce(supports("Fact one."))
+      .mockResolvedValueOnce(supports("Fact one."));
+    const controller = new AbortController();
+    const completed: AnalyzeChunkCheckpoint[] = [];
+    await expect(analyze(topic, items, { start: "2026-09-09", end: "2026-09-09" }, undefined, {
+      signal: controller.signal,
+      onChunkComplete: ({ input_sha256, insights, coverage_decisions }) => {
+        completed.push({ input_sha256, insights, coverage_decisions });
+        controller.abort(new Error("simulated A1 deadline"));
+      },
+    })).rejects.toThrow("simulated A1 deadline");
+    expect(completed).toHaveLength(1);
+    expect(vi.mocked(callStructured)).toHaveBeenCalledTimes(3);
+
+    vi.mocked(callStructured).mockReset();
+    vi.mocked(callStructured)
+      .mockResolvedValueOnce(modelOutput("two"))
+      .mockResolvedValueOnce(supports("Fact two."))
+      .mockResolvedValueOnce(supports("Fact two."));
+    const decisions: Array<{ terminal_reason: string }> = [];
+    const resumed = await analyze(topic, items, { start: "2026-09-09", end: "2026-09-09" }, undefined, {
+      completed_chunks: completed,
+      onCoverageDecision: (decision) => decisions.push(decision),
+    });
+
+    expect(vi.mocked(callStructured)).toHaveBeenCalledTimes(3);
+    expect(resumed.insights.map((insight) => insight.statement)).toEqual(["Fact one.", "Fact two."]);
+    expect(decisions.map((decision) => decision.terminal_reason)).toEqual(["kept", "kept"]);
   });
 });
 
@@ -630,6 +740,71 @@ describe("filterByQuoteCoverage（展示 quote 覆盖门）", () => {
     });
   });
 
+  it("主展示审计按原子 claim 分批，局部 index 映射回候选级审计", async () => {
+    const quote = "Frontier reduces latency error; Frontier decreases retry variance.";
+    const citations: Citation[] = [{
+      content_item_id: "ci", claim: quote, quote,
+      locator: { paragraph_index: 0, char_start: 0, char_end: quote.length },
+    }];
+    vi.mocked(callStructured)
+      .mockResolvedValueOnce(coverageVerdictsFor(quote, true))
+      .mockResolvedValueOnce(coverageVerdictsFor(quote, true))
+      .mockResolvedValueOnce(coverageVerdictsFor(quote, true));
+    const audit = await verifyDisplayedQuoteCoverage({ statement: quote, headline: "", importance_basis: "" }, citations, 1);
+
+    expect(vi.mocked(callStructured).mock.calls.map(([request]) => request.role)).toEqual(["validator", "validator", "coverage"]);
+    expect(vi.mocked(callStructured).mock.calls[0]?.[0].user).toContain("1. [statement] Frontier reduces latency error");
+    expect(vi.mocked(callStructured).mock.calls[0]?.[0].user).toContain("<atomic_claims>\n1. [statement] Frontier reduces latency error\n</atomic_claims>");
+    expect(vi.mocked(callStructured).mock.calls[1]?.[0].user).toContain("1. [statement] Frontier decreases retry variance");
+    expect(audit).toMatchObject({ covered: true, claims: [
+      { claim_id: "statement:1", supports: true },
+      { claim_id: "statement:2", supports: true },
+    ] });
+  });
+
+  it("反例：任一主审分批 verdict 缺失时拒绝整条候选", async () => {
+    const quote = "Frontier reduces latency error; Frontier decreases retry variance.";
+    const citations: Citation[] = [{
+      content_item_id: "ci", claim: quote, quote,
+      locator: { paragraph_index: 0, char_start: 0, char_end: quote.length },
+    }];
+    vi.mocked(callStructured)
+      .mockResolvedValueOnce(coverageVerdictsFor(quote, true))
+      .mockResolvedValueOnce({ data: { verdicts: [] } } as unknown as Awaited<ReturnType<typeof callStructured>>)
+      .mockResolvedValueOnce(coverageVerdictsFor(quote, true));
+    const audit = await verifyDisplayedQuoteCoverage({ statement: quote, headline: "", importance_basis: "" }, citations, 1);
+
+    expect(vi.mocked(callStructured).mock.calls.map(([request]) => request.role)).toEqual(["validator", "validator", "coverage"]);
+    expect(audit).toMatchObject({
+      covered: false,
+      claims: [
+        { reason: "primary_invalid_verdict_set", countercheck: { supports: true } },
+        { reason: "primary_invalid_verdict_set" },
+      ],
+    });
+  });
+
+  it("主展示审计读取 validator thinking，quote-only countercheck 只读取 COVERAGE_THINKING", async () => {
+    const oldValidator = process.env.VALIDATOR_THINKING;
+    const oldCoverage = process.env.COVERAGE_THINKING;
+    process.env.VALIDATOR_THINKING = "1";
+    process.env.COVERAGE_THINKING = "0";
+    try {
+      vi.mocked(callStructured).mockResolvedValue(coverageVerdicts(true));
+      await expect(filterByQuoteCoverage([insight("被完整覆盖的结论。")])).resolves.toHaveLength(1);
+      expect(DISPLAY_COVERAGE_PRIMARY_MAX_TOKENS).toBe(2048);
+      expect(vi.mocked(callStructured).mock.calls[0]?.[0]).toMatchObject({
+        role: "validator", thinking: true, maxTokens: DISPLAY_COVERAGE_PRIMARY_MAX_TOKENS,
+      });
+      expect(vi.mocked(callStructured).mock.calls[1]?.[0]).toMatchObject({ role: "coverage", thinking: false });
+    } finally {
+      if (oldValidator === undefined) delete process.env.VALIDATOR_THINKING;
+      else process.env.VALIDATOR_THINKING = oldValidator;
+      if (oldCoverage === undefined) delete process.env.COVERAGE_THINKING;
+      else process.env.COVERAGE_THINKING = oldCoverage;
+    }
+  });
+
   it("v6 把模型的翻译 claim 投影为绑定 quote，不能把因果/范围扩写带进读者 statement", async () => {
     const quote = "MCP workflow optimizations corresponded to a 1.67x speedup and reduced median end-to-end latency by about 40.0%.";
     vi.mocked(callStructured).mockResolvedValue(coverageVerdictsFor(quote, true));
@@ -714,15 +889,20 @@ describe("filterByQuoteCoverage（展示 quote 覆盖门）", () => {
   it("statement 与 claim 相等仍必须经过 claim→quote 语义审计", async () => {
     vi.mocked(callStructured).mockResolvedValue(coverageVerdicts(false));
     const audits: Array<{ claims: Array<{ reason: string }> }> = [];
-    const row = insight("The exemplification technique targets black-box chatbots.", [{
+    const draft = "The exemplification technique targets black-box chatbots.";
+    const quote = "We evaluate a prompt-injection technique using a bridge in external content.";
+    const row = insight(draft, [{
       content_item_id: "ci",
       claim: "The exemplification technique targets black-box chatbots",
-      quote: "We evaluate a prompt-injection technique using a bridge in external content.",
+      quote,
       locator: { paragraph_index: 0, char_start: 0, char_end: 73 },
     }]);
 
     await expect(filterByQuoteCoverage([row], undefined, undefined, (decision) => audits.push(decision))).resolves.toEqual([]);
     expect(vi.mocked(callStructured)).toHaveBeenCalledTimes(2);
+    const primary = vi.mocked(callStructured).mock.calls[0]?.[0];
+    expect(primary?.user).toContain("The exemplification technique targets black-box chatbots");
+    expect(primary?.user).not.toContain(`<atomic_claims>\n1. [statement] ${quote}`);
     expect(audits[0]?.claims[0]?.reason).toBe("judge_not_supported");
   });
 
@@ -751,6 +931,24 @@ describe("filterByQuoteCoverage（展示 quote 覆盖门）", () => {
     await expect(filterByQuoteCoverage([row], undefined, undefined, (decision) => audits.push(decision))).resolves.toEqual([]);
     expect(vi.mocked(callStructured)).not.toHaveBeenCalled();
     expect(audits[0]?.claims[0]).toMatchObject({ reason: "statement_token_not_in_bound_quote", uncovered_tokens: ["Frontier"] });
+  });
+
+  it("来源元数据不在绑定 quote 时，不能被 claim 当作隐含主语", async () => {
+    const quote = "VLLM bfloat16 with the recommended setting achieved 65.3% accuracy.";
+    const audits: Array<{ claims: Array<{ reason: string; uncovered_tokens?: string[] }> }> = [];
+    const row = insight("Aider 的该配置准确率为 65.3%。", [{
+      content_item_id: "ci",
+      claim: "Aider 的该配置准确率为 65.3%",
+      quote,
+      locator: { paragraph_index: 0, char_start: 0, char_end: quote.length },
+    }]);
+
+    await expect(filterByQuoteCoverage([row], undefined, undefined, (decision) => audits.push(decision))).resolves.toEqual([]);
+    expect(vi.mocked(callStructured)).not.toHaveBeenCalled();
+    expect(audits[0]?.claims[0]).toMatchObject({
+      reason: "statement_token_not_in_bound_quote",
+      uncovered_tokens: ["Aider"],
+    });
   });
 
   it("稳定锚点不能由更长 token 的子串伪造", async () => {
