@@ -686,10 +686,6 @@ export function claimNextGenerationDispatch(db: DB, now: Date = new Date()): Dis
         `INSERT INTO run(id,kind,target,status,started_at,trace_id) VALUES (@id,'analyze',@target,'running',@started_at,@trace_id)`,
       ).run({ id: rootRunId, target: JSON.stringify({ topic_id: payload.topic_id }), started_at: nowIso, trace_id: candidate.trace_id });
       db.prepare("UPDATE generation_trace SET root_run_id=? WHERE id=? AND root_run_id IS NULL").run(rootRunId, candidate.trace_id);
-      appendGenerationEvent(db, {
-        trace_id: candidate.trace_id, run_id: rootRunId, stage: "analyze", event_type: "started",
-        context_completeness: "partial", occurred_at: nowIso,
-      });
     }
     return {
       dispatchId: candidate.id, traceId: candidate.trace_id, ownerToken, claimEpoch, fencingEpoch,
@@ -720,7 +716,7 @@ export function heartbeatGenerationDispatch(db: DB, claim: DispatchClaim, now: D
 export function finishGenerationDispatch(
   db: DB,
   claim: DispatchClaim,
-  outcome: { status: "done" | "failed"; error?: { reason_code: string; message: string } },
+  outcome: { status: "done" | "failed"; error?: { reason_code: string; message: string; retryable?: boolean } },
   now: Date = new Date(),
 ): boolean {
   const nowIso = now.toISOString();
@@ -740,7 +736,7 @@ export function finishGenerationDispatch(
         appendGenerationEvent(db, {
           trace_id: claim.traceId, run_id: claim.rootRunId, stage: "analyze", event_type: "failed",
           reason_code: outcome.error?.reason_code ?? "dispatch_failed",
-          error: { reason_code: outcome.error?.reason_code ?? "dispatch_failed", retryable: true },
+          error: { reason_code: outcome.error?.reason_code ?? "dispatch_failed", retryable: outcome.error?.retryable ?? true },
           context_completeness: "partial", occurred_at: nowIso,
         });
       }
