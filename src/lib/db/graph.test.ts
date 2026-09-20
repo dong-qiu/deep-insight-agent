@@ -201,19 +201,45 @@ describe("reportLinkMap", () => {
     expect(reportLinkMap(db, "t1").get("i1")).toEqual({ report_id: "rNew", date: "2026-06-05" });
   });
 
-  it("drill 同表述只折叠展示，展开保留每条原始 occurrence 与全部报告链接", () => {
-    saveBatch("b_group", [mkInsight("i1", [org("OpenAI")])]);
+  it("图谱 drill 经持久化 occurrence 查询后只折叠展示，并保留每条原始记录和全部报告链接", () => {
+    const first = mkInsight("i1", [org("OpenAI")]);
+    first.statement = "OpenAI 发布了一个新版本。";
+    first.citations[0] = { ...first.citations[0]!, quote: first.statement, locator: { paragraph_index: 0, char_start: 0, char_end: first.statement.length } };
+    const duplicate = mkInsight("i_dup", [org("OpenAI")]);
+    duplicate.statement = first.statement;
+    duplicate.citations[0] = { ...duplicate.citations[0]!, quote: duplicate.statement, locator: { paragraph_index: 0, char_start: 0, char_end: duplicate.statement.length } };
+    saveBatch("b_group_first", [first]);
+    saveBatch("b_group_duplicate", [duplicate]);
     saveReport("rOld", "2026-06-01", ["i1"]);
     saveReport("rNew", "2026-06-05", ["i1"]);
-    const first = loadTopicInsights(db, "t1")[0];
-    const duplicate = { ...first, id: "i_dup", statement: first.statement, headline: first.headline, type: first.type };
-    const grouped = groupDrillInsights([first, duplicate], reportLinksByInsight(db, "t1"));
+    saveReport("rDuplicate", "2026-06-06", ["i_dup"]);
+
+    // This is the side-panel read path: raw rows remain independently queryable before grouping.
+    const raw = insightsMentioningEntity(db, "t1", "OpenAI");
+    expect(raw.map((insight) => insight.id).sort()).toEqual(["i1", "i_dup"]);
+    const grouped = groupDrillInsights(raw, reportLinksByInsight(db, "t1"));
     expect(grouped).toHaveLength(1);
     expect(grouped[0].occurrence_count).toBe(2);
     expect(grouped[0].occurrences.map((x) => x.id).sort()).toEqual(["i1", "i_dup"]);
     expect(grouped[0].occurrences.find((x) => x.id === "i1")?.report_links).toEqual([
       { report_id: "rOld", date: "2026-06-01" }, { report_id: "rNew", date: "2026-06-05" },
     ]);
+    expect(grouped[0].occurrences.find((x) => x.id === "i_dup")?.report_links).toEqual([
+      { report_id: "rDuplicate", date: "2026-06-06" },
+    ]);
+  });
+
+  it("图谱 drill 不因跨类型的相同表述而折叠", () => {
+    const aggregation = mkInsight("aggregation", [org("OpenAI")]);
+    aggregation.statement = "OpenAI 的同一措辞不等于同一类型。";
+    aggregation.citations[0] = { ...aggregation.citations[0]!, quote: aggregation.statement, locator: { paragraph_index: 0, char_start: 0, char_end: aggregation.statement.length } };
+    const trend = { ...aggregation, id: "trend", type: "trend" as const, citations: [{ ...aggregation.citations[0]!, content_item_id: "ci-trend", citation_ref: "cite-trend-1" }] };
+    saveBatch("b_aggregation", [aggregation]);
+    saveBatch("b_trend", [trend]);
+
+    const grouped = groupDrillInsights(insightsMentioningEntity(db, "t1", "OpenAI"), reportLinksByInsight(db, "t1"));
+    expect(grouped).toHaveLength(2);
+    expect(grouped.map((group) => group.occurrence_count)).toEqual([1, 1]);
   });
 
   it("drill 只展示持久化的 statement 绑定 quote，并让卡片与默认 occurrence 对齐", () => {

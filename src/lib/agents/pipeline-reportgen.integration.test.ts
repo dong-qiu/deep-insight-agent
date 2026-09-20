@@ -9,6 +9,7 @@ import { openDb, type DB } from "../db/index.js";
 import { insertContentItem, insertSource, insertTopic, listRuns } from "../db/repos.js";
 import { applyProvenanceMigrations } from "../db/provenance-migrations.js";
 import { appendGenerationEvent, captureRevision, entityKey, type EntityRef } from "../db/provenance-facts.js";
+import { listGenerationTraceTimeline } from "../db/provenance.js";
 import { contentItemRef, contentItemRevisionSnapshot } from "../db/provenance-revisions.js";
 import type { AnalysisBatch, ContentItem, Report, ReportIndexEntry, Source, Topic, ValidationResult } from "../types.js";
 import { DISPLAY_PROJECTION_VERSION, sourceQuoteHash } from "../utils/source-quote-projection.js";
@@ -40,17 +41,17 @@ const validation: ValidationResult = {
   checks: [{ insight_id: "i1", citation_index: 0, reachability: "pass", reachability_reason: "ok", consistency: "support", consistency_reason: "ok", verdict: "pass" }], report: { total: 1, pass: 1, blocked: 0, flagged: 0, errored: 0, consistency_failure_rate: 0, flagged_rate: 0, insights_total: 1, insights_includable: 1, releasable: true },
 };
 
-function seedCompleteTrace(): string {
+function seedCompleteTrace(inputBatch: AnalysisBatch = batch, inputValidation: ValidationResult = validation): string {
   const source: Source = { id: "s1", name: "Source", type: "rss", endpoint: "https://example.test/feed", topic_ids: [topic.id], fetch_interval: "1h", backfill: null, enabled: true };
   const item: ContentItem = { id: "ci1", source_id: source.id, url: "https://example.test/item", title: "Item", author: null, published_at: null, fetched_at: "2026-08-02T00:00:00Z", language: "en", topic_ids: [topic.id], tags: [], body: "A validated statement", body_kind: "article", raw_ref: "raw", content_hash: "content-hash", fetch_status: "ok" };
   insertSource(db, source); insertContentItem(db, item);
-  saveAnalysisBatch(db, batch); saveValidationResult(db, batch.id, validation);
+  saveAnalysisBatch(db, inputBatch); saveValidationResult(db, inputBatch.id, inputValidation);
   db.prepare(`INSERT INTO generation_trace(id,scope_kind,trigger_kind,status,completion_policy,coverage,runtime_version,summary,started_at)
     VALUES ('trace_1','topic_pipeline','api','running','{}','complete','{}','{}','2026-08-02T00:00:00Z')`).run();
   const content = contentItemRef(item);
   captureRevision(db, { entity_type: content.type, entity_key: entityKey(content), revision: content.revision, snapshot: contentItemRevisionSnapshot(item) });
-  const batchRef: EntityRef = { type: "analysis_batch", locator: { kind: "id", id: batch.id }, revision: batch.id, role: "input" };
-  const validationRef: EntityRef = { type: "validation_result", locator: { kind: "composite", key: { batch_id: batch.id } }, revision: batch.id, role: "input" };
+  const batchRef: EntityRef = { type: "analysis_batch", locator: { kind: "id", id: inputBatch.id }, revision: inputBatch.id, role: "input" };
+  const validationRef: EntityRef = { type: "validation_result", locator: { kind: "composite", key: { batch_id: inputBatch.id } }, revision: inputBatch.id, role: "input" };
   const analyzerContext = { analyzer_model: "analyzer", analyzer_prompt_hash: "a".repeat(64), analyzer_output_version: "v1", analyzer_cache_mode: "write_only", coverage_model: "disabled", coverage_prompt_hash: "b".repeat(64), coverage_thinking: "off", coverage_thinking_source: "explicit" };
   const validatorContext = { validator_model: "validator", validator_prompt_hash: "c".repeat(64), validator_thinking: "on", validator_cache_mode: "on" };
   appendGenerationEvent(db, { trace_id: "trace_1", stage: "analyze", event_type: "started", input_refs: [content], version_context: analyzerContext, context_completeness: "complete" });
@@ -108,6 +109,58 @@ describe("runReportGen production persistence path", () => {
     expect(db.prepare("SELECT decision,reason_code,supporting_citation_indices FROM report_selection_decision WHERE report_id=?").all(report.id)).toEqual([
       { decision: "published", reason_code: "selected_by_rule", supporting_citation_indices: "[0]" },
     ]);
+  });
+
+  it("persists the reader-visible duplicate loser and its deterministic winner through runReportGen", async () => {
+    const actual = await vi.importActual<typeof import("./report-gen.js")>("./report-gen.js");
+    buildReportMock.mockImplementation(actual.buildReport);
+    const duplicate = {
+      ...batch.insights[0]!, id: "i2", importance: 5, event_id: "separate-event",
+      citations: [{ ...batch.insights[0]!.citations[0]!, content_item_id: "ci2" }],
+    };
+    const duplicateBatch: AnalysisBatch = {
+      ...batch,
+      id: "b_reader_visible_duplicate",
+      insights: [batch.insights[0]!, duplicate],
+      display_coverage_audits: [
+        batch.display_coverage_audits![0]!,
+        { ...batch.display_coverage_audits![0]!, insight_id: duplicate.id, candidate_id: duplicate.id },
+      ],
+    };
+    const duplicateValidation: ValidationResult = {
+      ...validation,
+      checks: [
+        validation.checks[0]!,
+        { ...validation.checks[0]!, insight_id: duplicate.id },
+      ],
+      report: { ...validation.report, total: 2, pass: 2, insights_total: 2, insights_includable: 2 },
+    };
+    const traceId = seedCompleteTrace(duplicateBatch, duplicateValidation);
+    insertContentItem(db, {
+      id: "ci2", source_id: "s1", url: "https://example.test/item-2", title: "Item 2", author: null,
+      published_at: null, fetched_at: "2026-08-02T00:00:00Z", language: "en", topic_ids: [topic.id], tags: [],
+      body: "A validated statement", body_kind: "article", raw_ref: "raw", content_hash: "content-hash-2", fetch_status: "ok",
+    });
+    const report = await runReportGen(db, {
+      topic, batch: duplicateBatch, validation: duplicateValidation, type: "brief", traceId,
+    });
+
+    expect(report.insight_ids).toEqual(["i2"]);
+    expect(db.prepare(`SELECT insight_id,decision,reason_code,related_insight_id,published_rank
+      FROM report_selection_decision WHERE report_id=? ORDER BY insight_id`).all(report.id)).toEqual([
+      { insight_id: "i1", decision: "excluded", reason_code: "reader_visible_duplicate", related_insight_id: "i2", published_rank: null },
+      { insight_id: "i2", decision: "published", reason_code: "selected_by_rule", related_insight_id: null, published_rank: 1 },
+    ]);
+    const completed = db.prepare(`SELECT metrics FROM generation_event
+      WHERE trace_id=? AND stage='generate_report' AND event_type='completed'`).get(traceId) as { metrics: string };
+    expect(JSON.parse(completed.metrics)).toMatchObject({
+      batch_duplicate_filtered_count: 1,
+      fingerprint_duplicate_filtered_count: 0,
+      published_insight_count: 1,
+    });
+    expect(listGenerationTraceTimeline(db, traceId).find((event) => (
+      event.stage === "generate_report" && event.event_type === "completed"
+    ))?.metrics).toMatchObject({ batch_duplicate_filtered_count: 1, fingerprint_duplicate_filtered_count: 0 });
   });
 
   it("does not publish an unreleasable batch to the normal reader or index", async () => {

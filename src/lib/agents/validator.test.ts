@@ -379,9 +379,31 @@ describe("validateBatch（A 去重 + C 校验失败分账）", () => {
 
     expect(CONSISTENCY_LABEL_DECISION_TABLE).toContain("已有的限定范围或条件");
     expect(CONSISTENCY_LABEL_DECISION_TABLE).toContain("完全没有提及");
+    expect(CONSISTENCY_LABEL_DECISION_TABLE).toContain("先做两步，不可跳过");
+    expect(CONSISTENCY_LABEL_DECISION_TABLE).toContain("beta 定价是否已包含在订阅中");
+    expect(CONSISTENCY_LABEL_DECISION_TABLE).toContain("没有说“仅限这些”");
+    expect(CONSISTENCY_LABEL_DECISION_TABLE).toContain("只展示一个 pre-release 条目");
+    expect(CONSISTENCY_LABEL_DECISION_TABLE).toContain("改变角色/时间语境");
+    expect(CONSISTENCY_LABEL_DECISION_TABLE).toContain("明确供应链准备 8-hi");
     for (const [args] of vi.mocked(callStructured).mock.calls) {
       expect(args.system).toContain(CONSISTENCY_LABEL_DECISION_TABLE);
+      expect(args.system).toContain("同一连续论证链");
     }
+  });
+
+  it("批量 uncertain 保持失败关闭，不以随机单条复核覆盖为 not_support", async () => {
+    vi.mocked(callStructured)
+      .mockResolvedValueOnce(batchJudgeData([
+        { index: 1, consistency: "support", consistency_reason: "ok" },
+        { index: 2, consistency: "uncertain", consistency_reason: "uncertain" },
+      ]));
+
+    await expect(judgeConsistencyBatch(["提升 30.4 个百分点", "性能翻了一倍"], "原文仅说提升 30.4 个百分点。"))
+      .resolves.toMatchObject([
+        { consistency: "support" },
+        { consistency: "uncertain", consistency_reason: "uncertain" },
+      ]);
+    expect(vi.mocked(callStructured)).toHaveBeenCalledTimes(1);
   });
 
   it("来源发布时间无法解析时不插入原始值", async () => {
@@ -665,10 +687,11 @@ describe("validateBatch（B 按源归并批量判定 · 成本最大杠杆）", 
     const ins1 = insight("iu1", "A", [{ content_item_id: "ci_u", quote: "alpha" }]);
     const ins2 = insight("iu2", "B", [{ content_item_id: "ci_u", quote: "beta" }]);
     const cache = { get: () => undefined, set: vi.fn() };
-    vi.mocked(callStructured).mockResolvedValue(batchJudgeData([
-      { index: 1, consistency: "support", consistency_reason: "ok" },
-      { index: 2, consistency: "uncertain", consistency_reason: "uncertain" },
-    ]));
+    vi.mocked(callStructured)
+      .mockResolvedValueOnce(batchJudgeData([
+        { index: 1, consistency: "support", consistency_reason: "ok" },
+        { index: 2, consistency: "uncertain", consistency_reason: "uncertain" },
+      ]));
     await validateBatch([ins1, ins2], items, undefined, cache);
     expect(cache.set).toHaveBeenCalledTimes(1); // 只 support 回写、uncertain 不冻结待核实
   });

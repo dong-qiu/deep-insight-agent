@@ -889,15 +889,20 @@ describe("filterByQuoteCoverage（展示 quote 覆盖门）", () => {
   it("statement 与 claim 相等仍必须经过 claim→quote 语义审计", async () => {
     vi.mocked(callStructured).mockResolvedValue(coverageVerdicts(false));
     const audits: Array<{ claims: Array<{ reason: string }> }> = [];
-    const row = insight("The exemplification technique targets black-box chatbots.", [{
+    const draft = "The exemplification technique targets black-box chatbots.";
+    const quote = "We evaluate a prompt-injection technique using a bridge in external content.";
+    const row = insight(draft, [{
       content_item_id: "ci",
       claim: "The exemplification technique targets black-box chatbots",
-      quote: "We evaluate a prompt-injection technique using a bridge in external content.",
+      quote,
       locator: { paragraph_index: 0, char_start: 0, char_end: 73 },
     }]);
 
     await expect(filterByQuoteCoverage([row], undefined, undefined, (decision) => audits.push(decision))).resolves.toEqual([]);
     expect(vi.mocked(callStructured)).toHaveBeenCalledTimes(2);
+    const primary = vi.mocked(callStructured).mock.calls[0]?.[0];
+    expect(primary?.user).toContain("The exemplification technique targets black-box chatbots");
+    expect(primary?.user).not.toContain(`<atomic_claims>\n1. [statement] ${quote}`);
     expect(audits[0]?.claims[0]?.reason).toBe("judge_not_supported");
   });
 

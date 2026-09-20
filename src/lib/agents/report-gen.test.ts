@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AnalysisBatch, ContentItem, Topic, ValidationResult } from "../types.js";
-import { BRIEF_SUPPLEMENTAL_MAX, buildReport, HIGHLIGHTS_MAX, inlineCitedStatement, isMilestoneInsight, KEY_MIN_IMPORTANCE, persistedSelectionDecisions, reportHighlights, selectBriefInsights, selectInsights, summarizeBriefSelection } from "./report-gen.js";
+import { BRIEF_SUPPLEMENTAL_MAX, buildReport, HIGHLIGHTS_MAX, inlineCitedStatement, isMilestoneInsight, KEY_MIN_IMPORTANCE, persistedSelectionDecisions, readerVisibleEvidenceKey, reportHighlights, selectBriefInsights, selectInsights, summarizeBriefSelection } from "./report-gen.js";
 import { flagLabel } from "../utils/citation-verdict.js";
 import { DISPLAY_PROJECTION_VERSION, sourceQuoteHash } from "../utils/source-quote-projection.js";
 
@@ -216,6 +216,35 @@ describe("selectInsights（洞察级纳入判定）", () => {
     expect(selectInsights(batch, validation)).toEqual([]);
   });
 
+  it("相同展示 statement + 绑定 quote 只保留确定性代表项，并在选择账本记录胜出项", () => {
+    const batch = batchOf();
+    const duplicate = {
+      ...batch.insights[0]!, id: "i_exact_duplicate", importance: 5, event_id: "separate-event",
+      citations: [{ ...batch.insights[0]!.citations[0]!, content_item_id: "ci_duplicate" }],
+    };
+    batch.insights.push(duplicate);
+    batch.display_coverage_audits!.push({ ...batch.display_coverage_audits![0]!, insight_id: duplicate.id, candidate_id: duplicate.id });
+    const checks: ValidationResult = {
+      ...validation,
+      checks: [...validation.checks, {
+        insight_id: duplicate.id, citation_index: 0, reachability: "pass", reachability_reason: "ok",
+        consistency: "support", consistency_reason: "ok", verdict: "pass",
+      }],
+    };
+    expect(selectInsights(batch, checks).map((entry) => entry.insight.id)).toEqual(["i_exact_duplicate"]);
+    expect(persistedSelectionDecisions(batch, checks, "deep_dive", selectInsights(batch, checks)))
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ insight_id: "i1", decision: "excluded", reason_code: "reader_visible_duplicate", related_insight_id: "i_exact_duplicate" }),
+      ]));
+    expect(summarizeBriefSelection(batch, checks, "deep_dive").summary.batch_duplicate_filtered_count).toBe(1);
+  });
+
+  it("严格展示证据键只折排版与空白，不因大小写相同而合并", () => {
+    const base = batchOf().insights[0]!;
+    expect(readerVisibleEvidenceKey({ ...base, statement: "Model I", citations: [{ ...base.citations[0]!, quote: "Model I" }] }))
+      .not.toBe(readerVisibleEvidenceKey({ ...base, statement: "Model i", citations: [{ ...base.citations[0]!, quote: "Model i" }] }));
+  });
+
   it("v6 报告只显示一次绑定原文，次级引用仅留作审计而不进入 Markdown 或 HTML", () => {
     const batch = batchOf();
     const safe = batch.insights[0]!;
@@ -270,6 +299,55 @@ describe("selectBriefInsights（Daily Brief 已发布证据去重）", () => {
     });
     expect(report.insight_ids).toEqual([]);
     expect(reportHighlights(batchOf(), validation, { publishedEventEvidence: published }).map((x) => x.text)).toEqual([]);
+  });
+
+  it("相同展示证据的 fresh occurrence 优先于更高重要性的旧 occurrence", () => {
+    const old = { ...batchOf().insights[0]!, id: "old", event_id: "old-event", importance: 5, citations: [{ ...batchOf().insights[0]!.citations[0]!, content_item_id: "ci_old" }] };
+    const fresh = { ...batchOf().insights[0]!, id: "fresh", event_id: "fresh-event", importance: 3, citations: [{ ...batchOf().insights[0]!.citations[0]!, content_item_id: "ci_fresh" }] };
+    const batch: AnalysisBatch = {
+      ...batchOf(), insights: [old, fresh], display_coverage_audits: [
+        { ...batchOf().display_coverage_audits![0]!, insight_id: old.id, candidate_id: old.id },
+        { ...batchOf().display_coverage_audits![0]!, insight_id: fresh.id, candidate_id: fresh.id },
+      ],
+    };
+    const checks: ValidationResult = {
+      ...validation,
+      checks: [old, fresh].map((insight) => ({
+        insight_id: insight.id, citation_index: 0, reachability: "pass" as const, reachability_reason: "ok" as const,
+        consistency: "support" as const, consistency_reason: "ok" as const, verdict: "pass" as const,
+      })),
+    };
+    const selection = summarizeBriefSelection(batch, checks, "brief", [], {
+      since: "2026-05-06T00:00:00Z", content_item_ids: ["ci_fresh"], freshest_candidate_at: "2026-05-07T00:00:00Z",
+    });
+    expect(selection.included.map((item) => item.insight.id)).toEqual(["fresh"]);
+    expect(selection.summary.supplemental_published_insight_count).toBe(0);
+    expect(selection.decisions.find((decision) => decision.insight_id === "old"))
+      .toMatchObject({ decision: "excluded", reason_code: "reader_visible_duplicate", related_insight_id: "fresh" });
+  });
+
+  it("同 event 中 fresh occurrence 优先于更高重要性的旧 occurrence", () => {
+    const old = { ...batchOf().insights[0]!, id: "old_same_event", importance: 5, citations: [{ ...batchOf().insights[0]!.citations[0]!, content_item_id: "ci_old" }] };
+    const fresh = { ...batchOf().insights[0]!, id: "fresh_same_event", importance: 3, citations: [{ ...batchOf().insights[0]!.citations[0]!, content_item_id: "ci_fresh" }] };
+    const batch: AnalysisBatch = {
+      ...batchOf(), insights: [old, fresh], display_coverage_audits: [
+        { ...batchOf().display_coverage_audits![0]!, insight_id: old.id, candidate_id: old.id },
+        { ...batchOf().display_coverage_audits![0]!, insight_id: fresh.id, candidate_id: fresh.id },
+      ],
+    };
+    const checks: ValidationResult = {
+      ...validation,
+      checks: [old, fresh].map((insight) => ({
+        insight_id: insight.id, citation_index: 0, reachability: "pass" as const, reachability_reason: "ok" as const,
+        consistency: "support" as const, consistency_reason: "ok" as const, verdict: "pass" as const,
+      })),
+    };
+    const selection = summarizeBriefSelection(batch, checks, "brief", [], {
+      since: "2026-05-06T00:00:00Z", content_item_ids: ["ci_fresh"], freshest_candidate_at: "2026-05-07T00:00:00Z",
+    });
+    expect(selection.included.map((item) => item.insight.id)).toEqual(["fresh_same_event"]);
+    expect(selection.decisions.find((decision) => decision.insight_id === "old_same_event"))
+      .toMatchObject({ decision: "excluded", reason_code: "batch_duplicate", related_insight_id: "fresh_same_event" });
   });
 
   it("同批同 event 的重复只发布确定性代表项，且不合并 citations", () => {
@@ -363,12 +441,23 @@ describe("selectBriefInsights（Daily Brief 已发布证据去重）", () => {
 
   it("同批补充候选的 event 去重记录确定的胜出洞察，而非泛化 gate", () => {
     const batch = batchOf();
-    const duplicate = { ...batch.insights[0]!, id: "i_supplemental_duplicate", citations: [{ ...batch.insights[0]!.citations[0]!, content_item_id: "ci_old" }] };
+    const duplicateStatement = "S1 alternate evidence";
+    const duplicate = {
+      ...batch.insights[0]!, id: "i_supplemental_duplicate", statement: duplicateStatement,
+      citations: [{ ...batch.insights[0]!.citations[0]!, content_item_id: "ci_old", quote: duplicateStatement, claim: duplicateStatement }],
+    };
     batch.insights[0]!.citations[0] = { ...batch.insights[0]!.citations[0]!, content_item_id: "ci_old" };
     batch.insights.push(duplicate);
     batch.display_coverage_audits = [
       ...batch.display_coverage_audits!,
-      { ...batch.display_coverage_audits![0]!, insight_id: duplicate.id, candidate_id: duplicate.id },
+      {
+        ...batch.display_coverage_audits![0]!, insight_id: duplicate.id, candidate_id: duplicate.id,
+        decision: {
+          statement_citation_index: 1, statement_citation_ref: duplicate.citations[0]!.citation_ref!, display_projection_version: DISPLAY_PROJECTION_VERSION,
+          statement_sha256: sourceQuoteHash(duplicateStatement), quote_sha256: sourceQuoteHash(duplicateStatement),
+          claims: [{ claim_id: "statement:1", field: "statement", kind: "factual", supports: true, citation_indexes: [1], countercheck: { supports: true } }],
+        },
+      },
     ];
     const checks: ValidationResult = {
       ...validation,
@@ -401,13 +490,21 @@ describe("selectBriefInsights（Daily Brief 已发布证据去重）", () => {
     const base = batchOf().insights[0];
     const batch: AnalysisBatch = {
       ...batchOf(),
-      insights: Array.from({ length: BRIEF_SUPPLEMENTAL_MAX + 1 }, (_, i) => ({
-        ...base, id: `old_${i}`, event_id: `event_${i}`,
-        citations: [{ ...base.citations[0], content_item_id: `old_ci_${i}` }],
-      })),
+      insights: Array.from({ length: BRIEF_SUPPLEMENTAL_MAX + 1 }, (_, i) => {
+        const statement = `old evidence ${i}`;
+        return {
+          ...base, id: `old_${i}`, event_id: `event_${i}`, statement,
+          citations: [{ ...base.citations[0], content_item_id: `old_ci_${i}`, quote: statement, claim: statement }],
+        };
+      }),
     };
     batch.display_coverage_audits = batch.insights.map((insight) => ({
       ...batchOf().display_coverage_audits![0]!, insight_id: insight.id, candidate_id: insight.id,
+      decision: {
+        statement_citation_index: 1, statement_citation_ref: insight.citations[0]!.citation_ref!, display_projection_version: DISPLAY_PROJECTION_VERSION,
+        statement_sha256: sourceQuoteHash(insight.statement), quote_sha256: sourceQuoteHash(insight.citations[0]!.quote),
+        claims: [{ claim_id: "statement:1", field: "statement", kind: "factual", supports: true, citation_indexes: [1], countercheck: { supports: true } }],
+      },
     }));
     const checks: ValidationResult = {
       ...validation,

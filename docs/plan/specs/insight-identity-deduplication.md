@@ -26,19 +26,28 @@
 
 1. `event_id` 对齐以模型判断为主。仅当同一类型的严格指纹在历史中对应**唯一** `event_id` 时，确定性回退可复用该 ID；多个历史 ID 匹配时保持模型结果，不强行合并。
 2. 分块结果、缓存命中和新分析结果全部汇合后才执行当前批次对齐。对齐只改 `event_id` / `is_followup`，绝不删除 occurrence、改写 statement 或拼接 Citation。
-3. brief 先应用 `pass/support` 引用白名单，再在当前批次按 `event_id`（无 ID 时按严格指纹）选出确定性代表项：重要性更高优先，其次可发布引用数更多，最后按 Insight ID 排序。代表项只携带自身的白名单引用。
+3. 所有 reader-visible 选择先应用 `pass/support` 引用白名单，并对完全相同的“归一化 statement + 唯一绑定 quote”保留一个确定性代表项：重要性更高优先，其次可发布引用数更多，最后按 Insight ID 排序。此窄键仅去除字面重复展示，不等同于事件或语义合并；被过滤 occurrence 与胜出项必须留在选择账本。随后 brief 再按 `event_id`（无 ID 时按严格指纹）执行其事件级选择。代表项只携带自身的白名单引用。
 4. 对最近 14 天已发布 occurrence，若当前 Insight 没有自身新增的 `pass/support` `content_item_id`，则不发布。同一严格指纹可作为遗留分裂 `event_id` 的兜底；它不替代模型的语义事件对齐。
 5. 图谱 drill 仅在读取展示时折叠同类型、同严格指纹 occurrence；图数据、报告、原始 Insight 与 citation 记录均不修改。分组必须暴露 occurrence 数、每个原始 Insight 和其全部已发布报告链接。
 6. 选择诊断和 provenance timeline 记录 `batch_duplicate_filtered_count` 与 `fingerprint_duplicate_filtered_count`。计数不得把 blocked、flagged 或未入白名单的引用视为已发布证据。
 
 ## 验收标准 (AC)
 
-- [ ] AC1: 同一批次中，同类型且仅空白/已定义排版折叠后相同的 statement 取得同一 `event_id`；每条 Insight 和其 Citation occurrence 均仍被落库。
-- [ ] AC2: 唯一历史严格指纹匹配可覆盖模型产生的新 ID 并标记 follow-up；跨类型或多历史 ID 冲突时不得自动复用或合并。
-- [ ] AC3: Daily Brief 在 `pass/support` 白名单之后，对重复当前事件只发布一个按规则确定的代表项；代表项不得带入被过滤 occurrence 的引用。
-- [ ] AC4: 给定最近 14 天已发布的同严格指纹 occurrence，且当前项没有自身新增的成功校验引用时，Brief 不发布该项并记录指纹过滤计数；有新增成功引用时可作为更新发布。
-- [ ] AC5: 图谱 drill 将严格重复项折叠为一个展示组，同时可返回每条原始 occurrence、其 quote 和所有已发布报告链接；没有报告链接的 occurrence 仍可见但不伪造链接。
-- [ ] AC6: 过滤计数通过生成 provenance、报告选择诊断和 timeline 三条读取路径可见；固定 `asOf` 时 14 天历史窗口可复现。
+- [x] AC1: 同一批次中，同类型且仅空白/已定义排版折叠后相同的 statement 取得同一 `event_id`；每条 Insight 和其 Citation occurrence 均仍被落库。
+- [x] AC2: 唯一历史严格指纹匹配可覆盖模型产生的新 ID 并标记 follow-up；跨类型或多历史 ID 冲突时不得自动复用或合并。
+- [x] AC3: 所有 reader-visible 消费者在 `pass/support` 白名单之后，对相同 statement + 绑定 quote 只展示一个按规则确定的代表项；Daily Brief 随后对重复当前事件也只发布一个代表项。代表项不得带入被过滤 occurrence 的引用，选择账本须记录 exact-evidence winner。
+- [x] AC4: 给定最近 14 天已发布的同严格指纹 occurrence，且当前项没有自身新增的成功校验引用时，Brief 不发布该项并记录指纹过滤计数；有新增成功引用时可作为更新发布。
+- [x] AC5: 图谱 drill 将严格重复项折叠为一个展示组，同时可返回每条原始 occurrence、其 quote 和所有已发布报告链接；没有报告链接的 occurrence 仍可见但不伪造链接。
+- [x] AC6: 过滤计数通过生成 provenance、报告选择诊断和 timeline 三条读取路径可见；固定 `asOf` 时 14 天历史窗口可复现。
+
+### 验收证据（2026-09-20）
+
+| AC | 生产路径测试 |
+| --- | --- |
+| AC1–AC2 | `src/lib/agents/analyzer.test.ts` 的 `canonicalizeInsightEvents`；`src/lib/agents/pipeline.test.ts` 的落库接线 |
+| AC3–AC4 | `src/lib/agents/report-gen.test.ts` 与 `src/lib/agents/pipeline-reportgen.integration.test.ts` 的 reader-visible / 历史 evidence 选择 |
+| AC5 | `src/lib/db/graph.test.ts` 的持久化 occurrence → entity drill → read-time group → report links；`src/app/api/graph/drill/route.test.ts` 的 API 契约 |
+| AC6 | `src/lib/agents/pipeline-reportgen.integration.test.ts` 的 selection decision、generation event metrics 与 timeline 回读 |
 
 ## 非功能要求
 

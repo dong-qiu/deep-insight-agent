@@ -11,6 +11,7 @@ import { auditSupportsReaderProjection, requiredAuditCitationIndexes } from "../
 import { DISPLAY_PROJECTION_VERSION } from "../utils/source-quote-projection.js";
 import { entitiesMentionedInStatement } from "../utils/reader-visible-entities.js";
 import { insightFingerprint } from "../runtime/statement-fingerprint.js";
+import { compareKey } from "../runtime/text-normalize.js";
 import { coverageGaps, specificClaims } from "./analyzer.js";
 
 /** 每日节奏中已发布 event 的成功校验证据；由 DB 层读取、作为纯函数输入传入。 */
@@ -71,6 +72,55 @@ export interface IncludedInsight {
   source_quote_projection?: true;
 }
 
+/**
+ * Identity of the one piece of evidence a reader sees for a v6 insight. This is deliberately
+ * narrower than event identity: it removes only literal duplicate reader records, not similar
+ * claims or two independently worded facts about one event.
+ */
+export function readerVisibleEvidenceKey(insight: Insight): string {
+  const citation = insight.statement_citation_index == null
+    ? undefined
+    : insight.citations[insight.statement_citation_index - 1];
+  if (!citation) return `unbound:${insight.id}`;
+  return `${compareKey(insight.statement)}\u0000${compareKey(citation.quote)}`;
+}
+
+interface ReaderVisibleSelection {
+  included: IncludedInsight[];
+  /** Dropped insight ID → deterministic reader-visible representative. */
+  duplicate_winner_by_insight_id: ReadonlyMap<string, string>;
+  /** IDs that passed projection/citation gates before exact reader-evidence de-duplication. */
+  reader_eligible_ids: ReadonlySet<string>;
+}
+
+function compareReaderVisibleRepresentatives(left: IncludedInsight, right: IncludedInsight, preferredInsightIds: ReadonlySet<string>): number {
+  return Number(preferredInsightIds.has(right.insight.id)) - Number(preferredInsightIds.has(left.insight.id))
+    || right.insight.importance - left.insight.importance
+    || right.includableCitationIndices.length - left.includableCitationIndices.length
+    || (left.insight.id < right.insight.id ? -1 : left.insight.id > right.insight.id ? 1 : 0);
+}
+
+function dedupeReaderVisibleEvidence(candidates: readonly IncludedInsight[], preferredInsightIds: ReadonlySet<string> = new Set()): ReaderVisibleSelection {
+  const winners = new Map<string, IncludedInsight>();
+  for (const candidate of candidates) {
+    const key = readerVisibleEvidenceKey(candidate.insight);
+    const current = winners.get(key);
+    if (!current || compareReaderVisibleRepresentatives(candidate, current, preferredInsightIds) < 0) winners.set(key, candidate);
+  }
+  const duplicate_winner_by_insight_id = new Map<string, string>();
+  const included = candidates.filter((candidate) => {
+    const winner = winners.get(readerVisibleEvidenceKey(candidate.insight))!;
+    if (winner.insight.id === candidate.insight.id) return true;
+    duplicate_winner_by_insight_id.set(candidate.insight.id, winner.insight.id);
+    return false;
+  });
+  return {
+    included,
+    duplicate_winner_by_insight_id,
+    reader_eligible_ids: new Set(candidates.map((candidate) => candidate.insight.id)),
+  };
+}
+
 export interface PersistedSelectionDecision {
   insight_id: string;
   decision: "published" | "excluded";
@@ -119,7 +169,7 @@ function blockedReason(c: import("../types.js").CitationCheck): string | null {
  *  发布白名单仅保留明确 support 的 pass 引用；blocked、flagged 与无 check 一律不出报告。
  *  uncertain/校验失败仍保存在 ValidationResult，供人工核实或重试，不可作为发布证据。
  *  同时汇总被屏蔽数与理由直方图——供渲染端外露 validator 把关力度（透明信任信号）。 */
-export function selectInsights(batch: AnalysisBatch, validation: ValidationResult): IncludedInsight[] {
+function selectReaderEligibleInsights(batch: AnalysisBatch, validation: ValidationResult): IncludedInsight[] {
   // Reports are a new reader-visible derivative. Historical report text may remain available,
   // but a legacy/cache-derived batch cannot be rendered again from the old validator whitelist.
   // Every new report must have the persisted v6 binding audit below.
@@ -181,6 +231,18 @@ export function selectInsights(batch: AnalysisBatch, validation: ValidationResul
   return out;
 }
 
+function selectReaderVisibleInsights(batch: AnalysisBatch, validation: ValidationResult): ReaderVisibleSelection {
+  return dedupeReaderVisibleEvidence(selectReaderEligibleInsights(batch, validation));
+}
+
+/**
+ * Production reader-visible whitelist. Exact duplicate statement + bound quote pairs are
+ * represented once after all safety gates; every original occurrence remains persisted.
+ */
+export function selectInsights(batch: AnalysisBatch, validation: ValidationResult): IncludedInsight[] {
+  return selectReaderVisibleInsights(batch, validation).included;
+}
+
 /** Converts the exact deterministic selection output into one terminal record
  * per batch insight.  The reason is intentionally a coarse real gate family:
  * V1 must not pretend it knows a more specific model decision than exists. */
@@ -196,7 +258,8 @@ export function persistedSelectionDecisions(
   // cannot reconstruct. Callers must pass summarizeBriefSelection().decisions
   // rather than write a generic, unverifiable exclusion reason.
   if (type === "brief") throw new Error("brief_selection_decisions_required");
-  const base = new Set(selectInsights(batch, validation).map((item) => item.insight.id));
+  const readerSelection = selectReaderVisibleInsights(batch, validation);
+  const base = readerSelection.reader_eligible_ids;
   const selected = new Map(included.map((item, index) => [item.insight.id, { item, rank: index + 1 }]));
   return batch.insights.map((insight) => {
     const published = selected.get(insight.id);
@@ -204,9 +267,11 @@ export function persistedSelectionDecisions(
       insight_id: insight.id, decision: "published", reason_code: "selected_by_rule",
       published_rank: published.rank, supporting_citation_indices: published.item.includableCitationIndices,
     };
+    const duplicateWinner = readerSelection.duplicate_winner_by_insight_id.get(insight.id);
     return {
       insight_id: insight.id, decision: "excluded",
-      reason_code: base.has(insight.id) ? "selection_rule_excluded" : "projection_or_citation_gate",
+      reason_code: duplicateWinner ? "reader_visible_duplicate" : base.has(insight.id) ? "selection_rule_excluded" : "projection_or_citation_gate",
+      ...(duplicateWinner ? { related_insight_id: duplicateWinner } : {}),
       supporting_citation_indices: [],
     };
   });
@@ -221,18 +286,24 @@ export function summarizeBriefSelection(
   publishedEventEvidence: PublishedEventEvidence[] = [],
   freshness?: BriefFreshness,
 ): { included: IncludedInsight[]; summary: BriefSelectionSummary; decisions: PersistedSelectionDecision[] } {
-  const included = selectInsights(batch, validation);
-  if (type !== "brief") return {
-    included,
-    summary: {
-      includable_insight_count: included.length, freshness_filtered_insight_count: 0,
-      already_published_filtered_insight_count: 0, supplemental_candidate_count: 0,
-      supplemental_published_insight_count: 0, published_insight_count: included.length,
-      published_citation_count: included.reduce((total, x) => total + x.citationIndices.length, 0),
-      batch_duplicate_filtered_count: 0, fingerprint_duplicate_filtered_count: 0,
-    },
-    decisions: persistedSelectionDecisions(batch, validation, type, included),
-  };
+  const readerEligible = selectReaderEligibleInsights(batch, validation);
+  if (type !== "brief") {
+    const readerSelection = dedupeReaderVisibleEvidence(readerEligible);
+    return {
+      included: readerSelection.included,
+      summary: {
+        includable_insight_count: readerEligible.length, freshness_filtered_insight_count: 0,
+        already_published_filtered_insight_count: 0, supplemental_candidate_count: 0,
+        supplemental_published_insight_count: 0, published_insight_count: readerSelection.included.length,
+        published_citation_count: readerSelection.included.reduce((total, x) => total + x.citationIndices.length, 0),
+        batch_duplicate_filtered_count: readerSelection.duplicate_winner_by_insight_id.size, fingerprint_duplicate_filtered_count: 0,
+      },
+      decisions: persistedSelectionDecisions(batch, validation, type, readerSelection.included),
+    };
+  }
+  // Do not pre-deduplicate a Brief. A lower-ranked duplicate can be the only fresh / newly
+  // evidenced occurrence, and freshness plus history gates must choose before reader projection.
+  const included = readerEligible;
   // 有近期候选时，带近期成功校验证据的洞察走主通道。较早证据只可作为明确标注的、
   // 未发布 event 补充发现，不能被包装成“今日”内容（ADR-0021）。
   const freshItemIds = new Set(freshness?.content_item_ids ?? []);
@@ -278,8 +349,10 @@ export function summarizeBriefSelection(
     if (!hasNew && fingerprintAddsEvidence) fingerprintDuplicateFiltered += 1;
     return hasNew;
   };
-  const dedupeCurrent = (xs: IncludedInsight[]): { kept: IncludedInsight[]; filtered: number; droppedBy: Map<string, string> } => {
-    const ordered = [...xs].sort((a, b) => b.insight.importance - a.insight.importance || b.includableCitationIndices.length - a.includableCitationIndices.length || a.insight.id.localeCompare(b.insight.id));
+  const dedupeCurrent = (xs: IncludedInsight[], preferredInsightIds: ReadonlySet<string> = new Set()): { kept: IncludedInsight[]; filtered: number; droppedBy: Map<string, string> } => {
+    const ordered = [...xs].sort((a, b) => Number(preferredInsightIds.has(b.insight.id)) - Number(preferredInsightIds.has(a.insight.id))
+      || b.insight.importance - a.insight.importance || b.includableCitationIndices.length - a.includableCitationIndices.length
+      || (a.insight.id < b.insight.id ? -1 : a.insight.id > b.insight.id ? 1 : 0));
     const seen = new Map<string, string>();
     const droppedBy = new Map<string, string>();
     const kept = ordered.filter((x) => {
@@ -335,14 +408,19 @@ export function summarizeBriefSelection(
     .map((x) => ({ ...x, brief_inclusion: "supplemental" as const }));
   for (const item of supplementalCandidates.slice(BRIEF_SUPPLEMENTAL_MAX)) exclusionReasons.set(item.insight.id, { reason_code: "supplemental_limit" });
   const alreadyPublishedFiltered = freshAlreadyPublished + supplementalAlreadyPublished;
-  const selectedDedupe = dedupeCurrent([...freshSelected, ...supplementalSelected]);
+  const selectedDedupe = dedupeCurrent([...freshSelected, ...supplementalSelected], new Set(freshSelected.map((item) => item.insight.id)));
   for (const [id, winner] of selectedDedupe.droppedBy) exclusionReasons.set(id, { reason_code: "batch_duplicate", related_insight_id: winner });
-  const selected = selectedDedupe.kept;
+  const readerEvidenceDedupe = dedupeReaderVisibleEvidence(selectedDedupe.kept, new Set(freshSelected.map((item) => item.insight.id)));
+  for (const [id, winner] of readerEvidenceDedupe.duplicate_winner_by_insight_id) {
+    exclusionReasons.set(id, { reason_code: "reader_visible_duplicate", related_insight_id: winner });
+  }
+  const selected = readerEvidenceDedupe.included;
+  const selectedSupplementalCount = selected.filter((item) => item.brief_inclusion === "supplemental").length;
   // These reason codes are assigned from the actual branch outputs above;
   // they are not model explanations.  A later selected item always overrides
   // an earlier provisional exclusion (for example, an older supplemental).
   const selectedById = new Map(selected.map((item, index) => [item.insight.id, { item, rank: index + 1 }]));
-  const baseIds = new Set(included.map((item) => item.insight.id));
+  const baseIds = new Set(readerEligible.map((item) => item.insight.id));
   const freshIds = new Set(freshIncluded.map((item) => item.insight.id));
   const freshCandidateIds = new Set(freshCandidates.map((item) => item.insight.id));
   const supplementalCandidateIds = new Set(supplementalCandidates.map((item) => item.insight.id));
@@ -365,10 +443,10 @@ export function summarizeBriefSelection(
       includable_insight_count: included.length, freshness_filtered_insight_count: freshnessFiltered,
       already_published_filtered_insight_count: alreadyPublishedFiltered,
       supplemental_candidate_count: supplementalCandidates.length,
-      supplemental_published_insight_count: supplementalSelected.length,
+      supplemental_published_insight_count: selectedSupplementalCount,
       published_insight_count: selected.length,
       published_citation_count: selected.reduce((total, x) => total + x.citationIndices.length, 0),
-      batch_duplicate_filtered_count: freshDedupe.filtered + selectedDedupe.filtered,
+      batch_duplicate_filtered_count: readerEvidenceDedupe.duplicate_winner_by_insight_id.size + freshDedupe.filtered + selectedDedupe.filtered,
       fingerprint_duplicate_filtered_count: fingerprintDuplicateFiltered,
     },
     decisions,

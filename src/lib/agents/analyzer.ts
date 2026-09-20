@@ -130,8 +130,9 @@ ${CITATION_CLAUSE_AUDIT}
 // source-quote projection so the model is not told a claim will be reader-visible; v20 expands
 // the primary display-audit response allowance; v21 limits each primary display-audit request
 // to one atomic claim, preventing a truncated verdict set from hiding later claims; v22 restores
-// a 2k per-request budget because the multi-claim reason for the 4k allowance no longer exists.
-export const ANALYZER_OUTPUT_VERSION = 22;
+// a 2k per-request budget because the multi-claim reason for the 4k allowance no longer exists;
+// v23 audits the bound draft claim before source-quote projection can erase an unsupported scope.
+export const ANALYZER_OUTPUT_VERSION = 23;
 
 /** 分析缓存版本（ADR-0009）：analyzer 模型 + SYSTEM prompt 哈希 + 输出契约版本——任一变 → 版本变 → 旧分析缓存
  *  自动失效（不复用陈旧 prompt/schema/派生的洞察）。镜像 validator.consistencyCacheVersion 的版本隔离口径。 */
@@ -415,6 +416,8 @@ export interface CoverageDecision {
   statement_citation_claim?: string;
   /** v6 exact source projection evidence. These hashes bind persisted text to one citation. */
   display_projection_version?: typeof DISPLAY_PROJECTION_VERSION;
+  /** Hash-only trace of the bound draft claim that was audited before reader projection. */
+  draft_statement_sha256?: string;
   statement_sha256?: string;
   quote_sha256?: string;
   claims: CoverageClaimDecision[];
@@ -1088,22 +1091,10 @@ export async function filterByQuoteCoverage(
       });
       return null;
     }
-    // v6 source-quote projection. The generated statement/claim has already served its only
-    // allowed purpose (validating the chosen binding); it must not remain a reader fact.
-    const draftStatement = insight.statement;
-    insight.statement = boundCitation.quote;
-    insight.entities = entitiesMentionedInStatement(insight.statement, insight.entities ?? []);
-    if (draftStatement !== insight.statement) projection_reasons.push("statement_projected_to_bound_quote");
-    if (insight.headline?.trim()) {
-      insight.headline = "";
-      projection_reasons.push("headline_removed_for_source_quote_projection");
-    }
-    if ((insight.importance_facts ?? []).length) {
-      insight.importance_facts = [];
-      if (insight.importance_reason) insight.importance_basis = renderImportanceBasis([], insight.importance_reason);
-      projection_reasons.push("importance_facts_removed_for_source_quote_projection");
-    }
     const quoteHash = sourceQuoteHash(boundCitation.quote);
+    // Reject an irreducibly deictic reader quote before any model call. The draft cannot supply
+    // the missing referent, and running the draft-claim audit first would turn this cheap,
+    // deterministic rejection into unnecessary model work.
     if (hasUnresolvedQuoteLead(boundCitation.quote)) {
       console.warn(`  ⚠️ 丢弃无法独立理解的绑定 quote：${boundCitation.quote.slice(0, 36)}…`);
       onDecision?.({
@@ -1118,6 +1109,44 @@ export async function filterByQuoteCoverage(
         claims: [{ claim_id: "statement:1", field: "statement", text: insight.statement, kind: "factual", supports: false, citation_indexes: [], evidence_spans: [], reason: "unresolved_deictic_quote" }],
       });
       return null;
+    }
+    const draftStatement = insight.statement;
+    // Verify the analyzer's bound claim before replacing it with the reader-facing source quote.
+    // Auditing only after projection would erase an unsupported scope/subject from the model
+    // input and let a valid quote "repair" an invalid draft. The narrow clone deliberately omits
+    // headline and free importance facts because projection removes them; the controlled reason
+    // remains anchored to this exact statement claim.
+    const controlledDraftImportance = hasControlledImportance(insight);
+    const draftCoverageInput: Pick<Insight, "statement" | "headline" | "importance_basis" | "importance_facts" | "importance_reason" | "importance_reason_claim_indexes"> = {
+      statement: draftStatement,
+      headline: "",
+      importance_basis: controlledDraftImportance ? renderImportanceBasis([], insight.importance_reason!) : "",
+      ...(controlledDraftImportance ? {
+        importance_facts: [],
+        importance_reason: insight.importance_reason,
+        importance_reason_claim_indexes: insight.importance_reason_claim_indexes,
+      } : {}),
+    };
+    const coverage = await verifyDisplayedQuoteCoverage(draftCoverageInput, displayableCitations, boundDisplayCitationIndex, onCost, signal);
+    // The narrow audit clone may safely prune only malformed/unpassed model-declared anchors.
+    // Carry that deterministic pruning back before rendering the fixed reader metadata; never
+    // invent a replacement anchor here.
+    if (controlledDraftImportance && draftCoverageInput.importance_reason_claim_indexes !== insight.importance_reason_claim_indexes) {
+      insight.importance_reason_claim_indexes = draftCoverageInput.importance_reason_claim_indexes;
+    }
+    // v6 source-quote projection. The verified draft is never reader-visible: reader output is
+    // exactly the bound source quote, while the audit retains only a hash of the prior claim.
+    insight.statement = boundCitation.quote;
+    insight.entities = entitiesMentionedInStatement(insight.statement, insight.entities ?? []);
+    if (draftStatement !== insight.statement) projection_reasons.push("statement_projected_to_bound_quote");
+    if (insight.headline?.trim()) {
+      insight.headline = "";
+      projection_reasons.push("headline_removed_for_source_quote_projection");
+    }
+    if ((insight.importance_facts ?? []).length) {
+      insight.importance_facts = [];
+      if (insight.importance_reason) insight.importance_basis = renderImportanceBasis([], insight.importance_reason);
+      projection_reasons.push("importance_facts_removed_for_source_quote_projection");
     }
     const tokenGaps = [
       ...stableBoundQuoteTokenGaps(insight.statement, insight.entities ?? [], boundCitation),
@@ -1159,7 +1188,6 @@ export async function filterByQuoteCoverage(
     // a valid original binding such as #2 becomes an out-of-range pointer after an invalid #1
     // is removed, and a later audit of the persisted row would reject it incorrectly.
     insight.statement_citation_index = boundDisplayCitationIndex;
-    const coverage = await verifyDisplayedQuoteCoverage(insight, displayableCitations, boundDisplayCitationIndex, onCost, signal);
     const decisionBase = {
       candidate_id, gate_version: DISPLAY_COVERAGE_GATE_VERSION, pruned_citation_count,
       prompt_version: DISPLAY_COVERAGE_PROMPT_VERSION, prompt_hash: coverage.prompt_hash,
@@ -1169,6 +1197,7 @@ export async function filterByQuoteCoverage(
       statement_citation_ref: typeof declaredBinding === "string" ? undefined : declaredBinding.citation_ref,
       statement_citation_claim: displayableCitations[boundDisplayCitationIndex - 1]?.claim,
       display_projection_version: DISPLAY_PROJECTION_VERSION as "source_quote_v1",
+      draft_statement_sha256: sourceQuoteHash(draftStatement),
       statement_sha256: sourceQuoteHash(insight.statement),
       quote_sha256: quoteHash,
       projection_reasons,
