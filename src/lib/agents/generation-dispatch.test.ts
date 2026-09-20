@@ -51,6 +51,15 @@ describe("generation dispatch worker", () => {
   function completeTopicPipeline(runDb: DB, traceId: string, rootRunId: string) {
     runDb.prepare("UPDATE run SET status='done', ended_at=? WHERE id=?").run(new Date().toISOString(), rootRunId);
     appendGenerationEvent(runDb, { trace_id: traceId, stage: "select", event_type: "completed" });
+    // The executor owns the canonical analyze-start fact because it alone
+    // knows the frozen inputs and effective model configuration.
+    appendGenerationEvent(runDb, {
+      trace_id: traceId, run_id: rootRunId, stage: "analyze", event_type: "started",
+      version_context: {
+        analyzer_model: "test-analyzer", analyzer_prompt_hash: "a".repeat(64),
+        analyzer_output_version: "v1", analyzer_cache_mode: "off",
+      }, context_completeness: "complete",
+    });
     appendGenerationEvent(runDb, { trace_id: traceId, run_id: rootRunId, stage: "analyze", event_type: "completed" });
     for (const [id, kind, stage] of [["run_validate", "validate", "validate"], ["run_report", "report-gen", "generate_report"]] as const) {
       insertRun(runDb, {
@@ -92,6 +101,42 @@ describe("generation dispatch worker", () => {
     expect(db.prepare("SELECT status FROM generation_trace WHERE id=?").get(accepted.traceId)).toEqual({ status: "failed" });
     expect(db.prepare("SELECT status FROM run WHERE trace_id=?").get(accepted.traceId)).toEqual({ status: "failed" });
     expect(db.prepare("SELECT state FROM generation_dispatch WHERE trace_id=?").get(accepted.traceId)).toEqual({ state: "failed" });
+    expect(db.prepare("SELECT last_error FROM generation_dispatch WHERE trace_id=?").get(accepted.traceId)).toEqual({
+      last_error: JSON.stringify({ reason_code: "dispatch_failed", message: "dispatch_failed", retryable: true }),
+    });
+  });
+
+  it("does not pre-write analyze started before the executor supplies its canonical context", async () => {
+    const accepted = accept();
+    await expect(runGenerationDispatchOnce(db, async (runDb, _topicId, opts) => {
+      completeTopicPipeline(runDb, opts.traceId!, opts.rootRunId!);
+      return {} as Report;
+    })).resolves.toEqual({ claimed: true, traceId: accepted.traceId, status: "done" });
+
+    expect(db.prepare("SELECT stage,event_type,context_completeness,version_context FROM generation_event WHERE trace_id=? AND stage='analyze' AND event_type='started'").all(accepted.traceId)).toEqual([
+      {
+        stage: "analyze", event_type: "started", context_completeness: "complete",
+        version_context: JSON.stringify({ analyzer_cache_mode: "off", analyzer_model: "test-analyzer", analyzer_output_version: "v1", analyzer_prompt_hash: "a".repeat(64) }),
+      },
+    ]);
+  });
+
+  it.each([
+    "generation_event_idempotency_conflict",
+    "integrity_anchor_enabled_invalid",
+  ])("retains %s as a non-retryable stable reason code", async (reasonCode) => {
+    const accepted = accept();
+    await expect(runGenerationDispatchOnce(db, async () => {
+      throw new Error(reasonCode);
+    })).resolves.toEqual({ claimed: true, traceId: accepted.traceId, status: "failed" });
+
+    expect(db.prepare("SELECT last_error FROM generation_dispatch WHERE trace_id=?").get(accepted.traceId)).toEqual({
+      last_error: JSON.stringify({ reason_code: reasonCode, message: reasonCode, retryable: false }),
+    });
+    expect(db.prepare("SELECT reason_code,error FROM generation_event WHERE trace_id=? AND stage='analyze' AND event_type='failed'").get(accepted.traceId)).toEqual({
+      reason_code: reasonCode,
+      error: JSON.stringify({ reason_code: reasonCode, retryable: false }),
+    });
   });
 
   it("fails closed when the heartbeat throws, without leaking an interval exception", async () => {
@@ -150,8 +195,7 @@ describe("generation dispatch worker", () => {
     expect(db.prepare("SELECT state FROM generation_dispatch WHERE trace_id=?").get(accepted.traceId)).toEqual({ state: "failed" });
     expect(db.prepare("SELECT status FROM run WHERE trace_id=?").get(accepted.traceId)).toEqual({ status: "failed" });
     expect(db.prepare("SELECT stage,event_type,reason_code,error FROM generation_event WHERE trace_id=? ORDER BY sequence").all(accepted.traceId)).toEqual([
-      { stage: "analyze", event_type: "started", reason_code: null, error: null },
-      { stage: "analyze", event_type: "failed", reason_code: "dispatch_failed", error: JSON.stringify({ reason_code: "dispatch_failed", retryable: true }) },
+      { stage: "analyze", event_type: "failed", reason_code: "integrity_anchor_admission_required", error: JSON.stringify({ reason_code: "integrity_anchor_admission_required", retryable: false }) },
     ]);
     expect(db.prepare("SELECT COUNT(*) AS count FROM analysis_batch").get()).toEqual({ count: 0 });
     expect(db.prepare("SELECT COUNT(*) AS count FROM run WHERE trace_id=?").get(accepted.traceId)).toEqual({ count: 1 });
@@ -179,7 +223,6 @@ describe("generation dispatch worker", () => {
     expect(await runGenerationDispatchOnce(db)).toMatchObject({ claimed: true, traceId: accepted.traceId, status: "done" });
     expect(db.prepare("SELECT stage,event_type,reason_code FROM generation_event WHERE trace_id=?").all(accepted.traceId))
       .toEqual([
-        { stage: "analyze", event_type: "started", reason_code: null },
         { stage: "select", event_type: "skipped", reason_code: "no_content" },
       ]);
   });
@@ -225,6 +268,13 @@ describe("generation dispatch worker", () => {
     const validation = { checks: [], report: { releasable: true } } as unknown as ValidationResult;
     runAnalysisMock.mockImplementation(async (runDb, _topic, selected, _window, opts) => {
       rootRunId = opts.rootRunId;
+      appendGenerationEvent(runDb, {
+        trace_id: opts.traceId, run_id: rootRunId, stage: "analyze", event_type: "started",
+        version_context: {
+          analyzer_model: "test-analyzer", analyzer_prompt_hash: "a".repeat(64),
+          analyzer_output_version: "v1", analyzer_cache_mode: "off",
+        }, context_completeness: "complete",
+      });
       opts.telemetry.recordAnalysis(runDb, { batch, items: selected, run_id: rootRunId, costs: [] });
       appendGenerationEvent(runDb, { trace_id: opts.traceId, run_id: rootRunId, stage: "analyze", event_type: "completed" });
       return batch;

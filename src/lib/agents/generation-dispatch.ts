@@ -12,6 +12,25 @@ import { deploymentAnchorPublicationIfEnabled } from "../runtime/integrity-ancho
 import { NOOP_P1_TELEMETRY_SINK, type P1TelemetrySink } from "../capabilities/p1-telemetry.js";
 
 const HEARTBEAT_MS = 30_000;
+const STABLE_DISPATCH_FAILURE_CODES = new Set([
+  "generation_event_idempotency_conflict",
+  "provenance_revision_conflict",
+  "integrity_anchor_not_configured",
+  "integrity_anchor_enabled_invalid",
+  "integrity_anchor_admission_required",
+  "invalid_scheduled_dispatch_payload",
+  "invalid_scheduled_dispatch_window_end",
+]);
+
+function dispatchFailure(error: unknown): { reason_code: string; message: string; retryable: boolean } {
+  const message = error instanceof Error ? error.message : String(error);
+  if (STABLE_DISPATCH_FAILURE_CODES.has(message)) {
+    return { reason_code: message, message, retryable: false };
+  }
+  // A dispatch error may originate in an upstream response. Persist only the
+  // stable code here; detailed, redacted diagnostics belong in service logs.
+  return { reason_code: "dispatch_failed", message: "dispatch_failed", retryable: true };
+}
 
 /** Injection seam for deterministic failure tests.  Production always uses
  * the DB CAS heartbeat and the standard 30s cadence. */
@@ -63,10 +82,9 @@ export async function runGenerationDispatchOnce(
     }
     return { claimed: true, traceId: claim.traceId, status: "done" };
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
     if (!lostLease) {
       finishGenerationDispatch(db, claim, {
-        status: "failed", error: { reason_code: "dispatch_failed", message: message.slice(0, 512) },
+        status: "failed", error: dispatchFailure(error),
       });
     }
     return { claimed: true, traceId: claim.traceId, status: "failed" };
