@@ -38,12 +38,19 @@ Every row must be completed. `approved` is valid only when **all** allowed-use c
 
 ## Object-Lock and retention compatibility
 
-The current candidate bodies are immutable through the calendar date **2026-12-09 UTC**. Before a v2 lock is made, obtain the exact S3 `RetainUntilDate` UTC instant from controlled evidence and put that same instant in both `object_lock_retain_until` and the owner decision's `permitted_retention_until`. For every approved row, permitted retention must explicitly cover that instant; otherwise the current candidate is ineligible even if its future use would otherwise be allowed.
+Before a v2 lock is made, obtain the exact S3 `RetainUntilDate` UTC instant from the controlled
+candidate evidence and put that same instant in both `object_lock_retain_until` and the owner
+decision's `permitted_retention_until`. For the current formal candidate
+`a1-v2-platform-expanded-140-20260913`, that instant is **2026-12-12T15:50:49.815Z** (see
+`a1-v2-platform-expanded-candidate-2026-09-14.md`). A later candidate must use its own recorded
+instant rather than reusing this value. For every approved row, permitted retention must explicitly
+cover the applicable instant; otherwise the candidate is ineligible even if its future use would
+otherwise be allowed.
 
 | check | result | evidence / explanation |
 | --- | --- | --- |
-| every approved source permits storage through 2026-12-09 UTC | `pass/fail` | `<…>` |
-| every approved source permits the intended model-evaluation use through 2026-12-09 UTC | `pass/fail` | `<…>` |
+| every approved source permits storage through the applicable `object_lock_retain_until` instant | `pass/fail` | `<…>` |
+| every approved source permits the intended model-evaluation use through the applicable `object_lock_retain_until` instant | `pass/fail` | `<…>` |
 | required attribution/notice is recorded in the controlled runner or evidence store | `pass/fail` | `<…>` |
 | no decision relies on public RSS availability as a permission grant | `pass/fail` | `<…>` |
 | no source body or terms capture appears in the repository record | `pass/fail` | `<…>` |
@@ -55,7 +62,7 @@ If any check fails, set `decision status=blocked`; do **not** edit, relabel, del
 1. A publisher offers an RSS/Atom feed but grants no full-text storage or model-evaluation permission.
 2. A source grants quotation/public-reference rights but not internal retention of the fetched full text.
 3. A repository code licence is present but the snapshot contains release-page prose whose scope has not been confirmed.
-4. Permission allows 30 days while the immutable candidate remains retained through 2026-12-09 UTC.
+4. Permission allows 30 days while the immutable candidate remains retained beyond that period.
 5. A decision covers one Simon Willison feed but does not expressly cover the topic-specific feed and its fetched pages.
 6. Terms are visible today but there is no evidence of the version/effective date applicable at collection time.
 

@@ -1,6 +1,6 @@
 # Spec: A1 controlled v2 dataset
 
-> 状态：执行中（受控候选快照与原型内部使用决策已完成；human 标签、receipt、v2 lock 与 DCP 签署仍待完成）
+> 状态：原型内部研究执行中；正式 v2 提升已按 ADR-0030 延期（受控候选快照与原型内部使用决策已完成；正式 human 标签、receipt、v2 lock 与 DCP 签署均不在当前范围）
 > Owner：dongqiu
 > 关联：ADR-0028、`docs/verify/eval-criteria.md`、`evals/dataset/GUIDE.md`
 
@@ -75,6 +75,8 @@ AI 可以承担三个**诊断性预标注者**，用于发现分歧、估算人�
 
 若 human 在作出分歧裁决前，明确要求查看额外 AI 建议或理由，则必须改走 `human_with_ai_advice` 变体：输入 progress 和最终 adjudication 必须显式记录 `blind_attestation=false`、显示建议的事实和逐条 human reason。该变体只能使用独立的 `labels:ai-chat-to-adjudication` 与 `labels:ai-chat-finalize`，不得调用或伪装为盲裁决的 `labels:ai-dispute-to-adjudication` / `labels:ai-finalize`。其 receipt 继续是 `prototype_ai_assisted`、`lock_eligible=false`，并额外记录 `human_adjudication_mode=human_with_ai_advice`；正式 human receipt、v2 lock、baseline 和 DCP 验证器必须拒绝它。
 
+原型 A1 运行后若要用逐条 human_with_ai_advice 边界复核修订暂定标签，必须另建**派生** JSONL/receipt，不得覆盖已冻结的 parent JSONL 或 receipt。派生器必须同时校验 parent dataset/receipt SHA-256、完成的 review progress SHA-256、以及每条复核的稳定 `id + pair hash`；仅允许应用由该 progress 精确给出的标签或 negative type 变更，任一父字节、行序、旧标签、pair hash 或绑定清单漂移都必须失败。父行的任何额外审计字段必须原样保留。绑定清单和派生 receipt 不含原文；派生 receipt 必须显式记录 `human_adjudication_mode=human_with_ai_advice` 与 `human_adjudication_blind_attestation=false`。派生 JSONL 仍只留受控存储：CLI 必须显式指定仓库外的 `EVAL_ISOLATED_ROOT`，拒绝 `..`、符号链接和仓库内输出；receipt 固定 `prototype_ai_assisted`、`lock_eligible=false`、不可用于 v2 lock、baseline、DCP 或发布质量结论。
+
 ### 2026-09-10 cohort preflight
 
 - 十来源的最终隔离采集使用生产 collector；上述十个来源均实际写入候选库。首次总采集中的 `src_simonwillison_promptinj` 曾因 `ENOTFOUND` 失败，随后在**同一隔离根**单源重试成功；两份 manifest 都必须随受控快照保存。
@@ -91,6 +93,7 @@ AI 可以承担三个**诊断性预标注者**，用于发现分歧、估算人�
 - [ ] AC6: 两次同配置、同 lock、clean commit 的完整 automatic pass 以及完整的三方人工 receipt 均可回链；AI 预标注须隔离为 `diagnostic_only`，不得参与 receipt；此前状态只能标为 incomplete/smoke/provisional，不得盖 `Eval-Gate: pass`。
 - [ ] AC7: 若走 prototype AI-assisted consistency flow，两个 AI submission 的模型和 role 不同，所有分歧且仅分歧均有 blind human adjudication；其 receipt 明确为 `prototype_ai_assisted` / `lock_eligible=false`，并被 v2 lock 拒绝。
 - [ ] AC7a: 若 human 在裁决前收到 AI advice，专用 chat 变体必须将 `blind_attestation=false` 和 `human_with_ai_advice` 写入 hash 绑定的 adjudication/receipt；盲裁决命令和正式 receipt 均拒绝该输入，最终产物仍不可晋级。
+- [ ] AC7b: post-run human_with_ai_advice 边界复核若产生标签修订，必须输出不可覆盖 parent 的派生 JSONL/receipt；每个修订须绑定 parent dataset/receipt、review progress 与 `id + pair hash`，并继续声明 `prototype_ai_assisted`、`lock_eligible=false`。
 - [ ] AC8: A1 本地构建不选取 `partial` 或缺 `raw_ref` 的条目；受控快照准备拒绝 `partial`、缺失/不可读 raw archive、旧格式归档、归档正文输入单次规范化后与存储正文不一致，或正文/归档声明的 `content_hash` 不一致的条目，且不创建候选 manifest。
 
 隔离构建必须显式传入五个主题（包括新增的停用主题），例如：

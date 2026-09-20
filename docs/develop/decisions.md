@@ -1457,3 +1457,34 @@ P0 可在不写 P1 指标的默认路径上继续发布。未来恢复 P1 时，
 ### 后果
 
 复盘可以支持质量判断而不扩大原文保存或模型重放范围；其数据模型和部署迁移需随发布一起验证。任何后续新增展示字段、复盘状态或 migration 变更都必须同时更新 architecture 契约、迁移测试和 admin reader 的 fail-closed 边界。
+
+---
+
+## ADR-0030: A1 v2 受控快照维持内部研究原型范围，延期正式提升
+
+- **日期**: 2026-09-20
+- **状态**: Accepted
+
+### 背景
+
+当前 `a1-v2-platform-expanded-140-20260913` 仅用于个人/内部的非商业研究实验。它已有
+`approved_all` 的**原型范围**决定，但尚未取得逐来源的正式条款/许可决定，也未完成正式 human
+双盲标签、v2 dataset lock、DCP 样本量或可比 baseline。
+
+### 决定
+
+1. 当前快照、其内部 A1 运行、AI-assisted diagnostic、人工分歧裁决和运行性能证据仅用于内部研究
+   与原型质量判断；继续禁止再分发原文、训练、生产发布、对外展示原文或将结果用于商业场景。
+2. 本阶段不要求补齐 source-specific formal owner decision，也不派发正式双 human 盲审；原型可以
+   使用已完成的 `prototype_ai_assisted` 产物，但必须保留 `lock_eligible=false`。
+3. 不创建 `verified_v2` lock，不更新/建立正式 baseline，不宣称 Eval-Gate 通过、DCP 通过或发布准入。
+   自动 full A1 仍可作为内部管线与安全诊断证据，smoke 仍只能作链路验证。
+4. 现有逐来源 owner precheck 与正式 100-pair blind worklist 均保持冻结，作为未来正式化的前置资料；
+   不因原型范围而把任一 `unresolved`/`needs_permission` 行改写成外部许可或 `approved`。
+5. 若未来需要商业、生产或对外发布，必须重新进入正式路径：逐来源条款/权限决定、必要时替换快照、
+   两位 human 盲标与第三人裁决、`verified_v2` lock、DCP 样本量，以及两次同配置 clean full A1。
+
+### 后果
+
+原型可继续以较低的人工作业成本迭代和评估结果，但其证据边界必须在产物、文档和任何演示中保持
+显式。该决定不是法律意见，也不将“内部/非商业”解释为自动取得第三方全文存储、模型评测或再利用许可。

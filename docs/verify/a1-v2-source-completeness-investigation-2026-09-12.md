@@ -2,7 +2,7 @@
 
 > 更新（2026-09-13, Asia/Shanghai）：采集与快照完整性修复已实施并在隔离真实采集路径验证；全量 A1 质量运行仍因单主题 deadline 未完成，见文末限制。旧的 16 条人工分歧工作表已隔离，不得继续用作正式标注输入。
 
-> Status: **root cause confirmed; remediation pending review**. This is an evidence-quality issue, not a label correction or an authorization to mutate the frozen A1 v2 candidate population.
+> Status: **root cause confirmed; remediation implemented and replacement population verified**. This remains an evidence-quality issue, not a label correction or an authorization to mutate the original frozen A1 v2 candidate population.
 
 ## Observation
 
