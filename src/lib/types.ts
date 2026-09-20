@@ -314,6 +314,8 @@ export interface ValidationResult {
 export interface Cost {
   tokens: number;
   amount: number;
+  /** True when amount is a conservative fallback, not a provider-confirmed price. */
+  estimated?: boolean;
 }
 
 /** 报告对象（architecture 数据模型 · Report） */

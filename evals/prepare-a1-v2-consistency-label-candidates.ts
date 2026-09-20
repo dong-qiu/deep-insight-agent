@@ -10,7 +10,8 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { z } from "zod";
-import { assertModelSeparation, MODELS, callStructured, STRUCTURED_THINKING_TRANSPORT_VERSION } from "../src/lib/runtime/llm.js";
+import { assertModelSeparation, MODELS, callStructured } from "../src/lib/runtime/llm.js";
+import { llmApiKey, llmProvider, structuredTransportVersion } from "../src/lib/runtime/llm-provider.js";
 import { validatorThinking } from "../src/lib/runtime/env.js";
 import { consistencyPairHash } from "./a1-consistency-label-receipt.js";
 import { assertCompletedCandidateManifest } from "./a1-consistency-label-blind-worklist.js";
@@ -395,13 +396,13 @@ async function main(): Promise<void> {
     calibration_maximum_drafts_per_attempt: LABEL_CANDIDATE_MAX_DRAFTS_PER_ATTEMPT,
     generator_max_returned_drafts_per_attempt: LABEL_CANDIDATE_MAX_RETURNED_DRAFTS_PER_ATTEMPT,
     generator_max_structural_response_attempts: MAX_STRUCTURAL_RESPONSE_ATTEMPTS,
-    structured_transport_version: STRUCTURED_THINKING_TRANSPORT_VERSION,
+    structured_transport_version: structuredTransportVersion(),
   };
   const checkpoint = loadCandidateCheckpoint(checkpointPath, checkpointContext, checkpointPlan) ?? createCandidateCheckpoint(checkpointContext);
   assertCandidateCheckpointProbeIntegrity(checkpoint.completed_batches.flatMap((batch) => batch.candidates), inputs, checkpointContext);
   if (checkpoint.completed_batches.length) console.log(`从 feasibility checkpoint 恢复 ${checkpoint.completed_batches.length}/${checkpointPlan.length} 个完整批次`);
-  if (checkpointPlan.some((plan) => !checkpoint.completed_batches.some((batch) => batch.start === plan.start)) && !process.env.ANTHROPIC_API_KEY) {
-    throw new Error("缺少 ANTHROPIC_API_KEY，无法完成尚未 checkpoint 的诊断候选探测");
+  if (checkpointPlan.some((plan) => !checkpoint.completed_batches.some((batch) => batch.start === plan.start)) && !llmApiKey(llmProvider())) {
+    throw new Error("缺少当前 LLM_PROVIDER 对应的 API key，无法完成尚未 checkpoint 的诊断候选探测");
   }
   for (let start = 0; start < inputs.length; start += batchSize) {
     if (checkpoint.completed_batches.some((entry) => entry.start === start)) continue;
@@ -482,7 +483,7 @@ async function main(): Promise<void> {
       model: MODELS.validator, thinking: calibrationThinking, prompt_version: CALIBRATION_PROMPT_VERSION, prompt_sha256: hash(CALIBRATION_SYSTEM),
       response_schema_sha256: checkpointContext.calibration_response_schema_sha256, max_tokens: CALIBRATION_MAX_TOKENS,
       max_generation_attempts: LABEL_CANDIDATE_MAX_GENERATION_ATTEMPTS, minimum_drafts_per_attempt: LABEL_CANDIDATE_MIN_DRAFTS_PER_ATTEMPT, maximum_drafts_per_attempt: LABEL_CANDIDATE_MAX_DRAFTS_PER_ATTEMPT,
-      maximum_returned_drafts_per_attempt: LABEL_CANDIDATE_MAX_RETURNED_DRAFTS_PER_ATTEMPT, structured_transport_version: STRUCTURED_THINKING_TRANSPORT_VERSION,
+      maximum_returned_drafts_per_attempt: LABEL_CANDIDATE_MAX_RETURNED_DRAFTS_PER_ATTEMPT, structured_transport_version: structuredTransportVersion(),
       probe_metrics: checkpoint.probe_metrics,
       checkpoint_boundary: "only batches with every candidate × private intent probe attempted are checkpointed",
     },

@@ -6,6 +6,11 @@
 import Anthropic from "@anthropic-ai/sdk";
 
 export function isTransientApiError(e: unknown): boolean {
+  // Provider-neutral HTTP fallback. The Responses adapter intentionally exposes only a status
+  // (not a response body, which can echo source/prompt material), so classify standard retryable
+  // infrastructure statuses before checking Anthropic SDK classes.
+  const status = typeof e === "object" && e !== null && "status" in e ? (e as { status?: unknown }).status : undefined;
+  if (status === 429 || (typeof status === "number" && status >= 500 && status <= 599)) return true;
   // SDK 类型化错误（首选；APIConnectionError 涵盖其子类 APIConnectionTimeoutError）
   if (e instanceof Anthropic.APIConnectionError) return true;
   if (e instanceof Anthropic.RateLimitError) return true;

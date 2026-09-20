@@ -83,8 +83,10 @@ curl -fsS -X POST http://127.0.0.1:3000/api/cron -H "authorization: Bearer $CRON
 
 | 变量 | 必需 | 说明 |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | ✅ | 模型调用凭据 |
-| `ANTHROPIC_BASE_URL` | 中转站时 | 第三方中转站地址；直连 Anthropic 留空 |
+| `LLM_PROVIDER` | 否 | 默认 `anthropic`；设为 `volcengine-responses` 时启用火山 Coding Plan 的 OpenAI Responses 适配。provider 切换会使 A1 baseline 不可比。 |
+| `LLM_API_KEY` | 新 provider 时 ✅ | provider-neutral 模型调用凭据；Volcengine 必填。`anthropic` 保留 `ANTHROPIC_API_KEY` 兼容回退。 |
+| `LLM_BASE_URL` | Volcengine 时 ✅ | Volcengine Coding Plan 固定为 `https://ark.cn-beijing.volces.com/api/coding/v3`；不要改成 `/api/v3`，后者不使用套餐额度。 |
+| `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` | 旧 Anthropic 部署 | 兼容既有 relay；仅 `LLM_PROVIDER=anthropic` 时读取 key。新 Volcengine 部署不得依赖它。 |
 | `ANALYZER_MODEL` | ✅ | 分析模型；中转站必须显式设为其支持的模型。须同时 ≠ validator、coverage |
 | `VALIDATOR_MODEL` | ✅ | 主校验模型；须同时 ≠ analyzer、coverage |
 | `COVERAGE_MODEL` | ✅ | 展示引用反扩写复核模型；须同时 ≠ analyzer、validator。缺失或任意同模型时 analyze fail-closed。若 relay 只支持 Opus，可使用三种不同版本（如 `claude-opus-4-6` / `-4-7` / `-4-8`） |
@@ -100,7 +102,7 @@ curl -fsS -X POST http://127.0.0.1:3000/api/cron -H "authorization: Bearer $CRON
 | `PIPELINE_WINDOW_HOURS` | 否 | 单轮回看窗口，默认 168（7 天） |
 | `INITIAL_DIGEST_WINDOW_HOURS` / `INITIAL_DIGEST_ITEMS` | 否 | 冷启动首版综述的窗口/条数，默认 720（30 天）/ 25 |
 | `DEEP_DIVE_WINDOW_HOURS` / `DEEP_DIVE_ITEMS` | 否 | 用户触发主题深挖（C-1，`POST /api/topics/[id]/deep-dive`）的窗口/条数，默认 **2160（90 天，对齐 spec / ADR-0004）** / 25。成本由条数封顶、不随窗口涨；想缩小回看范围才需调低 |
-| `PROMPT_CACHE` | 否 | `0` 关闭 Anthropic prompt caching。**经只写不读的中转站建议设 0**——本 relay 首次定时 eval 实测 `cache r/w 0/17135`（写了付溢价、读 0 无收益）；直连 Anthropic 时不要设（cache read 真省钱）|
+| `PROMPT_CACHE` | 否 | `0` 关闭 Anthropic prompt caching。**经只写不读的中转站建议设 0**——本 relay 首次定时 eval 实测 `cache r/w 0/17135`（写了付溢价、读 0 无收益）；Volcengine Responses 当前不发送 Anthropic cache 字段。|
 | `CONSISTENCY_CACHE` | 否 | 跨批一致性判定缓存（省 relay 抖动重跑 / 报告重生成的重复 Opus 校验）。默认开；`0` 整体关闭（怀疑缓存返回坏判定时的运维开关）。按「校验模型 + prompt 哈希」版本隔离——改模型/prompt 自动失效重判 |
 | `CONSISTENCY_CACHE_TTL_DAYS` | 否 | 一致性缓存 TTL 天数，默认 14。过期项视为 miss → 重判（给"重跑可纠错"留出口，首跑偶发错判最多冻结一个 TTL）|
 | `PPT_POLISH_CONCURRENCY` | 否 | B 路径 LLM polish 单批并发上限，默认 4（中转站对 14 路 tool_use 流式 36% 截断、限到 4 路降到 14%；详见 practice-log 2026-06-03/04 条）|
@@ -478,14 +480,17 @@ docker compose exec -T -e ALERT_WEBHOOK=<url> app node /app/ops/probe-alert.mjs
 
 真模型 eval 不进公共 CI（需凭据 + 预算 + 中转站）。由定时 workflow `.github/workflows/eval.yml` 跑：**每周一次** + 可手动触发（`workflow_dispatch`，可限量做廉价冒烟）。`run-a1.ts` 自带阈值门 + `baseline.json` 回归对照（任一指标较基线降 >3pp → 非零退出 → job 变红），失败时复用渠道 adapter 推告警到 `ALERT_WEBHOOK`。
 
-**关键：用中转站 relay 凭据即可，不需要直连 `sk-ant-` key**（`run-a1.ts` 只要求 `ANTHROPIC_API_KEY` 存在，`sk-ant-` 仅软警告）。
+**关键：运行凭据必须与 `LLM_PROVIDER` 对齐。** Anthropic relay 可继续用旧 `ANTHROPIC_API_KEY`；Volcengine Coding Plan 必须使用 `LLM_API_KEY` 与 `LLM_BASE_URL=https://ark.cn-beijing.volces.com/api/coding/v3`，不能复用 Anthropic key。
 
 ### 在 repo 配置（Settings → Secrets and variables → Actions）
 
 | 类型 | 名称 | 必填 | 说明 |
 |---|---|---|---|
-| Secret | `ANTHROPIC_API_KEY` | ✅ | relay 凭据 |
-| Secret | `ANTHROPIC_BASE_URL` | ✅ | relay 端点 |
+| Variable | `LLM_PROVIDER` | 否 | 默认 `anthropic`；Volcengine 设 `volcengine-responses` |
+| Secret | `LLM_API_KEY` | Volcengine 时 ✅ | 新 provider 凭据 |
+| Variable | `LLM_BASE_URL` | Volcengine 时 ✅ | Coding Plan: `https://ark.cn-beijing.volces.com/api/coding/v3` |
+| Secret | `ANTHROPIC_API_KEY` | Anthropic legacy | 兼容 relay 凭据 |
+| Secret | `ANTHROPIC_BASE_URL` | Anthropic relay 时 | 兼容 relay 端点 |
 | Variable | `ANALYZER_MODEL` | ✅ | relay 支持的分析模型；须与 validator、coverage 均不同 |
 | Variable | `VALIDATOR_MODEL` | ✅ | relay 支持的主校验模型；须与 analyzer、coverage 均不同 |
 | Variable | `COVERAGE_MODEL` | ✅ | relay 支持的展示反扩写复核模型；须与 analyzer、validator 均不同。缺失时 A1 不启动 |

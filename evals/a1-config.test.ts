@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { sameEvalConfig, type EvalConfig } from "./a1-config.js";
 
 const current: EvalConfig = {
+  llm_provider: "anthropic", llm_endpoint_sha256: "endpoint",
   analyzer_model: "analyzer", analyzer_output_version: 17, analyzer_prompt_sha256: "analyzer-prompt",
   analyze_body_chars: 10_000, analyze_batch_chars: 30_000, select_window_chars: 1_000,
   validator_model: "validator", validator_contract_version: "validator-contract",
@@ -21,6 +22,8 @@ describe("A1 config comparability", () => {
     delete oldBaseline.analyzer_output_version;
     expect(sameEvalConfig(oldBaseline, current)).toBe(false);
     expect(sameEvalConfig({ ...current, analyzer_prompt_sha256: "old" }, current)).toBe(false);
+    expect(sameEvalConfig({ ...current, llm_provider: "volcengine-responses" }, current)).toBe(false);
+    expect(sameEvalConfig({ ...current, llm_endpoint_sha256: "other-endpoint" }, current)).toBe(false);
     expect(sameEvalConfig({ ...current, analyze_body_chars: 8_000 }, current)).toBe(false);
     expect(sameEvalConfig({ ...current, analyze_batch_chars: 20_000 }, current)).toBe(false);
     expect(sameEvalConfig({ ...current, validator_contract_version: "old" }, current)).toBe(false);

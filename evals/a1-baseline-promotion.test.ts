@@ -10,6 +10,7 @@ afterEach(() => roots.splice(0).forEach((root) => rmSync(root, { recursive: true
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 
 const config = {
+  llm_provider: "anthropic", llm_endpoint_sha256: "endpoint",
   analyzer_model: "a", analyzer_output_version: 1, analyzer_prompt_sha256: "p", analyze_body_chars: 1, analyze_batch_chars: 1, select_window_chars: 1,
   validator_model: "v", validator_contract_version: "v1", consistency_window_chars: 1, consistency_batch_max: 1, independent_call_concurrency: 1,
   relay_recovery_policy_version: "r", relay_recovery_max_probes: 1, relay_recovery_max_backoff_wait_ms: 1, relay_recovery_exhausted_cooldown_ms: 1,

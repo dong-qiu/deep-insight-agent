@@ -174,7 +174,7 @@ export async function answerFollowup(db: DB, report: Report, question: string): 
 
   let cost: Cost = { tokens: 0, amount: 0 };
   const addCost = (c: Cost): void => {
-    cost = { tokens: cost.tokens + c.tokens, amount: cost.amount + c.amount };
+    cost = { tokens: cost.tokens + c.tokens, amount: cost.amount + c.amount, ...(cost.estimated || c.estimated ? { estimated: true } : {}) };
   };
 
   const { pool, itemsById } = buildPool(db, report);

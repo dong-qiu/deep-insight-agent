@@ -11,7 +11,7 @@
 1. **Node 24+**，安装依赖：`npm install`
    > `package.json` 把 `@anthropic-ai/sdk` 标为 `latest`（要用到 `messages.parse` + `zodOutputFormat`）；
    > 首次安装后建议 `npm ls @anthropic-ai/sdk` 看实际版本并 pin 进 lockfile。
-2. **API key**：`cp .env.example .env.local`，填入 `ANTHROPIC_API_KEY`（`.env*` 已忽略，不入仓）。
+2. **API key**：`cp .env.example .env.local`，填入与 `LLM_PROVIDER` 对应的凭据（默认 Anthropic 可用 `ANTHROPIC_API_KEY`；Volcengine Responses 使用 `LLM_API_KEY` + `LLM_BASE_URL`；`.env*` 已忽略，不入仓）。
 
 ## 跑
 

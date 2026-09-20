@@ -4,7 +4,7 @@
  * 跑端到端切片：ContentItem[] → analyzer → Insight[] → validator → 指标，
  * 对照 `docs/verify/eval-criteria.md` 上线门槛打 PASS/FAIL。
  *
- * 用法：`npm run eval:a1`（需 .env.local 里的 ANTHROPIC_API_KEY）
+ * 用法：`npm run eval:a1`（需 .env.local 中与 LLM_PROVIDER 对应的凭据）
  *
  * 自动可测指标：引用可达性 / 一致性合格率 / 失败率 / flagged 率 / 校验器准召。
  * 人工指标（非显然占比、幻觉率）：脚本导出隔离的 evals/out/runs/<run-id>/review-queue.json 供人评。
@@ -47,7 +47,8 @@ import {
   type CoverageDecision,
 } from "../src/lib/agents/analyzer.js";
 import { consistencyBatchMax, consistencyCacheVersion, CONSISTENCY_WINDOW_CHARS, judgeWithRetry, validateBatch } from "../src/lib/agents/validator.js";
-import { anthropicBaseUrl, MODELS, assertCoverageModelSeparation, getCostReport, getRoleCallTelemetry, STRUCTURED_THINKING_TRANSPORT_VERSION } from "../src/lib/runtime/llm.js";
+import { MODELS, assertCoverageModelSeparation, getCostReport, getRoleCallTelemetry } from "../src/lib/runtime/llm.js";
+import { llmApiKey, llmBaseUrl, llmProvider, structuredTransportVersion } from "../src/lib/runtime/llm-provider.js";
 import { coverageThinking, coverageThinkingSource, validatorBatchOn, validatorThinking } from "../src/lib/runtime/env.js";
 import {
   RELAY_RECOVERY_MAX_PROBES,
@@ -380,6 +381,10 @@ function datasetDigest(path: string): string {
 
 function currentEvalConfig(qualityFile: string, consistencyFile: string, datasetLock: DatasetLockValidation): EvalConfig {
   return {
+    llm_provider: llmProvider(),
+    // An endpoint changes provider behaviour but can be deployment-sensitive; store only a hash
+    // in A1 artifacts, as we already do for prompts and datasets.
+    llm_endpoint_sha256: createHash("sha256").update(llmBaseUrl() ?? "provider-default").digest("hex"),
     analyzer_model: MODELS.analyzer,
     analyzer_output_version: ANALYZER_OUTPUT_VERSION,
     analyzer_prompt_sha256: createHash("sha256").update(ANALYZER_SYSTEM).digest("hex"),
@@ -399,7 +404,7 @@ function currentEvalConfig(qualityFile: string, consistencyFile: string, dataset
     validator_thinking: validatorThinking(),
     coverage_thinking: coverageThinking(),
     coverage_thinking_source: coverageThinkingSource(),
-    structured_thinking_transport_version: STRUCTURED_THINKING_TRANSPORT_VERSION,
+    structured_thinking_transport_version: structuredTransportVersion(),
     validator_batch: validatorBatchOn(),
     quality_dataset_sha256: datasetDigest(qualityFile),
     consistency_dataset_sha256: datasetDigest(consistencyFile),
@@ -692,17 +697,19 @@ function printMetrics(stratum: Stratum, rows: MetricRow[]): void {
 
 async function main(): Promise<void> {
   // .env.local 已由顶部 `import "./load-env.js"` 在 MODELS 求值前载入（见该模块注释）。
-  if (!process.env.ANTHROPIC_API_KEY) {
+  const provider = llmProvider();
+  const apiKey = llmApiKey(provider);
+  if (!apiKey) {
     console.error(
-      "缺少 ANTHROPIC_API_KEY。\n" +
-        "  1) cp .env.example .env.local 并填入真实 key，或\n" +
-        "  2) ANTHROPIC_API_KEY=sk-ant-... npm run eval:a1",
+      provider === "volcengine-responses"
+        ? "缺少 LLM_API_KEY（volcengine-responses）。请在 .env.local 设置 Coding Plan key 和 LLM_BASE_URL。"
+        : "缺少 LLM_API_KEY（或兼容的 ANTHROPIC_API_KEY）。请在 .env.local 设置真实 key。",
     );
     process.exit(2);
   }
-  if (!process.env.ANTHROPIC_API_KEY.startsWith("sk-ant-") && !anthropicBaseUrl()) {
+  if (provider === "anthropic" && !apiKey.startsWith("sk-ant-") && !llmBaseUrl(provider)) {
     console.warn(
-      "⚠️ ANTHROPIC_API_KEY 不以 'sk-ant-' 开头，可能不是有效的 Anthropic key" +
+      "⚠️ LLM_API_KEY / ANTHROPIC_API_KEY 不以 'sk-ant-' 开头，可能不是有效的 Anthropic key" +
         "（Anthropic key 形如 sk-ant-api03-...）。若实跑报 401/403，请先核对 key。\n",
     );
   }

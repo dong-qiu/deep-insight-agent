@@ -3,7 +3,8 @@
 # 密钥用 openssl 现场生成，写入 gitignored 的 .env.local——绝不进仓库。
 #
 # API key / 管理员密码两种提供方式（择一）：
-#   ① 环境变量：ANTHROPIC_API_KEY=sk-xxx ADMIN_PASSWORD=xxx ./gen-env.sh
+#   ① 环境变量：LLM_API_KEY=... ADMIN_PASSWORD=xxx ./gen-env.sh
+#      （仅 LLM_PROVIDER=anthropic 时兼容 ANTHROPIC_API_KEY=...）
 #   ② 不传则交互输入（密码不回显）。
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -17,11 +18,21 @@ AUTH_SECRET="$(openssl rand -base64 32)"
 CRON_SECRET="$(openssl rand -hex 16)"
 
 # —— API key ——
-API_KEY="${ANTHROPIC_API_KEY:-}"
+LLM_PROVIDER_VALUE="${LLM_PROVIDER:-anthropic}"
+case "$LLM_PROVIDER_VALUE" in
+  anthropic|volcengine-responses) ;;
+  *) echo "不支持的 LLM_PROVIDER=$LLM_PROVIDER_VALUE"; exit 1 ;;
+esac
+API_KEY="${LLM_API_KEY:-}"
+if [ -z "$API_KEY" ] && [ "$LLM_PROVIDER_VALUE" = "anthropic" ]; then API_KEY="${ANTHROPIC_API_KEY:-}"; fi
 if [ -z "$API_KEY" ]; then
-  read -rp "ANTHROPIC_API_KEY（直接回车则先留 TODO 占位，稍后手动填）: " API_KEY
+  read -rp "LLM_API_KEY（直接回车则先留 TODO 占位，稍后手动填）: " API_KEY
 fi
 [ -z "$API_KEY" ] && API_KEY="TODO_PASTE_YOUR_KEY"
+if [ "$LLM_PROVIDER_VALUE" = "volcengine-responses" ] && [ -z "${LLM_BASE_URL:-}" ]; then
+  echo "LLM_PROVIDER=volcengine-responses 需要在 config.sh 设置 LLM_BASE_URL（Coding Plan: https://ark.cn-beijing.volces.com/api/coding/v3）"
+  exit 1
+fi
 
 # —— 管理员密码 ——
 ADMIN_PW="${ADMIN_PASSWORD:-}"
@@ -63,8 +74,9 @@ PREV_BRIEF_THIN_MAX="$(extract_prev BRIEF_THIN_MAX_PUBLISHED)"
 # 注意：云上不钉 DB_PATH/DATA_DIR，用容器默认 /data（挂持久卷）。
 cat > "$ROOT/.env.local" <<EOF
 # 由 ops/aws/gen-env.sh 生成；容器运行时读取。切勿提交（.gitignore 已忽略 .env.*）。
-ANTHROPIC_API_KEY=$API_KEY
-$( [ -n "$ANTHROPIC_BASE_URL" ] && echo "ANTHROPIC_BASE_URL=$ANTHROPIC_BASE_URL" )
+LLM_PROVIDER=$LLM_PROVIDER_VALUE
+LLM_API_KEY=$API_KEY
+$( if [ "$LLM_PROVIDER_VALUE" = "volcengine-responses" ]; then echo "LLM_BASE_URL=$LLM_BASE_URL"; elif [ -n "${ANTHROPIC_BASE_URL:-}" ]; then echo "ANTHROPIC_BASE_URL=$ANTHROPIC_BASE_URL"; fi )
 ANALYZER_MODEL=$ANALYZER_MODEL
 VALIDATOR_MODEL=$VALIDATOR_MODEL
 
@@ -105,6 +117,6 @@ echo "==> 已写 $ROOT/.env 和 $ROOT/.env.local（权限 600）"
 { [ -n "$PREV_COST_D" ] || [ -n "$PREV_COST_M" ] || [ -n "$PREV_PUSH" ] || [ -n "$PREV_BASE" ] || [ -n "$PREV_BRIEF_THIN_ALERT" ] || [ -n "$PREV_BRIEF_THIN_MIN" ] || [ -n "$PREV_BRIEF_THIN_MAX" ]; } \
   && echo "    ↻ 已从旧 .env.local 继承运行时配置（成本熔断/报告推送/日报偏薄提醒），未抹掉" \
   || echo "    ℹ️ 运行时配置（COST_LIMIT_*/REPORT_PUSH/PUBLIC_BASE_URL/BRIEF_THIN_*）当前为注释占位，按需在 .env.local 取消注释填值"
-echo "    ANALYZER=$ANALYZER_MODEL  VALIDATOR=$VALIDATOR_MODEL  （二者已确保不同）"
-[ "$API_KEY" = "TODO_PASTE_YOUR_KEY" ] && echo "    ⚠️ ANTHROPIC_API_KEY 仍是占位，部署前请编辑 $ROOT/.env.local 填入真实 key"
+echo "    LLM_PROVIDER=$LLM_PROVIDER_VALUE  ANALYZER=$ANALYZER_MODEL  VALIDATOR=$VALIDATOR_MODEL  （二者已确保不同）"
+[ "$API_KEY" = "TODO_PASTE_YOUR_KEY" ] && echo "    ⚠️ LLM_API_KEY 仍是占位，部署前请编辑 $ROOT/.env.local 填入真实 key"
 [ "$ANALYZER_MODEL" = "$VALIDATOR_MODEL" ] && { echo "    ✗ ANALYZER_MODEL == VALIDATOR_MODEL，应用会启动失败！改 config.sh"; exit 1; }

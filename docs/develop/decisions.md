@@ -1488,3 +1488,47 @@ P0 可在不写 P1 指标的默认路径上继续发布。未来恢复 P1 时，
 
 原型可继续以较低的人工作业成本迭代和评估结果，但其证据边界必须在产物、文档和任何演示中保持
 显式。该决定不是法律意见，也不将“内部/非商业”解释为自动取得第三方全文存储、模型评测或再利用许可。
+
+---
+
+## ADR-0031: Volcengine Coding Plan 采用显式 OpenAI Responses 适配，保留 Anthropic 默认路径
+
+- **日期**: 2026-09-21
+- **状态**: Accepted（生产准入待 provider canary 与 A1）
+
+### 背景
+
+既有运行时只通过 Anthropic Messages SDK 与 relay 通讯。当前 Anthropic key 已不可靠，而内部原型可用
+Volcengine Coding Plan 的模型；同时不能把“OpenAI 兼容”理解为任意 endpoint、任意凭据都可互换。
+模型、协议和 endpoint 都会改变结构化输出、thinking、超时和成本行为，因此必须进入 A1 可比性边界。
+
+### 决定
+
+1. provider 显式由 `LLM_PROVIDER` 选择，缺省仍为 `anthropic`；新路线固定为
+   `volcengine-responses`，使用 Coding Plan 的 `https://ark.cn-beijing.volces.com/api/coding/v3`。
+   不使用普通 `/api/v3`，因为它不消耗 Coding Plan 套餐额度且可能产生额外计费。
+2. 新 provider 只接受 `LLM_API_KEY` 与显式 `LLM_BASE_URL`；`ANTHROPIC_API_KEY` 仅为默认 Anthropic
+   路径保留兼容回退，绝不跨 provider 发送。配置或端点缺失在网络调用前 fail-closed。
+3. Responses 路径使用强制 function call + 既有 Zod schema 门，保存既有“模型输出不直接可信”的契约。
+   初版使用受 `LLM_TIMEOUT_MS` 保护的非流式请求；在目标 account 对 exact Responses SSE event 合约通过
+   canary 前，不实现猜测式流解析。
+4. provider、endpoint 的 SHA-256 fingerprint 与 structured transport version 写入 EvalConfig，故所有旧
+   baseline 自动不可比。每个角色仍须模型两两不同，`VALIDATOR_THINKING=0` 与
+   `COVERAGE_THINKING=0` 保持当前原型冻结值。
+5. 未从实际订阅/控制台核实 USD 定价前，Volcengine usage 只供 token 观测和保守本地预算估算；落入
+   `cost_ledger` 的记录一律为 `cost_status=unknown`、金额 `NULL`，不能生成成本结论。
+
+### 准入顺序
+
+1. 在隔离 worktree 的 `.env.local` 写入 provider/key/endpoint 与三个不同模型；key 不进入 Git 或聊天。
+2. 先跑 `npm run eval:canary-thinking`（validator，thinking=1）和一次 `VALIDATOR_THINKING=0` 的小请求，
+   验证实际模型名、强制函数调用、usage 与 timeout。
+3. 再跑 smoke 仅证明接线，随后在冻结的数据锁上跑完整 A1；缺少 verified v2 lock、可比两次 run 与人工
+   标注时，仍只能形成内部原型诊断，不能宣称 Eval-Gate/DCP/生产质量准入。
+4. 实测通过后才更新部署 secret/variable、合并 PR、发布；若失败，保留 Anthropic 默认路径并以 canary 的
+   安全错误分类决定是调整 adapter 还是切换模型，不能靠放宽 Zod 或引用校验绕过。
+
+### 后果
+
+部署与 GitHub Actions 可逐步迁移到 `LLM_*` 变量，现有 Anthropic deployment 不会被本改动强制切断。
+新路径的模型质量、长输出延迟和 token/credit 成本均为待测假设，不由协议名称或厂商宣传替代评测。

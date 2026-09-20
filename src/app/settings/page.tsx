@@ -71,7 +71,7 @@ export default function SettingsPage() {
             三者必须为不同模型；由环境变量 / config 配置（只读），更换后需重启服务。
           </p>
         ) : (
-          <p className="muted" style={{ marginTop: ".5rem" }}>（模型配置未就绪：检查 ANTHROPIC_API_KEY 环境变量）</p>
+          <p className="muted" style={{ marginTop: ".5rem" }}>（模型配置未就绪：检查 LLM_API_KEY；Anthropic 旧部署可使用 ANTHROPIC_API_KEY）</p>
         )}
       </details>
 

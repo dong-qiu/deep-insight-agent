@@ -151,7 +151,7 @@ export async function polishForPpt(
 ): Promise<PolishResult> {
   let cost: Cost = { tokens: 0, amount: 0 };
   const accumulate = (c: Cost): void => {
-    cost = { tokens: cost.tokens + c.tokens, amount: cost.amount + c.amount };
+    cost = { tokens: cost.tokens + c.tokens, amount: cost.amount + c.amount, ...(cost.estimated || c.estimated ? { estimated: true } : {}) };
     opts.onCost?.(c);
   };
 

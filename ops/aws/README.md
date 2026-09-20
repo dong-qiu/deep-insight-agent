@@ -30,7 +30,11 @@ $EDITOR config.sh    # 区域/实例型号/域名/SSH 来源 CIDR
 ./provision.sh       # 完成后公网 IP 写入 .vm-ip
 
 # 3) 生成 .env / .env.local（openssl 现场生成密钥，写进 gitignored 文件）
-ANTHROPIC_API_KEY=sk-xxx ADMIN_PASSWORD=xxx ./gen-env.sh
+# 默认 Anthropic（兼容旧 ANTHROPIC_API_KEY）：
+LLM_API_KEY=sk-xxx ADMIN_PASSWORD=xxx ./gen-env.sh
+# Volcengine Coding Plan：先在 config.sh 设置 LLM_PROVIDER=volcengine-responses、
+# LLM_BASE_URL=https://ark.cn-beijing.volces.com/api/coding/v3，再执行：
+LLM_API_KEY=<Coding-Plan-key> ADMIN_PASSWORD=xxx ./gen-env.sh
 
 # 4) 可选：迁移本机现有生产数据到云端卷（保留采集历史；务必在 deploy 之前）
 ./migrate-db.sh

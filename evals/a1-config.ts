@@ -3,6 +3,9 @@
  * intentionally incomparable, so an older run cannot vouch for a newer prompt or contract.
  */
 export interface EvalConfig {
+  /** Provider and endpoint fingerprint are behavioural inputs, never credentials. */
+  llm_provider: string;
+  llm_endpoint_sha256: string;
   analyzer_model: string;
   analyzer_output_version: number;
   analyzer_prompt_sha256: string;
@@ -48,7 +51,7 @@ export interface EvalConfig {
 }
 
 export const EVAL_CONFIG_KEYS: Array<keyof EvalConfig> = [
-  "analyzer_model", "analyzer_output_version", "analyzer_prompt_sha256", "analyze_body_chars", "analyze_batch_chars", "select_window_chars",
+  "llm_provider", "llm_endpoint_sha256", "analyzer_model", "analyzer_output_version", "analyzer_prompt_sha256", "analyze_body_chars", "analyze_batch_chars", "select_window_chars",
   "validator_model", "validator_contract_version", "consistency_window_chars", "consistency_batch_max", "independent_call_concurrency",
   "relay_recovery_policy_version", "relay_recovery_max_probes", "relay_recovery_max_backoff_wait_ms", "relay_recovery_exhausted_cooldown_ms",
   "coverage_model", "validator_thinking", "coverage_thinking", "coverage_thinking_source", "structured_thinking_transport_version", "validator_batch",

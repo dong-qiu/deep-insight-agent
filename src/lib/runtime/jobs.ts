@@ -50,7 +50,9 @@ export async function runJob<T>(
   const ctx: JobCtx = {
     runId,
     recordCost(c) {
-      cost = cost ? { tokens: cost.tokens + c.tokens, amount: cost.amount + c.amount } : { ...c };
+      cost = cost
+        ? { tokens: cost.tokens + c.tokens, amount: cost.amount + c.amount, ...(cost.estimated || c.estimated ? { estimated: true } : {}) }
+        : { ...c };
     },
   };
   const elapsed = (): number => Math.round(performance.now() - startedMono);

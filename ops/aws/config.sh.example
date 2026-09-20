@@ -37,8 +37,14 @@ export APP_DOMAIN=""
 export ADMIN_EMAIL="admin"                # 后台登录名
 export ANALYZER_MODEL="claude-opus-4-7"   # ★ 必须 ≠ VALIDATOR_MODEL，否则应用启动即报错
 export VALIDATOR_MODEL="claude-opus-4-8"
+# 兼容默认路径；改用火山时设 volcengine-responses，并填写下方 LLM_BASE_URL。
+export LLM_PROVIDER="anthropic"
 export ANTHROPIC_BASE_URL="https://yibuapi.com"  # 直连 Anthropic 则置空 ""
-# ANTHROPIC_API_KEY / ADMIN_PASSWORD 不在此文件——运行 gen-env.sh 时通过环境变量或交互输入提供。
+# Volcengine Coding Plan：不要使用 /api/v3（不会消耗套餐额度）。
+# export LLM_PROVIDER="volcengine-responses"
+# export LLM_BASE_URL="https://ark.cn-beijing.volces.com/api/coding/v3"
+# LLM_API_KEY（Anthropic 旧部署可用 ANTHROPIC_API_KEY）/ ADMIN_PASSWORD 不在此文件——
+# 运行 gen-env.sh 时通过环境变量或交互输入提供。
 
 # —— 数据迁移（migrate-db.sh 用）——
 export SOURCE_CONTAINER="deep-insight-app-1"  # 本机现有生产容器名（其 /data/insight.db 是真生产库）
