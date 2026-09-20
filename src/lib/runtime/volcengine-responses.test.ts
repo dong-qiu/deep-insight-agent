@@ -15,16 +15,22 @@ const request = {
   thinking: false,
 };
 
+function sse(events: unknown[]): Response {
+  return new Response(`${events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("")}data: [DONE]\n\n`, {
+    status: 200,
+    headers: { "Content-Type": "text/event-stream" },
+  });
+}
+
 describe("Volcengine Responses structured adapter", () => {
   it("posts a forced function call to the Coding Plan Responses endpoint and normalizes usage", async () => {
     const calls: Array<[RequestInfo | URL, RequestInit | undefined]> = [];
     globalThis.fetch = async (input, init) => {
       calls.push([input, init]);
-      return new Response(JSON.stringify({
-      status: "completed",
-      output: [{ type: "function_call", name: STRUCTURED_RESPONSE_TOOL_NAME, arguments: '{"ok":true}' }],
-      usage: { input_tokens: 12, output_tokens: 5, input_tokens_details: { cached_tokens: 3 } },
-      }), { status: 200 });
+      return sse([
+        { type: "response.function_call_arguments.done", name: STRUCTURED_RESPONSE_TOOL_NAME, arguments: '{"ok":true}' },
+        { type: "response.completed", response: { status: "completed", output: [], usage: { input_tokens: 12, output_tokens: 5, input_tokens_details: { cached_tokens: 3 } } } },
+      ]);
     };
 
     await expect(callVolcengineResponses(request)).resolves.toEqual({
@@ -37,7 +43,7 @@ describe("Volcengine Responses structured adapter", () => {
     expect(url).toBe("https://ark.cn-beijing.volces.com/api/coding/v3/responses");
     expect(init).toMatchObject({ method: "POST", headers: { Authorization: "Bearer not-a-real-key", "Content-Type": "application/json" } });
     const body = JSON.parse(String(init?.body));
-    expect(body).toMatchObject({ model: "glm-5.3", instructions: request.system, input: request.user, max_output_tokens: 2048, thinking: { type: "disabled" } });
+    expect(body).toMatchObject({ model: "glm-5.3", instructions: request.system, input: request.user, max_output_tokens: 2048, stream: true, thinking: { type: "disabled" } });
     expect(body.tools[0]).toMatchObject({ type: "function", name: STRUCTURED_RESPONSE_TOOL_NAME, parameters: request.jsonSchema, strict: true });
     expect(body.tool_choice).toEqual({ type: "function", name: STRUCTURED_RESPONSE_TOOL_NAME });
   });
@@ -46,9 +52,10 @@ describe("Volcengine Responses structured adapter", () => {
     const calls: Array<[RequestInfo | URL, RequestInit | undefined]> = [];
     globalThis.fetch = async (input, init) => {
       calls.push([input, init]);
-      return new Response(JSON.stringify({
-        output: [{ type: "function_call", name: STRUCTURED_RESPONSE_TOOL_NAME, arguments: { ok: true } }], usage: {},
-      }), { status: 200 });
+      return sse([
+        { type: "response.function_call_arguments.done", name: STRUCTURED_RESPONSE_TOOL_NAME, arguments: { ok: true } },
+        { type: "response.completed", response: { status: "completed", output: [], usage: {} } },
+      ]);
     };
 
     await expect(callVolcengineResponses({ ...request, thinking: true })).resolves.toMatchObject({ input: { ok: true } });
@@ -63,7 +70,12 @@ describe("Volcengine Responses structured adapter", () => {
   });
 
   it("returns missing function output to the runtime's Zod gate so usage can still be accounted", async () => {
-    globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({ output: [{ type: "message" }] }), { status: 200 })) as typeof fetch;
+    globalThis.fetch = vi.fn(async () => sse([{ type: "response.completed", response: { status: "completed", output: [{ type: "message" }], usage: {} } }])) as typeof fetch;
     await expect(callVolcengineResponses(request)).resolves.toMatchObject({ input: undefined, usage: { input_tokens: 0, output_tokens: 0 } });
+  });
+
+  it("fails closed when a streaming response ends without its completion event", async () => {
+    globalThis.fetch = vi.fn(async () => sse([{ type: "response.function_call_arguments.done", name: STRUCTURED_RESPONSE_TOOL_NAME, arguments: '{"ok":true}' }])) as typeof fetch;
+    await expect(callVolcengineResponses(request)).rejects.toThrow("完成事件前结束");
   });
 });

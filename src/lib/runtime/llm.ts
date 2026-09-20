@@ -455,9 +455,9 @@ export async function retryTransientOperation<T>(
 
 /**
  * Responses-compatible implementation kept separate from the established Anthropic streaming
- * path.  This is intentionally non-streaming until the target Coding Plan account has passed the
- * provider canary for the exact SSE event contract; a wrong stream parser is worse than a bounded
- * request guarded by LLM_TIMEOUT_MS.
+ * path. The Coding Plan SSE contract was admission-probed before this reader was enabled; the
+ * adapter still keeps the same LLM_TIMEOUT_MS wall-clock guard and fails closed without a final
+ * completion event.
  */
 async function callVolcengineStructured<T extends z.ZodType>(
   opts: StructuredCall<T>,

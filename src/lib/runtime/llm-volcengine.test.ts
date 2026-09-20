@@ -7,6 +7,13 @@ const originalEnvironment = { ...process.env };
 const originalModels = { ...MODELS };
 const originalFetch = globalThis.fetch;
 
+function sse(events: unknown[]): Response {
+  return new Response(`${events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("")}data: [DONE]\n\n`, {
+    status: 200,
+    headers: { "Content-Type": "text/event-stream" },
+  });
+}
+
 afterEach(() => {
   for (const key of Object.keys(process.env)) if (!(key in originalEnvironment)) delete process.env[key];
   Object.assign(process.env, originalEnvironment);
@@ -22,11 +29,10 @@ describe("callStructured through Volcengine Responses", () => {
     process.env.LLM_API_KEY = "not-a-real-key";
     process.env.LLM_BASE_URL = "https://ark.cn-beijing.volces.com/api/coding/v3";
     Object.assign(MODELS, { analyzer: "glm-5.3" });
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
-      status: "completed",
-      output: [{ type: "function_call", name: STRUCTURED_RESPONSE_TOOL_NAME, arguments: '{"answer":"ok"}' }],
-      usage: { input_tokens: 11, output_tokens: 7 },
-    }), { status: 200 }));
+    const fetchMock = vi.fn(async () => sse([
+      { type: "response.function_call_arguments.done", name: STRUCTURED_RESPONSE_TOOL_NAME, arguments: '{"answer":"ok"}' },
+      { type: "response.completed", response: { status: "completed", output: [], usage: { input_tokens: 11, output_tokens: 7 } } },
+    ]));
     globalThis.fetch = fetchMock as typeof fetch;
 
     await expect(callStructured({
@@ -63,9 +69,9 @@ describe("callStructured through Volcengine Responses", () => {
     process.env.LLM_API_KEY = "not-a-real-key";
     process.env.LLM_BASE_URL = "https://ark.cn-beijing.volces.com/api/coding/v3";
     Object.assign(MODELS, { analyzer: "glm-5.3" });
-    globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({
-      status: "completed", output: [{ type: "message" }], usage: { input_tokens: 9, output_tokens: 4 },
-    }), { status: 200 })) as typeof fetch;
+    globalThis.fetch = vi.fn(async () => sse([
+      { type: "response.completed", response: { status: "completed", output: [{ type: "message" }], usage: { input_tokens: 9, output_tokens: 4 } } },
+    ])) as typeof fetch;
 
     await expect(callStructured({
       role: "analyzer", system: "system", user: "user", schema: z.object({ ok: z.boolean() }), maxTokens: 2048,

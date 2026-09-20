@@ -44,7 +44,8 @@ COVERAGE_THINKING=0
 
 ## 非目标与风险
 
-- 初版不实现 Responses SSE：在真实 Coding Plan account 对事件序列通过 canary 前，不能猜测流事件格式。
-  `LLM_TIMEOUT_MS` 为非流式请求保留硬中止。
+- Responses SSE 已在实际 Coding Plan account 上完成最小事件序列探测：适配器仅消费
+  `response.function_call_arguments.done` 与 `response.completed`，缺任一最终事件即 fail-closed。
+  `LLM_TIMEOUT_MS` 继续作为流式请求的硬中止；长输出稳定性仍须由 smoke/A1 证明。
 - 不在代码内写入火山产品价目或 API key；价格须以实际订阅/控制台为准。
 - 不改变 analyzer、validator、coverage 的提示词、引用白名单或报告发布 fail-closed 语义。

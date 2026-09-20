@@ -1510,8 +1510,9 @@ Volcengine Coding Plan 的模型；同时不能把“OpenAI 兼容”理解为�
 2. 新 provider 只接受 `LLM_API_KEY` 与显式 `LLM_BASE_URL`；`ANTHROPIC_API_KEY` 仅为默认 Anthropic
    路径保留兼容回退，绝不跨 provider 发送。配置或端点缺失在网络调用前 fail-closed。
 3. Responses 路径使用强制 function call + 既有 Zod schema 门，保存既有“模型输出不直接可信”的契约。
-   初版使用受 `LLM_TIMEOUT_MS` 保护的非流式请求；在目标 account 对 exact Responses SSE event 合约通过
-   canary 前，不实现猜测式流解析。
+   在目标 Coding Plan account 已观测到 `response.function_call_arguments.done` 与
+   `response.completed` 后，采用仅消费这两个终态的 SSE reader；仍受 `LLM_TIMEOUT_MS` 保护，
+   缺终态即 fail-closed，不猜测未观测事件。
 4. provider、endpoint 的 SHA-256 fingerprint 与 structured transport version 写入 EvalConfig，故所有旧
    baseline 自动不可比。每个角色仍须模型两两不同，`VALIDATOR_THINKING=0` 与
    `COVERAGE_THINKING=0` 保持当前原型冻结值。
