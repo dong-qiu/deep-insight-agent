@@ -68,7 +68,7 @@ export default async function ReportQualityReviewPage({
   const inputs = db.prepare(`SELECT pr.snapshot FROM generation_entity_ref er
     JOIN provenance_revision pr ON pr.entity_type=er.entity_type AND pr.entity_key=er.entity_key AND pr.revision=er.revision
     WHERE er.event_id=? AND er.role='input' AND er.entity_type='content_item'
-    ORDER BY er.ref_index LIMIT ? OFFSET ?`).all(snapshot.analyze_started_event_id, PAGE_SIZE, (inputPage - 1) * PAGE_SIZE) as Array<{ snapshot: string }>;
+    ORDER BY er.rowid LIMIT ? OFFSET ?`).all(snapshot.analyze_started_event_id, PAGE_SIZE, (inputPage - 1) * PAGE_SIZE) as Array<{ snapshot: string }>;
   const snapshots = inputs.map((row) => {
     const value = parseRecord(row.snapshot);
     const rawUrl = typeof value.url === "string" ? value.url : "";
