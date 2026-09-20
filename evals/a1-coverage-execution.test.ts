@@ -7,9 +7,14 @@ describe("A1 coverage execution-failure classification", () => {
       "primary_unavailable",
       "primary_invalid_verdict_set",
       "missing_or_duplicate_verdict",
+      "invalid_kind",
+      "unsupported_with_evidence",
+      "invalid_citation_indexes",
+      "invalid_evidence_span",
       "self_contained_unavailable",
       "self_contained_invalid_verdict_set",
       "self_contained_invalid_kind",
+      "self_contained_unsupported_with_evidence",
       "self_contained_invalid_citation_indexes",
       "self_contained_invalid_evidence_span",
     ]) expect(isA1CoverageExecutionFailure(reason)).toBe(true);
@@ -20,9 +25,7 @@ describe("A1 coverage execution-failure classification", () => {
       "invalid_or_unpassed_importance_anchor",
       "invalid_importance_contract",
       "quote_not_self_contained",
-      "self_contained_unsupported_with_evidence",
       "judge_not_supported",
-      "unsupported_with_evidence",
       "unresolved_deictic_quote",
     ]) expect(isA1CoverageExecutionFailure(reason)).toBe(false);
   });

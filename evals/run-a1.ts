@@ -714,7 +714,8 @@ async function main(): Promise<void> {
   const topicTimeoutMs = a1TopicTimeoutMs();
   const judgeTimeoutMs = a1JudgeTimeoutMs();
   const coverageTimeoutMs = a1CoverageTimeoutMs();
-  // 子集开关只服务于有界诊断。任一集合实际被截断都会成为不可晋升的 smoke run。
+  // 子集开关只服务于有界诊断。任何非零 A1_*_LIMIT（即使当前 fixture 恰好未被截断）
+  // 都会成为不可晋升的 smoke run，避免未来 fixture 扩容后静默改变全量证据范围。
 
   // ── Part A：洞察提炼 + 引用双层校验（按 stratum 分组收集） ──
   // A1_QUALITY_FILE 可指向本地多源集（evals/dataset/*.local.jsonl，不入仓）；默认 arXiv 集
@@ -762,7 +763,7 @@ async function main(): Promise<void> {
       issues: [`dataset lock 不可读取：${error instanceof Error ? error.message : String(error)}`],
     };
   }
-  // 仅实际缩小样本时才是冒烟；上限大于数据集不能悄悄绕过全量质量门。
+  // 任何非零 A1_*_LIMIT 都是冒烟；上限大于当前数据集也不能悄悄绕过全量质量门。
   const smoke = a1SmokeMode(
     process.env.A1_FORCE_SMOKE,
     qualitySelection,

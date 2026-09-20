@@ -17,16 +17,20 @@ export function parseA1CaseLimit(raw: string | undefined, name: string): number 
   return value;
 }
 
-/** `0` and a limit at/above the fixture size are full runs, never smoke by accident. */
+/** Keep the requested control in the artifact even when its value happens to include the
+ * current fixture. A non-zero control is still a bounded diagnostic invocation, not a
+ * promotable full run. */
 export function selectA1Cases<T>(all: T[], raw: string | undefined, name: string): A1CaseSelection<T> {
   const requested_limit = parseA1CaseLimit(raw, name);
   const cases = requested_limit === 0 ? all : all.slice(0, requested_limit);
   return { cases, requested_limit, truncated: cases.length < all.length };
 }
 
-/** Every score-affecting fixture participates: truncating even a safety-only fixture is smoke. */
-export function isA1Smoke(...selections: ReadonlyArray<Pick<A1CaseSelection<unknown>, "truncated">>): boolean {
-  return selections.some((selection) => selection.truncated);
+/** A formal full run must not carry any A1 subset control. A value above today's fixture is
+ * operationally equivalent for this one run, but it could silently become a subset when the
+ * fixture grows; classify it as smoke now rather than letting it enter a baseline. */
+export function isA1Smoke(...selections: ReadonlyArray<Pick<A1CaseSelection<unknown>, "requested_limit" | "truncated">>): boolean {
+  return selections.some((selection) => selection.requested_limit !== 0 || selection.truncated);
 }
 
 /** A dedicated fast-path wrapper may force non-promotable status even when a tiny custom fixture
@@ -34,7 +38,7 @@ export function isA1Smoke(...selections: ReadonlyArray<Pick<A1CaseSelection<unkn
  * any other value fails closed rather than silently changing the evidence class. */
 export function a1SmokeMode(
   forced: string | undefined,
-  ...selections: ReadonlyArray<Pick<A1CaseSelection<unknown>, "truncated">>
+  ...selections: ReadonlyArray<Pick<A1CaseSelection<unknown>, "requested_limit" | "truncated">>
 ): boolean {
   if (forced != null && forced !== "" && forced !== "0" && forced !== "1") {
     throw new Error("A1_FORCE_SMOKE 只能是 0 或 1");

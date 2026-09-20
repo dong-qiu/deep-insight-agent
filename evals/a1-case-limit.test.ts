@@ -11,11 +11,13 @@ describe("A1 eval subset controls", () => {
     expect(selectA1Cases(fixture, "0", "A1_TEST_LIMIT").truncated).toBe(false);
   });
 
-  it("marks only an actual truncation as smoke", () => {
+  it("marks any explicit non-zero subset control as smoke, even when it currently includes every case", () => {
     expect(selectA1Cases(fixture, "2", "A1_TEST_LIMIT")).toEqual({
       cases: ["one", "two"], requested_limit: 2, truncated: true,
     });
-    expect(selectA1Cases(fixture, "9", "A1_TEST_LIMIT").truncated).toBe(false);
+    const oversizedLimit = selectA1Cases(fixture, "9", "A1_TEST_LIMIT");
+    expect(oversizedLimit.truncated).toBe(false);
+    expect(isA1Smoke(oversizedLimit)).toBe(true);
   });
 
   it("does not let a truncated safety fixture masquerade as a full A1 run", () => {
@@ -28,9 +30,11 @@ describe("A1 eval subset controls", () => {
   });
 
   it("keeps the dedicated fast path non-promotable even for tiny fixtures", () => {
-    const full = selectA1Cases(["only"], "1", "A1_TEST_LIMIT");
+    const full = selectA1Cases(["only"], "0", "A1_TEST_LIMIT");
+    const controlled = selectA1Cases(["only"], "1", "A1_TEST_LIMIT");
     expect(a1SmokeMode("1", full, full, full, full)).toBe(true);
     expect(a1SmokeMode("0", full, full, full, full)).toBe(false);
+    expect(a1SmokeMode("0", controlled, full, full, full)).toBe(true);
     expect(() => a1SmokeMode("yes", full)).toThrow("A1_FORCE_SMOKE");
   });
 
