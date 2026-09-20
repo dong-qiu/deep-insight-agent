@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { openDb } from "../../src/lib/db/index.js";
 import { applyProvenanceMigrations } from "../../src/lib/db/provenance-migrations.js";
 import { canonicalHash, captureRevision, entityKey, appendGenerationEvent, type EntityRef } from "../../src/lib/db/provenance-facts.js";
-import { persistReportReviewPackage, publishReviewPackage, REPORT_SELECTION_RULE_VERSION } from "../../src/lib/db/report-review.js";
+import { assertReviewPackageForPublish, persistReportReviewPackage, publishReviewPackage, REPORT_SELECTION_RULE_VERSION } from "../../src/lib/db/report-review.js";
 import { upsertUser } from "../../src/lib/db/users.js";
 
 const tempRoot = mkdtempSync(join(tmpdir(), "insight-report-review-e2e-"));
@@ -75,6 +75,7 @@ async function signIn(email: string, password: string): Promise<CookieJar> {
 function seedPublishedReview(): void {
   const db = openDb(dbPath);
   applyProvenanceMigrations(db);
+  const publishedInsightIds = Array.from({ length: 51 }, (_, offset) => `insight_${offset + 1}`);
   db.prepare("INSERT INTO topic(id,name,keywords,language,brief_schedule,enabled) VALUES ('t_review','Review','[]','en','daily',1)").run();
   db.prepare("INSERT INTO analysis_batch(id,topic_id,time_window,status,display_coverage_state,display_projection_version) VALUES ('batch_review','t_review','{}','done','audited','source_quote_v1')").run();
   for (let index = 1; index <= 51; index += 1) {
@@ -89,7 +90,7 @@ function seedPublishedReview(): void {
       .run(insightId);
   }
   db.prepare(`INSERT INTO report(id,type,topic_id,status,generated_at,title,body_path,insight_ids,event_ids,prev_report_id,citation_count,cost,failure)
-    VALUES ('report-review','brief','t_review','done','2026-09-20T00:00:00.000Z','Review report','/reports/report-review','["insight_1"]','[]',NULL,1,'{"tokens":0,"amount":0}',NULL)`).run();
+    VALUES ('report-review','brief','t_review','done','2026-09-20T00:00:00.000Z','Review report','/reports/report-review',?,'[]',NULL,?,'{"tokens":0,"amount":0}',NULL)`).run(JSON.stringify(publishedInsightIds), publishedInsightIds.length);
   db.prepare(`INSERT INTO report(id,type,topic_id,status,generated_at,title,body_path,insight_ids,event_ids,prev_report_id,citation_count,cost,failure)
     VALUES ('legacy-review','brief','t_review','done','2026-09-20T00:00:00.000Z','Legacy report','/reports/legacy-review','[]','[]',NULL,0,'{"tokens":0,"amount":0}',NULL)`).run();
   db.prepare(`INSERT INTO generation_trace(id,scope_kind,trigger_kind,status,completion_policy,coverage,runtime_version,summary,started_at)
@@ -121,6 +122,7 @@ function seedPublishedReview(): void {
       published_rank: offset + 1, supporting_citation_indices: [0],
     })),
   });
+  assertReviewPackageForPublish(db, "report-review", publishedInsightIds);
   publishReviewPackage(db, "report-review");
   upsertUser(db, "viewer@example.test", "viewer-password", "viewer");
   db.close();

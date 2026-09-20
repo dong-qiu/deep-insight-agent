@@ -13,6 +13,7 @@ const EXECUTION_FAILURE_REASONS = new Set<string>([
   "invalid_kind",
   "unsupported_with_evidence",
   "invalid_citation_indexes",
+  "statement_bound_citation_not_selected",
   "invalid_evidence_span",
   "self_contained_unavailable",
   "self_contained_invalid_verdict_set",
