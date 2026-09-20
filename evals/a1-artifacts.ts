@@ -83,6 +83,10 @@ export interface A1RunProgress {
   state: "running" | "failed" | "completed";
   phase: "setup" | "quality" | "consistency" | "coverage_benchmark" | "finalizing";
   topic_timeout_ms?: number;
+  /** Total deadline for one labelled consistency judge, including nested retry budgets. */
+  judge_timeout_ms?: number;
+  /** Total deadline for one standalone display/quote benchmark case. */
+  coverage_timeout_ms?: number;
   current_case?: { index: number; total: number; topic_id?: string };
   /** Analyzer-chunk coordinates are execution diagnostics only, never a reduced sample claim. */
   current_chunk?: { index: number; total: number };

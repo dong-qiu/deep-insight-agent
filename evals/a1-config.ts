@@ -14,6 +14,8 @@ export interface EvalConfig {
   validator_contract_version: string;
   consistency_window_chars: number;
   consistency_batch_max: number;
+  /** Bounded parallelism for independent judges/fixtures; default remains serial. */
+  independent_call_concurrency: number;
   relay_recovery_policy_version: string;
   relay_recovery_max_probes: number;
   relay_recovery_max_backoff_wait_ms: number;
@@ -47,7 +49,7 @@ export interface EvalConfig {
 
 export const EVAL_CONFIG_KEYS: Array<keyof EvalConfig> = [
   "analyzer_model", "analyzer_output_version", "analyzer_prompt_sha256", "analyze_body_chars", "analyze_batch_chars", "select_window_chars",
-  "validator_model", "validator_contract_version", "consistency_window_chars", "consistency_batch_max",
+  "validator_model", "validator_contract_version", "consistency_window_chars", "consistency_batch_max", "independent_call_concurrency",
   "relay_recovery_policy_version", "relay_recovery_max_probes", "relay_recovery_max_backoff_wait_ms", "relay_recovery_exhausted_cooldown_ms",
   "coverage_model", "validator_thinking", "coverage_thinking", "coverage_thinking_source", "structured_thinking_transport_version", "validator_batch",
   "quality_dataset_sha256", "consistency_dataset_sha256", "dataset_lock_sha256", "dataset_lock_status", "display_coverage_dataset_sha256", "quote_self_contained_dataset_sha256",

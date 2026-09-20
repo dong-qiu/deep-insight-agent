@@ -11,7 +11,7 @@ const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 
 const config = {
   analyzer_model: "a", analyzer_output_version: 1, analyzer_prompt_sha256: "p", analyze_body_chars: 1, analyze_batch_chars: 1, select_window_chars: 1,
-  validator_model: "v", validator_contract_version: "v1", consistency_window_chars: 1, consistency_batch_max: 1,
+  validator_model: "v", validator_contract_version: "v1", consistency_window_chars: 1, consistency_batch_max: 1, independent_call_concurrency: 1,
   relay_recovery_policy_version: "r", relay_recovery_max_probes: 1, relay_recovery_max_backoff_wait_ms: 1, relay_recovery_exhausted_cooldown_ms: 1,
   coverage_model: "c", validator_thinking: true, coverage_thinking: true, coverage_thinking_source: "explicit" as const, structured_thinking_transport_version: "forced-tool-enabled-v1", validator_batch: true,
   quality_dataset_sha256: "q", consistency_dataset_sha256: "c", dataset_lock_sha256: "lock", dataset_lock_status: "verified_v2" as const,

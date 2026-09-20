@@ -28,3 +28,16 @@ export function selectA1Cases<T>(all: T[], raw: string | undefined, name: string
 export function isA1Smoke(...selections: ReadonlyArray<Pick<A1CaseSelection<unknown>, "truncated">>): boolean {
   return selections.some((selection) => selection.truncated);
 }
+
+/** A dedicated fast-path wrapper may force non-promotable status even when a tiny custom fixture
+ * happens to fit inside every limit.  `0` is accepted only as the normal (not forced) setting;
+ * any other value fails closed rather than silently changing the evidence class. */
+export function a1SmokeMode(
+  forced: string | undefined,
+  ...selections: ReadonlyArray<Pick<A1CaseSelection<unknown>, "truncated">>
+): boolean {
+  if (forced != null && forced !== "" && forced !== "0" && forced !== "1") {
+    throw new Error("A1_FORCE_SMOKE 只能是 0 或 1");
+  }
+  return forced === "1" || isA1Smoke(...selections);
+}

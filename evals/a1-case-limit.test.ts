@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isA1Smoke, parseA1CaseLimit, selectA1Cases } from "./a1-case-limit.js";
+import { a1SmokeMode, isA1Smoke, parseA1CaseLimit, selectA1Cases } from "./a1-case-limit.js";
 
 describe("A1 eval subset controls", () => {
   const fixture = ["one", "two", "three"];
@@ -25,6 +25,13 @@ describe("A1 eval subset controls", () => {
     expect(isA1Smoke(full, full, full, full)).toBe(false);
     expect(isA1Smoke(full, full, limitedDisplay, full)).toBe(true);
     expect(isA1Smoke(full, full, full, limitedQuote)).toBe(true);
+  });
+
+  it("keeps the dedicated fast path non-promotable even for tiny fixtures", () => {
+    const full = selectA1Cases(["only"], "1", "A1_TEST_LIMIT");
+    expect(a1SmokeMode("1", full, full, full, full)).toBe(true);
+    expect(a1SmokeMode("0", full, full, full, full)).toBe(false);
+    expect(() => a1SmokeMode("yes", full)).toThrow("A1_FORCE_SMOKE");
   });
 
   it("rejects malformed and negative controls rather than silently changing evidence", () => {

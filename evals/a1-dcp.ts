@@ -1,5 +1,6 @@
 /** DCP 样本规模是评测证据的准入条件，而不是自动分数的替代品。 */
 import type { Insight } from "../src/lib/types.js";
+import { readerVisibleEvidenceKey } from "../src/lib/agents/report-gen.js";
 
 export const DCP_SAMPLE_CONTRACT_VERSION = "reader-visible-v2";
 export const DCP_MIN_TOPICS = 5;
@@ -19,8 +20,6 @@ export interface ReaderVisibleDuplicateEvidence {
   duplicate_statement_quote_keys: string[];
 }
 
-const textKey = (value: string): string => value.trim().replace(/\s+/g, " ").toLocaleLowerCase();
-
 export function readerVisibleDuplicateEvidence(insights: readonly Insight[]): ReaderVisibleDuplicateEvidence {
   const ids = new Set<string>();
   const duplicateIds = new Set<string>();
@@ -29,12 +28,9 @@ export function readerVisibleDuplicateEvidence(insights: readonly Insight[]): Re
   for (const insight of insights) {
     if (ids.has(insight.id)) duplicateIds.add(insight.id);
     ids.add(insight.id);
-    const bound = insight.statement_citation_index == null ? undefined : insight.citations[insight.statement_citation_index - 1];
     // An unbound candidate is already non-publishable. Do not manufacture a false de-dup key
     // from its full citation set; emit its own opaque key so repeated unbound IDs are still seen.
-    const key = bound
-      ? `${textKey(insight.statement)}\u0000${textKey(bound.quote)}`
-      : `unbound:${insight.id}`;
+    const key = readerVisibleEvidenceKey(insight);
     if (evidence.has(key)) duplicateEvidence.add(key);
     evidence.add(key);
   }

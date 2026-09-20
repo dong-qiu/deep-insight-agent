@@ -97,7 +97,7 @@ describe("A1 DCP sample prerequisite", () => {
       { ...base, id: "same-id", topic_id: "b" },
       { ...base, id: "other-id", topic_id: "c" },
     ] as Insight[]);
-    expect(duplicated).toEqual({ duplicate_insight_ids: ["same-id"], duplicate_statement_quote_keys: [`${quote.toLowerCase()}\u0000${quote.toLowerCase()}`] });
+    expect(duplicated).toEqual({ duplicate_insight_ids: ["same-id"], duplicate_statement_quote_keys: [`${quote}\u0000${quote}`] });
     expect(dcpSamplePrerequisite({
       topics: DCP_MIN_TOPICS, consistencyPairs: DCP_MIN_CONSISTENCY_PAIRS,
       readerVisibleInsightsByTopic: topicCounts(Array.from({ length: DCP_MIN_TOPICS }, () => DCP_MIN_READER_VISIBLE_INSIGHTS_PER_TOPIC)),

@@ -5,7 +5,7 @@ const current: EvalConfig = {
   analyzer_model: "analyzer", analyzer_output_version: 17, analyzer_prompt_sha256: "analyzer-prompt",
   analyze_body_chars: 10_000, analyze_batch_chars: 30_000, select_window_chars: 1_000,
   validator_model: "validator", validator_contract_version: "validator-contract",
-  consistency_window_chars: 600, consistency_batch_max: 8,
+  consistency_window_chars: 600, consistency_batch_max: 8, independent_call_concurrency: 1,
   relay_recovery_policy_version: "relay-half-open-v1", relay_recovery_max_probes: 3, relay_recovery_max_backoff_wait_ms: 70_750, relay_recovery_exhausted_cooldown_ms: 70_750,
   coverage_model: "coverage", validator_thinking: false, coverage_thinking: false, coverage_thinking_source: "explicit", structured_thinking_transport_version: "forced-tool-enabled-v1", validator_batch: true,
   quality_dataset_sha256: "quality", consistency_dataset_sha256: "consistency", dataset_lock_sha256: "dataset-lock", dataset_lock_status: "verified_v2", display_coverage_dataset_sha256: "coverage-data", quote_self_contained_dataset_sha256: "quote-data",
@@ -24,6 +24,7 @@ describe("A1 config comparability", () => {
     expect(sameEvalConfig({ ...current, analyze_body_chars: 8_000 }, current)).toBe(false);
     expect(sameEvalConfig({ ...current, analyze_batch_chars: 20_000 }, current)).toBe(false);
     expect(sameEvalConfig({ ...current, validator_contract_version: "old" }, current)).toBe(false);
+    expect(sameEvalConfig({ ...current, independent_call_concurrency: 2 }, current)).toBe(false);
     expect(sameEvalConfig({ ...current, relay_recovery_policy_version: "old" }, current)).toBe(false);
     expect(sameEvalConfig({ ...current, relay_recovery_exhausted_cooldown_ms: 1 }, current)).toBe(false);
     expect(sameEvalConfig({ ...current, coverage_model: "other-coverage" }, current)).toBe(false);
