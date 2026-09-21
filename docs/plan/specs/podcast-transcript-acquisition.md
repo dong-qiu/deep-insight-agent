@@ -58,7 +58,7 @@ transcript；`observe` 仍可写纯候选/决策事实，`enabled` 若写事实�
 2. 每次候选、决策、尝试和终态写追加式 `transcript_acquisition_fact`。其完整字段、键、冲突、
    索引、保留和可见性契约在 `architecture.md`；它独立于 `SourceCreditFact`，仅用于采集诊断与
    漏斗观察，不能决定 RSS 熔断、`reader_eligible`、报告选择或引用白名单。
-3. 成功入库的 transcript 的 `raw_ref` 必须归档 evidence envelope，至少包含 RSS entry、节目页、实际下载的原始转写载荷、稳定 URL（去掉签名查询参数）、抓取时刻、adapter 版本、原始/清洗正文 hash。raw archive 未验证前，`reader_eligible=false`。
+3. 成功入库的 transcript 的 `raw_ref` 必须归档 evidence envelope，至少包含 RSS entry、节目页、实际下载的转写载荷、稳定 URL（去掉签名查询参数）、抓取时刻、adapter 版本、原始/清洗正文 hash。归档前必须从 URL、RSS/HTML/XML/JSON 载荷中移除认证参数和 URL userinfo；归档对象是**凭据脱敏后的载荷**，并同时保存原下载载荷的 SHA-256（仅作不可逆完整性指纹）和脱敏归档载荷的 SHA-256。这样可审查证据仍可回链到下载事实，但绝不把可用 token、密码或 API key 写入 evidence。raw archive 未验证前，`reader_eligible=false`。
 4. 抓取失败是单集 acquisition 终态：`no_transcript`、`robots_denied`、`http_error`、`size_limited`、`timeout`、`parse_empty`、`transient_error`。它不能把 RSS 源熔断，也不能伪装成成功 transcript。
 5. 既存 URL 从不升级或降级。其历史 citation 仍指向原 ContentItem；新 URL 才能固定其首次正文形态。
 

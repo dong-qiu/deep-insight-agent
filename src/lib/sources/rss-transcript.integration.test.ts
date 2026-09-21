@@ -56,4 +56,24 @@ describe("fetchTranscript production transport path", () => {
     });
     await expect(fetchTranscript(TRANSCRIPT)).resolves.toMatchObject({ outcome: "timeout", reason_code: "request_timeout" });
   });
+
+  it("records parse-empty and transient failures as structured outcomes", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) =>
+      String(input) === `${ORIGIN}/robots.txt`
+        ? new Response("", { status: 404 })
+        : new Response("WEBVTT\n\n00:00:01.000 --> 00:00:02.000", { status: 200 }),
+    );
+    await expect(fetchTranscript(TRANSCRIPT)).resolves.toMatchObject({
+      outcome: "parse_empty", reason_code: "cleaned_body_empty",
+    });
+    vi.restoreAllMocks();
+
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      if (String(input) === `${ORIGIN}/robots.txt`) return new Response("", { status: 404 });
+      throw new TypeError("network unavailable");
+    });
+    await expect(fetchTranscript(TRANSCRIPT)).resolves.toMatchObject({
+      outcome: "transient_error", reason_code: "request_error",
+    });
+  });
 });
