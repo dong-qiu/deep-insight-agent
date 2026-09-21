@@ -1,6 +1,7 @@
 /** 金牌源播客适配器（ADR-0007 切片6d）：对「转写不在 feed 里、但在官网有规律 URL」的播客，
  *  在 rss 解析后做两件事——①**标题筛子**：丢掉与本源主题无关的单集（如 Lex 的物理/政治集）；
- *  ②**转写 URL 推导**：从单集页 URL 推出官网转写页 URL，交回 collector 的「只对新 url 抓」流程。
+ *  ②**转写 URL 推导**：从单集页 URL 推出官网转写页 URL，交给后续 policy-aware
+ *  acquisition/shadow worker 评估；本模块本身不发起请求。
  *  按 Source.endpoint 的 host 命中注册表；未注册的源原样透传，零影响其它源。 */
 import type { Source } from "../types.js";
 import type { RawItem } from "./types.js";
@@ -42,8 +43,8 @@ export function titleMatchesAiSwe(title: string): boolean {
 }
 
 /** Lex Fridman：单集页 https://lexfridman.com/<slug>/ → 转写页 https://lexfridman.com/<slug>-transcript/。
- *  仅对 lexfridman.com 的**单段 slug**单集页推导（排除多级路径/非该站）。转写页存在性由 fetchTranscript
- *  实抓兜底（404/空 → 返 null → collector 维持 feed 原 description 正文，body_kind 仍 article）。 */
+ *  仅对 lexfridman.com 的**单段 slug**单集页推导（排除多级路径/非该站）。后续 worker 会用
+ *  fetchTranscript 的结构化结果处理 404、空正文等失败；当前阶段保留 feed 正文。 */
 export function deriveLexTranscriptUrl(episodeUrl: string): string | undefined {
   try {
     const u = new URL(episodeUrl);

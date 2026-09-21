@@ -58,6 +58,16 @@ export interface SafeFetchOptions {
 /** 单次抓取响应体字节上限（默认 8MB）：防异常巨大 feed 撑爆内存/XML 解析。 */
 export const MAX_RESPONSE_BYTES = 8_000_000;
 
+/** Stable machine-readable cause for callers that must distinguish a capped response from a
+ * transient network failure without depending on an error-message translation. */
+export class ResponseSizeLimitError extends Error {
+  readonly code = "response_size_limit";
+  constructor(maxBytes: number) {
+    super(`response_size_limit:${maxBytes}`);
+    this.name = "ResponseSizeLimitError";
+  }
+}
+
 /** 流式读取响应体，超过 maxBytes 即中止——不把整个超大响应读进内存。
  *  - 默认（truncate=false）：超限抛错（保守，调用方按失败处理）。
  *  - opts.truncate=true：超限**截断保留已读部分**（仍封顶内存）而非抛错——给「内容本身可用、只是 feed 体量
@@ -85,7 +95,7 @@ export async function readTextCapped(
         console.warn(`[readTextCapped] 响应超 ${maxBytes} 字节，已截断保留前 ${Buffer.concat(chunks).length} 字节${opts.label ? `（${opts.label}）` : ""}`);
         return Buffer.concat(chunks).toString("utf8");
       }
-      throw new Error(`响应体超过上限 ${maxBytes} 字节`);
+      throw new ResponseSizeLimitError(maxBytes);
     }
     chunks.push(value);
   }

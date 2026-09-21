@@ -58,7 +58,7 @@ transcript；`observe` 仍可写纯候选/决策事实，`enabled` 若写事实�
 2. 每次候选、决策、尝试和终态写追加式 `transcript_acquisition_fact`。其完整字段、键、冲突、
    索引、保留和可见性契约在 `architecture.md`；它独立于 `SourceCreditFact`，仅用于采集诊断与
    漏斗观察，不能决定 RSS 熔断、`reader_eligible`、报告选择或引用白名单。
-3. 成功入库的 transcript 的 `raw_ref` 必须归档 evidence envelope，至少包含 RSS entry、节目页、实际下载的原始转写载荷、稳定 URL（去掉签名查询参数）、抓取时刻、adapter 版本、原始/清洗正文 hash。raw archive 未验证前，`reader_eligible=false`。
+3. 成功入库的 transcript 的 `raw_ref` 必须归档 evidence envelope，至少包含 RSS entry、节目页、实际下载的转写载荷、稳定 URL（去掉签名查询参数）、抓取时刻、adapter 版本、原始/清洗正文 hash。归档前必须从 URL、RSS/HTML/XML/JSON 载荷中移除认证参数和 URL userinfo；归档对象是**凭据脱敏后的载荷**，并同时保存原下载载荷的 SHA-256（仅作不可逆完整性指纹）和脱敏归档载荷的 SHA-256。这样可审查证据仍可回链到下载事实，但绝不把可用 token、密码或 API key 写入 evidence。raw archive 未验证前，`reader_eligible=false`。
 4. 抓取失败是单集 acquisition 终态：`no_transcript`、`robots_denied`、`http_error`、`size_limited`、`timeout`、`parse_empty`、`transient_error`。它不能把 RSS 源熔断，也不能伪装成成功 transcript。
 5. 既存 URL 从不升级或降级。其历史 citation 仍指向原 ContentItem；新 URL 才能固定其首次正文形态。
 
@@ -109,8 +109,9 @@ Pragmatic 还需人工核验至少 10 集的 RSS item、节目页、转写 JSON 
 ## 实施切片
 
 1. 契约、迁移和默认关闭态。
-2. RSS 播客识别、结构化抓取结果、evidence envelope 和 body_kind 修复。
-3. 确定性预筛、shadow worker、事实和漏斗读模型。
+2. 结构化抓取结果、传输失败分类与 evidence envelope；此切片不得让生产 collector 请求 transcript，
+   也不得改变 RSS item 的 `body_kind`。
+3. RSS 播客识别与 `body_kind` 固化、确定性预筛、shadow worker、事实和漏斗读模型。
 4. Chain of Thought 的 `observe/all` 对照；共同门槛通过后另立批准变更，才可 `enabled/all`。
 5. Pragmatic 的播客识别和 `observe/relevant_only`；专属 heldout 门及 10 集人工核验通过后，才可
    小配额 `enabled/relevant_only`，连续观察 14 天后才允许扩容。

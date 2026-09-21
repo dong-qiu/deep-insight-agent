@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fetchWithRetry, isPrivateOrReserved, readTextCapped, safeFetch } from "./safe-fetch.js";
+import { ResponseSizeLimitError, fetchWithRetry, isPrivateOrReserved, readTextCapped, safeFetch } from "./safe-fetch.js";
 
 const enc = new TextEncoder();
 /** 用多块 ReadableStream 造 Response，逐块触发 readTextCapped 的 maxBytes 判定。 */
@@ -47,7 +47,7 @@ describe("readTextCapped 大小封顶", () => {
 
   it("超限默认抛错（不传 truncate）", async () => {
     // 块累计：3→6→10，maxBytes=8 在第三块触顶
-    await expect(readTextCapped(streamResponse(["abc", "def", "ghij"]), 8)).rejects.toThrow(/超过上限 8 字节/);
+    await expect(readTextCapped(streamResponse(["abc", "def", "ghij"]), 8)).rejects.toThrow(ResponseSizeLimitError);
   });
 
   it("超限 + truncate=true → 截断保留触顶块之前的部分、不抛错、打 warn", async () => {

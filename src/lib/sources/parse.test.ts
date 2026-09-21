@@ -185,6 +185,8 @@ describe("parseRss", () => {
   it("无 <podcast:transcript> → transcript_url undefined（普通 feed 不受影响）", () => {
     expect(parseRss(RSS)[0].transcript_url).toBeUndefined();
     expect(parseRss(ATOM)[0].transcript_url).toBeUndefined();
+    expect(parseRss(RSS)[0].body_kind).toBeUndefined();
+    expect(parseRss(ATOM)[0].body_kind).toBeUndefined();
   });
 
   it("<podcast:transcript> 多格式：按 MIME 优先级选（plain>vtt），跳过 rel=captions", () => {
@@ -200,7 +202,7 @@ describe("parseRss", () => {
   </item>
 </channel></rss>`;
     const items = parseRss(feed);
-    expect(items[0].body).toBe("Show notes."); // body 仍是 show notes（抓取在 fetchRss、按开关）
+    expect(items[0].body).toBe("Show notes."); // RSS 解析阶段不改变正文形态；后续 policy-aware worker 才能评估抓取
     expect(items[0].transcript_url).toBe("https://pod.example/ep1.txt"); // text/plain 优先、srt 因 captions 被跳
   });
 

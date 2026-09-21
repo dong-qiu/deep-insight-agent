@@ -1,6 +1,5 @@
-/** fetchRss 只解析不抓（ADR-0007 6a：转写抓取已移到 collector 去重后、只对新 url 抓）。
- *  此处守住「fetchRss 不抓转写」不变量——即便开关开，fetchRss 也只解析 transcript_url、body 仍 show notes。
- *  B族抓取/不降级的实际行为在 collector.test 覆盖。 */
+/** RSS feed path only parses episode metadata. Transcript transport is covered separately through
+ * the real safeFetch → robots → cap path in rss-transcript.integration.test.ts. */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Source } from "../types.js";
 
@@ -45,8 +44,8 @@ afterEach(() => {
   responses.clear();
 });
 
-describe("fetchRss 只解析不抓（6a）", () => {
-  it("只解析 transcript_url，body 仍 show notes、body_kind 未设——即便开关开也不抓（抓取在 collector）", async () => {
+describe("fetchRss 只解析不抓（ADR-0027）", () => {
+  it("只解析 transcript_url，body 与 body_kind 均保持既有 RSS 语义——即便开关开也不抓（后续 worker 才会评估）", async () => {
     process.env.TRANSCRIPT_FETCH = "1"; // 开关开
     responses.set("https://pod/feed", { ok: true, text: FEED });
     // 不为 transcript URL 设响应——若 fetchRss 误抓会 throw "unmocked fetch"

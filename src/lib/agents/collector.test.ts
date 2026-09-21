@@ -1,5 +1,5 @@
-/** collector 编排测试：① 按源全文归档（#82）② B族转写抓取（ADR-0007 6a）。
- *  mock fetchFromSource（共享 raws）+ fetchArticle（#82）+ fetchTranscript（6a）；内存 DB + 临时 DATA_DIR。 */
+/** collector 编排测试：标题党 RSS 全文回填（#82）及播客证据不变量。
+ *  mock fetchFromSource（共享 raws）+ fetchArticle（#82）；内存 DB + 临时 DATA_DIR。 */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -21,7 +21,7 @@ import type { Source } from "../types.js";
 const { raws, article, ctl } = vi.hoisted(() => ({
   raws: { value: [] as RawItem[] },
   article: { fn: vi.fn(async (_url: string) => null as { raw_html: string; body_html: string } | string | null) },
-  ctl: { transcript: null as string | null, lastContainer: undefined as string | null | undefined, fetchError: null as Error | null },
+  ctl: { lastContainer: undefined as string | null | undefined, fetchError: null as Error | null },
 }));
 vi.mock("../sources/index.js", () => ({ fetchFromSource: vi.fn(async () => {
   if (ctl.fetchError) throw ctl.fetchError;
@@ -36,11 +36,6 @@ vi.mock("../sources/article.js", () => ({
     return typeof result === "string" ? { raw_html: `<html><body>${result}</body></html>`, body_html: result } : result;
   },
 }));
-vi.mock("../sources/rss.js", () => ({
-  fetchTranscript: vi.fn(async () => ctl.transcript),
-  transcriptFetchEnabled: () => process.env.TRANSCRIPT_FETCH === "1",
-}));
-
 const { collectSource } = await import("./collector.js");
 
 const sourceAnq: Source = {
@@ -79,7 +74,6 @@ afterEach(() => {
   delete process.env.TRANSCRIPT_FETCH;
   delete process.env.ARTICLE_FETCH_MAX_PER_RUN;
   raws.value = [];
-  ctl.transcript = null;
   ctl.fetchError = null;
   vi.unstubAllEnvs();
   vi.clearAllMocks();
@@ -259,47 +253,38 @@ describe("collector 按源 fetch_mode 全文策略（ADR-0008 切片2）", () =>
   });
 });
 
-describe("collector B族转写抓取（6a）", () => {
-  it("开关开 + 新 url + transcript_url → 抓转写、存 body_kind=transcript", async () => {
-    process.env.TRANSCRIPT_FETCH = "1";
-    raws.value = [mkRaw("https://pod/ep1", "Show notes.", "https://pod/ep1.txt")];
-    ctl.transcript = "Real transcript body.";
-    await collectSource(db, sourcePod);
-    const item = getContentItem(db, getContentByUrl(db, "https://pod/ep1")!.id)!;
-    expect(item.body_kind).toBe("transcript");
-    expect(item.body).toBe("Real transcript body.");
-  });
-
-  it("开关开 + 新 url + 抓取失败（返 null）→ 落 show notes（article），仍入库", async () => {
-    process.env.TRANSCRIPT_FETCH = "1";
-    raws.value = [mkRaw("https://pod/ep_fail", "Show notes.", "https://pod/ep_fail.txt")];
-    ctl.transcript = null;
-    const res = await collectSource(db, sourcePod);
-    expect(res.inserted).toBe(1);
-    const item = getContentItem(db, getContentByUrl(db, "https://pod/ep_fail")!.id)!;
-    expect(item.body_kind).toBe("article");
-    expect(item.body).toBe("Show notes.");
-  });
-
-  it("开关关 → 新 url 不抓转写，存 show notes（body_kind=article 默认）", async () => {
-    raws.value = [mkRaw("https://pod/ep2", "Show notes.", "https://pod/ep2.txt")];
-    ctl.transcript = "should NOT be used";
-    await collectSource(db, sourcePod);
-    const item = getContentItem(db, getContentByUrl(db, "https://pod/ep2")!.id)!;
-    expect(item.body_kind).toBe("article");
-    expect(item.body).toBe("Show notes.");
+describe("collector preserves existing transcript evidence", () => {
+  it("在预筛与配额 collector 合入前，enabled 策略也不从生产 collector 请求 transcript", async () => {
+    const policySource: Source = {
+      ...sourcePod, id: "s_policy", endpoint: "https://pod/policy-feed",
+      transcript_mode: "enabled", transcript_policy_version: "podcast-policy-v1",
+    };
+    insertSource(db, policySource);
+    raws.value = [{ ...mkRawWithKind("https://pod/ep-staged", "Show notes.", "show_notes"), transcript_url: "https://pod/ep-staged.txt" }];
+    await collectSource(db, policySource);
+    const item = getContentItem(db, getContentByUrl(db, "https://pod/ep-staged")!.id)!;
+    expect(item).toMatchObject({ body_kind: "show_notes", body: "Show notes." });
   });
 
   it("不降级：已是 transcript 的 url 再采到 show notes → 跳过、保留 transcript", async () => {
-    process.env.TRANSCRIPT_FETCH = "1";
-    const tr = rawToContentItem(mkRawWithKind("https://pod/ep3", "Transcript text.", "transcript"), sourcePod, "2026-06-20T00:00:00Z");
+    const tr = rawToContentItem(mkRawWithKind("https://pod/ep3", "Transcript text.", "transcript"), sourceAnq, "2026-06-20T00:00:00Z");
     insertContentItem(db, tr);
     raws.value = [mkRaw("https://pod/ep3", "Different show notes now.", "https://pod/ep3.txt")];
-    const res = await collectSource(db, sourcePod);
+    const res = await collectSource(db, sourceAnq);
     expect(res.skipped).toBeGreaterThanOrEqual(1);
     const item = getContentItem(db, tr.id)!;
     expect(item.body_kind).toBe("transcript");
     expect(item.body).toBe("Transcript text.");
+  });
+
+  it("不升级：既有 article 的 URL 后来被识别为播客 show notes → 跳过、保留首次形态", async () => {
+    const article = rawToContentItem(mkRaw("https://pod/ep-article", "Original article body."), sourceAnq, "2026-06-20T00:00:00Z");
+    insertContentItem(db, article);
+    raws.value = [mkRawWithKind("https://pod/ep-article", "New show notes body.", "show_notes")];
+    const res = await collectSource(db, sourceAnq);
+    expect(res.skipped).toBeGreaterThanOrEqual(1);
+    const item = getContentItem(db, article.id)!;
+    expect(item).toMatchObject({ body_kind: "article", body: "Original article body." });
   });
 });
 
