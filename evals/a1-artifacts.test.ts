@@ -128,6 +128,8 @@ describe("A1 isolated artifacts", () => {
     writeA1RunProgress(workspace, {
       state: "failed", phase: "quality", topic_timeout_ms: 600_000,
       current_case: { index: 0, total: 5, topic_id: "topic-a" },
+      benchmark: "display_coverage",
+      settled: { consistency_cases: 12, display_coverage_cases: 3, quote_self_contained_cases: 0 },
       completed: { quality_cases: 0, consistency_cases: 0 },
       last_failure: { phase: "quality", case_index: 0, topic_id: "topic-a", error: "deadline" },
     });
@@ -139,6 +141,8 @@ describe("A1 isolated artifacts", () => {
 
     expect(JSON.parse(readFileSync(join(workspace.finalDir, "progress.json"), "utf8"))).toMatchObject({
       state: "failed", phase: "quality", current_case: { topic_id: "topic-a" },
+      benchmark: "display_coverage",
+      settled: { consistency_cases: 12, display_coverage_cases: 3, quote_self_contained_cases: 0 },
     });
     expect(JSON.parse(readFileSync(join(workspace.finalDir, "manifest.json"), "utf8"))).toMatchObject({
       artifacts: { "progress.json": sha256File(join(workspace.finalDir, "progress.json")) },

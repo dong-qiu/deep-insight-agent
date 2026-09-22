@@ -487,6 +487,7 @@ async function runDisplayCoverageBenchmark(
   cases: DisplayCoverageCase[],
   concurrency: number,
   timeoutMs: number,
+  onSettled?: (result: DisplayCoverageResult, index: number) => void,
 ): Promise<DisplayCoverageResult[]> {
   return mapA1IndependentCalls(cases, concurrency, async (c) => {
     const startedAt = Date.now();
@@ -545,7 +546,7 @@ async function runDisplayCoverageBenchmark(
         decisions, latency_ms: Date.now() - startedAt, error: a1ErrorMessage(error),
       };
     }
-  });
+  }, { onSettled });
 }
 
 /** Coverage is evaluated without the primary validator in this fixture.  Keeping this separate
@@ -554,6 +555,7 @@ async function runQuoteSelfContainedBenchmark(
   cases: QuoteSelfContainedCase[],
   concurrency: number,
   timeoutMs: number,
+  onSettled?: (result: QuoteSelfContainedResult, index: number) => void,
 ): Promise<QuoteSelfContainedResult[]> {
   return mapA1IndependentCalls(cases, concurrency, async (c) => {
     const startedAt = Date.now();
@@ -588,7 +590,7 @@ async function runQuoteSelfContainedBenchmark(
         error: a1ErrorMessage(error),
       };
     }
-  });
+  }, { onSettled });
 }
 
 function gitValue(args: string[]): string | null {
@@ -957,6 +959,8 @@ async function main(): Promise<void> {
   const matrixByStratum: Record<Stratum, ConfusionMatrix> = { arxiv: emptyMatrix(), transcript: emptyMatrix() };
   const judgeEvidence: JudgeEvidence[] = [];
   let judgeSucceeded = 0;
+  let judgeSucceededLive = 0;
+  let judgeSettled = 0;
   const judgeFailures: Array<{ case_index: number; error: string; latency_ms: number }> = [];
   updateA1Progress({
     state: "running", phase: "consistency", topic_timeout_ms: topicTimeoutMs,
@@ -994,16 +998,23 @@ async function main(): Promise<void> {
         };
       }
     },
+    {
+      onSettled: (result, caseIndex) => {
+        judgeSettled++;
+        if (result.judgment) judgeSucceededLive++;
+        updateA1Progress({
+          state: "running", phase: "consistency", topic_timeout_ms: topicTimeoutMs,
+          judge_timeout_ms: judgeTimeoutMs, coverage_timeout_ms: coverageTimeoutMs,
+          current_case: { index: caseIndex, total: consistencyCases.length },
+          completed: { quality_cases: qualitySucceeded, consistency_cases: judgeSucceededLive },
+          settled: { consistency_cases: judgeSettled },
+        });
+      },
+    },
   );
   for (const result of independentJudgeResults) {
     const { case_index: caseIndex, stratum, case: c, judgment, latency_ms, error } = result;
     const st = judgeByStratum[stratum];
-    updateA1Progress({
-      state: "running", phase: "consistency", topic_timeout_ms: topicTimeoutMs,
-      judge_timeout_ms: judgeTimeoutMs, coverage_timeout_ms: coverageTimeoutMs,
-      current_case: { index: caseIndex, total: consistencyCases.length },
-      completed: { quality_cases: qualitySucceeded, consistency_cases: judgeSucceeded },
-    });
     if (!judgment) {
       judgeFailures.push({ case_index: caseIndex, error: error ?? "未知校验器错误", latency_ms });
       recordJudgeAttempt(st, c.expected_consistency, null);
@@ -1014,12 +1025,6 @@ async function main(): Promise<void> {
     judgeSucceeded++;
     matrixByStratum[stratum][c.expected_consistency][judgment.consistency]++;
     judgeEvidence.push({ case_index: caseIndex, stratum, expected: c.expected_consistency, predicted: judgment.consistency, rationale: judgment.rationale, latency_ms, error: null });
-    updateA1Progress({
-      state: "running", phase: "consistency", topic_timeout_ms: topicTimeoutMs,
-      judge_timeout_ms: judgeTimeoutMs, coverage_timeout_ms: coverageTimeoutMs,
-      current_case: { index: caseIndex, total: consistencyCases.length },
-      completed: { quality_cases: qualitySucceeded, consistency_cases: judgeSucceeded },
-    });
   }
   const judgedTotal = STRATA.reduce((n, s) => n + judgeByStratum[s].judged, 0);
   const errorsTotal = STRATA.reduce((n, s) => n + judgeByStratum[s].errors, 0);
@@ -1092,12 +1097,31 @@ async function main(): Promise<void> {
     state: "running", phase: "coverage_benchmark", topic_timeout_ms: topicTimeoutMs,
     judge_timeout_ms: judgeTimeoutMs, coverage_timeout_ms: coverageTimeoutMs,
     completed: { quality_cases: qualitySucceeded, consistency_cases: judgeSucceeded },
+    benchmark: "display_coverage",
+    settled: { consistency_cases: judgeSettled, display_coverage_cases: 0, quote_self_contained_cases: 0 },
   });
   process.stdout.write(`[展示引用覆盖] ${displayCoverageCases.length} 条手标反例/正例… `);
+  let displayCoverageSettled = 0;
+  let quoteSelfContainedSettled = 0;
   const displayCoverageResults = await runDisplayCoverageBenchmark(
     displayCoverageCases,
     evalConfig.independent_call_concurrency,
     coverageTimeoutMs,
+    (_result, caseIndex) => {
+      displayCoverageSettled++;
+      updateA1Progress({
+        state: "running", phase: "coverage_benchmark", topic_timeout_ms: topicTimeoutMs,
+        judge_timeout_ms: judgeTimeoutMs, coverage_timeout_ms: coverageTimeoutMs,
+        benchmark: "display_coverage",
+        current_case: { index: caseIndex, total: displayCoverageCases.length },
+        completed: { quality_cases: qualitySucceeded, consistency_cases: judgeSucceeded },
+        settled: {
+          consistency_cases: judgeSettled,
+          display_coverage_cases: displayCoverageSettled,
+          quote_self_contained_cases: quoteSelfContainedSettled,
+        },
+      });
+    },
   );
   const expectedRejects = displayCoverageResults.filter((result) => result.expected === "reject");
   const expectedAccepts = displayCoverageResults.filter((result) => result.expected === "accept");
@@ -1115,11 +1139,37 @@ async function main(): Promise<void> {
   console.log(`${displayCoverageMetric.pass ? "✅" : "❌"} unsafe_accept ${unsafeAccepts.length}/${expectedRejects.length}；projection_violation ${projectionViolations.length}/${displayCoverageResults.length}；false_reject ${falseRejects.length}/${expectedAccepts.length}`);
 
   // ── Coverage 单角色校准（不能由主 validator 的先行拒绝代替）──
+  updateA1Progress({
+    state: "running", phase: "coverage_benchmark", topic_timeout_ms: topicTimeoutMs,
+    judge_timeout_ms: judgeTimeoutMs, coverage_timeout_ms: coverageTimeoutMs,
+    benchmark: "quote_self_contained",
+    completed: { quality_cases: qualitySucceeded, consistency_cases: judgeSucceeded },
+    settled: {
+      consistency_cases: judgeSettled,
+      display_coverage_cases: displayCoverageSettled,
+      quote_self_contained_cases: 0,
+    },
+  });
   process.stdout.write(`[Coverage quote-self-contained] ${quoteSelfContainedCases.length} 条手标 quote-only 用例… `);
   const quoteSelfContainedResults = await runQuoteSelfContainedBenchmark(
     quoteSelfContainedCases,
     evalConfig.independent_call_concurrency,
     coverageTimeoutMs,
+    (_result, caseIndex) => {
+      quoteSelfContainedSettled++;
+      updateA1Progress({
+        state: "running", phase: "coverage_benchmark", topic_timeout_ms: topicTimeoutMs,
+        judge_timeout_ms: judgeTimeoutMs, coverage_timeout_ms: coverageTimeoutMs,
+        benchmark: "quote_self_contained",
+        current_case: { index: caseIndex, total: quoteSelfContainedCases.length },
+        completed: { quality_cases: qualitySucceeded, consistency_cases: judgeSucceeded },
+        settled: {
+          consistency_cases: judgeSettled,
+          display_coverage_cases: displayCoverageSettled,
+          quote_self_contained_cases: quoteSelfContainedSettled,
+        },
+      });
+    },
   );
   const quoteExpectedRejects = quoteSelfContainedResults.filter((result) => result.expected === "reject");
   const quoteUnsafeAccepts = quoteExpectedRejects.filter((result) => result.actual === "accept");

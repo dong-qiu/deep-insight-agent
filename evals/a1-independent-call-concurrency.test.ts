@@ -27,4 +27,22 @@ describe("A1 independent-call concurrency", () => {
     expect(result).toEqual(["FIRST", "SECOND", "THIRD", "FOURTH"]);
     expect(peak).toBe(2);
   });
+
+  it("reports each settled result without changing the returned source order", async () => {
+    const settled: Array<{ index: number; result: string }> = [];
+    const result = await mapA1IndependentCalls(["first", "second", "third"], 2, async (value) => {
+      await new Promise((resolve) => setTimeout(resolve, value === "first" ? 8 : 1));
+      return value.toUpperCase();
+    }, {
+      onSettled: (value, index) => settled.push({ index, result: value }),
+    });
+
+    expect(result).toEqual(["FIRST", "SECOND", "THIRD"]);
+    expect(settled).toEqual(expect.arrayContaining([
+      { index: 0, result: "FIRST" },
+      { index: 1, result: "SECOND" },
+      { index: 2, result: "THIRD" },
+    ]));
+    expect(settled).toHaveLength(3);
+  });
 });

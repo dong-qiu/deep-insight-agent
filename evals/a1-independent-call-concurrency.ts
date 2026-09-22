@@ -6,6 +6,11 @@
 export const DEFAULT_A1_INDEPENDENT_CALL_CONCURRENCY = 1;
 export const MAX_A1_INDEPENDENT_CALL_CONCURRENCY = 2;
 
+/** Optional execution-only hook. It never changes the mapper input, output order, or scoring. */
+export interface A1IndependentCallHooks<R> {
+  onSettled?: (result: R, index: number) => void;
+}
+
 export function a1IndependentCallConcurrency(raw = process.env.A1_INDEPENDENT_CALL_CONCURRENCY): number {
   if (raw == null || raw === "") return DEFAULT_A1_INDEPENDENT_CALL_CONCURRENCY;
   const value = Number(raw);
@@ -20,6 +25,7 @@ export async function mapA1IndependentCalls<T, R>(
   values: readonly T[],
   concurrency: number,
   mapper: (value: T, index: number) => Promise<R>,
+  hooks: A1IndependentCallHooks<R> = {},
 ): Promise<R[]> {
   if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > MAX_A1_INDEPENDENT_CALL_CONCURRENCY) {
     throw new Error(`A1 independent-call concurrency 必须是 1–${MAX_A1_INDEPENDENT_CALL_CONCURRENCY}`);
@@ -30,7 +36,9 @@ export async function mapA1IndependentCalls<T, R>(
     while (true) {
       const index = next++;
       if (index >= values.length) return;
-      output[index] = await mapper(values[index]!, index);
+      const result = await mapper(values[index]!, index);
+      output[index] = result;
+      hooks.onSettled?.(result, index);
     }
   };
   await Promise.all(Array.from({ length: Math.min(concurrency, values.length) }, worker));
