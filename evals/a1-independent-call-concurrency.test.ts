@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   a1IndependentCallConcurrency,
   DEFAULT_A1_INDEPENDENT_CALL_CONCURRENCY,
@@ -28,21 +28,29 @@ describe("A1 independent-call concurrency", () => {
     expect(peak).toBe(2);
   });
 
-  it("reports each settled result without changing the returned source order", async () => {
-    const settled: Array<{ index: number; result: string }> = [];
+  it("reports only settled coordinates without changing the returned source order", async () => {
+    const settled: number[] = [];
     const result = await mapA1IndependentCalls(["first", "second", "third"], 2, async (value) => {
       await new Promise((resolve) => setTimeout(resolve, value === "first" ? 8 : 1));
       return value.toUpperCase();
     }, {
-      onSettled: (value, index) => settled.push({ index, result: value }),
+      onSettled: (index) => settled.push(index),
     });
 
     expect(result).toEqual(["FIRST", "SECOND", "THIRD"]);
-    expect(settled).toEqual(expect.arrayContaining([
-      { index: 0, result: "FIRST" },
-      { index: 1, result: "SECOND" },
-      { index: 2, result: "THIRD" },
-    ]));
+    expect(settled).toEqual(expect.arrayContaining([0, 1, 2]));
     expect(settled).toHaveLength(3);
+  });
+
+  it("treats a progress-observer failure as best-effort telemetry rather than an evaluation failure", async () => {
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      await expect(mapA1IndependentCalls(["only"], 1, async (value) => value.toUpperCase(), {
+        onSettled: () => { throw new Error("observer disk unavailable"); },
+      })).resolves.toEqual(["ONLY"]);
+      expect(warning).toHaveBeenCalledWith("A1 independent-call progress hook failed; continuing evaluation");
+    } finally {
+      warning.mockRestore();
+    }
   });
 });

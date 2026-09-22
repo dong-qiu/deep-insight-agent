@@ -487,7 +487,7 @@ async function runDisplayCoverageBenchmark(
   cases: DisplayCoverageCase[],
   concurrency: number,
   timeoutMs: number,
-  onSettled?: (result: DisplayCoverageResult, index: number) => void,
+  onSettled?: (index: number) => void,
 ): Promise<DisplayCoverageResult[]> {
   return mapA1IndependentCalls(cases, concurrency, async (c) => {
     const startedAt = Date.now();
@@ -555,7 +555,7 @@ async function runQuoteSelfContainedBenchmark(
   cases: QuoteSelfContainedCase[],
   concurrency: number,
   timeoutMs: number,
-  onSettled?: (result: QuoteSelfContainedResult, index: number) => void,
+  onSettled?: (index: number) => void,
 ): Promise<QuoteSelfContainedResult[]> {
   return mapA1IndependentCalls(cases, concurrency, async (c) => {
     const startedAt = Date.now();
@@ -959,7 +959,6 @@ async function main(): Promise<void> {
   const matrixByStratum: Record<Stratum, ConfusionMatrix> = { arxiv: emptyMatrix(), transcript: emptyMatrix() };
   const judgeEvidence: JudgeEvidence[] = [];
   let judgeSucceeded = 0;
-  let judgeSucceededLive = 0;
   let judgeSettled = 0;
   const judgeFailures: Array<{ case_index: number; error: string; latency_ms: number }> = [];
   updateA1Progress({
@@ -999,14 +998,13 @@ async function main(): Promise<void> {
       }
     },
     {
-      onSettled: (result, caseIndex) => {
+      onSettled: (caseIndex) => {
         judgeSettled++;
-        if (result.judgment) judgeSucceededLive++;
         updateA1Progress({
           state: "running", phase: "consistency", topic_timeout_ms: topicTimeoutMs,
           judge_timeout_ms: judgeTimeoutMs, coverage_timeout_ms: coverageTimeoutMs,
           current_case: { index: caseIndex, total: consistencyCases.length },
-          completed: { quality_cases: qualitySucceeded, consistency_cases: judgeSucceededLive },
+          completed: { quality_cases: qualitySucceeded, consistency_cases: 0 },
           settled: { consistency_cases: judgeSettled },
         });
       },
@@ -1107,7 +1105,7 @@ async function main(): Promise<void> {
     displayCoverageCases,
     evalConfig.independent_call_concurrency,
     coverageTimeoutMs,
-    (_result, caseIndex) => {
+    (caseIndex) => {
       displayCoverageSettled++;
       updateA1Progress({
         state: "running", phase: "coverage_benchmark", topic_timeout_ms: topicTimeoutMs,
@@ -1155,7 +1153,7 @@ async function main(): Promise<void> {
     quoteSelfContainedCases,
     evalConfig.independent_call_concurrency,
     coverageTimeoutMs,
-    (_result, caseIndex) => {
+    (caseIndex) => {
       quoteSelfContainedSettled++;
       updateA1Progress({
         state: "running", phase: "coverage_benchmark", topic_timeout_ms: topicTimeoutMs,
