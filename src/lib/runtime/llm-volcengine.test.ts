@@ -14,6 +14,15 @@ function sse(events: unknown[]): Response {
   });
 }
 
+function endlesslyBufferedSse(): Response {
+  const encoder = new TextEncoder();
+  return new Response(new ReadableStream<Uint8Array>({
+    pull(controller) {
+      controller.enqueue(encoder.encode("data: {\"type\":\"response.in_progress\"}\n\n"));
+    },
+  }), { status: 200, headers: { "Content-Type": "text/event-stream" } });
+}
+
 afterEach(() => {
   for (const key of Object.keys(process.env)) if (!(key in originalEnvironment)) delete process.env[key];
   Object.assign(process.env, originalEnvironment);
@@ -78,5 +87,20 @@ describe("callStructured through Volcengine Responses", () => {
       role: "analyzer", system: "system", user: "user", schema: z.object({ ok: z.boolean() }), maxTokens: 2048,
     })).rejects.toThrow("schema 校验失败");
     expect(getCostReport().byModel).toEqual([expect.objectContaining({ model: "glm-5.3", calls: 1, input: 9, output: 4, unpriced: true })]);
+  });
+
+  it("propagates the full callStructured wall-clock deadline through an endlessly buffered Responses stream", async () => {
+    process.env.LLM_PROVIDER = "volcengine-responses";
+    process.env.LLM_API_KEY = "not-a-real-key";
+    process.env.LLM_BASE_URL = "https://ark.cn-beijing.volces.com/api/coding/v3";
+    process.env.LLM_TIMEOUT_MS = "5";
+    process.env.LLM_MAX_RETRIES = "0";
+    process.env.LLM_TRANSIENT_RETRIES = "0";
+    Object.assign(MODELS, { analyzer: "glm-5.3" });
+    globalThis.fetch = vi.fn(async () => endlesslyBufferedSse()) as typeof fetch;
+
+    await expect(callStructured({
+      role: "analyzer", system: "system", user: "user", schema: z.object({ ok: z.boolean() }), maxTokens: 2048,
+    })).rejects.toThrow("LLM stream exceeded wall-clock timeout of 5ms");
   });
 });

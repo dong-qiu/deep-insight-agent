@@ -24,11 +24,14 @@ function sse(events: unknown[], lineBreak = "\n"): Response {
   });
 }
 
-function endlesslyBufferedSse(): Response {
+function endlesslyBufferedSse(onCancel?: (reason: unknown) => void): Response {
   const encoder = new TextEncoder();
   return new Response(new ReadableStream<Uint8Array>({
     pull(controller) {
       controller.enqueue(encoder.encode("data: {\"type\":\"response.in_progress\"}\n\n"));
+    },
+    cancel(reason) {
+      onCancel?.(reason);
     },
   }), { status: 200, headers: { "Content-Type": "text/event-stream" } });
 }
@@ -174,11 +177,25 @@ describe("Volcengine Responses structured adapter", () => {
   });
 
   it("cancels an endlessly buffered SSE reader when its caller deadline aborts", async () => {
-    globalThis.fetch = vi.fn(async () => endlesslyBufferedSse()) as typeof fetch;
+    let resolveCancelled: ((reason: unknown) => void) | undefined;
+    const cancelled = new Promise<unknown>((resolve) => { resolveCancelled = resolve; });
+    globalThis.fetch = vi.fn(async () => endlesslyBufferedSse((reason) => resolveCancelled?.(reason))) as typeof fetch;
     const controller = new AbortController();
     setTimeout(() => controller.abort(new Error("test caller deadline")), 5);
 
     await expect(callVolcengineResponses({ ...request, signal: controller.signal })).rejects.toThrow("test caller deadline");
+    await expect(cancelled).resolves.toMatchObject({ message: "test caller deadline" });
+  });
+
+  it("keeps the normal completion path when a non-aborted caller signal is supplied", async () => {
+    globalThis.fetch = vi.fn(async () => sse([
+      { type: "response.function_call_arguments.done", name: STRUCTURED_RESPONSE_TOOL_NAME, arguments: '{"ok":true}' },
+      { type: "response.completed", response: { status: "completed", usage: {} } },
+    ])) as typeof fetch;
+    const controller = new AbortController();
+
+    await expect(callVolcengineResponses({ ...request, signal: controller.signal })).resolves.toMatchObject({ input: { ok: true } });
+    expect(controller.signal.aborted).toBe(false);
   });
 
   it("refuses an unadmitted adapter endpoint before fetch even if a caller bypasses the runtime", async () => {
