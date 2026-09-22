@@ -75,7 +75,7 @@ LLM_API_KEY=<Coding-Plan-key> ADMIN_PASSWORD=xxx ./gen-env.sh
 - **不 clone 私库**：`deploy.sh` 直接 rsync 本机这份仓库，免 PAT。
 - **`.env.local` 永不入库**：`.gitignore` 已忽略 `.env.*`；`config.sh`、`.vm-ip`、`.vm-id` 也已忽略。
 - **工程名钉死** `COMPOSE_PROJECT_NAME=deep-insight` → 卷恒为 `deep-insight_insight-data`，换目录/重跑不孤立数据。
-- **模型校验**：`gen-env.sh` 拦截 `ANALYZER_MODEL == VALIDATOR_MODEL`（应用此约束下会启动失败）。
+- **模型校验**：`gen-env.sh` 要求 analyzer、validator、coverage 三个模型两两不同；缺失或重复会在写入运行时配置前失败。
 - **SSH 收窄**：安全组 22 端口只放行 `SSH_ALLOW_CIDR`（默认你的公网 IP）。
 
 ## 费用提示（AWS）

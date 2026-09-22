@@ -47,11 +47,6 @@ if [ "$ANALYZER_MODEL" = "$VALIDATOR_MODEL" ] || [ "$ANALYZER_MODEL" = "$COVERAG
   echo "ANALYZER_MODEL、VALIDATOR_MODEL 与 COVERAGE_MODEL 必须两两不同，应用会启动失败！改 config.sh"
   exit 1
 fi
-VALIDATOR_THINKING_VALUE="${VALIDATOR_THINKING:-0}"
-COVERAGE_THINKING_VALUE="${COVERAGE_THINKING:-0}"
-case "$VALIDATOR_THINKING_VALUE" in 0|1) ;; *) echo "VALIDATOR_THINKING 必须是 0 或 1"; exit 1 ;; esac
-case "$COVERAGE_THINKING_VALUE" in 0|1) ;; *) echo "COVERAGE_THINKING 必须是 0 或 1"; exit 1 ;; esac
-
 # —— 管理员密码 ——
 ADMIN_PW="${ADMIN_PASSWORD:-}"
 if [ -z "$ADMIN_PW" ]; then
@@ -87,6 +82,18 @@ PREV_TRANSCRIPT="$(extract_prev TRANSCRIPT_FETCH)"
 PREV_BRIEF_THIN_ALERT="$(extract_prev BRIEF_THIN_REPORT_ALERT)"
 PREV_BRIEF_THIN_MIN="$(extract_prev BRIEF_THIN_MIN_SELECTED)"
 PREV_BRIEF_THIN_MAX="$(extract_prev BRIEF_THIN_MAX_PUBLISHED)"
+PREV_VALIDATOR_THINKING="$(extract_prev VALIDATOR_THINKING)"
+PREV_COVERAGE_THINKING="$(extract_prev COVERAGE_THINKING)"
+
+# New config.sh values take precedence. For an existing custom config.sh created before these
+# switches were introduced, preserve a valid explicit runtime choice instead of silently changing
+# a previously reviewed thinking setting during deployment regeneration.
+VALIDATOR_THINKING_VALUE="${VALIDATOR_THINKING:-${PREV_VALIDATOR_THINKING#*=}}"
+COVERAGE_THINKING_VALUE="${COVERAGE_THINKING:-${PREV_COVERAGE_THINKING#*=}}"
+VALIDATOR_THINKING_VALUE="${VALIDATOR_THINKING_VALUE:-0}"
+COVERAGE_THINKING_VALUE="${COVERAGE_THINKING_VALUE:-0}"
+case "$VALIDATOR_THINKING_VALUE" in 0|1) ;; *) echo "VALIDATOR_THINKING 必须是 0 或 1"; exit 1 ;; esac
+case "$COVERAGE_THINKING_VALUE" in 0|1) ;; *) echo "COVERAGE_THINKING 必须是 0 或 1"; exit 1 ;; esac
 
 # —— .env.local（容器运行时）——
 # 注意：云上不钉 DB_PATH/DATA_DIR，用容器默认 /data（挂持久卷）。
@@ -135,8 +142,8 @@ EOF
 
 chmod 600 "$ROOT/.env.local"
 echo "==> 已写 $ROOT/.env 和 $ROOT/.env.local（权限 600）"
-{ [ -n "$PREV_COST_D" ] || [ -n "$PREV_COST_M" ] || [ -n "$PREV_PUSH" ] || [ -n "$PREV_BASE" ] || [ -n "$PREV_BRIEF_THIN_ALERT" ] || [ -n "$PREV_BRIEF_THIN_MIN" ] || [ -n "$PREV_BRIEF_THIN_MAX" ]; } \
-  && echo "    ↻ 已从旧 .env.local 继承运行时配置（成本熔断/报告推送/日报偏薄提醒），未抹掉" \
+{ [ -n "$PREV_COST_D" ] || [ -n "$PREV_COST_M" ] || [ -n "$PREV_PUSH" ] || [ -n "$PREV_BASE" ] || [ -n "$PREV_BRIEF_THIN_ALERT" ] || [ -n "$PREV_BRIEF_THIN_MIN" ] || [ -n "$PREV_BRIEF_THIN_MAX" ] || [ -n "$PREV_VALIDATOR_THINKING" ] || [ -n "$PREV_COVERAGE_THINKING" ]; } \
+  && echo "    ↻ 已从旧 .env.local 继承运行时配置（成本熔断/报告推送/日报偏薄提醒/thinking），未抹掉" \
   || echo "    ℹ️ 运行时配置（COST_LIMIT_*/REPORT_PUSH/PUBLIC_BASE_URL/BRIEF_THIN_*）当前为注释占位，按需在 .env.local 取消注释填值"
 echo "    LLM_PROVIDER=$LLM_PROVIDER_VALUE  ANALYZER=$ANALYZER_MODEL  VALIDATOR=$VALIDATOR_MODEL  COVERAGE=$COVERAGE_MODEL  （三者已确保两两不同）"
 if [ "$API_KEY" = "TODO_PASTE_YOUR_KEY" ]; then

@@ -1,3 +1,5 @@
+import { once } from "node:events";
+import { createServer, type Server } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { callVolcengineResponses, STRUCTURED_RESPONSE_TOOL_NAME, VolcengineResponsesError } from "./volcengine-responses.js";
 
@@ -20,6 +22,19 @@ function sse(events: unknown[], lineBreak = "\n"): Response {
     status: 200,
     headers: { "Content-Type": "text/event-stream" },
   });
+}
+
+async function listen(server: Server): Promise<number> {
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("test server has no TCP port");
+  return address.port;
+}
+
+async function close(server: Server): Promise<void> {
+  server.close();
+  await once(server, "close");
 }
 
 describe("Volcengine Responses structured adapter", () => {
@@ -122,6 +137,30 @@ describe("Volcengine Responses structured adapter", () => {
       });
       expect(fetchMock).toHaveBeenCalledOnce();
       expect(requestInit).toMatchObject({ redirect: "error" });
+    }
+  });
+
+  it("relies on Node's redirect:error behavior so a 307 target never receives the POST body", async () => {
+    let redirectedRequests = 0;
+    const destination = createServer((_req, res) => {
+      redirectedRequests++;
+      res.writeHead(204).end();
+    });
+    const destinationPort = await listen(destination);
+    const origin = createServer((_req, res) => {
+      res.writeHead(307, { Location: `http://127.0.0.1:${destinationPort}/collect` }).end();
+    });
+    const originPort = await listen(origin);
+    try {
+      await expect(originalFetch(`http://127.0.0.1:${originPort}/responses`, {
+        method: "POST",
+        body: "protected source input",
+        redirect: "error",
+      })).rejects.toThrow();
+      expect(redirectedRequests).toBe(0);
+    } finally {
+      await close(origin);
+      await close(destination);
     }
   });
 
