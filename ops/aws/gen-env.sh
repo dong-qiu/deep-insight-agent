@@ -34,6 +34,24 @@ if [ "$LLM_PROVIDER_VALUE" = "volcengine-responses" ] && [ -z "${LLM_BASE_URL:-}
   exit 1
 fi
 
+# —— 模型与思考配置 ——
+# Coverage 是 v6 reader-visible 引用反扩写的独立复核角色；缺失或与另外两者同模型都会
+# fail-closed。必须在写 .env.local 前失败，避免重跑部署脚本覆盖成无法启动的配置。
+for MODEL_KEY in ANALYZER_MODEL VALIDATOR_MODEL COVERAGE_MODEL; do
+  if [ -z "${!MODEL_KEY:-}" ]; then
+    echo "config.sh 必须显式设置 $MODEL_KEY（并与另外两个模型不同）"
+    exit 1
+  fi
+done
+if [ "$ANALYZER_MODEL" = "$VALIDATOR_MODEL" ] || [ "$ANALYZER_MODEL" = "$COVERAGE_MODEL" ] || [ "$VALIDATOR_MODEL" = "$COVERAGE_MODEL" ]; then
+  echo "ANALYZER_MODEL、VALIDATOR_MODEL 与 COVERAGE_MODEL 必须两两不同，应用会启动失败！改 config.sh"
+  exit 1
+fi
+VALIDATOR_THINKING_VALUE="${VALIDATOR_THINKING:-0}"
+COVERAGE_THINKING_VALUE="${COVERAGE_THINKING:-0}"
+case "$VALIDATOR_THINKING_VALUE" in 0|1) ;; *) echo "VALIDATOR_THINKING 必须是 0 或 1"; exit 1 ;; esac
+case "$COVERAGE_THINKING_VALUE" in 0|1) ;; *) echo "COVERAGE_THINKING 必须是 0 或 1"; exit 1 ;; esac
+
 # —— 管理员密码 ——
 ADMIN_PW="${ADMIN_PASSWORD:-}"
 if [ -z "$ADMIN_PW" ]; then
@@ -79,6 +97,9 @@ LLM_API_KEY=$API_KEY
 $( if [ "$LLM_PROVIDER_VALUE" = "volcengine-responses" ]; then echo "LLM_BASE_URL=$LLM_BASE_URL"; elif [ -n "${ANTHROPIC_BASE_URL:-}" ]; then echo "ANTHROPIC_BASE_URL=$ANTHROPIC_BASE_URL"; fi )
 ANALYZER_MODEL=$ANALYZER_MODEL
 VALIDATOR_MODEL=$VALIDATOR_MODEL
+COVERAGE_MODEL=$COVERAGE_MODEL
+VALIDATOR_THINKING=$VALIDATOR_THINKING_VALUE
+COVERAGE_THINKING=$COVERAGE_THINKING_VALUE
 
 AUTH_SECRET=$AUTH_SECRET
 ADMIN_EMAIL=$ADMIN_EMAIL
@@ -117,6 +138,7 @@ echo "==> 已写 $ROOT/.env 和 $ROOT/.env.local（权限 600）"
 { [ -n "$PREV_COST_D" ] || [ -n "$PREV_COST_M" ] || [ -n "$PREV_PUSH" ] || [ -n "$PREV_BASE" ] || [ -n "$PREV_BRIEF_THIN_ALERT" ] || [ -n "$PREV_BRIEF_THIN_MIN" ] || [ -n "$PREV_BRIEF_THIN_MAX" ]; } \
   && echo "    ↻ 已从旧 .env.local 继承运行时配置（成本熔断/报告推送/日报偏薄提醒），未抹掉" \
   || echo "    ℹ️ 运行时配置（COST_LIMIT_*/REPORT_PUSH/PUBLIC_BASE_URL/BRIEF_THIN_*）当前为注释占位，按需在 .env.local 取消注释填值"
-echo "    LLM_PROVIDER=$LLM_PROVIDER_VALUE  ANALYZER=$ANALYZER_MODEL  VALIDATOR=$VALIDATOR_MODEL  （二者已确保不同）"
-[ "$API_KEY" = "TODO_PASTE_YOUR_KEY" ] && echo "    ⚠️ LLM_API_KEY 仍是占位，部署前请编辑 $ROOT/.env.local 填入真实 key"
-[ "$ANALYZER_MODEL" = "$VALIDATOR_MODEL" ] && { echo "    ✗ ANALYZER_MODEL == VALIDATOR_MODEL，应用会启动失败！改 config.sh"; exit 1; }
+echo "    LLM_PROVIDER=$LLM_PROVIDER_VALUE  ANALYZER=$ANALYZER_MODEL  VALIDATOR=$VALIDATOR_MODEL  COVERAGE=$COVERAGE_MODEL  （三者已确保两两不同）"
+if [ "$API_KEY" = "TODO_PASTE_YOUR_KEY" ]; then
+  echo "    ⚠️ LLM_API_KEY 仍是占位，部署前请编辑 $ROOT/.env.local 填入真实 key"
+fi

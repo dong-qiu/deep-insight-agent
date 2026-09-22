@@ -35,8 +35,12 @@ export APP_DOMAIN=""
 
 # —— 运行时配置（写入 .env.local 的非密钥项；密钥由 gen-env.sh 用 openssl 生成）——
 export ADMIN_EMAIL="admin"                # 后台登录名
-export ANALYZER_MODEL="claude-opus-4-7"   # ★ 必须 ≠ VALIDATOR_MODEL，否则应用启动即报错
+export ANALYZER_MODEL="claude-opus-4-7"   # ★ 三个模型必须两两不同，否则应用启动即报错
 export VALIDATOR_MODEL="claude-opus-4-8"
+export COVERAGE_MODEL="claude-opus-4-6"
+# 新 provider / relay 的受控默认值；改为 1 前必须分别通过对应模型的 canary 与质量复核。
+export VALIDATOR_THINKING="0"
+export COVERAGE_THINKING="0"
 # 兼容默认路径；改用火山时设 volcengine-responses，并填写下方 LLM_BASE_URL。
 export LLM_PROVIDER="anthropic"
 export ANTHROPIC_BASE_URL="https://yibuapi.com"  # 直连 Anthropic 则置空 ""

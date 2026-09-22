@@ -7,6 +7,7 @@
  * validation remains the final authority on model output.
  */
 import type { TokenUsage } from "./cost.js";
+import { llmBaseUrl } from "./llm-provider.js";
 
 export const STRUCTURED_RESPONSE_TOOL_NAME = "respond_with_structured_output";
 
@@ -59,7 +60,10 @@ function asNonNegativeInt(value: unknown): number {
 }
 
 function endpoint(baseUrl: string): string {
-  const normalized = baseUrl.replace(/\/+$/, "");
+  // This adapter is exported and may acquire callers beyond callStructured. Re-admit the target
+  // here so no future caller can send a Coding Plan bearer key to an arbitrary compatible relay.
+  const normalized = llmBaseUrl("volcengine-responses", baseUrl);
+  if (!normalized) throw new VolcengineResponsesError("Volcengine Responses 缺少受控 Coding Plan endpoint");
   return normalized.endsWith("/responses") ? normalized : `${normalized}/responses`;
 }
 
@@ -163,6 +167,11 @@ export async function callVolcengineResponses(
 ): Promise<VolcengineResponsesResult> {
   const response = await fetch(endpoint(request.baseUrl), {
     method: "POST",
+    // The admission check above applies to this request only. Node fetch strips Authorization on
+    // a cross-origin redirect but still forwards the POST body, which contains prompts/source
+    // material. Never follow any redirect so neither credentials nor protected input escape the
+    // allowlisted Coding Plan origin.
+    redirect: "error",
     headers: {
       Authorization: `Bearer ${request.apiKey}`,
       "Content-Type": "application/json",

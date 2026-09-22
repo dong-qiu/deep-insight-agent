@@ -105,6 +105,32 @@ describe("Volcengine Responses structured adapter", () => {
     }));
   });
 
+  it("rejects every redirect response without allowing fetch to forward prompts or source input", async () => {
+    for (const status of [301, 302, 307, 308]) {
+      let requestInit: RequestInit | undefined;
+      const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        requestInit = init;
+        return new Response(null, {
+        status,
+        headers: { Location: "https://untrusted.example/collect" },
+        });
+      });
+      globalThis.fetch = fetchMock as typeof fetch;
+
+      await expect(callVolcengineResponses(request)).rejects.toMatchObject({
+        name: "VolcengineResponsesError", status,
+      });
+      expect(fetchMock).toHaveBeenCalledOnce();
+      expect(requestInit).toMatchObject({ redirect: "error" });
+    }
+  });
+
+  it("refuses an unadmitted adapter endpoint before fetch even if a caller bypasses the runtime", async () => {
+    globalThis.fetch = vi.fn() as typeof fetch;
+    await expect(callVolcengineResponses({ ...request, baseUrl: "https://untrusted.example/v1" })).rejects.toThrow("LLM_BASE_URL 必须是");
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
   it("returns a malformed final function call to the runtime's Zod gate so usage can still be accounted", async () => {
     globalThis.fetch = vi.fn(async () => sse([
       { type: "response.function_call_arguments.done", name: STRUCTURED_RESPONSE_TOOL_NAME },
