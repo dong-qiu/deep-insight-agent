@@ -24,6 +24,15 @@ function sse(events: unknown[], lineBreak = "\n"): Response {
   });
 }
 
+function endlesslyBufferedSse(): Response {
+  const encoder = new TextEncoder();
+  return new Response(new ReadableStream<Uint8Array>({
+    pull(controller) {
+      controller.enqueue(encoder.encode("data: {\"type\":\"response.in_progress\"}\n\n"));
+    },
+  }), { status: 200, headers: { "Content-Type": "text/event-stream" } });
+}
+
 async function listen(server: Server): Promise<number> {
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
@@ -162,6 +171,14 @@ describe("Volcengine Responses structured adapter", () => {
       await close(origin);
       await close(destination);
     }
+  });
+
+  it("cancels an endlessly buffered SSE reader when its caller deadline aborts", async () => {
+    globalThis.fetch = vi.fn(async () => endlesslyBufferedSse()) as typeof fetch;
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(new Error("test caller deadline")), 5);
+
+    await expect(callVolcengineResponses({ ...request, signal: controller.signal })).rejects.toThrow("test caller deadline");
   });
 
   it("refuses an unadmitted adapter endpoint before fetch even if a caller bypasses the runtime", async () => {

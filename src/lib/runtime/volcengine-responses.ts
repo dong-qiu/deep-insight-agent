@@ -91,15 +91,39 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
  * Coding Plan: the completed event carries status/usage and the function-arguments done event
  * carries our forced structured result. Do not log event bodies: they can contain model output.
  */
-async function readResponsesStream(response: Response): Promise<{ body: ResponseBody; functionArguments: unknown }> {
+async function readResponsesStream(response: Response, signal?: AbortSignal): Promise<{ body: ResponseBody; functionArguments: unknown }> {
   const reader = response.body?.getReader();
   if (!reader) throw new VolcengineResponsesError("Volcengine Responses 流式响应缺少 body");
+  if (signal?.aborted) {
+    void reader.cancel(signal.reason).catch(() => undefined);
+    throw signal.reason ?? new Error("Volcengine Responses 流式请求已取消");
+  }
   const decoder = new TextDecoder();
   let buffer = "";
   let completed: ResponseBody | undefined;
   let functionArguments: unknown;
   let functionArgumentsDone = false;
   let anonymousFunctionArguments: unknown[] = [];
+  let readsSinceYield = 0;
+  let blocksSinceYield = 0;
+  let rejectAbort: ((reason: unknown) => void) | undefined;
+  const aborted = new Promise<never>((_, reject) => { rejectAbort = reject; });
+  const onAbort = (): void => {
+    const reason = signal?.reason ?? new Error("Volcengine Responses 流式请求已取消");
+    // A fetch signal normally aborts the body too, but do this explicitly: once a Response has
+    // been returned, an already-buffered SSE reader can otherwise remain pending in runtimes or
+    // test doubles that do not wire fetch cancellation through to reader.read().
+    void reader.cancel(reason).catch(() => undefined);
+    rejectAbort?.(reason);
+  };
+  signal?.addEventListener("abort", onAbort, { once: true });
+
+  const yieldToTimers = async (): Promise<void> => {
+    // Undici may fulfil a long sequence of buffered reader.read() calls as microtasks. Yielding
+    // periodically lets wall-clock abort timers run, so an A1 deadline cannot be starved by an
+    // otherwise valid but never-completing SSE stream.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  };
 
   const consumeBlock = (block: string): void => {
     const data = block.split(/\r?\n/)
@@ -135,16 +159,32 @@ async function readResponsesStream(response: Response): Promise<{ body: Response
     if (event.type === "response.failed") throw new VolcengineResponsesError("Volcengine Responses 流式请求失败");
   };
 
-  while (true) {
-    const { value, done } = await reader.read();
-    buffer += decoder.decode(value, { stream: !done });
-    let separator: RegExpExecArray | null;
-    while ((separator = /\r?\n\r?\n/.exec(buffer))) {
-      const boundary = separator.index;
-      consumeBlock(buffer.slice(0, boundary));
-      buffer = buffer.slice(boundary + separator[0].length);
+  try {
+    while (true) {
+      const { value, done } = signal ? await Promise.race([reader.read(), aborted]) : await reader.read();
+      // `reader.cancel()` may make an in-flight read resolve as `{ done: true }` before the
+      // abort rejection wins the race. Preserve the caller's terminal reason in that ordering.
+      if (signal?.aborted) throw signal.reason ?? new Error("Volcengine Responses 流式请求已取消");
+      buffer += decoder.decode(value, { stream: !done });
+      if (++readsSinceYield >= 64) {
+        readsSinceYield = 0;
+        await yieldToTimers();
+      }
+      let separator: RegExpExecArray | null;
+      while ((separator = /\r?\n\r?\n/.exec(buffer))) {
+        const boundary = separator.index;
+        consumeBlock(buffer.slice(0, boundary));
+        buffer = buffer.slice(boundary + separator[0].length);
+        if (++blocksSinceYield >= 64) {
+          blocksSinceYield = 0;
+          await yieldToTimers();
+        }
+      }
+      if (done) break;
     }
-    if (done) break;
+  } finally {
+    signal?.removeEventListener("abort", onAbort);
+    if (signal?.aborted) void reader.cancel(signal.reason).catch(() => undefined);
   }
   if (buffer.trim()) consumeBlock(buffer);
   if (!completed) throw new VolcengineResponsesError("Volcengine Responses 流式响应在完成事件前结束");
@@ -205,7 +245,7 @@ export async function callVolcengineResponses(
     throw new VolcengineResponsesError(`Volcengine Responses 请求失败（HTTP ${response.status}）`, response.status);
   }
 
-  const { body, functionArguments } = await readResponsesStream(response);
+  const { body, functionArguments } = await readResponsesStream(response, request.signal);
 
   return {
     // Missing/invalid function arguments deliberately reach the Zod gate as undefined/raw text,
