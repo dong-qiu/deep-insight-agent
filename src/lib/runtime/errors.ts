@@ -21,5 +21,5 @@ export function isTransientApiError(e: unknown): boolean {
   // streaming heartbeats after the SDK timeout. Its explicit timeout is infrastructure evidence,
   // never a content refusal: classifying it as a refusal makes analyzer recursively split one
   // unavailable batch into many costly requests.
-  return /Connection error|Request timed out|\btimeout\b|aborted|Unexpected event order|ETIMEDOUT|ECONNRESET|socket hang up|ENETUNREACH|EAI_AGAIN/i.test(msg);
+  return /Connection error|Request timed out|\btimeout\b|aborted|Unexpected event order|\bfetch failed\b|ETIMEDOUT|ECONNRESET|socket hang up|ENETUNREACH|EAI_AGAIN/i.test(msg);
 }

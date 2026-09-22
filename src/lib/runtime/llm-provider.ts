@@ -8,6 +8,8 @@
 export type LlmProvider = "anthropic" | "volcengine-responses";
 
 const PROVIDERS: readonly LlmProvider[] = ["anthropic", "volcengine-responses"];
+export const VOLCENGINE_CODING_PLAN_BASE_URL = "https://ark.cn-beijing.volces.com/api/coding/v3";
+const VOLCENGINE_CODING_PLAN_GATEWAY_SUFFIX = ".apigateway-cn-beijing.volceapi.com";
 
 function nonEmpty(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
@@ -45,14 +47,43 @@ export function requireLlmApiKey(provider = llmProvider()): string {
  */
 export function llmBaseUrl(provider = llmProvider(), raw = process.env.LLM_BASE_URL): string | undefined {
   const configured = nonEmpty(raw) ?? (provider === "anthropic" ? nonEmpty(process.env.ANTHROPIC_BASE_URL) : undefined);
-  return configured?.replace(/\/+$/, "");
+  if (!configured) return undefined;
+  const normalized = configured.replace(/\/+$/, "");
+  if (provider !== "volcengine-responses") return normalized;
+
+  let endpoint: URL;
+  try {
+    endpoint = new URL(normalized);
+  } catch {
+    throw new Error("volcengine-responses 的 LLM_BASE_URL 必须是 Coding Plan 的 HTTPS endpoint");
+  }
+  const expected = new URL(VOLCENGINE_CODING_PLAN_BASE_URL);
+  const path = endpoint.pathname.replace(/\/+$/, "");
+  const fixedCodingPlanEndpoint = endpoint.hostname === expected.hostname && path === expected.pathname;
+  // Coding Plan can also issue an account-specific gateway endpoint in its official Volcengine
+  // DNS zone. Console versions expose either the `/v1` API root or the complete
+  // `/v1/responses` endpoint. The hostname remains provider-owned (not user-selected), so both
+  // forms keep console-issued keys usable without allowing an arbitrary compatible relay.
+  const consoleIssuedGateway = endpoint.hostname.endsWith(VOLCENGINE_CODING_PLAN_GATEWAY_SUFFIX) &&
+    endpoint.hostname !== VOLCENGINE_CODING_PLAN_GATEWAY_SUFFIX.slice(1) && (path === "/v1" || path === "/v1/responses");
+  if (
+    endpoint.protocol !== "https:" || endpoint.hostname !== expected.hostname ||
+    endpoint.port || endpoint.username || endpoint.password || endpoint.search || endpoint.hash || !fixedCodingPlanEndpoint
+  ) {
+    if (!(endpoint.protocol === "https:" && !endpoint.port && !endpoint.username && !endpoint.password && !endpoint.search && !endpoint.hash && (fixedCodingPlanEndpoint || consoleIssuedGateway))) {
+      throw new Error(`volcengine-responses 的 LLM_BASE_URL 必须是 ${VOLCENGINE_CODING_PLAN_BASE_URL} 或受控的 Volcengine Coding Plan gateway`);
+    }
+  }
+  // Return a normalized, admitted target only: every bearer-key request stays inside the
+  // Coding Plan endpoint allowlist, whether the account uses the public or console-issued form.
+  return normalized;
 }
 
 export function requireLlmBaseUrl(provider = llmProvider()): string {
   const baseUrl = llmBaseUrl(provider);
   if (baseUrl) return baseUrl;
   if (provider === "volcengine-responses") {
-    throw new Error("volcengine-responses 调用需要设置 LLM_BASE_URL（Coding Plan: https://ark.cn-beijing.volces.com/api/coding/v3）");
+    throw new Error(`volcengine-responses 调用需要设置 LLM_BASE_URL（Coding Plan: ${VOLCENGINE_CODING_PLAN_BASE_URL} 或控制台签发的 gateway）`);
   }
   throw new Error(`${provider} 调用需要设置 LLM_BASE_URL`);
 }
@@ -64,5 +95,7 @@ export function llmCostProvider(provider = llmProvider()): "anthropic" | "volcen
 
 /** A change in provider transport changes A1 behaviour and therefore invalidates comparability. */
 export function structuredTransportVersion(provider = llmProvider()): string {
-  return provider === "volcengine-responses" ? "volcengine-responses-forced-function-v1" : "forced-tool-enabled-v1";
+  // v2 pins the Coding Plan origin and requires both final SSE events. Keep this in EvalConfig so
+  // A1 results from the earlier permissive stream reader cannot be compared as equivalent.
+  return provider === "volcengine-responses" ? "volcengine-responses-forced-function-v2" : "forced-tool-enabled-v1";
 }

@@ -70,7 +70,8 @@ describe("callStructured through Volcengine Responses", () => {
     process.env.LLM_BASE_URL = "https://ark.cn-beijing.volces.com/api/coding/v3";
     Object.assign(MODELS, { analyzer: "glm-5.3" });
     globalThis.fetch = vi.fn(async () => sse([
-      { type: "response.completed", response: { status: "completed", output: [{ type: "message" }], usage: { input_tokens: 9, output_tokens: 4 } } },
+      { type: "response.function_call_arguments.done", name: STRUCTURED_RESPONSE_TOOL_NAME },
+      { type: "response.completed", response: { status: "completed", usage: { input_tokens: 9, output_tokens: 4 } } },
     ])) as typeof fetch;
 
     await expect(callStructured({

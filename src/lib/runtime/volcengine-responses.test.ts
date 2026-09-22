@@ -15,8 +15,8 @@ const request = {
   thinking: false,
 };
 
-function sse(events: unknown[]): Response {
-  return new Response(`${events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("")}data: [DONE]\n\n`, {
+function sse(events: unknown[], lineBreak = "\n"): Response {
+  return new Response(`${events.map((event) => `data: ${JSON.stringify(event)}${lineBreak}${lineBreak}`).join("")}data: [DONE]${lineBreak}${lineBreak}`, {
     status: 200,
     headers: { "Content-Type": "text/event-stream" },
   });
@@ -48,6 +48,22 @@ describe("Volcengine Responses structured adapter", () => {
     expect(body.tool_choice).toEqual({ type: "function", name: STRUCTURED_RESPONSE_TOOL_NAME });
   });
 
+  it("does not append /responses twice when a console gateway provides the complete endpoint", async () => {
+    const calls: Array<[RequestInfo | URL, RequestInit | undefined]> = [];
+    globalThis.fetch = async (input, init) => {
+      calls.push([input, init]);
+      return sse([
+        { type: "response.function_call_arguments.done", name: STRUCTURED_RESPONSE_TOOL_NAME, arguments: '{"ok":true}' },
+        { type: "response.completed", response: { status: "completed", usage: {} } },
+      ]);
+    };
+    await expect(callVolcengineResponses({
+      ...request,
+      baseUrl: "https://tenant.apigateway-cn-beijing.volceapi.com/v1/responses/",
+    })).resolves.toMatchObject({ input: { ok: true } });
+    expect(calls[0]![0]).toBe("https://tenant.apigateway-cn-beijing.volceapi.com/v1/responses");
+  });
+
   it("supports an enabled-thinking request without changing the structured contract", async () => {
     const calls: Array<[RequestInfo | URL, RequestInit | undefined]> = [];
     globalThis.fetch = async (input, init) => {
@@ -62,6 +78,26 @@ describe("Volcengine Responses structured adapter", () => {
     expect(JSON.parse(String(calls[0]![1]?.body)).thinking).toEqual({ type: "enabled" });
   });
 
+  it("accepts standard CRLF SSE framing", async () => {
+    globalThis.fetch = vi.fn(async () => sse([
+      { type: "response.function_call_arguments.done", name: STRUCTURED_RESPONSE_TOOL_NAME, arguments: '{"ok":true}' },
+      { type: "response.completed", response: { status: "completed", usage: {} } },
+    ], "\r\n")) as typeof fetch;
+    await expect(callVolcengineResponses(request)).resolves.toMatchObject({ input: { ok: true } });
+  });
+
+  it("accepts one anonymous arguments-done event only when completed output identifies the forced function", async () => {
+    globalThis.fetch = vi.fn(async () => sse([
+      { type: "response.function_call_arguments.done", arguments: '{"ok":true}' },
+      { type: "response.completed", response: {
+        status: "completed",
+        output: [{ type: "function_call", name: STRUCTURED_RESPONSE_TOOL_NAME }],
+        usage: {},
+      } },
+    ])) as typeof fetch;
+    await expect(callVolcengineResponses(request)).resolves.toMatchObject({ input: { ok: true } });
+  });
+
   it("does not leak an upstream error body into the safe failure", async () => {
     globalThis.fetch = vi.fn(async () => new Response("credential=do-not-log; source body=do-not-log", { status: 503 })) as typeof fetch;
     await expect(callVolcengineResponses(request)).rejects.toEqual(expect.objectContaining({
@@ -69,9 +105,27 @@ describe("Volcengine Responses structured adapter", () => {
     }));
   });
 
-  it("returns missing function output to the runtime's Zod gate so usage can still be accounted", async () => {
-    globalThis.fetch = vi.fn(async () => sse([{ type: "response.completed", response: { status: "completed", output: [{ type: "message" }], usage: {} } }])) as typeof fetch;
+  it("returns a malformed final function call to the runtime's Zod gate so usage can still be accounted", async () => {
+    globalThis.fetch = vi.fn(async () => sse([
+      { type: "response.function_call_arguments.done", name: STRUCTURED_RESPONSE_TOOL_NAME },
+      { type: "response.completed", response: { status: "completed", usage: {} } },
+    ])) as typeof fetch;
     await expect(callVolcengineResponses(request)).resolves.toMatchObject({ input: undefined, usage: { input_tokens: 0, output_tokens: 0 } });
+  });
+
+  it("fails closed when the completion event has no matching function-arguments final event", async () => {
+    globalThis.fetch = vi.fn(async () => sse([
+      { type: "response.completed", response: { status: "completed", usage: {} } },
+    ])) as typeof fetch;
+    await expect(callVolcengineResponses(request)).rejects.toThrow("缺少函数参数完成事件");
+  });
+
+  it("does not trust an anonymous arguments-done event without an expected completed function call", async () => {
+    globalThis.fetch = vi.fn(async () => sse([
+      { type: "response.function_call_arguments.done", arguments: '{"ok":true}' },
+      { type: "response.completed", response: { status: "completed", output: [{ type: "function_call", name: "other_function" }], usage: {} } },
+    ])) as typeof fetch;
+    await expect(callVolcengineResponses(request)).rejects.toThrow("缺少函数参数完成事件");
   });
 
   it("fails closed when a streaming response ends without its completion event", async () => {

@@ -59,7 +59,8 @@ function asNonNegativeInt(value: unknown): number {
 }
 
 function endpoint(baseUrl: string): string {
-  return `${baseUrl.replace(/\/+$/, "")}/responses`;
+  const normalized = baseUrl.replace(/\/+$/, "");
+  return normalized.endsWith("/responses") ? normalized : `${normalized}/responses`;
 }
 
 function parseFunctionArguments(value: unknown): unknown {
@@ -93,9 +94,11 @@ async function readResponsesStream(response: Response): Promise<{ body: Response
   let buffer = "";
   let completed: ResponseBody | undefined;
   let functionArguments: unknown;
+  let functionArgumentsDone = false;
+  let anonymousFunctionArguments: unknown[] = [];
 
   const consumeBlock = (block: string): void => {
-    const data = block.split("\n")
+    const data = block.split(/\r?\n/)
       .map((line) => line.trimEnd())
       .filter((line) => line.startsWith("data:"))
       .map((line) => line.slice(5).trimStart())
@@ -108,7 +111,15 @@ async function readResponsesStream(response: Response): Promise<{ body: Response
       throw new VolcengineResponsesError("Volcengine Responses 流式响应包含无效 JSON");
     }
     if (event.type === "response.function_call_arguments.done" && event.name === STRUCTURED_RESPONSE_TOOL_NAME) {
+      functionArgumentsDone = true;
       functionArguments = event.arguments;
+      return;
+    }
+    if (event.type === "response.function_call_arguments.done" && event.name === undefined) {
+      // Some Coding Plan gateway streams omit `name` on the arguments-done event, while their
+      // paired completed event retains the function_call name. Do not accept an anonymous event
+      // by itself: it is resolved only below against exactly one expected completed output item.
+      anonymousFunctionArguments.push(event.arguments);
       return;
     }
     if (event.type === "response.completed") {
@@ -123,15 +134,26 @@ async function readResponsesStream(response: Response): Promise<{ body: Response
   while (true) {
     const { value, done } = await reader.read();
     buffer += decoder.decode(value, { stream: !done });
-    let boundary: number;
-    while ((boundary = buffer.indexOf("\n\n")) >= 0) {
+    let separator: RegExpExecArray | null;
+    while ((separator = /\r?\n\r?\n/.exec(buffer))) {
+      const boundary = separator.index;
       consumeBlock(buffer.slice(0, boundary));
-      buffer = buffer.slice(boundary + 2);
+      buffer = buffer.slice(boundary + separator[0].length);
     }
     if (done) break;
   }
   if (buffer.trim()) consumeBlock(buffer);
   if (!completed) throw new VolcengineResponsesError("Volcengine Responses 流式响应在完成事件前结束");
+  if (!functionArgumentsDone && anonymousFunctionArguments.length === 1) {
+    const expectedFunctionCalls = completed.output?.filter(
+      (item) => item.type === "function_call" && item.name === STRUCTURED_RESPONSE_TOOL_NAME,
+    ) ?? [];
+    if (expectedFunctionCalls.length === 1) {
+      functionArgumentsDone = true;
+      functionArguments = anonymousFunctionArguments[0];
+    }
+  }
+  if (!functionArgumentsDone) throw new VolcengineResponsesError("Volcengine Responses 流式响应缺少函数参数完成事件");
   return { body: completed, functionArguments };
 }
 
@@ -175,14 +197,11 @@ export async function callVolcengineResponses(
   }
 
   const { body, functionArguments } = await readResponsesStream(response);
-  const call = body.output?.find((item) => item.type === "function_call" && item.name === STRUCTURED_RESPONSE_TOOL_NAME);
 
   return {
     // Missing/invalid function arguments deliberately reach the Zod gate as undefined/raw text,
     // after usage has been returned and accounted. HTTP failures still throw above.
-    input: functionArguments !== undefined
-      ? parseFunctionArguments(functionArguments)
-      : call ? parseFunctionArguments(call.arguments) : undefined,
+    input: parseFunctionArguments(functionArguments),
     usage: {
       input_tokens: asNonNegativeInt(body.usage?.input_tokens),
       output_tokens: asNonNegativeInt(body.usage?.output_tokens),

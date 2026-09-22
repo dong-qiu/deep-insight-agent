@@ -89,7 +89,7 @@ let _client: Anthropic | null = null;
  * public API, so merely documenting ANTHROPIC_BASE_URL is insufficient: an unrecognised relay
  * credential then produces long, misleading timeouts against the wrong endpoint.
  */
-export function anthropicBaseUrl(raw = process.env.LLM_BASE_URL ?? process.env.ANTHROPIC_BASE_URL): string | undefined {
+export function anthropicBaseUrl(raw = process.env.ANTHROPIC_BASE_URL): string | undefined {
   const value = raw?.trim();
   return value ? value.replace(/\/+$/, "") : undefined;
 }

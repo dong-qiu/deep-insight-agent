@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { llmApiKey, llmBaseUrl, llmCostProvider, llmProvider, requireLlmApiKey, requireLlmBaseUrl, structuredTransportVersion } from "./llm-provider.js";
+import { llmApiKey, llmBaseUrl, llmCostProvider, llmProvider, requireLlmApiKey, requireLlmBaseUrl, structuredTransportVersion, VOLCENGINE_CODING_PLAN_BASE_URL } from "./llm-provider.js";
 
 const environment = { ...process.env };
 afterEach(() => {
@@ -23,10 +23,10 @@ describe("LLM provider selection", () => {
     process.env.LLM_BASE_URL = " https://ark.cn-beijing.volces.com/api/coding/v3/ ";
     expect(llmProvider()).toBe("volcengine-responses");
     expect(llmApiKey()).toBe("volc-key");
-    expect(llmBaseUrl()).toBe("https://ark.cn-beijing.volces.com/api/coding/v3");
-    expect(requireLlmBaseUrl()).toBe("https://ark.cn-beijing.volces.com/api/coding/v3");
+    expect(llmBaseUrl()).toBe(VOLCENGINE_CODING_PLAN_BASE_URL);
+    expect(requireLlmBaseUrl()).toBe(VOLCENGINE_CODING_PLAN_BASE_URL);
     expect(llmCostProvider()).toBe("volcengine");
-    expect(structuredTransportVersion()).toBe("volcengine-responses-forced-function-v1");
+    expect(structuredTransportVersion()).toBe("volcengine-responses-forced-function-v2");
   });
 
   it("does not use an Anthropic legacy key for a Volcengine request", () => {
@@ -41,5 +41,27 @@ describe("LLM provider selection", () => {
     expect(() => llmProvider("unknown-provider")).toThrow("不支持的 LLM_PROVIDER");
     delete process.env.LLM_BASE_URL;
     expect(() => requireLlmBaseUrl("volcengine-responses")).toThrow("LLM_BASE_URL");
+  });
+
+  it("pins a Coding Plan bearer key to the admitted HTTPS endpoint", () => {
+    expect(llmBaseUrl(
+      "volcengine-responses",
+      "https://tenant.apigateway-cn-beijing.volceapi.com/v1/",
+    )).toBe("https://tenant.apigateway-cn-beijing.volceapi.com/v1");
+    expect(llmBaseUrl(
+      "volcengine-responses",
+      "https://tenant.apigateway-cn-beijing.volceapi.com/v1/responses/",
+    )).toBe("https://tenant.apigateway-cn-beijing.volceapi.com/v1/responses");
+    for (const endpoint of [
+      "http://ark.cn-beijing.volces.com/api/coding/v3",
+      "https://ark.cn-beijing.volces.com.evil.example/api/coding/v3",
+      "https://reader:password@ark.cn-beijing.volces.com/api/coding/v3",
+      "https://ark.cn-beijing.volces.com/api/coding/v3?redirect=https://evil.example",
+      "https://ark.cn-beijing.volces.com/api/v3",
+      "https://tenant.apigateway-cn-beijing.volceapi.com/api/coding/v3",
+      "https://tenant.apigateway-cn-beijing.volceapi.evil.example/v1",
+    ]) {
+      expect(() => llmBaseUrl("volcengine-responses", endpoint)).toThrow("LLM_BASE_URL 必须是");
+    }
   });
 });
