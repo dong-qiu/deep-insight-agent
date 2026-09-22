@@ -63,6 +63,8 @@ AI 可以承担三个**诊断性预标注者**，用于发现分歧、估算人�
 
 原型可额外使用 `review:ai` 与 `review:ai-compare` 对某一 immutable `review-queue` 做两位、模型与 role 均不同的 AI 审阅。每位 AI 独立判断 `non_obvious`、`hallucination` 与 `importance_reasonable`；每一字段只有在两者均给出明确 `yes/no` 且完全相同时才记为 `ai_consensus`。任一字段不一致或为 `uncertain` 必须进入 human dispute pack；一条洞察可只把其中有分歧的字段交由人工。该 pack 会显示 AI 标签和理由，故 human 处于 `human_with_ai_advice`、`blind_attestation=false` 的原型模式；所有 outputs 必须以 `.local.json` 保存，固定为 `diagnostic_only` / `lock_eligible=false`，不得传给 `review:receipt`、baseline promotion、DCP 或发布签署。
 
+若 human 在对话或其他 AI 建议可见的界面中完成上述洞察裁决，使用 `review:ai-human-record` 生成独立的 `.local.json` 诊断记录。该记录必须逐字绑定当前 manifest、review queue、AI review receipt、AI dispute pack 与输入 progress 的 SHA-256，覆盖全部且仅覆盖 dispute population，并记录非空 human reason。它固定为 `human_with_ai_advice` / `blind_attestation=false` / `diagnostic_only` / `lock_eligible=false`，使用与正式 `review:receipt` 不同的 tri-state schema；不得伪装为两份 blind human submission、不得参与 baseline promotion、DCP 或发布质量签署。
+
 1. 三个预标注任务必须各自记录实际模型与配置；若共用模型、prompt 或上下文，它们是相关的辅助信号，不得写成“独立人工复核”或拿来计算人评一致性。
 2. 两位人工 reviewer 在各自提交完整、带 hash 的盲评前，拿到的输入不得包含 AI 标签、AI 理由、彼此标签或裁决建议。AI 预标注只能在两份人工提交都冻结后，作为分歧诊断材料揭示。
 3. 第三位**人工** adjudicator 只裁决两位人工 reviewer 的分歧；AI 结果可供查阅但不能覆盖、补齐或生成任何人工决定。

@@ -65,6 +65,7 @@
     "review:csv": "tsx evals/make-review-csv.ts",
     "review:ai": "tsx evals/run-a1-ai-insight-reviewer.ts",
     "review:ai-compare": "tsx evals/compare-a1-ai-insight-reviews.ts",
+    "review:ai-human-record": "tsx evals/record-a1-ai-insight-human-adjudication.ts",
     "lint": "eslint src ops evals eslint.config.mjs next.config.mjs vitest.config.ts --max-warnings=0",
     "typecheck": "npm run typecheck:ts7 && npm run typecheck:ts6",
     "typecheck:ts7": "node ./node_modules/@typescript/native/bin/tsc --noEmit",

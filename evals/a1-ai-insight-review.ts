@@ -8,6 +8,8 @@ import { createHash } from "node:crypto";
 import type { A1ReviewBinding } from "./a1-review-receipt.js";
 
 export const AI_INSIGHT_REVIEW_VERSION = "a1-ai-insight-review-v2";
+export const AI_INSIGHT_HUMAN_ADJUDICATION_PROGRESS_VERSION = "a1-ai-insight-human-adjudication-progress-v1";
+export const AI_INSIGHT_HUMAN_ADJUDICATION_VERSION = "a1-ai-insight-human-adjudication-v1";
 export type AiInsightReviewRole = "validator" | "coverage";
 export type AiInsightVerdict = "yes" | "no" | "uncertain";
 export type AiInsightReviewField = "non_obvious" | "hallucination" | "importance_reasonable";
@@ -71,6 +73,52 @@ export interface AiInsightReviewReceipt {
   note: string;
 }
 
+/**
+ * An explicitly AI-advised, human-entered decision. It is intentionally tri-state: this is a
+ * diagnostic calibration record, not a replacement for the boolean marks in a blind receipt.
+ */
+export interface AiInsightHumanAdjudicationDecision {
+  insight_id: string;
+  insight_text_sha256: string;
+  non_obvious: AiInsightVerdict;
+  hallucination: AiInsightVerdict;
+  importance_reasonable: AiInsightVerdict;
+  human_reason: string;
+}
+
+/**
+ * Local input surface for a human who has already seen the AI dispute pack. This must never
+ * claim blind review: the finalizer below verifies that declaration before binding it.
+ */
+export interface AiInsightHumanAdjudicationProgress {
+  schema_version: typeof AI_INSIGHT_HUMAN_ADJUDICATION_PROGRESS_VERSION;
+  status: "completed";
+  adjudication_mode: "human_with_ai_advice";
+  blind_attestation: false;
+  decisions: readonly AiInsightHumanAdjudicationDecision[];
+}
+
+/**
+ * Hash-bound, prototype-only record of a chat/user adjudication. It deliberately has no
+ * `reviewers` field, uses tri-state marks, and cannot satisfy `review:receipt`'s two-human,
+ * blind-submission contract.
+ */
+export interface AiInsightHumanAdjudicationRecord {
+  schema_version: typeof AI_INSIGHT_HUMAN_ADJUDICATION_VERSION;
+  status: "diagnostic_only";
+  lock_eligible: false;
+  human_adjudication_mode: "human_with_ai_advice";
+  human_adjudication_blind_attestation: false;
+  adjudicator_id: string;
+  adjudicator_kind: "human";
+  binding: Omit<A1ReviewBinding, "insights">;
+  ai_review_receipt_sha256: string;
+  dispute_pack_sha256: string;
+  progress_sha256: string;
+  decisions: readonly AiInsightHumanAdjudicationDecision[];
+  note: string;
+}
+
 const hash = (value: string | Buffer): string => createHash("sha256").update(value).digest("hex");
 const stable = (value: unknown): string => {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
@@ -116,6 +164,17 @@ function validDecision(decision: AiInsightReviewDecision, expectedHash: string |
     && typeof decision.rationale === "string"
     && decision.rationale.trim().length > 0
     && decision.rationale.length <= 600;
+}
+
+function validHumanDecision(decision: AiInsightHumanAdjudicationDecision, expectedHash: string | undefined): boolean {
+  return Boolean(decision.insight_id)
+    && expectedHash === decision.insight_text_sha256
+    && verdict(decision.non_obvious)
+    && verdict(decision.hallucination)
+    && verdict(decision.importance_reasonable)
+    && typeof decision.human_reason === "string"
+    && decision.human_reason.trim().length > 0
+    && decision.human_reason.length <= 600;
 }
 
 function validateSubmission(binding: A1ReviewBinding, submission: AiInsightReviewerSubmission, label: string): string[] {
@@ -207,4 +266,62 @@ export function compareAiInsightReviews(
     note: "Prototype-only AI consensus. It is diagnostic_only, lock_eligible=false, and must never be passed to review:receipt, a DCP decision, baseline promotion, or release sign-off.",
   };
   return { receipt, consensus_ids, disputes };
+}
+
+/**
+ * Binds an explicitly AI-advised human decision to the exact review artifacts. The caller must
+ * supply the dispute IDs from the comparator's immutable local pack; every and only such insight
+ * must be adjudicated, so a partial chat transcript can never look complete.
+ */
+export function bindAiInsightHumanAdjudication(
+  binding: A1ReviewBinding,
+  aiReceipt: AiInsightReviewReceipt,
+  disputeIds: readonly string[],
+  progress: AiInsightHumanAdjudicationProgress,
+  adjudicatorId: string,
+  artifactHashes: { ai_review_receipt_sha256: string; dispute_pack_sha256: string; progress_sha256: string },
+): AiInsightHumanAdjudicationRecord {
+  const issues: string[] = [];
+  if (!adjudicatorId.trim()) issues.push("human chat adjudicator_id 不可为空");
+  if (aiReceipt.schema_version !== AI_INSIGHT_REVIEW_VERSION || aiReceipt.status !== "diagnostic_only" || aiReceipt.lock_eligible !== false
+    || aiReceipt.human_adjudication_mode !== "human_with_ai_advice" || !sameBinding(exactBinding(binding), aiReceipt.binding)
+    || aiReceipt.issues.length > 0) {
+    issues.push("AI review receipt 不是当前 run 的合格 diagnostic_only 产物");
+  }
+  const sortedDisputeIds = [...disputeIds].sort();
+  if (!sortedDisputeIds.length || new Set(sortedDisputeIds).size !== sortedDisputeIds.length) {
+    issues.push("AI dispute population 为空或含重复 insight_id");
+  }
+  if (aiReceipt.agreement.dispute_ids_sha256 !== hash(sortedDisputeIds.join("\n"))) {
+    issues.push("AI dispute pack 与 receipt 的 dispute population 不匹配");
+  }
+  if (progress.schema_version !== AI_INSIGHT_HUMAN_ADJUDICATION_PROGRESS_VERSION || progress.status !== "completed"
+    || progress.adjudication_mode !== "human_with_ai_advice" || progress.blind_attestation !== false) {
+    issues.push("human chat progress 必须显式声明 completed、human_with_ai_advice 且 blind_attestation=false");
+  }
+  const expected = new Map(binding.insights.map((item) => [item.id, item.text_sha256]));
+  const seen = new Set<string>();
+  for (const decision of progress.decisions) {
+    if (seen.has(decision.insight_id)) issues.push(`human chat adjudication 重复判断 ${decision.insight_id}`);
+    seen.add(decision.insight_id);
+    if (!validHumanDecision(decision, expected.get(decision.insight_id))) {
+      issues.push(`human chat adjudication 的 ${decision.insight_id} 无效、无理由或文本 hash 不匹配`);
+    }
+    if (!sortedDisputeIds.includes(decision.insight_id)) issues.push(`human chat adjudication 含非分歧项 ${decision.insight_id}`);
+  }
+  for (const id of sortedDisputeIds) if (!seen.has(id)) issues.push(`human chat adjudication 缺少分歧项 ${id}`);
+  if (issues.length) throw new Error(`human chat insight adjudication 不合格：${issues.join("；")}`);
+  return {
+    schema_version: AI_INSIGHT_HUMAN_ADJUDICATION_VERSION,
+    status: "diagnostic_only",
+    lock_eligible: false,
+    human_adjudication_mode: "human_with_ai_advice",
+    human_adjudication_blind_attestation: false,
+    adjudicator_id: adjudicatorId.trim(),
+    adjudicator_kind: "human",
+    binding: exactBinding(binding),
+    ...artifactHashes,
+    decisions: progress.decisions,
+    note: "Prototype-only AI-advised human insight adjudication. It is diagnostic_only, lock_eligible=false, and must never be passed to review:receipt, baseline promotion, a DCP decision, or release sign-off.",
+  };
 }

@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { A1ReviewBinding } from "./a1-review-receipt.js";
 import {
+  AI_INSIGHT_HUMAN_ADJUDICATION_PROGRESS_VERSION,
   AI_INSIGHT_REVIEW_VERSION,
   assertAiInsightReviewerSeparation,
+  bindAiInsightHumanAdjudication,
   compareAiInsightReviews,
   insightReviewBinding,
   type AiInsightReviewerSubmission,
@@ -80,5 +82,50 @@ describe("prototype AI insight review", () => {
 
   it("fails before calls when reviewer models are not independent", () => {
     expect(() => assertAiInsightReviewerSeparation("same", "same")).toThrow("不同模型");
+  });
+
+  it("binds complete AI-advised human decisions as diagnostic-only and refuses a partial population", () => {
+    const first = submission("validator", [decision("ins-1", "1".repeat(64)), decision("ins-2", "2".repeat(64))]);
+    const second = submission("coverage", [
+      decision("ins-1", "1".repeat(64), { non_obvious: "no" }),
+      decision("ins-2", "2".repeat(64), { importance_reasonable: "uncertain" }),
+    ]);
+    const compared = compareAiInsightReviews(binding, first, second);
+    const progress = {
+      schema_version: AI_INSIGHT_HUMAN_ADJUDICATION_PROGRESS_VERSION,
+      status: "completed",
+      adjudication_mode: "human_with_ai_advice",
+      blind_attestation: false,
+      decisions: [
+        { insight_id: "ins-1", insight_text_sha256: "1".repeat(64), non_obvious: "no", hallucination: "no", importance_reasonable: "uncertain", human_reason: "直接复述，引用支持，重要性证据不足。" },
+        { insight_id: "ins-2", insight_text_sha256: "2".repeat(64), non_obvious: "no", hallucination: "no", importance_reasonable: "uncertain", human_reason: "直接复述，引用支持，重要性证据不足。" },
+      ],
+    } as const;
+
+    const record = bindAiInsightHumanAdjudication(
+      binding,
+      compared.receipt,
+      compared.disputes.map((item) => item.insight_id),
+      progress,
+      "human-chat",
+      { ai_review_receipt_sha256: "a".repeat(64), dispute_pack_sha256: "b".repeat(64), progress_sha256: "c".repeat(64) },
+    );
+
+    expect(record).toMatchObject({
+      status: "diagnostic_only",
+      lock_eligible: false,
+      human_adjudication_mode: "human_with_ai_advice",
+      human_adjudication_blind_attestation: false,
+      adjudicator_kind: "human",
+    });
+    expect(record).not.toHaveProperty("reviewers");
+    expect(() => bindAiInsightHumanAdjudication(
+      binding,
+      compared.receipt,
+      compared.disputes.map((item) => item.insight_id),
+      { ...progress, decisions: progress.decisions.slice(0, 1) },
+      "human-chat",
+      { ai_review_receipt_sha256: "a".repeat(64), dispute_pack_sha256: "b".repeat(64), progress_sha256: "c".repeat(64) },
+    )).toThrow("缺少分歧项");
   });
 });
