@@ -34,7 +34,7 @@ describe("A1 independent-call concurrency", () => {
       await new Promise((resolve) => setTimeout(resolve, value === "first" ? 8 : 1));
       return value.toUpperCase();
     }, {
-      onSettled: (index) => settled.push(index),
+      onSettled: (index) => { settled.push(index); },
     });
 
     expect(result).toEqual(["FIRST", "SECOND", "THIRD"]);
@@ -48,6 +48,22 @@ describe("A1 independent-call concurrency", () => {
       await expect(mapA1IndependentCalls(["only"], 1, async (value) => value.toUpperCase(), {
         onSettled: () => { throw new Error("observer disk unavailable"); },
       })).resolves.toEqual(["ONLY"]);
+      expect(warning).toHaveBeenCalledWith("A1 independent-call progress hook failed; continuing evaluation");
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
+  it("consumes a later async observer rejection without delaying or failing the mapper", async () => {
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      await expect(mapA1IndependentCalls(["only"], 1, async (value) => value.toUpperCase(), {
+        onSettled: async () => {
+          await Promise.resolve();
+          throw new Error("observer failed later");
+        },
+      })).resolves.toEqual(["ONLY"]);
+      await new Promise<void>((resolve) => setImmediate(resolve));
       expect(warning).toHaveBeenCalledWith("A1 independent-call progress hook failed; continuing evaluation");
     } finally {
       warning.mockRestore();
