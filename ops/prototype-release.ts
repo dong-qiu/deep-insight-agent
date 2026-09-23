@@ -1,0 +1,114 @@
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
+import { PROTOTYPE_POLICY_VERSION } from "../src/lib/runtime/prototype-policy.js";
+import { parsePrototypeSafetyReceipt, type PrototypeSafetyReceipt } from "../evals/prototype-safety.js";
+
+export const PROTOTYPE_CI_EVIDENCE_SCHEMA_VERSION = "prototype-ci-evidence-v1";
+export const PROTOTYPE_RELEASE_RECEIPT_SCHEMA_VERSION = "prototype-release-receipt-v1";
+
+export interface PrototypeCiEvidence {
+  schema_version: typeof PROTOTYPE_CI_EVIDENCE_SCHEMA_VERSION;
+  commit: string;
+  run: { url: string; id: string; attempt: number };
+  checks: { lint: "pass"; test: "pass"; typecheck: "pass"; build: "pass"; docker: "pass" };
+}
+
+export interface PrototypeReleaseReceipt {
+  schema_version: typeof PROTOTYPE_RELEASE_RECEIPT_SCHEMA_VERSION;
+  policy_version: typeof PROTOTYPE_POLICY_VERSION;
+  stage: "prototype";
+  commit: string;
+  image_tag: string;
+  generated_at: string;
+  safety_eval: Pick<PrototypeSafetyReceipt, "run_id" | "model_config_sha256" | "artifacts">;
+  ci: PrototypeCiEvidence;
+  known_limits: readonly string[];
+}
+
+type UnknownRecord = Record<string, unknown>;
+
+function record(value: unknown, label: string): UnknownRecord {
+  if (value == null || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} 必须是对象`);
+  return value as UnknownRecord;
+}
+
+function text(value: unknown, label: string): string {
+  if (typeof value !== "string" || !value.trim()) throw new Error(`${label} 必须是非空字符串`);
+  return value;
+}
+
+function commit(value: unknown, label: string): string {
+  const result = text(value, label);
+  if (!/^[0-9a-f]{40}$/i.test(result)) throw new Error(`${label} 必须是完整 git sha`);
+  return result;
+}
+
+/** CI only writes this after all required code checks in the same job have passed. */
+export function createPrototypeCiEvidence(input: { commit: string; runUrl: string; runId: string; runAttempt: number }): PrototypeCiEvidence {
+  if (!Number.isInteger(input.runAttempt) || input.runAttempt < 1) throw new Error("CI run attempt 无效");
+  const run = { url: text(input.runUrl, "CI run URL"), id: text(input.runId, "CI run id"), attempt: input.runAttempt };
+  return {
+    schema_version: PROTOTYPE_CI_EVIDENCE_SCHEMA_VERSION,
+    commit: commit(input.commit, "CI commit"),
+    run,
+    checks: { lint: "pass", test: "pass", typecheck: "pass", build: "pass", docker: "pass" },
+  };
+}
+
+export function parsePrototypeCiEvidence(value: unknown): PrototypeCiEvidence {
+  const evidence = record(value, "prototype CI evidence");
+  if (evidence.schema_version !== PROTOTYPE_CI_EVIDENCE_SCHEMA_VERSION) throw new Error("prototype CI evidence schema 不匹配");
+  const run = record(evidence.run, "prototype CI evidence.run");
+  const attempt = run.attempt;
+  if (!Number.isInteger(attempt) || (attempt as number) < 1) throw new Error("prototype CI evidence run attempt 无效");
+  const checks = record(evidence.checks, "prototype CI evidence.checks");
+  for (const key of ["lint", "test", "typecheck", "build", "docker"] as const) {
+    if (checks[key] !== "pass") throw new Error(`prototype CI evidence ${key} 未通过`);
+  }
+  return {
+    schema_version: PROTOTYPE_CI_EVIDENCE_SCHEMA_VERSION,
+    commit: commit(evidence.commit, "prototype CI evidence.commit"),
+    run: { url: text(run.url, "prototype CI evidence.run.url"), id: text(run.id, "prototype CI evidence.run.id"), attempt: attempt as number },
+    checks: { lint: "pass", test: "pass", typecheck: "pass", build: "pass", docker: "pass" },
+  };
+}
+
+/** Bind a safe model-eval receipt and a CI pass to the exact image tag a deployment may select. */
+export function createPrototypeReleaseReceipt(input: {
+  commit: string;
+  safetyReceipt: unknown;
+  ciEvidence: unknown;
+  generatedAt?: string;
+}): PrototypeReleaseReceipt {
+  const expectedCommit = commit(input.commit, "release commit");
+  const safety = parsePrototypeSafetyReceipt(input.safetyReceipt);
+  const ci = parsePrototypeCiEvidence(input.ciEvidence);
+  if (safety.source.commit !== expectedCommit || ci.commit !== expectedCommit) {
+    throw new Error("prototype release receipt 的 safety/CI evidence 必须绑定同一 commit");
+  }
+  return {
+    schema_version: PROTOTYPE_RELEASE_RECEIPT_SCHEMA_VERSION,
+    policy_version: PROTOTYPE_POLICY_VERSION,
+    stage: "prototype",
+    commit: expectedCommit,
+    image_tag: `sha-${expectedCommit}`,
+    generated_at: input.generatedAt ?? new Date().toISOString(),
+    safety_eval: {
+      run_id: safety.run_id,
+      model_config_sha256: safety.model_config_sha256,
+      artifacts: safety.artifacts,
+    },
+    ci,
+    known_limits: [
+      "internal_authenticated_prototype_only",
+      "source_terms_deferred_not_authorization",
+      "no_public_raw_content_api_or_training_use",
+      "no_formal_baseline_or_dcp_claim",
+    ],
+  };
+}
+
+export function writePrototypeReleaseArtifact(path: string, value: PrototypeCiEvidence | PrototypeReleaseReceipt): void {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
+}

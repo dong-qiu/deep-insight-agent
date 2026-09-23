@@ -10,4 +10,8 @@ export const A1_SMOKE_LIMITS = {
 
 export function applyA1SmokeConfig(env: Record<string, string | undefined> = process.env): void {
   Object.assign(env, A1_SMOKE_LIMITS);
+  // A named safety subset belongs only to eval:a1:prototype-safety. Do not let a shell's stale
+  // selector change the documented first-N smoke fixture.
+  delete env.A1_DISPLAY_COVERAGE_IDS;
+  delete env.A1_QUOTE_SELF_CONTAINED_IDS;
 }

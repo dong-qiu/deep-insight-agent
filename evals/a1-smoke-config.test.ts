@@ -8,9 +8,13 @@ describe("A1 fast smoke configuration", () => {
       A1_CONSISTENCY_LIMIT: "100",
       A1_DISPLAY_COVERAGE_LIMIT: "0",
       A1_QUOTE_SELF_CONTAINED_LIMIT: "0",
+      A1_DISPLAY_COVERAGE_IDS: "unexpected",
+      A1_QUOTE_SELF_CONTAINED_IDS: "unexpected",
       A1_FORCE_SMOKE: "0",
     };
     applyA1SmokeConfig(env);
     expect(env).toMatchObject(A1_SMOKE_LIMITS);
+    expect(env.A1_DISPLAY_COVERAGE_IDS).toBeUndefined();
+    expect(env.A1_QUOTE_SELF_CONTAINED_IDS).toBeUndefined();
   });
 });

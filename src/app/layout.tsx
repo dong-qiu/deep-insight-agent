@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { auth, signOut } from "../auth.js";
+import { PROTOTYPE_POLICY_NOTICE } from "../lib/runtime/prototype-policy.js";
 import { formatReleaseTime, getReleaseInfo, shortGitSha } from "../lib/runtime/release-info.js";
 import "./globals.css";
 
@@ -54,6 +55,8 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
         </header>
         <main>{children}</main>
         <footer className="release-footer muted" aria-label="发布版本信息">
+          <span className="prototype-policy-badge" title={PROTOTYPE_POLICY_NOTICE}>内部原型</span>
+          <span className="prototype-policy-notice">仅限已认证用户；原文仅管理员核验</span>
           <span>版本 <code title={release.gitSha}>{`v${release.version}${revision ? ` · ${revision}` : ""}`}</code></span>
           {releasedAt && release.releasedAt ? <time dateTime={release.releasedAt}>发布于 {releasedAt}</time> : <span>本地开发构建</span>}
         </footer>

@@ -61,7 +61,7 @@ import type { AnalysisBatch, CitationCheck, ContentItem, ImportanceReason, Insig
 import { DISPLAY_PROJECTION_VERSION } from "../src/lib/utils/source-quote-projection.js";
 import { selectInsights } from "../src/lib/agents/report-gen.js";
 import { beginA1Run, finalizeA1Run, finalizeFailedA1Run, sha256File, writeA1RunProgress, writeJson, type A1RunProgress, type A1RunWorkspace } from "./a1-artifacts.js";
-import { a1SmokeMode, selectA1Cases } from "./a1-case-limit.js";
+import { a1SmokeMode, selectA1Cases, selectA1CasesByIds } from "./a1-case-limit.js";
 import { isA1CoverageExecutionFailure } from "./a1-coverage-execution.js";
 import { a1IndependentCallConcurrency, mapA1IndependentCalls } from "./a1-independent-call-concurrency.js";
 import {
@@ -351,6 +351,8 @@ interface JudgeEvidence {
   case_index: number;
   stratum: Stratum;
   expected: ConsistencyLabel;
+  /** Benchmark taxonomy only; source text and statement stay out of this aggregate field. */
+  negative_type?: string;
   predicted: ConsistencyLabel | null;
   rationale: string | null;
   /** End-to-end time including all nested SDK/application retry attempts. */
@@ -738,18 +740,14 @@ async function main(): Promise<void> {
   const consistencySelection = selectA1Cases(consistencyAll, process.env.A1_CONSISTENCY_LIMIT, "A1_CONSISTENCY_LIMIT");
   const consistencyCases = consistencySelection.cases;
   const displayCoverageAll = readDisplayCoverageCases();
-  const displayCoverageSelection = selectA1Cases(
-    displayCoverageAll,
-    process.env.A1_DISPLAY_COVERAGE_LIMIT,
-    "A1_DISPLAY_COVERAGE_LIMIT",
-  );
+  const displayCoverageSelection = process.env.A1_DISPLAY_COVERAGE_IDS?.trim()
+    ? selectA1CasesByIds(displayCoverageAll, process.env.A1_DISPLAY_COVERAGE_IDS, "A1_DISPLAY_COVERAGE_IDS")
+    : selectA1Cases(displayCoverageAll, process.env.A1_DISPLAY_COVERAGE_LIMIT, "A1_DISPLAY_COVERAGE_LIMIT");
   const displayCoverageCases = displayCoverageSelection.cases;
   const quoteSelfContainedAll = readQuoteSelfContainedCases();
-  const quoteSelfContainedSelection = selectA1Cases(
-    quoteSelfContainedAll,
-    process.env.A1_QUOTE_SELF_CONTAINED_LIMIT,
-    "A1_QUOTE_SELF_CONTAINED_LIMIT",
-  );
+  const quoteSelfContainedSelection = process.env.A1_QUOTE_SELF_CONTAINED_IDS?.trim()
+    ? selectA1CasesByIds(quoteSelfContainedAll, process.env.A1_QUOTE_SELF_CONTAINED_IDS, "A1_QUOTE_SELF_CONTAINED_IDS")
+    : selectA1Cases(quoteSelfContainedAll, process.env.A1_QUOTE_SELF_CONTAINED_LIMIT, "A1_QUOTE_SELF_CONTAINED_LIMIT");
   const quoteSelfContainedCases = quoteSelfContainedSelection.cases;
   const datasetLockPath = process.env.A1_DATASET_LOCK ?? DEFAULT_DATASET_LOCK;
   let datasetLock: DatasetLockValidation;
@@ -1016,13 +1014,19 @@ async function main(): Promise<void> {
     if (!judgment) {
       judgeFailures.push({ case_index: caseIndex, error: error ?? "未知校验器错误", latency_ms });
       recordJudgeAttempt(st, c.expected_consistency, null);
-      judgeEvidence.push({ case_index: caseIndex, stratum, expected: c.expected_consistency, predicted: null, rationale: null, latency_ms, error: error ?? "未知校验器错误" });
+      judgeEvidence.push({ case_index: caseIndex, stratum, expected: c.expected_consistency, negative_type: c.negative_type, predicted: null, rationale: null, latency_ms, error: error ?? "未知校验器错误" });
       continue;
     }
     recordJudgeAttempt(st, c.expected_consistency, judgment.consistency);
     judgeSucceeded++;
     matrixByStratum[stratum][c.expected_consistency][judgment.consistency]++;
-    judgeEvidence.push({ case_index: caseIndex, stratum, expected: c.expected_consistency, predicted: judgment.consistency, rationale: judgment.rationale, latency_ms, error: null });
+    judgeEvidence.push({ case_index: caseIndex, stratum, expected: c.expected_consistency, negative_type: c.negative_type, predicted: judgment.consistency, rationale: judgment.rationale, latency_ms, error: null });
+    updateA1Progress({
+      state: "running", phase: "consistency", topic_timeout_ms: topicTimeoutMs,
+      judge_timeout_ms: judgeTimeoutMs, coverage_timeout_ms: coverageTimeoutMs,
+      current_case: { index: caseIndex, total: consistencyCases.length },
+      completed: { quality_cases: qualitySucceeded, consistency_cases: judgeSucceeded },
+    });
   }
   const judgedTotal = STRATA.reduce((n, s) => n + judgeByStratum[s].judged, 0);
   const errorsTotal = STRATA.reduce((n, s) => n + judgeByStratum[s].errors, 0);
