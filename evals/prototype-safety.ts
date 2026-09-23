@@ -167,6 +167,34 @@ export function certifyPrototypeSafetyRun(input: PrototypeSafetyEvidence): Proto
   };
 }
 
+/** Validate a previously written aggregate receipt before a release receipt can reference it. */
+export function parsePrototypeSafetyReceipt(value: unknown): PrototypeSafetyReceipt {
+  const receipt = record(value, "prototype safety receipt");
+  if (receipt.schema_version !== PROTOTYPE_SAFETY_SCHEMA_VERSION || receipt.policy_version !== PROTOTYPE_POLICY_VERSION || receipt.stage !== "prototype") {
+    throw new Error("prototype safety receipt schema/policy 不匹配");
+  }
+  const source = record(receipt.source, "prototype safety receipt.source");
+  const commit = text(source.commit, "prototype safety receipt.source.commit");
+  if (!/^[0-9a-f]{40}$/i.test(commit)) throw new Error("prototype safety receipt commit 无效");
+  const artifacts = record(receipt.artifacts, "prototype safety receipt.artifacts");
+  for (const key of ["manifest_sha256", "a1_run_sha256"] as const) {
+    if (!/^[0-9a-f]{64}$/i.test(text(artifacts[key], `prototype safety receipt.artifacts.${key}`))) {
+      throw new Error(`prototype safety receipt ${key} 无效`);
+    }
+  }
+  if (!/^[0-9a-f]{64}$/i.test(text(receipt.model_config_sha256, "prototype safety receipt.model_config_sha256"))) {
+    throw new Error("prototype safety receipt model_config_sha256 无效");
+  }
+  const safety = record(receipt.safety, "prototype safety receipt.safety");
+  if (safety.core_complete !== true) throw new Error("prototype safety receipt 不是完整运行");
+  for (const key of ["display_coverage", "quote_self_contained"] as const) {
+    if (count(record(safety[key], `prototype safety receipt.safety.${key}`).unsafe_accept, `prototype safety receipt.safety.${key}.unsafe_accept`) !== 0) {
+      throw new Error(`prototype safety receipt ${key} 存在 unsafe_accept`);
+    }
+  }
+  return receipt as unknown as PrototypeSafetyReceipt;
+}
+
 /** Receipt files are append-only by run id; an existing path is treated as tampering/operator error. */
 export function writePrototypeSafetyReceipt(path: string, receipt: PrototypeSafetyReceipt): void {
   mkdirSync(dirname(path), { recursive: true });

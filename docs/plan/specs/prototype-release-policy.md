@@ -57,6 +57,19 @@ source-specific 条款判断或双人盲审作为原型发布前置条件。
 `eval:a1:prototype-safety` 的 `prototype-safety-receipt-v1` 只保存 commit、模型配置哈希、A1
 artifact 哈希和聚合计数；它拒绝覆盖同一 run 的收据，也不写回 A1 已完成的不可变运行目录。
 
+CI 在 lint、测试、typecheck、build 和 Docker 检查全部完成后上传同 commit 的
+`prototype-ci-evidence-v1` artifact。准备部署时，从该 CI run 下载该 artifact 并运行：
+
+```bash
+npm run release:prototype:receipt -- \
+  evals/out/prototype-safety-receipts/<run-id>.json \
+  /path/to/prototype-ci-evidence.json \
+  /path/to/prototype-release.json
+```
+
+命令拒绝 dirty worktree、commit 不一致、缺失 CI 检查或 `unsafe_accept > 0`。输出仅绑定
+`sha-<commit>` 镜像标签；它是部署随附的过程记录，不是新的审批工作流。
+
 ## 重新进入正式治理的触发条件
 
 出现以下任一条件前，必须先以新 ADR 替换本政策并重新设计相应门禁：匿名/公开访问、付费或

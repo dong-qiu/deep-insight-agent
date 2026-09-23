@@ -29,6 +29,7 @@
     "eval:a1": "tsx evals/run-a1.ts",
     "eval:a1:smoke": "tsx evals/run-a1-smoke.ts",
     "eval:a1:prototype-safety": "tsx evals/run-prototype-safety.ts",
+    "release:prototype:receipt": "tsx ops/create-prototype-release-receipt.ts",
     "eval:canary-thinking": "tsx evals/canary-structured-thinking.ts",
     "review:receipt": "tsx evals/verify-review-receipt.ts",
     "baseline:promote": "tsx evals/promote-a1-baseline.ts",
