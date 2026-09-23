@@ -26,6 +26,8 @@ function safetyReceipt() {
 describe("prototype release receipts", () => {
   it("binds safe model evidence and green CI evidence to one immutable image tag", () => {
     const ci = createPrototypeCiEvidence({ commit: sha, runUrl: "https://example.test/runs/123", runId: "123", runAttempt: 1 });
+    // The verify-job artifact must not claim the downstream Docker job has run.
+    expect(ci.checks).toEqual({ lint: "pass", test: "pass", typecheck: "pass", build: "pass" });
     const receipt = createPrototypeReleaseReceipt({ commit: sha, safetyReceipt: safetyReceipt(), ciEvidence: ci, generatedAt: "2026-09-23T01:00:00.000Z" });
     expect(receipt).toMatchObject({ commit: sha, image_tag: `sha-${sha}`, ci: ci, safety_eval: { run_id: "a1-safe" } });
     expect(JSON.stringify(receipt)).not.toContain("must-not-leak");

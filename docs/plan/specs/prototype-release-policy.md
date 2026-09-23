@@ -57,8 +57,9 @@ source-specific 条款判断或双人盲审作为原型发布前置条件。
 `eval:a1:prototype-safety` 的 `prototype-safety-receipt-v1` 只保存 commit、模型配置哈希、A1
 artifact 哈希和聚合计数；它拒绝覆盖同一 run 的收据，也不写回 A1 已完成的不可变运行目录。
 
-CI 在 lint、测试、typecheck、build 和 Docker 检查全部完成后上传同 commit 的
-`prototype-ci-evidence-v1` artifact。准备部署时，从该 CI run 下载该 artifact 并运行：
+CI 的 verify job 在 lint、测试、typecheck 与 build 全部完成后上传同 commit 的
+`prototype-ci-evidence-v1` artifact。Docker 是独立的下游 CI check，必须同样为绿，但不会被
+尚未执行 Docker 的 verify artifact 提前声称为通过。准备部署时，从该 CI run 下载该 artifact 并运行：
 
 ```bash
 npm run release:prototype:receipt -- \

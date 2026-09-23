@@ -10,7 +10,8 @@ export interface PrototypeCiEvidence {
   schema_version: typeof PROTOTYPE_CI_EVIDENCE_SCHEMA_VERSION;
   commit: string;
   run: { url: string; id: string; attempt: number };
-  checks: { lint: "pass"; test: "pass"; typecheck: "pass"; build: "pass"; docker: "pass" };
+  /** Written at the end of CI's verify job; Docker remains a separate required CI check. */
+  checks: { lint: "pass"; test: "pass"; typecheck: "pass"; build: "pass" };
 }
 
 export interface PrototypeReleaseReceipt {
@@ -51,7 +52,7 @@ export function createPrototypeCiEvidence(input: { commit: string; runUrl: strin
     schema_version: PROTOTYPE_CI_EVIDENCE_SCHEMA_VERSION,
     commit: commit(input.commit, "CI commit"),
     run,
-    checks: { lint: "pass", test: "pass", typecheck: "pass", build: "pass", docker: "pass" },
+    checks: { lint: "pass", test: "pass", typecheck: "pass", build: "pass" },
   };
 }
 
@@ -62,14 +63,14 @@ export function parsePrototypeCiEvidence(value: unknown): PrototypeCiEvidence {
   const attempt = run.attempt;
   if (!Number.isInteger(attempt) || (attempt as number) < 1) throw new Error("prototype CI evidence run attempt 无效");
   const checks = record(evidence.checks, "prototype CI evidence.checks");
-  for (const key of ["lint", "test", "typecheck", "build", "docker"] as const) {
+  for (const key of ["lint", "test", "typecheck", "build"] as const) {
     if (checks[key] !== "pass") throw new Error(`prototype CI evidence ${key} 未通过`);
   }
   return {
     schema_version: PROTOTYPE_CI_EVIDENCE_SCHEMA_VERSION,
     commit: commit(evidence.commit, "prototype CI evidence.commit"),
     run: { url: text(run.url, "prototype CI evidence.run.url"), id: text(run.id, "prototype CI evidence.run.id"), attempt: attempt as number },
-    checks: { lint: "pass", test: "pass", typecheck: "pass", build: "pass", docker: "pass" },
+    checks: { lint: "pass", test: "pass", typecheck: "pass", build: "pass" },
   };
 }
 

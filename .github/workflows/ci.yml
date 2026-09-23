@@ -175,9 +175,10 @@ jobs:
       # 开发者机器执行，不能仅因不随生产镜像 ship 就忽略；Dependabot 负责提出升级，本门兜底。
       - name: npm audit (all deps, high+ blocking)
         run: npm audit --audit-level=high
-      # This aggregate is intentionally written only after every required code check in this job
-      # has passed. A later prototype release receipt binds this immutable CI run to its exact SHA;
-      # it does not turn the artifact into a legal or quality approval.
+      # This aggregate is intentionally written only after lint/test/typecheck/build in this job
+      # have passed. Docker is a separate downstream required CI check and is not claimed here.
+      # A later prototype release receipt binds this immutable CI run to its exact SHA; it does
+      # not turn the artifact into a legal or quality approval.
       - name: write prototype CI evidence
         run: npx tsx ops/write-prototype-ci-evidence.ts "$RUNNER_TEMP/prototype-ci-evidence.json"
       - name: upload prototype CI evidence
