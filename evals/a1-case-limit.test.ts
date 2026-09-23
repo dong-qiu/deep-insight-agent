@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { a1SmokeMode, isA1Smoke, parseA1CaseLimit, selectA1Cases } from "./a1-case-limit.js";
+import { a1SmokeMode, isA1Smoke, parseA1CaseLimit, selectA1Cases, selectA1CasesByIds } from "./a1-case-limit.js";
 
 describe("A1 eval subset controls", () => {
   const fixture = ["one", "two", "three"];
@@ -41,6 +41,20 @@ describe("A1 eval subset controls", () => {
   it("rejects malformed and negative controls rather than silently changing evidence", () => {
     for (const raw of ["-1", "1.2", "not-a-number"]) {
       expect(() => parseA1CaseLimit(raw, "A1_TEST_LIMIT")).toThrow("A1_TEST_LIMIT");
+    }
+  });
+
+  it("selects a named, non-promotable subset without mutating fixture order", () => {
+    const cases = [{ id: "one" }, { id: "two" }, { id: "three" }];
+    const selected = selectA1CasesByIds(cases, "three,one", "A1_TEST_IDS");
+    expect(selected).toEqual({ cases: [cases[2], cases[0]], requested_limit: 2, truncated: true });
+    expect(isA1Smoke(selected)).toBe(true);
+  });
+
+  it("rejects absent, duplicate, or malformed named case ids", () => {
+    const cases = [{ id: "one" }, { id: "two" }];
+    for (const ids of ["one,one", "one,missing", "one,,two"]) {
+      expect(() => selectA1CasesByIds(cases, ids, "A1_TEST_IDS")).toThrow("A1_TEST_IDS");
     }
   });
 });

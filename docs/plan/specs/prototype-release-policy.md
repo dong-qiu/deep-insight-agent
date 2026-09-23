@@ -45,13 +45,17 @@ source-specific 条款判断或双人盲审作为原型发布前置条件。
 
 - 纯确定性/UI 改动：运行受影响测试、`typecheck`，必要时运行 `build`。
 - 变更模型、provider、prompt、validator、coverage 或来源语义：运行小型真模型
-  `prototype safety eval`。它必须覆盖 `support`、`uncertain`、三种 `not_support` 类型，以及
+  `npm run eval:a1:prototype-safety`。它强制进入 A1 smoke，按 case ID 从正式夹具选择样本，
+  不复制、不重排完整 benchmark；必须覆盖 `support`、`uncertain`、三种 `not_support` 类型，以及
   display/quote 的正反例。
 - prototype safety eval 的硬门仅为完整执行与 `unsafe_accept=0`；`false_reject` 首先作为趋势
   指标，连续三次观测后再考虑阈值。
 - 完整 A1 留作按需或周期性诊断；无可比 baseline、DCP 或 v2 lock 不阻塞内部 prototype。
 - 每次准备部署时生成一份无正文、无 URL、无密钥的 `prototype-release.json`，绑定代码版本、
   模型配置指纹、CI 与 safety eval 的聚合结果。它是可追踪收据，不是批准。
+
+`eval:a1:prototype-safety` 的 `prototype-safety-receipt-v1` 只保存 commit、模型配置哈希、A1
+artifact 哈希和聚合计数；它拒绝覆盖同一 run 的收据，也不写回 A1 已完成的不可变运行目录。
 
 ## 重新进入正式治理的触发条件
 

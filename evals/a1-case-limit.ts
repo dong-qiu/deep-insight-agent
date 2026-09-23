@@ -26,6 +26,27 @@ export function selectA1Cases<T>(all: T[], raw: string | undefined, name: string
   return { cases, requested_limit, truncated: cases.length < all.length };
 }
 
+/**
+ * A named subset keeps a small safety fixture representative without reordering or copying the
+ * formal benchmark. Named selection is always non-promotable: fixture growth must not silently
+ * turn a curated sample into a full A1 run.
+ */
+export function selectA1CasesByIds<T extends { id: string }>(all: T[], raw: string | undefined, name: string): A1CaseSelection<T> {
+  const requested = raw?.trim();
+  if (!requested) return { cases: all, requested_limit: 0, truncated: false };
+  const ids = requested.split(",").map((id) => id.trim());
+  if (!ids.length || ids.some((id) => !id)) throw new Error(`${name} 必须是逗号分隔的非空 case id`);
+  if (new Set(ids).size !== ids.length) throw new Error(`${name} 不能包含重复 case id`);
+  const byId = new Map(all.map((entry) => [entry.id, entry]));
+  if (byId.size !== all.length) throw new Error(`${name} 的 fixture 含重复 case id`);
+  const cases = ids.map((id) => {
+    const entry = byId.get(id);
+    if (!entry) throw new Error(`${name} 包含 fixture 中不存在的 case id: ${id}`);
+    return entry;
+  });
+  return { cases, requested_limit: ids.length, truncated: cases.length < all.length };
+}
+
 /** A formal full run must not carry any A1 subset control. A value above today's fixture is
  * operationally equivalent for this one run, but it could silently become a subset when the
  * fixture grows; classify it as smoke now rather than letting it enter a baseline. */
