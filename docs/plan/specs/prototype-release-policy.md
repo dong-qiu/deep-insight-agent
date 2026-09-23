@@ -58,19 +58,22 @@ source-specific 条款判断或双人盲审作为原型发布前置条件。
 artifact 哈希和聚合计数；它拒绝覆盖同一 run 的收据，也不写回 A1 已完成的不可变运行目录。
 
 CI 的 verify job 在 lint、测试、typecheck 与 build 全部完成后上传与候选源 commit 绑定的
-`prototype-ci-evidence-v1` artifact。PR 中 GitHub 实际检查的是临时 merge ref，因此 artifact 也会
-显式记录 `tested_commit`；直接 main push 时两个 SHA 相同。Docker 是独立的下游 CI check，必须同样为
-绿，但不会被尚未执行 Docker 的 verify artifact 提前声称为通过。准备部署时，从该 CI run 下载该
-artifact 并运行：
+`prototype-ci-evidence-v1` artifact。Docker job 仅在镜像和运行时检查全部通过后才上传独立的
+`prototype-docker-evidence-v1` artifact；release receipt 缺少任一 artifact、commit/tested commit/run
+不一致或 Docker 未通过都会 fail closed。PR 中 GitHub 实际检查的是临时 merge ref，因此两个 artifact
+都会显式记录 `tested_commit`；直接 main push 时两个 SHA 相同。
+
+准备部署时，从同一 CI run 下载这两个 artifact 并运行：
 
 ```bash
 npm run release:prototype:receipt -- \
   evals/out/prototype-safety-receipts/<run-id>.json \
   /path/to/prototype-ci-evidence.json \
+  /path/to/prototype-docker-evidence.json \
   /path/to/prototype-release.json
 ```
 
-命令拒绝 dirty worktree、commit 不一致、缺失 CI 检查或 `unsafe_accept > 0`。输出仅绑定
+命令拒绝 dirty worktree、commit/run 不一致、缺失 CI/Docker 检查或 `unsafe_accept > 0`。输出仅绑定
 `sha-<commit>` 镜像标签；它是部署随附的过程记录，不是新的审批工作流。
 
 ## 重新进入正式治理的触发条件

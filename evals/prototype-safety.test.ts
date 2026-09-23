@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { certifyPrototypeSafetyRun, writePrototypeSafetyReceipt } from "./prototype-safety.js";
+import { certifyPrototypeSafetyRun, parsePrototypeSafetyReceipt, writePrototypeSafetyReceipt } from "./prototype-safety.js";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -15,7 +15,7 @@ function evidence() {
       secret_like_debug: "do-not-persist",
     },
     a1_run: {
-      run_id: "a1-test", config: { analyzer_model: "analyzer", validator_model: "validator", coverage_model: "coverage" },
+      run_id: "a1-20260923000000-deadbeef", config: { analyzer_model: "analyzer", validator_model: "validator", coverage_model: "coverage" },
       dataset: { smoke: true, smoke_forced: true }, completion: { core_complete: true },
       judge_cases: [
         { expected: "support", error: null, source_text: "source body must stay out" },
@@ -68,6 +68,26 @@ describe("prototype safety receipt", () => {
     const oneSided = evidence();
     (oneSided.a1_run.quote_self_contained_coverage as { results: unknown[] }).results = [{ expected: "reject", actual: "reject", error: null }];
     expect(() => certifyPrototypeSafetyRun(oneSided)).toThrow("必须同时含应接受与应拒绝样本");
+  });
+
+  it("rejects incomplete or smuggled aggregate receipts before a release can reference them", () => {
+    const receipt = certifyPrototypeSafetyRun(evidence());
+    expect(parsePrototypeSafetyReceipt(receipt)).toEqual(receipt);
+
+    const missingCoverage = structuredClone(receipt) as unknown as Record<string, unknown>;
+    delete (missingCoverage.safety as Record<string, unknown>).quote_self_contained;
+    expect(() => parsePrototypeSafetyReceipt(missingCoverage)).toThrow("字段不匹配");
+
+    const missingNegativeType = structuredClone(receipt) as unknown as Record<string, unknown>;
+    ((missingNegativeType.safety as Record<string, unknown>).consistency_expected as Record<string, unknown>).negative_types = ["exaggeration", "out_of_context"];
+    expect(() => parsePrototypeSafetyReceipt(missingNegativeType)).toThrow("negative_type");
+
+    const urlRunId = structuredClone(receipt) as unknown as Record<string, unknown>;
+    urlRunId.run_id = "https://example.test/run";
+    expect(() => parsePrototypeSafetyReceipt(urlRunId)).toThrow("run_id 无效");
+
+    const smuggledField = { ...receipt, secret_like_debug: "must-not-pass" };
+    expect(() => parsePrototypeSafetyReceipt(smuggledField)).toThrow("字段不匹配");
   });
 
   it("writes once and refuses to overwrite a run-bound receipt", () => {

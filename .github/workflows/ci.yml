@@ -177,8 +177,8 @@ jobs:
         run: npm audit --audit-level=high
       # This aggregate is intentionally written only after lint/test/typecheck/build in this job
       # have passed. Docker is a separate downstream required CI check and is not claimed here.
-      # A later prototype release receipt binds this immutable CI run to its exact SHA; it does
-      # not turn the artifact into a legal or quality approval.
+      # A later prototype release receipt binds this candidate source SHA and records the tested
+      # merge SHA; it does not turn the artifact into a legal or quality approval.
       - name: write prototype CI evidence
         run: npx tsx ops/write-prototype-ci-evidence.ts "$RUNNER_TEMP/prototype-ci-evidence.json"
         env:
@@ -341,3 +341,15 @@ jobs:
             echo "stalled durable dispatch incorrectly passed worker readiness" >&2
             exit 1
           fi
+      # This artifact is deliberately emitted only after every Docker check above passes.
+      # The release receipt requires it in addition to the verify-job artifact.
+      - name: write prototype Docker evidence
+        run: npx tsx ops/write-prototype-docker-evidence.ts "$RUNNER_TEMP/prototype-docker-evidence.json"
+        env:
+          PROTOTYPE_CI_EVIDENCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: upload prototype Docker evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: prototype-docker-evidence-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ runner.temp }}/prototype-docker-evidence.json
+          if-no-files-found: error
