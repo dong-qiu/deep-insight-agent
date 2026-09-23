@@ -181,10 +181,14 @@ jobs:
       # not turn the artifact into a legal or quality approval.
       - name: write prototype CI evidence
         run: npx tsx ops/write-prototype-ci-evidence.ts "$RUNNER_TEMP/prototype-ci-evidence.json"
+        env:
+          # PR workflows test GitHub's temporary merge ref, while releases select the immutable
+          # PR head. The artifact records both; direct main pushes use the same SHA for both.
+          PROTOTYPE_CI_EVIDENCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: upload prototype CI evidence
         uses: actions/upload-artifact@v7
         with:
-          name: prototype-ci-evidence-${{ github.sha }}
+          name: prototype-ci-evidence-${{ github.event.pull_request.head.sha || github.sha }}
           path: ${{ runner.temp }}/prototype-ci-evidence.json
           if-no-files-found: error
 
