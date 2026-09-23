@@ -25,20 +25,21 @@ function safetyReceipt() {
 
 describe("prototype release receipts", () => {
   it("binds safe model evidence and green CI evidence to one immutable image tag", () => {
-    const ci = createPrototypeCiEvidence({ commit: sha, runUrl: "https://example.test/runs/123", runId: "123", runAttempt: 1 });
+    const ci = createPrototypeCiEvidence({ commit: sha, runId: "123", runAttempt: 1 });
     // The verify-job artifact must not claim the downstream Docker job has run.
     expect(ci.checks).toEqual({ lint: "pass", test: "pass", typecheck: "pass", build: "pass" });
     expect(ci.tested_commit).toBe(sha);
     const receipt = createPrototypeReleaseReceipt({ commit: sha, safetyReceipt: safetyReceipt(), ciEvidence: ci, generatedAt: "2026-09-23T01:00:00.000Z" });
     expect(receipt).toMatchObject({ commit: sha, image_tag: `sha-${sha}`, ci: ci, safety_eval: { run_id: "a1-safe" } });
     expect(JSON.stringify(receipt)).not.toContain("must-not-leak");
+    expect(JSON.stringify(receipt)).not.toContain("http");
   });
 
   it("fails closed when CI lacks a required check or evidence points at another commit", () => {
-    const failedCi = createPrototypeCiEvidence({ commit: sha, runUrl: "https://example.test/runs/123", runId: "123", runAttempt: 1 }) as unknown as { checks: { build: string } };
+    const failedCi = createPrototypeCiEvidence({ commit: sha, runId: "123", runAttempt: 1 }) as unknown as { checks: { build: string } };
     failedCi.checks.build = "fail";
     expect(() => parsePrototypeCiEvidence(failedCi)).toThrow("build 未通过");
-    const otherCi = createPrototypeCiEvidence({ commit: "f".repeat(40), runUrl: "https://example.test/runs/123", runId: "123", runAttempt: 1 });
+    const otherCi = createPrototypeCiEvidence({ commit: "f".repeat(40), runId: "123", runAttempt: 1 });
     expect(() => createPrototypeReleaseReceipt({ commit: sha, safetyReceipt: safetyReceipt(), ciEvidence: otherCi })).toThrow("同一 commit");
   });
 
@@ -46,7 +47,6 @@ describe("prototype release receipts", () => {
     const ci = createPrototypeCiEvidence({
       commit: sha,
       testedCommit: "b".repeat(40),
-      runUrl: "https://example.test/runs/123",
       runId: "123",
       runAttempt: 1,
     });
@@ -58,7 +58,7 @@ describe("prototype release receipts", () => {
     const root = mkdtempSync(join(tmpdir(), "prototype-release-"));
     roots.push(root);
     const path = join(root, "ci.json");
-    const ci = createPrototypeCiEvidence({ commit: sha, runUrl: "https://example.test/runs/123", runId: "123", runAttempt: 1 });
+    const ci = createPrototypeCiEvidence({ commit: sha, runId: "123", runAttempt: 1 });
     writePrototypeReleaseArtifact(path, ci);
     expect(existsSync(path)).toBe(true);
     expect(JSON.parse(readFileSync(path, "utf8"))).toEqual(ci);

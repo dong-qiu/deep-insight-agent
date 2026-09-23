@@ -12,7 +12,8 @@ export interface PrototypeCiEvidence {
   commit: string;
   /** The commit GitHub Actions actually checked (a temporary merge ref for PRs). */
   tested_commit: string;
-  run: { url: string; id: string; attempt: number };
+  /** Opaque Actions identifiers only; a process receipt must not persist URLs. */
+  run: { id: string; attempt: number };
   /** Written at the end of CI's verify job; Docker remains a separate required CI check. */
   checks: { lint: "pass"; test: "pass"; typecheck: "pass"; build: "pass" };
 }
@@ -51,12 +52,11 @@ function commit(value: unknown, label: string): string {
 export function createPrototypeCiEvidence(input: {
   commit: string;
   testedCommit?: string;
-  runUrl: string;
   runId: string;
   runAttempt: number;
 }): PrototypeCiEvidence {
   if (!Number.isInteger(input.runAttempt) || input.runAttempt < 1) throw new Error("CI run attempt 无效");
-  const run = { url: text(input.runUrl, "CI run URL"), id: text(input.runId, "CI run id"), attempt: input.runAttempt };
+  const run = { id: text(input.runId, "CI run id"), attempt: input.runAttempt };
   return {
     schema_version: PROTOTYPE_CI_EVIDENCE_SCHEMA_VERSION,
     commit: commit(input.commit, "CI commit"),
@@ -80,7 +80,7 @@ export function parsePrototypeCiEvidence(value: unknown): PrototypeCiEvidence {
     schema_version: PROTOTYPE_CI_EVIDENCE_SCHEMA_VERSION,
     commit: commit(evidence.commit, "prototype CI evidence.commit"),
     tested_commit: commit(evidence.tested_commit, "prototype CI evidence.tested_commit"),
-    run: { url: text(run.url, "prototype CI evidence.run.url"), id: text(run.id, "prototype CI evidence.run.id"), attempt: attempt as number },
+    run: { id: text(run.id, "prototype CI evidence.run.id"), attempt: attempt as number },
     checks: { lint: "pass", test: "pass", typecheck: "pass", build: "pass" },
   };
 }
