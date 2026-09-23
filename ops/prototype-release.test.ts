@@ -54,6 +54,10 @@ describe("prototype release receipts", () => {
     delete incompleteSafety.safety.quote_self_contained;
     expect(() => createPrototypeReleaseReceipt({ commit: sha, safetyReceipt: incompleteSafety, ciEvidence: ci, dockerEvidence: docker })).toThrow("字段不匹配");
 
+    const impossibleNegativeCoverage = safetyReceipt() as unknown as { safety: { consistency_expected: { not_support: number } } };
+    impossibleNegativeCoverage.safety.consistency_expected.not_support = 1;
+    expect(() => createPrototypeReleaseReceipt({ commit: sha, safetyReceipt: impossibleNegativeCoverage, ciEvidence: ci, dockerEvidence: docker })).toThrow("必须覆盖全部标签");
+
     const urlRunCi = { ...ci, run: { ...ci.run, id: "https://example.test/123" } };
     expect(() => createPrototypeReleaseReceipt({ commit: sha, safetyReceipt: safetyReceipt(), ciEvidence: urlRunCi, dockerEvidence: docker })).toThrow("numeric run id");
   });

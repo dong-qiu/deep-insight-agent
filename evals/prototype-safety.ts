@@ -231,7 +231,7 @@ export function parsePrototypeSafetyReceipt(value: unknown): PrototypeSafetyRece
     uncertain: count(consistency.uncertain, "prototype safety receipt consistency.uncertain"),
     not_support: count(consistency.not_support, "prototype safety receipt consistency.not_support"),
   };
-  if (!expected.support || !expected.uncertain || !expected.not_support) {
+  if (!expected.support || !expected.uncertain || expected.not_support < REQUIRED_NEGATIVE_TYPES.length) {
     throw new Error("prototype safety receipt consistency 必须覆盖全部标签");
   }
   const negativeTypes = array(consistency.negative_types, "prototype safety receipt consistency.negative_types").map((entry, index) => text(entry, `prototype safety receipt negative_types[${index}]`));
