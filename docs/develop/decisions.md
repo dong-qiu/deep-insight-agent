@@ -1488,3 +1488,87 @@ P0 可在不写 P1 指标的默认路径上继续发布。未来恢复 P1 时，
 
 原型可继续以较低的人工作业成本迭代和评估结果，但其证据边界必须在产物、文档和任何演示中保持
 显式。该决定不是法律意见，也不将“内部/非商业”解释为自动取得第三方全文存储、模型评测或再利用许可。
+
+---
+
+## ADR-0031: Volcengine Coding Plan 采用显式 OpenAI Responses 适配，保留 Anthropic 默认路径
+
+- **日期**: 2026-09-21
+- **状态**: Accepted（生产准入待 provider canary 与 A1）
+
+### 背景
+
+既有运行时只通过 Anthropic Messages SDK 与 relay 通讯。当前 Anthropic key 已不可靠，而内部原型可用
+Volcengine Coding Plan 的模型；同时不能把“OpenAI 兼容”理解为任意 endpoint、任意凭据都可互换。
+模型、协议和 endpoint 都会改变结构化输出、thinking、超时和成本行为，因此必须进入 A1 可比性边界。
+
+### 决定
+
+1. provider 显式由 `LLM_PROVIDER` 选择，缺省仍为 `anthropic`；新路线固定为
+   `volcengine-responses`，使用 Coding Plan 的 `https://ark.cn-beijing.volces.com/api/coding/v3`。
+   不使用普通 `/api/v3`，因为它不消耗 Coding Plan 套餐额度且可能产生额外计费。
+2. 新 provider 只接受 `LLM_API_KEY` 与显式 `LLM_BASE_URL`；`ANTHROPIC_API_KEY` 仅为默认 Anthropic
+   路径保留兼容回退，绝不跨 provider 发送。配置或端点缺失在网络调用前 fail-closed。
+3. Responses 路径使用强制 function call + 既有 Zod schema 门，保存既有“模型输出不直接可信”的契约。
+   在目标 Coding Plan account 已观测到 `response.function_call_arguments.done` 与
+   `response.completed` 后，采用仅消费这两个终态的 SSE reader；仍受 `LLM_TIMEOUT_MS` 保护，
+   缺终态即 fail-closed，不猜测未观测事件。
+4. provider、endpoint 的 SHA-256 fingerprint 与 structured transport version 写入 EvalConfig，故所有旧
+   baseline 自动不可比。每个角色仍须模型两两不同，`VALIDATOR_THINKING=0` 与
+   `COVERAGE_THINKING=0` 保持当前原型冻结值。
+5. 未从实际订阅/控制台核实 USD 定价前，Volcengine usage 只供 token 观测和保守本地预算估算；落入
+   `cost_ledger` 的记录一律为 `cost_status=unknown`、金额 `NULL`，不能生成成本结论。
+
+### 准入顺序
+
+1. 在隔离 worktree 的 `.env.local` 写入 provider/key/endpoint 与三个不同模型；key 不进入 Git 或聊天。
+2. 先跑 `npm run eval:canary-thinking`（validator，thinking=1）和一次 `VALIDATOR_THINKING=0` 的小请求，
+   验证实际模型名、强制函数调用、usage 与 timeout。
+3. 再跑 smoke 仅证明接线，随后在冻结的数据锁上跑完整 A1；缺少 verified v2 lock、可比两次 run 与人工
+   标注时，仍只能形成内部原型诊断，不能宣称 Eval-Gate/DCP/生产质量准入。
+4. 实测通过后才更新部署 secret/variable、合并 PR、发布；若失败，保留 Anthropic 默认路径并以 canary 的
+   安全错误分类决定是调整 adapter 还是切换模型，不能靠放宽 Zod 或引用校验绕过。
+
+### 后果
+
+部署与 GitHub Actions 可逐步迁移到 `LLM_*` 变量，现有 Anthropic deployment 不会被本改动强制切断。
+新路径的模型质量、长输出延迟和 token/credit 成本均为待测假设，不由协议名称或厂商宣传替代评测。
+
+---
+
+## ADR-0032: 以固定内部原型政策替代多轴发布状态机
+
+- **日期**: 2026-09-23
+- **状态**: Accepted
+
+### 背景
+
+当前产品持续处于内部原型开发阶段。将正式发布所需的 `quality_status`、
+`source_terms_status`、`release_tier`、DCP、可比 baseline、逐来源条款背书和双人盲审直接
+映射到每次原型迭代，会把大量时间花在尚未适用的状态维护与证据提升上。与此同时，引用白名单、
+原文归档完整性与访问控制不能因开发速度而退化。
+
+### 决定
+
+1. 当前系统只采用 `development` 与内部 `prototype` 两种运行语境。对用户可见的产品政策固定为
+   `prototype-policy-v1`：仅限已认证用户、原文仅管理员核验、不公开、不商用、不提供公共 API
+   导出、不用于模型训练；`source_terms` 记录为 `deferred_not_authorization`，不作任何许可声明。
+2. 不为报告或发布新增多轴状态机、SQLite schema 或逐版本审批流。政策以静态代码常量、全局界面
+   标识和测试不变量表达；未来扩大范围不能通过环境变量或文案修改绕过 ADR。
+3. 原型发布仍强制四条硬边界：`pass + support` validator 白名单、已验证 raw archive 的
+   reader eligibility、原文仅管理员核验、管理员可快速隐藏/撤回报告或禁用来源。
+4. 模型/provider/prompt/validator/coverage/来源语义变更使用小型真模型 `prototype safety eval`。
+   它必须覆盖三类 `not_support` 及 display/quote 正反例，且完整执行和 `unsafe_accept=0` 是硬门；
+   `false_reject` 先作为趋势观测，不在没有三次实测前臆定阈值。完整 A1 保留为按需或周期性诊断，
+   不因 baseline/DCP/v2 lock 缺失阻塞内部 prototype。
+5. 每次准备部署时生成无正文、URL、prompt、模型输出与凭据的 `prototype-release.json`，绑定 commit、
+   模型配置指纹、CI 与 safety eval 的聚合证据。该收据用于回看过程，不是批准、合规或质量认证。
+6. 一旦出现匿名/公开访问、付费/商业使用、原文外显、公共 API/批量导出、训练使用，或需要对外宣称
+   来源许可/合规/正式质量保证，必须以新 ADR 重新进入正式治理；ADR-0030 的 formal-readiness
+   材料仍保留为未来输入，不得被改写为现有授权。
+
+### 后果
+
+快速迭代只需跑与改动匹配的确定性测试或小型安全评测，并留下最小可审查证据；不再将旧 baseline
+不可比或 DCP 样本量不足误当作内部 prototype 的发布障碍。此决定不改变报告引用的 fail-closed
+实现，也不扩大第三方内容的使用权限。

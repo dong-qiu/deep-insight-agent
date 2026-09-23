@@ -5,7 +5,7 @@
  * 安全门：批量的负例召回率（not_support 召回）不得低于单条；尤其任何 label=not_support 被批量判成
  * 非 not_support（漏网）都要单列。批量只在"同源多 claim"时与单条有别。
  *
- * 用法：tsx evals/validate-batch-judge.ts（需 .env.local 的 ANTHROPIC_API_KEY/BASE_URL）。一次性脚本。
+ * 用法：tsx evals/validate-batch-judge.ts（需 .env.local 的当前 LLM_PROVIDER 凭据）。一次性脚本。
  */
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";

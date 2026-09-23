@@ -40,7 +40,7 @@ Source → ContentItem → AnalysisBatch → ValidationResult → Report
 
 - Node.js `>=24.19 <25`
 - npm `>=11 <12`
-- 用于运行分析与评测的 Anthropic API Key 或兼容中转站配置
+- 用于运行分析与评测的 LLM provider 凭据（默认 Anthropic；也可用 Volcengine Coding Plan Responses）
 
 ### 本地运行
 
@@ -50,7 +50,7 @@ cd deep-insight-agent
 
 cp .env.example .env.local
 # 在 .env.local 中至少配置 AUTH_SECRET、ADMIN_EMAIL、ADMIN_PASSWORD；
-# 运行分析/评测前再配置 ANTHROPIC_API_KEY。
+# 运行分析/评测前再配置 LLM_PROVIDER 对应的 key（见 .env.example）。
 
 npm ci
 npm run seed
@@ -87,7 +87,7 @@ npm run dev
 
 ```bash
 cp .env.example .env.local
-# 填写 ANTHROPIC_API_KEY、AUTH_SECRET、ADMIN_EMAIL、ADMIN_PASSWORD、CRON_SECRET
+# 填写 LLM provider 凭据、AUTH_SECRET、ADMIN_EMAIL、ADMIN_PASSWORD、CRON_SECRET
 
 # Apple Silicon 使用 TARGETARCH=arm64；x86_64 可省略该变量。
 TARGETARCH=arm64 docker compose up -d --build

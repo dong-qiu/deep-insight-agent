@@ -14,6 +14,8 @@ import type { Cost } from "../types.js";
 import { FALLBACK_PRICING, costUSD, type TokenUsage } from "./cost.js";
 import { llmMaxRetries, llmTimeoutMs, llmTransientRetries, llmTransientRetryBackoffMs, promptCacheOn } from "./env.js";
 import { isTransientApiError } from "./errors.js";
+import { llmProvider, requireLlmApiKey, requireLlmBaseUrl } from "./llm-provider.js";
+import { callVolcengineResponses } from "./volcengine-responses.js";
 
 // 已警告过的未知模型集合（每模型仅警告一次，防日志刷屏）
 const warnedUnpriced = new Set<string>();
@@ -102,6 +104,7 @@ function getClient(): Anthropic {
   const maxRetries = llmMaxRetries();
   const baseURL = anthropicBaseUrl();
   return (_client ??= new Anthropic({
+    apiKey: requireLlmApiKey("anthropic"),
     timeout,
     maxRetries,
     ...(baseURL ? { baseURL } : {}),
@@ -234,7 +237,7 @@ export function resetRoleCallTelemetry(): void {
   roleMeter.clear();
 }
 
-function record(model: string, u: Anthropic.Usage): void {
+function record(model: string, u: TokenUsage): void {
   const agg = meter.get(model) ?? {
     calls: 0,
     input: 0,
@@ -251,10 +254,10 @@ function record(model: string, u: Anthropic.Usage): void {
   agg.cacheRead += u.cache_read_input_tokens ?? 0;
   // 未知模型：标 unpriced 同时**走保守估算**（不静默 $0）。曾因 VALIDATOR_MODEL 配为
   // 未入表型号致 amount=0、56 万 token 被记成 \$0，掩盖真实成本（2026-06-03）。
-  const c = costUSD(model, u as TokenUsage);
+  const c = costUSD(model, u);
   if (c === null) {
     agg.unpriced = true;
-    agg.usd += fallbackCostUSD(model, u as TokenUsage);
+    agg.usd += fallbackCostUSD(model, u);
   } else {
     agg.usd += c;
   }
@@ -272,14 +275,25 @@ export function resetCostMeter(): void {
 
 /** 单次调用的 token/成本（按返回值透传给调用方做 per-Run 记账，避免读全局 meter 做差——并发不隔离）。
  *  未知模型用 fallbackCostUSD 保守估算（最贵已知价），不静默 \$0。 */
-function usageToCost(model: string, u: Anthropic.Usage): Cost {
+function usageToCost(model: string, u: TokenUsage): Cost {
   const tokens =
     (u.input_tokens ?? 0) +
     (u.output_tokens ?? 0) +
     (u.cache_creation_input_tokens ?? 0) +
     (u.cache_read_input_tokens ?? 0);
-  const known = costUSD(model, u as TokenUsage);
-  return { tokens, amount: known ?? fallbackCostUSD(model, u as TokenUsage) };
+  const known = costUSD(model, u);
+  return known === null
+    ? { tokens, amount: fallbackCostUSD(model, u), estimated: true }
+    : { tokens, amount: known };
+}
+
+function addCost(left: Cost, right: Cost): Cost {
+  const estimated = Boolean(left.estimated || right.estimated);
+  return {
+    tokens: left.tokens + right.tokens,
+    amount: left.amount + right.amount,
+    ...(estimated ? { estimated: true } : {}),
+  };
 }
 
 export interface StructuredCall<T extends z.ZodType> {
@@ -303,7 +317,7 @@ export interface StructuredCall<T extends z.ZodType> {
 
 export interface StructuredResult<T> {
   data: T;
-  usage: Anthropic.Usage;
+  usage: TokenUsage;
   /** 本次（含内部重试）累计成本 */
   cost: Cost;
 }
@@ -439,9 +453,116 @@ export async function retryTransientOperation<T>(
   }
 }
 
+/**
+ * Responses-compatible implementation kept separate from the established Anthropic streaming
+ * path. The Coding Plan SSE contract was admission-probed before this reader was enabled; the
+ * adapter still keeps the same LLM_TIMEOUT_MS wall-clock guard and fails closed without a final
+ * completion event.
+ */
+async function callVolcengineStructured<T extends z.ZodType>(
+  opts: StructuredCall<T>,
+): Promise<StructuredResult<z.infer<T>>> {
+  const startedAt = performance.now();
+  let underlyingRequests = 0;
+  let succeeded = false;
+  const outputStopReasons: string[] = [];
+  try {
+    const model = MODELS[opts.role];
+    const maxTokens = opts.maxTokens ?? 16_000;
+    // Keep the existing thinking budget guard, even though its provider-specific request shape is
+    // represented by the adapter. This prevents a true setting from silently receiving too small
+    // an output allowance.
+    if (opts.thinking) structuredThinkingConfig(true, maxTokens);
+    const jsonSchema = z.toJSONSchema(opts.schema) as Record<string, unknown>;
+    if (jsonSchema.type !== "object") {
+      throw new Error(`callStructured schema 根类型必须是 object（当前 ${String(jsonSchema.type ?? "<未知>")}）`);
+    }
+
+    let cost: Cost = { tokens: 0, amount: 0 };
+    const account = (usage: TokenUsage): void => {
+      record(model, usage);
+      const next = usageToCost(model, usage);
+      cost = addCost(cost, next);
+      opts.onCost?.(next);
+    };
+    const oneRequest = async () => {
+      underlyingRequests++;
+      const request = createRequestAbortSignal(llmTimeoutMs(), opts.signal);
+      try {
+        if (request.signal.aborted) throw request.signal.reason ?? new Error("LLM request aborted before start");
+        return await callVolcengineResponses({
+          apiKey: requireLlmApiKey("volcengine-responses"),
+          baseUrl: requireLlmBaseUrl("volcengine-responses"),
+          model,
+          system: opts.system,
+          user: opts.user,
+          jsonSchema,
+          maxTokens,
+          thinking: Boolean(opts.thinking),
+          signal: request.signal,
+        });
+      } finally {
+        request.dispose();
+      }
+    };
+    const withRetry = () => retryTransientOperation(oneRequest, {
+      retries: llmTransientRetries(),
+      backoffMs: llmTransientRetryBackoffMs(),
+      signal: opts.signal,
+      onRetry: (error, retryNumber) => {
+        const kind = error instanceof Error && error.name ? error.name : "UnknownError";
+        console.warn(`  ⚠️ LLM 瞬态失败，应用层重试 ${retryNumber}/${llmTransientRetries()}（role=${opts.role}，${kind}）`);
+      },
+    });
+
+    let response = await withRetry();
+    if (response.stopReason) outputStopReasons.push(response.stopReason);
+    account(response.usage);
+    // Retain the existing bounded refusal retry policy where the provider represents a refusal as
+    // a completed structured response. Other incomplete reasons remain evidence, not retries.
+    for (let attempt = 1; response.stopReason === "refusal" && attempt < 3; attempt++) {
+      response = await withRetry();
+      if (response.stopReason) outputStopReasons.push(response.stopReason);
+      account(response.usage);
+    }
+    if (response.stopReason === "max_output_tokens" || response.stopReason === "max_tokens") {
+      console.warn(`  ⚠️ 输出达 maxTokens(${maxTokens}) 截断（role=${opts.role}）——建议提高预算或缩小批`);
+    }
+
+    const parsed = opts.schema.safeParse(response.input);
+    if (!parsed.success) {
+      const coerced = coerceStringifiedFields(response.input, parsed.error.issues);
+      const retry = coerced != null ? opts.schema.safeParse(coerced) : null;
+      if (retry?.success) {
+        console.warn(`  ⚠️ 结构化输出字段被序列化成字符串、已定点 JSON.parse 修正（role=${opts.role}）`);
+        succeeded = true;
+        return { data: retry.data, usage: response.usage, cost };
+      }
+      throw new Error(
+        `结构化输出 schema 校验失败（role=${opts.role}）：${parsed.error.issues
+          .slice(0, 3)
+          .map((issue) => `${issue.path.join(".")}: ${issue.message}`)
+          .join("; ")}`,
+      );
+    }
+    succeeded = true;
+    return { data: parsed.data, usage: response.usage, cost };
+  } finally {
+    recordRoleCallTelemetry(
+      opts.role,
+      performance.now() - startedAt,
+      underlyingRequests,
+      !succeeded,
+      outputStopReasons,
+      opts.telemetryOperation,
+    );
+  }
+}
+
 export async function callStructured<T extends z.ZodType>(
   opts: StructuredCall<T>,
 ): Promise<StructuredResult<z.infer<T>>> {
+  if (llmProvider() === "volcengine-responses") return callVolcengineStructured(opts);
   const startedAt = performance.now();
   let underlyingRequests = 0;
   let succeeded = false;
@@ -484,7 +605,7 @@ export async function callStructured<T extends z.ZodType>(
   const account = (u: Anthropic.Usage): void => {
     record(model, u);
     const c = usageToCost(model, u);
-    cost = { tokens: cost.tokens + c.tokens, amount: cost.amount + c.amount };
+    cost = addCost(cost, c);
     opts.onCost?.(c);
   };
 

@@ -14,6 +14,9 @@ describe("isTransientApiError（中转站瞬时错误 vs 模型层错误）", ()
     expect(isTransientApiError(new Error("read ECONNRESET"))).toBe(true);
     expect(isTransientApiError(new Error("connect ETIMEDOUT 1.2.3.4:443"))).toBe(true);
     expect(isTransientApiError(new Error("socket hang up"))).toBe(true);
+    // Native fetch (used by the Responses adapter) surfaces connection loss with this exact
+    // message rather than an Anthropic SDK error class.
+    expect(isTransientApiError(new TypeError("fetch failed"))).toBe(true);
   });
 
   it("模型拒答 / 解析失败 → false（应继续拆批隔离）", () => {

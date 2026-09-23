@@ -5,6 +5,20 @@
 > 状态：🟡 初稿 · 2026-05-18 · 阈值为 M1 暂定值，M1 末随真实数据标定。
 > 2026-05-25 据 A1 实跑校准「非显然」门槛（硬门槛 → 追求层）；可达性 / 幻觉两条红线不动。
 
+## 内部原型适用范围
+
+ADR-0032 将当前产品固定为仅限已认证用户的内部原型。本文中标为“上线门”“DCP”或“正式回归门”的
+baseline、dataset lock、样本量与双人盲审要求，仅在未来重新进入正式/公开/商业治理时作为发布门。
+
+在当前原型阶段，模型、provider、prompt、validator、coverage 或来源语义变更的最小 AI 质量证据是
+`npm run eval:a1:prototype-safety`：它必须真实执行 analyzer/validator/coverage 路径，覆盖
+`support`、`uncertain` 和 exaggeration/out_of_context/misattribution 三类 `not_support`，且 display
+与 quote-only 基准均须 `unsafe_accept=0`、无执行失败。该结果是受限 smoke 安全证据；它不建立
+baseline、不满足 DCP，也不构成许可、合规或正式质量认证。`false_reject` 保持诊断指标，连续三次
+观测后才可考虑量化阈值。
+
+无论处于何种阶段，报告只接受 `pass + support` 白名单引用，raw archive 未验证时必须 fail closed。
+
 ## 评分维度
 
 洞察 / 报告输出的人评 + 自评维度：

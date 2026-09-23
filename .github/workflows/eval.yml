@@ -1,20 +1,20 @@
 # 定时真模型 eval（A1 回归门）——DCP-3 ② 的"定时 eval job"。
 #
 # 为什么单独一个 workflow：真模型 eval 需 API 凭据 + 预算 + 中转站，不进公共 CI（见 ci.yml 注释）。
-# 这里用 repo secrets 经【中转站 relay】跑——**不需要直连 sk-ant- key**，relay 凭据即可
-# （run-a1.ts 只要求 ANTHROPIC_API_KEY 存在，sk-ant- 仅软警告）。
+# 这里用 repo secrets 经显式 LLM provider 跑；Anthropic legacy secrets 仍受支持。Volcengine
+# Coding Plan 使用 LLM_PROVIDER=volcengine-responses + LLM_API_KEY + LLM_BASE_URL，不能复用旧 key。
 #
 # 触发：每周一次（北京周二凌晨）+ 手动（workflow_dispatch，可限量做廉价冒烟）。
 # 判定：run-a1.ts 自带阈值门 + baseline.json 回归对照（任一指标较基线降 >3pp → 非零退出 → 本 job 变红）。
 # 失败 → 复用渠道 adapter 推一条告警到 ALERT_WEBHOOK（飞书等）。
 #
-# ⚠️ 网络前提：GitHub 托管 runner 在境外，必须能访问你的 relay（ANTHROPIC_BASE_URL）。
+# ⚠️ 网络前提：GitHub 托管 runner 在境外，必须能访问所配置的 LLM endpoint。
 #    若 relay 限国内 IP/区域 → runner 连不上，eval 会网络失败。两条退路：
 #      ① 用 self-hosted runner（跑在你能访问 relay 的机器/VPS 上）；
 #      ② 改在容器内跑（加 /api/eval 端点 + 数据集打进镜像）。
 #
 # 需要在 repo 配置（Settings → Secrets and variables → Actions）：
-#   Secrets：ANTHROPIC_API_KEY（relay 凭据）、ANTHROPIC_BASE_URL（relay 端点）、
+#   Secrets：LLM_API_KEY（新 provider 凭据；或兼容的 ANTHROPIC_API_KEY）、
 #            可选 ALERT_WEBHOOK、ALERT_FEISHU_SECRET
 #   Variables：ANALYZER_MODEL、VALIDATOR_MODEL、COVERAGE_MODEL（展示反扩写复核）；三者均为
 #              relay 支持的不同模型。可选 ALERT_CHANNEL。
@@ -51,6 +51,10 @@ jobs:
     name: A1 真模型回归 eval（经 relay）
     runs-on: ubuntu-latest
     env:
+      LLM_PROVIDER: ${{ vars.LLM_PROVIDER || 'anthropic' }}
+      LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+      LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
+      # Compatibility only. Runtime ignores this key for volcengine-responses.
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
       ANALYZER_MODEL: ${{ vars.ANALYZER_MODEL }}
@@ -69,11 +73,17 @@ jobs:
       A1_QUALITY_LIMIT: ${{ github.event.inputs.quality_limit || '0' }}
       A1_CONSISTENCY_LIMIT: ${{ github.event.inputs.consistency_limit || '0' }}
     steps:
-      - name: 检查 relay 凭据是否已配
+      - name: 检查 LLM provider 凭据是否已配
         id: guard
         run: |
-          if [ -z "$ANTHROPIC_API_KEY" ] || [ -z "$ANTHROPIC_BASE_URL" ]; then
-            echo "::notice::未配置 ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL secrets，跳过真模型 eval（没有 relay 凭据时本 job 空跑、不报错）。"
+          if [ "$LLM_PROVIDER" = "volcengine-responses" ]; then
+            if [ -z "$LLM_API_KEY" ] || [ -z "$LLM_BASE_URL" ]; then
+              echo "::notice::未配置 LLM_API_KEY / LLM_BASE_URL，跳过 Volcengine 真模型 eval（没有凭据时本 job 空跑、不报错）。"
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          elif [ -z "$LLM_API_KEY" ] && [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "::notice::未配置 LLM_API_KEY 或 ANTHROPIC_API_KEY，跳过 Anthropic 真模型 eval（没有凭据时本 job 空跑、不报错）。"
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi

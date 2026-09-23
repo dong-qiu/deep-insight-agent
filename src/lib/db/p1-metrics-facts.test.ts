@@ -69,6 +69,20 @@ describe("P1 dashboard metric facts", () => {
     expect(metricLogs.warn).toHaveBeenCalledWith(expect.objectContaining({ err: "metric_conflict_audit_write_failed" }), expect.stringContaining("指标事实写入失败"));
   });
 
+  it("never records an unverified provider-price fallback as known cost", () => {
+    const provider = process.env.LLM_PROVIDER;
+    process.env.LLM_PROVIDER = "volcengine-responses";
+    try {
+      const db = dbWithMetrics();
+      const batch = { id: "batch_estimated_cost", topic_id: "topic_1" } as AnalysisBatch;
+      appendAnalysisMetricFacts(db, { batch, items: [], run_id: "run_1", costs: [{ tokens: 17, amount: 0.42, estimated: true }] });
+      expect(db.prepare("SELECT provider,amount_minor,cost_status,input_tokens FROM cost_ledger").get())
+        .toEqual({ provider: "volcengine", amount_minor: null, cost_status: "unknown", input_tokens: 17 });
+    } finally {
+      if (provider === undefined) delete process.env.LLM_PROVIDER; else process.env.LLM_PROVIDER = provider;
+    }
+  });
+
   it("materializes exact known, unknown, and validator aggregates then revises only inside the seven-day window", () => {
     const db = dbWithMetrics();
     const time = "2026-08-01T01:00:00.000Z";

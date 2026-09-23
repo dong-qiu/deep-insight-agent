@@ -17,11 +17,28 @@ import { type AppConfig, AppConfigSchema } from "./types.js";
 const DEFAULTS_PATH =
   process.env.INSIGHT_CONFIG_PATH ?? join(dirname(fileURLToPath(import.meta.url)), "defaults.yaml");
 
+/** A deliberately narrow migration alias. Only the legacy Anthropic deployment may satisfy the
+ * generic runtime key; new providers must use LLM_API_KEY so credentials cannot cross providers. */
+const ENV_REFERENCE_ALIASES: Record<string, readonly string[]> = {
+  LLM_API_KEY: ["LLM_API_KEY", "ANTHROPIC_API_KEY"],
+};
+
+function envReference(name: string): string | undefined {
+  const candidates = name === "LLM_API_KEY" && (process.env.LLM_PROVIDER?.trim() || "anthropic") !== "anthropic"
+    ? ["LLM_API_KEY"]
+    : ENV_REFERENCE_ALIASES[name] ?? [name];
+  for (const candidate of candidates) {
+    const value = process.env[candidate];
+    if (value !== undefined) return value;
+  }
+  return undefined;
+}
+
 /** 递归把字符串里的 ${VAR} 替换为环境变量；引用了未设置的变量即抛（密钥唯一来源 = env）。 */
 export function resolveEnvRefs<T>(node: T): T {
   if (typeof node === "string") {
     return node.replace(/\$\{([A-Z0-9_]+)\}/g, (_m, name: string) => {
-      const v = process.env[name];
+      const v = envReference(name);
       if (v === undefined) throw new Error(`配置引用了未设置的环境变量：${name}`);
       return v;
     }) as T;

@@ -4,7 +4,7 @@
  * 跑端到端切片：ContentItem[] → analyzer → Insight[] → validator → 指标，
  * 对照 `docs/verify/eval-criteria.md` 上线门槛打 PASS/FAIL。
  *
- * 用法：`npm run eval:a1`（需 .env.local 里的 ANTHROPIC_API_KEY）
+ * 用法：`npm run eval:a1`（需 .env.local 中与 LLM_PROVIDER 对应的凭据）
  *
  * 自动可测指标：引用可达性 / 一致性合格率 / 失败率 / flagged 率 / 校验器准召。
  * 人工指标（非显然占比、幻觉率）：脚本导出隔离的 evals/out/runs/<run-id>/review-queue.json 供人评。
@@ -47,7 +47,8 @@ import {
   type CoverageDecision,
 } from "../src/lib/agents/analyzer.js";
 import { consistencyBatchMax, consistencyCacheVersion, CONSISTENCY_WINDOW_CHARS, judgeWithRetry, validateBatch } from "../src/lib/agents/validator.js";
-import { anthropicBaseUrl, MODELS, assertCoverageModelSeparation, getCostReport, getRoleCallTelemetry, STRUCTURED_THINKING_TRANSPORT_VERSION } from "../src/lib/runtime/llm.js";
+import { MODELS, assertCoverageModelSeparation, getCostReport, getRoleCallTelemetry } from "../src/lib/runtime/llm.js";
+import { llmApiKey, llmBaseUrl, llmProvider, structuredTransportVersion } from "../src/lib/runtime/llm-provider.js";
 import { coverageThinking, coverageThinkingSource, validatorBatchOn, validatorThinking } from "../src/lib/runtime/env.js";
 import {
   RELAY_RECOVERY_MAX_PROBES,
@@ -60,7 +61,7 @@ import type { AnalysisBatch, CitationCheck, ContentItem, ImportanceReason, Insig
 import { DISPLAY_PROJECTION_VERSION } from "../src/lib/utils/source-quote-projection.js";
 import { selectInsights } from "../src/lib/agents/report-gen.js";
 import { beginA1Run, finalizeA1Run, finalizeFailedA1Run, sha256File, writeA1RunProgress, writeJson, type A1RunProgress, type A1RunWorkspace } from "./a1-artifacts.js";
-import { a1SmokeMode, selectA1Cases } from "./a1-case-limit.js";
+import { a1SmokeMode, selectA1Cases, selectA1CasesByIds } from "./a1-case-limit.js";
 import { isA1CoverageExecutionFailure } from "./a1-coverage-execution.js";
 import { a1IndependentCallConcurrency, mapA1IndependentCalls } from "./a1-independent-call-concurrency.js";
 import {
@@ -350,6 +351,8 @@ interface JudgeEvidence {
   case_index: number;
   stratum: Stratum;
   expected: ConsistencyLabel;
+  /** Benchmark taxonomy only; source text and statement stay out of this aggregate field. */
+  negative_type?: string;
   predicted: ConsistencyLabel | null;
   rationale: string | null;
   /** End-to-end time including all nested SDK/application retry attempts. */
@@ -380,6 +383,10 @@ function datasetDigest(path: string): string {
 
 function currentEvalConfig(qualityFile: string, consistencyFile: string, datasetLock: DatasetLockValidation): EvalConfig {
   return {
+    llm_provider: llmProvider(),
+    // An endpoint changes provider behaviour but can be deployment-sensitive; store only a hash
+    // in A1 artifacts, as we already do for prompts and datasets.
+    llm_endpoint_sha256: createHash("sha256").update(llmBaseUrl() ?? "provider-default").digest("hex"),
     analyzer_model: MODELS.analyzer,
     analyzer_output_version: ANALYZER_OUTPUT_VERSION,
     analyzer_prompt_sha256: createHash("sha256").update(ANALYZER_SYSTEM).digest("hex"),
@@ -399,7 +406,7 @@ function currentEvalConfig(qualityFile: string, consistencyFile: string, dataset
     validator_thinking: validatorThinking(),
     coverage_thinking: coverageThinking(),
     coverage_thinking_source: coverageThinkingSource(),
-    structured_thinking_transport_version: STRUCTURED_THINKING_TRANSPORT_VERSION,
+    structured_thinking_transport_version: structuredTransportVersion(),
     validator_batch: validatorBatchOn(),
     quality_dataset_sha256: datasetDigest(qualityFile),
     consistency_dataset_sha256: datasetDigest(consistencyFile),
@@ -482,6 +489,7 @@ async function runDisplayCoverageBenchmark(
   cases: DisplayCoverageCase[],
   concurrency: number,
   timeoutMs: number,
+  onSettled?: (index: number) => void,
 ): Promise<DisplayCoverageResult[]> {
   return mapA1IndependentCalls(cases, concurrency, async (c) => {
     const startedAt = Date.now();
@@ -540,7 +548,7 @@ async function runDisplayCoverageBenchmark(
         decisions, latency_ms: Date.now() - startedAt, error: a1ErrorMessage(error),
       };
     }
-  });
+  }, { onSettled });
 }
 
 /** Coverage is evaluated without the primary validator in this fixture.  Keeping this separate
@@ -549,6 +557,7 @@ async function runQuoteSelfContainedBenchmark(
   cases: QuoteSelfContainedCase[],
   concurrency: number,
   timeoutMs: number,
+  onSettled?: (index: number) => void,
 ): Promise<QuoteSelfContainedResult[]> {
   return mapA1IndependentCalls(cases, concurrency, async (c) => {
     const startedAt = Date.now();
@@ -583,7 +592,7 @@ async function runQuoteSelfContainedBenchmark(
         error: a1ErrorMessage(error),
       };
     }
-  });
+  }, { onSettled });
 }
 
 function gitValue(args: string[]): string | null {
@@ -692,17 +701,19 @@ function printMetrics(stratum: Stratum, rows: MetricRow[]): void {
 
 async function main(): Promise<void> {
   // .env.local 已由顶部 `import "./load-env.js"` 在 MODELS 求值前载入（见该模块注释）。
-  if (!process.env.ANTHROPIC_API_KEY) {
+  const provider = llmProvider();
+  const apiKey = llmApiKey(provider);
+  if (!apiKey) {
     console.error(
-      "缺少 ANTHROPIC_API_KEY。\n" +
-        "  1) cp .env.example .env.local 并填入真实 key，或\n" +
-        "  2) ANTHROPIC_API_KEY=sk-ant-... npm run eval:a1",
+      provider === "volcengine-responses"
+        ? "缺少 LLM_API_KEY（volcengine-responses）。请在 .env.local 设置 Coding Plan key 和 LLM_BASE_URL。"
+        : "缺少 LLM_API_KEY（或兼容的 ANTHROPIC_API_KEY）。请在 .env.local 设置真实 key。",
     );
     process.exit(2);
   }
-  if (!process.env.ANTHROPIC_API_KEY.startsWith("sk-ant-") && !anthropicBaseUrl()) {
+  if (provider === "anthropic" && !apiKey.startsWith("sk-ant-") && !llmBaseUrl(provider)) {
     console.warn(
-      "⚠️ ANTHROPIC_API_KEY 不以 'sk-ant-' 开头，可能不是有效的 Anthropic key" +
+      "⚠️ LLM_API_KEY / ANTHROPIC_API_KEY 不以 'sk-ant-' 开头，可能不是有效的 Anthropic key" +
         "（Anthropic key 形如 sk-ant-api03-...）。若实跑报 401/403，请先核对 key。\n",
     );
   }
@@ -729,18 +740,14 @@ async function main(): Promise<void> {
   const consistencySelection = selectA1Cases(consistencyAll, process.env.A1_CONSISTENCY_LIMIT, "A1_CONSISTENCY_LIMIT");
   const consistencyCases = consistencySelection.cases;
   const displayCoverageAll = readDisplayCoverageCases();
-  const displayCoverageSelection = selectA1Cases(
-    displayCoverageAll,
-    process.env.A1_DISPLAY_COVERAGE_LIMIT,
-    "A1_DISPLAY_COVERAGE_LIMIT",
-  );
+  const displayCoverageSelection = process.env.A1_DISPLAY_COVERAGE_IDS?.trim()
+    ? selectA1CasesByIds(displayCoverageAll, process.env.A1_DISPLAY_COVERAGE_IDS, "A1_DISPLAY_COVERAGE_IDS")
+    : selectA1Cases(displayCoverageAll, process.env.A1_DISPLAY_COVERAGE_LIMIT, "A1_DISPLAY_COVERAGE_LIMIT");
   const displayCoverageCases = displayCoverageSelection.cases;
   const quoteSelfContainedAll = readQuoteSelfContainedCases();
-  const quoteSelfContainedSelection = selectA1Cases(
-    quoteSelfContainedAll,
-    process.env.A1_QUOTE_SELF_CONTAINED_LIMIT,
-    "A1_QUOTE_SELF_CONTAINED_LIMIT",
-  );
+  const quoteSelfContainedSelection = process.env.A1_QUOTE_SELF_CONTAINED_IDS?.trim()
+    ? selectA1CasesByIds(quoteSelfContainedAll, process.env.A1_QUOTE_SELF_CONTAINED_IDS, "A1_QUOTE_SELF_CONTAINED_IDS")
+    : selectA1Cases(quoteSelfContainedAll, process.env.A1_QUOTE_SELF_CONTAINED_LIMIT, "A1_QUOTE_SELF_CONTAINED_LIMIT");
   const quoteSelfContainedCases = quoteSelfContainedSelection.cases;
   const datasetLockPath = process.env.A1_DATASET_LOCK ?? DEFAULT_DATASET_LOCK;
   let datasetLock: DatasetLockValidation;
@@ -950,6 +957,7 @@ async function main(): Promise<void> {
   const matrixByStratum: Record<Stratum, ConfusionMatrix> = { arxiv: emptyMatrix(), transcript: emptyMatrix() };
   const judgeEvidence: JudgeEvidence[] = [];
   let judgeSucceeded = 0;
+  let judgeSettled = 0;
   const judgeFailures: Array<{ case_index: number; error: string; latency_ms: number }> = [];
   updateA1Progress({
     state: "running", phase: "consistency", topic_timeout_ms: topicTimeoutMs,
@@ -987,26 +995,32 @@ async function main(): Promise<void> {
         };
       }
     },
+    {
+      onSettled: (caseIndex) => {
+        judgeSettled++;
+        updateA1Progress({
+          state: "running", phase: "consistency", topic_timeout_ms: topicTimeoutMs,
+          judge_timeout_ms: judgeTimeoutMs, coverage_timeout_ms: coverageTimeoutMs,
+          current_case: { index: caseIndex, total: consistencyCases.length },
+          completed: { quality_cases: qualitySucceeded, consistency_cases: 0 },
+          settled: { consistency_cases: judgeSettled },
+        });
+      },
+    },
   );
   for (const result of independentJudgeResults) {
     const { case_index: caseIndex, stratum, case: c, judgment, latency_ms, error } = result;
     const st = judgeByStratum[stratum];
-    updateA1Progress({
-      state: "running", phase: "consistency", topic_timeout_ms: topicTimeoutMs,
-      judge_timeout_ms: judgeTimeoutMs, coverage_timeout_ms: coverageTimeoutMs,
-      current_case: { index: caseIndex, total: consistencyCases.length },
-      completed: { quality_cases: qualitySucceeded, consistency_cases: judgeSucceeded },
-    });
     if (!judgment) {
       judgeFailures.push({ case_index: caseIndex, error: error ?? "未知校验器错误", latency_ms });
       recordJudgeAttempt(st, c.expected_consistency, null);
-      judgeEvidence.push({ case_index: caseIndex, stratum, expected: c.expected_consistency, predicted: null, rationale: null, latency_ms, error: error ?? "未知校验器错误" });
+      judgeEvidence.push({ case_index: caseIndex, stratum, expected: c.expected_consistency, negative_type: c.negative_type, predicted: null, rationale: null, latency_ms, error: error ?? "未知校验器错误" });
       continue;
     }
     recordJudgeAttempt(st, c.expected_consistency, judgment.consistency);
     judgeSucceeded++;
     matrixByStratum[stratum][c.expected_consistency][judgment.consistency]++;
-    judgeEvidence.push({ case_index: caseIndex, stratum, expected: c.expected_consistency, predicted: judgment.consistency, rationale: judgment.rationale, latency_ms, error: null });
+    judgeEvidence.push({ case_index: caseIndex, stratum, expected: c.expected_consistency, negative_type: c.negative_type, predicted: judgment.consistency, rationale: judgment.rationale, latency_ms, error: null });
     updateA1Progress({
       state: "running", phase: "consistency", topic_timeout_ms: topicTimeoutMs,
       judge_timeout_ms: judgeTimeoutMs, coverage_timeout_ms: coverageTimeoutMs,
@@ -1085,12 +1099,31 @@ async function main(): Promise<void> {
     state: "running", phase: "coverage_benchmark", topic_timeout_ms: topicTimeoutMs,
     judge_timeout_ms: judgeTimeoutMs, coverage_timeout_ms: coverageTimeoutMs,
     completed: { quality_cases: qualitySucceeded, consistency_cases: judgeSucceeded },
+    benchmark: "display_coverage",
+    settled: { consistency_cases: judgeSettled, display_coverage_cases: 0, quote_self_contained_cases: 0 },
   });
   process.stdout.write(`[展示引用覆盖] ${displayCoverageCases.length} 条手标反例/正例… `);
+  let displayCoverageSettled = 0;
+  let quoteSelfContainedSettled = 0;
   const displayCoverageResults = await runDisplayCoverageBenchmark(
     displayCoverageCases,
     evalConfig.independent_call_concurrency,
     coverageTimeoutMs,
+    (caseIndex) => {
+      displayCoverageSettled++;
+      updateA1Progress({
+        state: "running", phase: "coverage_benchmark", topic_timeout_ms: topicTimeoutMs,
+        judge_timeout_ms: judgeTimeoutMs, coverage_timeout_ms: coverageTimeoutMs,
+        benchmark: "display_coverage",
+        current_case: { index: caseIndex, total: displayCoverageCases.length },
+        completed: { quality_cases: qualitySucceeded, consistency_cases: judgeSucceeded },
+        settled: {
+          consistency_cases: judgeSettled,
+          display_coverage_cases: displayCoverageSettled,
+          quote_self_contained_cases: quoteSelfContainedSettled,
+        },
+      });
+    },
   );
   const expectedRejects = displayCoverageResults.filter((result) => result.expected === "reject");
   const expectedAccepts = displayCoverageResults.filter((result) => result.expected === "accept");
@@ -1108,11 +1141,37 @@ async function main(): Promise<void> {
   console.log(`${displayCoverageMetric.pass ? "✅" : "❌"} unsafe_accept ${unsafeAccepts.length}/${expectedRejects.length}；projection_violation ${projectionViolations.length}/${displayCoverageResults.length}；false_reject ${falseRejects.length}/${expectedAccepts.length}`);
 
   // ── Coverage 单角色校准（不能由主 validator 的先行拒绝代替）──
+  updateA1Progress({
+    state: "running", phase: "coverage_benchmark", topic_timeout_ms: topicTimeoutMs,
+    judge_timeout_ms: judgeTimeoutMs, coverage_timeout_ms: coverageTimeoutMs,
+    benchmark: "quote_self_contained",
+    completed: { quality_cases: qualitySucceeded, consistency_cases: judgeSucceeded },
+    settled: {
+      consistency_cases: judgeSettled,
+      display_coverage_cases: displayCoverageSettled,
+      quote_self_contained_cases: 0,
+    },
+  });
   process.stdout.write(`[Coverage quote-self-contained] ${quoteSelfContainedCases.length} 条手标 quote-only 用例… `);
   const quoteSelfContainedResults = await runQuoteSelfContainedBenchmark(
     quoteSelfContainedCases,
     evalConfig.independent_call_concurrency,
     coverageTimeoutMs,
+    (caseIndex) => {
+      quoteSelfContainedSettled++;
+      updateA1Progress({
+        state: "running", phase: "coverage_benchmark", topic_timeout_ms: topicTimeoutMs,
+        judge_timeout_ms: judgeTimeoutMs, coverage_timeout_ms: coverageTimeoutMs,
+        benchmark: "quote_self_contained",
+        current_case: { index: caseIndex, total: quoteSelfContainedCases.length },
+        completed: { quality_cases: qualitySucceeded, consistency_cases: judgeSucceeded },
+        settled: {
+          consistency_cases: judgeSettled,
+          display_coverage_cases: displayCoverageSettled,
+          quote_self_contained_cases: quoteSelfContainedSettled,
+        },
+      });
+    },
   );
   const quoteExpectedRejects = quoteSelfContainedResults.filter((result) => result.expected === "reject");
   const quoteUnsafeAccepts = quoteExpectedRejects.filter((result) => result.actual === "accept");

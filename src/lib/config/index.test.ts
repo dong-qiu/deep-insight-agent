@@ -15,18 +15,29 @@ describe("resolveEnvRefs", () => {
     delete process.env.TEST_MISSING_XYZ;
     expect(() => resolveEnvRefs({ k: "${TEST_MISSING_XYZ}" })).toThrow(/TEST_MISSING_XYZ/);
   });
+  it("在非 Anthropic provider 下拒绝以旧 key 满足通用 key", () => {
+    const provider = process.env.LLM_PROVIDER;
+    const generic = process.env.LLM_API_KEY;
+    process.env.LLM_PROVIDER = "volcengine-responses";
+    delete process.env.LLM_API_KEY;
+    process.env.ANTHROPIC_API_KEY = "legacy-key";
+    expect(() => resolveEnvRefs({ k: "${LLM_API_KEY}" })).toThrow(/LLM_API_KEY/);
+    if (provider === undefined) delete process.env.LLM_PROVIDER; else process.env.LLM_PROVIDER = provider;
+    if (generic === undefined) delete process.env.LLM_API_KEY; else process.env.LLM_API_KEY = generic;
+  });
 });
 
 describe("loadStaticConfig + 播种 + 合并", () => {
   let db: DB;
   beforeEach(() => {
+    delete process.env.LLM_API_KEY;
     process.env.ANTHROPIC_API_KEY = "test-key";
     db = openDb(":memory:");
   });
 
   it("加载默认配置、解析 ${VAR}、通过 Zod 校验", () => {
     const cfg = loadStaticConfig();
-    expect(cfg.models.apiKey).toBe("test-key"); // ${ANTHROPIC_API_KEY} 已解析
+    expect(cfg.models.apiKey).toBe("test-key"); // ${LLM_API_KEY} 经 Anthropic legacy alias 解析
     expect(cfg.models.analyzer).toBeTruthy();
     expect(cfg.defaultTopics.length).toBeGreaterThan(0);
     expect(cfg.defaultSources.length).toBeGreaterThan(0);

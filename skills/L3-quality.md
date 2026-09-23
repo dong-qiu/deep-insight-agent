@@ -24,6 +24,17 @@
 
 详见 `docs/verify/eval-criteria.md`。任何修改 prompt / 模型 / 数据源的 PR 必须附上 eval 对比结果。
 
+### 内部原型的快速路径（ADR-0032）
+
+当前产品固定为已认证用户可用的内部 `prototype`，不是正式/公开发布。对模型、provider、prompt、
+validator、coverage 或来源语义的改动，PR 必须附 `npm run eval:a1:prototype-safety` 的真实模型收据：
+执行完整、覆盖 `support`/`uncertain`/三种 `not_support`，并且 display 与 quote-only 的
+`unsafe_accept=0`。`false_reject` 先记录趋势，未取得三次观测前不得臆定新阈值。
+
+该 scoped evidence 不得写成可比 baseline、DCP、人评通过、来源许可或正式质量准入。完整 A1 仍作为
+按需/周期性诊断；若进入匿名/公开、付费/商业、原文外显/API 导出、训练或对外质量声明，立即回到
+下方正式门与 `eval-gate` 的 baseline/DCP 路径。
+
 ## 假设验证：量化先于实现
 
 - **拍脑袋的阈值 / 评分 / 相关性假设，写实现前先建离线 eval 出 before/after**：一批真样本 + 人工标注 + P/R/F1 表，把"这个方向有没有用"从争论变成测量。20 行脚本能在写第一行实现前砍掉一个会白做的功能——比"实现一版→上线→观察几周→才发现没用"省一个数量级。

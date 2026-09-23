@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { loadStaticConfig, seedDefaults } from "../src/lib/config/index.js";
 import { openLocalBootstrapDb } from "../src/lib/db/local-bootstrap.js";
 
-// 加载 .env.local（loadStaticConfig 需 ANTHROPIC_API_KEY 解析 ${VAR}）
+// 加载 .env.local（loadStaticConfig 需 LLM_API_KEY，Anthropic legacy alias 仍可解析）
 if (existsSync(".env.local")) {
   for (const line of readFileSync(".env.local", "utf8").split("\n")) {
     const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/);

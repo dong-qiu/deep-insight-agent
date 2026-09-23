@@ -10,7 +10,7 @@ ROOT="$(cd ../.. && pwd)"
 [ -f .vm-ip ] || { echo "缺 .vm-ip：先跑 ./provision.sh"; exit 1; }
 IP="$(cat .vm-ip)"
 [ -f "$ROOT/.env.local" ] || { echo "缺 .env.local：先跑 ./gen-env.sh 或确保仓库根已有 .env.local"; exit 1; }
-grep -q "TODO_PASTE_YOUR_KEY" "$ROOT/.env.local" && { echo "✗ .env.local 里 ANTHROPIC_API_KEY 还是占位，先填真实 key"; exit 1; }
+grep -q "TODO_PASTE_YOUR_KEY" "$ROOT/.env.local" && { echo "✗ .env.local 里 LLM_API_KEY 还是占位，先填真实 key"; exit 1; }
 
 # 传输目标：经 SSM 隧道时 SSH_HOST=localhost / SSH_PORT=2222；否则回落公网 IP:22
 SSH_HOST="${SSH_HOST:-$IP}"; SSH_PORT="${SSH_PORT:-22}"

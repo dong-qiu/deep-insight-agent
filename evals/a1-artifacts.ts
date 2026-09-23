@@ -90,6 +90,10 @@ export interface A1RunProgress {
   current_case?: { index: number; total: number; topic_id?: string };
   /** Analyzer-chunk coordinates are execution diagnostics only, never a reduced sample claim. */
   current_chunk?: { index: number; total: number };
+  /** Which independent safety fixture is settling; execution state only, never a score. */
+  benchmark?: "display_coverage" | "quote_self_contained";
+  /** Settled calls may include a recorded failure; keep this distinct from successful completions. */
+  settled?: { consistency_cases?: number; display_coverage_cases?: number; quote_self_contained_cases?: number };
   completed?: { quality_cases: number; consistency_cases: number };
   last_failure?: { phase: string; case_index?: number; topic_id?: string; error: string };
 }

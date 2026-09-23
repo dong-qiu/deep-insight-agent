@@ -22,6 +22,11 @@ nav a { margin-right: 1rem; }
   border-top: 1px solid #e5e7eb; font-size: .78rem;
 }
 .release-footer code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.prototype-policy-badge {
+  display: inline-block; padding: .08rem .42rem; border-radius: 999px;
+  background: #e0e7ff; color: #3730a3; font-weight: 650;
+}
+.prototype-policy-notice { font-size: .78rem; }
 .card { border: 1px solid #e5e7eb; border-radius: 8px; padding: .75rem 1rem; margin: .75rem 0; }
 .card h3 { margin: 0 0 .25rem; font-size: 1.05rem; }
 .card h4 { margin: 0 0 .25rem; font-size: 1rem; }
@@ -86,6 +91,7 @@ nav a { margin-right: 1rem; }
 .tag-chip { display: inline-block; margin: 0 .4rem .4rem 0; padding: .1rem .5rem; background: #f3f4f6; border-radius: 12px; font-size: .85rem; }
 @media (prefers-color-scheme: dark) {
   .release-footer { border-color: #374151; }
+  .prototype-policy-badge { background: #312e81; color: #c7d2fe; }
   .tag-chip { background: #1f2937; }
 }
 /* 主题页（IA「主题」）：关键实体标签 + 重大事件徽标 */

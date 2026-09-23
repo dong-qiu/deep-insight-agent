@@ -1,6 +1,7 @@
 /** P1b-2 adapters: attach metric facts to committed writers without affecting publication decisions. */
 import type { Cost, AnalysisBatch, ContentItem, ValidationResult } from "../types.js";
 import { MODELS } from "../runtime/llm.js";
+import { llmCostProvider } from "../runtime/llm-provider.js";
 import { runLogger } from "../runtime/logger.js";
 import { notifyMetricLateFact } from "../runtime/metric-alert.js";
 import type { DB } from "./index.js";
@@ -35,6 +36,11 @@ function alertIfQuarantined(db: DB, kind: FactKind, id: string, occurredAt: stri
   if (isMetricLateEvent(db, kind, id)) notifyMetricLateFact({ factKind: kind, eventId: id, occurredAt });
 }
 function cents(cost: Cost): number { return Math.max(0, Math.round(cost.amount * 100)); }
+function ledgerCost(cost: Cost): { amount_minor: number | null; cost_status: "known" | "unknown" } {
+  // A conservative fallback is valuable for a local budget warning, but it is not a provider
+  // price and must never be persisted as a known accounting fact.
+  return cost.estimated ? { amount_minor: null, cost_status: "unknown" } : { amount_minor: cents(cost), cost_status: "known" };
+}
 function checkReason(check: ValidationResult["checks"][number]): "source_not_found" | "source_unreachable" | "quote_not_in_source" | "out_of_context" | "exaggeration" | "misattribution" | "speaker_attribution_unknown" | "uncertain" | "not_evaluated" | "internal_error" {
   if (check.reachability_reason !== "ok") return check.reachability_reason;
   if (check.consistency_reason !== "ok") return check.consistency_reason === "not_evaluated" ? "internal_error" : check.consistency_reason;
@@ -82,7 +88,7 @@ export function appendAnalysisMetricFacts(db: DB, input: { batch: AnalysisBatch;
       const id = metricFactId("cost", [input.batch.id, "analyze", index]);
       const factOccurredAt = metricFactOccurredAt(db, "cost", id, occurredAt);
       appendCostLedger(db, { entry_id: id, trace_id: `metric:batch:${input.batch.id}`, stage: "processed", pipeline_version: PIPELINE_VERSION, topic_id: input.batch.topic_id,
-        provider: "anthropic", model: MODELS.analyzer, currency: "USD", amount_minor: cents(cost), cost_status: "known", input_tokens: cost.tokens, output_tokens: 0, occurred_at: factOccurredAt, ingested_at: occurredAt });
+        provider: llmCostProvider(), model: MODELS.analyzer, currency: "USD", ...ledgerCost(cost), input_tokens: cost.tokens, output_tokens: 0, occurred_at: factOccurredAt, ingested_at: occurredAt });
       alertIfQuarantined(db, "cost", id, factOccurredAt);
     });
   });
@@ -115,7 +121,7 @@ export function appendValidationMetricFacts(db: DB, input: { batch: AnalysisBatc
       const id = metricFactId("cost", [input.batch.id, "validate", index]);
       const factOccurredAt = metricFactOccurredAt(db, "cost", id, occurredAt);
       appendCostLedger(db, { entry_id: id, trace_id: `metric:batch:${input.batch.id}`, stage: "validated", pipeline_version: PIPELINE_VERSION, topic_id: input.batch.topic_id,
-        provider: "anthropic", model: MODELS.validator, currency: "USD", amount_minor: cents(cost), cost_status: "known", input_tokens: cost.tokens, output_tokens: 0, occurred_at: factOccurredAt, ingested_at: occurredAt });
+        provider: llmCostProvider(), model: MODELS.validator, currency: "USD", ...ledgerCost(cost), input_tokens: cost.tokens, output_tokens: 0, occurred_at: factOccurredAt, ingested_at: occurredAt });
       alertIfQuarantined(db, "cost", id, factOccurredAt);
     });
   });

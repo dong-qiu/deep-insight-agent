@@ -9,7 +9,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { z } from "zod";
 import { coverageThinking, validatorThinking } from "../src/lib/runtime/env.js";
-import { callStructured, MODELS, STRUCTURED_THINKING_TRANSPORT_VERSION, type Role } from "../src/lib/runtime/llm.js";
+import { callStructured, MODELS, type Role } from "../src/lib/runtime/llm.js";
+import { llmApiKey, llmProvider, structuredTransportVersion } from "../src/lib/runtime/llm-provider.js";
 import { readConsistencyBlindWorklist } from "./a1-consistency-label-blind-worklist.js";
 import {
   AI_ASSISTED_REVIEW_VERSION,
@@ -51,7 +52,7 @@ if (!worklistPath || !reviewerRoleArg || !outputPath) {
 if (reviewerRoleArg !== "validator" && reviewerRoleArg !== "coverage") throw new Error("AI reviewer 只能是 validator 或 coverage");
 if (!outputPath.endsWith(".local.json")) throw new Error("AI reviewer 输出必须以 .local.json 结尾，防止诊断标签进入 Git");
 if (existsSync(outputPath)) throw new Error("AI reviewer 输出已存在，拒绝覆盖诊断证据");
-if (!process.env.ANTHROPIC_API_KEY) throw new Error("缺少 ANTHROPIC_API_KEY，无法运行 AI reviewer");
+if (!llmApiKey(llmProvider())) throw new Error("缺少当前 LLM_PROVIDER 对应的 API key，无法运行 AI reviewer");
 
 const role = reviewerRoleArg as Extract<Role, "validator" | "coverage">;
 // This is intentionally before input/checkpoint restore and any LLM call. A same-model pair
@@ -71,7 +72,7 @@ if (worklist.length !== 100 || input.some((row, index) => (row as { pair_sha256?
 
 const checkpointContext = {
   reviewer_id: reviewerId, role, model, thinking,
-  structured_thinking_transport_version: STRUCTURED_THINKING_TRANSPORT_VERSION,
+  structured_thinking_transport_version: structuredTransportVersion(),
   response_budget_version: aiReviewResponseBudgetVersion(maxTokens), max_tokens: maxTokens,
   prompt_version: PROMPT_VERSION, prompt_sha256: hash(SYSTEM),
   worklist_sha256: hash(inputBytes), pair_population_sha256: pairPopulationSha(worklist),

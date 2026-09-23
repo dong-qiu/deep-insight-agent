@@ -15,6 +15,8 @@ describe("isAdminOnlyPath（多账号分权闸门）", () => {
     expect(isAdminOnlyPath("/api/reports/rep_1/followup")).toBe(true);
     expect(isAdminOnlyPath("/api/reports/rep_1/pptx")).toBe(true);
     expect(isAdminOnlyPath("/api/admin/reports/rep_1/redaction")).toBe(true);
+    // 原型阶段的快速隐藏/撤回仍只能由管理员触发。
+    expect(isAdminOnlyPath("/api/admin/reports/rep_1/retention")).toBe(true);
   });
 
   it("viewer 可读路径 → 非 admin-only", () => {
