@@ -71,6 +71,8 @@ describe("technology opportunity dogfood v2", () => {
     expect(() => scoreDogfoodLabels(labels, source(), manifest, sealed, { ...mapping, records: mapping.records.map((x, i) => i ? x : { ...x, candidate: false, direction_id: null, lane: null }) })).toThrow();
   });
 
+  // This contract launches seven npm/tsx subprocesses. Under the full isolated Vitest suite its
+  // wall time includes worker contention, so the default 5s unit-test budget is not meaningful.
   it("runs the documented export→sample→seal→mapping→materialize→score CLI contract", () => {
     const dir = mkdtempSync(join(tmpdir(), "dogfood-v2-"));
     try {
@@ -90,5 +92,5 @@ describe("technology opportunity dogfood v2", () => {
       expect(JSON.parse(scoreOutput.slice(scoreOutput.indexOf("{")))).toMatchObject({ total: 1 });
       expect(JSON.parse(readFileSync(paths[3], "utf8"))).not.toHaveProperty("actual_candidate");
     } finally { rmSync(dir, { recursive: true, force: true }); }
-  });
+  }, 20_000);
 });
