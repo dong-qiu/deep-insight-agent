@@ -22,6 +22,7 @@ import { normalizeUrl, rawToContentItem } from "../sources/normalize.js";
 import { screenPodcastCandidate } from "../sources/podcast-screening.js";
 import { stableEvidenceUrl } from "../sources/podcast-evidence.js";
 import { transcriptFetchEnabled, transcriptShadowFetchEnabled } from "../sources/rss.js";
+import { assertExplicitTranscriptPolicy } from "../transcript-policy.js";
 import type { RawItem } from "../sources/types.js";
 import { runPodcastTranscriptShadow } from "./podcast-shadow.js";
 import { createPodcastShadowStore } from "./podcast-shadow-store.js";
@@ -84,7 +85,9 @@ function recordPodcastMetadataFacts(input: {
 }): void {
   const mode = input.source.transcript_mode ?? "off";
   const policyVersion = input.source.transcript_policy_version?.trim();
-  if (mode === "off" || !policyVersion || !input.raw.is_podcast_episode) return;
+  // This delivery is observe-only. `enabled` has no production acquisition semantics yet, so it
+  // must not leave partial metadata that looks like an approved/enabled execution trail.
+  if (mode !== "observe" || !policyVersion || !input.raw.is_podcast_episode) return;
 
   const decision = screenPodcastCandidate(input.raw, input.topics);
   const fallbackBodyKind: TranscriptAcquisitionFact["fallback_body_kind"] = input.raw.body.trim()
@@ -124,6 +127,7 @@ export async function collectSource(
   source: Source,
   opts: { retryOf?: string | null; probe?: boolean; traceClaim?: SourceCollectClaim; telemetry?: P1TelemetrySink } = {},
 ): Promise<CollectResult> {
+  assertExplicitTranscriptPolicy(source);
   const telemetry = opts.telemetry ?? NOOP_P1_TELEMETRY_SINK;
   const trace = opts.traceClaim;
   const sourceRef = trace ? sourceConfigRef(source) : null;
@@ -205,9 +209,9 @@ export async function collectSource(
     let articleFetches = 0; // 本轮已抓全文条数（绑首轮全量回填的串行规模，剩余留下轮）
     const articleBudget = articleFetchMaxPerRun();
     const transcriptMode = source.transcript_mode ?? "off";
-    const sourceTopics = transcriptMode === "off"
-      ? []
-      : listTopics(db, { enabledOnly: true }).filter((topic) => source.topic_ids.includes(topic.id));
+    const sourceTopics = transcriptMode === "observe"
+      ? listTopics(db, { enabledOnly: true }).filter((topic) => source.topic_ids.includes(topic.id))
+      : [];
     for (const raw of raws) {
       // full_text only accepts a page-derived body for a new URL. In particular, an emergency fetch
       // kill must not overwrite an already-complete article with the feed summary.

@@ -67,6 +67,10 @@ const sourceAnq: Source = {
 const sourcePod: Source = {
   id: "s1", name: "Pod", type: "rss", endpoint: "https://pod/feed",
   topic_ids: ["t1"], fetch_interval: "1h", backfill: null, enabled: true,
+  // Keep the fixture ready for an explicit observe/enabled policy. Its default remains off.
+  transcript_mode: "off", transcript_strategy: "relevant_only", transcript_max_items_per_run: 2,
+  transcript_max_bytes_per_run: 2_000, transcript_timeout_budget_ms: 1_000, transcript_host_qps: 1,
+  transcript_policy_version: null,
 };
 const sourceFullText: Source = {
   id: "s_ft", name: "先知式", type: "rss", endpoint: "https://xz.example/feed",
@@ -281,7 +285,7 @@ describe("collector 按源 fetch_mode 全文策略（ADR-0008 切片2）", () =>
 });
 
 describe("collector preserves existing transcript evidence", () => {
-  it("在预筛与配额 collector 合入前，enabled 策略也不从生产 collector 请求 transcript", async () => {
+  it("在预筛与配额 collector 合入前，enabled 策略保持 dormant，既不请求也不写观察事实", async () => {
     const policySource: Source = {
       ...sourcePod, id: "s_policy", endpoint: "https://pod/policy-feed",
       transcript_mode: "enabled", transcript_policy_version: "podcast-policy-v1",
@@ -291,6 +295,9 @@ describe("collector preserves existing transcript evidence", () => {
     await collectSource(db, policySource);
     const item = getContentItem(db, getContentByUrl(db, "https://pod/ep-staged")!.id)!;
     expect(item).toMatchObject({ body_kind: "show_notes", body: "Show notes." });
+    expect(ctl.transcriptCalls).toBe(0);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM transcript_acquisition_fact WHERE source_id=?").get(policySource.id))
+      .toEqual({ n: 0 });
   });
 
   it("observe 只写候选/决策事实，绝不抓取或替换生产 show_notes", async () => {
@@ -302,6 +309,13 @@ describe("collector preserves existing transcript evidence", () => {
     expect(ctl.transcriptCalls).toBe(0);
     expect(db.prepare("SELECT stage,outcome,decision FROM transcript_acquisition_fact WHERE source_id=? ORDER BY stage").all(sourcePod.id))
       .toEqual([{ stage: "candidate", outcome: "not_attempted", decision: "fetch" }, { stage: "decision", outcome: "decision", decision: "fetch" }]);
+  });
+
+  it("直接调用 collector 也拒绝未完整声明的 observe 策略", async () => {
+    await expect(collectSource(db, {
+      ...sourcePod, transcript_mode: "observe", transcript_policy_version: "podcast-policy-v1",
+      transcript_max_items_per_run: undefined,
+    })).rejects.toThrow("transcript_policy_fields_required");
   });
 
   it("observe 的显式 shadow 开关只写隔离 SQLite/archive，不进入生产 ContentItem", async () => {

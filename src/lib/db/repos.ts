@@ -6,6 +6,7 @@ import { parseFacets } from "../topics/facets.js";
 import type { ContentItem, Cost, Run, Source, Topic, TranscriptAcquisitionFact } from "../types.js";
 import type { DB } from "./index.js";
 import { canonicalHash, projectTrace } from "./provenance-facts.js";
+import { assertExplicitTranscriptPolicy } from "../transcript-policy.js";
 
 const j = (v: unknown): string => JSON.stringify(v);
 const b = (v: boolean): number => (v ? 1 : 0);
@@ -20,6 +21,7 @@ type TranscriptPolicy = Pick<Source,
  * empty; a policy-aware mode must be explicitly versioned before any collector may read it. */
 function transcriptPolicyForWrite(source: Source): Required<TranscriptPolicy> {
   const transcript_mode = source.transcript_mode ?? "off";
+  assertExplicitTranscriptPolicy(source);
   const transcript_strategy = source.transcript_strategy ?? "relevant_only";
   const transcript_max_items_per_run = source.transcript_max_items_per_run ?? 5;
   const transcript_max_bytes_per_run = source.transcript_max_bytes_per_run ?? 5 * 1024 * 1024;

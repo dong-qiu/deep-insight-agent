@@ -7,6 +7,7 @@ import type { Source, Topic, TranscriptAcquisitionFact } from "../types.js";
 import { stableEvidenceUrl } from "../sources/podcast-evidence.js";
 import { screenPodcastCandidate } from "../sources/podcast-screening.js";
 import { PodcastRequestBudgetError, fetchPodcastProgramPage, fetchTranscript, transcriptFetchEnabled, transcriptShadowFetchEnabled } from "../sources/rss.js";
+import { assertExplicitTranscriptPolicy } from "../transcript-policy.js";
 import type { PodcastProgramPageFetchResult, RawItem, TranscriptFetchResult } from "../sources/types.js";
 
 const PODCAST_TRANSCRIPT_SHADOW_ADAPTER_VERSION = "rss-podcast-transcript-shadow-v1";
@@ -43,6 +44,7 @@ export async function runPodcastTranscriptShadow(input: {
   sleep?: (ms: number) => Promise<void>;
 }): Promise<ShadowSampleResult> {
   if ((input.source.transcript_mode ?? "off") !== "observe") throw new Error("podcast_shadow_requires_observe_mode");
+  assertExplicitTranscriptPolicy(input.source);
   const policyVersion = input.source.transcript_policy_version?.trim();
   if (!policyVersion) throw new Error("transcript_policy_version_required");
   // This function owns transcript requests. Enforce both kill switches here as well as in the

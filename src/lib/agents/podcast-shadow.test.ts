@@ -67,20 +67,27 @@ describe("runPodcastTranscriptShadow", () => {
     await expect(runPodcastTranscriptShadow({
       source: { ...source, transcript_policy_version: null }, raws: [], topics: [], sink: memorySink([], []),
     })).rejects.toThrow("transcript_policy_version_required");
+    await expect(runPodcastTranscriptShadow({
+      source: { ...source, transcript_max_items_per_run: undefined }, raws: [], topics: [], sink: memorySink([], []),
+    })).rejects.toThrow("transcript_policy_fields_required");
   });
 
-  it("双总熔断在 request-owning worker 内生效，直接调用也不能发起网络请求", async () => {
-    delete process.env.TRANSCRIPT_SHADOW_FETCH;
-    let transcriptRequests = 0;
-    let programPageRequests = 0;
-    await expect(runPodcastTranscriptShadow({
-      source, raws: [raw("https://reader:secret@pod.example/ep?lang=en&token=secret")],
-      topics: [{ id: "t", keywords: ["coding agent"] }], sink: memorySink([], []),
-      fetcher: async () => { transcriptRequests++; return success; },
-      programPageFetcher: async () => { programPageRequests++; return programPage; },
-    })).rejects.toThrow("podcast_shadow_fetch_disabled");
-    expect(transcriptRequests).toBe(0);
-    expect(programPageRequests).toBe(0);
+  it("双总熔断在 request-owning worker 内生效，任一关闭时直接调用也不能发起网络请求", async () => {
+    for (const disabledGate of ["TRANSCRIPT_FETCH", "TRANSCRIPT_SHADOW_FETCH"] as const) {
+      process.env.TRANSCRIPT_FETCH = "1";
+      process.env.TRANSCRIPT_SHADOW_FETCH = "1";
+      delete process.env[disabledGate];
+      let transcriptRequests = 0;
+      let programPageRequests = 0;
+      await expect(runPodcastTranscriptShadow({
+        source, raws: [raw("https://reader:secret@pod.example/ep?lang=en&token=secret")],
+        topics: [{ id: "t", keywords: ["coding agent"] }], sink: memorySink([], []),
+        fetcher: async () => { transcriptRequests++; return success; },
+        programPageFetcher: async () => { programPageRequests++; return programPage; },
+      })).rejects.toThrow("podcast_shadow_fetch_disabled");
+      expect(transcriptRequests).toBe(0);
+      expect(programPageRequests).toBe(0);
+    }
   });
 
   it("shadow facts use a credential-free canonical episode URL", async () => {

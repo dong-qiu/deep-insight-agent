@@ -2,7 +2,7 @@
 import { z } from "zod/v4";
 import { hasDomainFacet, isValidFacet } from "../topics/facets.js";
 
-export const SourceConfigSchema = z.object({
+const SourceConfigInputSchema = z.object({
   id: z.string(),
   name: z.string(),
   type: z.enum(["rss", "arxiv", "api"]),
@@ -16,21 +16,53 @@ export const SourceConfigSchema = z.object({
   content_container: z.string().nullable().default(null),
   // ADR-0027：新源先关闭全文，只有逐源经过 shadow/eval 后才允许 enabled。
   transcript_mode: z.enum(["off", "observe", "enabled"]).default("off"),
-  transcript_strategy: z.enum(["all", "relevant_only"]).default("relevant_only"),
-  transcript_max_items_per_run: z.number().int().positive().default(5),
-  transcript_max_bytes_per_run: z.number().int().positive().default(5 * 1024 * 1024),
-  transcript_timeout_budget_ms: z.number().int().positive().default(30_000),
-  transcript_host_qps: z.number().positive().default(0.5),
+  // `off` remains backward-compatible with omitted policy fields. Once a source opts into a
+  // policy-aware mode, however, every decision and resource limit must be authored explicitly:
+  // silently inheriting a default would make an approval impossible to audit or reproduce.
+  transcript_strategy: z.enum(["all", "relevant_only"]).optional(),
+  transcript_max_items_per_run: z.number().int().positive().optional(),
+  transcript_max_bytes_per_run: z.number().int().positive().optional(),
+  transcript_timeout_budget_ms: z.number().int().positive().optional(),
+  transcript_host_qps: z.number().positive().optional(),
   transcript_policy_version: z.string().trim().min(1).nullable().default(null),
-}).superRefine((source, ctx) => {
-  if (source.transcript_mode !== "off" && !source.transcript_policy_version) {
+});
+
+/** A source that is not yet policy-aware may use the legacy defaults. `observe` and `enabled`
+ * cannot: their complete policy is the unit that is reviewed, versioned and later approved. */
+export const SourceConfigSchema = SourceConfigInputSchema.superRefine((source, ctx) => {
+  if (source.transcript_mode === "off") return;
+  if (!source.transcript_policy_version) {
     ctx.addIssue({
       code: "custom",
       path: ["transcript_policy_version"],
       message: "observe/enabled transcript_mode 必须提供非空 transcript_policy_version",
     });
   }
-});
+  for (const field of [
+    "transcript_strategy",
+    "transcript_max_items_per_run",
+    "transcript_max_bytes_per_run",
+    "transcript_timeout_budget_ms",
+    "transcript_host_qps",
+  ] as const) {
+    if (source[field] === undefined) {
+      ctx.addIssue({
+        code: "custom",
+        path: [field],
+        message: "observe/enabled transcript_mode 必须显式提供完整的策略与资源上限",
+      });
+    }
+  }
+}).transform((source) => ({
+  ...source,
+  // Normalize legacy/off sources only after validation so callers always receive a complete
+  // Source-shaped policy, while non-off sources can never acquire these values implicitly.
+  transcript_strategy: source.transcript_strategy ?? "relevant_only",
+  transcript_max_items_per_run: source.transcript_max_items_per_run ?? 5,
+  transcript_max_bytes_per_run: source.transcript_max_bytes_per_run ?? 5 * 1024 * 1024,
+  transcript_timeout_budget_ms: source.transcript_timeout_budget_ms ?? 30_000,
+  transcript_host_qps: source.transcript_host_qps ?? 0.5,
+}));
 
 export const TopicConfigSchema = z.object({
   id: z.string(),
