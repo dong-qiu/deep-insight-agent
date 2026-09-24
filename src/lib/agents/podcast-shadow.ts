@@ -84,10 +84,19 @@ export async function runPodcastTranscriptShadow(input: {
 
   for (const raw of input.raws) {
     if (!raw.is_podcast_episode) continue;
-    const decision = screenPodcastCandidate(raw, input.topics);
+    let decision: ReturnType<typeof screenPodcastCandidate>;
+    let canonicalEpisodeUrl: string;
+    try {
+      decision = screenPodcastCandidate(raw, input.topics);
+      canonicalEpisodeUrl = stableEvidenceUrl(raw.url);
+    } catch {
+      // A malformed feed item is not a terminal acquisition fact because it has no safe,
+      // durable episode identity. It must not starve later valid candidates in this sample.
+      continue;
+    }
     const common = {
       source_id: input.source.id,
-      canonical_episode_url: stableEvidenceUrl(raw.url),
+      canonical_episode_url: canonicalEpisodeUrl,
       candidate_hash: decision.candidate_hash,
       transcript_policy_version: policyVersion,
       mode: "observe" as const,

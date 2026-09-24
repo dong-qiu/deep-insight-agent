@@ -35,7 +35,8 @@ Source 是否采集：
 `eligible candidate` 指已由 RSS audio / podcast 元数据识别、且允许尝试公开 transcript 的播客单集。
 限额只暂停 transcript；RSS 采集不能被暂停或熔断。
 
-`off` 时上述策略字段可缺省且不得被读取；`observe` 或 `enabled` 时，strategy、四项限额及非空
+`off` 时上述策略字段可缺省；也可保存供日后审查的 staged policy，但它不得参与任何候选判断、
+预筛决策、acquisition fact 或网络请求。`observe` 或 `enabled` 时，strategy、四项限额及非空
 `transcript_policy_version` 均为必填。任何会改变候选、预筛决策或请求行为的变更（mode、strategy、
 限额、topic 关联、规则或 adapter）必须先升级 policy version，不能覆盖既有事实。
 

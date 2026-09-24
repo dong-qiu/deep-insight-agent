@@ -108,6 +108,19 @@ describe("runPodcastTranscriptShadow", () => {
     expect(JSON.stringify(facts)).not.toContain("secret");
   });
 
+  it("畸形候选只跳过自身，后续合法候选仍会完成 shadow 采样", async () => {
+    const facts: Omit<TranscriptAcquisitionFact, "event_key">[] = [];
+    const result = await runPodcastTranscriptShadow({
+      source,
+      raws: [raw("https://[malformed"), raw("https://pod.example/valid-after-malformed")],
+      topics: [{ id: "t", keywords: ["coding agent"] }], sink: memorySink(facts, []),
+      fetcher: async () => success, programPageFetcher: async () => programPage,
+    });
+    expect(result).toEqual({ observed: 1, requested: 1, succeeded: 1, budget_limited: 0 });
+    expect(facts).toHaveLength(4);
+    expect(facts.every((fact) => fact.canonical_episode_url === "https://pod.example/valid-after-malformed")).toBe(true);
+  });
+
   it("节目页失败按真实 transport outcome 终结，不把失败伪装成 success", async () => {
     const facts: Omit<TranscriptAcquisitionFact, "event_key">[] = [];
     const archives: unknown[] = [];

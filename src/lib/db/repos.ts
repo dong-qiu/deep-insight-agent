@@ -17,8 +17,8 @@ type TranscriptPolicy = Pick<Source,
   "transcript_policy_version"
 >;
 
-/** Resolve optional legacy Source fields at the persistence boundary. `off` keeps its version
- * empty; a policy-aware mode must be explicitly versioned before any collector may read it. */
+/** Resolve optional legacy Source fields at the persistence boundary. `off` may retain an inert
+ * staged policy for later review, but only a policy-aware mode may consume it for acquisition. */
 function transcriptPolicyForWrite(source: Source): Required<TranscriptPolicy> {
   const transcript_mode = source.transcript_mode ?? "off";
   assertExplicitTranscriptPolicy(source);
