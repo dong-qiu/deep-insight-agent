@@ -2,6 +2,8 @@
 
 export const VOLCENGINE_STREAM_PROBE_SCHEMA_VERSION = "volcengine-stream-probe-v1";
 
+export type ProbeThinkingProfileError = "coverage_thinking_requires_profiles_above_thinking_budget";
+
 export interface VolcengineStreamProbeProfile {
   id: string;
   inputChars: number;
@@ -22,7 +24,7 @@ export const VOLCENGINE_STREAM_PROBE_PROFILES: readonly VolcengineStreamProbePro
 
 export type ProbeFailure = {
   error_type: string;
-  terminal?: "completed" | "incomplete" | "failed" | "error" | "eof_before_terminal";
+  terminal?: "completed" | "completed_invalid_status" | "incomplete" | "failed" | "error" | "eof_before_terminal";
   incomplete_reason?: "max_output_tokens" | "max_tokens" | "other";
   http_status?: number;
   saw_done?: boolean;
@@ -76,6 +78,23 @@ export function selectProbeProfiles(raw = process.env.VOLCENGINE_STREAM_PROBE_PR
     if (!profile) throw new Error(`未知的 VOLCENGINE_STREAM_PROBE_PROFILE_IDS: ${id}`);
     return profile;
   });
+}
+
+/**
+ * Thinking needs a response allowance strictly above its 1024-token budget. Reject the requested
+ * profiles before a provider call rather than reporting a local configuration rejection as an SSE
+ * transport failure.
+ */
+export function probeThinkingProfileError(
+  profiles: readonly VolcengineStreamProbeProfile[],
+  thinking: boolean,
+  thinkingBudgetTokens: number,
+): ProbeThinkingProfileError | undefined {
+  if (!thinking) return undefined;
+  const incompatible = profiles.filter((profile) => profile.maxTokens <= thinkingBudgetTokens);
+  return incompatible.length
+    ? "coverage_thinking_requires_profiles_above_thinking_budget"
+    : undefined;
 }
 
 export function syntheticProbeInput(chars: number): string {

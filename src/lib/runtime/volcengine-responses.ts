@@ -15,7 +15,7 @@ export const STRUCTURED_RESPONSE_TOOL_NAME = "respond_with_structured_output";
  * Bounded, protocol-only evidence for a failed Responses stream. It deliberately excludes
  * event payloads: those payloads may contain the prompt, source material, or model output.
  */
-export type VolcengineResponsesTerminal = "completed" | "incomplete" | "failed" | "error" | "eof_before_terminal";
+export type VolcengineResponsesTerminal = "completed" | "completed_invalid_status" | "incomplete" | "failed" | "error" | "eof_before_terminal";
 
 export interface VolcengineResponsesStreamDiagnostic {
   terminal: VolcengineResponsesTerminal;
@@ -31,7 +31,7 @@ export class VolcengineResponsesError extends Error {
     readonly status?: number,
     readonly retryable = false,
     readonly streamDiagnostic?: VolcengineResponsesStreamDiagnostic,
-    /** Paid response usage when a completed stream violates the forced-function protocol. */
+    /** Safely normalized paid-response usage, including formal terminal failures. */
     readonly usage?: TokenUsage,
   ) {
     super(message);
@@ -86,6 +86,16 @@ function incompleteReason(body: ResponseBody | undefined): VolcengineResponsesSt
 
 function asNonNegativeInt(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0;
+}
+
+/** Extract only numeric usage fields; never retain a provider response body in a failure. */
+function normalizeUsage(body: ResponseBody): TokenUsage {
+  return {
+    input_tokens: asNonNegativeInt(body.usage?.input_tokens),
+    output_tokens: asNonNegativeInt(body.usage?.output_tokens),
+    cache_creation_input_tokens: 0,
+    cache_read_input_tokens: asNonNegativeInt(body.usage?.input_tokens_details?.cached_tokens),
+  };
 }
 
 function endpoint(baseUrl: string): string {
@@ -163,12 +173,18 @@ async function readResponsesStream(
     terminal: VolcengineResponsesTerminal,
     retryable = false,
     body?: ResponseBody,
-  ): VolcengineResponsesError => new VolcengineResponsesError(message, undefined, retryable, {
-    terminal,
-    sawDone,
-    functionArgumentsDone,
-    ...(terminal === "incomplete" ? { incompleteReason: incompleteReason(body) } : {}),
-  });
+  ): VolcengineResponsesError => new VolcengineResponsesError(
+    message,
+    undefined,
+    retryable,
+    {
+      terminal,
+      sawDone,
+      functionArgumentsDone,
+      ...(terminal === "incomplete" ? { incompleteReason: incompleteReason(body) } : {}),
+    },
+    body ? normalizeUsage(body) : undefined,
+  );
 
   const consumeBlock = (block: string): void => {
     const data = block.split(/\r?\n/)
@@ -209,9 +225,11 @@ async function readResponsesStream(
       const body = asRecord(event.response) as ResponseBody | undefined;
       throw streamError("Volcengine Responses 流式请求未完成", "incomplete", false, body);
     }
-    if (event.type === "response.failed") throw streamError("Volcengine Responses 流式请求失败", "failed");
+    if (event.type === "response.failed") {
+      throw streamError("Volcengine Responses 流式请求失败", "failed", false, asRecord(event.response) as ResponseBody | undefined);
+    }
     if (event.type === "response.error" || event.type === "error") {
-      throw streamError("Volcengine Responses 流式请求返回错误事件", "error");
+      throw streamError("Volcengine Responses 流式请求返回错误事件", "error", false, asRecord(event.response) as ResponseBody | undefined);
     }
   };
 
@@ -263,15 +281,6 @@ async function readResponsesStream(
   return { body: completed, functionArguments, streamDiagnostic: { sawDone, functionArgumentsDone } };
 }
 
-function safeStopReason(body: ResponseBody): VolcengineResponsesResult["stopReason"] {
-  const incomplete = body.incomplete_details?.reason;
-  if (incomplete === "max_output_tokens" || incomplete === "max_tokens") return incomplete;
-  const status = body.status;
-  if (status === "completed" || status === "incomplete" || status === "failed" || status === "refusal") return status;
-  // Preserve that the provider returned an unexpected terminal field without serializing it.
-  return typeof incomplete === "string" || typeof status === "string" ? "other" : undefined;
-}
-
 /** Perform one streaming structured response. The caller supplies the wall-clock AbortSignal. */
 export async function callVolcengineResponses(
   request: VolcengineResponsesRequest,
@@ -317,12 +326,19 @@ export async function callVolcengineResponses(
   }
 
   const { body, functionArguments, streamDiagnostic } = await readResponsesStream(response, request.signal);
-  const usage = {
-    input_tokens: asNonNegativeInt(body.usage?.input_tokens),
-    output_tokens: asNonNegativeInt(body.usage?.output_tokens),
-    cache_creation_input_tokens: 0,
-    cache_read_input_tokens: asNonNegativeInt(body.usage?.input_tokens_details?.cached_tokens),
-  };
+  const usage = normalizeUsage(body);
+  // A `response.completed` event is valid only when its own response status confirms completion.
+  // Never allow contradictory, missing, or provider-private status text to carry schema-valid
+  // arguments into an analyzer/validator result. Usage is retained for paid failure accounting.
+  if (body.status !== "completed") {
+    throw new VolcengineResponsesError(
+      "Volcengine Responses 完成事件包含无效终态",
+      undefined,
+      false,
+      { terminal: "completed_invalid_status", ...streamDiagnostic },
+      usage,
+    );
+  }
   if (!streamDiagnostic.functionArgumentsDone) {
     // This is a transport-contract defect after a completed, paid response, not a semantic model
     // refusal. The structured caller accounts `usage` before its single transport retry.
@@ -340,7 +356,7 @@ export async function callVolcengineResponses(
     // after usage has been returned and accounted. HTTP failures still throw above.
     input: parseFunctionArguments(functionArguments),
     usage,
-    stopReason: safeStopReason(body),
+    stopReason: "completed",
     streamDiagnostic,
   };
 }

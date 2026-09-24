@@ -36,10 +36,11 @@ COVERAGE_THINKING=0
 2. Volcengine 请求只发往 allowlist 中的 Coding Plan Responses endpoint（API root 时为 `${LLM_BASE_URL}/responses`，
    完整 endpoint 则原样使用），使用 Bearer `LLM_API_KEY`，且请求采用 forced function call；模型输出仍由原有 Zod
    schema 校验。HTTP 错误日志不得回显上游 body，任意其他 endpoint 必须在网络请求前被拒绝。
-3. `response.completed` 后缺少整个 forced function-arguments final event 的响应，必须先保留 usage、
-   成本和 protocol telemetry，再仅由 `LLM_TRANSIENT_RETRIES` 执行有界新请求；耗尽后 fail-closed，且
-   不得再进入 validator 外层重试。event 已到达但参数缺失/损坏的响应仍须在 Zod 门失败；两种情况都不得
-   把已付费失败静默成零成本。
+3. 只有 `response.completed` 且其 response `status="completed"`、并且收到整个 forced
+   function-arguments final event 的响应才可进入 Zod 门。缺少整个 event 的响应必须先保留 usage、成本和
+   protocol telemetry，再仅由 `LLM_TRANSIENT_RETRIES` 执行有界新请求；耗尽后 fail-closed，且不得再进入
+   validator 外层重试。任何 formal terminal 或 `response.completed` 内矛盾/缺失 status 都须 fail-closed；
+   event 已到达但参数缺失/损坏的响应仍须在 Zod 门失败。以上所有带 usage 的已付费失败不得静默成零成本。
 4. 未核实价格的模型成本必须标 `estimated`；写入 `cost_ledger` 时为
    `amount_minor=NULL, cost_status=unknown`，不能作为已知成本聚合。
 5. A1 EvalConfig 必须记录 provider、endpoint SHA-256 和 transport version；任一项变化使历史
@@ -65,5 +66,6 @@ COVERAGE_THINKING=0
 - 不改变 analyzer、validator、coverage 的提示词、引用白名单或报告发布 fail-closed 语义。
 - `npm run eval:probe-volcengine-stream` 是传输诊断，不是 A1 或质量门。它经生产等价的
   `callStructured` 路径发送合成输入，默认每档三次（可用 `VOLCENGINE_STREAM_PROBE_ATTEMPTS=1..10`
-  调整），只写入忽略目录中的聚合终态/HTTP/延迟信息；不发送原文，也不得被用作 baseline、DCP
-  或发布准入证据。
+  调整）。当 coverage thinking 打开而所选 profile 的 `maxTokens` 不超过 thinking budget 时，工具须在
+  任何网络请求前以固定配置错误退出，不能把它写成 SSE 失败。它只写入忽略目录中的聚合终态/HTTP/延迟信息；
+  不发送原文，也不得被用作 baseline、DCP 或发布准入证据。

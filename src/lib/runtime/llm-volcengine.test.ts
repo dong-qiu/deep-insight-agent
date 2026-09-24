@@ -111,6 +111,36 @@ describe("callStructured through Volcengine Responses", () => {
     });
   });
 
+  it("accounts but never accepts paid formal or contradictory terminal responses", async () => {
+    process.env.LLM_PROVIDER = "volcengine-responses";
+    process.env.LLM_API_KEY = "not-a-real-key";
+    process.env.LLM_BASE_URL = "https://ark.cn-beijing.volces.com/api/coding/v3";
+    process.env.LLM_TRANSIENT_RETRIES = "0";
+    Object.assign(MODELS, { analyzer: "glm-5.3" });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(sse([
+        { type: "response.incomplete", response: { status: "incomplete", incomplete_details: { reason: "max_output_tokens" }, usage: { input_tokens: 9, output_tokens: 4 } } },
+      ]))
+      .mockResolvedValueOnce(sse([
+        { type: "response.function_call_arguments.done", name: STRUCTURED_RESPONSE_TOOL_NAME, arguments: '{"ok":true}' },
+        { type: "response.completed", response: { status: "refusal", usage: { input_tokens: 3, output_tokens: 2 } } },
+      ]));
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    const call = () => callStructured({
+      role: "analyzer", telemetryOperation: "provider_transport_test", system: "system", user: "user", schema: z.object({ ok: z.boolean() }), maxTokens: 2048,
+    });
+    await expect(call()).rejects.toMatchObject({ retryable: false, streamDiagnostic: { terminal: "incomplete" } });
+    await expect(call()).rejects.toMatchObject({ retryable: false, streamDiagnostic: { terminal: "completed_invalid_status" } });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(getCostReport().byModel).toEqual([expect.objectContaining({ model: "glm-5.3", calls: 2, input: 12, output: 6, unpriced: true })]);
+    expect(getRoleCallTelemetry().analyzer).toMatchObject({
+      failures: 2,
+      provider_stream_failures: { incomplete: 1, completed_invalid_status: 1 },
+      output_stop_reasons: { max_output_tokens: 1, other: 1 },
+    });
+  });
+
   it("retries one paid completed-protocol defect inside callStructured and preserves both requests", async () => {
     process.env.LLM_PROVIDER = "volcengine-responses";
     process.env.LLM_API_KEY = "not-a-real-key";

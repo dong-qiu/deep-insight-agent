@@ -23,7 +23,7 @@ function fallbackCostUSD(model: string, u: TokenUsage): number {
   if (!warnedUnpriced.has(model)) {
     warnedUnpriced.add(model);
     console.warn(
-      `⚠️ 未知模型「${model}」不在价目表（PRICING）；按已知最贵价（input $${FALLBACK_PRICING.input}/M, output $${FALLBACK_PRICING.output}/M）保守估算成本。补全 src/lib/runtime/cost.ts 的 PRICING。`,
+      `⚠️ 模型「${model}」没有可核实的本地价目；按已知最贵价（input $${FALLBACK_PRICING.input}/M, output $${FALLBACK_PRICING.output}/M）保守估算成本，并标为 estimated。实际订阅计费请以服务商控制台为准。`,
     );
   }
   const cacheWrite = u.cache_creation_input_tokens ?? 0;
@@ -576,11 +576,18 @@ async function callVolcengineStructured<T extends z.ZodType>(
               providerSseDone.push(error.streamDiagnostic.sawDone);
               providerFunctionArgumentsDone.push(error.streamDiagnostic.functionArgumentsDone);
             }
-            // A terminal `completed` response without the forced function event has paid usage.
-            // Account it before retrying; otherwise a provider contract failure disappears from
-            // both cost telemetry and the A1 evidence ledger.
+            // Terminal Responses events can include paid usage even when their structured output
+            // is rejected. Account it before any retry or fail-closed propagation so failed
+            // requests remain visible in the cost ledger and A1 evidence.
             if (error.usage) {
-              outputStopReasons.push("completed");
+              const stopReason = terminal === "incomplete"
+                ? error.streamDiagnostic?.incompleteReason ?? "incomplete"
+                : terminal === "failed"
+                  ? "failed"
+                  : terminal === "completed" ? "completed"
+                    : terminal === "completed_invalid_status" ? "other"
+                      : undefined;
+              if (stopReason) outputStopReasons.push(stopReason);
               account(error.usage);
             }
           }

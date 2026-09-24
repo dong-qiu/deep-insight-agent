@@ -8,12 +8,13 @@ import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { z } from "zod/v4";
 import { coverageThinking, llmTimeoutMs, llmTransientRetries } from "../src/lib/runtime/env.js";
-import { assertCoverageModelSeparation, callStructured, getRoleCallTelemetry, MODELS } from "../src/lib/runtime/llm.js";
+import { assertCoverageModelSeparation, callStructured, getRoleCallTelemetry, MODELS, STRUCTURED_THINKING_BUDGET_TOKENS } from "../src/lib/runtime/llm.js";
 import { llmApiKey, llmProvider, structuredTransportVersion } from "../src/lib/runtime/llm-provider.js";
 import { VolcengineResponsesError } from "../src/lib/runtime/volcengine-responses.js";
 import {
   VOLCENGINE_STREAM_PROBE_SCHEMA_VERSION,
   probeAttemptsPerProfile,
+  probeThinkingProfileError,
   probePassed,
   safeProbeErrorType,
   safeProbeHttpStatus,
@@ -23,6 +24,13 @@ import {
   type ProbeAttempt,
   type ProbeFailure,
 } from "./volcengine-stream-probe-lib.js";
+
+class ProbeConfigurationError extends Error {
+  constructor(readonly reason: "coverage_thinking_requires_profiles_above_thinking_budget") {
+    super(reason);
+    this.name = "ProbeConfigurationError";
+  }
+}
 
 function safeFailure(error: unknown): ProbeFailure {
   if (!(error instanceof VolcengineResponsesError)) return { error_type: safeProbeErrorType(error) };
@@ -69,6 +77,9 @@ async function main(): Promise<void> {
   const startedAt = new Date().toISOString();
   const attemptsPerProfile = probeAttemptsPerProfile();
   const profiles = selectProbeProfiles();
+  const thinking = coverageThinking();
+  const profileError = probeThinkingProfileError(profiles, thinking, STRUCTURED_THINKING_BUDGET_TOKENS);
+  if (profileError) throw new ProbeConfigurationError(profileError);
   const attempts: ProbeAttempt[] = [];
   const outputPath = probeOutputPath();
   const output = (status: "running" | "completed" | "failed") => ({
@@ -79,7 +90,7 @@ async function main(): Promise<void> {
     config: {
       provider,
       coverage_model: MODELS.coverage,
-      coverage_thinking: coverageThinking(),
+      coverage_thinking: thinking,
       structured_transport_version: structuredTransportVersion(),
       llm_timeout_ms: llmTimeoutMs(),
       transient_retries: llmTransientRetries(),
@@ -110,7 +121,7 @@ async function main(): Promise<void> {
           ].join("\n"),
           schema,
           maxTokens: profile.maxTokens,
-          thinking: coverageThinking(),
+          thinking,
         });
         attempts.push({ profile_id: profile.id, duration_ms: performance.now() - started });
       } catch (error) {
@@ -139,6 +150,10 @@ async function main(): Promise<void> {
 
 main().catch((error) => {
   // Never expose an upstream body, a prompt, a source, or an opaque request id from a CLI error.
-  console.error(JSON.stringify({ status: "failed", error_type: safeProbeErrorType(error) }));
+  console.error(JSON.stringify({
+    status: "failed",
+    error_type: error instanceof ProbeConfigurationError ? error.name : safeProbeErrorType(error),
+    ...(error instanceof ProbeConfigurationError ? { reason: error.reason } : {}),
+  }));
   process.exit(1);
 });

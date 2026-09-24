@@ -244,13 +244,14 @@ describe("Volcengine Responses structured adapter", () => {
     });
   });
 
-  it("classifies a formal incomplete terminal without retaining its event body or request id", async () => {
+  it("classifies and preserves safe paid usage for a formal incomplete terminal without retaining its event body or request id", async () => {
     globalThis.fetch = vi.fn(async () => sse([
       { type: "response.function_call_arguments.done", name: STRUCTURED_RESPONSE_TOOL_NAME, arguments: '{"ok":true}' },
       {
         type: "response.incomplete",
         response: {
           status: "incomplete",
+          usage: { input_tokens: 9, output_tokens: 4, input_tokens_details: { cached_tokens: 2 } },
           incomplete_details: { reason: "max_output_tokens", source_body: "must-not-escape" },
         },
       },
@@ -267,30 +268,44 @@ describe("Volcengine Responses structured adapter", () => {
         functionArgumentsDone: true,
         incompleteReason: "max_output_tokens",
       },
+      usage: { input_tokens: 9, output_tokens: 4, cache_creation_input_tokens: 0, cache_read_input_tokens: 2 },
     });
     expect(error).not.toHaveProperty("streamDiagnostic.requestId");
     expect(JSON.stringify(error)).not.toContain("must-not-escape");
     expect(JSON.stringify(error)).not.toContain("req-7e1d");
   });
 
-  it("classifies failed and generic error terminal events as non-retryable", async () => {
+  it("classifies failed and generic error terminal events as non-retryable while retaining only paid usage", async () => {
     for (const type of ["response.failed", "error"]) {
-      globalThis.fetch = vi.fn(async () => sse([{ type }])) as typeof fetch;
-      await expect(callVolcengineResponses(request)).rejects.toMatchObject({
+      globalThis.fetch = vi.fn(async () => sse([{
+        type,
+        response: { usage: { input_tokens: 9, output_tokens: 4, input_tokens_details: { cached_tokens: 2 } }, source_body: "must-not-escape" },
+      }])) as typeof fetch;
+      const error = await callVolcengineResponses(request).catch((caught: unknown) => caught);
+      expect(error).toMatchObject({
         retryable: false,
         streamDiagnostic: { terminal: type === "response.failed" ? "failed" : "error" },
+        usage: { input_tokens: 9, output_tokens: 4, cache_creation_input_tokens: 0, cache_read_input_tokens: 2 },
       });
+      expect(JSON.stringify(error)).not.toContain("must-not-escape");
     }
   });
 
-  it("maps unknown completed terminal fields to a fixed stop reason without persisting SSE data", async () => {
-    globalThis.fetch = vi.fn(async () => sse([
-      { type: "response.function_call_arguments.done", name: STRUCTURED_RESPONSE_TOOL_NAME, arguments: '{"ok":true}' },
-      { type: "response.completed", response: { status: "token=do-not-persist", incomplete_details: { reason: "credential=do-not-persist" }, usage: {} } },
-    ])) as typeof fetch;
+  it("fails closed for every non-completed status on a completed event without persisting SSE data", async () => {
+    for (const status of ["incomplete", "failed", "refusal", "token=do-not-persist", undefined]) {
+      globalThis.fetch = vi.fn(async () => sse([
+        { type: "response.function_call_arguments.done", name: STRUCTURED_RESPONSE_TOOL_NAME, arguments: '{"ok":true}' },
+        { type: "response.completed", response: { status, incomplete_details: { reason: "credential=do-not-persist" }, usage: { input_tokens: 9, output_tokens: 4 } } },
+      ])) as typeof fetch;
 
-    const result = await callVolcengineResponses(request);
-    expect(result.stopReason).toBe("other");
-    expect(JSON.stringify(result)).not.toContain("do-not-persist");
+      const error = await callVolcengineResponses(request).catch((caught: unknown) => caught);
+      expect(error).toMatchObject({
+        name: "VolcengineResponsesError",
+        retryable: false,
+        streamDiagnostic: { terminal: "completed_invalid_status", sawDone: true, functionArgumentsDone: true },
+        usage: { input_tokens: 9, output_tokens: 4 },
+      });
+      expect(JSON.stringify(error)).not.toContain("do-not-persist");
+    }
   });
 });

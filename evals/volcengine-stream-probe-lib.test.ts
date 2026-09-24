@@ -3,6 +3,7 @@ import {
   VOLCENGINE_STREAM_PROBE_PROFILES,
   probeAttemptsPerProfile,
   probePassed,
+  probeThinkingProfileError,
   safeProbeErrorType,
   safeProbeHttpStatus,
   selectProbeProfiles,
@@ -30,6 +31,13 @@ describe("Volcengine stream probe helpers", () => {
     ]);
     expect(selectProbeProfiles("short_4096,short_8192").map((profile) => profile.maxTokens)).toEqual([4_096, 8_192]);
     expect(() => selectProbeProfiles("unknown")).toThrow("未知的 VOLCENGINE_STREAM_PROBE_PROFILE_IDS");
+  });
+
+  it("rejects locally incompatible profile budgets before treating them as stream failures", () => {
+    const defaults = selectProbeProfiles(undefined);
+    expect(probeThinkingProfileError(defaults, false, 1_024)).toBeUndefined();
+    expect(probeThinkingProfileError(defaults, true, 1_024)).toBe("coverage_thinking_requires_profiles_above_thinking_budget");
+    expect(probeThinkingProfileError(selectProbeProfiles("coverage_2048,short_4096"), true, 1_024)).toBeUndefined();
   });
 
   it("summarizes only bounded protocol metadata", () => {
