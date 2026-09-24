@@ -994,6 +994,8 @@ CREATE TABLE IF NOT EXISTS insight (
   type             TEXT NOT NULL CHECK (type IN ('aggregation','trend')),
   event_id         TEXT,
   statement        TEXT NOT NULL,
+  -- 已通过展示覆盖审计的主题语言结论；缺省/旧行为空，读路径回退 statement 的绑定原文。
+  reader_statement TEXT NOT NULL DEFAULT '',
   -- 1-based citation binding for reader-visible statement provenance. NULL means legacy/unverified.
   statement_citation_index INTEGER,
   headline         TEXT NOT NULL DEFAULT '',

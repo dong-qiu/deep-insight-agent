@@ -11,6 +11,7 @@ vi.mock("../runtime/llm.js", () => ({
   MODELS: { analyzer: "test-analyzer", validator: "test-validator", coverage: "test-coverage" },
 }));
 import { callStructured } from "../runtime/llm.js";
+import { sourceQuoteHash } from "../utils/source-quote-projection.js";
 import { ANALYZE_BODY_CHARS, ANALYZER_SYSTEM, CITATION_CLAUSE_AUDIT, DISPLAY_COVERAGE_PRIMARY_MAX_TOKENS, QuoteCoverageRejectedError, REPAIR_QUOTE_MIN_PREFIX, SELECT_SEPARATOR, analyze, canonicalizeInsightEvents, carveQuote, chunkByChars, chunkWindows, coverageGaps, filterByQuoteCoverage, isCompleteStatement, quoteCoverageClauses, renderImportanceBasis, repairCitationSource, repairCoverage, repairQuote, selectForAnalyze, specificClaims, truncateForAnalyze, verifyDisplayedQuoteCoverage, type AnalyzeChunkCheckpoint, type AnalyzeStageTelemetry } from "./analyzer.js";
 import { AnalyzerOutputSchema } from "../types.js";
 
@@ -808,7 +809,7 @@ describe("filterByQuoteCoverage（展示 quote 覆盖门）", () => {
   it("v6 把模型的翻译 claim 投影为绑定 quote，不能把因果/范围扩写带进读者 statement", async () => {
     const quote = "MCP workflow optimizations corresponded to a 1.67x speedup and reduced median end-to-end latency by about 40.0%.";
     vi.mocked(callStructured).mockResolvedValue(coverageVerdictsFor(quote, true));
-    const audits: Array<{ display_projection_version?: string; statement_sha256?: string; quote_sha256?: string }> = [];
+    const audits: Array<{ display_projection_version?: string; draft_statement_sha256?: string; statement_sha256?: string; quote_sha256?: string }> = [];
     const row = insight("MCP workflow 优化带来 1.67 倍加速并将中位端到端延迟降低约 40.0%。", [{
       content_item_id: "ci", claim: "MCP workflow 优化带来 1.67 倍加速并将中位端到端延迟降低约 40.0%",
       quote, locator: { paragraph_index: 0, char_start: 0, char_end: quote.length },
@@ -816,8 +817,10 @@ describe("filterByQuoteCoverage（展示 quote 覆盖门）", () => {
 
     await expect(filterByQuoteCoverage([row], undefined, undefined, (decision) => audits.push(decision))).resolves.toEqual([row]);
     expect(row.statement).toBe(quote);
+    expect(row.reader_statement).toBe("MCP workflow 优化带来 1.67 倍加速并将中位端到端延迟降低约 40.0%。");
     expect(row.headline).toBe("");
     expect(audits[0]).toMatchObject({ display_projection_version: "source_quote_v1", statement_sha256: expect.any(String), quote_sha256: expect.any(String) });
+    expect(audits[0]?.draft_statement_sha256).toBe(sourceQuoteHash(row.reader_statement!));
     expect(audits[0]?.statement_sha256).toBe(audits[0]?.quote_sha256);
   });
 

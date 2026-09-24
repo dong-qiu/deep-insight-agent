@@ -146,7 +146,10 @@ export function Markdown({ md, anchorPrefix = "cite-" }: { md: string; anchorPre
 /** 行内分词：`code` + 标准 markdown 链接 [text](url) + [N] 引用锚（C-2）。
  *  正则按优先级：链接（含括号 text + URL）→ code → [N] 数字锚。
  *  顺序重要：链接先匹配避免 [5](url) 被误识别成 [5] 锚。 */
-const INLINE_PATTERN = /(\[[^\]]+\]\([^)]+\)|`[^`]+`|\[\d+\])/g;
+// `\\[12\\]` is a literal source reference escaped by report-gen, not a generated report
+// citation. Keep the negative lookbehind scoped to numeric citation syntax; ordinary markdown
+// links retain their existing precedence and behaviour.
+const INLINE_PATTERN = /(\[[^\]]+\]\([^)]+\)|`[^`]+`|(?<!\\)\[\d+\])/g;
 
 /** anchorPrefix 让同页多处引用各用独立锚命名空间（报告正文 "cite-" vs 追问 "cite-fup-{id}-"）。 */
 function inlineWith(text: string, anchorPrefix: string): ReactNode {
@@ -170,6 +173,9 @@ function inlineWith(text: string, anchorPrefix: string): ReactNode {
         </sup>
       );
     }
-    return p;
+    // Report-gen escapes source-derived numeric brackets to prevent an evidence footnote such
+    // as `[12]` from becoming a dangling `#cite-12` navigation target. React must render the
+    // literal text without exposing the markdown escape character.
+    return p.replace(/\\([\[\]])/g, "$1");
   });
 }
