@@ -6,6 +6,7 @@
  */
 import { createHash } from "node:crypto";
 import type { Topic } from "../types.js";
+import { stableEvidenceUrl } from "./podcast-evidence.js";
 import type { RawItem } from "./types.js";
 
 export const PODCAST_SCREENING_POLICY_VERSION = "podcast-screen-v1";
@@ -26,7 +27,9 @@ function lower(value: string | null | undefined): string {
 function candidateHash(raw: RawItem): string {
   // The hash is an opaque fact identity; do not place signed transcript URLs in diagnosable rows.
   return createHash("sha256").update(JSON.stringify({
-    url: raw.url, title: raw.title, author: raw.author, published_at: raw.published_at,
+    // Episode links can also be signed. Hash their stable, credential-free identity so a fresh
+    // transport signature neither creates a new candidate nor influences a durable fact key.
+    url: stableEvidenceUrl(raw.url), title: raw.title, author: raw.author, published_at: raw.published_at,
     body: raw.body, is_podcast_episode: raw.is_podcast_episode ?? false,
     podcast_episode_type: raw.podcast_episode_type ?? null,
     has_transcript: Boolean(raw.transcript_url),

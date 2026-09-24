@@ -4,8 +4,9 @@
  * it writes to an isolated database/archive and has no route into ContentItem or Report.
  */
 import type { Source, Topic, TranscriptAcquisitionFact } from "../types.js";
+import { stableEvidenceUrl } from "../sources/podcast-evidence.js";
 import { screenPodcastCandidate } from "../sources/podcast-screening.js";
-import { PodcastRequestBudgetError, fetchPodcastProgramPage, fetchTranscript } from "../sources/rss.js";
+import { PodcastRequestBudgetError, fetchPodcastProgramPage, fetchTranscript, transcriptFetchEnabled, transcriptShadowFetchEnabled } from "../sources/rss.js";
 import type { PodcastProgramPageFetchResult, RawItem, TranscriptFetchResult } from "../sources/types.js";
 
 const PODCAST_TRANSCRIPT_SHADOW_ADAPTER_VERSION = "rss-podcast-transcript-shadow-v1";
@@ -44,6 +45,9 @@ export async function runPodcastTranscriptShadow(input: {
   if ((input.source.transcript_mode ?? "off") !== "observe") throw new Error("podcast_shadow_requires_observe_mode");
   const policyVersion = input.source.transcript_policy_version?.trim();
   if (!policyVersion) throw new Error("transcript_policy_version_required");
+  // This function owns transcript requests. Enforce both kill switches here as well as in the
+  // collector so a future caller cannot turn an observe sample into an accidental network path.
+  if (!transcriptFetchEnabled() || !transcriptShadowFetchEnabled()) throw new Error("podcast_shadow_fetch_disabled");
 
   const fetcher = input.fetcher ?? fetchTranscript;
   const programPageFetcher = input.programPageFetcher ?? fetchPodcastProgramPage;
@@ -81,7 +85,7 @@ export async function runPodcastTranscriptShadow(input: {
     const decision = screenPodcastCandidate(raw, input.topics);
     const common = {
       source_id: input.source.id,
-      canonical_episode_url: raw.url,
+      canonical_episode_url: stableEvidenceUrl(raw.url),
       candidate_hash: decision.candidate_hash,
       transcript_policy_version: policyVersion,
       mode: "observe" as const,

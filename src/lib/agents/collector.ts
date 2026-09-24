@@ -20,10 +20,11 @@ import { articleFetchEnabled, articleFetchKilled, fetchArticle } from "../source
 import { fetchFromSource } from "../sources/index.js";
 import { normalizeUrl, rawToContentItem } from "../sources/normalize.js";
 import { screenPodcastCandidate } from "../sources/podcast-screening.js";
-import { transcriptFetchEnabled } from "../sources/rss.js";
+import { stableEvidenceUrl } from "../sources/podcast-evidence.js";
+import { transcriptFetchEnabled, transcriptShadowFetchEnabled } from "../sources/rss.js";
 import type { RawItem } from "../sources/types.js";
 import { runPodcastTranscriptShadow } from "./podcast-shadow.js";
-import { createPodcastShadowStore, transcriptShadowFetchEnabled } from "./podcast-shadow-store.js";
+import { createPodcastShadowStore } from "./podcast-shadow-store.js";
 
 export interface CollectResult {
   runId: string;
@@ -91,7 +92,9 @@ function recordPodcastMetadataFacts(input: {
     : null;
   const common = {
     source_id: input.source.id,
-    canonical_episode_url: input.raw.url,
+    // Facts are append-only diagnostics, so their episode identity must never retain signed
+    // transport query parameters or URL userinfo.
+    canonical_episode_url: stableEvidenceUrl(input.raw.url),
     candidate_hash: decision.candidate_hash,
     transcript_policy_version: policyVersion,
     mode,

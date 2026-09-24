@@ -336,6 +336,23 @@ describe("collector preserves existing transcript evidence", () => {
     expect(existsSync(join(process.env.DATA_DIR!, "podcast-shadow", "shadow.db"))).toBe(false);
   });
 
+  it("observe metadata facts never persist episode URL credentials", async () => {
+    raws.value = [mkPodcastRaw(
+      "https://reader:secret@pod/ep-fact?lang=en&token=ephemeral",
+      "Show notes.",
+      "https://pod/ep-fact.txt?token=ephemeral",
+    )];
+    await collectSource(db, { ...sourcePod, transcript_mode: "observe", transcript_policy_version: "podcast-policy-v1" });
+    const facts = db.prepare("SELECT canonical_episode_url FROM transcript_acquisition_fact WHERE source_id=? ORDER BY stage")
+      .all(sourcePod.id) as Array<{ canonical_episode_url: string }>;
+    expect(facts).toEqual([
+      { canonical_episode_url: "https://pod/ep-fact?lang=en" },
+      { canonical_episode_url: "https://pod/ep-fact?lang=en" },
+    ]);
+    expect(JSON.stringify(facts)).not.toContain("secret");
+    expect(JSON.stringify(facts)).not.toContain("ephemeral");
+  });
+
   it("重复采集同一播客候选时不制造 acquisition conflict", async () => {
     raws.value = [mkPodcastRaw("https://pod/ep-repeat", "Show notes.", "https://pod/ep-repeat.txt")];
     const observing = { ...sourcePod, transcript_mode: "observe" as const, transcript_policy_version: "podcast-policy-v1" };

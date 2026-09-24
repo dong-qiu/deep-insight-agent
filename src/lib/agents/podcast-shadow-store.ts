@@ -18,12 +18,6 @@ function sha256(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
 }
 
-/** Explicit global allow gate for a controlled observe sample. It never enables production
- * transcript collection: that still needs an enabled source and separate future implementation. */
-export function transcriptShadowFetchEnabled(): boolean {
-  return process.env.TRANSCRIPT_SHADOW_FETCH === "1" || process.env.TRANSCRIPT_SHADOW_FETCH === "true";
-}
-
 export interface PodcastShadowStore {
   sink: PodcastShadowSink;
   root: string;

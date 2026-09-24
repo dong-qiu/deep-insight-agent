@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { runPodcastTranscriptShadow, type PodcastShadowSink } from "./podcast-shadow.js";
 import type { Source, TranscriptAcquisitionFact } from "../types.js";
 import type { PodcastProgramPageFetchResult, RawItem, TranscriptFetchResult } from "../sources/types.js";
@@ -34,6 +34,16 @@ function terminal(facts: Omit<TranscriptAcquisitionFact, "event_key">[]) {
   return facts.filter((fact) => fact.stage === "terminal");
 }
 
+beforeEach(() => {
+  process.env.TRANSCRIPT_FETCH = "1";
+  process.env.TRANSCRIPT_SHADOW_FETCH = "1";
+});
+
+afterEach(() => {
+  delete process.env.TRANSCRIPT_FETCH;
+  delete process.env.TRANSCRIPT_SHADOW_FETCH;
+});
+
 describe("runPodcastTranscriptShadow", () => {
   it("仅向 shadow fact sink 写候选/决策/attempt/terminal，且受单轮项目预算限制", async () => {
     const facts: Omit<TranscriptAcquisitionFact, "event_key">[] = [];
@@ -57,6 +67,32 @@ describe("runPodcastTranscriptShadow", () => {
     await expect(runPodcastTranscriptShadow({
       source: { ...source, transcript_policy_version: null }, raws: [], topics: [], sink: memorySink([], []),
     })).rejects.toThrow("transcript_policy_version_required");
+  });
+
+  it("双总熔断在 request-owning worker 内生效，直接调用也不能发起网络请求", async () => {
+    delete process.env.TRANSCRIPT_SHADOW_FETCH;
+    let transcriptRequests = 0;
+    let programPageRequests = 0;
+    await expect(runPodcastTranscriptShadow({
+      source, raws: [raw("https://reader:secret@pod.example/ep?lang=en&token=secret")],
+      topics: [{ id: "t", keywords: ["coding agent"] }], sink: memorySink([], []),
+      fetcher: async () => { transcriptRequests++; return success; },
+      programPageFetcher: async () => { programPageRequests++; return programPage; },
+    })).rejects.toThrow("podcast_shadow_fetch_disabled");
+    expect(transcriptRequests).toBe(0);
+    expect(programPageRequests).toBe(0);
+  });
+
+  it("shadow facts use a credential-free canonical episode URL", async () => {
+    const facts: Omit<TranscriptAcquisitionFact, "event_key">[] = [];
+    await runPodcastTranscriptShadow({
+      source, raws: [raw("https://reader:secret@pod.example/ep?lang=en&token=secret")],
+      topics: [{ id: "t", keywords: ["coding agent"] }], sink: memorySink(facts, []),
+      fetcher: async () => success, programPageFetcher: async () => programPage,
+    });
+    expect(facts).toHaveLength(4);
+    expect(facts.every((fact) => fact.canonical_episode_url === "https://pod.example/ep?lang=en")).toBe(true);
+    expect(JSON.stringify(facts)).not.toContain("secret");
   });
 
   it("节目页失败按真实 transport outcome 终结，不把失败伪装成 success", async () => {

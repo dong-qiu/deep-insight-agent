@@ -188,6 +188,13 @@ export function transcriptFetchEnabled(): boolean {
   return process.env.TRANSCRIPT_FETCH === "1" || process.env.TRANSCRIPT_FETCH === "true";
 }
 
+/** Observe-mode transcript sampling has a second, narrower kill switch. Keeping both network
+ * gates in the source layer lets every request-owning caller enforce the same boundary instead
+ * of relying on collector orchestration alone. */
+export function transcriptShadowFetchEnabled(): boolean {
+  return process.env.TRANSCRIPT_SHADOW_FETCH === "1" || process.env.TRANSCRIPT_SHADOW_FETCH === "true";
+}
+
 export async function fetchRss(source: Source): Promise<RawItem[]> {
   const { origin, pathname } = new URL(source.endpoint);
   const rules = await fetchRobots(origin);

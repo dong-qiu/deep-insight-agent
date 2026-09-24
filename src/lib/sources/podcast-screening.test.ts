@@ -28,9 +28,15 @@ describe("screenPodcastCandidate", () => {
     expect(screenPodcastCandidate(episode({ title: "Coding agent preview", podcast_episode_type: "trailer" }), topics).decision).toBe("fetch");
   });
 
-  it("候选 hash 对相同有效载荷稳定，且不暴露 transcript URL", () => {
-    const first = screenPodcastCandidate(episode({ transcript_url: "https://cdn.example/t?signature=one" }), topics);
-    const second = screenPodcastCandidate(episode({ transcript_url: "https://cdn.example/t?signature=two" }), topics);
+  it("候选 hash 对相同有效载荷稳定，且不受 episode/transcript transport credentials 影响", () => {
+    const first = screenPodcastCandidate(episode({
+      url: "https://reader:one@pod.example/ep?lang=en&token=one",
+      transcript_url: "https://cdn.example/t?signature=one",
+    }), topics);
+    const second = screenPodcastCandidate(episode({
+      url: "https://reader:two@pod.example/ep?lang=en&token=two",
+      transcript_url: "https://cdn.example/t?signature=two",
+    }), topics);
     expect(first.candidate_hash).toBe(second.candidate_hash);
     expect(first.candidate_hash).not.toContain("signature");
   });
