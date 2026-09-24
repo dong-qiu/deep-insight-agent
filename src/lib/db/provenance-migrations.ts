@@ -374,7 +374,7 @@ CREATE INDEX IF NOT EXISTS idx_analysis_batch_display_projection ON analysis_bat
 
 /** The original audited draft is retained separately from the exact source quote, so reader
  * rendering can present a localized conclusion without weakening the v6 source binding. */
-const READER_STATEMENT_SQL = "insight reader statement v1";
+const READER_STATEMENT_SQL = "ALTER TABLE insight ADD COLUMN reader_statement TEXT NOT NULL DEFAULT '';";
 
 // generation_effect originally modelled only report_file and carried a required
 // report_id.  Rebuild it forward so raw_archive has the same durable intent
@@ -632,7 +632,7 @@ export function applyProvenanceMigrations(db: DB): void {
         db.exec(migration.sql);
       } else if (migration.version === "20260924_46_reader_statement") {
         if (!hasColumn(db, "insight", "reader_statement")) {
-          db.exec("ALTER TABLE insight ADD COLUMN reader_statement TEXT NOT NULL DEFAULT ''");
+          db.exec(migration.sql);
         }
       } else if (migration.version === "20260910_40_raw_archive_effect") {
         migrateRawArchiveEffect(db);

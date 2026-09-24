@@ -363,6 +363,43 @@ describe("selectInsights（洞察级纳入判定）", () => {
     expect(index.summary).toBe("本期包含 1 条已核验原文。");
     expect(index.highlights).toEqual([]);
   });
+
+  it("原文和中文结论中的 [12] 以文字呈现，不伪造第 12 条日报引用", () => {
+    const batch = batchOf();
+    const safe = batch.insights[0]!;
+    const quote = "Evidence [12].";
+    const readerStatement = "结论保留原文编号 [12]。";
+    safe.statement = quote;
+    safe.reader_statement = readerStatement;
+    safe.statement_citation_index = 1;
+    safe.citations[0] = { ...safe.citations[0]!, quote, citation_ref: "binding" };
+    batch.display_coverage_state = "audited";
+    batch.display_projection_version = DISPLAY_PROJECTION_VERSION;
+    batch.display_coverage_audits = [{
+      insight_id: safe.id, candidate_id: safe.id, gate_version: "display-coverage-v6", terminal_reason: "kept",
+      prompt_version: "display-coverage-v6", input_hash: "input", validator_model: "validator",
+      decision: {
+        statement_citation_index: 1, statement_citation_ref: "binding", display_projection_version: DISPLAY_PROJECTION_VERSION,
+        draft_statement_sha256: sourceQuoteHash(readerStatement), statement_sha256: sourceQuoteHash(quote), quote_sha256: sourceQuoteHash(quote),
+        claims: [{ claim_id: "statement:1", field: "statement", kind: "factual", supports: true, citation_indexes: [1], countercheck: { supports: true } }],
+      }, created_at: "2026-09-09T00:00:00.000Z",
+    }];
+    const passing: ValidationResult = {
+      ...validation,
+      checks: validation.checks.map((check) => check.insight_id === safe.id
+        ? { ...check, consistency: "support" as const, consistency_reason: "ok", verdict: "pass" as const }
+        : check),
+    };
+    const { report } = buildReport({
+      topic, batch, validation: passing, type: "brief",
+      contentLookup: new Map([["ci1", { source_id: "s1", source_name: "Primary Source", tags: [], url: "https://primary.example", published_at: null, observed_at: "2026-09-09T00:00:00Z" }]]),
+      now: "2026-09-09T00:00:00Z",
+    });
+    expect(report.body_md).toContain("\\[12\\]");
+    expect(report.body_md).toContain("- [1] 原文证据：「Evidence \\[12\\].」");
+    expect(report.body_md).toContain("结论保留原文编号 \\[12\\]。 [1]");
+    expect(report.body_md).not.toContain("- [12]");
+  });
 });
 
 describe("selectBriefInsights（Daily Brief 已发布证据去重）", () => {
@@ -953,6 +990,30 @@ describe("buildReport · deep_dive（最小确定性深挖）", () => {
       expect(body).not.toContain(`${quote.slice(0, 30)}…`);
       expect(body).not.toContain("待补引：OpenAI");
     }
+  });
+
+  it("混合深挖不在导航区重复中文结论，只有详版结论紧随原文证据", () => {
+    const deep = batchOf();
+    const insight = deep.insights[0]!;
+    const quote = "A validated source quote.";
+    const readerStatement = "这是可读的中文结论。";
+    insight.statement = quote;
+    insight.reader_statement = readerStatement;
+    insight.citations[0] = { ...insight.citations[0]!, quote, citation_ref: "i1binding" };
+    deep.display_coverage_audits![0]!.decision = {
+      statement_citation_index: 1, statement_citation_ref: "i1binding", display_projection_version: DISPLAY_PROJECTION_VERSION,
+      draft_statement_sha256: sourceQuoteHash(readerStatement), statement_sha256: sourceQuoteHash(quote), quote_sha256: sourceQuoteHash(quote),
+      claims: [{ claim_id: "statement:1", field: "statement", kind: "factual", supports: true, citation_indexes: [1], countercheck: { supports: true } }],
+    };
+    const { report: projected } = buildReport({ topic, batch: deep, validation, type: "deep_dive", contentLookup: new Map(), now: "2026-05-07T08:00:00Z" });
+    for (const body of [projected.body_md, projected.body_html]) {
+      expect(body.split(readerStatement).length - 1).toBe(1);
+      expect(body).toContain(quote);
+    }
+    const navigation = projected.body_md.slice(projected.body_md.indexOf("## TL;DR"), projected.body_md.indexOf("## 重点关注"));
+    expect(navigation).toContain("已核验洞察 #1");
+    expect(navigation).not.toContain(readerStatement);
+    expect(projected.body_md).toContain(`- [1] 原文证据：「${quote}」`);
   });
 });
 

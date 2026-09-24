@@ -335,16 +335,27 @@ describe("provenance migration runner", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it("upgrades a physical v45 insight table with reader_statement only through the migration ledger", () => {
-    const db = openDb(":memory:");
-    applyProvenanceMigrations(db);
-    db.exec("ALTER TABLE insight DROP COLUMN reader_statement;");
-    db.prepare("DELETE FROM schema_migration WHERE version=?").run("20260924_46_reader_statement");
+  it("production startup leaves a physical v45 table to v46's exclusive ledger migration", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ia-reader-statement-v45-"));
+    const path = join(dir, "insight.db");
+    const v46 = openDb(path);
+    applyProvenanceMigrations(v46);
+    v46.exec("ALTER TABLE insight DROP COLUMN reader_statement;");
+    v46.prepare("DELETE FROM schema_migration WHERE version=?").run("20260924_46_reader_statement");
+    v46.close();
 
-    applyProvenanceMigrations(db);
-    expect((db.prepare("PRAGMA table_info(insight)").all() as { name: string }[]).map((column) => column.name))
+    // `db:migrate` opens the database first. The generic startup compatibility path must not
+    // add this provenance-owned field before the v46 transaction can record its ledger row.
+    const runner = openDb(path);
+    expect((runner.prepare("PRAGMA table_info(insight)").all() as { name: string }[]).map((column) => column.name))
+      .not.toContain("reader_statement");
+    expect(runner.prepare("SELECT 1 FROM schema_migration WHERE version='20260924_46_reader_statement'").get()).toBeFalsy();
+    applyProvenanceMigrations(runner);
+    expect((runner.prepare("PRAGMA table_info(insight)").all() as { name: string }[]).map((column) => column.name))
       .toContain("reader_statement");
-    expect(db.prepare("SELECT 1 FROM schema_migration WHERE version='20260924_46_reader_statement'").get()).toBeTruthy();
+    expect(runner.prepare("SELECT 1 FROM schema_migration WHERE version='20260924_46_reader_statement'").get()).toBeTruthy();
+    runner.close();
+    rmSync(dir, { recursive: true, force: true });
   });
 
   it("upgrades the physical pre-display-coverage schema without treating it as audited", () => {

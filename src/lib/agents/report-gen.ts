@@ -658,8 +658,10 @@ export function inlineCitedStatement(
   cites: { num: number; quote: string }[],
   entityNames: string[],
 ): string {
-  if (!cites.length) return statement;
+  if (!cites.length) return escapeMarkdownCitationTokens(statement);
   const tokens = specificClaims(statement, entityNames); // statement 里需被覆盖的数字/实体 token
+  const literalNumericBrackets = [...statement.matchAll(/\[\d+\]/g)]
+    .map((match) => ({ start: match.index!, end: match.index! + match[0].length }));
   const anchors: { end: number; num: number }[] = [];
   const trailing: number[] = [];
   const usedPos = new Set<number>();
@@ -671,6 +673,9 @@ export function inlineCitedStatement(
       if (!nq.includes(t.replace(/\s+/g, ""))) continue; // 此 quote 不覆盖该 token
       const pos = statement.indexOf(t);
       if (pos < 0 || usedPos.has(pos)) continue; // statement 里定位不到 / 该位置已被别的引用占用
+      // A reference number in quoted source prose is not a claim token. Anchoring inside `[12]`
+      // would produce malformed Markdown and could make the source reference look like evidence.
+      if (literalNumericBrackets.some((span) => pos >= span.start && pos + t.length <= span.end)) continue;
       if (pos > bestPos) {
         // 取最靠后的可用 token——贴近最具体的值（如"得分 1507"的 1507 而非句首实体）
         bestPos = pos;
@@ -688,12 +693,22 @@ export function inlineCitedStatement(
   let out = "";
   let cursor = 0;
   for (const a of anchors) {
-    out += statement.slice(cursor, a.end) + `[${a.num}]`;
+    // Source prose can legitimately contain e.g. `[12]` (paper footnotes/references). Escape
+    // it before adding the system-owned citation marker so the Markdown renderer cannot confuse
+    // evidence text with a report citation.
+    out += escapeMarkdownCitationTokens(statement.slice(cursor, a.end)) + `[${a.num}]`;
     cursor = a.end;
   }
-  out += statement.slice(cursor);
+  out += escapeMarkdownCitationTokens(statement.slice(cursor));
   if (trailing.length) out += " " + trailing.map((n) => `[${n}]`).join("");
   return out;
+}
+
+/** Preserve literal numeric brackets in source-derived Markdown. Report-owned `[N]` is appended
+ * only by `inlineCitedStatement`, while this escape remains standard-Markdown-compatible for
+ * other consumers. A pre-existing escape stays untouched. */
+function escapeMarkdownCitationTokens(text: string): string {
+  return text.replace(/(^|[^\\])\[(\d+)\]/g, "$1\\[$2\\]");
 }
 
 /** 单条洞察的 Markdown 块。deep_dive（detailed）多展示来源数 / 多源印证。
@@ -732,7 +747,7 @@ function insightBlockMd(
         orderedCites.map((i) => ({ num: numOf.get(i)!, quote: ins.citations[i].quote })),
         (ins.entities ?? []).map((e) => e.name),
       )
-    : ins.statement;
+    : escapeMarkdownCitationTokens(ins.statement);
   // P1 不复报：is_followup=true 标 〔更新〕——读者一眼看出"本条是已报告事件的新进展"。
   // analyzer 已在 prompt 层约束"无新进展则不出"，此标记仅作展示提示。flagged 洞察
   // 不进入发布渲染，待核实/重试状态仅保留在 ValidationResult 的人工处理队列。
@@ -760,7 +775,7 @@ function insightBlockMd(
       // than a dangling inline reference. A quote-only fallback does not repeat its heading;
       // hybrid rendering instead makes the literal quote explicit evidence for the Chinese text.
       const evidence = x.reader_statement
-        ? `原文证据：「${citation!.quote}」— ${info?.url ? `[${sourceLabel}](${info.url})` : sourceLabel}${datePart}`
+        ? `原文证据：「${escapeMarkdownCitationTokens(citation!.quote)}」— ${info?.url ? `[${sourceLabel}](${info.url})` : sourceLabel}${datePart}`
         : `已核验原文 · ${info?.url ? `[${sourceLabel}](${info.url})` : sourceLabel}${datePart}`;
       L.push(`- [${numOf.get(orderedCites[0]!)!}] ${evidence}`);
     } else {
@@ -778,7 +793,7 @@ function insightBlockMd(
       L.push(`  - ${info?.url ? `[${sourceLabel}](${info.url})` : sourceLabel}${datePart}`);
       // 该篇下挂各条逐字 quote（[n] 与行内锚同号；markdown.tsx 按 [n] 建锚，与缩进无关）。
       for (const i of g.indices) {
-        L.push(`    - [${numOf.get(i)}] 「${ins.citations[i].quote}」`);
+        L.push(`    - [${numOf.get(i)}] 「${escapeMarkdownCitationTokens(ins.citations[i].quote)}」`);
       }
     }
     }
@@ -867,10 +882,11 @@ function renderMarkdown(
   // 上浮可扫读段（TL;DR / 概览 / 趋势 / 时间线）→ 再到详版（关键发现+其他动态，含行内引用清单）。
   const ordered = orderInsights(included);
 
-  // v6 makes the bound source quote the sole factual reader text.  The navigational sections
-  // below therefore contain only controlled ordinal/importance/date metadata; the quote itself
-  // appears once, in its detailed block, and is never abbreviated or copied into a summary.
-  if (ordered.every((x) => x.source_quote_projection && !x.reader_statement)) {
+  // Reader-evidence records have exactly one evidence-bearing detail block. Their navigational
+  // sections must stay ordinal/metadata-only whether that block begins with a localized
+  // conclusion or falls back to the raw quote; otherwise a deep-dive repeats a claim away from
+  // its source evidence.
+  if (ordered.every((x) => x.source_quote_projection)) {
     const ordinal = new Map(ordered.map((x, i) => [x.insight.id, i + 1]));
     L.push("## TL;DR", "");
     for (const x of tldrPick(included)) L.push(`- 已核验洞察 #${ordinal.get(x.insight.id)} · 重要性 ${x.insight.importance}/5`);
@@ -1036,7 +1052,7 @@ function renderHtml(
   } else {
     // deep_dive 结构化六段，与 Markdown 版式对齐（#19）
     const ordered = orderInsights(included);
-    if (ordered.every((x) => x.source_quote_projection && !x.reader_statement)) {
+    if (ordered.every((x) => x.source_quote_projection)) {
       const ordinal = new Map(ordered.map((x, i) => [x.insight.id, i + 1]));
       const tldr = `<section class="tldr"><h2>TL;DR</h2><ul>${tldrPick(included)
         .map((x) => `<li>已核验洞察 #${ordinal.get(x.insight.id)} · 重要性 ${x.insight.importance}/5</li>`)
