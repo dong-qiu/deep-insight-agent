@@ -6,6 +6,7 @@ import { parseFacets } from "../topics/facets.js";
 import type { ContentItem, Cost, Run, Source, Topic, TranscriptAcquisitionFact } from "../types.js";
 import type { DB } from "./index.js";
 import { canonicalHash, projectTrace } from "./provenance-facts.js";
+import { assertExplicitTranscriptPolicy } from "../transcript-policy.js";
 
 const j = (v: unknown): string => JSON.stringify(v);
 const b = (v: boolean): number => (v ? 1 : 0);
@@ -16,10 +17,11 @@ type TranscriptPolicy = Pick<Source,
   "transcript_policy_version"
 >;
 
-/** Resolve optional legacy Source fields at the persistence boundary. `off` keeps its version
- * empty; a policy-aware mode must be explicitly versioned before any collector may read it. */
+/** Resolve optional legacy Source fields at the persistence boundary. `off` may retain an inert
+ * staged policy for later review, but only a policy-aware mode may consume it for acquisition. */
 function transcriptPolicyForWrite(source: Source): Required<TranscriptPolicy> {
   const transcript_mode = source.transcript_mode ?? "off";
+  assertExplicitTranscriptPolicy(source);
   const transcript_strategy = source.transcript_strategy ?? "relevant_only";
   const transcript_max_items_per_run = source.transcript_max_items_per_run ?? 5;
   const transcript_max_bytes_per_run = source.transcript_max_bytes_per_run ?? 5 * 1024 * 1024;
@@ -27,21 +29,10 @@ function transcriptPolicyForWrite(source: Source): Required<TranscriptPolicy> {
   const transcript_host_qps = source.transcript_host_qps ?? 0.5;
   const transcript_policy_version = source.transcript_policy_version?.trim() || null;
 
-  if (transcript_mode !== "off" && !transcript_policy_version) {
-    throw new Error("transcript_policy_version_required");
-  }
-  if (
-    !Number.isInteger(transcript_max_items_per_run) || transcript_max_items_per_run <= 0 ||
-    !Number.isInteger(transcript_max_bytes_per_run) || transcript_max_bytes_per_run <= 0 ||
-    !Number.isInteger(transcript_timeout_budget_ms) || transcript_timeout_budget_ms <= 0 ||
-    !Number.isFinite(transcript_host_qps) || transcript_host_qps <= 0
-  ) {
-    throw new Error("invalid_transcript_policy_limits");
-  }
   return {
     transcript_mode, transcript_strategy, transcript_max_items_per_run,
     transcript_max_bytes_per_run, transcript_timeout_budget_ms, transcript_host_qps,
-    transcript_policy_version: transcript_mode === "off" ? null : transcript_policy_version,
+    transcript_policy_version,
   };
 }
 
@@ -171,8 +162,10 @@ function assertTranscriptAcquisitionFact(fact: TranscriptAcquisitionFact): void 
   }
 }
 
-/** Transcript diagnostics are idempotent observations. A conflicting replay is retained in its
- * own append-only table and rejected instead of silently overwriting the original evidence. */
+/** Transcript diagnostics are idempotent observations. `run_id` and `occurred_at` describe the
+ * delivery attempt rather than the immutable acquisition stage, so they are deliberately outside
+ * the semantic hash. A conflicting replay is retained in its own append-only table instead of
+ * silently overwriting the original evidence. */
 export function appendTranscriptAcquisitionFact(
   db: DB,
   fact: TranscriptAcquisitionFact,
@@ -189,7 +182,6 @@ export function appendTranscriptAcquisitionFact(
     decision: fact.decision, outcome: fact.outcome, reason_code: fact.reason_code, bytes: fact.bytes,
     duration_ms: fact.duration_ms, fallback_body_kind: fact.fallback_body_kind,
     content_item_id: fact.content_item_id, raw_ref: fact.raw_ref, evidence_status: fact.evidence_status,
-    run_id: fact.run_id, occurred_at: fact.occurred_at,
   });
   const existing = db.prepare("SELECT semantic_payload_hash FROM transcript_acquisition_fact WHERE event_key=?").get(fact.event_key) as
     | { semantic_payload_hash: string }

@@ -20,6 +20,29 @@ function ensureColumn(db: DB, table: string, column: string, ddl: string): void 
   if (!hasColumn(db, table, column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
 }
 
+/** The earlier observe-only implementation used a different, append-only fact schema. SQLite
+ * cannot add its missing primary key and CHECK contracts in place. Preserve it under an explicit
+ * legacy name rather than guessing mode/strategy/evidence fields, then create the v43 table.
+ * Removing old index/trigger names first lets the new table install its own guards. */
+function archiveIncompatibleTranscriptFactTable(
+  db: DB,
+  table: "transcript_acquisition_fact" | "transcript_acquisition_conflict",
+  requiredColumn: string,
+): void {
+  if (!tableExists(db, table) || hasColumn(db, table, requiredColumn)) return;
+  const legacy = `${table}_legacy_v1`;
+  if (tableExists(db, legacy)) throw new Error(`${legacy}_already_exists`);
+  const indexes = table === "transcript_acquisition_fact"
+    ? ["idx_transcript_acquisition_source_time", "idx_transcript_acquisition_episode"]
+    : ["idx_transcript_acquisition_conflict_event"];
+  const triggers = table === "transcript_acquisition_fact"
+    ? ["transcript_acquisition_fact_no_update", "transcript_acquisition_fact_no_delete", "transcript_acquisition_fact_mode_guard_insert"]
+    : ["transcript_acquisition_conflict_no_update", "transcript_acquisition_conflict_no_delete"];
+  for (const trigger of triggers) db.exec(`DROP TRIGGER IF EXISTS ${trigger}`);
+  for (const index of indexes) db.exec(`DROP INDEX IF EXISTS ${index}`);
+  db.exec(`ALTER TABLE ${table} RENAME TO ${legacy}`);
+}
+
 /** SQLite cannot alter a CHECK constraint in place. Rebuild this compact validation projection
  * before a validator can emit the new fail-closed speaker-attribution reason. */
 function migrateCitationCheckReason(db: DB): void {
@@ -63,6 +86,8 @@ export function migratePodcastTranscriptContracts(
     ensureColumn(db, "citation", "speaker_attribution", "speaker_attribution TEXT");
   }
   migrateCitationCheckReason(db);
+  archiveIncompatibleTranscriptFactTable(db, "transcript_acquisition_fact", "event_key");
+  archiveIncompatibleTranscriptFactTable(db, "transcript_acquisition_conflict", "event_key");
   db.exec(PODCAST_TRANSCRIPT_CONTRACTS_SCHEMA_SQL);
   if (includePolicyVersionImmutability) db.exec(PODCAST_TRANSCRIPT_POLICY_VERSION_IMMUTABILITY_SQL);
   db.exec(`INSERT OR IGNORE INTO source_transcript_policy_version(source_id,transcript_policy_version,recorded_at)

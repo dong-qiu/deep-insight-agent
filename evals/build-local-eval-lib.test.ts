@@ -126,4 +126,19 @@ describe("buildLocalEvalCases", () => {
     expect(() => parseTopicSourceIds('["src_a"]', "EVAL_TOPIC_SOURCE_IDS")).toThrow("JSON object");
     expect(() => parseTopicSourceIds('{"topic":["src_a","src_a"]}', "EVAL_TOPIC_SOURCE_IDS")).toThrow("不可重复");
   });
+
+  it("bodyKind=transcript excludes show-notes and article fallbacks", () => {
+    const result = buildLocalEvalCases(
+      [topic],
+      () => [
+        item("src_article"),
+        { ...item("src_show_notes"), body_kind: "show_notes" as const },
+        { ...item("src_a"), id: "item-src_a-transcript", url: "https://example.test/src_a-transcript", body_kind: "transcript" as const },
+        { ...item("src_b"), body_kind: "transcript" as const },
+      ],
+      window,
+      { minBody: 400, perSource: 1, maxItems: 2, minimumSources: 2, requiredSourceIds: ["src_a", "src_b"], bodyKind: "transcript" },
+    );
+    expect(result.cases[0].items.map((entry) => entry.body_kind)).toEqual(["transcript", "transcript"]);
+  });
 });

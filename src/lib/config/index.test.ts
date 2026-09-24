@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { type DB, openDb } from "../db/index.js";
 import {
-  getEffectiveModels, getEffectiveSources, loadStaticConfig, resolveEnvRefs, seedDefaults,
+  getEffectiveModels, getEffectiveSources, loadStaticConfig, loadStaticSourceConfig, resolveEnvRefs, seedDefaults,
 } from "./index.js";
+import { SourceConfigSchema } from "./types.js";
 
 describe("resolveEnvRefs", () => {
   it("递归替换 ${VAR}（字符串/数组/对象，非字符串原样）", () => {
@@ -42,6 +43,58 @@ describe("loadStaticConfig + 播种 + 合并", () => {
     expect(cfg.defaultTopics.length).toBeGreaterThan(0);
     expect(cfg.defaultSources.length).toBeGreaterThan(0);
     expect(cfg.defaultSources[0].backfill).toBeNull(); // 未填 → 默认 null
+  });
+
+  it("source-only 配置不解析模型密钥，但仍校验 topics 与 sources", () => {
+    const prior = process.env.ANTHROPIC_API_KEY;
+    delete process.env.ANTHROPIC_API_KEY;
+    try {
+      const config = loadStaticSourceConfig();
+      expect(config.defaultTopics.length).toBeGreaterThan(0);
+      expect(config.defaultSources.find((source) => source.id === "src_chain_of_thought")).toMatchObject({
+        transcript_mode: "off", transcript_host_qps: 0.5,
+      });
+    } finally {
+      if (prior === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = prior;
+    }
+  });
+
+  it("observe/enabled 策略必须显式给出完整的决策与资源上限，off 才可使用默认值", () => {
+    const base = loadStaticConfig().defaultSources[0]!;
+    const policyAware = {
+      ...base,
+      transcript_mode: "observe" as const,
+      transcript_strategy: "relevant_only" as const,
+      transcript_max_items_per_run: 2,
+      transcript_max_bytes_per_run: 2_000,
+      transcript_timeout_budget_ms: 1_000,
+      transcript_host_qps: 1,
+      transcript_policy_version: "podcast-policy-v1",
+    };
+    expect(SourceConfigSchema.safeParse(policyAware).success).toBe(true);
+    for (const field of [
+      "transcript_strategy",
+      "transcript_max_items_per_run",
+      "transcript_max_bytes_per_run",
+      "transcript_timeout_budget_ms",
+      "transcript_host_qps",
+    ] as const) {
+      const incomplete = { ...policyAware, [field]: undefined };
+      expect(SourceConfigSchema.safeParse(incomplete).success).toBe(false);
+    }
+    const legacyOff = { ...policyAware, transcript_mode: "off" as const, transcript_policy_version: null };
+    for (const field of [
+      "transcript_strategy",
+      "transcript_max_items_per_run",
+      "transcript_max_bytes_per_run",
+      "transcript_timeout_budget_ms",
+      "transcript_host_qps",
+    ] as const) delete (legacyOff as Record<string, unknown>)[field];
+    expect(SourceConfigSchema.parse(legacyOff)).toMatchObject({
+      transcript_strategy: "relevant_only", transcript_max_items_per_run: 5,
+      transcript_max_bytes_per_run: 5 * 1024 * 1024, transcript_timeout_budget_ms: 30_000, transcript_host_qps: 0.5,
+    });
   });
 
   it("将 GitHub Changelog 保持为显式启用前的 staged 候选", () => {

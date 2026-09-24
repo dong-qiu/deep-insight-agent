@@ -1,16 +1,22 @@
 /** Recorded-response integration coverage for the production transcript path. It retains
  * safeFetch, robots and streaming size-cap behavior; only the network boundary is replaced. */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fetchTranscript } from "./rss.js";
+import { fetchPodcastProgramPage, fetchTranscript } from "./rss.js";
 
 const ORIGIN = "https://8.8.8.8"; // public IP literal: safeFetch still performs its normal guard without DNS I/O.
 const TRANSCRIPT = `${ORIGIN}/transcript.vtt?format=vtt&sig=ephemeral`;
+const PROGRAM = `${ORIGIN}/episode?lang=en&X-Amz-Signature=ephemeral`;
+const REDIRECT = `${ORIGIN}/redirect-to-transcript`;
 
 function recordedFetch(input: string | URL | Request): Response {
   const url = String(input);
   if (url === `${ORIGIN}/robots.txt`) return new Response("User-agent: *\nAllow: /", { status: 200 });
+  if (url === REDIRECT) return new Response(null, { status: 302, headers: { location: TRANSCRIPT } });
   if (url === TRANSCRIPT) return new Response("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nHello world", {
     status: 200, headers: { "content-type": "text/vtt" },
+  });
+  if (url === PROGRAM) return new Response("<html><main>Episode page</main></html>", {
+    status: 200, headers: { "content-type": "text/html" },
   });
   return new Response("not found", { status: 404 });
 }
@@ -25,6 +31,10 @@ describe("fetchTranscript production transport path", () => {
       outcome: "success", stable_url: `${ORIGIN}/transcript.vtt?format=vtt`, raw_payload: expect.stringContaining("Hello world"),
       cleaned_body: "Hello world", content_type: "text/vtt",
     });
+    expect(result.outcome === "success" && result.bytes).toBe(
+      Buffer.byteLength("User-agent: *\nAllow: /", "utf8")
+      + Buffer.byteLength("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nHello world", "utf8"),
+    );
     expect(network.mock.calls.map(([input]) => String(input))).toEqual([`${ORIGIN}/robots.txt`, TRANSCRIPT]);
   });
 
@@ -75,5 +85,47 @@ describe("fetchTranscript production transport path", () => {
     await expect(fetchTranscript(TRANSCRIPT)).resolves.toMatchObject({
       outcome: "transient_error", reason_code: "request_error",
     });
+  });
+
+  it("caps an oversized robots body before it can trigger the transcript payload request", async () => {
+    const network = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) =>
+      String(input) === `${ORIGIN}/robots.txt`
+        ? new Response("User-agent: *\nDisallow: /this-response-is-deliberately-too-large", { status: 200 })
+        : new Response("unexpected payload", { status: 500 }));
+    await expect(fetchTranscript(TRANSCRIPT, { maxBytes: 8 })).resolves.toMatchObject({
+      outcome: "size_limited", reason_code: "response_size_limit", bytes: expect.any(Number),
+    });
+    expect(network).toHaveBeenCalledOnce();
+  });
+
+  it("applies the source request gate to both robots and transcript transport", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => recordedFetch(input));
+    const gated: string[] = [];
+    await expect(fetchTranscript(TRANSCRIPT, { beforeRequest: async (url) => { gated.push(url); } })).resolves.toMatchObject({ outcome: "success" });
+    expect(gated).toEqual([`${ORIGIN}/robots.txt`, TRANSCRIPT]);
+  });
+
+  it("applies the source request gate to every redirect hop", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => recordedFetch(input));
+    const gated: string[] = [];
+    await expect(fetchTranscript(REDIRECT, { beforeRequest: async (url) => { gated.push(url); } })).resolves.toMatchObject({ outcome: "success" });
+    expect(gated).toEqual([`${ORIGIN}/robots.txt`, REDIRECT, TRANSCRIPT]);
+  });
+});
+
+describe("fetchPodcastProgramPage evidence transport path", () => {
+  it("checks robots and archives a stable program-page identity separately from the transcript URL", async () => {
+    const network = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => recordedFetch(input));
+    await expect(fetchPodcastProgramPage(PROGRAM)).resolves.toMatchObject({
+      outcome: "success", stable_url: `${ORIGIN}/episode?lang=en`, raw_payload: expect.stringContaining("Episode page"), content_type: "text/html",
+    });
+    expect(network.mock.calls.map(([input]) => String(input))).toEqual([`${ORIGIN}/robots.txt`, PROGRAM]);
+  });
+
+  it("applies the source request gate to both robots and program-page transport", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => recordedFetch(input));
+    const gated: string[] = [];
+    await expect(fetchPodcastProgramPage(PROGRAM, { beforeRequest: async (url) => { gated.push(url); } })).resolves.toMatchObject({ outcome: "success" });
+    expect(gated).toEqual([`${ORIGIN}/robots.txt`, PROGRAM]);
   });
 });

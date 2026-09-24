@@ -8,7 +8,7 @@ import { type DB, openDb } from "../db/index.js";
 import { applyProvenanceMigrations } from "../db/provenance-migrations.js";
 import { SQLITE_P1_TELEMETRY_SINK } from "../capabilities/p1-telemetry-sqlite.js";
 import { claimSourceCollectTrace, createScheduledSourceCollectTrace, createSourceCollectTrace, getGenerationTraceStatus } from "../db/provenance.js";
-import { getContentByUrl, getContentItem, insertContentItem, insertSource, listContentForTopic } from "../db/repos.js";
+import { getContentByUrl, getContentItem, insertContentItem, insertSource, insertTopic, listContentForTopic } from "../db/repos.js";
 import { captureRevision, entityKey } from "../db/provenance-facts.js";
 import { contentItemRef, contentItemRevisionSnapshot } from "../db/provenance-revisions.js";
 import * as rawArchive from "../db/raw-archive.js";
@@ -21,7 +21,18 @@ import type { Source } from "../types.js";
 const { raws, article, ctl } = vi.hoisted(() => ({
   raws: { value: [] as RawItem[] },
   article: { fn: vi.fn(async (_url: string) => null as { raw_html: string; body_html: string } | string | null) },
-  ctl: { lastContainer: undefined as string | null | undefined, fetchError: null as Error | null },
+  ctl: {
+    lastContainer: undefined as string | null | undefined, fetchError: null as Error | null,
+    transcriptCalls: 0,
+    transcript: {
+      outcome: "success" as const, stable_url: "https://pod/transcript.txt", raw_payload: "raw transcript",
+      cleaned_body: "clean body", bytes: 14, duration_ms: 5, content_type: "text/plain",
+    },
+    programPage: {
+      outcome: "success" as const, stable_url: "https://pod/episode", raw_payload: "<html>episode</html>",
+      bytes: 20, duration_ms: 4, content_type: "text/html",
+    },
+  },
 }));
 vi.mock("../sources/index.js", () => ({ fetchFromSource: vi.fn(async () => {
   if (ctl.fetchError) throw ctl.fetchError;
@@ -36,6 +47,17 @@ vi.mock("../sources/article.js", () => ({
     return typeof result === "string" ? { raw_html: `<html><body>${result}</body></html>`, body_html: result } : result;
   },
 }));
+vi.mock("../sources/rss.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../sources/rss.js")>();
+  return {
+    ...actual,
+    fetchTranscript: vi.fn(async () => {
+      ctl.transcriptCalls++;
+      return ctl.transcript;
+    }),
+    fetchPodcastProgramPage: vi.fn(async () => ctl.programPage),
+  };
+});
 const { collectSource } = await import("./collector.js");
 
 const sourceAnq: Source = {
@@ -45,6 +67,10 @@ const sourceAnq: Source = {
 const sourcePod: Source = {
   id: "s1", name: "Pod", type: "rss", endpoint: "https://pod/feed",
   topic_ids: ["t1"], fetch_interval: "1h", backfill: null, enabled: true,
+  // Keep the fixture ready for an explicit observe/enabled policy. Its default remains off.
+  transcript_mode: "off", transcript_strategy: "relevant_only", transcript_max_items_per_run: 2,
+  transcript_max_bytes_per_run: 2_000, transcript_timeout_budget_ms: 1_000, transcript_host_qps: 1,
+  transcript_policy_version: null,
 };
 const sourceFullText: Source = {
   id: "s_ft", name: "先知式", type: "rss", endpoint: "https://xz.example/feed",
@@ -58,6 +84,8 @@ const mkRaw = (url: string, body: string, transcript_url?: string): RawItem =>
   ({ url, title: "Ep", author: null, published_at: null, body, transcript_url, raw: "{}" });
 const mkRawWithKind = (url: string, body: string, kind: RawItem["body_kind"]): RawItem =>
   ({ url, title: "Ep", author: null, published_at: null, body, body_kind: kind, raw: "{}" });
+const mkPodcastRaw = (url: string, body: string, transcript_url?: string): RawItem =>
+  ({ ...mkRawWithKind(url, body, "show_notes"), title: "Coding agent episode", is_podcast_episode: true, transcript_url });
 
 let db: DB;
 beforeEach(() => {
@@ -67,14 +95,17 @@ beforeEach(() => {
   insertSource(db, sourceAnq);
   insertSource(db, sourcePod);
   insertSource(db, sourceFullText);
+  insertTopic(db, { id: "t1", name: "Agents", keywords: ["coding agent"], language: "en", brief_schedule: "daily", enabled: true, facets: [] });
   article.fn.mockReset();
 });
 afterEach(() => {
   delete process.env.ARTICLE_FETCH;
   delete process.env.TRANSCRIPT_FETCH;
+  delete process.env.TRANSCRIPT_SHADOW_FETCH;
   delete process.env.ARTICLE_FETCH_MAX_PER_RUN;
   raws.value = [];
   ctl.fetchError = null;
+  ctl.transcriptCalls = 0;
   vi.unstubAllEnvs();
   vi.clearAllMocks();
 });
@@ -254,7 +285,7 @@ describe("collector 按源 fetch_mode 全文策略（ADR-0008 切片2）", () =>
 });
 
 describe("collector preserves existing transcript evidence", () => {
-  it("在预筛与配额 collector 合入前，enabled 策略也不从生产 collector 请求 transcript", async () => {
+  it("在预筛与配额 collector 合入前，enabled 策略保持 dormant，既不请求也不写观察事实", async () => {
     const policySource: Source = {
       ...sourcePod, id: "s_policy", endpoint: "https://pod/policy-feed",
       transcript_mode: "enabled", transcript_policy_version: "podcast-policy-v1",
@@ -264,6 +295,103 @@ describe("collector preserves existing transcript evidence", () => {
     await collectSource(db, policySource);
     const item = getContentItem(db, getContentByUrl(db, "https://pod/ep-staged")!.id)!;
     expect(item).toMatchObject({ body_kind: "show_notes", body: "Show notes." });
+    expect(ctl.transcriptCalls).toBe(0);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM transcript_acquisition_fact WHERE source_id=?").get(policySource.id))
+      .toEqual({ n: 0 });
+  });
+
+  it("observe 只写候选/决策事实，绝不抓取或替换生产 show_notes", async () => {
+    process.env.TRANSCRIPT_FETCH = "1";
+    raws.value = [mkPodcastRaw("https://pod/ep_observe", "Show notes.", "https://pod/ep_observe.txt")];
+    await collectSource(db, { ...sourcePod, transcript_mode: "observe", transcript_policy_version: "podcast-policy-v1" });
+    const item = getContentItem(db, getContentByUrl(db, "https://pod/ep_observe")!.id)!;
+    expect(item).toMatchObject({ body_kind: "show_notes", body: "Show notes." });
+    expect(ctl.transcriptCalls).toBe(0);
+    expect(db.prepare("SELECT stage,outcome,decision FROM transcript_acquisition_fact WHERE source_id=? ORDER BY stage").all(sourcePod.id))
+      .toEqual([{ stage: "candidate", outcome: "not_attempted", decision: "fetch" }, { stage: "decision", outcome: "decision", decision: "fetch" }]);
+  });
+
+  it("直接调用 collector 也拒绝未完整声明的 observe 策略", async () => {
+    await expect(collectSource(db, {
+      ...sourcePod, transcript_mode: "observe", transcript_policy_version: "podcast-policy-v1",
+      transcript_max_items_per_run: undefined,
+    })).rejects.toThrow("transcript_policy_fields_required");
+  });
+
+  it("畸形的 podcast URL 只跳过诊断事实，不能失败正常 RSS 采集", async () => {
+    raws.value = [mkPodcastRaw("https://[malformed", "", "https://pod/ep-malformed.txt")];
+    await expect(collectSource(db, {
+      ...sourcePod, transcript_mode: "observe", transcript_policy_version: "podcast-policy-v1",
+    })).resolves.toMatchObject({ inserted: 0, skipped: 1 });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM transcript_acquisition_fact WHERE source_id=?").get(sourcePod.id))
+      .toEqual({ n: 0 });
+  });
+
+  it("observe 的显式 shadow 开关只写隔离 SQLite/archive，不进入生产 ContentItem", async () => {
+    process.env.TRANSCRIPT_FETCH = "1";
+    process.env.TRANSCRIPT_SHADOW_FETCH = "1";
+    raws.value = [{
+      ...mkPodcastRaw("https://pod/ep_shadow", "Show notes.", "https://pod/ep_shadow.txt?token=ephemeral"),
+      raw: JSON.stringify({ "podcast:transcript": { "@_url": "https://pod/ep_shadow.txt?token=ephemeral" } }),
+    }];
+    ctl.transcript = { ...ctl.transcript, raw_payload: "raw shadow transcript", cleaned_body: "Shadow-only transcript." };
+    await collectSource(db, { ...sourcePod, transcript_mode: "observe", transcript_policy_version: "podcast-policy-v1" });
+    expect(getContentItem(db, getContentByUrl(db, "https://pod/ep_shadow")!.id)!).toMatchObject({ body_kind: "show_notes", body: "Show notes." });
+    const shadow = openDb(join(process.env.DATA_DIR!, "podcast-shadow", "shadow.db"));
+    const row = shadow.prepare("SELECT outcome,raw_ref,evidence_status FROM transcript_acquisition_fact WHERE source_id=? AND stage='terminal'").get(sourcePod.id) as { outcome: string; raw_ref: string; evidence_status: string };
+    shadow.close();
+    expect(row).toMatchObject({ outcome: "success", evidence_status: "verified" });
+    const archive = JSON.parse(readFileSync(join(process.env.DATA_DIR!, "podcast-shadow", row.raw_ref), "utf8"));
+    expect(archive).toMatchObject({
+      schema_version: "podcast-transcript-evidence-v2",
+      program_page: { raw_payload: "<html>episode</html>" },
+      transcript: { raw_payload: "raw shadow transcript" },
+    });
+    expect(archive.episode.rss_item).not.toContain("token=ephemeral");
+    expect(ctl.transcriptCalls).toBe(1);
+  });
+
+  it("observe 的 shadow 子开关不能绕过 TRANSCRIPT_FETCH 总熔断", async () => {
+    process.env.TRANSCRIPT_SHADOW_FETCH = "1";
+    raws.value = [mkPodcastRaw("https://pod/ep-global-gate", "Show notes.", "https://pod/ep-global-gate.txt")];
+    await collectSource(db, { ...sourcePod, transcript_mode: "observe", transcript_policy_version: "podcast-policy-v1" });
+    expect(ctl.transcriptCalls).toBe(0);
+    expect(existsSync(join(process.env.DATA_DIR!, "podcast-shadow", "shadow.db"))).toBe(false);
+  });
+
+  it("observe metadata facts never persist episode URL credentials", async () => {
+    raws.value = [mkPodcastRaw(
+      "https://reader:secret@pod/ep-fact?lang=en&token=ephemeral",
+      "Show notes.",
+      "https://pod/ep-fact.txt?token=ephemeral",
+    )];
+    await collectSource(db, { ...sourcePod, transcript_mode: "observe", transcript_policy_version: "podcast-policy-v1" });
+    const facts = db.prepare("SELECT canonical_episode_url FROM transcript_acquisition_fact WHERE source_id=? ORDER BY stage")
+      .all(sourcePod.id) as Array<{ canonical_episode_url: string }>;
+    expect(facts).toEqual([
+      { canonical_episode_url: "https://pod/ep-fact?lang=en" },
+      { canonical_episode_url: "https://pod/ep-fact?lang=en" },
+    ]);
+    expect(JSON.stringify(facts)).not.toContain("secret");
+    expect(JSON.stringify(facts)).not.toContain("ephemeral");
+  });
+
+  it("重复采集同一播客候选时不制造 acquisition conflict", async () => {
+    raws.value = [mkPodcastRaw("https://pod/ep-repeat", "Show notes.", "https://pod/ep-repeat.txt")];
+    const observing = { ...sourcePod, transcript_mode: "observe" as const, transcript_policy_version: "podcast-policy-v1" };
+    await collectSource(db, observing);
+    await collectSource(db, observing);
+    expect(db.prepare("SELECT COUNT(*) AS count FROM transcript_acquisition_fact WHERE source_id=?").get(sourcePod.id)).toEqual({ count: 2 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM transcript_acquisition_conflict").get()).toEqual({ count: 0 });
+  });
+
+  it("podcast RSS 即使配置 full_text 也保持 show_notes，不额外抓节目页覆盖分类", async () => {
+    const fullTextPodcast = { ...sourcePod, id: "s_podcast_full_text", fetch_mode: "full_text" as const };
+    insertSource(db, fullTextPodcast);
+    raws.value = [mkPodcastRaw("https://pod/ep-show-notes", "short show notes", "https://pod/ep-show-notes.txt")];
+    await collectSource(db, fullTextPodcast);
+    expect(article.fn).not.toHaveBeenCalled();
+    expect(getContentItem(db, getContentByUrl(db, "https://pod/ep-show-notes")!.id)!).toMatchObject({ body_kind: "show_notes", body: "short show notes" });
   });
 
   it("不降级：已是 transcript 的 url 再采到 show notes → 跳过、保留 transcript", async () => {

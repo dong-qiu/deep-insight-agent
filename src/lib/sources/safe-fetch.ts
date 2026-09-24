@@ -53,6 +53,8 @@ export interface SafeFetchOptions {
   headers?: Record<string, string>;
   timeoutMs?: number;
   maxRedirects?: number;
+  /** Source policy hook, invoked for every actual HTTP hop including redirects. */
+  beforeRequest?: (url: string) => Promise<void>;
 }
 
 /** 单次抓取响应体字节上限（默认 8MB）：防异常巨大 feed 撑爆内存/XML 解析。 */
@@ -62,9 +64,12 @@ export const MAX_RESPONSE_BYTES = 8_000_000;
  * transient network failure without depending on an error-message translation. */
 export class ResponseSizeLimitError extends Error {
   readonly code = "response_size_limit";
-  constructor(maxBytes: number) {
+  /** Bytes observed before cancellation. This is deliberately retained for source-level quotas. */
+  readonly bytesRead: number;
+  constructor(maxBytes: number, bytesRead: number = maxBytes) {
     super(`response_size_limit:${maxBytes}`);
     this.name = "ResponseSizeLimitError";
+    this.bytesRead = bytesRead;
   }
 }
 
@@ -95,7 +100,7 @@ export async function readTextCapped(
         console.warn(`[readTextCapped] 响应超 ${maxBytes} 字节，已截断保留前 ${Buffer.concat(chunks).length} 字节${opts.label ? `（${opts.label}）` : ""}`);
         return Buffer.concat(chunks).toString("utf8");
       }
-      throw new ResponseSizeLimitError(maxBytes);
+      throw new ResponseSizeLimitError(maxBytes, total);
     }
     chunks.push(value);
   }
@@ -134,6 +139,7 @@ export async function fetchWithRetry(
 
 export async function safeFetch(input: string, opts: SafeFetchOptions = {}): Promise<Response> {
   const timeoutMs = opts.timeoutMs ?? 15_000;
+  const deadline = Date.now() + timeoutMs;
   const maxRedirects = opts.maxRedirects ?? 5;
   let target = input;
   for (let hop = 0; ; hop++) {
@@ -147,10 +153,15 @@ export async function safeFetch(input: string, opts: SafeFetchOptions = {}): Pro
       throw new Error(`不允许的协议：${u.protocol}（仅 http/https）`);
     }
     await assertPublicHost(u.hostname);
+    // Redirects are independent network requests. Apply source QPS/deadline policy after the
+    // target is resolved and before every hop, rather than treating a redirect chain as one fetch.
+    await opts.beforeRequest?.(u.toString());
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) throw new DOMException("safeFetch deadline exhausted", "TimeoutError");
     const res = await fetch(u, {
       headers: opts.headers,
       redirect: "manual",
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: AbortSignal.timeout(remainingMs),
     });
     if (res.status >= 300 && res.status < 400) {
       const loc = res.headers.get("location");

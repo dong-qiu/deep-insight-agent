@@ -60,6 +60,7 @@ describe("readTextCapped 大小封顶", () => {
 });
 
 describe("safeFetch 拦截（不触网即拒）", () => {
+  afterEach(() => vi.restoreAllMocks());
   it("拒非 http/https 协议", async () => {
     await expect(safeFetch("file:///etc/passwd")).rejects.toThrow(/协议/);
     await expect(safeFetch("ftp://example.com/x")).rejects.toThrow(/协议/);
@@ -72,6 +73,31 @@ describe("safeFetch 拦截（不触网即拒）", () => {
   });
   it("拒非法 URL", async () => {
     await expect(safeFetch("http://")).rejects.toThrow();
+  });
+
+  it("每个 redirect hop 都经过 request gate", async () => {
+    const start = "http://8.8.8.8/start";
+    const final = "http://8.8.8.8/final";
+    const network = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(null, { status: 302, headers: { location: final } }))
+      .mockResolvedValueOnce(new Response("ok", { status: 200 }));
+    const gated: string[] = [];
+    await expect(safeFetch(start, { beforeRequest: async (url) => { gated.push(url); } })).resolves.toMatchObject({ status: 200 });
+    expect(gated).toEqual([start, final]);
+    expect(network).toHaveBeenCalledTimes(2);
+  });
+
+  it("redirect 不能重置总 deadline，gate 后超时不会发下一 hop", async () => {
+    const start = "http://8.8.8.8/start";
+    const final = "http://8.8.8.8/final";
+    let clock = 0;
+    vi.spyOn(Date, "now").mockImplementation(() => clock);
+    const network = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 302, headers: { location: final } }));
+    await expect(safeFetch(start, {
+      timeoutMs: 10,
+      beforeRequest: async (url) => { if (url === final) clock = 11; },
+    })).rejects.toMatchObject({ name: "TimeoutError" });
+    expect(network).toHaveBeenCalledTimes(1);
   });
 });
 

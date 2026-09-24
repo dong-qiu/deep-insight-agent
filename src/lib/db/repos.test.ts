@@ -116,6 +116,9 @@ it("transcript acquisition fact 使用确定性 event_key 幂等重放，冲突�
   const fact = { ...factInput, event_key: transcriptAcquisitionEventKey(factInput) };
   expect(appendTranscriptAcquisitionFact(db, fact)).toEqual({ replayed: false });
   expect(appendTranscriptAcquisitionFact(db, fact)).toEqual({ replayed: true });
+  expect(appendTranscriptAcquisitionFact(db, {
+    ...fact, run_id: "run_later", occurred_at: "2026-09-14T00:00:00.000Z",
+  })).toEqual({ replayed: true });
   expect(() => appendTranscriptAcquisitionFact(db, { ...fact, reason_code: "different_decision" })).toThrow("transcript_acquisition_idempotency_conflict");
   expect(db.prepare("SELECT COUNT(*) AS n FROM transcript_acquisition_conflict WHERE event_key=?").get(fact.event_key)).toEqual({ n: 1 });
   expect(() => db.prepare("DELETE FROM transcript_acquisition_fact WHERE event_key=?").run(fact.event_key)).toThrow("append-only");
@@ -127,6 +130,17 @@ it("transcript acquisition fact 使用确定性 event_key 幂等重放，冲突�
 it("policy-aware transcript Source 必须有版本，策略变更必须升级版本", () => {
   expect(() => insertSource(db, { ...sampleSource, transcript_mode: "observe", transcript_policy_version: null }))
     .toThrow("transcript_policy_version_required");
+  for (const field of [
+    "transcript_strategy",
+    "transcript_max_items_per_run",
+    "transcript_max_bytes_per_run",
+    "transcript_timeout_budget_ms",
+    "transcript_host_qps",
+  ] as const) {
+    expect(() => insertSource(db, {
+      ...sampleSource, id: `missing-${field}`, transcript_mode: "observe", transcript_policy_version: "pod-v1", [field]: undefined,
+    })).toThrow("transcript_policy_fields_required");
+  }
   const observed = { ...sampleSource, transcript_mode: "observe" as const, transcript_policy_version: "pod-v1" };
   insertSource(db, observed);
   expect(() => updateSource(db, { ...observed, transcript_max_items_per_run: 6 }))
