@@ -91,7 +91,7 @@ export const ANALYZER_SYSTEM = `你是行业洞察分析引擎。给定一个主
 3. 可溯源（逐字、宁短勿拼）：每条洞察挂 ≥ 1 条引用；quote 必须能**原样在该 citation 的 content_item_id 对应 body 里搜到**——逐字逐标点复制 body 中**一段连续**的原文，**优先短而精确的片段（一句话以内、尽量 ≤ 30 字）**；绝不改写/转述/补全/把分散句子拼接（需要多处证据就拆成多条 citation）。**不得把某篇的 quote 挂到另一篇 content_item_id，也不得把 title、URL、发布时间等元数据当作 quote。**与其引一段长而可能漂移的，不如引一小段绝对逐字的。content_item_id 必须来自输入清单。
 4. 引用覆盖结论（**每个具体声明都要有覆盖它的 quote**）：结论里出现的每一个具体数字、金额、百分比、专有名称、关键限定，都必须有**一条所挂 quote 直接包含它**。若已挂的 quote 没覆盖到某个数字/实体，就**为它单独再加一条短 quote**（逐字复制 body 中含该数字/实体的那句）——结论综合了原文多句时，**每个被引用的事实各挂一条短 quote**；宁可多挂几条逐字短引用，也不得让任何具体声明无 quote 覆盖（例：结论说"900 份调查"，就必须有一条 quote 含 "900"；说"得分 1507"，就必须有一条含 "1507"）。没有 quote 直接支撑的具体数字/论断，不要写进结论。
 4.5. 原子 claim 对齐：每条 citation 都要填 claim——它是该条 quote **单独、直接**支撑的一个完整事实，使用 statement 的语言；不得把其他来源的事实、跨来源共识、因果解释或泛化结论塞进同一个 claim。跨来源洞察要拆成多个 citation claim，而非让任一来源支撑整段综合结论。标题、URL、发布时间等元数据即使可在输入条目中看到，也**不能单独作为 citation claim 或 quote**；若要提及论文/来源名称，必须同时用该条 body 中的原文事实支撑结论。
-4.5.1. **绑定不变量（机器强制）**：每条 insight 只能有一个 statement 实质命题；statement_citation_index 必须指向唯一主 citation（从 1 起）。读者最终看到的是该 citation 的 quote **原文**，不是 statement 草稿或 claim 的翻译/改写；claim 仅供内部审计，不能含 quote 没有的词。**不要把输入条目的 source 名、作者、站点、标题或 URL 当作 quote 的隐含主语**：例如绑定 quote 没有 Aider，claim/statement 就不得写“Aider 的基准……”，应只陈述 quote 自己明说的事实，或跳过该候选。你输出的 statement 只是绑定校验草稿，不能作为添加事实的旁路；需要不同事实就另建 insight。选择能脱离标题、主题、正文和其他引用独立成立的完整 quote；不要选择以 it、this、the gap、the agent、our approach、the full system、top systems、no single model、该方法、该架构等需要展示外先行词或比较集合的片段。
+4.5.1. **绑定不变量（机器强制）**：每条 insight 只能有一个 statement 实质命题；statement_citation_index 必须指向唯一主 citation（从 1 起）。读者会同时看到：① 通过展示覆盖审计的 statement 草稿（按主题语言写作）；② 该 citation 的 quote **原文**。claim 仅供内部审计，不能含 quote 没有的词。**不要把输入条目的 source 名、作者、站点、标题或 URL 当作 quote 的隐含主语**：例如绑定 quote 没有 Aider，claim/statement 就不得写“Aider 的基准……”，应只陈述 quote 自己明说的事实，或跳过该候选。需要不同事实就另建 insight。选择能脱离标题、主题、正文和其他引用独立成立的完整 quote；不要选择以 it、this、the gap、the agent、our approach、the full system、top systems、no single model、该方法、该架构等需要展示外先行词或比较集合的片段。
 ${CITATION_CLAUSE_AUDIT}
 5. 不得放大：结论的适用范围/程度/条件必须与来源严格一致。不得把"仅在 X 上"写成"在多类/所有上"，不得把"最高 N / up to N"写成"总是 N"，不得把"提示 / 有限证据"写成"证明"。
 6. 完整自足：statement 必须是完整句子，不得截断或留半句。
@@ -131,8 +131,9 @@ ${CITATION_CLAUSE_AUDIT}
 // the primary display-audit response allowance; v21 limits each primary display-audit request
 // to one atomic claim, preventing a truncated verdict set from hiding later claims; v22 restores
 // a 2k per-request budget because the multi-claim reason for the 4k allowance no longer exists;
-// v23 audits the bound draft claim before source-quote projection can erase an unsupported scope.
-export const ANALYZER_OUTPUT_VERSION = 23;
+// v23 audits the bound draft claim before source-quote projection can erase an unsupported scope;
+// v24 persists that audited draft separately for the Chinese-conclusion + source-evidence reader mode.
+export const ANALYZER_OUTPUT_VERSION = 24;
 
 /** 分析缓存版本（ADR-0009）：analyzer 模型 + SYSTEM prompt 哈希 + 输出契约版本——任一变 → 版本变 → 旧分析缓存
  *  自动失效（不复用陈旧 prompt/schema/派生的洞察）。镜像 validator.consistencyCacheVersion 的版本隔离口径。 */
@@ -1239,6 +1240,10 @@ export async function filterByQuoteCoverage(
     if (!legacyWithoutImportanceText) {
       insight.importance_basis = renderImportanceBasis(insight.importance_facts ?? [], insight.importance_reason!);
     }
+    // The bound source quote remains `statement`; retain the previously audited draft only after
+    // every primary/countercheck and controlled-metadata gate has accepted it. Reader paths bind
+    // this exact text back to draft_statement_sha256 before showing it.
+    insight.reader_statement = draftStatement;
     onDecision?.({ ...decisionBase, terminal_reason: degraded_fields.length ? "kept_degraded" : "kept", ...(degraded_fields.length ? { degraded_fields: [...new Set(degraded_fields)] } : {}) });
     return insight;
   };
@@ -1599,6 +1604,7 @@ async function analyzeChunk(
   throwIfAborted(signal);
   const user = `主题：${topic.name}（关键词：${topic.keywords.join("、")}）
 时间窗：${timeWindow.start} ~ ${timeWindow.end}
+读者结论语言：${topic.language === "zh" ? "中文。保留模型名、产品名、版本号和数字等原文专名；不要翻译或扩写它们。" : topic.language === "en" ? "English." : "以主题的主要语言写作；保留模型名、产品名、版本号和数字等原文专名。"}
 
 该主题最近 14 天已报告事件清单（用于 event_id / is_followup 判定）：${renderHistory(history)}
 已采集内容（共 ${items.length} 条）：

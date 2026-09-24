@@ -64,6 +64,29 @@ export function auditSupportsStatementBinding(
     // v6 requires the independent quote-only judge in addition to the primary coverage verdict.
     && Boolean((statementClaims[0] as AuditClaim & { countercheck?: { supports?: unknown } }).countercheck?.supports === true);
 }
+
+/** The source quote remains the canonical persisted statement. A localized reader conclusion is
+ * allowed only when it is byte-for-byte the draft that the same v6 audit approved before quote
+ * projection. This deliberately does not attempt translation, normalization, or a fresh model
+ * rewrite on a database read path. */
+export function auditSupportsReaderStatement(decision: unknown, readerStatement: string | undefined): boolean {
+  if (!readerStatement?.trim() || !decision || typeof decision !== "object") return false;
+  const record = decision as {
+    display_projection_version?: unknown; draft_statement_sha256?: unknown; claims?: unknown;
+  };
+  if (record.display_projection_version !== DISPLAY_PROJECTION_VERSION
+    || record.draft_statement_sha256 !== sourceQuoteHash(readerStatement)
+    || !Array.isArray(record.claims)) return false;
+  const statementClaims = record.claims.filter((claim): claim is AuditClaim => Boolean(claim) && typeof claim === "object"
+    && (claim as AuditClaim).claim_id === "statement:1"
+    && (claim as AuditClaim).field === "statement"
+    && (claim as AuditClaim).kind === "factual");
+  return statementClaims.length === 1
+    && statementClaims[0].supports === true
+    && Array.isArray(statementClaims[0].citation_indexes)
+    && statementClaims[0].citation_indexes.length === 1
+    && Boolean((statementClaims[0] as AuditClaim & { countercheck?: { supports?: unknown } }).countercheck?.supports === true);
+}
 /** The only reader-visible importance copy allowed beside a source quote. Keep this closed
  * vocabulary here so persisted consumers cannot accept an arbitrary system-prefixed sentence. */
 const CONTROLLED_IMPORTANCE_BASIS = new Set([

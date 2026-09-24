@@ -19,7 +19,7 @@ const batch: AnalysisBatch = {
   status: "done", no_significant_event: false,
   insights: [
     {
-      id: "i1", topic_id: "t1", type: "aggregation", event_id: null, statement: "S1", headline: "H1",
+      id: "i1", topic_id: "t1", type: "aggregation", event_id: null, statement: "S1", reader_statement: "中文结论 S1", headline: "H1",
       statement_citation_index: 1,
       importance: 4, importance_basis: "basis",
       citations: [{ content_item_id: "ci1", quote: "q1", locator: { paragraph_index: 0, char_start: 0, char_end: 2 } }],
@@ -45,7 +45,8 @@ const batch: AnalysisBatch = {
 it("AnalysisBatch 往返（含 insights + citations）", () => {
   saveAnalysisBatch(db, batch);
   expect(getAnalysisBatch(db, "b1")).toEqual({ ...batch, display_coverage_state: "legacy", display_projection_version: "legacy" });
-  expect(db.prepare("SELECT statement_citation_index FROM insight WHERE id = 'i2'").get()).toEqual({ statement_citation_index: 2 });
+  expect(db.prepare("SELECT statement_citation_index, reader_statement FROM insight WHERE id = 'i2'").get()).toEqual({ statement_citation_index: 2, reader_statement: "" });
+  expect(db.prepare("SELECT reader_statement FROM insight WHERE id = 'i1'").get()).toEqual({ reader_statement: "中文结论 S1" });
 });
 
 it("同一事务持久化 citation_ref/claim 与展示覆盖审计，读回不把旧行伪装成已审计", () => {

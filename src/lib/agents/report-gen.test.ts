@@ -245,7 +245,7 @@ describe("selectInsights（洞察级纳入判定）", () => {
       .not.toBe(readerVisibleEvidenceKey({ ...base, statement: "Model i", citations: [{ ...base.citations[0]!, quote: "Model i" }] }));
   });
 
-  it("v6 报告只显示一次绑定原文，次级引用仅留作审计而不进入 Markdown 或 HTML", () => {
+  it("v6 原文回退仍提供可定位的证据锚点，次级引用只留作审计", () => {
     const batch = batchOf();
     const safe = batch.insights[0]!;
     safe.statement = "OpenAI released Codex.";
@@ -276,13 +276,129 @@ describe("selectInsights（洞察级纳入判定）", () => {
         ["ci2", { source_id: "s2", source_name: "Secondary Source", tags: [], url: "https://secondary.example", published_at: null, observed_at: "2026-09-09T00:00:00Z" }],
       ]), now: "2026-09-09T00:00:00Z",
     });
+    expect(report.body_md).toContain("## 1. OpenAI released Codex[1].");
+    // 反例：行内 [1] 必须有同号的列表目标，不能再留下只能看、不能跳转的悬空编号。
+    expect(report.body_md).toContain("- [1] 已核验原文 · [Primary Source](https://primary.example)");
+    expect(report.body_html).toContain(`<h2>1. ${safe.statement}</h2>`);
     for (const body of [report.body_md, report.body_html]) {
-      expect(body.split(safe.statement).length - 1).toBe(1);
       expect(body).not.toContain("An audit-only secondary quote.");
       expect(body).not.toContain("Secondary Source");
     }
-    expect(report.body_md).toContain("已核验原文 [1] [Primary Source](https://primary.example)");
-    expect(report.body_html).toContain("已核验原文");
+  });
+
+  it("仅展示哈希绑定的中文结论，并紧随逐字原文证据", () => {
+    const batch = batchOf();
+    const safe = batch.insights[0]!;
+    const quote = "OpenAI released Codex.";
+    const readerStatement = "OpenAI 发布了 Codex。";
+    safe.statement = quote;
+    safe.reader_statement = readerStatement;
+    safe.statement_citation_index = 1;
+    safe.citations[0] = { ...safe.citations[0]!, quote, citation_ref: "binding" };
+    batch.display_coverage_state = "audited";
+    batch.display_projection_version = DISPLAY_PROJECTION_VERSION;
+    batch.display_coverage_audits = [{
+      insight_id: safe.id, candidate_id: safe.id, gate_version: "display-coverage-v6", terminal_reason: "kept",
+      prompt_version: "display-coverage-v6", input_hash: "input", validator_model: "validator",
+      decision: {
+        statement_citation_index: 1, statement_citation_ref: "binding", display_projection_version: DISPLAY_PROJECTION_VERSION,
+        draft_statement_sha256: sourceQuoteHash(readerStatement), statement_sha256: sourceQuoteHash(quote), quote_sha256: sourceQuoteHash(quote),
+        claims: [{ claim_id: "statement:1", field: "statement", kind: "factual", supports: true, citation_indexes: [1], countercheck: { supports: true } }],
+      }, created_at: "2026-09-09T00:00:00.000Z",
+    }];
+    const passing: ValidationResult = {
+      ...validation,
+      checks: validation.checks.map((check) => check.insight_id === safe.id
+        ? { ...check, consistency: "support" as const, consistency_reason: "ok", verdict: "pass" as const }
+        : check),
+    };
+    const { report, index } = buildReport({
+      topic, batch, validation: passing, type: "brief",
+      contentLookup: new Map([["ci1", { source_id: "s1", source_name: "Primary Source", tags: [], url: "https://primary.example", published_at: null, observed_at: "2026-09-09T00:00:00Z" }]]),
+      now: "2026-09-09T00:00:00Z",
+    });
+
+    expect(report.body_md).toContain("OpenAI 发布了 Codex[1]。");
+    expect(report.body_md).toContain(`- [1] 原文证据：「${quote}」— [Primary Source](https://primary.example)`);
+    expect(report.body_html).toContain(`<h2>1. ${readerStatement}</h2>`);
+    expect(report.body_html).toContain(`<q>「${quote}」</q>`);
+    expect(index.summary).toContain(readerStatement);
+    expect(index.highlights).toEqual([readerStatement]);
+  });
+
+  it("反例：中文结论与展示审计哈希不一致时，安全回退为绑定原文", () => {
+    const batch = batchOf();
+    const safe = batch.insights[0]!;
+    const quote = "OpenAI released Codex.";
+    safe.statement = quote;
+    safe.reader_statement = "未经审计的中文结论。";
+    safe.statement_citation_index = 1;
+    safe.citations[0] = { ...safe.citations[0]!, quote, citation_ref: "binding" };
+    batch.display_coverage_state = "audited";
+    batch.display_projection_version = DISPLAY_PROJECTION_VERSION;
+    batch.display_coverage_audits = [{
+      insight_id: safe.id, candidate_id: safe.id, gate_version: "display-coverage-v6", terminal_reason: "kept",
+      prompt_version: "display-coverage-v6", input_hash: "input", validator_model: "validator",
+      decision: {
+        statement_citation_index: 1, statement_citation_ref: "binding", display_projection_version: DISPLAY_PROJECTION_VERSION,
+        draft_statement_sha256: sourceQuoteHash("另一个草稿。"), statement_sha256: sourceQuoteHash(quote), quote_sha256: sourceQuoteHash(quote),
+        claims: [{ claim_id: "statement:1", field: "statement", kind: "factual", supports: true, citation_indexes: [1], countercheck: { supports: true } }],
+      }, created_at: "2026-09-09T00:00:00.000Z",
+    }];
+    const passing: ValidationResult = {
+      ...validation,
+      checks: validation.checks.map((check) => check.insight_id === safe.id
+        ? { ...check, consistency: "support" as const, consistency_reason: "ok", verdict: "pass" as const }
+        : check),
+    };
+    const { report, index } = buildReport({
+      topic, batch, validation: passing, type: "brief",
+      contentLookup: new Map([["ci1", { source_id: "s1", source_name: "Primary Source", tags: [], url: "https://primary.example", published_at: null, observed_at: "2026-09-09T00:00:00Z" }]]),
+      now: "2026-09-09T00:00:00Z",
+    });
+
+    expect(report.body_md).toContain("## 1. OpenAI released Codex[1].");
+    expect(report.body_md).toContain("- [1] 已核验原文 · [Primary Source](https://primary.example)");
+    expect(report.body_md).not.toContain(safe.reader_statement);
+    expect(index.summary).toBe("本期包含 1 条已核验原文。");
+    expect(index.highlights).toEqual([]);
+  });
+
+  it("原文和中文结论中的 [12] 以文字呈现，不伪造第 12 条日报引用", () => {
+    const batch = batchOf();
+    const safe = batch.insights[0]!;
+    const quote = "Evidence [12].";
+    const readerStatement = "结论保留原文编号 [12]。";
+    safe.statement = quote;
+    safe.reader_statement = readerStatement;
+    safe.statement_citation_index = 1;
+    safe.citations[0] = { ...safe.citations[0]!, quote, citation_ref: "binding" };
+    batch.display_coverage_state = "audited";
+    batch.display_projection_version = DISPLAY_PROJECTION_VERSION;
+    batch.display_coverage_audits = [{
+      insight_id: safe.id, candidate_id: safe.id, gate_version: "display-coverage-v6", terminal_reason: "kept",
+      prompt_version: "display-coverage-v6", input_hash: "input", validator_model: "validator",
+      decision: {
+        statement_citation_index: 1, statement_citation_ref: "binding", display_projection_version: DISPLAY_PROJECTION_VERSION,
+        draft_statement_sha256: sourceQuoteHash(readerStatement), statement_sha256: sourceQuoteHash(quote), quote_sha256: sourceQuoteHash(quote),
+        claims: [{ claim_id: "statement:1", field: "statement", kind: "factual", supports: true, citation_indexes: [1], countercheck: { supports: true } }],
+      }, created_at: "2026-09-09T00:00:00.000Z",
+    }];
+    const passing: ValidationResult = {
+      ...validation,
+      checks: validation.checks.map((check) => check.insight_id === safe.id
+        ? { ...check, consistency: "support" as const, consistency_reason: "ok", verdict: "pass" as const }
+        : check),
+    };
+    const { report } = buildReport({
+      topic, batch, validation: passing, type: "brief",
+      contentLookup: new Map([["ci1", { source_id: "s1", source_name: "Primary Source", tags: [], url: "https://primary.example", published_at: null, observed_at: "2026-09-09T00:00:00Z" }]]),
+      now: "2026-09-09T00:00:00Z",
+    });
+    expect(report.body_md).toContain("\\[12\\]");
+    expect(report.body_md).toContain("- [1] 原文证据：「Evidence \\[12\\].」");
+    expect(report.body_md).toContain("结论保留原文编号 \\[12\\]。 [1]");
+    expect(report.body_md).not.toContain("- [12]");
   });
 });
 
@@ -720,7 +836,7 @@ describe("buildReport 派生", () => {
     expect(report.body_html).toContain('<a href="https://a.example/q1" target="_blank" rel="noopener noreferrer"><span class="src">Source A</span></a> · 2026-05-07');
     expect(report.body_html).toContain('class="cite-src verified-source"');
     expect(report.body_html).not.toContain('<li class="cite-quote">');
-    expect(report.body_html).toContain("· 引用 已核验原文");
+    expect(report.body_html).toContain("· 引用 1 条已核验原文");
     // 旧的裸 content_item_id 形式已消失
     expect(report.body_html).not.toContain("<code>ci");
   });
@@ -758,7 +874,7 @@ describe("buildReport 派生", () => {
   it("C-2 绑定来源保留连续编号，但不把编号重复注入 statement", () => {
     expect(report.body_md).toMatch(/## 1\. S1/);
     expect(report.body_md).not.toContain("S2");
-    expect(report.body_md).toMatch(/- 引用：已核验原文 \[1\] \[Source A\]\(https:\/\/a\.example\/q1\) · 2026-05-07/);
+    expect(report.body_md).toMatch(/- \[1\] 已核验原文 · \[Source A\]\(https:\/\/a\.example\/q1\) · 2026-05-07/);
     expect(report.body_md).not.toContain("「q1」");
   });
 
@@ -874,6 +990,30 @@ describe("buildReport · deep_dive（最小确定性深挖）", () => {
       expect(body).not.toContain(`${quote.slice(0, 30)}…`);
       expect(body).not.toContain("待补引：OpenAI");
     }
+  });
+
+  it("混合深挖不在导航区重复中文结论，只有详版结论紧随原文证据", () => {
+    const deep = batchOf();
+    const insight = deep.insights[0]!;
+    const quote = "A validated source quote.";
+    const readerStatement = "这是可读的中文结论。";
+    insight.statement = quote;
+    insight.reader_statement = readerStatement;
+    insight.citations[0] = { ...insight.citations[0]!, quote, citation_ref: "i1binding" };
+    deep.display_coverage_audits![0]!.decision = {
+      statement_citation_index: 1, statement_citation_ref: "i1binding", display_projection_version: DISPLAY_PROJECTION_VERSION,
+      draft_statement_sha256: sourceQuoteHash(readerStatement), statement_sha256: sourceQuoteHash(quote), quote_sha256: sourceQuoteHash(quote),
+      claims: [{ claim_id: "statement:1", field: "statement", kind: "factual", supports: true, citation_indexes: [1], countercheck: { supports: true } }],
+    };
+    const { report: projected } = buildReport({ topic, batch: deep, validation, type: "deep_dive", contentLookup: new Map(), now: "2026-05-07T08:00:00Z" });
+    for (const body of [projected.body_md, projected.body_html]) {
+      expect(body.split(readerStatement).length - 1).toBe(1);
+      expect(body).toContain(quote);
+    }
+    const navigation = projected.body_md.slice(projected.body_md.indexOf("## TL;DR"), projected.body_md.indexOf("## 重点关注"));
+    expect(navigation).toContain("已核验洞察 #1");
+    expect(navigation).not.toContain(readerStatement);
+    expect(projected.body_md).toContain(`- [1] 原文证据：「${quote}」`);
   });
 });
 

@@ -212,6 +212,12 @@ export interface Insight {
   type: "aggregation" | "trend";
   event_id: string | null;
   statement: string;
+  /**
+   * 已通过展示覆盖审计、供读者阅读的主题语言原子结论。`statement` 仍保留精确绑定的
+   * 原文 quote；此字段只有其 hash 与审计中的 draft_statement_sha256 一致时才可展示。
+   * 缺失或不匹配时读路径必须回退 `statement`，绝不临时翻译或改写。
+   */
+  reader_statement?: string;
   /** 1-based binding to the single citation whose atomic claim is reproduced by statement.
    * Analyzer output requires it; persisted legacy rows may omit it but must never be re-published
    * through a fresh display-coverage audit. */
@@ -538,8 +544,8 @@ export const LlmCitationSchema = z.object({
 
 /** analyzer 产出的单条洞察 */
 export const LlmInsightSchema = z.object({
-  statement: z.string().describe("仅作绑定校验草稿：中性叙述，不预测、不评论，且不得添加所绑定 quote 没有的范围、关系、机制、程度或评价。读者最终看到的是 statement_citation_index 所选 citation 的 quote 原文，不是本草稿或 citation claim"),
-  statement_citation_index: z.number().int().positive().describe("读者最终展示 statement 唯一绑定的 citations 1-based 序号。所选 quote 必须是完整、可独立理解的原子事实；代码将其逐字投影为最终 statement，不得选择多个引用"),
+  statement: z.string().describe("绑定校验草稿：中性叙述，不预测、不评论，且不得添加所绑定 quote 没有的范围、关系、机制、程度或评价。代码只会在该草稿通过展示覆盖审计后，将其保存为读者结论；原文 quote 始终与结论同时展示。"),
+  statement_citation_index: z.number().int().positive().describe("唯一主 citations 的 1-based 序号。所选 quote 必须是完整、可独立理解的原子事实；代码将 quote 保留为 statement，并将通过审计的草稿另存为 reader_statement，不得选择多个引用。"),
   headline: z
     .string()
     .describe(

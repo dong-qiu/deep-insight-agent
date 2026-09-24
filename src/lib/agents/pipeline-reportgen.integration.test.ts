@@ -91,6 +91,35 @@ describe("runReportGen production persistence path", () => {
     expect(listRuns(db, { kind: "report-gen" })[0]?.status).toBe("done");
   });
 
+  it("persists the audited Chinese conclusion with its exact source evidence through the normal report path", async () => {
+    const actual = await vi.importActual<typeof import("./report-gen.js")>("./report-gen.js");
+    buildReportMock.mockImplementation(actual.buildReport);
+    const readerStatement = "这是已验证的中文结论。";
+    const hybridBatch: AnalysisBatch = {
+      ...structuredClone(batch), id: "b_hybrid_reader_evidence",
+      insights: [{ ...structuredClone(batch.insights[0]!), reader_statement: readerStatement }],
+      display_coverage_audits: [{
+        ...structuredClone(batch.display_coverage_audits![0]!),
+        decision: {
+          ...structuredClone(batch.display_coverage_audits![0]!.decision) as Record<string, unknown>,
+          draft_statement_sha256: sourceQuoteHash(readerStatement),
+        },
+      }],
+    };
+    const traceId = seedCompleteTrace(hybridBatch);
+
+    const report = await runReportGen(db, { topic, batch: hybridBatch, validation, type: "brief", traceId });
+    expect(report.body_md).toContain(`${readerStatement} [1]`);
+    expect(report.body_md).toContain("- [1] 原文证据：「A validated statement」— [Source](https://example.test/item)");
+    expect(report.body_html).toContain(`<h2>1. ${readerStatement}</h2>`);
+    expect(report.body_html).toContain("<q>「A validated statement」</q>");
+    expect(getReport(db, report.id)?.body_md).toContain(`${readerStatement} [1]`);
+    expect(queryReportIndex(db, { topic: topic.id })[0]).toMatchObject({
+      summary: readerStatement,
+      highlights: [readerStatement],
+    });
+  });
+
   it("trace-backed publication atomically binds the complete review package before readers can see it", async () => {
     const report: Report = {
       id: "rep_trace", type: "brief", topic_id: topic.id, status: "done", generated_at: "2026-08-02T00:00:00Z", title: "Trace Brief",
