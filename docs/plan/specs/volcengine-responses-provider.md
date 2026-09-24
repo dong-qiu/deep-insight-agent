@@ -51,7 +51,11 @@ COVERAGE_THINKING=0
   `response.function_call_arguments.done` 与 `response.completed`，缺任一最终事件即 fail-closed；支持标准 LF/CRLF
   帧界。若 gateway 在前一事件省略 function name，只能以 completed output 中**唯一**的预期 forced function
   call 绑定该 arguments-done 事件；不能回退信任任意 output。`response.function_call_arguments.done` 已出现但参数
-  缺失/损坏时，仍保留 completed usage 后交给 Zod 门失败。
+  缺失/损坏时，仍保留 completed usage 后交给 Zod 门失败。SSE 的正式 `response.incomplete`、`response.failed`、
+  `error` 事件与无终态 EOF 必须分开记录；前三者默认不可重试，只有无 `response.completed` 的 EOF 可触发由
+  `LLM_TRANSIENT_RETRIES` 限制（默认一次）的有界新请求重试。下一次必须重新取得完整终止事件与函数参数；不得接受、拼接或推断前一次残片。诊断只能保留终态枚举、
+  是否收齐 `[DONE]`/函数参数和失败 HTTP status 等聚合信息；不得持久化 SSE data、原文、prompt、模型输出、endpoint、
+  key 或 provider request id。
   `LLM_TIMEOUT_MS` 继续作为流式请求的硬中止；长输出稳定性仍须由 smoke/A1 证明。
 - 不在代码内写入火山产品价目或 API key；价格须以实际订阅/控制台为准。
 - 不改变 analyzer、validator、coverage 的提示词、引用白名单或报告发布 fail-closed 语义。

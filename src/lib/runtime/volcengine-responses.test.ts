@@ -17,10 +17,10 @@ const request = {
   thinking: false,
 };
 
-function sse(events: unknown[], lineBreak = "\n"): Response {
+function sse(events: unknown[], lineBreak = "\n", headers: HeadersInit = {}): Response {
   return new Response(`${events.map((event) => `data: ${JSON.stringify(event)}${lineBreak}${lineBreak}`).join("")}data: [DONE]${lineBreak}${lineBreak}`, {
     status: 200,
-    headers: { "Content-Type": "text/event-stream" },
+    headers: { "Content-Type": "text/event-stream", ...headers },
   });
 }
 
@@ -216,7 +216,11 @@ describe("Volcengine Responses structured adapter", () => {
     globalThis.fetch = vi.fn(async () => sse([
       { type: "response.completed", response: { status: "completed", usage: {} } },
     ])) as typeof fetch;
-    await expect(callVolcengineResponses(request)).rejects.toThrow("缺少函数参数完成事件");
+    await expect(callVolcengineResponses(request)).rejects.toMatchObject({
+      message: expect.stringContaining("缺少函数参数完成事件"),
+      retryable: false,
+      streamDiagnostic: { terminal: "completed", sawDone: true, functionArgumentsDone: false },
+    });
   });
 
   it("does not trust an anonymous arguments-done event without an expected completed function call", async () => {
@@ -229,6 +233,49 @@ describe("Volcengine Responses structured adapter", () => {
 
   it("fails closed when a streaming response ends without its completion event", async () => {
     globalThis.fetch = vi.fn(async () => sse([{ type: "response.function_call_arguments.done", name: STRUCTURED_RESPONSE_TOOL_NAME, arguments: '{"ok":true}' }])) as typeof fetch;
-    await expect(callVolcengineResponses(request)).rejects.toThrow("完成事件前结束");
+    await expect(callVolcengineResponses(request)).rejects.toMatchObject({
+      message: expect.stringContaining("完成事件前结束"),
+      retryable: true,
+      streamDiagnostic: { terminal: "eof_before_terminal", sawDone: true, functionArgumentsDone: true },
+    });
+  });
+
+  it("classifies a formal incomplete terminal without retaining its event body or request id", async () => {
+    globalThis.fetch = vi.fn(async () => sse([
+      { type: "response.function_call_arguments.done", name: STRUCTURED_RESPONSE_TOOL_NAME, arguments: '{"ok":true}' },
+      {
+        type: "response.incomplete",
+        response: {
+          status: "incomplete",
+          incomplete_details: { reason: "max_output_tokens", source_body: "must-not-escape" },
+        },
+      },
+    ], "\n", { "x-request-id": "req-7e1d" })) as typeof fetch;
+
+    const error = await callVolcengineResponses(request).catch((caught: unknown) => caught);
+    expect(error).toMatchObject({
+      name: "VolcengineResponsesError",
+      message: "Volcengine Responses 流式请求未完成",
+      retryable: false,
+      streamDiagnostic: {
+        terminal: "incomplete",
+        sawDone: false,
+        functionArgumentsDone: true,
+        incompleteReason: "max_output_tokens",
+      },
+    });
+    expect(error).not.toHaveProperty("streamDiagnostic.requestId");
+    expect(JSON.stringify(error)).not.toContain("must-not-escape");
+    expect(JSON.stringify(error)).not.toContain("req-7e1d");
+  });
+
+  it("classifies failed and generic error terminal events as non-retryable", async () => {
+    for (const type of ["response.failed", "error"]) {
+      globalThis.fetch = vi.fn(async () => sse([{ type }])) as typeof fetch;
+      await expect(callVolcengineResponses(request)).rejects.toMatchObject({
+        retryable: false,
+        streamDiagnostic: { terminal: type === "response.failed" ? "failed" : "error" },
+      });
+    }
   });
 });
