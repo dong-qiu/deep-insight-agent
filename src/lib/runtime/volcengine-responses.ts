@@ -11,8 +11,27 @@ import { llmBaseUrl } from "./llm-provider.js";
 
 export const STRUCTURED_RESPONSE_TOOL_NAME = "respond_with_structured_output";
 
+/**
+ * Bounded, protocol-only evidence for a failed Responses stream. It deliberately excludes
+ * event payloads: those payloads may contain the prompt, source material, or model output.
+ */
+export type VolcengineResponsesTerminal = "completed" | "incomplete" | "failed" | "error" | "eof_before_terminal";
+
+export interface VolcengineResponsesStreamDiagnostic {
+  terminal: VolcengineResponsesTerminal;
+  sawDone: boolean;
+  functionArgumentsDone: boolean;
+  /** Provider vocabulary is allowlisted before it can leave the SSE reader. */
+  incompleteReason?: "max_output_tokens" | "max_tokens" | "other";
+}
+
 export class VolcengineResponsesError extends Error {
-  constructor(message: string, readonly status?: number) {
+  constructor(
+    message: string,
+    readonly status?: number,
+    readonly retryable = false,
+    readonly streamDiagnostic?: VolcengineResponsesStreamDiagnostic,
+  ) {
     super(message);
     this.name = "VolcengineResponsesError";
   }
@@ -55,6 +74,12 @@ type StreamEvent = {
   response?: unknown;
 };
 
+function incompleteReason(body: ResponseBody | undefined): VolcengineResponsesStreamDiagnostic["incompleteReason"] {
+  const value = body?.incomplete_details?.reason;
+  if (value === "max_output_tokens" || value === "max_tokens") return value;
+  return value == null ? undefined : "other";
+}
+
 function asNonNegativeInt(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0;
 }
@@ -91,7 +116,10 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
  * Coding Plan: the completed event carries status/usage and the function-arguments done event
  * carries our forced structured result. Do not log event bodies: they can contain model output.
  */
-async function readResponsesStream(response: Response, signal?: AbortSignal): Promise<{ body: ResponseBody; functionArguments: unknown }> {
+async function readResponsesStream(
+  response: Response,
+  signal?: AbortSignal,
+): Promise<{ body: ResponseBody; functionArguments: unknown }> {
   const reader = response.body?.getReader();
   if (!reader) throw new VolcengineResponsesError("Volcengine Responses 流式响应缺少 body");
   if (signal?.aborted) {
@@ -104,6 +132,7 @@ async function readResponsesStream(response: Response, signal?: AbortSignal): Pr
   let functionArguments: unknown;
   let functionArgumentsDone = false;
   let anonymousFunctionArguments: unknown[] = [];
+  let sawDone = false;
   let readsSinceYield = 0;
   let blocksSinceYield = 0;
   let rejectAbort: ((reason: unknown) => void) | undefined;
@@ -125,13 +154,29 @@ async function readResponsesStream(response: Response, signal?: AbortSignal): Pr
     await new Promise<void>((resolve) => setImmediate(resolve));
   };
 
+  const streamError = (
+    message: string,
+    terminal: VolcengineResponsesTerminal,
+    retryable = false,
+    body?: ResponseBody,
+  ): VolcengineResponsesError => new VolcengineResponsesError(message, undefined, retryable, {
+    terminal,
+    sawDone,
+    functionArgumentsDone,
+    ...(terminal === "incomplete" ? { incompleteReason: incompleteReason(body) } : {}),
+  });
+
   const consumeBlock = (block: string): void => {
     const data = block.split(/\r?\n/)
       .map((line) => line.trimEnd())
       .filter((line) => line.startsWith("data:"))
       .map((line) => line.slice(5).trimStart())
       .join("\n");
-    if (!data || data === "[DONE]") return;
+    if (!data) return;
+    if (data === "[DONE]") {
+      sawDone = true;
+      return;
+    }
     let event: StreamEvent;
     try {
       event = JSON.parse(data) as StreamEvent;
@@ -156,7 +201,14 @@ async function readResponsesStream(response: Response, signal?: AbortSignal): Pr
       completed = completedBody as ResponseBody;
       return;
     }
-    if (event.type === "response.failed") throw new VolcengineResponsesError("Volcengine Responses 流式请求失败");
+    if (event.type === "response.incomplete") {
+      const body = asRecord(event.response) as ResponseBody | undefined;
+      throw streamError("Volcengine Responses 流式请求未完成", "incomplete", false, body);
+    }
+    if (event.type === "response.failed") throw streamError("Volcengine Responses 流式请求失败", "failed");
+    if (event.type === "response.error" || event.type === "error") {
+      throw streamError("Volcengine Responses 流式请求返回错误事件", "error");
+    }
   };
 
   try {
@@ -187,7 +239,12 @@ async function readResponsesStream(response: Response, signal?: AbortSignal): Pr
     if (signal?.aborted) void reader.cancel(signal.reason).catch(() => undefined);
   }
   if (buffer.trim()) consumeBlock(buffer);
-  if (!completed) throw new VolcengineResponsesError("Volcengine Responses 流式响应在完成事件前结束");
+  // The remote peer may close an otherwise healthy SSE connection before emitting its terminal
+  // event. The partial response remains unusable and is never accepted; mark only this transport
+  // condition retryable so callStructured can make a bounded fresh request.
+  if (!completed) {
+    throw streamError("Volcengine Responses 流式响应在完成事件前结束", "eof_before_terminal", true);
+  }
   if (!functionArgumentsDone && anonymousFunctionArguments.length === 1) {
     const expectedFunctionCalls = completed.output?.filter(
       (item) => item.type === "function_call" && item.name === STRUCTURED_RESPONSE_TOOL_NAME,
@@ -197,7 +254,9 @@ async function readResponsesStream(response: Response, signal?: AbortSignal): Pr
       functionArguments = anonymousFunctionArguments[0];
     }
   }
-  if (!functionArgumentsDone) throw new VolcengineResponsesError("Volcengine Responses 流式响应缺少函数参数完成事件");
+  if (!functionArgumentsDone) {
+    throw streamError("Volcengine Responses 流式响应缺少函数参数完成事件", "completed");
+  }
   return { body: completed, functionArguments };
 }
 

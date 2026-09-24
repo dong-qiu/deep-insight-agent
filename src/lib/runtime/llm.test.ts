@@ -1,7 +1,7 @@
 /** coerceStringifiedFields 纯函数单测（6b 防御：模型偶发把 array/object 字段返成 JSON 字符串）。 */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod/v4";
-import { MODELS, anthropicBaseUrl, assertCoverageModelSeparation, assertModelSeparation, coerceStringifiedFields, createRequestAbortSignal, getRoleCallTelemetry, recordRoleCallTelemetry, resetRoleCallTelemetry, retryTransientOperation, structuredThinkingConfig } from "./llm.js";
+import { MODELS, anthropicBaseUrl, assertCoverageModelSeparation, assertModelSeparation, callStructured, coerceStringifiedFields, createRequestAbortSignal, getRoleCallTelemetry, recordRoleCallTelemetry, resetRoleCallTelemetry, retryTransientOperation, structuredThinkingConfig } from "./llm.js";
 
 const originalModels = { ...MODELS };
 
@@ -149,6 +149,80 @@ describe("retryTransientOperation（SSE 墙钟超时的有界应用层重试）"
     const operation = vi.fn(async () => { throw timeout; });
     await expect(retryTransientOperation(operation, { retries: 99, backoffMs: 0 })).rejects.toBe(timeout);
     expect(operation).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe("Volcengine Responses EOF recovery", () => {
+  const environmentKeys = ["LLM_PROVIDER", "LLM_API_KEY", "LLM_BASE_URL", "LLM_TRANSIENT_RETRIES", "LLM_TRANSIENT_RETRY_BACKOFF_MS"] as const;
+
+  async function withVolcengineEnvironment<T>(fn: () => Promise<T>): Promise<T> {
+    const previous = new Map(environmentKeys.map((key) => [key, process.env[key]]));
+    const previousFetch = globalThis.fetch;
+    try {
+      process.env.LLM_PROVIDER = "volcengine-responses";
+      process.env.LLM_API_KEY = "not-a-real-key";
+      process.env.LLM_BASE_URL = "https://ark.cn-beijing.volces.com/api/coding/v3";
+      process.env.LLM_TRANSIENT_RETRIES = "1";
+      process.env.LLM_TRANSIENT_RETRY_BACKOFF_MS = "0";
+      return await fn();
+    } finally {
+      globalThis.fetch = previousFetch;
+      for (const key of environmentKeys) {
+        const value = previous.get(key);
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  }
+
+  function sse(events: unknown[]): Response {
+    return new Response(`${events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("")}data: [DONE]\n\n`, {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    });
+  }
+
+  it("retries one fresh request after EOF before completion and never accepts the first partial result", async () => {
+    await withVolcengineEnvironment(async () => {
+      resetRoleCallTelemetry();
+      const fetchMock = vi.fn()
+        .mockResolvedValueOnce(sse([
+          { type: "response.function_call_arguments.done", name: "respond_with_structured_output", arguments: '{"ok":false}' },
+        ]))
+        .mockResolvedValueOnce(sse([
+          { type: "response.function_call_arguments.done", name: "respond_with_structured_output", arguments: '{"ok":true}' },
+          { type: "response.completed", response: { status: "completed", usage: {} } },
+        ]));
+      globalThis.fetch = fetchMock as typeof fetch;
+
+      await expect(callStructured({
+        role: "analyzer",
+        system: "Return a boolean.",
+        user: "Return ok=true.",
+        schema: z.object({ ok: z.boolean() }),
+      })).resolves.toMatchObject({ data: { ok: true } });
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(getRoleCallTelemetry().analyzer).toMatchObject({ calls: 1, failures: 0, requests: 2 });
+      resetRoleCallTelemetry();
+    });
+  });
+
+  it("does not retry a provider-declared incomplete response", async () => {
+    await withVolcengineEnvironment(async () => {
+      const fetchMock = vi.fn().mockResolvedValue(sse([
+        { type: "response.incomplete", response: { status: "incomplete", incomplete_details: { reason: "max_output_tokens" } } },
+      ]));
+      globalThis.fetch = fetchMock as typeof fetch;
+
+      await expect(callStructured({
+        role: "analyzer",
+        system: "Return a boolean.",
+        user: "Return ok=true.",
+        schema: z.object({ ok: z.boolean() }),
+      })).rejects.toMatchObject({ retryable: false, streamDiagnostic: { terminal: "incomplete" } });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
   });
 });
 

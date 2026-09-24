@@ -4,8 +4,13 @@
  *  - **模型层错误**（stop_reason=refusal、Zod 解析失败、max_tokens）→ 现有拆批隔离仍正确处理。
  *  SDK 已内部 maxRetries=2 重试；到达本层仍失败 = 真瞬时挂掉。 */
 import Anthropic from "@anthropic-ai/sdk";
+import { VolcengineResponsesError } from "./volcengine-responses.js";
 
 export function isTransientApiError(e: unknown): boolean {
+  // The Responses adapter only marks a stream that ended before its mandatory completion event
+  // retryable. It is still rejected by that attempt; this merely permits the bounded fresh
+  // request used for connection-level faults, without widening retries to schema/model errors.
+  if (e instanceof VolcengineResponsesError && e.retryable) return true;
   // Provider-neutral HTTP fallback. The Responses adapter intentionally exposes only a status
   // (not a response body, which can echo source/prompt material), so classify standard retryable
   // infrastructure statuses before checking Anthropic SDK classes.

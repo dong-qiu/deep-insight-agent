@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { isTransientApiError } from "./errors.js";
+import { VolcengineResponsesError } from "./volcengine-responses.js";
 
 describe("isTransientApiError（中转站瞬时错误 vs 模型层错误）", () => {
   it("Connection error 消息 → true（实测 security 0 洞察的真实情形）", () => {
@@ -17,6 +18,11 @@ describe("isTransientApiError（中转站瞬时错误 vs 模型层错误）", ()
     // Native fetch (used by the Responses adapter) surfaces connection loss with this exact
     // message rather than an Anthropic SDK error class.
     expect(isTransientApiError(new TypeError("fetch failed"))).toBe(true);
+  });
+
+  it("仅重试被 Responses 适配器显式标记的不完整 SSE 传输", () => {
+    expect(isTransientApiError(new VolcengineResponsesError("stream ended before completion", undefined, true))).toBe(true);
+    expect(isTransientApiError(new VolcengineResponsesError("missing function arguments"))).toBe(false);
   });
 
   it("模型拒答 / 解析失败 → false（应继续拆批隔离）", () => {
