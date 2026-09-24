@@ -59,3 +59,7 @@ COVERAGE_THINKING=0
   `LLM_TIMEOUT_MS` 继续作为流式请求的硬中止；长输出稳定性仍须由 smoke/A1 证明。
 - 不在代码内写入火山产品价目或 API key；价格须以实际订阅/控制台为准。
 - 不改变 analyzer、validator、coverage 的提示词、引用白名单或报告发布 fail-closed 语义。
+- `npm run eval:probe-volcengine-stream` 是传输诊断，不是 A1 或质量门。它经生产等价的
+  `callStructured` 路径发送合成输入，默认每档三次（可用 `VOLCENGINE_STREAM_PROBE_ATTEMPTS=1..10`
+  调整），只写入忽略目录中的聚合终态/HTTP/延迟信息；不发送原文，也不得被用作 baseline、DCP
+  或发布准入证据。

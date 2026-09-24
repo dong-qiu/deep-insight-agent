@@ -31,6 +31,8 @@
     "eval:a1:prototype-safety": "tsx evals/run-prototype-safety.ts",
     "release:prototype:receipt": "tsx ops/create-prototype-release-receipt.ts",
     "eval:canary-thinking": "tsx evals/canary-structured-thinking.ts",
+    "eval:canary-provider": "tsx evals/provider-admission-canary.ts",
+    "eval:probe-volcengine-stream": "tsx evals/volcengine-stream-probe.ts",
     "review:receipt": "tsx evals/verify-review-receipt.ts",
     "baseline:promote": "tsx evals/promote-a1-baseline.ts",
     "eval:collect-source-cohort": "tsx evals/collect-source-cohort.ts",

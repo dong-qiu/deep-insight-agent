@@ -95,7 +95,8 @@ export function llmCostProvider(provider = llmProvider()): "anthropic" | "volcen
 
 /** A change in provider transport changes A1 behaviour and therefore invalidates comparability. */
 export function structuredTransportVersion(provider = llmProvider()): string {
-  // v2 pins the Coding Plan origin and requires both final SSE events. Keep this in EvalConfig so
-  // A1 results from the earlier permissive stream reader cannot be compared as equivalent.
-  return provider === "volcengine-responses" ? "volcengine-responses-forced-function-v2" : "forced-tool-enabled-v1";
+  // v3 pins the Coding Plan origin and classifies formal incomplete/failed/error SSE terminals
+  // separately from an EOF-before-terminal retry. Keep this in EvalConfig so results from an
+  // earlier reader cannot be compared as equivalent.
+  return provider === "volcengine-responses" ? "volcengine-responses-forced-function-v3" : "forced-tool-enabled-v1";
 }

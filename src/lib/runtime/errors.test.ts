@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isTransientApiError } from "./errors.js";
+import { isTransientApiError, isVolcengineTransportContractDefect } from "./errors.js";
 import { VolcengineResponsesError } from "./volcengine-responses.js";
 
 describe("isTransientApiError（中转站瞬时错误 vs 模型层错误）", () => {
@@ -23,6 +23,18 @@ describe("isTransientApiError（中转站瞬时错误 vs 模型层错误）", ()
   it("仅重试被 Responses 适配器显式标记的不完整 SSE 传输", () => {
     expect(isTransientApiError(new VolcengineResponsesError("stream ended before completion", undefined, true))).toBe(true);
     expect(isTransientApiError(new VolcengineResponsesError("missing function arguments"))).toBe(false);
+  });
+
+  it("只把 EOF 或缺 forced-function 的 completed 交给内层传输重试预算", () => {
+    expect(isVolcengineTransportContractDefect(new VolcengineResponsesError(
+      "EOF", undefined, true, { terminal: "eof_before_terminal", sawDone: true, functionArgumentsDone: true },
+    ))).toBe(true);
+    expect(isVolcengineTransportContractDefect(new VolcengineResponsesError(
+      "missing function", undefined, true, { terminal: "completed", sawDone: true, functionArgumentsDone: false },
+    ))).toBe(true);
+    expect(isVolcengineTransportContractDefect(new VolcengineResponsesError(
+      "formal incomplete", undefined, false, { terminal: "incomplete", sawDone: false, functionArgumentsDone: false },
+    ))).toBe(false);
   });
 
   it("模型拒答 / 解析失败 → false（应继续拆批隔离）", () => {

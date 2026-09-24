@@ -22,6 +22,19 @@ export const coverageThinkingSource = (): "explicit" | "inherited" =>
 export const coverageThinking = (): boolean =>
   coverageThinkingSource() === "inherited" ? validatorThinking() : process.env.COVERAGE_THINKING !== "0";
 
+/**
+ * Response allowance for the independent reader-visible quote countercheck.  This is separate
+ * from the primary validator budget: it is a different model/provider call and must be frozen
+ * in EvalConfig before an A1 result is comparable.  Keep 2048 as the compatibility default;
+ * a provider-specific escalation is an explicit, bounded deployment decision.
+ */
+export const coverageMaxTokens = (): number => {
+  const raw = process.env.COVERAGE_MAX_TOKENS;
+  if (raw == null || raw.trim() === "") return 2_048;
+  const value = Number(raw);
+  return value === 2_048 || value === 4_096 || value === 8_192 ? value : 2_048;
+};
+
 /** 校验器重试次数（指数退避），默认 2。 */
 export const validatorRetries = (): number => Math.max(0, Number(process.env.VALIDATOR_RETRIES ?? 2));
 
