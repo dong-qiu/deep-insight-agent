@@ -9,6 +9,7 @@ import "./load-env.js";
 import { z } from "zod/v4";
 import { callStructured, MODELS } from "../src/lib/runtime/llm.js";
 import { llmApiKey, llmProvider, structuredTransportVersion } from "../src/lib/runtime/llm-provider.js";
+import { safeProviderAdmissionError } from "./provider-admission-canary-lib.js";
 
 const provider = llmProvider();
 if (!llmApiKey(provider)) {
@@ -34,8 +35,7 @@ try {
   console.log(JSON.stringify(result));
   process.exit(result.supported ? 0 : 1);
 } catch (error) {
-  const status = typeof error === "object" && error != null && "status" in error ? (error as { status?: unknown }).status : undefined;
   // Do not print URL/key-bearing request configuration from an SDK error object.
-  console.error(JSON.stringify({ supported: false, provider, model: MODELS.validator, error_type: error instanceof Error ? error.name : "unknown", ...(typeof status === "number" ? { status } : {}) }));
+  console.error(JSON.stringify({ supported: false, provider, model: MODELS.validator, ...safeProviderAdmissionError(error) }));
   process.exit(1);
 }

@@ -26,7 +26,7 @@ describe("LLM provider selection", () => {
     expect(llmBaseUrl()).toBe(VOLCENGINE_CODING_PLAN_BASE_URL);
     expect(requireLlmBaseUrl()).toBe(VOLCENGINE_CODING_PLAN_BASE_URL);
     expect(llmCostProvider()).toBe("volcengine");
-    expect(structuredTransportVersion()).toBe("volcengine-responses-forced-function-v2");
+    expect(structuredTransportVersion()).toBe("volcengine-responses-forced-function-v3");
   });
 
   it("does not use an Anthropic legacy key for a Volcengine request", () => {

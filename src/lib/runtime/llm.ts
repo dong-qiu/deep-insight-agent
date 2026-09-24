@@ -15,7 +15,7 @@ import { FALLBACK_PRICING, costUSD, type TokenUsage } from "./cost.js";
 import { llmMaxRetries, llmTimeoutMs, llmTransientRetries, llmTransientRetryBackoffMs, promptCacheOn } from "./env.js";
 import { isTransientApiError } from "./errors.js";
 import { llmProvider, requireLlmApiKey, requireLlmBaseUrl } from "./llm-provider.js";
-import { callVolcengineResponses } from "./volcengine-responses.js";
+import { callVolcengineResponses, VolcengineResponsesError } from "./volcengine-responses.js";
 
 // 已警告过的未知模型集合（每模型仅警告一次，防日志刷屏）
 const warnedUnpriced = new Set<string>();
@@ -23,7 +23,7 @@ function fallbackCostUSD(model: string, u: TokenUsage): number {
   if (!warnedUnpriced.has(model)) {
     warnedUnpriced.add(model);
     console.warn(
-      `⚠️ 未知模型「${model}」不在价目表（PRICING）；按已知最贵价（input $${FALLBACK_PRICING.input}/M, output $${FALLBACK_PRICING.output}/M）保守估算成本。补全 src/lib/runtime/cost.ts 的 PRICING。`,
+      `⚠️ 模型「${model}」没有可核实的本地价目；按已知最贵价（input $${FALLBACK_PRICING.input}/M, output $${FALLBACK_PRICING.output}/M）保守估算成本，并标为 estimated。实际订阅计费请以服务商控制台为准。`,
     );
   }
   const cacheWrite = u.cache_creation_input_tokens ?? 0;
@@ -139,6 +139,14 @@ export interface CallTelemetryAggregate {
   /** Terminal reasons returned by completed model requests. `max_tokens` remains evidence even
    * when the relay supplied a schema-valid tool use. */
   output_stop_reasons: Record<string, number>;
+  /** Bounded Responses SSE failure classes; no event body, request id, endpoint, or prompt. */
+  provider_stream_failures: Record<string, number>;
+  /** Failed provider HTTP statuses only; successful responses and response bodies are omitted. */
+  provider_http_statuses: Record<string, number>;
+  /** `[DONE]` presence from the provider stream, stored only as aggregate boolean counts. */
+  provider_sse_done: Record<string, number>;
+  /** Forced function-arguments completion, stored only as aggregate boolean counts. */
+  provider_function_arguments_done: Record<string, number>;
   latency_ms: { p50: number; p95: number; max: number };
 }
 
@@ -153,6 +161,10 @@ type MutableCallTelemetryAggregate = {
   failures: number;
   requests: number;
   outputStopReasons: Map<string, number>;
+  providerStreamFailures: Map<string, number>;
+  providerHttpStatuses: Map<string, number>;
+  providerSseDone: Map<string, number>;
+  providerFunctionArgumentsDone: Map<string, number>;
   latency: number[];
 };
 
@@ -162,7 +174,17 @@ const roleMeter = new Map<Role, {
 }>();
 
 function emptyMutableCallTelemetry(): MutableCallTelemetryAggregate {
-  return { calls: 0, failures: 0, requests: 0, outputStopReasons: new Map<string, number>(), latency: [] };
+  return {
+    calls: 0,
+    failures: 0,
+    requests: 0,
+    outputStopReasons: new Map<string, number>(),
+    providerStreamFailures: new Map<string, number>(),
+    providerHttpStatuses: new Map<string, number>(),
+    providerSseDone: new Map<string, number>(),
+    providerFunctionArgumentsDone: new Map<string, number>(),
+    latency: [],
+  };
 }
 
 function readonlyCallTelemetry(aggregate: MutableCallTelemetryAggregate): CallTelemetryAggregate {
@@ -171,6 +193,10 @@ function readonlyCallTelemetry(aggregate: MutableCallTelemetryAggregate): CallTe
     failures: aggregate.failures,
     requests: aggregate.requests,
     output_stop_reasons: Object.fromEntries([...aggregate.outputStopReasons.entries()].sort(([a], [b]) => a.localeCompare(b))),
+    provider_stream_failures: Object.fromEntries([...aggregate.providerStreamFailures.entries()].sort(([a], [b]) => a.localeCompare(b))),
+    provider_http_statuses: Object.fromEntries([...aggregate.providerHttpStatuses.entries()].sort(([a], [b]) => a.localeCompare(b))),
+    provider_sse_done: Object.fromEntries([...aggregate.providerSseDone.entries()].sort(([a], [b]) => a.localeCompare(b))),
+    provider_function_arguments_done: Object.fromEntries([...aggregate.providerFunctionArgumentsDone.entries()].sort(([a], [b]) => a.localeCompare(b))),
     latency_ms: {
       p50: percentile(aggregate.latency, 0.5),
       p95: percentile(aggregate.latency, 0.95),
@@ -179,12 +205,29 @@ function readonlyCallTelemetry(aggregate: MutableCallTelemetryAggregate): CallTe
   };
 }
 
+export interface CallTransportTelemetry {
+  /** Fixed protocol labels emitted by the provider adapter, never raw SSE data. */
+  streamFailures?: readonly string[];
+  /** Failed HTTP status codes only. */
+  httpStatuses?: readonly number[];
+  sseDone?: readonly boolean[];
+  functionArgumentsDone?: readonly boolean[];
+}
+
+function incrementBounded(aggregate: Map<string, number>, values: readonly string[]): void {
+  for (const value of values) {
+    if (!/^[a-z0-9_:-]{1,64}$/i.test(value)) continue;
+    aggregate.set(value, (aggregate.get(value) ?? 0) + 1);
+  }
+}
+
 function recordCallTelemetry(
   aggregate: MutableCallTelemetryAggregate,
   latencyMs: number,
   requests: number,
   failed: boolean,
   outputStopReasons: readonly string[],
+  transport: CallTransportTelemetry = {},
 ): void {
   aggregate.calls++;
   aggregate.requests += requests;
@@ -193,6 +236,15 @@ function recordCallTelemetry(
     if (!reason) continue;
     aggregate.outputStopReasons.set(reason, (aggregate.outputStopReasons.get(reason) ?? 0) + 1);
   }
+  incrementBounded(aggregate.providerStreamFailures, transport.streamFailures ?? []);
+  incrementBounded(
+    aggregate.providerHttpStatuses,
+    (transport.httpStatuses ?? [])
+      .filter((status) => Number.isInteger(status) && status >= 100 && status <= 599)
+      .map(String),
+  );
+  incrementBounded(aggregate.providerSseDone, (transport.sseDone ?? []).map(String));
+  incrementBounded(aggregate.providerFunctionArgumentsDone, (transport.functionArgumentsDone ?? []).map(String));
   aggregate.latency.push(Math.max(0, latencyMs));
 }
 
@@ -212,11 +264,12 @@ export function recordRoleCallTelemetry(
   outputStopReasons: readonly string[] = [],
   /** Use a code-owned, bounded operation identifier; omitted calls remain visibly unclassified. */
   operation = "unclassified",
+  transport: CallTransportTelemetry = {},
 ): void {
   const meter = roleMeter.get(role) ?? { aggregate: emptyMutableCallTelemetry(), byOperation: new Map<string, MutableCallTelemetryAggregate>() };
   const operationMeter = meter.byOperation.get(operation) ?? emptyMutableCallTelemetry();
-  recordCallTelemetry(meter.aggregate, latencyMs, requests, failed, outputStopReasons);
-  recordCallTelemetry(operationMeter, latencyMs, requests, failed, outputStopReasons);
+  recordCallTelemetry(meter.aggregate, latencyMs, requests, failed, outputStopReasons, transport);
+  recordCallTelemetry(operationMeter, latencyMs, requests, failed, outputStopReasons, transport);
   meter.byOperation.set(operation, operationMeter);
   roleMeter.set(role, meter);
 }
@@ -466,6 +519,16 @@ async function callVolcengineStructured<T extends z.ZodType>(
   let underlyingRequests = 0;
   let succeeded = false;
   const outputStopReasons: string[] = [];
+  const providerStreamFailures: string[] = [];
+  const providerHttpStatuses: number[] = [];
+  const providerSseDone: boolean[] = [];
+  const providerFunctionArgumentsDone: boolean[] = [];
+  const providerTransport: CallTransportTelemetry = {
+    streamFailures: providerStreamFailures,
+    httpStatuses: providerHttpStatuses,
+    sseDone: providerSseDone,
+    functionArgumentsDone: providerFunctionArgumentsDone,
+  };
   try {
     const model = MODELS[opts.role];
     const maxTokens = opts.maxTokens ?? 16_000;
@@ -490,17 +553,46 @@ async function callVolcengineStructured<T extends z.ZodType>(
       const request = createRequestAbortSignal(llmTimeoutMs(), opts.signal);
       try {
         if (request.signal.aborted) throw request.signal.reason ?? new Error("LLM request aborted before start");
-        return await callVolcengineResponses({
-          apiKey: requireLlmApiKey("volcengine-responses"),
-          baseUrl: requireLlmBaseUrl("volcengine-responses"),
-          model,
-          system: opts.system,
-          user: opts.user,
-          jsonSchema,
-          maxTokens,
-          thinking: Boolean(opts.thinking),
-          signal: request.signal,
-        });
+        try {
+          return await callVolcengineResponses({
+            apiKey: requireLlmApiKey("volcengine-responses"),
+            baseUrl: requireLlmBaseUrl("volcengine-responses"),
+            model,
+            system: opts.system,
+            user: opts.user,
+            jsonSchema,
+            maxTokens,
+            thinking: Boolean(opts.thinking),
+            signal: request.signal,
+          });
+        } catch (error) {
+          if (error instanceof VolcengineResponsesError) {
+            const terminal = error.streamDiagnostic?.terminal;
+            if (terminal) providerStreamFailures.push(
+              terminal === "completed" ? "completed_missing_function_arguments" : terminal,
+            );
+            if (typeof error.status === "number") providerHttpStatuses.push(error.status);
+            if (error.streamDiagnostic) {
+              providerSseDone.push(error.streamDiagnostic.sawDone);
+              providerFunctionArgumentsDone.push(error.streamDiagnostic.functionArgumentsDone);
+            }
+            // Terminal Responses events can include paid usage even when their structured output
+            // is rejected. Account it before any retry or fail-closed propagation so failed
+            // requests remain visible in the cost ledger and A1 evidence.
+            if (error.usage) {
+              const stopReason = terminal === "incomplete"
+                ? error.streamDiagnostic?.incompleteReason ?? "incomplete"
+                : terminal === "failed"
+                  ? "failed"
+                  : terminal === "completed" ? "completed"
+                    : terminal === "completed_invalid_status" ? "other"
+                      : undefined;
+              if (stopReason) outputStopReasons.push(stopReason);
+              account(error.usage);
+            }
+          }
+          throw error;
+        }
       } finally {
         request.dispose();
       }
@@ -515,13 +607,21 @@ async function callVolcengineStructured<T extends z.ZodType>(
       },
     });
 
+    const recordResponseProtocol = (response: Awaited<ReturnType<typeof oneRequest>>): void => {
+      providerSseDone.push(response.streamDiagnostic.sawDone);
+      providerFunctionArgumentsDone.push(response.streamDiagnostic.functionArgumentsDone);
+      if (!response.streamDiagnostic.functionArgumentsDone) providerStreamFailures.push("completed_missing_function_arguments");
+    };
+
     let response = await withRetry();
+    recordResponseProtocol(response);
     if (response.stopReason) outputStopReasons.push(response.stopReason);
     account(response.usage);
     // Retain the existing bounded refusal retry policy where the provider represents a refusal as
     // a completed structured response. Other incomplete reasons remain evidence, not retries.
     for (let attempt = 1; response.stopReason === "refusal" && attempt < 3; attempt++) {
       response = await withRetry();
+      recordResponseProtocol(response);
       if (response.stopReason) outputStopReasons.push(response.stopReason);
       account(response.usage);
     }
@@ -555,6 +655,7 @@ async function callVolcengineStructured<T extends z.ZodType>(
       !succeeded,
       outputStopReasons,
       opts.telemetryOperation,
+      providerTransport,
     );
   }
 }

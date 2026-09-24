@@ -116,10 +116,24 @@ describe("A1 isolated artifacts", () => {
     const successful = beginA1Run(runs, "2026-09-09T00:00:00.000Z");
     finalizeA1Run(successful, manifest(successful.runId, "completed", "pass"));
     const failed = beginA1Run(runs, "2026-09-09T00:02:00.000Z");
-    finalizeA1Run(failed, { ...manifest(failed.runId, "failed", "not_evaluated"), error: "network" });
+    finalizeA1Run(failed, {
+      ...manifest(failed.runId, "failed", "not_evaluated"),
+      llm_role_telemetry: {
+        coverage: {
+          calls: 1, failures: 1, requests: 1, output_stop_reasons: {},
+          provider_stream_failures: { incomplete: 1 }, provider_http_statuses: {},
+          provider_sse_done: { false: 1 }, provider_function_arguments_done: { false: 1 },
+          latency_ms: { p50: 10, p95: 10, max: 10 }, by_operation: {},
+        },
+      },
+      error: "network",
+    });
 
     expect(JSON.parse(readFileSync(join(runs, "latest-complete.json"), "utf8")).run_id).toBe(successful.runId);
-    expect(JSON.parse(readFileSync(join(failed.finalDir, "manifest.json"), "utf8"))).toMatchObject({ status: "failed", error: "network" });
+    expect(JSON.parse(readFileSync(join(failed.finalDir, "manifest.json"), "utf8"))).toMatchObject({
+      status: "failed", error: "network",
+      llm_role_telemetry: { coverage: { provider_stream_failures: { incomplete: 1 } } },
+    });
   });
 
   it("publishes the bounded progress checkpoint with a terminal failure", () => {

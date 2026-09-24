@@ -76,6 +76,8 @@ function validatedVersionContext(versionContext: Record<string, unknown> | undef
       result[key] = value;
     } else if (key === "coverage_thinking_source" && (value === "explicit" || value === "inherited")) {
       result[key] = value;
+    } else if (key === "coverage_max_tokens" && (value === "2048" || value === "4096" || value === "8192")) {
+      result[key] = value;
     } else if ((key === "report_selection_rule" || key === "report_renderer") && value === "report-selection-v1") {
       result[key] = value;
     } else {

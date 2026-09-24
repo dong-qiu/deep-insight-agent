@@ -64,6 +64,7 @@ describe("Volcengine Responses structured adapter", () => {
       input: { ok: true },
       usage: { input_tokens: 12, output_tokens: 5, cache_creation_input_tokens: 0, cache_read_input_tokens: 3 },
       stopReason: "completed",
+      streamDiagnostic: { sawDone: true, functionArgumentsDone: true },
     });
     expect(calls).toHaveLength(1);
     const [url, init] = calls[0]!;
@@ -212,13 +213,13 @@ describe("Volcengine Responses structured adapter", () => {
     await expect(callVolcengineResponses(request)).resolves.toMatchObject({ input: undefined, usage: { input_tokens: 0, output_tokens: 0 } });
   });
 
-  it("fails closed when the completion event has no matching function-arguments final event", async () => {
+  it("returns a retryable completed-protocol defect with its paid usage", async () => {
     globalThis.fetch = vi.fn(async () => sse([
-      { type: "response.completed", response: { status: "completed", usage: {} } },
+      { type: "response.completed", response: { status: "completed", usage: { input_tokens: 9, output_tokens: 4 } } },
     ])) as typeof fetch;
     await expect(callVolcengineResponses(request)).rejects.toMatchObject({
-      message: expect.stringContaining("缺少函数参数完成事件"),
-      retryable: false,
+      retryable: true,
+      usage: { input_tokens: 9, output_tokens: 4 },
       streamDiagnostic: { terminal: "completed", sawDone: true, functionArgumentsDone: false },
     });
   });
@@ -228,7 +229,10 @@ describe("Volcengine Responses structured adapter", () => {
       { type: "response.function_call_arguments.done", arguments: '{"ok":true}' },
       { type: "response.completed", response: { status: "completed", output: [{ type: "function_call", name: "other_function" }], usage: {} } },
     ])) as typeof fetch;
-    await expect(callVolcengineResponses(request)).rejects.toThrow("缺少函数参数完成事件");
+    await expect(callVolcengineResponses(request)).rejects.toMatchObject({
+      retryable: true,
+      streamDiagnostic: { terminal: "completed", sawDone: true, functionArgumentsDone: false },
+    });
   });
 
   it("fails closed when a streaming response ends without its completion event", async () => {
@@ -240,13 +244,14 @@ describe("Volcengine Responses structured adapter", () => {
     });
   });
 
-  it("classifies a formal incomplete terminal without retaining its event body or request id", async () => {
+  it("classifies and preserves safe paid usage for a formal incomplete terminal without retaining its event body or request id", async () => {
     globalThis.fetch = vi.fn(async () => sse([
       { type: "response.function_call_arguments.done", name: STRUCTURED_RESPONSE_TOOL_NAME, arguments: '{"ok":true}' },
       {
         type: "response.incomplete",
         response: {
           status: "incomplete",
+          usage: { input_tokens: 9, output_tokens: 4, input_tokens_details: { cached_tokens: 2 } },
           incomplete_details: { reason: "max_output_tokens", source_body: "must-not-escape" },
         },
       },
@@ -263,19 +268,44 @@ describe("Volcengine Responses structured adapter", () => {
         functionArgumentsDone: true,
         incompleteReason: "max_output_tokens",
       },
+      usage: { input_tokens: 9, output_tokens: 4, cache_creation_input_tokens: 0, cache_read_input_tokens: 2 },
     });
     expect(error).not.toHaveProperty("streamDiagnostic.requestId");
     expect(JSON.stringify(error)).not.toContain("must-not-escape");
     expect(JSON.stringify(error)).not.toContain("req-7e1d");
   });
 
-  it("classifies failed and generic error terminal events as non-retryable", async () => {
+  it("classifies failed and generic error terminal events as non-retryable while retaining only paid usage", async () => {
     for (const type of ["response.failed", "error"]) {
-      globalThis.fetch = vi.fn(async () => sse([{ type }])) as typeof fetch;
-      await expect(callVolcengineResponses(request)).rejects.toMatchObject({
+      globalThis.fetch = vi.fn(async () => sse([{
+        type,
+        response: { usage: { input_tokens: 9, output_tokens: 4, input_tokens_details: { cached_tokens: 2 } }, source_body: "must-not-escape" },
+      }])) as typeof fetch;
+      const error = await callVolcengineResponses(request).catch((caught: unknown) => caught);
+      expect(error).toMatchObject({
         retryable: false,
         streamDiagnostic: { terminal: type === "response.failed" ? "failed" : "error" },
+        usage: { input_tokens: 9, output_tokens: 4, cache_creation_input_tokens: 0, cache_read_input_tokens: 2 },
       });
+      expect(JSON.stringify(error)).not.toContain("must-not-escape");
+    }
+  });
+
+  it("fails closed for every non-completed status on a completed event without persisting SSE data", async () => {
+    for (const status of ["incomplete", "failed", "refusal", "token=do-not-persist", undefined]) {
+      globalThis.fetch = vi.fn(async () => sse([
+        { type: "response.function_call_arguments.done", name: STRUCTURED_RESPONSE_TOOL_NAME, arguments: '{"ok":true}' },
+        { type: "response.completed", response: { status, incomplete_details: { reason: "credential=do-not-persist" }, usage: { input_tokens: 9, output_tokens: 4 } } },
+      ])) as typeof fetch;
+
+      const error = await callVolcengineResponses(request).catch((caught: unknown) => caught);
+      expect(error).toMatchObject({
+        name: "VolcengineResponsesError",
+        retryable: false,
+        streamDiagnostic: { terminal: "completed_invalid_status", sawDone: true, functionArgumentsDone: true },
+        usage: { input_tokens: 9, output_tokens: 4 },
+      });
+      expect(JSON.stringify(error)).not.toContain("do-not-persist");
     }
   });
 });

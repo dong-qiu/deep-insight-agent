@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { coverageThinking, coverageThinkingSource, llmMaxRetries, llmTransientRetries, llmTransientRetryBackoffMs, validatorBatchOn, validatorThinking } from "./env.js";
+import { coverageMaxTokens, coverageThinking, coverageThinkingSource, llmMaxRetries, llmTransientRetries, llmTransientRetryBackoffMs, validatorBatchOn, validatorThinking } from "./env.js";
 
 describe("llmMaxRetries", () => {
   const original = process.env.LLM_MAX_RETRIES;
@@ -82,6 +82,35 @@ describe("coverageThinking", () => {
     process.env.COVERAGE_THINKING = "1";
     expect(validatorThinking()).toBe(false);
     expect(coverageThinking()).toBe(true);
+  });
+});
+
+describe("coverageMaxTokens", () => {
+  const original = process.env.COVERAGE_MAX_TOKENS;
+
+  afterEach(() => {
+    if (original === undefined) delete process.env.COVERAGE_MAX_TOKENS;
+    else process.env.COVERAGE_MAX_TOKENS = original;
+  });
+
+  it("preserves the 2048 compatibility default and bounds explicit escalations", () => {
+    delete process.env.COVERAGE_MAX_TOKENS;
+    expect(coverageMaxTokens()).toBe(2_048);
+    process.env.COVERAGE_MAX_TOKENS = "4096";
+    expect(coverageMaxTokens()).toBe(4_096);
+    process.env.COVERAGE_MAX_TOKENS = "8192";
+    expect(coverageMaxTokens()).toBe(8_192);
+  });
+
+  it("rejects invalid values by falling back to the conservative default", () => {
+    process.env.COVERAGE_MAX_TOKENS = "2047";
+    expect(coverageMaxTokens()).toBe(2_048);
+    process.env.COVERAGE_MAX_TOKENS = "8193";
+    expect(coverageMaxTokens()).toBe(2_048);
+    process.env.COVERAGE_MAX_TOKENS = "3000";
+    expect(coverageMaxTokens()).toBe(2_048);
+    process.env.COVERAGE_MAX_TOKENS = "invalid";
+    expect(coverageMaxTokens()).toBe(2_048);
   });
 });
 

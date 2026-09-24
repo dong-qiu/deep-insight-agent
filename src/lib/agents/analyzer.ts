@@ -7,8 +7,8 @@
  * 不让模型编造。
  */
 import { createHash, randomUUID } from "node:crypto";
-import { isTransientApiError } from "../runtime/errors.js";
-import { coverageBackfillOff, coverageThinking, coverageThinkingSource, validatorBackoffMs, validatorRetries, validatorThinking } from "../runtime/env.js";
+import { isTransientApiError, isVolcengineTransportContractDefect } from "../runtime/errors.js";
+import { coverageBackfillOff, coverageMaxTokens, coverageThinking, coverageThinkingSource, validatorBackoffMs, validatorRetries, validatorThinking } from "../runtime/env.js";
 import { MODELS, assertCoverageModelSeparation, callStructured } from "../runtime/llm.js";
 import { collapseWithMap, compareKey } from "../runtime/text-normalize.js";
 import { insightFingerprint } from "../runtime/statement-fingerprint.js";
@@ -159,6 +159,7 @@ export function analyzerReviewVersionContext(cacheMode: AnalyzerReviewCacheMode 
     coverage_prompt_hash: DISPLAY_COVERAGE_COUNTERCHECK_PROMPT_HASH,
     coverage_thinking: coverageThinking() ? "on" : "off",
     coverage_thinking_source: coverageThinkingSource(),
+    coverage_max_tokens: String(coverageMaxTokens()),
   };
 }
 
@@ -730,14 +731,19 @@ export async function verifyQuoteSelfContained(
     try {
       const result = await callStructured({
         role: "coverage", telemetryOperation: "display_quote_countercheck", system: QUOTE_COVERAGE_COUNTERCHECK_SYSTEM, user, schema: QuoteCoverageSchema,
-        // 1024 is the minimum thinking budget, so the total response allowance must be larger.
-        thinking: coverageThinking(), maxTokens: 2048, onCost, signal,
+        // This independent provider/model path needs its own bounded, explicitly recorded output
+        // allowance. The default stays 2048; provider escalations are only admitted by A1.
+        thinking: coverageThinking(), maxTokens: coverageMaxTokens(), onCost, signal,
       });
       data = result.data as QuoteCoverage;
       break;
     } catch (error) {
       throwIfAborted(signal);
       lastError = error;
+      // callStructured already performs the one allowed fresh request for a transport EOF.
+      // Do not re-run a formal `response.incomplete`, schema violation, or model refusal here:
+      // those are fail-closed verdict-contract failures, not a transient recovery opportunity.
+      if (!isTransientApiError(error) || isVolcengineTransportContractDefect(error)) break;
       if (attempt < validatorRetries()) await sleep(validatorBackoffMs() * 2 ** attempt);
     }
   }
@@ -819,8 +825,12 @@ export async function verifyDisplayedQuoteCoverage(
         });
         data = result.data as QuoteCoverage;
         break;
-      } catch {
+      } catch (error) {
         throwIfAborted(signal);
+        // A formal provider terminal (for example max_output_tokens) and a structured-output
+        // contract failure cannot be repaired by submitting the exact same primary claim again.
+        // Retry only classified infrastructure faults; unavailable remains conservative below.
+        if (!isTransientApiError(error) || isVolcengineTransportContractDefect(error)) break;
         if (attempt < validatorRetries()) await sleep(validatorBackoffMs() * 2 ** attempt);
       }
     }

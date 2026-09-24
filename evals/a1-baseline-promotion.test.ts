@@ -14,7 +14,7 @@ const config = {
   analyzer_model: "a", analyzer_output_version: 1, analyzer_prompt_sha256: "p", analyze_body_chars: 1, analyze_batch_chars: 1, select_window_chars: 1,
   validator_model: "v", validator_contract_version: "v1", consistency_window_chars: 1, consistency_batch_max: 1, independent_call_concurrency: 1,
   relay_recovery_policy_version: "r", relay_recovery_max_probes: 1, relay_recovery_max_backoff_wait_ms: 1, relay_recovery_exhausted_cooldown_ms: 1,
-  coverage_model: "c", validator_thinking: true, coverage_thinking: true, coverage_thinking_source: "explicit" as const, structured_thinking_transport_version: "forced-tool-enabled-v1", validator_batch: true,
+  coverage_model: "c", validator_thinking: true, coverage_thinking: true, coverage_thinking_source: "explicit" as const, coverage_max_tokens: 2048, structured_thinking_transport_version: "forced-tool-enabled-v1", validator_batch: true,
   quality_dataset_sha256: "q", consistency_dataset_sha256: "c", dataset_lock_sha256: "lock", dataset_lock_status: "verified_v2" as const,
   display_coverage_dataset_sha256: "d", quote_self_contained_dataset_sha256: "s", display_coverage_gate_version: "g", display_projection_version: "p",
   display_coverage_primary_prompt_version: "p", display_coverage_primary_prompt_sha256: "p", display_coverage_primary_response_budget_version: "output-4096-v1", display_coverage_primary_max_tokens: 4096, display_coverage_primary_claims_per_call: 1, display_coverage_countercheck_prompt_version: "c", display_coverage_countercheck_prompt_sha256: "c",

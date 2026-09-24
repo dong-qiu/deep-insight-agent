@@ -49,7 +49,7 @@ import {
 import { consistencyBatchMax, consistencyCacheVersion, CONSISTENCY_WINDOW_CHARS, judgeWithRetry, validateBatch } from "../src/lib/agents/validator.js";
 import { MODELS, assertCoverageModelSeparation, getCostReport, getRoleCallTelemetry } from "../src/lib/runtime/llm.js";
 import { llmApiKey, llmBaseUrl, llmProvider, structuredTransportVersion } from "../src/lib/runtime/llm-provider.js";
-import { coverageThinking, coverageThinkingSource, validatorBatchOn, validatorThinking } from "../src/lib/runtime/env.js";
+import { coverageMaxTokens, coverageThinking, coverageThinkingSource, validatorBatchOn, validatorThinking } from "../src/lib/runtime/env.js";
 import {
   RELAY_RECOVERY_MAX_PROBES,
   RELAY_RECOVERY_MAX_BACKOFF_WAIT_MS,
@@ -165,6 +165,9 @@ function finalizeActiveA1Failure(error: unknown): void {
       config: activeRunContext.config,
       dataset: activeRunContext.dataset,
       source: activeRunContext.source,
+      // A failed A1 run is precisely when provider terminal evidence is most useful. Preserve
+      // the same aggregate-only telemetry as a completed run; never serialize the thrown error.
+      llm_role_telemetry: getRoleCallTelemetry(),
       insights: { count: 0, ids_sha256: createHash("sha256").update("").digest("hex") },
       artifacts: {
         ...(existsSync(progressPath) ? { "progress.json": sha256File(progressPath) } : {}),
@@ -406,6 +409,7 @@ function currentEvalConfig(qualityFile: string, consistencyFile: string, dataset
     validator_thinking: validatorThinking(),
     coverage_thinking: coverageThinking(),
     coverage_thinking_source: coverageThinkingSource(),
+    coverage_max_tokens: coverageMaxTokens(),
     structured_thinking_transport_version: structuredTransportVersion(),
     validator_batch: validatorBatchOn(),
     quality_dataset_sha256: datasetDigest(qualityFile),
@@ -820,7 +824,7 @@ async function main(): Promise<void> {
   });
   console.log(
     `A1 验证实跑\n模型：分析=${MODELS.analyzer} / 校验=${MODELS.validator} / 反扩写复核=${MODELS.coverage}` +
-      `\n配置：validator thinking=${evalConfig.validator_thinking ? "on" : "off"} / coverage thinking=${evalConfig.coverage_thinking ? "on" : "off"} (${evalConfig.coverage_thinking_source}) / batch=${evalConfig.validator_batch ? "on" : "off"} / independent calls=${evalConfig.independent_call_concurrency}` +
+      `\n配置：validator thinking=${evalConfig.validator_thinking ? "on" : "off"} / coverage thinking=${evalConfig.coverage_thinking ? "on" : "off"} (${evalConfig.coverage_thinking_source}) / coverage maxTokens=${evalConfig.coverage_max_tokens} / batch=${evalConfig.validator_batch ? "on" : "off"} / independent calls=${evalConfig.independent_call_concurrency}` +
       `\n数据集锁：${datasetLock.status}（${datasetLock.promotion_eligible ? "可候选提升" : "不可提升"}）\n`,
   );
   console.log(

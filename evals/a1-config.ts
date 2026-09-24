@@ -28,6 +28,8 @@ export interface EvalConfig {
   coverage_thinking: boolean;
   /** Explicit settings are required for frozen baselines; inherited preserves legacy behaviour only. */
   coverage_thinking_source: "explicit" | "inherited";
+  /** Independent quote-countercheck allowance; changes incomplete-terminal risk and cost. */
+  coverage_max_tokens: number;
   structured_thinking_transport_version: string;
   validator_batch: boolean;
   quality_dataset_sha256: string;
@@ -54,7 +56,7 @@ export const EVAL_CONFIG_KEYS: Array<keyof EvalConfig> = [
   "llm_provider", "llm_endpoint_sha256", "analyzer_model", "analyzer_output_version", "analyzer_prompt_sha256", "analyze_body_chars", "analyze_batch_chars", "select_window_chars",
   "validator_model", "validator_contract_version", "consistency_window_chars", "consistency_batch_max", "independent_call_concurrency",
   "relay_recovery_policy_version", "relay_recovery_max_probes", "relay_recovery_max_backoff_wait_ms", "relay_recovery_exhausted_cooldown_ms",
-  "coverage_model", "validator_thinking", "coverage_thinking", "coverage_thinking_source", "structured_thinking_transport_version", "validator_batch",
+  "coverage_model", "validator_thinking", "coverage_thinking", "coverage_thinking_source", "coverage_max_tokens", "structured_thinking_transport_version", "validator_batch",
   "quality_dataset_sha256", "consistency_dataset_sha256", "dataset_lock_sha256", "dataset_lock_status", "display_coverage_dataset_sha256", "quote_self_contained_dataset_sha256",
   "display_coverage_gate_version", "display_projection_version", "display_coverage_primary_prompt_version", "display_coverage_primary_prompt_sha256",
   "display_coverage_primary_response_budget_version", "display_coverage_primary_max_tokens", "display_coverage_primary_claims_per_call",

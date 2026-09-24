@@ -231,15 +231,27 @@ describe("role-level LLM telemetry", () => {
 
   it("records attempts, failures and percentile latency separately for each role", () => {
     recordRoleCallTelemetry("coverage", 10, 1, false, [], "display_quote_countercheck");
-    recordRoleCallTelemetry("coverage", 30, 3, true, ["max_tokens", "refusal", "max_tokens"], "display_quote_countercheck");
+    recordRoleCallTelemetry(
+      "coverage",
+      30,
+      3,
+      true,
+      ["max_tokens", "refusal", "max_tokens"],
+      "display_quote_countercheck",
+      { streamFailures: ["eof_before_terminal", "eof_before_terminal"], httpStatuses: [503], sseDone: [true, false], functionArgumentsDone: [true, false] },
+    );
     recordRoleCallTelemetry("validator", 20, 1, false, ["tool_use"], "citation_consistency_batch");
     expect(getRoleCallTelemetry()).toMatchObject({
       coverage: {
         calls: 2, failures: 1, requests: 4, output_stop_reasons: { max_tokens: 2, refusal: 1 },
+        provider_stream_failures: { eof_before_terminal: 2 }, provider_http_statuses: { 503: 1 },
+        provider_sse_done: { false: 1, true: 1 }, provider_function_arguments_done: { false: 1, true: 1 },
         latency_ms: { p50: 10, p95: 30, max: 30 },
         by_operation: {
           display_quote_countercheck: {
             calls: 2, failures: 1, requests: 4, output_stop_reasons: { max_tokens: 2, refusal: 1 },
+            provider_stream_failures: { eof_before_terminal: 2 }, provider_http_statuses: { 503: 1 },
+            provider_sse_done: { false: 1, true: 1 }, provider_function_arguments_done: { false: 1, true: 1 },
           },
         },
       },

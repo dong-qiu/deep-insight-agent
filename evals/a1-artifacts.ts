@@ -57,6 +57,14 @@ export interface A1RunManifest {
     requests: number;
     /** Includes successful-but-truncated `max_tokens` model responses. */
     output_stop_reasons: Record<string, number>;
+    /** Aggregate-only Responses SSE failure classes; never includes event data or request ids. */
+    provider_stream_failures?: Record<string, number>;
+    /** Failed provider HTTP statuses; endpoint and response bodies remain excluded. */
+    provider_http_statuses?: Record<string, number>;
+    /** Aggregate-only `[DONE]` presence; never stores SSE payloads. */
+    provider_sse_done?: Record<string, number>;
+    /** Aggregate-only forced function-arguments completion; never stores model output. */
+    provider_function_arguments_done?: Record<string, number>;
     latency_ms: { p50: number; p95: number; max: number };
     /** Application-owned operation names distinguish validator phases without persisting prompts. */
     by_operation: Record<string, {
@@ -64,6 +72,10 @@ export interface A1RunManifest {
       failures: number;
       requests: number;
       output_stop_reasons: Record<string, number>;
+      provider_stream_failures?: Record<string, number>;
+      provider_http_statuses?: Record<string, number>;
+      provider_sse_done?: Record<string, number>;
+      provider_function_arguments_done?: Record<string, number>;
       latency_ms: { p50: number; p95: number; max: number };
     }>;
   }>;
