@@ -16,6 +16,7 @@ const EPHEMERAL_QUERY_KEY = /^(?:sig(?:nature)?|token|expires?|policy|key-pair-i
 // Short Azure SAS query names (`se`, `sp`, `sr`, `st`, etc.) are safe to recognise as URL
 // parameters, but are too ambiguous to treat as arbitrary HTML/JSON field names.
 const CREDENTIAL_FIELD = "(?:sig(?:nature)?|token|expires?|policy|key-pair-id|awsaccesskeyid|x-amz-[a-z0-9_-]+|x-goog-[a-z0-9_-]+|api[_-]?key|x-api-key|authorization|auth(?:entication|orization)?|access[_-]?token|x-auth-token|client[_-]?secret|secret|password|passwd|credential|bearer|session(?:[_-]?id)?)";
+const CREDENTIAL_FIELD_NAME = new RegExp(`^${CREDENTIAL_FIELD}$`, "i");
 const CREDENTIAL_FIELD_VALUE = new RegExp(
   `(^|[^A-Za-z0-9_</-]|\\\\n)(["']?)(${CREDENTIAL_FIELD})\\2(?![A-Za-z0-9_-])(\\s*(?:=|:)\\s*)(?:(['"])[^'"]*\\5|(?:Bearer\\s+)?[^\\s<>&,;]+)`,
   "gi",
@@ -48,8 +49,11 @@ export function stableEvidenceUrl(input: string): string {
 function redactEvidencePayload(rawPayload: string): string {
   const redactUrl = (candidate: string, escaped = false): string => {
     try {
-      const normalized = escaped ? candidate.replace(/\\\//g, "/").replace(/\\+$/, "") : candidate;
-      return stableEvidenceUrl(normalized);
+      const usesHtmlEntity = /&amp;/iu.test(candidate);
+      const normalized = (escaped ? candidate.replace(/\\\//g, "/").replace(/\\+$/, "") : candidate)
+        .replace(/&amp;/giu, "&");
+      const stable = stableEvidenceUrl(normalized);
+      return usesHtmlEntity ? stable.replace(/&/gu, "&amp;") : stable;
     } catch {
       // An incomplete URL-like substring is content, not a reliable credential boundary.
       return candidate;
@@ -69,6 +73,36 @@ function redactEvidencePayload(rawPayload: string): string {
       return `${prefix}${keyQuote}${key}${keyQuote}${separator}${quote}<redacted>${quote}`;
     },
   );
+}
+
+/** JSON RSS records can contain HTML fields. Decode the JSON first so redacting an href cannot
+ * consume its JSON escape delimiter; then serialise the redacted structure back to durable text. */
+function sanitizeRssValue(value: unknown): unknown {
+  if (typeof value === "string") {
+    try {
+      const url = new URL(value);
+      return url.protocol === "http:" || url.protocol === "https:" ? stableEvidenceUrl(value) : redactEvidencePayload(value);
+    } catch {
+      return redactEvidencePayload(value);
+    }
+  }
+  if (Array.isArray(value)) return value.map(sanitizeRssValue);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, nested]) => [
+      key,
+      CREDENTIAL_FIELD_NAME.test(key) ? "<redacted>" : sanitizeRssValue(nested),
+    ]));
+  }
+  return value;
+}
+
+function sanitizeRssItem(raw: string): string {
+  try {
+    return JSON.stringify(sanitizeRssValue(JSON.parse(raw)));
+  } catch {
+    // Malformed adapter records still must not provide a credential-storage bypass.
+    return redactEvidencePayload(raw);
+  }
 }
 
 export interface PodcastProgramPageEvidence {
@@ -93,11 +127,11 @@ function sha256(value: string): string {
  * ContentItem is reader eligible. RSS metadata, the program page, and the downloaded transcript
  * remain independently inspectable even after signed transport URLs expire. */
 export function podcastTranscriptEvidenceEnvelope(input: PodcastTranscriptEvidenceInput): string {
-  const episodePayload = redactEvidencePayload(input.episode.raw);
+  const episodePayload = sanitizeRssItem(input.episode.raw);
   const programPagePayload = redactEvidencePayload(input.program_page.raw_payload);
   const transcriptPayload = redactEvidencePayload(input.transcript.raw_payload);
   return JSON.stringify({
-    schema_version: "podcast-transcript-evidence-v1",
+    schema_version: "podcast-transcript-evidence-v2",
     adapter_version: input.adapter_version,
     fetched_at: input.fetched_at,
     episode: {

@@ -31,6 +31,10 @@ describe("fetchTranscript production transport path", () => {
       outcome: "success", stable_url: `${ORIGIN}/transcript.vtt?format=vtt`, raw_payload: expect.stringContaining("Hello world"),
       cleaned_body: "Hello world", content_type: "text/vtt",
     });
+    expect(result.outcome === "success" && result.bytes).toBe(
+      Buffer.byteLength("User-agent: *\nAllow: /", "utf8")
+      + Buffer.byteLength("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nHello world", "utf8"),
+    );
     expect(network.mock.calls.map(([input]) => String(input))).toEqual([`${ORIGIN}/robots.txt`, TRANSCRIPT]);
   });
 
@@ -81,6 +85,17 @@ describe("fetchTranscript production transport path", () => {
     await expect(fetchTranscript(TRANSCRIPT)).resolves.toMatchObject({
       outcome: "transient_error", reason_code: "request_error",
     });
+  });
+
+  it("caps an oversized robots body before it can trigger the transcript payload request", async () => {
+    const network = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) =>
+      String(input) === `${ORIGIN}/robots.txt`
+        ? new Response("User-agent: *\nDisallow: /this-response-is-deliberately-too-large", { status: 200 })
+        : new Response("unexpected payload", { status: 500 }));
+    await expect(fetchTranscript(TRANSCRIPT, { maxBytes: 8 })).resolves.toMatchObject({
+      outcome: "size_limited", reason_code: "response_size_limit", bytes: expect.any(Number),
+    });
+    expect(network).toHaveBeenCalledOnce();
   });
 
   it("applies the source request gate to both robots and transcript transport", async () => {

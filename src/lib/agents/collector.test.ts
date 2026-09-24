@@ -307,7 +307,10 @@ describe("collector preserves existing transcript evidence", () => {
   it("observe 的显式 shadow 开关只写隔离 SQLite/archive，不进入生产 ContentItem", async () => {
     process.env.TRANSCRIPT_FETCH = "1";
     process.env.TRANSCRIPT_SHADOW_FETCH = "1";
-    raws.value = [mkPodcastRaw("https://pod/ep_shadow", "Show notes.", "https://pod/ep_shadow.txt")];
+    raws.value = [{
+      ...mkPodcastRaw("https://pod/ep_shadow", "Show notes.", "https://pod/ep_shadow.txt?token=ephemeral"),
+      raw: JSON.stringify({ "podcast:transcript": { "@_url": "https://pod/ep_shadow.txt?token=ephemeral" } }),
+    }];
     ctl.transcript = { ...ctl.transcript, raw_payload: "raw shadow transcript", cleaned_body: "Shadow-only transcript." };
     await collectSource(db, { ...sourcePod, transcript_mode: "observe", transcript_policy_version: "podcast-policy-v1" });
     expect(getContentItem(db, getContentByUrl(db, "https://pod/ep_shadow")!.id)!).toMatchObject({ body_kind: "show_notes", body: "Show notes." });
@@ -315,11 +318,13 @@ describe("collector preserves existing transcript evidence", () => {
     const row = shadow.prepare("SELECT outcome,raw_ref,evidence_status FROM transcript_acquisition_fact WHERE source_id=? AND stage='terminal'").get(sourcePod.id) as { outcome: string; raw_ref: string; evidence_status: string };
     shadow.close();
     expect(row).toMatchObject({ outcome: "success", evidence_status: "verified" });
-    expect(JSON.parse(readFileSync(join(process.env.DATA_DIR!, "podcast-shadow", row.raw_ref), "utf8"))).toMatchObject({
-      schema_version: "podcast-transcript-evidence-v1",
+    const archive = JSON.parse(readFileSync(join(process.env.DATA_DIR!, "podcast-shadow", row.raw_ref), "utf8"));
+    expect(archive).toMatchObject({
+      schema_version: "podcast-transcript-evidence-v2",
       program_page: { raw_payload: "<html>episode</html>" },
       transcript: { raw_payload: "raw shadow transcript" },
     });
+    expect(archive.episode.rss_item).not.toContain("token=ephemeral");
     expect(ctl.transcriptCalls).toBe(1);
   });
 

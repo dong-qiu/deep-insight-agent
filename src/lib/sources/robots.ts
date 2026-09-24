@@ -1,6 +1,6 @@
 /** 极简 robots.txt 解析与判定（合规落点，architecture 安全设计「合规与版权」）。
  *  仅处理 User-agent / Disallow 分组；Allow 与通配符细则留后续。 */
-import { safeFetch } from "./safe-fetch.js";
+import { MAX_RESPONSE_BYTES, ResponseSizeLimitError, readTextCapped, safeFetch } from "./safe-fetch.js";
 
 export const UA = "InsightAgentBot";
 
@@ -67,17 +67,35 @@ export function rulesForStatus(status: number, body: string, ua: string = UA): R
 export async function fetchRobots(
   origin: string,
   ua: string = UA,
-  opts: { timeoutMs?: number; beforeRequest?: (url: string) => Promise<void> } = {},
+  opts: {
+    timeoutMs?: number;
+    maxBytes?: number;
+    beforeRequest?: (url: string) => Promise<void>;
+    /** Accounts for robots bytes in an enclosing source-level acquisition budget. */
+    onBytes?: (bytes: number) => void;
+  } = {},
 ): Promise<RobotsRules> {
   const robotsUrl = new URL("/robots.txt", origin).toString();
   try {
     const res = await safeFetch(robotsUrl, { headers: { "user-agent": ua }, timeoutMs: opts.timeoutMs, beforeRequest: opts.beforeRequest });
-    const body = res.ok ? await res.text() : "";
+    let body = "";
+    if (res.ok) {
+      try {
+        body = await readTextCapped(res, opts.maxBytes ?? MAX_RESPONSE_BYTES);
+        opts.onBytes?.(Buffer.byteLength(body, "utf8"));
+      } catch (error) {
+        if (error instanceof ResponseSizeLimitError) opts.onBytes?.(error.bytesRead);
+        throw error;
+      }
+    }
     return rulesForStatus(res.status, body, ua);
   } catch (error) {
     // A policy gate denial is intentional control flow, not an unavailable robots endpoint. It
     // must reach the structured podcast outcome instead of falling through as fail-open rules.
     if (error instanceof Error && error.name === "PodcastRequestBudgetError") throw error;
+    // An oversized robots response is an untrusted-body limit violation, not a transient
+    // availability miss. Never silently convert it into an allow-all rule.
+    if (error instanceof ResponseSizeLimitError) throw error;
     return { disallow: [] }; // 网络不可达：瞬时错误不永久阻断（保守放行），记录留后续
   }
 }

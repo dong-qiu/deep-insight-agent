@@ -19,6 +19,15 @@ type PodcastFetchOptions = {
   beforeRequest?: (url: string) => Promise<void>;
 };
 
+/** The acquisition byte cap covers every downloaded body for an episode, including robots.
+ * The successful result's `bytes` therefore records the full transport total, not just the
+ * archive payload. */
+function remainingTransportBytes(maxBytes: number, robotsBytes: number): number {
+  const remaining = maxBytes - robotsBytes;
+  if (remaining <= 0) throw new ResponseSizeLimitError(maxBytes, 0);
+  return remaining;
+}
+
 /** <podcast:transcript> 格式优先级：纯文本 > HTML > 字幕（vtt/srt）；未知 MIME 排最后。 */
 const TRANSCRIPT_MIME_RANK: Record<string, number> = {
   "text/plain": 0,
@@ -205,19 +214,28 @@ export async function fetchTranscript(
   const started = Date.now();
   const deadline = started + (opts.timeoutMs ?? 15_000);
   const remaining = () => Math.max(1, deadline - Date.now());
+  const maxBytes = opts.maxBytes ?? MAX_RESPONSE_BYTES;
+  let robotsBytes = 0;
+  let readingPayload = false;
   let stableUrl = "";
   try {
     stableUrl = stableEvidenceUrl(url);
     const { origin, pathname } = new URL(url);
-    const rules = await fetchRobots(origin, UA, { timeoutMs: remaining(), beforeRequest: opts.beforeRequest });
+    const rules = await fetchRobots(origin, UA, {
+      timeoutMs: remaining(), maxBytes, beforeRequest: opts.beforeRequest,
+      onBytes: (bytes) => { robotsBytes += bytes; },
+    });
     if (!isAllowed(rules, pathname)) {
-      return { outcome: "robots_denied", stable_url: stableUrl, bytes: null, duration_ms: Date.now() - started, reason_code: "robots_denied" };
+      return { outcome: "robots_denied", stable_url: stableUrl, bytes: robotsBytes || null, duration_ms: Date.now() - started, reason_code: "robots_denied" };
     }
+    const payloadCap = remainingTransportBytes(maxBytes, robotsBytes);
     const res = await safeFetch(url, { headers: { "user-agent": UA }, timeoutMs: remaining(), beforeRequest: opts.beforeRequest });
     if (!res.ok) {
-      return { outcome: "http_error", stable_url: stableUrl, bytes: null, duration_ms: Date.now() - started, reason_code: `http_${res.status}` };
+      return { outcome: "http_error", stable_url: stableUrl, bytes: robotsBytes || null, duration_ms: Date.now() - started, reason_code: `http_${res.status}` };
     }
-    const raw = await readTextCapped(res, opts.maxBytes ?? MAX_RESPONSE_BYTES);
+    readingPayload = true;
+    const raw = await readTextCapped(res, payloadCap);
+    const payloadBytes = Buffer.byteLength(raw, "utf8");
     // 结构化 HTML 转写页走专用抽取（抽空 → null，不灌垃圾）：Lex 式 .ts-text（6d）、Changelog 式 <cite>/<p>
     // （2026-06-26）；其余 VTT/SRT/纯文本走 stripTranscript。
     const cleaned = /class="[^"]*\bts-text\b/i.test(raw)
@@ -226,11 +244,11 @@ export async function fetchTranscript(
         ? extractCiteTranscript(raw)
         : stripTranscript(raw);
     if (!cleaned) {
-      return { outcome: "parse_empty", stable_url: stableUrl, bytes: Buffer.byteLength(raw, "utf8"), duration_ms: Date.now() - started, reason_code: "cleaned_body_empty" };
+      return { outcome: "parse_empty", stable_url: stableUrl, bytes: robotsBytes + payloadBytes, duration_ms: Date.now() - started, reason_code: "cleaned_body_empty" };
     }
     return {
       outcome: "success", stable_url: stableUrl, raw_payload: raw, cleaned_body: cleaned,
-      bytes: Buffer.byteLength(raw, "utf8"), duration_ms: Date.now() - started,
+      bytes: robotsBytes + payloadBytes, duration_ms: Date.now() - started,
       content_type: res.headers?.get("content-type") ?? null,
     };
   } catch (error) {
@@ -240,7 +258,8 @@ export async function fetchTranscript(
       : error instanceof DOMException && (error.name === "AbortError" || error.name === "TimeoutError")
         ? "timeout" : "transient_error";
     return {
-      outcome, stable_url: stableUrl ?? "", bytes: error instanceof ResponseSizeLimitError ? error.bytesRead : null, duration_ms: Date.now() - started,
+      outcome, stable_url: stableUrl ?? "", bytes: error instanceof ResponseSizeLimitError
+        ? robotsBytes + (readingPayload ? error.bytesRead : 0) : robotsBytes || null, duration_ms: Date.now() - started,
       reason_code: outcome === "size_limited" ? "response_size_limit" : error instanceof PodcastRequestBudgetError
         ? "source_timeout_budget_exhausted" : outcome === "timeout" ? "request_timeout" : "request_error",
     };
@@ -256,22 +275,31 @@ export async function fetchPodcastProgramPage(
   const started = Date.now();
   const deadline = started + (opts.timeoutMs ?? 15_000);
   const remaining = () => Math.max(1, deadline - Date.now());
+  const maxBytes = opts.maxBytes ?? MAX_RESPONSE_BYTES;
+  let robotsBytes = 0;
+  let readingPayload = false;
   let stableUrl = "";
   try {
     stableUrl = stableEvidenceUrl(url);
     const { origin, pathname } = new URL(url);
-    const rules = await fetchRobots(origin, UA, { timeoutMs: remaining(), beforeRequest: opts.beforeRequest });
+    const rules = await fetchRobots(origin, UA, {
+      timeoutMs: remaining(), maxBytes, beforeRequest: opts.beforeRequest,
+      onBytes: (bytes) => { robotsBytes += bytes; },
+    });
     if (!isAllowed(rules, pathname)) {
-      return { outcome: "robots_denied", stable_url: stableUrl, bytes: null, duration_ms: Date.now() - started, reason_code: "robots_denied" };
+      return { outcome: "robots_denied", stable_url: stableUrl, bytes: robotsBytes || null, duration_ms: Date.now() - started, reason_code: "robots_denied" };
     }
+    const payloadCap = remainingTransportBytes(maxBytes, robotsBytes);
     const res = await safeFetch(url, { headers: { "user-agent": UA }, timeoutMs: remaining(), beforeRequest: opts.beforeRequest });
     if (!res.ok) {
-      return { outcome: "http_error", stable_url: stableUrl, bytes: null, duration_ms: Date.now() - started, reason_code: `http_${res.status}` };
+      return { outcome: "http_error", stable_url: stableUrl, bytes: robotsBytes || null, duration_ms: Date.now() - started, reason_code: `http_${res.status}` };
     }
-    const raw = await readTextCapped(res, opts.maxBytes ?? MAX_RESPONSE_BYTES);
+    readingPayload = true;
+    const raw = await readTextCapped(res, payloadCap);
+    const payloadBytes = Buffer.byteLength(raw, "utf8");
     return {
       outcome: "success", stable_url: stableUrl, raw_payload: raw,
-      bytes: Buffer.byteLength(raw, "utf8"), duration_ms: Date.now() - started,
+      bytes: robotsBytes + payloadBytes, duration_ms: Date.now() - started,
       content_type: res.headers?.get("content-type") ?? null,
     };
   } catch (error) {
@@ -280,7 +308,8 @@ export async function fetchPodcastProgramPage(
       : error instanceof DOMException && (error.name === "AbortError" || error.name === "TimeoutError")
         ? "timeout" : "transient_error";
     return {
-      outcome, stable_url: stableUrl, bytes: error instanceof ResponseSizeLimitError ? error.bytesRead : null, duration_ms: Date.now() - started,
+      outcome, stable_url: stableUrl, bytes: error instanceof ResponseSizeLimitError
+        ? robotsBytes + (readingPayload ? error.bytesRead : 0) : robotsBytes || null, duration_ms: Date.now() - started,
       reason_code: outcome === "size_limited" ? "response_size_limit" : error instanceof PodcastRequestBudgetError
         ? "source_timeout_budget_exhausted" : outcome === "timeout" ? "request_timeout" : "request_error",
     };

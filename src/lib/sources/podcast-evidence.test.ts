@@ -9,7 +9,10 @@ describe("podcast transcript evidence envelope", () => {
       episode: {
         url: "https://pod.example/episodes/1?lang=en&sig=ephemeral", title: "Episode 1",
         author: null, published_at: "2026-09-13T00:00:00.000Z", body: "show notes",
-        body_kind: "show_notes", raw: '{"rss":"entry"}',
+        body_kind: "show_notes", raw: JSON.stringify({
+          link: "https://pod.example/episodes/1?lang=en",
+          "podcast:transcript": { "@_url": "https://cdn.example/transcript?lang=en&token=ephemeral" },
+        }),
       },
       program_page: {
         stable_url: "https://pod.example/episodes/1?lang=en&X-Amz-Signature=ephemeral",
@@ -23,14 +26,42 @@ describe("podcast transcript evidence envelope", () => {
     }));
 
     expect(envelope).toMatchObject({
-      schema_version: "podcast-transcript-evidence-v1",
-      episode: { url: "https://pod.example/episodes/1?lang=en", rss_item: '{"rss":"entry"}' },
+      schema_version: "podcast-transcript-evidence-v2",
+      episode: { url: "https://pod.example/episodes/1?lang=en" },
       program_page: { stable_url: "https://pod.example/episodes/1?lang=en", raw_payload: "<html>episode page</html>" },
       transcript: { stable_url: "https://cdn.example/transcript?lang=en", raw_payload: "Speaker: original payload" },
     });
     expect(envelope.transcript.source_payload_sha256).toMatch(/^[a-f0-9]{64}$/);
     expect(envelope.transcript.archived_payload_sha256).toMatch(/^[a-f0-9]{64}$/);
     expect(envelope.transcript.cleaned_body_sha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(JSON.parse(envelope.episode.rss_item)).toEqual({
+      link: "https://pod.example/episodes/1?lang=en",
+      "podcast:transcript": { "@_url": "https://cdn.example/transcript?lang=en" },
+    });
+  });
+
+  it("also redacts credentials from malformed adapter raw before archiving", () => {
+    const envelope = JSON.parse(podcastTranscriptEvidenceEnvelope({
+      adapter_version: "rss-podcast-transcript-v1", fetched_at: "2026-09-13T00:00:00.000Z",
+      episode: { url: "https://pod.example/episodes/1", title: "Episode 1", author: null, published_at: null,
+        body: "", body_kind: "show_notes", raw: "invalid https://cdn.example/t?token=ephemeral&lang=en raw" },
+      program_page: { stable_url: "https://pod.example/episodes/1", content_type: null, raw_payload: "page" },
+      transcript: { outcome: "success", stable_url: "https://cdn.example/t", content_type: "text/plain", raw_payload: "raw", cleaned_body: "clean", bytes: 3, duration_ms: 1 },
+    }));
+    expect(envelope.episode.rss_item).toBe("invalid https://cdn.example/t?lang=en raw");
+  });
+
+  it("redacts credentials embedded in RSS HTML fields", () => {
+    const envelope = JSON.parse(podcastTranscriptEvidenceEnvelope({
+      adapter_version: "rss-podcast-transcript-v1", fetched_at: "2026-09-13T00:00:00.000Z",
+      episode: { url: "https://pod.example/episodes/1", title: "Episode 1", author: null, published_at: null,
+        body: "", body_kind: "show_notes", raw: JSON.stringify({
+          "content:encoded": '<a href="https://cdn.example/t?lang=en&amp;token=ephemeral">transcript</a>',
+        }) },
+      program_page: { stable_url: "https://pod.example/episodes/1", content_type: null, raw_payload: "page" },
+      transcript: { outcome: "success", stable_url: "https://cdn.example/t", content_type: "text/plain", raw_payload: "raw", cleaned_body: "clean", bytes: 3, duration_ms: 1 },
+    }));
+    expect(envelope.episode.rss_item).toBe('{"content:encoded":"<a href=\\"https://cdn.example/t?lang=en\\">transcript</a>"}');
   });
 
   it("does not strip a non-credential query parameter", () => {

@@ -52,6 +52,9 @@ transcript；`observe` 仍可写纯候选/决策事实，`enabled` 若写事实�
 逐源策略，再切换 collector。部署前后的精确优先级和回滚步骤见
 [`operations.md`](../../launch/operations.md)。
 
+当前交付仅实现 `observe` 的隔离 shadow 采样；`enabled` 的生产 ContentItem 写入仍是后续切片，
+不得因配置为 `enabled` 预期当前 collector 会抓取或让 transcript 进入日报。
+
 ## 数据与证据契约
 
 1. RSS item 必须明确区分普通文章和播客单集；无全文的播客正文标 `show_notes`，普通 newsletter 保持 `article`。
