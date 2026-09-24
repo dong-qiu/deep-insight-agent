@@ -54,14 +54,14 @@ export const SourceConfigSchema = SourceConfigInputSchema.superRefine((source, c
     }
   }
 }).transform((source) => ({
-  ...source,
-  // Normalize legacy/off sources only after validation so callers always receive a complete
-  // Source-shaped policy, while non-off sources can never acquire these values implicitly.
-  transcript_strategy: source.transcript_strategy ?? "relevant_only",
-  transcript_max_items_per_run: source.transcript_max_items_per_run ?? 5,
-  transcript_max_bytes_per_run: source.transcript_max_bytes_per_run ?? 5 * 1024 * 1024,
-  transcript_timeout_budget_ms: source.transcript_timeout_budget_ms ?? 30_000,
-  transcript_host_qps: source.transcript_host_qps ?? 0.5,
+    ...source,
+    // `off` retains any source-authored future policy as inert configuration, while only a
+    // non-off source may actually consume it (the runtime guard enforces that boundary).
+    transcript_strategy: source.transcript_strategy ?? "relevant_only",
+    transcript_max_items_per_run: source.transcript_max_items_per_run ?? 5,
+    transcript_max_bytes_per_run: source.transcript_max_bytes_per_run ?? 5 * 1024 * 1024,
+    transcript_timeout_budget_ms: source.transcript_timeout_budget_ms ?? 30_000,
+    transcript_host_qps: source.transcript_host_qps ?? 0.5,
 }));
 
 export const TopicConfigSchema = z.object({

@@ -84,42 +84,48 @@ function recordPodcastMetadataFacts(input: {
   occurredAt: string;
 }): void {
   const mode = input.source.transcript_mode ?? "off";
-  const policyVersion = input.source.transcript_policy_version?.trim();
   // This delivery is observe-only. `enabled` has no production acquisition semantics yet, so it
   // must not leave partial metadata that looks like an approved/enabled execution trail.
-  if (mode !== "observe" || !policyVersion || !input.raw.is_podcast_episode) return;
-
-  const decision = screenPodcastCandidate(input.raw, input.topics);
-  const fallbackBodyKind: TranscriptAcquisitionFact["fallback_body_kind"] = input.raw.body.trim()
-    ? (input.raw.body_kind === "show_notes" ? "show_notes" : "article")
-    : null;
-  const common = {
-    source_id: input.source.id,
-    // Facts are append-only diagnostics, so their episode identity must never retain signed
-    // transport query parameters or URL userinfo.
-    canonical_episode_url: stableEvidenceUrl(input.raw.url),
-    candidate_hash: decision.candidate_hash,
-    transcript_policy_version: policyVersion,
-    mode,
-    strategy: input.source.transcript_strategy ?? "relevant_only",
-    execution_scope: "production_metadata" as const,
-    adapter_version: `${PODCAST_TRANSCRIPT_ADAPTER_VERSION}+${decision.policy_version}`,
-    decision: decision.decision,
-    bytes: null,
-    duration_ms: null,
-    fallback_body_kind: fallbackBodyKind,
-    content_item_id: null,
-    raw_ref: null,
-    evidence_status: "not_applicable" as const,
-    run_id: input.runId,
-    occurred_at: input.occurredAt,
-  };
-  recordTranscriptFact(input.db, {
-    ...common, stage: "candidate", attempt: 0, outcome: "not_attempted", reason_code: "podcast_metadata",
-  });
-  recordTranscriptFact(input.db, {
-    ...common, stage: "decision", attempt: 0, outcome: "decision", reason_code: decision.reason_code,
-  });
+  if (mode !== "observe" || !input.raw.is_podcast_episode) return;
+  try {
+    const policyVersion = input.source.transcript_policy_version!.trim();
+    const decision = screenPodcastCandidate(input.raw, input.topics);
+    const fallbackBodyKind: TranscriptAcquisitionFact["fallback_body_kind"] = input.raw.body.trim()
+      ? (input.raw.body_kind === "show_notes" ? "show_notes" : "article")
+      : null;
+    const common = {
+      source_id: input.source.id,
+      // Facts are append-only diagnostics, so their episode identity must never retain signed
+      // transport query parameters or URL userinfo.
+      canonical_episode_url: stableEvidenceUrl(input.raw.url),
+      candidate_hash: decision.candidate_hash,
+      transcript_policy_version: policyVersion,
+      mode,
+      strategy: input.source.transcript_strategy!,
+      execution_scope: "production_metadata" as const,
+      adapter_version: `${PODCAST_TRANSCRIPT_ADAPTER_VERSION}+${decision.policy_version}`,
+      decision: decision.decision,
+      bytes: null,
+      duration_ms: null,
+      fallback_body_kind: fallbackBodyKind,
+      content_item_id: null,
+      raw_ref: null,
+      evidence_status: "not_applicable" as const,
+      run_id: input.runId,
+      occurred_at: input.occurredAt,
+    };
+    recordTranscriptFact(input.db, {
+      ...common, stage: "candidate", attempt: 0, outcome: "not_attempted", reason_code: "podcast_metadata",
+    });
+    recordTranscriptFact(input.db, {
+      ...common, stage: "decision", attempt: 0, outcome: "decision", reason_code: decision.reason_code,
+    });
+  } catch (error) {
+    // Observation facts are diagnostically useful but must never turn a malformed feed entry
+    // into a failed P0 RSS run. Do not include the raw URL in logs: it may be a signed transport
+    // URL or user-controlled malformed text.
+    console.warn(`[transcript-acquisition] podcast metadata fact skipped: ${error instanceof Error ? error.message : "unknown_error"}`);
+  }
 }
 
 export async function collectSource(

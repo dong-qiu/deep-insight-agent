@@ -29,21 +29,10 @@ function transcriptPolicyForWrite(source: Source): Required<TranscriptPolicy> {
   const transcript_host_qps = source.transcript_host_qps ?? 0.5;
   const transcript_policy_version = source.transcript_policy_version?.trim() || null;
 
-  if (transcript_mode !== "off" && !transcript_policy_version) {
-    throw new Error("transcript_policy_version_required");
-  }
-  if (
-    !Number.isInteger(transcript_max_items_per_run) || transcript_max_items_per_run <= 0 ||
-    !Number.isInteger(transcript_max_bytes_per_run) || transcript_max_bytes_per_run <= 0 ||
-    !Number.isInteger(transcript_timeout_budget_ms) || transcript_timeout_budget_ms <= 0 ||
-    !Number.isFinite(transcript_host_qps) || transcript_host_qps <= 0
-  ) {
-    throw new Error("invalid_transcript_policy_limits");
-  }
   return {
     transcript_mode, transcript_strategy, transcript_max_items_per_run,
     transcript_max_bytes_per_run, transcript_timeout_budget_ms, transcript_host_qps,
-    transcript_policy_version: transcript_mode === "off" ? null : transcript_policy_version,
+    transcript_policy_version,
   };
 }
 

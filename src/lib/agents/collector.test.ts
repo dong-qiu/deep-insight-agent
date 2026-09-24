@@ -318,6 +318,15 @@ describe("collector preserves existing transcript evidence", () => {
     })).rejects.toThrow("transcript_policy_fields_required");
   });
 
+  it("畸形的 podcast URL 只跳过诊断事实，不能失败正常 RSS 采集", async () => {
+    raws.value = [mkPodcastRaw("https://[malformed", "", "https://pod/ep-malformed.txt")];
+    await expect(collectSource(db, {
+      ...sourcePod, transcript_mode: "observe", transcript_policy_version: "podcast-policy-v1",
+    })).resolves.toMatchObject({ inserted: 0, skipped: 1 });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM transcript_acquisition_fact WHERE source_id=?").get(sourcePod.id))
+      .toEqual({ n: 0 });
+  });
+
   it("observe 的显式 shadow 开关只写隔离 SQLite/archive，不进入生产 ContentItem", async () => {
     process.env.TRANSCRIPT_FETCH = "1";
     process.env.TRANSCRIPT_SHADOW_FETCH = "1";

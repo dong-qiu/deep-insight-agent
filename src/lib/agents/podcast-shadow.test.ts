@@ -70,6 +70,12 @@ describe("runPodcastTranscriptShadow", () => {
     await expect(runPodcastTranscriptShadow({
       source: { ...source, transcript_max_items_per_run: undefined }, raws: [], topics: [], sink: memorySink([], []),
     })).rejects.toThrow("transcript_policy_fields_required");
+    await expect(runPodcastTranscriptShadow({
+      source: { ...source, transcript_policy_version: "  " }, raws: [], topics: [], sink: memorySink([], []),
+    })).rejects.toThrow("transcript_policy_version_required");
+    await expect(runPodcastTranscriptShadow({
+      source: { ...source, transcript_host_qps: 0 }, raws: [], topics: [], sink: memorySink([], []),
+    })).rejects.toThrow("invalid_transcript_policy_limits");
   });
 
   it("双总熔断在 request-owning worker 内生效，任一关闭时直接调用也不能发起网络请求", async () => {
