@@ -101,6 +101,14 @@ describe("Markdown 引用 [N]（C-2）", () => {
     expect(h).toMatch(/id="cite-1"/);
   });
 
+  it("中文结论 + 原文证据的日报格式：结论编号可定位到原文证据", () => {
+    const h = html("## 1. OpenAI 发布了 Codex。 [1]\n- [1] 原文证据：「OpenAI released Codex.」— [Primary Source](https://example.com/source)");
+    expect(h).toMatch(/href=\"#cite-1\"[^>]*>\[1\]<\/a>/);
+    expect(h).toContain('id="cite-1"');
+    expect(h).toContain("原文证据：");
+    expect(h).toContain("OpenAI released Codex.");
+  });
+
   it("普通 [text] 非数字 → 不被识别为引用", () => {
     const h = html("正文 [TODO] 标签");
     expect(h).not.toContain("cite-ref");

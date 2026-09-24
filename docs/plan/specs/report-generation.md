@@ -27,7 +27,7 @@ MVP 端到端管线的输出段。把校验后的洞察组织成用户可读、�
 2. 首份 brief 为 `type=initial_digest`：对回填的历史内容做信号去噪后输出重点（**受第 7 项规模上限约束，非全量摊开**），并把覆盖的 `event_ids` 写入「不复报」基线；之后的 brief 为 `type=brief`。
 3. 深挖：用户提交深挖请求时**同步触发一次** `insight-analysis`（时间窗 = 该 `Topic` 最近 90 天，可配置）+ `citation-validation`；以产出的 `AnalysisBatch` + `ValidationResult` 为输入，围绕单一 `Topic` 输出 `type=deep_dive` 的完整结构化报告。
 4. 无重要事件（输入 `AnalysisBatch.no_significant_event=true`、`releasable=true`）时，brief 诚实输出「无重要事件」，**`Report.status=done`，不置 failed**；批次失败（`status=failed`）或不可放行（`releasable=false`）时报告置 `failed`。
-5. 洞察纳入按 `architecture.md`「校验结果 · 洞察级纳入判定」：仅含至少一条 `pass`（明确 `support`）引用的洞察纳入；`blocked` 与 `flagged` 引用均不进入发布报告，后者进入人工核实/重试队列；每条结论标引用编号、行内可点回原文。
+5. 洞察纳入按 `architecture.md`「校验结果 · 洞察级纳入判定」：仅含至少一条 `pass`（明确 `support`）引用的洞察纳入；`blocked` 与 `flagged` 引用均不进入发布报告，后者进入人工核实/重试队列；每条结论标引用编号、行内可点回原文。对于采用读者证据投影的新批次，日报展示为“已审计的主题语言结论 + 绑定 quote 的逐字原文证据 + 来源链接/日期”：结论只有在其哈希精确绑定到展示覆盖审计的通过草稿时才可展示；否则安全回退为原文 quote。引用编号必须有唯一可达的锚点，不能只输出孤立的 `[N]`。
 6. 报告状态按 `architecture.md` `Report.status` 流转：`generating` →（`done` | `failed`）；`failed` 是不可变的生成尝试，
 重跑必须新建 `Report` / `Run`，以 `retry_of` 溯源边关联，不得将失败行改回 `generating`；`done` → `archived`。不可放行时写
 `Report.status=failed`，不写正文 artifact、`ReportIndexEntry` 或 FTS；`deleted` 转换由报告管理 / 看板触发，**不在本段职责内**
@@ -51,6 +51,7 @@ MVP 端到端管线的输出段。把校验后的洞察组织成用户可读、�
   `archived`，与管理看板一致。
 - [ ] AC11: 当本期选中近期候选时，Brief 中每条可见洞察均含该候选集的一条成功校验引用；若没有符合项，产出 done 状态的空 Brief，并记录新鲜度审计字段。
 - [ ] **AC12（严格去重而不丢失证据）**: 在 `pass/support` 白名单之后，Brief 对当前批次重复事件及最近 14 天遗留分裂 event_id 的严格 statement 指纹去重；只发布确定性代表项及其自身成功引用，记录过滤计数，且不修改原始 occurrence（详见 `insight-identity-deduplication.md`）。
+- [ ] **AC13（混合展示可溯源）**: 新 reader-evidence 批次展示的主题语言结论必须精确绑定到已通过展示覆盖审计的草稿；每条结论后均有逐字原文 quote、可点击来源和可达的引用锚点。审计绑定缺失、哈希不符或引用锚点不存在时不得发布该中文结论；可安全回退为绑定原文。
 
 ## 非功能要求
 

@@ -372,6 +372,10 @@ const SOURCE_QUOTE_PROJECTION_SQL = `
 CREATE INDEX IF NOT EXISTS idx_analysis_batch_display_projection ON analysis_batch(display_projection_version, id);
 `;
 
+/** The original audited draft is retained separately from the exact source quote, so reader
+ * rendering can present a localized conclusion without weakening the v6 source binding. */
+const READER_STATEMENT_SQL = "insight reader statement v1";
+
 // generation_effect originally modelled only report_file and carried a required
 // report_id.  Rebuild it forward so raw_archive has the same durable intent
 // ledger without weakening report/anchor foreign keys or rewriting old rows.
@@ -445,6 +449,7 @@ DELETE FROM dashboard_cost_fact_v1 WHERE tenant_id='default' AND EXISTS (
   // v40-v44 were already released on main. This feature was never released
   // under its old branch-local v40/v41 numbers, so it enters as v45.
   { version: "20260916_45_report_quality_review_trace_v1", sql: REPORT_REVIEW_TRACE_V1_FROZEN_SQL },
+  { version: "20260924_46_reader_statement", sql: READER_STATEMENT_SQL },
 ];
 
 function hasColumn(db: DB, table: string, column: string): boolean {
@@ -625,6 +630,10 @@ export function applyProvenanceMigrations(db: DB): void {
           db.exec("ALTER TABLE analysis_batch ADD COLUMN display_projection_version TEXT NOT NULL DEFAULT 'legacy' CHECK (display_projection_version IN ('legacy','source_quote_v1'))");
         }
         db.exec(migration.sql);
+      } else if (migration.version === "20260924_46_reader_statement") {
+        if (!hasColumn(db, "insight", "reader_statement")) {
+          db.exec("ALTER TABLE insight ADD COLUMN reader_statement TEXT NOT NULL DEFAULT ''");
+        }
       } else if (migration.version === "20260910_40_raw_archive_effect") {
         migrateRawArchiveEffect(db);
       } else if (migration.version === "20260911_41_content_reader_eligibility") {

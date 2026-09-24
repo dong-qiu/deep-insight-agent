@@ -78,6 +78,8 @@ function migrate(db: DB): void {
   // 一句话要点（headline 方案）：analyzer 为每条洞察产出的 ≤40 字浓缩，供列表卡片扫读；
   // 旧库补列默认 ''（重跑管线写正确值，渲染端回退到 statement）。
   ensureColumn(db, "insight", "headline", "headline TEXT NOT NULL DEFAULT ''");
+  // 混合日报展示：仅保存通过展示覆盖审计的主题语言结论；空字符串统一回退绑定原文。
+  ensureColumn(db, "insight", "reader_statement", "reader_statement TEXT NOT NULL DEFAULT ''");
   // 展示 statement 的唯一 citation 绑定。旧数据保留 NULL，reader-visible 图谱会 fail-closed 排除。
   ensureColumn(db, "insight", "statement_citation_index", "statement_citation_index INTEGER");
   db.exec("CREATE INDEX IF NOT EXISTS idx_insight_batch_statement_citation ON insight(batch_id, statement_citation_index)");
