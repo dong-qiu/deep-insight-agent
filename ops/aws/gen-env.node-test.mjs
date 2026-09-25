@@ -22,6 +22,7 @@ test("gen-env writes all independent model and thinking settings into a fresh ru
       'COVERAGE_MODEL="glm-5.2"',
       'VALIDATOR_THINKING="0"',
       'COVERAGE_THINKING="0"',
+      'COVERAGE_MAX_TOKENS="4096"',
       'ADMIN_EMAIL="admin"',
     ].join("\n"));
 
@@ -37,6 +38,7 @@ test("gen-env writes all independent model and thinking settings into a fresh ru
       "COVERAGE_MODEL=glm-5.2",
       "VALIDATOR_THINKING=0",
       "COVERAGE_THINKING=0",
+      "COVERAGE_MAX_TOKENS=4096",
     ]) assert.match(runtimeEnv, new RegExp(`^${line}$`, "m"));
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -67,7 +69,7 @@ test("gen-env rejects duplicate models before writing runtime configuration", ()
   }
 });
 
-test("gen-env preserves valid existing thinking values when an older config does not declare them", () => {
+test("gen-env preserves valid existing coverage role settings when an older config does not declare them", () => {
   const root = mkdtempSync(join(tmpdir(), "insight-gen-env-"));
   try {
     const aws = join(root, "ops/aws");
@@ -79,7 +81,7 @@ test("gen-env preserves valid existing thinking values when an older config does
       'COVERAGE_MODEL="coverage"',
       'ADMIN_EMAIL="admin"',
     ].join("\n"));
-    writeFileSync(join(root, ".env.local"), "VALIDATOR_THINKING=1\nCOVERAGE_THINKING=1\n");
+    writeFileSync(join(root, ".env.local"), "VALIDATOR_THINKING=1\nCOVERAGE_THINKING=1\nCOVERAGE_MAX_TOKENS=4096\n");
 
     execFileSync("bash", [join(aws, "gen-env.sh")], {
       env: { ...process.env, LLM_API_KEY: "test-only-key", ADMIN_PASSWORD: "test-only-password" },
@@ -88,6 +90,33 @@ test("gen-env preserves valid existing thinking values when an older config does
     const runtimeEnv = readFileSync(join(root, ".env.local"), "utf8");
     assert.match(runtimeEnv, /^VALIDATOR_THINKING=1$/m);
     assert.match(runtimeEnv, /^COVERAGE_THINKING=1$/m);
+    assert.match(runtimeEnv, /^COVERAGE_MAX_TOKENS=4096$/m);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("gen-env rejects an unsupported coverage token budget before writing runtime configuration", () => {
+  const root = mkdtempSync(join(tmpdir(), "insight-gen-env-"));
+  try {
+    const aws = join(root, "ops/aws");
+    cpSync(script, join(aws, "gen-env.sh"), { recursive: false });
+    writeFileSync(join(aws, "config.sh"), [
+      'COMPOSE_PROJECT="test-insight"',
+      'ANALYZER_MODEL="analyzer"',
+      'VALIDATOR_MODEL="validator"',
+      'COVERAGE_MODEL="coverage"',
+      'COVERAGE_MAX_TOKENS="3000"',
+      'ADMIN_EMAIL="admin"',
+    ].join("\n"));
+
+    const result = spawnSync("bash", [join(aws, "gen-env.sh")], {
+      env: { ...process.env, LLM_API_KEY: "test-only-key", ADMIN_PASSWORD: "test-only-password" },
+      stdio: "pipe",
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stdout.toString("utf8"), /COVERAGE_MAX_TOKENS 必须是 2048、4096 或 8192/);
+    assert.throws(() => readFileSync(join(root, ".env.local"), "utf8"), /ENOENT/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

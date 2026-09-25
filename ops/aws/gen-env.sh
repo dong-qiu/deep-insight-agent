@@ -85,16 +85,20 @@ PREV_BRIEF_THIN_MIN="$(extract_prev BRIEF_THIN_MIN_SELECTED)"
 PREV_BRIEF_THIN_MAX="$(extract_prev BRIEF_THIN_MAX_PUBLISHED)"
 PREV_VALIDATOR_THINKING="$(extract_prev VALIDATOR_THINKING)"
 PREV_COVERAGE_THINKING="$(extract_prev COVERAGE_THINKING)"
+PREV_COVERAGE_MAX_TOKENS="$(extract_prev COVERAGE_MAX_TOKENS)"
 
 # New config.sh values take precedence. For an existing custom config.sh created before these
-# switches were introduced, preserve a valid explicit runtime choice instead of silently changing
-# a previously reviewed thinking setting during deployment regeneration.
+# switches were introduced, preserve a reviewed explicit runtime choice instead of silently
+# changing a coverage role setting during deployment regeneration.
 VALIDATOR_THINKING_VALUE="${VALIDATOR_THINKING:-${PREV_VALIDATOR_THINKING#*=}}"
 COVERAGE_THINKING_VALUE="${COVERAGE_THINKING:-${PREV_COVERAGE_THINKING#*=}}"
+COVERAGE_MAX_TOKENS_VALUE="${COVERAGE_MAX_TOKENS:-${PREV_COVERAGE_MAX_TOKENS#*=}}"
 VALIDATOR_THINKING_VALUE="${VALIDATOR_THINKING_VALUE:-0}"
 COVERAGE_THINKING_VALUE="${COVERAGE_THINKING_VALUE:-0}"
+COVERAGE_MAX_TOKENS_VALUE="${COVERAGE_MAX_TOKENS_VALUE:-2048}"
 case "$VALIDATOR_THINKING_VALUE" in 0|1) ;; *) echo "VALIDATOR_THINKING 必须是 0 或 1"; exit 1 ;; esac
 case "$COVERAGE_THINKING_VALUE" in 0|1) ;; *) echo "COVERAGE_THINKING 必须是 0 或 1"; exit 1 ;; esac
+case "$COVERAGE_MAX_TOKENS_VALUE" in 2048|4096|8192) ;; *) echo "COVERAGE_MAX_TOKENS 必须是 2048、4096 或 8192"; exit 1 ;; esac
 
 # —— .env.local（容器运行时）——
 # 注意：云上不钉 DB_PATH/DATA_DIR，用容器默认 /data（挂持久卷）。
@@ -108,6 +112,7 @@ VALIDATOR_MODEL=$VALIDATOR_MODEL
 COVERAGE_MODEL=$COVERAGE_MODEL
 VALIDATOR_THINKING=$VALIDATOR_THINKING_VALUE
 COVERAGE_THINKING=$COVERAGE_THINKING_VALUE
+COVERAGE_MAX_TOKENS=$COVERAGE_MAX_TOKENS_VALUE
 
 AUTH_SECRET=$AUTH_SECRET
 ADMIN_EMAIL=$ADMIN_EMAIL
@@ -144,10 +149,10 @@ EOF
 
 chmod 600 "$ROOT/.env.local"
 echo "==> 已写 $ROOT/.env 和 $ROOT/.env.local（权限 600）"
-{ [ -n "$PREV_COST_D" ] || [ -n "$PREV_COST_M" ] || [ -n "$PREV_PUSH" ] || [ -n "$PREV_BASE" ] || [ -n "$PREV_BRIEF_THIN_ALERT" ] || [ -n "$PREV_BRIEF_THIN_MIN" ] || [ -n "$PREV_BRIEF_THIN_MAX" ] || [ -n "$PREV_VALIDATOR_THINKING" ] || [ -n "$PREV_COVERAGE_THINKING" ]; } \
-  && echo "    ↻ 已从旧 .env.local 继承运行时配置（成本熔断/报告推送/日报偏薄提醒/thinking），未抹掉" \
+{ [ -n "$PREV_COST_D" ] || [ -n "$PREV_COST_M" ] || [ -n "$PREV_PUSH" ] || [ -n "$PREV_BASE" ] || [ -n "$PREV_BRIEF_THIN_ALERT" ] || [ -n "$PREV_BRIEF_THIN_MIN" ] || [ -n "$PREV_BRIEF_THIN_MAX" ] || [ -n "$PREV_VALIDATOR_THINKING" ] || [ -n "$PREV_COVERAGE_THINKING" ] || [ -n "$PREV_COVERAGE_MAX_TOKENS" ]; } \
+  && echo "    ↻ 已从旧 .env.local 继承运行时配置（成本熔断/报告推送/日报偏薄提醒/coverage 设置），未抹掉" \
   || echo "    ℹ️ 运行时配置（COST_LIMIT_*/REPORT_PUSH/PUBLIC_BASE_URL/BRIEF_THIN_*）当前为注释占位，按需在 .env.local 取消注释填值"
-echo "    LLM_PROVIDER=$LLM_PROVIDER_VALUE  ANALYZER=$ANALYZER_MODEL  VALIDATOR=$VALIDATOR_MODEL  COVERAGE=$COVERAGE_MODEL  （三者已确保两两不同）"
+echo "    LLM_PROVIDER=$LLM_PROVIDER_VALUE  ANALYZER=$ANALYZER_MODEL  VALIDATOR=$VALIDATOR_MODEL  COVERAGE=$COVERAGE_MODEL  COVERAGE_MAX_TOKENS=$COVERAGE_MAX_TOKENS_VALUE  （三者已确保两两不同）"
 if [ "$API_KEY" = "TODO_PASTE_YOUR_KEY" ]; then
   echo "    ⚠️ LLM_API_KEY 仍是占位，部署前请编辑 $ROOT/.env.local 填入真实 key"
 fi

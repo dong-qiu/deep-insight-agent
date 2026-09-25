@@ -1,6 +1,6 @@
 # Volcengine Responses Provider（原型）
 
-- 状态：实施完成，生产准入待 canary / A1
+- 状态：实施完成；内部原型的 provider probe 与 A1 smoke 已通过，正式可比 baseline / DCP 不在本规格的准入范围内
 - 关联：ADR-0031、`eval-gate`、`docs/verify/eval-criteria.md`
 
 ## 目标
@@ -15,15 +15,19 @@ endpoint 运行 analyzer、validator 与 coverage 三个独立模型。此规格
 LLM_PROVIDER=volcengine-responses
 LLM_API_KEY=<Coding Plan key>
 LLM_BASE_URL=https://ark.cn-beijing.volces.com/api/coding/v3
-ANALYZER_MODEL=glm-5.3
+ANALYZER_MODEL=deepseek-v4-flash
 VALIDATOR_MODEL=deepseek-v4-pro
-COVERAGE_MODEL=kimi-k3
+COVERAGE_MODEL=glm-5.2
 VALIDATOR_THINKING=0
-COVERAGE_THINKING=0
+COVERAGE_THINKING=1
+COVERAGE_MAX_TOKENS=4096
 ```
 
-`ANALYZER_MODEL`、`VALIDATOR_MODEL`、`COVERAGE_MODEL` 必须彼此不同。模型只是待测配置示例，
-不是质量结论。缺少 `LLM_API_KEY` 或 `LLM_BASE_URL` 时，Volcengine provider 必须在任何网络请求之前
+上例是当前已验证的 **Volcengine 内部原型 profile**，不是所有 provider 的默认值或正式质量结论。
+`ANALYZER_MODEL`、`VALIDATOR_MODEL`、`COVERAGE_MODEL` 必须彼此不同；`COVERAGE_MAX_TOKENS`
+只允许 `2048`、`4096` 或 `8192`。将其提高到默认值 `2048` 以上前，必须以相同 provider/model/thinking
+组合完成 stream probe 和 A1；AWS 的 `gen-env.sh` 必须把经审核的显式值写入 `.env.local`，并拒绝其他值，
+不能在部署重生成时静默回落。缺少 `LLM_API_KEY` 或 `LLM_BASE_URL` 时，Volcengine provider 必须在任何网络请求之前
 失败；`LLM_BASE_URL` 只能是上述固定 HTTPS Coding Plan API root，或控制台签发的
 `*.apigateway-cn-beijing.volceapi.com/v1` root／`.../v1/responses` 完整 HTTPS endpoint（不得有 userinfo、query
 或 fragment）。适配器只在 URL 尚未以 `/responses` 结尾时追加该路径；不得回退或转发 `ANTHROPIC_API_KEY`。
