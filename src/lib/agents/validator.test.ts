@@ -17,6 +17,7 @@ vi.mock("../runtime/relay-recovery.js", async (importOriginal) => {
 
 import { callStructured } from "../runtime/llm.js";
 import { RelayUnavailableError, isRelayCapacityError, withRelayRecovery } from "../runtime/relay-recovery.js";
+import { VolcengineResponsesError } from "../runtime/volcengine-responses.js";
 import { buildWindowByItem, checkReachability, CONSISTENCY_LABEL_DECISION_TABLE, consistencyCacheVersion, insightInclusion, isValidationDegraded, judgeConsistency, judgeConsistencyBatch, summarize, validateBatch, verdictFor } from "./validator.js";
 import type { CitationCheck, ContentItem, Insight } from "../types.js";
 
@@ -292,6 +293,62 @@ describe("validateBatch（A 去重 + C 校验失败分账）", () => {
     const { checks } = await validateBatch([ins], items);
     expect(callStructured).toHaveBeenCalledTimes(1); // 3 引用同源 → 判 1 次
     expect(checks.map((c) => c.verdict)).toEqual(["pass", "pass", "pass"]); // 复用同一结果，无相互矛盾
+  });
+
+  it("Volcengine 单条 formal terminal 不进入 validator retry 或 relay recovery", async () => {
+    const priorProvider = process.env.LLM_PROVIDER;
+    process.env.LLM_PROVIDER = "volcengine-responses";
+    process.env.VALIDATOR_RETRIES = "2";
+    try {
+      const items = [item("ci_volc_single", "Body has the supported quote.")];
+      const ins = insight("ivolc_single", "Claim", [{ content_item_id: "ci_volc_single", quote: "supported quote" }]);
+      vi.mocked(callStructured).mockRejectedValueOnce(new VolcengineResponsesError(
+        "Volcengine Responses completed without a usable function result",
+        undefined,
+        false,
+        { terminal: "completed", sawDone: true, functionArgumentsDone: false },
+      ));
+
+      const { checks } = await validateBatch([ins], items);
+
+      expect(callStructured).toHaveBeenCalledTimes(1);
+      expect(withRelayRecovery).not.toHaveBeenCalled();
+      expect(checks).toMatchObject([{ consistency: "not_evaluated", verdict: "flagged" }]);
+    } finally {
+      if (priorProvider === undefined) delete process.env.LLM_PROVIDER;
+      else process.env.LLM_PROVIDER = priorProvider;
+    }
+  });
+
+  it("Volcengine 批量 formal terminal 不扇出为逐条新请求", async () => {
+    const priorProvider = process.env.LLM_PROVIDER;
+    const priorBatch = process.env.VALIDATOR_BATCH;
+    process.env.LLM_PROVIDER = "volcengine-responses";
+    process.env.VALIDATOR_BATCH = "1";
+    process.env.VALIDATOR_RETRIES = "2";
+    try {
+      const items = [item("ci_volc_batch", "alpha quote and beta quote")];
+      const first = insight("ivolc_batch_a", "A", [{ content_item_id: "ci_volc_batch", quote: "alpha quote" }]);
+      const second = insight("ivolc_batch_b", "B", [{ content_item_id: "ci_volc_batch", quote: "beta quote" }]);
+      vi.mocked(callStructured).mockRejectedValueOnce(new VolcengineResponsesError(
+        "Volcengine Responses formal incomplete terminal",
+        undefined,
+        false,
+        { terminal: "incomplete", sawDone: false, functionArgumentsDone: false, incompleteReason: "max_output_tokens" },
+      ));
+
+      const { checks } = await validateBatch([first, second], items);
+
+      expect(callStructured).toHaveBeenCalledTimes(1);
+      expect(withRelayRecovery).not.toHaveBeenCalled();
+      expect(checks).toHaveLength(2);
+      expect(checks.every((check) => check.consistency === "not_evaluated" && check.verdict === "flagged")).toBe(true);
+    } finally {
+      if (priorProvider === undefined) delete process.env.LLM_PROVIDER;
+      else process.env.LLM_PROVIDER = priorProvider;
+      if (priorBatch === undefined) delete process.env.VALIDATOR_BATCH;
+      else process.env.VALIDATOR_BATCH = priorBatch;
+    }
   });
 
   it("A：不同源各判一次", async () => {

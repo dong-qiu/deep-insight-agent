@@ -26,8 +26,8 @@ COVERAGE_MAX_TOKENS=4096
 上例是当前已验证的 **Volcengine 内部原型 profile**，不是所有 provider 的默认值或正式质量结论。
 `ANALYZER_MODEL`、`VALIDATOR_MODEL`、`COVERAGE_MODEL` 必须彼此不同；`COVERAGE_MAX_TOKENS`
 只允许 `2048`、`4096` 或 `8192`。将其提高到默认值 `2048` 以上前，必须以相同 provider/model/thinking
-组合完成 stream probe 和 A1；AWS 的 `gen-env.sh` 必须把经审核的显式值写入 `.env.local`，并拒绝其他值，
-不能在部署重生成时静默回落。缺少 `LLM_API_KEY` 或 `LLM_BASE_URL` 时，Volcengine provider 必须在任何网络请求之前
+组合完成 stream probe 和 A1；AWS 的 `gen-env.sh` 与运行时都必须把经审核的显式值写入/接受，并拒绝其他值，
+不能在部署重生成或手工配置时静默回落。缺少 `LLM_API_KEY` 或 `LLM_BASE_URL` 时，Volcengine provider 必须在任何网络请求之前
 失败；`LLM_BASE_URL` 只能是上述固定 HTTPS Coding Plan API root，或控制台签发的
 `*.apigateway-cn-beijing.volceapi.com/v1` root／`.../v1/responses` 完整 HTTPS endpoint（不得有 userinfo、query
 或 fragment）。适配器只在 URL 尚未以 `/responses` 结尾时追加该路径；不得回退或转发 `ANTHROPIC_API_KEY`。

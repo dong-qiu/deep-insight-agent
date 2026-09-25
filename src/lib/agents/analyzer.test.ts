@@ -52,6 +52,25 @@ describe("AnalyzerOutputSchema 的原子 citation claim", () => {
 });
 
 describe("analyze 的展示覆盖审计投影", () => {
+  it("无效的 coverage token profile 在任何 analyzer 请求前失败", async () => {
+    const prior = process.env.COVERAGE_MAX_TOKENS;
+    process.env.COVERAGE_MAX_TOKENS = "3000";
+    const topic: Topic = { id: "t", name: "T", keywords: [], language: "en", brief_schedule: "daily", enabled: true };
+    const content: ContentItem = {
+      id: "ci", source_id: "s", url: "https://example.test", title: "T", author: null, published_at: null,
+      fetched_at: "2026-09-09T00:00:00.000Z", language: "en", topic_ids: ["t"], tags: [],
+      body: "Source body.", body_kind: "article", raw_ref: "", content_hash: "h", fetch_status: "ok",
+    };
+    try {
+      await expect(analyze(topic, [content], { start: "2026-09-09", end: "2026-09-09" }))
+        .rejects.toThrow("COVERAGE_MAX_TOKENS 必须是 2048、4096 或 8192");
+      expect(callStructured).not.toHaveBeenCalled();
+    } finally {
+      if (prior === undefined) delete process.env.COVERAGE_MAX_TOKENS;
+      else process.env.COVERAGE_MAX_TOKENS = prior;
+    }
+  });
+
   it("passes an A1 topic deadline into the analyzer call and does not split after cancellation", async () => {
     const topic: Topic = { id: "t", name: "T", keywords: [], language: "en", brief_schedule: "daily", enabled: true };
     const content: ContentItem = {

@@ -10,6 +10,7 @@ import {
   validatorRetries, validatorThinking,
 } from "../runtime/env.js";
 import { MODELS, callStructured } from "../runtime/llm.js";
+import { llmProvider } from "../runtime/llm-provider.js";
 import { RelayUnavailableError, withRelayRecovery } from "../runtime/relay-recovery.js";
 import { compareKey } from "../runtime/text-normalize.js";
 import { isIncludableCheck, isValidationError } from "../utils/citation-verdict.js";
@@ -241,11 +242,13 @@ function validatorRelayBaseUrl(): string | undefined {
   return baseUrl ? baseUrl.replace(/\/+$/, "") : undefined;
 }
 
-/** Keep ordinary transient/model-output retry semantics, but let an explicit relay capacity
- * outage enter the shared, bounded half-open recovery gate.  A recovered probe returns its own
- * judgment; a budget-exhausted gate is deliberately surfaced as an error to the existing
- * fail-closed caller path rather than being reclassified as a semantic verdict. */
+/** Keep ordinary transient/model-output retry semantics for the legacy Anthropic relay, but let
+ * an explicit relay capacity outage enter the shared, bounded half-open recovery gate. The
+ * Responses provider is deliberately excluded: callStructured owns its sole retry (a fresh
+ * request after an explicit pre-terminal EOF), and an outer validator retry could re-submit a
+ * paid completed/formal-terminal request. */
 async function retryJudge<T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (llmProvider() === "volcengine-responses") return operation();
   const extra = validatorRetries();
   const base = validatorBackoffMs();
   let lastErr: unknown;
@@ -547,13 +550,17 @@ export async function validateBatch(
       };
       if (batchOn && group.length > 1) {
         // 批量：源文发一遍，逐条独立判。整组失败（瞬时抖动/产出残缺）时退回逐条，
-        // 不能把一次 schema 漂移放大成整组引用都未评估。
+        // 不能把一次 schema 漂移放大成整组引用都未评估。Volcengine 是例外：任何完成后
+        // 错误都可能已经消耗受保护输入，绝不能把一批再扇出为 N 个新请求。
         let results: JudgeOutcome[];
         try {
           results = await judgeBatchWithRetry(group.map((e) => e.claim), body, onCost, metadata, group.map((e) => e.quote), signal);
         } catch (error) {
           throwIfAborted(signal);
-          if (error instanceof RelayUnavailableError) {
+          if (llmProvider() === "volcengine-responses") {
+            console.warn(`  ⚠️ Volcengine 批量一致性校验失败，本组 ${group.length} 条不扇出逐条复判，记为校验失败`);
+            results = group.map(() => ({ error: true }));
+          } else if (error instanceof RelayUnavailableError) {
             // A capacity outage is process-wide and already spent a shared recovery budget.
             // Do not amplify one failed batch into N individual relay requests; keep every item
             // not_evaluated so the standard reader fail-closed path and later retry can handle it.

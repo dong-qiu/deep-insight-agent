@@ -96,6 +96,33 @@ test("gen-env preserves valid existing coverage role settings when an older conf
   }
 });
 
+test("gen-env lets an explicit new coverage token budget override the inherited old value", () => {
+  const root = mkdtempSync(join(tmpdir(), "insight-gen-env-"));
+  try {
+    const aws = join(root, "ops/aws");
+    cpSync(script, join(aws, "gen-env.sh"), { recursive: false });
+    writeFileSync(join(aws, "config.sh"), [
+      'COMPOSE_PROJECT="test-insight"',
+      'ANALYZER_MODEL="analyzer"',
+      'VALIDATOR_MODEL="validator"',
+      'COVERAGE_MODEL="coverage"',
+      'COVERAGE_MAX_TOKENS="2048"',
+      'ADMIN_EMAIL="admin"',
+    ].join("\n"));
+    writeFileSync(join(root, ".env.local"), "COVERAGE_MAX_TOKENS=4096\n");
+
+    execFileSync("bash", [join(aws, "gen-env.sh")], {
+      env: { ...process.env, LLM_API_KEY: "test-only-key", ADMIN_PASSWORD: "test-only-password" },
+      stdio: "pipe",
+    });
+    const runtimeEnv = readFileSync(join(root, ".env.local"), "utf8");
+    assert.match(runtimeEnv, /^COVERAGE_MAX_TOKENS=2048$/m);
+    assert.doesNotMatch(runtimeEnv, /^COVERAGE_MAX_TOKENS=4096$/m);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("gen-env rejects an unsupported coverage token budget before writing runtime configuration", () => {
   const root = mkdtempSync(join(tmpdir(), "insight-gen-env-"));
   try {
