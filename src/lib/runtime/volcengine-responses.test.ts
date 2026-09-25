@@ -213,12 +213,12 @@ describe("Volcengine Responses structured adapter", () => {
     await expect(callVolcengineResponses(request)).resolves.toMatchObject({ input: undefined, usage: { input_tokens: 0, output_tokens: 0 } });
   });
 
-  it("returns a retryable completed-protocol defect with its paid usage", async () => {
+  it("fails closed for a completed-protocol defect while retaining its paid usage", async () => {
     globalThis.fetch = vi.fn(async () => sse([
       { type: "response.completed", response: { status: "completed", usage: { input_tokens: 9, output_tokens: 4 } } },
     ])) as typeof fetch;
     await expect(callVolcengineResponses(request)).rejects.toMatchObject({
-      retryable: true,
+      retryable: false,
       usage: { input_tokens: 9, output_tokens: 4 },
       streamDiagnostic: { terminal: "completed", sawDone: true, functionArgumentsDone: false },
     });
@@ -230,7 +230,7 @@ describe("Volcengine Responses structured adapter", () => {
       { type: "response.completed", response: { status: "completed", output: [{ type: "function_call", name: "other_function" }], usage: {} } },
     ])) as typeof fetch;
     await expect(callVolcengineResponses(request)).rejects.toMatchObject({
-      retryable: true,
+      retryable: false,
       streamDiagnostic: { terminal: "completed", sawDone: true, functionArgumentsDone: false },
     });
   });

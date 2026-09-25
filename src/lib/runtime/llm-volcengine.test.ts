@@ -89,11 +89,11 @@ describe("callStructured through Volcengine Responses", () => {
     expect(getCostReport().byModel).toEqual([expect.objectContaining({ model: "glm-5.3", calls: 1, input: 9, output: 4, unpriced: true })]);
   });
 
-  it("accounts a paid completion that omitted the final function event before the Zod gate rejects it", async () => {
+  it("accounts and fails closed for a paid completion that omitted the final function event", async () => {
     process.env.LLM_PROVIDER = "volcengine-responses";
     process.env.LLM_API_KEY = "not-a-real-key";
     process.env.LLM_BASE_URL = "https://ark.cn-beijing.volces.com/api/coding/v3";
-    process.env.LLM_TRANSIENT_RETRIES = "0";
+    process.env.LLM_TRANSIENT_RETRIES = "1";
     Object.assign(MODELS, { analyzer: "glm-5.3" });
     globalThis.fetch = vi.fn(async () => sse([
       { type: "response.completed", response: { status: "completed", usage: { input_tokens: 9, output_tokens: 4 } } },
@@ -101,7 +101,8 @@ describe("callStructured through Volcengine Responses", () => {
 
     await expect(callStructured({
       role: "analyzer", telemetryOperation: "provider_transport_test", system: "system", user: "user", schema: z.object({ ok: z.boolean() }), maxTokens: 2048,
-    })).rejects.toMatchObject({ retryable: true, streamDiagnostic: { terminal: "completed", functionArgumentsDone: false } });
+    })).rejects.toMatchObject({ retryable: false, streamDiagnostic: { terminal: "completed", functionArgumentsDone: false } });
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
     expect(getCostReport().byModel).toEqual([expect.objectContaining({ model: "glm-5.3", calls: 1, input: 9, output: 4, unpriced: true })]);
     expect(getRoleCallTelemetry().analyzer).toMatchObject({
       failures: 1,
@@ -141,7 +142,7 @@ describe("callStructured through Volcengine Responses", () => {
     });
   });
 
-  it("retries one paid completed-protocol defect inside callStructured and preserves both requests", async () => {
+  it("does not resubmit a paid completed-protocol defect even when the EOF retry budget is available", async () => {
     process.env.LLM_PROVIDER = "volcengine-responses";
     process.env.LLM_API_KEY = "not-a-real-key";
     process.env.LLM_BASE_URL = "https://ark.cn-beijing.volces.com/api/coding/v3";
@@ -159,13 +160,13 @@ describe("callStructured through Volcengine Responses", () => {
 
     await expect(callStructured({
       role: "analyzer", telemetryOperation: "provider_transport_test", system: "system", user: "user", schema: z.object({ ok: z.boolean() }), maxTokens: 2048,
-    })).resolves.toMatchObject({ data: { ok: true } });
-    expect(globalThis.fetch).toHaveBeenCalledTimes(2);
-    expect(getCostReport().byModel).toEqual([expect.objectContaining({ calls: 2, input: 12, output: 6 })]);
+    })).rejects.toMatchObject({ retryable: false, streamDiagnostic: { terminal: "completed", functionArgumentsDone: false } });
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    expect(getCostReport().byModel).toEqual([expect.objectContaining({ calls: 1, input: 9, output: 4 })]);
     expect(getRoleCallTelemetry().analyzer).toMatchObject({
-      requests: 2, failures: 0,
+      requests: 1, failures: 1,
       provider_stream_failures: { completed_missing_function_arguments: 1 },
-      provider_function_arguments_done: { false: 1, true: 1 },
+      provider_function_arguments_done: { false: 1 },
     });
   });
 

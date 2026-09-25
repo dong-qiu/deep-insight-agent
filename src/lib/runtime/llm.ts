@@ -206,7 +206,7 @@ function readonlyCallTelemetry(aggregate: MutableCallTelemetryAggregate): CallTe
 }
 
 export interface CallTransportTelemetry {
-  /** Fixed protocol labels emitted by the provider adapter, never raw SSE data. */
+  /** Provider labels are allowlisted at the artifact sink, never raw SSE data. */
   streamFailures?: readonly string[];
   /** Failed HTTP status codes only. */
   httpStatuses?: readonly number[];
@@ -214,11 +214,25 @@ export interface CallTransportTelemetry {
   functionArgumentsDone?: readonly boolean[];
 }
 
-function incrementBounded(aggregate: Map<string, number>, values: readonly string[]): void {
+const PROVIDER_STREAM_FAILURE_LABELS = new Set([
+  "completed_invalid_status",
+  "completed_missing_function_arguments",
+  "eof_before_terminal",
+  "error",
+  "failed",
+  "incomplete",
+]);
+
+function increment(aggregate: Map<string, number>, values: readonly string[]): void {
   for (const value of values) {
-    if (!/^[a-z0-9_:-]{1,64}$/i.test(value)) continue;
     aggregate.set(value, (aggregate.get(value) ?? 0) + 1);
   }
+}
+
+/** This is the persistence boundary for provider protocol metadata.  Error names and SSE fields
+ * are mutable/upstream-controlled, so syntactic filtering is insufficient here. */
+function incrementProviderStreamFailures(aggregate: Map<string, number>, values: readonly string[]): void {
+  increment(aggregate, values.filter((value) => PROVIDER_STREAM_FAILURE_LABELS.has(value)));
 }
 
 function recordCallTelemetry(
@@ -236,15 +250,15 @@ function recordCallTelemetry(
     if (!reason) continue;
     aggregate.outputStopReasons.set(reason, (aggregate.outputStopReasons.get(reason) ?? 0) + 1);
   }
-  incrementBounded(aggregate.providerStreamFailures, transport.streamFailures ?? []);
-  incrementBounded(
+  incrementProviderStreamFailures(aggregate.providerStreamFailures, transport.streamFailures ?? []);
+  increment(
     aggregate.providerHttpStatuses,
     (transport.httpStatuses ?? [])
       .filter((status) => Number.isInteger(status) && status >= 100 && status <= 599)
       .map(String),
   );
-  incrementBounded(aggregate.providerSseDone, (transport.sseDone ?? []).map(String));
-  incrementBounded(aggregate.providerFunctionArgumentsDone, (transport.functionArgumentsDone ?? []).map(String));
+  increment(aggregate.providerSseDone, (transport.sseDone ?? []).map(String));
+  increment(aggregate.providerFunctionArgumentsDone, (transport.functionArgumentsDone ?? []).map(String));
   aggregate.latency.push(Math.max(0, latencyMs));
 }
 

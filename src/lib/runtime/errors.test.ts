@@ -25,13 +25,13 @@ describe("isTransientApiError（中转站瞬时错误 vs 模型层错误）", ()
     expect(isTransientApiError(new VolcengineResponsesError("missing function arguments"))).toBe(false);
   });
 
-  it("只把 EOF 或缺 forced-function 的 completed 交给内层传输重试预算", () => {
+  it("只把 completion 前 EOF 交给内层传输重试预算", () => {
     expect(isVolcengineTransportContractDefect(new VolcengineResponsesError(
       "EOF", undefined, true, { terminal: "eof_before_terminal", sawDone: true, functionArgumentsDone: true },
     ))).toBe(true);
     expect(isVolcengineTransportContractDefect(new VolcengineResponsesError(
-      "missing function", undefined, true, { terminal: "completed", sawDone: true, functionArgumentsDone: false },
-    ))).toBe(true);
+      "missing function", undefined, false, { terminal: "completed", sawDone: true, functionArgumentsDone: false },
+    ))).toBe(false);
     expect(isVolcengineTransportContractDefect(new VolcengineResponsesError(
       "formal incomplete", undefined, false, { terminal: "incomplete", sawDone: false, functionArgumentsDone: false },
     ))).toBe(false);

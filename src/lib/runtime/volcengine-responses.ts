@@ -341,11 +341,12 @@ export async function callVolcengineResponses(
   }
   if (!streamDiagnostic.functionArgumentsDone) {
     // This is a transport-contract defect after a completed, paid response, not a semantic model
-    // refusal. The structured caller accounts `usage` before its single transport retry.
+    // refusal. Account its usage, then fail closed: a provider-declared completion is not a
+    // connection loss, so resubmitting protected input would add an unapproved paid request.
     throw new VolcengineResponsesError(
       "Volcengine Responses 完成事件缺少函数参数完成事件",
       undefined,
-      true,
+      false,
       { terminal: "completed", ...streamDiagnostic },
       usage,
     );

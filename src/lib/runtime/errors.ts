@@ -6,11 +6,10 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { VolcengineResponsesError } from "./volcengine-responses.js";
 
-/** These Volcengine protocol defects get their only fresh-request budget inside callStructured. */
+/** Only an EOF before any provider terminal gets a fresh-request budget inside callStructured. */
 export function isVolcengineTransportContractDefect(e: unknown): boolean {
   if (!(e instanceof VolcengineResponsesError)) return false;
-  return e.streamDiagnostic?.terminal === "eof_before_terminal"
-    || (e.streamDiagnostic?.terminal === "completed" && !e.streamDiagnostic.functionArgumentsDone);
+  return e.streamDiagnostic?.terminal === "eof_before_terminal";
 }
 
 export function isTransientApiError(e: unknown): boolean {

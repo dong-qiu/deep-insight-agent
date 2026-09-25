@@ -38,8 +38,8 @@ COVERAGE_THINKING=0
    schema 校验。HTTP 错误日志不得回显上游 body，任意其他 endpoint 必须在网络请求前被拒绝。
 3. 只有 `response.completed` 且其 response `status="completed"`、并且收到整个 forced
    function-arguments final event 的响应才可进入 Zod 门。缺少整个 event 的响应必须先保留 usage、成本和
-   protocol telemetry，再仅由 `LLM_TRANSIENT_RETRIES` 执行有界新请求；耗尽后 fail-closed，且不得再进入
-   validator 外层重试。任何 formal terminal 或 `response.completed` 内矛盾/缺失 status 都须 fail-closed；
+   protocol telemetry，随后立即 fail-closed，且不得进入任何内层或 validator 外层重试。任何 formal terminal
+   或 `response.completed` 内矛盾/缺失 status 都须 fail-closed；
    event 已到达但参数缺失/损坏的响应仍须在 Zod 门失败。以上所有带 usage 的已付费失败不得静默成零成本。
 4. 未核实价格的模型成本必须标 `estimated`；写入 `cost_ledger` 时为
    `amount_minor=NULL, cost_status=unknown`，不能作为已知成本聚合。
@@ -55,10 +55,10 @@ COVERAGE_THINKING=0
   帧界。若 gateway 在前一事件省略 function name，只能以 completed output 中**唯一**的预期 forced function
   call 绑定该 arguments-done 事件；不能回退信任任意 output。`response.function_call_arguments.done` 已出现但参数
   缺失/损坏时，仍保留 completed usage 后交给 Zod 门失败。SSE 的正式 `response.incomplete`、`response.failed`、
-  `error` 事件与无终态 EOF 必须分开记录；前三者默认不可重试。无 `response.completed` 的 EOF，以及
-  `response.completed` 已到达但缺少整个 forced function event 的协议缺口，可触发由 `LLM_TRANSIENT_RETRIES`
-  限制（默认一次）的有界新请求重试；耗尽后不再交给 validator 外层重试。下一次必须重新取得完整终止事件与
-  函数参数；不得接受、拼接或推断前一次残片。诊断只能保留终态枚举、
+  `error` 事件与无终态 EOF 必须分开记录；前三者和任何已收到 `response.completed` 的协议缺口默认不可重试。
+  只有无 `response.completed` 的 EOF 可触发由 `LLM_TRANSIENT_RETRIES` 限制（默认一次）的有界新请求重试；
+  耗尽后不再交给 validator 外层重试。下一次必须重新取得完整终止事件与函数参数；不得接受、拼接或推断前一次
+  残片。诊断只能保留终态枚举、
   是否收齐 `[DONE]`/函数参数和失败 HTTP status 等聚合信息；不得持久化 SSE data、原文、prompt、模型输出、endpoint、
   key 或 provider request id。
   `LLM_TIMEOUT_MS` 继续作为流式请求的硬中止；长输出稳定性仍须由 smoke/A1 证明。

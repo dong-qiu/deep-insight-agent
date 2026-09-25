@@ -238,7 +238,7 @@ describe("role-level LLM telemetry", () => {
       true,
       ["max_tokens", "refusal", "max_tokens"],
       "display_quote_countercheck",
-      { streamFailures: ["eof_before_terminal", "eof_before_terminal"], httpStatuses: [503], sseDone: [true, false], functionArgumentsDone: [true, false] },
+      { streamFailures: ["eof_before_terminal", "eof_before_terminal", "source_secret", "upstream-error"], httpStatuses: [503], sseDone: [true, false], functionArgumentsDone: [true, false] },
     );
     recordRoleCallTelemetry("validator", 20, 1, false, ["tool_use"], "citation_consistency_batch");
     expect(getRoleCallTelemetry()).toMatchObject({
