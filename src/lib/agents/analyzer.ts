@@ -10,6 +10,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { isTransientApiError, isVolcengineResponsesFailure } from "../runtime/errors.js";
 import { coverageBackfillOff, coverageMaxTokens, coverageThinking, coverageThinkingSource, validatorBackoffMs, validatorRetries, validatorThinking } from "../runtime/env.js";
 import { MODELS, assertCoverageModelSeparation, callStructured } from "../runtime/llm.js";
+import { llmProvider } from "../runtime/llm-provider.js";
 import { collapseWithMap, compareKey } from "../runtime/text-normalize.js";
 import { insightFingerprint } from "../runtime/statement-fingerprint.js";
 import { entitiesMentionedInStatement } from "../utils/reader-visible-entities.js";
@@ -740,10 +741,11 @@ export async function verifyQuoteSelfContained(
     } catch (error) {
       throwIfAborted(signal);
       lastError = error;
-      // callStructured already performs the one allowed fresh request for a transport EOF.
-      // Do not re-run a formal `response.incomplete`, schema violation, or model refusal here:
-      // those are fail-closed verdict-contract failures, not a transient recovery opportunity.
-      if (!isTransientApiError(error) || isVolcengineResponsesFailure(error)) break;
+      // callStructured owns the only Volcengine recovery: one explicit pre-terminal EOF retry.
+      // Never resubmit a Volcengine validator request here, including native fetch/timeout errors
+      // that do not carry the adapter's typed error. Formal terminals, schema failures and model
+      // refusals remain conservative unavailable verdicts below.
+      if (!isTransientApiError(error) || isVolcengineResponsesFailure(error) || llmProvider() === "volcengine-responses") break;
       if (attempt < validatorRetries()) await sleep(validatorBackoffMs() * 2 ** attempt);
     }
   }
@@ -827,10 +829,10 @@ export async function verifyDisplayedQuoteCoverage(
         break;
       } catch (error) {
         throwIfAborted(signal);
-        // A formal provider terminal (for example max_output_tokens) and a structured-output
-        // contract failure cannot be repaired by submitting the exact same primary claim again.
-        // Retry only classified infrastructure faults; unavailable remains conservative below.
-        if (!isTransientApiError(error) || isVolcengineResponsesFailure(error)) break;
+        // The Volcengine path has no outer retry budget: callStructured may only recover a
+        // pre-terminal EOF itself. Other provider terminals, native fetch/timeout errors and
+        // structured-output failures become conservative unavailable verdicts below.
+        if (!isTransientApiError(error) || isVolcengineResponsesFailure(error) || llmProvider() === "volcengine-responses") break;
         if (attempt < validatorRetries()) await sleep(validatorBackoffMs() * 2 ** attempt);
       }
     }
