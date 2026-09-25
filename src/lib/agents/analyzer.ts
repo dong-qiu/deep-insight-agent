@@ -7,7 +7,7 @@
  * 不让模型编造。
  */
 import { createHash, randomUUID } from "node:crypto";
-import { isTransientApiError, isVolcengineTransportContractDefect } from "../runtime/errors.js";
+import { isTransientApiError, isVolcengineResponsesFailure } from "../runtime/errors.js";
 import { coverageBackfillOff, coverageMaxTokens, coverageThinking, coverageThinkingSource, validatorBackoffMs, validatorRetries, validatorThinking } from "../runtime/env.js";
 import { MODELS, assertCoverageModelSeparation, callStructured } from "../runtime/llm.js";
 import { collapseWithMap, compareKey } from "../runtime/text-normalize.js";
@@ -743,7 +743,7 @@ export async function verifyQuoteSelfContained(
       // callStructured already performs the one allowed fresh request for a transport EOF.
       // Do not re-run a formal `response.incomplete`, schema violation, or model refusal here:
       // those are fail-closed verdict-contract failures, not a transient recovery opportunity.
-      if (!isTransientApiError(error) || isVolcengineTransportContractDefect(error)) break;
+      if (!isTransientApiError(error) || isVolcengineResponsesFailure(error)) break;
       if (attempt < validatorRetries()) await sleep(validatorBackoffMs() * 2 ** attempt);
     }
   }
@@ -830,7 +830,7 @@ export async function verifyDisplayedQuoteCoverage(
         // A formal provider terminal (for example max_output_tokens) and a structured-output
         // contract failure cannot be repaired by submitting the exact same primary claim again.
         // Retry only classified infrastructure faults; unavailable remains conservative below.
-        if (!isTransientApiError(error) || isVolcengineTransportContractDefect(error)) break;
+        if (!isTransientApiError(error) || isVolcengineResponsesFailure(error)) break;
         if (attempt < validatorRetries()) await sleep(validatorBackoffMs() * 2 ** attempt);
       }
     }

@@ -6,10 +6,9 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { VolcengineResponsesError } from "./volcengine-responses.js";
 
-/** Only an EOF before any provider terminal gets a fresh-request budget inside callStructured. */
-export function isVolcengineTransportContractDefect(e: unknown): boolean {
-  if (!(e instanceof VolcengineResponsesError)) return false;
-  return e.streamDiagnostic?.terminal === "eof_before_terminal";
+/** Responses-provider failures have an intentionally narrower retry policy than generic relays. */
+export function isVolcengineResponsesFailure(e: unknown): boolean {
+  return e instanceof VolcengineResponsesError;
 }
 
 export function isTransientApiError(e: unknown): boolean {

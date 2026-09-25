@@ -1220,6 +1220,34 @@ describe("filterByQuoteCoverage（展示 quote 覆盖门）", () => {
     }
   });
 
+  it("主审的 completed 缺函数事件不会被上层 validator retry 重复提交", async () => {
+    const priorRetries = process.env.VALIDATOR_RETRIES;
+    process.env.VALIDATOR_RETRIES = "2";
+    try {
+      const quote = "SpecBench contains 30 systems-level programming tasks.";
+      vi.mocked(callStructured)
+        .mockRejectedValueOnce(new VolcengineResponsesError(
+          "Volcengine Responses 完成事件缺少函数参数完成事件",
+          undefined,
+          false,
+          { terminal: "completed", sawDone: true, functionArgumentsDone: false },
+        ))
+        .mockResolvedValueOnce(coverageVerdictsFor(quote, true));
+      const audits: Array<{ claims: Array<{ supports: boolean; reason: string; countercheck?: { supports: boolean } }> }> = [];
+      const row = insight("SpecBench contains 30 systems-level programming tasks.", [{
+        content_item_id: "ci", claim: "SpecBench contains 30 systems-level programming tasks", quote,
+        locator: { paragraph_index: 0, char_start: 0, char_end: quote.length },
+      }]);
+
+      await expect(filterByQuoteCoverage([row], undefined, undefined, (decision) => audits.push(decision))).resolves.toEqual([]);
+      expect(vi.mocked(callStructured).mock.calls.map(([request]) => request.role)).toEqual(["validator", "coverage"]);
+      expect(audits[0]?.claims[0]).toMatchObject({ supports: false, reason: "primary_unavailable", countercheck: { supports: true } });
+    } finally {
+      if (priorRetries === undefined) delete process.env.VALIDATOR_RETRIES;
+      else process.env.VALIDATOR_RETRIES = priorRetries;
+    }
+  });
+
   it("耗尽的 SSE 传输契约缺口只由 callStructured 重试，不再消耗 validator retry", async () => {
     const priorRetries = process.env.VALIDATOR_RETRIES;
     process.env.VALIDATOR_RETRIES = "2";

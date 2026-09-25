@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod/v4";
 import { callStructured, getCostReport, getRoleCallTelemetry, MODELS, resetCostMeter, resetRoleCallTelemetry } from "./llm.js";
+import type { Cost } from "../types.js";
 import { STRUCTURED_RESPONSE_TOOL_NAME } from "./volcengine-responses.js";
 
 const originalEnvironment = { ...process.env };
@@ -95,14 +96,18 @@ describe("callStructured through Volcengine Responses", () => {
     process.env.LLM_BASE_URL = "https://ark.cn-beijing.volces.com/api/coding/v3";
     process.env.LLM_TRANSIENT_RETRIES = "1";
     Object.assign(MODELS, { analyzer: "glm-5.3" });
-    globalThis.fetch = vi.fn(async () => sse([
+    const fetchMock = vi.fn(async () => sse([
       { type: "response.completed", response: { status: "completed", usage: { input_tokens: 9, output_tokens: 4 } } },
-    ])) as typeof fetch;
+    ]));
+    globalThis.fetch = fetchMock as typeof fetch;
+    const costs: Cost[] = [];
 
     await expect(callStructured({
       role: "analyzer", telemetryOperation: "provider_transport_test", system: "system", user: "user", schema: z.object({ ok: z.boolean() }), maxTokens: 2048,
+      onCost: (cost) => costs.push(cost),
     })).rejects.toMatchObject({ retryable: false, streamDiagnostic: { terminal: "completed", functionArgumentsDone: false } });
-    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(costs).toEqual([expect.objectContaining({ tokens: 13, estimated: true, amount: expect.any(Number) })]);
     expect(getCostReport().byModel).toEqual([expect.objectContaining({ model: "glm-5.3", calls: 1, input: 9, output: 4, unpriced: true })]);
     expect(getRoleCallTelemetry().analyzer).toMatchObject({
       failures: 1,
@@ -220,18 +225,51 @@ describe("callStructured through Volcengine Responses", () => {
     });
   });
 
+  it("does not retry a Volcengine HTTP failure even when the generic relay policy would", async () => {
+    process.env.LLM_PROVIDER = "volcengine-responses";
+    process.env.LLM_API_KEY = "not-a-real-key";
+    process.env.LLM_BASE_URL = "https://ark.cn-beijing.volces.com/api/coding/v3";
+    process.env.LLM_TRANSIENT_RETRIES = "1";
+    process.env.LLM_TRANSIENT_RETRY_BACKOFF_MS = "0";
+    Object.assign(MODELS, { analyzer: "glm-5.3" });
+    const fetchMock = vi.fn(async () => new Response("upstream body must not persist", { status: 503 }));
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    await expect(callStructured({
+      role: "analyzer", telemetryOperation: "provider_transport_test", system: "system", user: "user", schema: z.object({ ok: z.boolean() }), maxTokens: 2048,
+    })).rejects.toMatchObject({ status: 503, retryable: false });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry a Volcengine fetch failure even when the generic relay policy would", async () => {
+    process.env.LLM_PROVIDER = "volcengine-responses";
+    process.env.LLM_API_KEY = "not-a-real-key";
+    process.env.LLM_BASE_URL = "https://ark.cn-beijing.volces.com/api/coding/v3";
+    process.env.LLM_TRANSIENT_RETRIES = "1";
+    process.env.LLM_TRANSIENT_RETRY_BACKOFF_MS = "0";
+    Object.assign(MODELS, { analyzer: "glm-5.3" });
+    const fetchMock = vi.fn(async () => { throw new TypeError("fetch failed"); });
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    await expect(callStructured({
+      role: "analyzer", telemetryOperation: "provider_transport_test", system: "system", user: "user", schema: z.object({ ok: z.boolean() }), maxTokens: 2048,
+    })).rejects.toThrow("fetch failed");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("propagates the full callStructured wall-clock deadline through an endlessly buffered Responses stream", async () => {
     process.env.LLM_PROVIDER = "volcengine-responses";
     process.env.LLM_API_KEY = "not-a-real-key";
     process.env.LLM_BASE_URL = "https://ark.cn-beijing.volces.com/api/coding/v3";
     process.env.LLM_TIMEOUT_MS = "5";
     process.env.LLM_MAX_RETRIES = "0";
-    process.env.LLM_TRANSIENT_RETRIES = "0";
+    process.env.LLM_TRANSIENT_RETRIES = "1";
     Object.assign(MODELS, { analyzer: "glm-5.3" });
     globalThis.fetch = vi.fn(async () => endlesslyBufferedSse()) as typeof fetch;
 
     await expect(callStructured({
       role: "analyzer", system: "system", user: "user", schema: z.object({ ok: z.boolean() }), maxTokens: 2048,
     })).rejects.toThrow("LLM stream exceeded wall-clock timeout of 5ms");
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
   });
 });
