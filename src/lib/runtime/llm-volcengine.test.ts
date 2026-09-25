@@ -15,6 +15,13 @@ function sse(events: unknown[]): Response {
   });
 }
 
+function rawSse(blocks: string[]): Response {
+  return new Response(`${blocks.map((block) => `data: ${block}\n\n`).join("")}data: [DONE]\n\n`, {
+    status: 200,
+    headers: { "Content-Type": "text/event-stream" },
+  });
+}
+
 function endlesslyBufferedSse(): Response {
   const encoder = new TextEncoder();
   return new Response(new ReadableStream<Uint8Array>({
@@ -173,6 +180,48 @@ describe("callStructured through Volcengine Responses", () => {
       provider_stream_failures: { completed_missing_function_arguments: 1 },
       provider_function_arguments_done: { false: 1 },
     });
+  });
+
+  it("accounts and emits safe telemetry for a paid completed stream protocol violation", async () => {
+    process.env.LLM_PROVIDER = "volcengine-responses";
+    process.env.LLM_API_KEY = "not-a-real-key";
+    process.env.LLM_BASE_URL = "https://ark.cn-beijing.volces.com/api/coding/v3";
+    process.env.LLM_TRANSIENT_RETRIES = "1";
+    process.env.LLM_TRANSIENT_RETRY_BACKOFF_MS = "0";
+    Object.assign(MODELS, { analyzer: "glm-5.3" });
+
+    const completed = JSON.stringify({
+      type: "response.completed",
+      response: { status: "completed", usage: { input_tokens: 9, output_tokens: 4 }, source_body: "must-not-escape" },
+    });
+    const formalConflict = JSON.stringify({
+      type: "response.incomplete",
+      response: { status: "incomplete", usage: { input_tokens: 99, output_tokens: 99 }, source_body: "later-body-must-not-escape" },
+    });
+
+    for (const trailingBlock of ["{this-is-not-json", formalConflict]) {
+      resetCostMeter();
+      resetRoleCallTelemetry();
+      const fetchMock = vi.fn(async () => rawSse([completed, trailingBlock]));
+      globalThis.fetch = fetchMock as typeof fetch;
+      const costs: Cost[] = [];
+
+      await expect(callStructured({
+        role: "analyzer", telemetryOperation: "provider_transport_test", system: "system", user: "user", schema: z.object({ ok: z.boolean() }), maxTokens: 2048,
+        onCost: (cost) => costs.push(cost),
+      })).rejects.toMatchObject({ retryable: false, streamDiagnostic: { terminal: "completed_protocol_violation" } });
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(costs).toEqual([expect.objectContaining({ tokens: 13, estimated: true, amount: expect.any(Number) })]);
+      expect(getCostReport().byModel).toEqual([expect.objectContaining({ calls: 1, input: 9, output: 4, unpriced: true })]);
+      expect(getRoleCallTelemetry().analyzer).toMatchObject({
+        requests: 1,
+        failures: 1,
+        provider_stream_failures: { completed_protocol_violation: 1 },
+        provider_sse_done: { false: 1 },
+        provider_function_arguments_done: { false: 1 },
+      });
+    }
   });
 
   it("retries only EOF-before-terminal and records its safe protocol class after recovery", async () => {

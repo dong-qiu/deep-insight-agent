@@ -1621,7 +1621,8 @@ Responses SSE 在已收到 `response.completed` 后仍可能缺少 forced functi
 ### 决定
 
 1. 任何已收到 `response.completed` 的矛盾状态、缺函数事件或不完整协议，均先保留可安全归一化的 usage
-   与聚合终态 telemetry，然后立即 fail-closed。
+   与聚合终态 telemetry，然后立即 fail-closed。其后如出现无效 JSON、重复完成或矛盾正式终态，仍以首个完成事件
+   的 usage 计费，并以固定 `completed_protocol_violation` 遥测，不接触或保留后续 body。
 2. 只有尚未收到任何 provider completion terminal 的 EOF 可使用 `LLM_TRANSIENT_RETRIES` 的既有有界
    新请求预算；正式 `incomplete`、`failed`、`error` 与 completed-protocol defect 均不得重试。
 3. A1 artifact 的 provider stream failure 只接受代码定义的精确枚举，未知标签在持久化汇总边界丢弃。

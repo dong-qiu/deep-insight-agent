@@ -217,6 +217,7 @@ export interface CallTransportTelemetry {
 const PROVIDER_STREAM_FAILURE_LABELS = new Set([
   "completed_invalid_status",
   "completed_missing_function_arguments",
+  "completed_protocol_violation",
   "eof_before_terminal",
   "error",
   "failed",
@@ -601,7 +602,7 @@ async function callVolcengineStructured<T extends z.ZodType>(
                 ? error.streamDiagnostic?.incompleteReason ?? "incomplete"
                 : terminal === "failed"
                   ? "failed"
-                  : terminal === "completed" ? "completed"
+                    : terminal === "completed" || terminal === "completed_protocol_violation" ? "completed"
                     : terminal === "completed_invalid_status" ? "other"
                       : undefined;
               if (stopReason) outputStopReasons.push(stopReason);

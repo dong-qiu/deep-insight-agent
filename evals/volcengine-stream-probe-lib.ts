@@ -24,7 +24,7 @@ export const VOLCENGINE_STREAM_PROBE_PROFILES: readonly VolcengineStreamProbePro
 
 export type ProbeFailure = {
   error_type: string;
-  terminal?: "completed" | "completed_invalid_status" | "incomplete" | "failed" | "error" | "eof_before_terminal";
+  terminal?: "completed" | "completed_invalid_status" | "completed_protocol_violation" | "incomplete" | "failed" | "error" | "eof_before_terminal";
   incomplete_reason?: "max_output_tokens" | "max_tokens" | "other";
   http_status?: number;
   saw_done?: boolean;

@@ -39,7 +39,8 @@ COVERAGE_THINKING=0
 3. 只有 `response.completed` 且其 response `status="completed"`、并且收到整个 forced
    function-arguments final event 的响应才可进入 Zod 门。缺少整个 event 的响应必须先保留 usage、成本和
    protocol telemetry，随后立即 fail-closed，且不得进入任何内层或 validator 外层重试。任何 formal terminal
-   或 `response.completed` 内矛盾/缺失 status 都须 fail-closed；
+   或 `response.completed` 内矛盾/缺失 status 都须 fail-closed；若完成事件之后出现无效 SSE JSON、重复完成事件或
+   另一个正式终态，必须继续使用首个完成事件的安全 usage，并记录 `completed_protocol_violation`，不得被后续 body 覆盖；
    event 已到达但参数缺失/损坏的响应仍须在 Zod 门失败。以上所有带 usage 的已付费失败不得静默成零成本。
 4. 未核实价格的模型成本必须标 `estimated`；写入 `cost_ledger` 时为
    `amount_minor=NULL, cost_status=unknown`，不能作为已知成本聚合。
@@ -55,7 +56,8 @@ COVERAGE_THINKING=0
   帧界。若 gateway 在前一事件省略 function name，只能以 completed output 中**唯一**的预期 forced function
   call 绑定该 arguments-done 事件；不能回退信任任意 output。`response.function_call_arguments.done` 已出现但参数
   缺失/损坏时，仍保留 completed usage 后交给 Zod 门失败。SSE 的正式 `response.incomplete`、`response.failed`、
-  `error` 事件与无终态 EOF 必须分开记录；前三者和任何已收到 `response.completed` 的协议缺口默认不可重试。
+  `error` 事件与无终态 EOF 必须分开记录；完成后无效 JSON、重复完成或矛盾终态统一记录为
+  `completed_protocol_violation`；前三者和任何已收到 `response.completed` 的协议缺口默认不可重试。
   只有无 `response.completed` 的 EOF 可触发由 `LLM_TRANSIENT_RETRIES` 限制（默认一次）的有界新请求重试；
   耗尽后不再交给 validator 外层重试。下一次必须重新取得完整终止事件与函数参数；不得接受、拼接或推断前一次
   残片。诊断只能保留终态枚举、

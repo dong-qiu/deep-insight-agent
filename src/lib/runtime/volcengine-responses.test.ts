@@ -24,6 +24,13 @@ function sse(events: unknown[], lineBreak = "\n", headers: HeadersInit = {}): Re
   });
 }
 
+function rawSse(blocks: string[]): Response {
+  return new Response(`${blocks.map((block) => `data: ${block}\n\n`).join("")}data: [DONE]\n\n`, {
+    status: 200,
+    headers: { "Content-Type": "text/event-stream" },
+  });
+}
+
 function endlesslyBufferedSse(onCancel?: (reason: unknown) => void): Response {
   const encoder = new TextEncoder();
   return new Response(new ReadableStream<Uint8Array>({
@@ -222,6 +229,48 @@ describe("Volcengine Responses structured adapter", () => {
       usage: { input_tokens: 9, output_tokens: 4 },
       streamDiagnostic: { terminal: "completed", sawDone: true, functionArgumentsDone: false },
     });
+  });
+
+  it("retains completed usage and safe telemetry when a later SSE block has invalid JSON", async () => {
+    globalThis.fetch = vi.fn(async () => rawSse([
+      JSON.stringify({
+        type: "response.completed",
+        response: { status: "completed", usage: { input_tokens: 9, output_tokens: 4 }, source_body: "must-not-escape" },
+      }),
+      "{this-is-not-json",
+    ])) as typeof fetch;
+
+    const error = await callVolcengineResponses(request).catch((caught: unknown) => caught);
+    expect(error).toMatchObject({
+      name: "VolcengineResponsesError",
+      retryable: false,
+      streamDiagnostic: { terminal: "completed_protocol_violation", sawDone: false, functionArgumentsDone: false },
+      usage: { input_tokens: 9, output_tokens: 4 },
+    });
+    expect(JSON.stringify(error)).not.toContain("must-not-escape");
+  });
+
+  it("retains the completed usage when a later formal terminal contradicts it", async () => {
+    globalThis.fetch = vi.fn(async () => sse([
+      {
+        type: "response.completed",
+        response: { status: "completed", usage: { input_tokens: 9, output_tokens: 4 }, source_body: "must-not-escape" },
+      },
+      {
+        type: "response.incomplete",
+        response: { status: "incomplete", usage: { input_tokens: 99, output_tokens: 99 }, source_body: "later-body-must-not-escape" },
+      },
+    ])) as typeof fetch;
+
+    const error = await callVolcengineResponses(request).catch((caught: unknown) => caught);
+    expect(error).toMatchObject({
+      name: "VolcengineResponsesError",
+      retryable: false,
+      streamDiagnostic: { terminal: "completed_protocol_violation", sawDone: false, functionArgumentsDone: false },
+      usage: { input_tokens: 9, output_tokens: 4 },
+    });
+    expect(JSON.stringify(error)).not.toContain("must-not-escape");
+    expect(JSON.stringify(error)).not.toContain("later-body-must-not-escape");
   });
 
   it("does not trust an anonymous arguments-done event without an expected completed function call", async () => {
