@@ -7,9 +7,10 @@
  * 不让模型编造。
  */
 import { createHash, randomUUID } from "node:crypto";
-import { isTransientApiError, isVolcengineTransportContractDefect } from "../runtime/errors.js";
+import { isTransientApiError, isVolcengineResponsesFailure } from "../runtime/errors.js";
 import { coverageBackfillOff, coverageMaxTokens, coverageThinking, coverageThinkingSource, validatorBackoffMs, validatorRetries, validatorThinking } from "../runtime/env.js";
 import { MODELS, assertCoverageModelSeparation, callStructured } from "../runtime/llm.js";
+import { llmProvider } from "../runtime/llm-provider.js";
 import { collapseWithMap, compareKey } from "../runtime/text-normalize.js";
 import { insightFingerprint } from "../runtime/statement-fingerprint.js";
 import { entitiesMentionedInStatement } from "../utils/reader-visible-entities.js";
@@ -708,6 +709,10 @@ export async function verifyQuoteSelfContained(
 ): Promise<CoverageCountercheck> {
   throwIfAborted(signal);
   assertCoverageModelSeparation();
+  // Reject an explicit unsupported token profile before this helper can make its own coverage
+  // request. analyze() and filterByQuoteCoverage() perform the same preflight before earlier
+  // analyzer/validator work starts.
+  const maxTokens = coverageMaxTokens();
   const user = `<displayed_quote>\n${escapePromptData(citation.quote)}\n</displayed_quote>\n\n<locator>\n${citation.locator.paragraph_index}:${citation.locator.char_start}:${citation.locator.char_end}\n</locator>`;
   const input_hash = createHash("sha256")
     .update(`${DISPLAY_COVERAGE_COUNTERCHECK_PROMPT_VERSION}\n${user}`)
@@ -733,17 +738,18 @@ export async function verifyQuoteSelfContained(
         role: "coverage", telemetryOperation: "display_quote_countercheck", system: QUOTE_COVERAGE_COUNTERCHECK_SYSTEM, user, schema: QuoteCoverageSchema,
         // This independent provider/model path needs its own bounded, explicitly recorded output
         // allowance. The default stays 2048; provider escalations are only admitted by A1.
-        thinking: coverageThinking(), maxTokens: coverageMaxTokens(), onCost, signal,
+        thinking: coverageThinking(), maxTokens, onCost, signal,
       });
       data = result.data as QuoteCoverage;
       break;
     } catch (error) {
       throwIfAborted(signal);
       lastError = error;
-      // callStructured already performs the one allowed fresh request for a transport EOF.
-      // Do not re-run a formal `response.incomplete`, schema violation, or model refusal here:
-      // those are fail-closed verdict-contract failures, not a transient recovery opportunity.
-      if (!isTransientApiError(error) || isVolcengineTransportContractDefect(error)) break;
+      // callStructured owns the only Volcengine recovery: one explicit pre-terminal EOF retry.
+      // Never resubmit a Volcengine validator request here, including native fetch/timeout errors
+      // that do not carry the adapter's typed error. Formal terminals, schema failures and model
+      // refusals remain conservative unavailable verdicts below.
+      if (!isTransientApiError(error) || isVolcengineResponsesFailure(error) || llmProvider() === "volcengine-responses") break;
       if (attempt < validatorRetries()) await sleep(validatorBackoffMs() * 2 ** attempt);
     }
   }
@@ -827,10 +833,10 @@ export async function verifyDisplayedQuoteCoverage(
         break;
       } catch (error) {
         throwIfAborted(signal);
-        // A formal provider terminal (for example max_output_tokens) and a structured-output
-        // contract failure cannot be repaired by submitting the exact same primary claim again.
-        // Retry only classified infrastructure faults; unavailable remains conservative below.
-        if (!isTransientApiError(error) || isVolcengineTransportContractDefect(error)) break;
+        // The Volcengine path has no outer retry budget: callStructured may only recover a
+        // pre-terminal EOF itself. Other provider terminals, native fetch/timeout errors and
+        // structured-output failures become conservative unavailable verdicts below.
+        if (!isTransientApiError(error) || isVolcengineResponsesFailure(error) || llmProvider() === "volcengine-responses") break;
         if (attempt < validatorRetries()) await sleep(validatorBackoffMs() * 2 ** attempt);
       }
     }
@@ -1015,6 +1021,9 @@ export async function filterByQuoteCoverage(
   onDecision?: CoverageAuditSink,
   signal?: AbortSignal,
 ): Promise<Insight[]> {
+  // This exported gate may be called without analyze(); reject an invalid reviewed profile
+  // before it can reach either primary validation or its independent coverage countercheck.
+  coverageMaxTokens();
   const auditOne = async (insight: Insight, candidateIndex: number): Promise<Insight | null> => {
     throwIfAborted(signal);
     const candidate_id = citationCandidateId(insight, candidateIndex);
@@ -1800,6 +1809,7 @@ export async function analyze(
   // countercheck, analyzeWithSplit would mistake them for a content refusal and silently split
   // away otherwise valid source items.
   assertCoverageModelSeparation();
+  coverageMaxTokens();
   const batchId = `batch_${randomUUID().slice(0, 8)}`;
   const history = opts.history ?? [];
   const insights: Insight[] = [];

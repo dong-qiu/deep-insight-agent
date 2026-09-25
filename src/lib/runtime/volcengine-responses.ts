@@ -15,7 +15,7 @@ export const STRUCTURED_RESPONSE_TOOL_NAME = "respond_with_structured_output";
  * Bounded, protocol-only evidence for a failed Responses stream. It deliberately excludes
  * event payloads: those payloads may contain the prompt, source material, or model output.
  */
-export type VolcengineResponsesTerminal = "completed" | "completed_invalid_status" | "incomplete" | "failed" | "error" | "eof_before_terminal";
+export type VolcengineResponsesTerminal = "completed" | "completed_invalid_status" | "completed_protocol_violation" | "incomplete" | "failed" | "error" | "eof_before_terminal";
 
 export interface VolcengineResponsesStreamDiagnostic {
   terminal: VolcengineResponsesTerminal;
@@ -186,6 +186,16 @@ async function readResponsesStream(
     body ? normalizeUsage(body) : undefined,
   );
 
+  // Once a completed event carries usage, it is the only cost envelope we may trust for this
+  // request. A later malformed or contradictory block must not overwrite it with a second,
+  // potentially provider-private response body, nor make the paid call disappear from evidence.
+  const completedProtocolError = (message: string): VolcengineResponsesError => streamError(
+    message,
+    "completed_protocol_violation",
+    false,
+    completed,
+  );
+
   const consumeBlock = (block: string): void => {
     const data = block.split(/\r?\n/)
       .map((line) => line.trimEnd())
@@ -201,7 +211,10 @@ async function readResponsesStream(
     try {
       event = JSON.parse(data) as StreamEvent;
     } catch {
-      throw new VolcengineResponsesError("Volcengine Responses 流式响应包含无效 JSON");
+      if (completed) {
+        throw completedProtocolError("Volcengine Responses 完成事件后包含无效 JSON");
+      }
+      throw streamError("Volcengine Responses 流式响应包含无效 JSON", "error");
     }
     if (event.type === "response.function_call_arguments.done" && event.name === STRUCTURED_RESPONSE_TOOL_NAME) {
       functionArgumentsDone = true;
@@ -217,18 +230,22 @@ async function readResponsesStream(
     }
     if (event.type === "response.completed") {
       const completedBody = asRecord(event.response);
-      if (!completedBody) throw new VolcengineResponsesError("Volcengine Responses 完成事件缺少 response");
+      if (!completedBody) throw completedProtocolError("Volcengine Responses 完成事件缺少 response");
+      if (completed) throw completedProtocolError("Volcengine Responses 流式响应包含重复完成事件");
       completed = completedBody as ResponseBody;
       return;
     }
     if (event.type === "response.incomplete") {
       const body = asRecord(event.response) as ResponseBody | undefined;
+      if (completed) throw completedProtocolError("Volcengine Responses 完成事件后收到矛盾终态");
       throw streamError("Volcengine Responses 流式请求未完成", "incomplete", false, body);
     }
     if (event.type === "response.failed") {
+      if (completed) throw completedProtocolError("Volcengine Responses 完成事件后收到矛盾终态");
       throw streamError("Volcengine Responses 流式请求失败", "failed", false, asRecord(event.response) as ResponseBody | undefined);
     }
     if (event.type === "response.error" || event.type === "error") {
+      if (completed) throw completedProtocolError("Volcengine Responses 完成事件后收到矛盾终态");
       throw streamError("Volcengine Responses 流式请求返回错误事件", "error", false, asRecord(event.response) as ResponseBody | undefined);
     }
   };
@@ -341,11 +358,12 @@ export async function callVolcengineResponses(
   }
   if (!streamDiagnostic.functionArgumentsDone) {
     // This is a transport-contract defect after a completed, paid response, not a semantic model
-    // refusal. The structured caller accounts `usage` before its single transport retry.
+    // refusal. Account its usage, then fail closed: a provider-declared completion is not a
+    // connection loss, so resubmitting protected input would add an unapproved paid request.
     throw new VolcengineResponsesError(
       "Volcengine Responses 完成事件缺少函数参数完成事件",
       undefined,
-      true,
+      false,
       { terminal: "completed", ...streamDiagnostic },
       usage,
     );

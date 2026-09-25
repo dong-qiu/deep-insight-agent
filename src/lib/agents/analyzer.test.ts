@@ -52,6 +52,25 @@ describe("AnalyzerOutputSchema 的原子 citation claim", () => {
 });
 
 describe("analyze 的展示覆盖审计投影", () => {
+  it("无效的 coverage token profile 在任何 analyzer 请求前失败", async () => {
+    const prior = process.env.COVERAGE_MAX_TOKENS;
+    process.env.COVERAGE_MAX_TOKENS = "3000";
+    const topic: Topic = { id: "t", name: "T", keywords: [], language: "en", brief_schedule: "daily", enabled: true };
+    const content: ContentItem = {
+      id: "ci", source_id: "s", url: "https://example.test", title: "T", author: null, published_at: null,
+      fetched_at: "2026-09-09T00:00:00.000Z", language: "en", topic_ids: ["t"], tags: [],
+      body: "Source body.", body_kind: "article", raw_ref: "", content_hash: "h", fetch_status: "ok",
+    };
+    try {
+      await expect(analyze(topic, [content], { start: "2026-09-09", end: "2026-09-09" }))
+        .rejects.toThrow("COVERAGE_MAX_TOKENS 必须是 2048、4096 或 8192");
+      expect(callStructured).not.toHaveBeenCalled();
+    } finally {
+      if (prior === undefined) delete process.env.COVERAGE_MAX_TOKENS;
+      else process.env.COVERAGE_MAX_TOKENS = prior;
+    }
+  });
+
   it("passes an A1 topic deadline into the analyzer call and does not split after cancellation", async () => {
     const topic: Topic = { id: "t", name: "T", keywords: [], language: "en", brief_schedule: "daily", enabled: true };
     const content: ContentItem = {
@@ -1217,6 +1236,64 @@ describe("filterByQuoteCoverage（展示 quote 覆盖门）", () => {
     } finally {
       if (priorRetries === undefined) delete process.env.VALIDATOR_RETRIES;
       else process.env.VALIDATOR_RETRIES = priorRetries;
+    }
+  });
+
+  it("主审的 completed 缺函数事件不会被上层 validator retry 重复提交", async () => {
+    const priorRetries = process.env.VALIDATOR_RETRIES;
+    process.env.VALIDATOR_RETRIES = "2";
+    try {
+      const quote = "SpecBench contains 30 systems-level programming tasks.";
+      vi.mocked(callStructured)
+        .mockRejectedValueOnce(new VolcengineResponsesError(
+          "Volcengine Responses 完成事件缺少函数参数完成事件",
+          undefined,
+          false,
+          { terminal: "completed", sawDone: true, functionArgumentsDone: false },
+        ))
+        .mockResolvedValueOnce(coverageVerdictsFor(quote, true));
+      const audits: Array<{ claims: Array<{ supports: boolean; reason: string; countercheck?: { supports: boolean } }> }> = [];
+      const row = insight("SpecBench contains 30 systems-level programming tasks.", [{
+        content_item_id: "ci", claim: "SpecBench contains 30 systems-level programming tasks", quote,
+        locator: { paragraph_index: 0, char_start: 0, char_end: quote.length },
+      }]);
+
+      await expect(filterByQuoteCoverage([row], undefined, undefined, (decision) => audits.push(decision))).resolves.toEqual([]);
+      expect(vi.mocked(callStructured).mock.calls.map(([request]) => request.role)).toEqual(["validator", "coverage"]);
+      expect(audits[0]?.claims[0]).toMatchObject({ supports: false, reason: "primary_unavailable", countercheck: { supports: true } });
+    } finally {
+      if (priorRetries === undefined) delete process.env.VALIDATOR_RETRIES;
+      else process.env.VALIDATOR_RETRIES = priorRetries;
+    }
+  });
+
+  it.each([
+    ["native fetch failed", new TypeError("fetch failed")],
+    ["wall-clock timeout", new Error("LLM stream exceeded wall-clock timeout of 5ms")],
+  ])("Volcengine 主审的 %s 不会被上层 validator retry 重复提交", async (_label, error) => {
+    const priorRetries = process.env.VALIDATOR_RETRIES;
+    const priorProvider = process.env.LLM_PROVIDER;
+    process.env.VALIDATOR_RETRIES = "2";
+    process.env.LLM_PROVIDER = "volcengine-responses";
+    try {
+      const quote = "SpecBench contains 30 systems-level programming tasks.";
+      vi.mocked(callStructured)
+        .mockRejectedValueOnce(error)
+        .mockResolvedValueOnce(coverageVerdictsFor(quote, true));
+      const audits: Array<{ claims: Array<{ supports: boolean; reason: string; countercheck?: { supports: boolean } }> }> = [];
+      const row = insight("SpecBench contains 30 systems-level programming tasks.", [{
+        content_item_id: "ci", claim: "SpecBench contains 30 systems-level programming tasks", quote,
+        locator: { paragraph_index: 0, char_start: 0, char_end: quote.length },
+      }]);
+
+      await expect(filterByQuoteCoverage([row], undefined, undefined, (decision) => audits.push(decision))).resolves.toEqual([]);
+      expect(vi.mocked(callStructured).mock.calls.map(([request]) => request.role)).toEqual(["validator", "coverage"]);
+      expect(audits[0]?.claims[0]).toMatchObject({ supports: false, reason: "primary_unavailable", countercheck: { supports: true } });
+    } finally {
+      if (priorRetries === undefined) delete process.env.VALIDATOR_RETRIES;
+      else process.env.VALIDATOR_RETRIES = priorRetries;
+      if (priorProvider === undefined) delete process.env.LLM_PROVIDER;
+      else process.env.LLM_PROVIDER = priorProvider;
     }
   });
 

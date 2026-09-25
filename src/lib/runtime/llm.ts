@@ -206,7 +206,7 @@ function readonlyCallTelemetry(aggregate: MutableCallTelemetryAggregate): CallTe
 }
 
 export interface CallTransportTelemetry {
-  /** Fixed protocol labels emitted by the provider adapter, never raw SSE data. */
+  /** Provider labels are allowlisted at the artifact sink, never raw SSE data. */
   streamFailures?: readonly string[];
   /** Failed HTTP status codes only. */
   httpStatuses?: readonly number[];
@@ -214,11 +214,26 @@ export interface CallTransportTelemetry {
   functionArgumentsDone?: readonly boolean[];
 }
 
-function incrementBounded(aggregate: Map<string, number>, values: readonly string[]): void {
+const PROVIDER_STREAM_FAILURE_LABELS = new Set([
+  "completed_invalid_status",
+  "completed_missing_function_arguments",
+  "completed_protocol_violation",
+  "eof_before_terminal",
+  "error",
+  "failed",
+  "incomplete",
+]);
+
+function increment(aggregate: Map<string, number>, values: readonly string[]): void {
   for (const value of values) {
-    if (!/^[a-z0-9_:-]{1,64}$/i.test(value)) continue;
     aggregate.set(value, (aggregate.get(value) ?? 0) + 1);
   }
+}
+
+/** This is the persistence boundary for provider protocol metadata.  Error names and SSE fields
+ * are mutable/upstream-controlled, so syntactic filtering is insufficient here. */
+function incrementProviderStreamFailures(aggregate: Map<string, number>, values: readonly string[]): void {
+  increment(aggregate, values.filter((value) => PROVIDER_STREAM_FAILURE_LABELS.has(value)));
 }
 
 function recordCallTelemetry(
@@ -236,15 +251,15 @@ function recordCallTelemetry(
     if (!reason) continue;
     aggregate.outputStopReasons.set(reason, (aggregate.outputStopReasons.get(reason) ?? 0) + 1);
   }
-  incrementBounded(aggregate.providerStreamFailures, transport.streamFailures ?? []);
-  incrementBounded(
+  incrementProviderStreamFailures(aggregate.providerStreamFailures, transport.streamFailures ?? []);
+  increment(
     aggregate.providerHttpStatuses,
     (transport.httpStatuses ?? [])
       .filter((status) => Number.isInteger(status) && status >= 100 && status <= 599)
       .map(String),
   );
-  incrementBounded(aggregate.providerSseDone, (transport.sseDone ?? []).map(String));
-  incrementBounded(aggregate.providerFunctionArgumentsDone, (transport.functionArgumentsDone ?? []).map(String));
+  increment(aggregate.providerSseDone, (transport.sseDone ?? []).map(String));
+  increment(aggregate.providerFunctionArgumentsDone, (transport.functionArgumentsDone ?? []).map(String));
   aggregate.latency.push(Math.max(0, latencyMs));
 }
 
@@ -455,6 +470,8 @@ export interface TransientRetryOptions {
   signal?: AbortSignal;
   onRetry?: (error: unknown, retryNumber: number) => void;
   sleep?: (delayMs: number, signal?: AbortSignal) => Promise<void>;
+  /** Provider-specific callers may be stricter than the generic relay retry classifier. */
+  retryWhen?: (error: unknown) => boolean;
 }
 
 function abortableDelay(delayMs: number, signal?: AbortSignal): Promise<void> {
@@ -492,13 +509,14 @@ export async function retryTransientOperation<T>(
 ): Promise<T> {
   const retries = Math.min(2, Math.max(0, options.retries));
   const sleep = options.sleep ?? abortableDelay;
+  const retryWhen = options.retryWhen ?? isTransientApiError;
   for (let attempt = 0; ; attempt++) {
     if (options.signal?.aborted) throw options.signal.reason ?? new Error("LLM request aborted before start");
     try {
       return await operation();
     } catch (error) {
       if (options.signal?.aborted) throw options.signal.reason ?? error;
-      if (!isTransientApiError(error) || attempt >= retries) throw error;
+      if (!retryWhen(error) || attempt >= retries) throw error;
       const retryNumber = attempt + 1;
       options.onRetry?.(error, retryNumber);
       await sleep(options.backoffMs, options.signal);
@@ -584,7 +602,7 @@ async function callVolcengineStructured<T extends z.ZodType>(
                 ? error.streamDiagnostic?.incompleteReason ?? "incomplete"
                 : terminal === "failed"
                   ? "failed"
-                  : terminal === "completed" ? "completed"
+                    : terminal === "completed" || terminal === "completed_protocol_violation" ? "completed"
                     : terminal === "completed_invalid_status" ? "other"
                       : undefined;
               if (stopReason) outputStopReasons.push(stopReason);
@@ -601,6 +619,12 @@ async function callVolcengineStructured<T extends z.ZodType>(
       retries: llmTransientRetries(),
       backoffMs: llmTransientRetryBackoffMs(),
       signal: opts.signal,
+      // A completed provider response, HTTP status, timeout, or generic fetch error can already
+      // represent a paid protected-input submission. Only the adapter's explicit pre-terminal EOF
+      // receives the one fresh-request recovery budget for this provider.
+      retryWhen: (error) => error instanceof VolcengineResponsesError
+        && error.retryable === true
+        && error.streamDiagnostic?.terminal === "eof_before_terminal",
       onRetry: (error, retryNumber) => {
         const kind = error instanceof Error && error.name ? error.name : "UnknownError";
         console.warn(`  ⚠️ LLM 瞬态失败，应用层重试 ${retryNumber}/${llmTransientRetries()}（role=${opts.role}，${kind}）`);

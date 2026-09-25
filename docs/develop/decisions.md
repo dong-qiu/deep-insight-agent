@@ -1604,3 +1604,31 @@ Volcengine Coding Plan 的模型；同时不能把“OpenAI 兼容”理解为�
 日报重新获得中文可读性，同时保留逐字原文与来源的可审查关系。该设计改变 reader-visible AI 文本，
 必须更新 analyzer 缓存版本、补展示/持久化/生产路径反例测试，并执行内部 prototype safety eval；
 旧报告和缺少绑定的新旧记录保持 quote-only 回退，不做无审计回填。
+
+---
+
+## ADR-0034: Volcengine 已完成终态的协议缺口一律计费后 fail-closed
+
+- **日期**: 2026-09-25
+- **状态**: Accepted
+
+### 背景
+
+Responses SSE 在已收到 `response.completed` 后仍可能缺少 forced function-arguments final event。
+该响应可能已产生 usage；将它再次提交可偶发恢复结构化结果，却会增加一次受保护输入的付费请求，并改变
+同一运行在网关抖动下的成本和输出。它不是连接在 provider 终态前断开的 EOF。
+
+### 决定
+
+1. 任何已收到 `response.completed` 的矛盾状态、缺函数事件或不完整协议，均先保留可安全归一化的 usage
+   与聚合终态 telemetry，然后立即 fail-closed。其后如出现无效 JSON、重复完成或矛盾正式终态，仍以首个完成事件
+   的 usage 计费，并以固定 `completed_protocol_violation` 遥测，不接触或保留后续 body。
+2. 只有尚未收到任何 provider completion terminal 的 EOF 可使用 `LLM_TRANSIENT_RETRIES` 的既有有界
+   新请求预算；正式 `incomplete`、`failed`、`error` 与 completed-protocol defect 均不得重试。
+3. A1 artifact 的 provider stream failure 只接受代码定义的精确枚举，未知标签在持久化汇总边界丢弃。
+
+### 后果
+
+运行结果和成本边界更可预测；偶发 completed-protocol defect 会使当前调用失败，而不会被额外请求掩盖。
+该行为涉及 provider/validator 运行时，必须在精确提交上重新执行 provider canary、probe 与 prototype-safety
+eval；它不改变引用白名单或报告发布的 fail-closed 语义。

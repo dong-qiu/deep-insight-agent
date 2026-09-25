@@ -102,15 +102,15 @@ describe("coverageMaxTokens", () => {
     expect(coverageMaxTokens()).toBe(8_192);
   });
 
-  it("rejects invalid values by falling back to the conservative default", () => {
+  it("rejects invalid explicit values instead of silently changing the reviewed profile", () => {
     process.env.COVERAGE_MAX_TOKENS = "2047";
-    expect(coverageMaxTokens()).toBe(2_048);
+    expect(coverageMaxTokens).toThrow("COVERAGE_MAX_TOKENS 必须是 2048、4096 或 8192");
     process.env.COVERAGE_MAX_TOKENS = "8193";
-    expect(coverageMaxTokens()).toBe(2_048);
+    expect(coverageMaxTokens).toThrow("COVERAGE_MAX_TOKENS 必须是 2048、4096 或 8192");
     process.env.COVERAGE_MAX_TOKENS = "3000";
-    expect(coverageMaxTokens()).toBe(2_048);
+    expect(coverageMaxTokens).toThrow("COVERAGE_MAX_TOKENS 必须是 2048、4096 或 8192");
     process.env.COVERAGE_MAX_TOKENS = "invalid";
-    expect(coverageMaxTokens()).toBe(2_048);
+    expect(coverageMaxTokens).toThrow("COVERAGE_MAX_TOKENS 必须是 2048、4096 或 8192");
   });
 });
 

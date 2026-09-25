@@ -41,6 +41,9 @@ export COVERAGE_MODEL="claude-opus-4-6"
 # 新 provider / relay 的受控默认值；改为 1 前必须分别通过对应模型的 canary 与质量复核。
 export VALIDATOR_THINKING="0"
 export COVERAGE_THINKING="0"
+# 独立 quote 自足性反审的输出上限；仅允许 2048 / 4096 / 8192。
+# 4096/8192 会改变成本、response.incomplete 风险和 A1 可比性，须先用同 provider/model 完成 probe + A1。
+export COVERAGE_MAX_TOKENS="2048"
 # 兼容默认路径；改用火山时设 volcengine-responses，并填写下方 LLM_BASE_URL。
 export LLM_PROVIDER="anthropic"
 export ANTHROPIC_BASE_URL="https://yibuapi.com"  # 直连 Anthropic 则置空 ""
