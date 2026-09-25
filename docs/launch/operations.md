@@ -481,6 +481,8 @@ docker compose exec -T -e ALERT_WEBHOOK=<url> app node /app/ops/probe-alert.mjs
 
 真模型 eval 不进公共 CI（需凭据 + 预算 + 中转站）。由定时 workflow `.github/workflows/eval.yml` 跑：**每周一次** + 可手动触发（`workflow_dispatch`，可限量做廉价冒烟）。`run-a1.ts` 自带阈值门 + `baseline.json` 回归对照（任一指标较基线降 >3pp → 非零退出 → job 变红），失败时复用渠道 adapter 推告警到 `ALERT_WEBHOOK`。
 
+手动 dispatch 的 `coverage_thinking` 是受控候选开关：默认 `0`，定时任务也始终为 `0`；选择 `1` 只改变该次 CI eval，**不会**修改 Actions Variable 或生产 `.env.local`。仅当同一 provider / endpoint / 三模型组合已经通过 canary，且全量 A1 重复运行与人工复核都完成后，才可把该候选考虑为生产配置；它本身不构成基线或发布证据。
+
 **关键：运行凭据必须与 `LLM_PROVIDER` 对齐。** Anthropic relay 可继续用旧 `ANTHROPIC_API_KEY`；Volcengine Coding Plan 必须使用 `LLM_API_KEY` 与 `LLM_BASE_URL=https://ark.cn-beijing.volces.com/api/coding/v3`，不能复用 Anthropic key。
 
 ### 在 repo 配置（Settings → Secrets and variables → Actions）

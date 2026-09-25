@@ -32,6 +32,13 @@ on:
       consistency_limit:
         description: "限制一致性对数（0=全量）"
         default: "0"
+      coverage_thinking:
+        description: "独立 Coverage 的 thinking（仅手动候选评测；0=关闭，1=开启）"
+        type: choice
+        options:
+          - "0"
+          - "1"
+        default: "0"
       source_ids:
         description: "可选：逗号分隔的 staged source id；在隔离 SQLite 中真实采集并要求每个源进入 A1 样本"
         required: false
@@ -65,10 +72,11 @@ jobs:
       # A canary proves request compatibility, not long-running relay liveness. This config differs
       # from the old baseline, so A1 must remain formally incomparable until verified_v2 + two-run
       # baseline promotion; do not interpret an automatic score as an Eval-Gate pass.
-      # Keep the Coverage role explicit but off until its separately configured model passes the
-      # same quote-self-contained canary; it must never silently inherit validator settings in CI.
+      # Scheduled runs and ordinary manual runs stay at 0. A manually selected 1 is an explicitly
+      # recorded candidate experiment: it must follow a canary and full A1 evidence, and never
+      # changes production runtime configuration by itself.
       VALIDATOR_THINKING: "0"
-      COVERAGE_THINKING: "0"
+      COVERAGE_THINKING: ${{ github.event.inputs.coverage_thinking || '0' }}
       PROMPT_CACHE: "0" # 本 relay 只写不读 prompt cache（首跑实测 cache r/w 0/17135）→ 关掉免付写入溢价
       A1_QUALITY_LIMIT: ${{ github.event.inputs.quality_limit || '0' }}
       A1_CONSISTENCY_LIMIT: ${{ github.event.inputs.consistency_limit || '0' }}
