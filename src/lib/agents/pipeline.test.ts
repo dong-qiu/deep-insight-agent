@@ -12,7 +12,7 @@ import { SQLITE_P1_TELEMETRY_SINK } from "../capabilities/p1-telemetry-sqlite.js
 import { captureRevision, entityKey, type EntityRef } from "../db/provenance-facts.js";
 import { contentItemRef, contentItemRevision } from "../db/provenance-revisions.js";
 import { recordAnalysisCache } from "../db/analysis-cache.js";
-import { analyzerCacheVersion } from "./analyzer.js";
+import { analyzerCacheVersion, QuoteCoverageRejectedError, type CoverageDecision } from "./analyzer.js";
 import type { AnalysisBatch, ContentItem, Insight, Report, ReportIndexEntry, Source, Topic, ValidationResult } from "../types.js";
 import { DISPLAY_PROJECTION_VERSION, sourceQuoteHash } from "../utils/source-quote-projection.js";
 
@@ -172,6 +172,64 @@ beforeEach(() => {
 });
 
 describe("runAnalysis", () => {
+  it.each([false, true])("全拒绝保留脱敏诊断而不创建 batch（cache read=%s）", async (cacheRead) => {
+    vi.stubEnv("ANALYSIS_CACHE", "1");
+    vi.stubEnv("ANALYSIS_CACHE_READ", cacheRead ? "1" : "0");
+    vi.stubEnv("FULL_REANALYZE_DOW", "-1");
+    try {
+      applyProvenanceMigrations(db);
+      db.prepare(`INSERT INTO generation_trace(id,scope_kind,trigger_kind,status,completion_policy,coverage,runtime_version,summary,started_at)
+        VALUES ('trace_diag','topic_pipeline','api','running','{}','complete','{}','{}','2026-06-07T00:00:00Z')`).run();
+      analyzeMock.mockImplementation(async (_t, _items, _w, _cost, options) => {
+        for (let i = 0; i < 14; i++) options.onCoverageDecision({
+          candidate_id: `PRIVATE-${i}`, gate_version: "display-coverage-v6", terminal_reason: "dropped_coverage_error",
+          claims: [{ claim_id: "statement:1", field: "statement", text: "PRIVATE claim", kind: "factual", supports: false,
+            reason: "primary_unavailable", citation_indexes: [], evidence_spans: [] }],
+        } satisfies CoverageDecision);
+        throw new QuoteCoverageRejectedError(14);
+      });
+      await expect(runAnalysis(db, topic, [], win, { traceId: "trace_diag" })).rejects.toThrow(QuoteCoverageRejectedError);
+      expect(db.prepare("SELECT event_type FROM generation_event ORDER BY sequence").all()).toEqual([
+        { event_type: "started" }, { event_type: "failed" },
+      ]);
+      const event = db.prepare("SELECT metrics,output_refs,context_completeness FROM generation_event WHERE event_type='failed'").get() as { metrics: string; output_refs: string; context_completeness: string };
+      expect(JSON.parse(event.metrics)).toEqual({ candidate_count: 14 });
+      expect(JSON.parse(event.output_refs)[0].visibility_class).toBe("admin_only");
+      expect(event.context_completeness).toBe("partial");
+      const row = db.prepare("SELECT snapshot FROM provenance_revision WHERE entity_type='analysis_coverage_diagnostics'").get() as { snapshot: string };
+      expect(JSON.parse(row.snapshot).candidates).toHaveLength(14);
+      expect(row.snapshot).toContain("primary_unavailable");
+      expect(row.snapshot).not.toContain("PRIVATE");
+      expect(getAnalysisBatch(db, "b1")).toBeNull();
+      expect(db.prepare("SELECT count(*) AS n FROM report").get()).toEqual({ n: 0 });
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it.each(["success", "partial_error", "lease_lost"] as const)("候选诊断遵守成功/失败/租约边界：%s", async (outcome) => {
+    applyProvenanceMigrations(db);
+    db.prepare(`INSERT INTO generation_trace(id,scope_kind,trigger_kind,status,completion_policy,coverage,runtime_version,summary,started_at)
+      VALUES ('trace_diag','topic_pipeline','api','running','{}','complete','{}','{}','2026-06-07T00:00:00Z')`).run();
+    let active = true;
+    let lateCallback: ((d: CoverageDecision) => void) | undefined;
+    const decision: CoverageDecision = { candidate_id: "c1", gate_version: "display-coverage-v6", terminal_reason: "kept", claims: [] };
+    analyzeMock.mockImplementation(async (_t, _items, _w, _cost, options) => {
+      lateCallback = options.onCoverageDecision;
+      lateCallback!(decision);
+      if (outcome === "lease_lost") active = false;
+      if (outcome !== "success") throw new Error("partial failure");
+      return mkBatch();
+    });
+    const run = runAnalysis(db, topic, [], win, { traceId: "trace_diag", assertWrite: () => { if (!active) throw new Error("lease lost"); } });
+    if (outcome === "success") await expect(run).resolves.toMatchObject({ id: "b1" });
+    else await expect(run).rejects.toThrow(outcome === "lease_lost" ? "lease lost" : "partial failure");
+    lateCallback?.(decision);
+    const count = outcome === "lease_lost" ? 0 : 1;
+    expect(db.prepare("SELECT count(*) AS n FROM provenance_revision WHERE entity_type='analysis_coverage_diagnostics'").get()).toEqual({ n: count });
+    expect(db.prepare("SELECT count(*) AS n FROM generation_event WHERE output_refs LIKE '%analysis_coverage_diagnostics%'").get()).toEqual({ n: count });
+    expect(db.prepare("SELECT count(*) AS n FROM generation_event WHERE event_type='completed'").get()).toEqual({ n: outcome === "success" ? 1 : 0 });
+    if (outcome !== "success") expect(getAnalysisBatch(db, "b1")).toBeNull();
+  });
+
   it("trace 模式为真实输入与 batch 输出追加最小溯源事实", async () => {
     const savedCache = process.env.ANALYSIS_CACHE;
     const savedCacheRead = process.env.ANALYSIS_CACHE_READ;

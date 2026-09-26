@@ -15,6 +15,7 @@ import { collapseWithMap, compareKey } from "../runtime/text-normalize.js";
 import { insightFingerprint } from "../runtime/statement-fingerprint.js";
 import { entitiesMentionedInStatement } from "../utils/reader-visible-entities.js";
 import { DISPLAY_PROJECTION_VERSION, sourceQuoteHash } from "../utils/source-quote-projection.js";
+import { containsChinese, READER_LANGUAGE_EQUIVALENCE_RULE, READER_LANGUAGE_REPAIR_PROMPT_HASH, rewriteReaderStatementChinese } from "./reader-language.js";
 import {
   AnalyzerOutputSchema, type AnalysisBatch,
   CoverageRepairSchema,
@@ -133,8 +134,9 @@ ${CITATION_CLAUSE_AUDIT}
 // to one atomic claim, preventing a truncated verdict set from hiding later claims; v22 restores
 // a 2k per-request budget because the multi-claim reason for the 4k allowance no longer exists;
 // v23 audits the bound draft claim before source-quote projection can erase an unsupported scope;
-// v24 persists that audited draft separately for the Chinese-conclusion + source-evidence reader mode.
-export const ANALYZER_OUTPUT_VERSION = 24;
+// v24 persists that audited draft separately for the Chinese-conclusion + source-evidence reader mode;
+// v25 repairs entirely non-Chinese zh drafts only after support, then re-audits before publication.
+export const ANALYZER_OUTPUT_VERSION = 25;
 
 /** 分析缓存版本（ADR-0009）：analyzer 模型 + SYSTEM prompt 哈希 + 输出契约版本——任一变 → 版本变 → 旧分析缓存
  *  自动失效（不复用陈旧 prompt/schema/派生的洞察）。镜像 validator.consistencyCacheVersion 的版本隔离口径。 */
@@ -423,6 +425,14 @@ export interface CoverageDecision {
   draft_statement_sha256?: string;
   statement_sha256?: string;
   quote_sha256?: string;
+  reader_language_repair?: {
+    status: "repaired" | "unavailable" | "invalid" | "rejected";
+    prompt_hash: string;
+    source_draft_sha256: string;
+    source_audit_input_hash: string;
+    source_claims: CoverageClaimDecision[];
+    translated_draft_sha256?: string;
+  };
   claims: CoverageClaimDecision[];
 }
 export type CoverageAuditSink = (decision: CoverageDecision) => void;
@@ -798,15 +808,18 @@ export async function verifyDisplayedQuoteCoverage(
   statementCitationIndex: number,
   onCost?: (cost: Cost) => void,
   signal?: AbortSignal,
+  translationSourceClaim?: string,
 ): Promise<CoverageVerification> {
   throwIfAborted(signal);
   const checked_at = new Date().toISOString();
   const claims = displayedQuoteCoverageClaims(insight);
+  const system = QUOTE_COVERAGE_SYSTEM + (translationSourceClaim === undefined ? "" : READER_LANGUAGE_EQUIVALENCE_RULE);
+  const promptHash = createHash("sha256").update(system).digest("hex");
   if (!claims.length || !citations.length) return {
     covered: false,
     claims: [],
     input_hash: "",
-    prompt_hash: DISPLAY_COVERAGE_PROMPT_HASH,
+    prompt_hash: promptHash,
     checked_at,
   };
   const evidence = citations.map((citation, i) => `${i + 1}.\ncitation_claim：${escapePromptData(citation.claim ?? "")}\ndisplayed_quote：${escapePromptData(citation.quote)}`).join("\n\n");
@@ -820,13 +833,14 @@ export async function verifyDisplayedQuoteCoverage(
   for (let start = 0; start < claims.length; start += DISPLAY_COVERAGE_PRIMARY_CLAIMS_PER_CALL) {
     const claimBatch = claims.slice(start, start + DISPLAY_COVERAGE_PRIMARY_CLAIMS_PER_CALL);
     const atomicClaims = claimBatch.map(({ field, text }, i) => `${i + 1}. [${field}] ${escapePromptData(text)}`).join("\n");
-    const user = `<atomic_claims>\n${atomicClaims}\n</atomic_claims>\n\n<citation_evidence>\n${evidence}\n</citation_evidence>`;
+    const user = `<atomic_claims>\n${atomicClaims}\n</atomic_claims>\n\n<citation_evidence>\n${evidence}\n</citation_evidence>`
+      + (translationSourceClaim === undefined ? "" : `\n\n<translation_source_claim>\n${escapePromptData(translationSourceClaim)}\n</translation_source_claim>`);
     inputHashes.push(createHash("sha256").update(`${DISPLAY_COVERAGE_PROMPT_VERSION}\n${user}`).digest("hex"));
     let data: QuoteCoverage | undefined;
     for (let attempt = 0; attempt <= validatorRetries(); attempt++) {
       try {
         const result = await callStructured({
-          role: "validator", telemetryOperation: "display_quote_primary", system: QUOTE_COVERAGE_SYSTEM, user, schema: QuoteCoverageSchema,
+          role: "validator", telemetryOperation: "display_quote_primary", system, user, schema: QuoteCoverageSchema,
           thinking: validatorThinking(), maxTokens: DISPLAY_COVERAGE_PRIMARY_MAX_TOKENS, onCost, signal,
         });
         data = result.data as QuoteCoverage;
@@ -958,7 +972,7 @@ export async function verifyDisplayedQuoteCoverage(
     covered: decisions.length > 0 && decisions.every((decision) => decision.supports),
     claims: decisions,
     input_hash,
-    prompt_hash: DISPLAY_COVERAGE_PROMPT_HASH,
+    prompt_hash: promptHash,
     checked_at,
   };
 }
@@ -1020,6 +1034,7 @@ export async function filterByQuoteCoverage(
   itemsById?: ReadonlyMap<string, ContentItem>,
   onDecision?: CoverageAuditSink,
   signal?: AbortSignal,
+  translationSourceClaim?: string,
 ): Promise<Insight[]> {
   // This exported gate may be called without analyze(); reject an invalid reviewed profile
   // before it can reach either primary validation or its independent coverage countercheck.
@@ -1147,7 +1162,7 @@ export async function filterByQuoteCoverage(
         importance_reason_claim_indexes: insight.importance_reason_claim_indexes,
       } : {}),
     };
-    const coverage = await verifyDisplayedQuoteCoverage(draftCoverageInput, displayableCitations, boundDisplayCitationIndex, onCost, signal);
+    const coverage = await verifyDisplayedQuoteCoverage(draftCoverageInput, displayableCitations, boundDisplayCitationIndex, onCost, signal, translationSourceClaim);
     // The narrow audit clone may safely prune only malformed/unpassed model-declared anchors.
     // Carry that deterministic pruning back before rendering the fixed reader metadata; never
     // invent a replacement anchor here.
@@ -1258,6 +1273,48 @@ export async function filterByQuoteCoverage(
     }
     if (!legacyWithoutImportanceText) {
       insight.importance_basis = renderImportanceBasis(insight.importance_facts ?? [], insight.importance_reason!);
+    }
+    if (insight.language === "zh" && !containsChinese(draftStatement)) {
+      // Do not let translation erase an unsafe source claim: the original gate above must pass
+      // first. A second full gate audits the translated claim with the exact same source quote.
+      const repairBase = {
+        prompt_hash: READER_LANGUAGE_REPAIR_PROMPT_HASH, source_draft_sha256: sourceQuoteHash(draftStatement),
+        source_audit_input_hash: coverage.input_hash, source_claims: coverage.claims,
+      };
+      let translated: string;
+      try {
+        translated = await rewriteReaderStatementChinese(draftStatement, boundCitation.quote, onCost, signal);
+      } catch {
+        throwIfAborted(signal);
+        onDecision?.({ ...decisionBase, terminal_reason: "dropped_coverage_error",
+          reader_language_repair: { ...repairBase, status: "unavailable" },
+          claims: [{ claim_id: "statement:1", field: "statement", text: draftStatement, kind: "factual", supports: false,
+            citation_indexes: [], evidence_spans: [], reason: "reader_language_repair_unavailable" }],
+        });
+        return null;
+      }
+      throwIfAborted(signal);
+      const translatedRepair = { ...repairBase, translated_draft_sha256: sourceQuoteHash(translated) };
+      if (!containsChinese(translated) || !isCompleteStatement(translated)) {
+        onDecision?.({ ...decisionBase, terminal_reason: "dropped_coverage",
+          reader_language_repair: { ...translatedRepair, status: "invalid" },
+          claims: [{ claim_id: "statement:1", field: "statement", text: translated, kind: "factual", supports: false,
+            citation_indexes: [], evidence_spans: [], reason: "reader_language_repair_invalid" }],
+        });
+        return null;
+      }
+      const translatedInsight: Insight = { ...insight, statement: translated, reader_statement: undefined,
+        citations: displayableCitations.map((citation, index) => index === boundDisplayCitationIndex - 1
+          ? { ...citation, claim: translated } : { ...citation }),
+      };
+      // containsChinese guarantees this nested full audit cannot call the rewriter again.
+      // Preserve exactly one terminal candidate disposition; the prior support remains evidence.
+      const [rechecked] = await filterByQuoteCoverage([translatedInsight], onCost, itemsById, (decision) => {
+        onDecision?.({ ...decision, reader_language_repair: { ...translatedRepair,
+          status: decision.terminal_reason === "kept" || decision.terminal_reason === "kept_degraded" ? "repaired" : "rejected",
+        } });
+      }, signal, draftStatement);
+      return rechecked ?? null;
     }
     // The bound source quote remains `statement`; retain the previously audited draft only after
     // every primary/countercheck and controlled-metadata gate has accepted it. Reader paths bind
