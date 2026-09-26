@@ -129,12 +129,13 @@ type PersistedLeadEvidenceRow = TechLeadEvidence & {
   headline: string | null;
   importance_basis: string;
   display_coverage_decision: string;
+  display_coverage_gate_version: string;
 };
 
 function isReaderVisibleLeadEvidence(row: PersistedLeadEvidenceRow): boolean {
   let decision: unknown;
   try { decision = JSON.parse(row.display_coverage_decision); } catch { return false; }
-  return auditSupportsStatementBinding(decision, {
+  return auditSupportsStatementBinding({ gate_version: row.display_coverage_gate_version, decision }, {
     citation_index: row.statement_citation_index,
     citation_ref: row.statement_citation_ref,
     statement: row.statement,
@@ -150,7 +151,7 @@ export function listTechLeadEvidence(db: DB, leadId: string): TechLeadEvidence[]
   const rows = db.prepare(`SELECT e.lead_id,e.insight_id,e.citation_index,s.name AS source_name,c.url,ci.quote,
       COALESCE(c.published_at,c.fetched_at) AS observed_at
       ,i.statement,i.statement_citation_index,ci.citation_ref AS statement_citation_ref,
-      i.headline,i.importance_basis,d.decision AS display_coverage_decision
+      i.headline,i.importance_basis,d.decision AS display_coverage_decision,d.gate_version AS display_coverage_gate_version
     FROM tech_lead_evidence e
     JOIN citation ci ON ci.insight_id=e.insight_id AND ci.citation_index=e.citation_index
     JOIN insight i ON i.id=ci.insight_id

@@ -3,7 +3,7 @@ import { extractLeadCandidates } from "../agents/tech-leads.js";
 import { saveAnalysisBatch, saveValidationResult } from "./analysis.js";
 import { openDb } from "./index.js";
 import { insertContentItem, insertSource, insertTopic } from "./repos.js";
-import { getTechLead, listTechLeadEvidence, listTechLeads, setTechLeadStatus, upsertTechLeads } from "./tech-leads.js";
+import { getTechLead, listPlanningTechLeads, listTechLeadEvidence, listTechLeads, setTechLeadStatus, upsertTechLeads } from "./tech-leads.js";
 import type { AnalysisBatch, ContentItem, Source, Topic, ValidationResult } from "../types.js";
 import { DISPLAY_PROJECTION_VERSION, sourceQuoteHash } from "../utils/source-quote-projection.js";
 
@@ -33,6 +33,15 @@ it("upsert 追加 pass 证据、保留用户忽略状态且读取证据可回溯
   expect(readerPayload).not.toContain("Hallucinated acquisition");
   expect(readerPayload).not.toContain("Unbound claim");
   expect(readerPayload).not.toContain("3 个独立来源");
+  for (const version of ["", "display-coverage-v5", "display-coverage-v9", "display-coverage-v999"]) {
+    db.prepare("UPDATE display_coverage_audit SET gate_version=? WHERE batch_id='b'").run(version);
+    expect(listTechLeadEvidence(db, lead.id)).toEqual([]);
+    expect(listTechLeads(db, { includeDismissed: true })).toEqual([]);
+    expect(listPlanningTechLeads(db)).toEqual([]);
+    expect(getTechLead(db, lead.id)).toBeNull();
+  }
+  db.prepare("UPDATE display_coverage_audit SET gate_version='display-coverage-v6' WHERE batch_id='b'").run();
+  expect(listTechLeadEvidence(db, lead.id)).toHaveLength(1);
   db.prepare("UPDATE citation_check SET consistency='uncertain' WHERE insight_id='i' AND citation_index=0").run();
   expect(listTechLeadEvidence(db, lead.id)).toEqual([]); // 防御异常 pass + non-support 不能从已落库证据复活
   expect(setTechLeadStatus(db, lead.id, "dismissed")).toBe(true);

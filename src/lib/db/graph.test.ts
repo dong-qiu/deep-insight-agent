@@ -80,6 +80,20 @@ beforeEach(() => {
 });
 
 describe("buildTopicGraph", () => {
+  it.each(["", "display-coverage-v5", "display-coverage-v9", "display-coverage-v999"])(
+    "graph and both drill paths reject valid-shaped audits with unsupported gate %s", (version) => {
+      saveBatch("unsupported", [mkInsight("unsupported", [org("OpenAI"), org("Cursor")])]);
+      saveBatch("current", [mkInsight("current", [org("OpenAI"), org("Cursor")])]);
+      db.prepare("UPDATE display_coverage_audit SET gate_version = ? WHERE batch_id = ?").run(version, "unsupported");
+      expect(loadTopicInsights(db, "t1").map((row) => row.id)).toEqual(["current"]);
+      expect(buildTopicGraph(db, "t1", { minEdgeWeight: 1 })).toMatchObject({
+        insightCount: 1, graph: { edges: [{ a: "Cursor", b: "OpenAI", weight: 1, strength: 1 }] },
+      });
+      expect(insightsMentioningEntity(db, "t1", "OpenAI").map((row) => row.id)).toEqual(["current"]);
+      expect(insightsCooccurring(db, "t1", "OpenAI", "Cursor").map((row) => row.id)).toEqual(["current"]);
+      expect(db.prepare("SELECT COUNT(*) AS n FROM display_coverage_audit").get()).toEqual({ n: 2 });
+    },
+  );
   it("共现 2 条 → 边 + 计数（自适应阈值=2）", () => {
     saveBatch("b1", [mkInsight("i1", [org("OpenAI"), org("Cursor")])]);
     saveBatch("b2", [mkInsight("i2", [org("OpenAI"), org("Cursor")])]);

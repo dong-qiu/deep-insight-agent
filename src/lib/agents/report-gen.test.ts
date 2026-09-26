@@ -59,6 +59,16 @@ const validation: ValidationResult = {
   report: { total: 4, pass: 1, blocked: 2, flagged: 1, errored: 0, consistency_failure_rate: 0.25, flagged_rate: 0.25, insights_total: 3, insights_includable: 1, releasable: true },
 };
 
+it.each([undefined, "", "display-coverage-v5", "display-coverage-v9", "display-coverage-v999"])(
+  "report whitelist rejects unsupported audit gate %s even with a valid decision", (gateVersion) => {
+    const batch = batchOf();
+    expect(selectInsights(batch, validation)).toHaveLength(1);
+    if (gateVersion === undefined) Reflect.deleteProperty(batch.display_coverage_audits![0], "gate_version");
+    else batch.display_coverage_audits![0].gate_version = gateVersion;
+    expect(selectInsights(batch, validation)).toEqual([]);
+  },
+);
+
 it("selection ledger assigns exactly one terminal decision per insight without changing the whitelist", () => {
   const selected = summarizeBriefSelection(batchOf(), validation, "deep_dive");
   const decisions = persistedSelectionDecisions(batchOf(), validation, "deep_dive", selected.included);

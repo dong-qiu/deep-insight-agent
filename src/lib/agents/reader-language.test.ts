@@ -99,8 +99,9 @@ describe("Chinese reader-language repair", () => {
     expect(audits).toHaveLength(1);
     expect(audits[0]).toMatchObject({ terminal_reason: "kept", draft_statement_sha256: sourceQuoteHash(chinese),
       statement_citation_claim: chinese, reader_language_repair: { status: "repaired", source_draft_sha256: sourceQuoteHash(quote) } });
-    expect(auditSupportsReaderStatement(audits[0], chinese)).toBe(true);
-    expect(auditSupportsReaderStatement(audits[0], quote)).toBe(false);
+    const readerAudit = { gate_version: audits[0].gate_version, decision: audits[0] };
+    expect(auditSupportsReaderStatement(readerAudit, chinese)).toBe(true);
+    expect(auditSupportsReaderStatement(readerAudit, quote)).toBe(false);
     expect(vi.mocked(callStructured).mock.calls.map(([r]) => r.telemetryOperation)).toEqual([
       "display_quote_primary", "display_quote_countercheck", "reader_language_repair", "display_quote_primary", "display_quote_countercheck",
     ]);
