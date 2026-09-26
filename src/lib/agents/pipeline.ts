@@ -16,13 +16,14 @@ import { runJob } from "../runtime/jobs.js";
 import type { AnalysisBatch, ContentItem, Cost, Report, TechLead, Topic, ValidationResult } from "../types.js";
 import { upsertTechLeads } from "../db/tech-leads.js";
 import { listTopicDirections, seedDefaultDirections, upsertTechnologyOpportunities } from "../db/planning.js";
-import { analyze, analyzerCacheVersion, analyzerReviewVersionContext, canonicalizeInsightEvents, type HistoricalEvent } from "./analyzer.js";
+import { analyze, analyzerCacheVersion, analyzerReviewVersionContext, canonicalizeInsightEvents, type CoverageDecision, type HistoricalEvent } from "./analyzer.js";
+import { coverageDiagnostic } from "./coverage-diagnostics.js";
 import { buildReport, persistedSelectionDecisions, reportHighlights, summarizeBriefSelection, type BriefFreshness, type CitationDisplay } from "./report-gen.js";
 import type { AnalysisSelectionDiagnostics } from "./analysis-selection.js";
 import { consistencyCacheVersion, isValidationDegraded, validateBatch, validatorReviewVersionContext } from "./validator.js";
 import { extractLeadCandidates } from "./tech-leads.js";
 import { deriveOpportunityCandidates } from "./opportunity-planning.js";
-import { appendGenerationEvent, captureRevision, entityKey, type EntityRef } from "../db/provenance-facts.js";
+import { appendGenerationEvent, canonicalHash, captureRevision, entityKey, type EntityRef } from "../db/provenance-facts.js";
 import {
   contentItemRef, contentItemRevisionSnapshot, techLeadRef, techLeadRevisionSnapshot,
   technologyOpportunityRef, technologyOpportunityRevisionSnapshot, topicDirectionRef, topicDirectionRevisionSnapshot,
@@ -78,6 +79,25 @@ export async function runAnalysis(
   // full re-analysis deliberately bypasses reads to retain cross-item joins.
   const cacheReadActive = analysisCacheReadEnabled() && !isFullReanalyzeToday();
   const cacheMode = !analysisCacheEnabled() ? "off" : cacheReadActive ? "read_write" : "write_only";
+  const diagnostics: ReturnType<typeof coverageDiagnostic>[] = [];
+  let diagnosticsClosed = false;
+  const onCoverageDecision = (decision: CoverageDecision): void => {
+    if (opts.traceId && !diagnosticsClosed) diagnostics.push(coverageDiagnostic(decision));
+  };
+  // Capture inside the same transaction as the existing completed/failed event.
+  // Closing the sink also prevents late concurrent callbacks from changing this snapshot.
+  const captureDiagnostics = (): EntityRef[] => {
+    diagnosticsClosed = true;
+    if (!opts.traceId || !diagnostics.length) return [];
+    const snapshot = { schema_version: 1, candidates: diagnostics };
+    const ref: EntityRef = {
+      type: "analysis_coverage_diagnostics", locator: { kind: "id", id: opts.traceId },
+      revision: canonicalHash(snapshot), role: "evidence", visibility_class: "admin_only",
+    };
+    opts.assertWrite?.();
+    captureRevision(db, { entity_type: ref.type, entity_key: entityKey(ref), revision: ref.revision, snapshot });
+    return [ref];
+  };
   emitTrace(db, opts.traceId, { stage: "analyze", event_type: "started", input_refs: inputs, version_context: analyzerReviewVersionContext(cacheMode), context_completeness: "complete" }, opts.assertWrite);
   try {
   if (opts.traceId) captureContentRevisions(db, items, inputs, opts.assertWrite);
@@ -98,13 +118,13 @@ export async function runAnalysis(
       const { hits, missItems, hitItemCount } = lookupCachedInsights(db, topic.id, items, version);
       cacheHitItemCount = hitItemCount;
       cacheMissItemCount = missItems.length;
-      batch = await analyze(topic, missItems, window, recordCost, { history });
+      batch = await analyze(topic, missItems, window, recordCost, { history, onCoverageDecision });
       newInsightsForCache = [...batch.insights]; // 本轮真析产出（写缓存用），须在追加复用洞察前快照
       const instantiated = instantiateCachedInsights(hits, batch.id, history, batch.insights.length);
       batch.insights.push(...instantiated);
       batch.no_significant_event = batch.insights.length === 0;
     } else {
-      batch = await analyze(topic, items, window, recordCost, { history });
+      batch = await analyze(topic, items, window, recordCost, { history, onCoverageDecision });
       newInsightsForCache = batch.insights;
     }
     // Must run after cache hits are appended. It preserves all occurrence/citation
@@ -114,8 +134,10 @@ export async function runAnalysis(
       const ref: EntityRef = { type: "analysis_batch", locator: { kind: "id", id: batch.id }, revision: batch.id, role: "output" };
       saveAnalysisBatch(db, batch, () => {
         opts.assertWrite?.();
+        const diagnosticRefs = captureDiagnostics();
         captureRevision(db, { entity_type: ref.type, entity_key: entityKey(ref), revision: ref.revision, snapshot: { topic_id: batch.topic_id, time_window: batch.time_window, no_significant_event: batch.no_significant_event, insight_count: batch.insights.length } });
-        emitTrace(db, opts.traceId, { stage: "analyze", event_type: "completed", input_refs: inputs, output_refs: [ref], metrics: {
+        emitTrace(db, opts.traceId, { stage: "analyze", event_type: "completed", input_refs: inputs, output_refs: [ref, ...diagnosticRefs], metrics: {
+          ...(diagnosticRefs.length ? { candidate_count: diagnostics.length } : {}),
           input_content_count: items.length, analysis_insight_count: batch.insights.length,
           no_significant_event: batch.no_significant_event ? 1 : 0,
           analysis_cache_hit_item_count: cacheHitItemCount,
@@ -136,7 +158,12 @@ export async function runAnalysis(
   });
   return result;
   } catch (error) {
-    emitTrace(db, opts.traceId, { stage: "analyze", event_type: "failed", input_refs: inputs, error: { reason_code: traceFailureReason(error, "analysis_failed") } }, opts.assertWrite);
+    db.transaction(() => {
+      const diagnosticRefs = captureDiagnostics();
+      emitTrace(db, opts.traceId, { stage: "analyze", event_type: "failed", input_refs: inputs, output_refs: diagnosticRefs,
+        metrics: diagnosticRefs.length ? { candidate_count: diagnostics.length } : {}, context_completeness: "partial",
+        error: { reason_code: traceFailureReason(error, "analysis_failed") } }, opts.assertWrite);
+    })();
     throw error;
   }
 }

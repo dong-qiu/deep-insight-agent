@@ -292,7 +292,8 @@ P1b-2 的指标写模型由 collector、analysis 与 validation 的已提交写�
 | `topic_id` | string | Y | → `Topic.id` |
 | `type` | enum | Y | `aggregation`（主题聚合）/ `trend`（趋势识别）—— MVP 仅此两类 |
 | `event_id` | string \| null | N | 关联事件聚类键；`aggregation` 类挂事件，纯 `trend` 可为 null |
-| `statement` | text | Y | 结论文本 |
+| `statement` | text | Y | v6 中逐字等于绑定 citation 的原文 quote；去重与图谱的稳定事实锚点 |
+| `reader_statement` | text | N | ADR-0033 的读者结论；仅展示与通过审计的 draft 哈希完全一致的文本。中文主题完全无汉字的原始 claim 可在通过原审计后进行一次有界翻译并完整复审；不得替换原文证据，详见 `daily-reader-language-diagnostics.md` |
 | `importance` | int (1–5) | Y | 重要性评分 |
 | `importance_basis` | text | Y | 评分依据 —— 满足「可解释」原则 |
 | `citations` | Citation[] | Y | 引用列表（≥ 1，无引用不输出） |
