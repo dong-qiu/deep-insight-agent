@@ -32,7 +32,7 @@ v1 的样本口径容易只看到已进入机会池的信号，无法测量“�
 v1 是历史记录，**不可执行、不可用于新增 dogfood 或评分**。在隔离目录、使用独立的只读 DB 快照，唯一允许的顺序如下；不得从机会池、500 行 UI view 或任何旧 v1 标签回填：
 
 ```bash
-npm run eval:opportunity-export -- qualified-snapshot.json <UTC>
+DB_PATH=/absolute/private/snapshot.db npm run eval:opportunity-export -- qualified-snapshot.json <UTC>
 npm run eval:opportunity-sample -- qualified-snapshot.json blind-manifest.json <fixed-seed> <count>
 # 评审者此时按 labels.v2.template.json 的 expected-only 结构填写 expected-only.json
 npm run eval:opportunity-seal -- blind-manifest.json expected-only.json sealed.json <UTC>

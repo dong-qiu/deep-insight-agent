@@ -5,7 +5,15 @@
 ## 盲标与固定样本
 
 1. 从只读快照导出**全量合格 TechLead**（即仍有当前 `pass` 证据、未 dismissed 的 `listPlanningTechLeads` 语义），绝不能从 `TechnologyOpportunity` pool 倒推样本。唯一可执行输入是 `qualified-tech-leads-snapshot-v2`，明确声明 `source=listPlanningTechLeads`、`qualification=current_pass_evidence_and_not_dismissed`、`pagination=unbounded`、`total_count`，并逐行带 `status`、`pass_evidence_count` 和确定性映射输入；500 行默认 view、截断、dismissed 或无 pass 的快照会被拒绝。v1 是历史格式，不可执行。
-2. 在隔离目录先运行 `npm run eval:opportunity-export -- qualified-snapshot.json <UTC>`，再运行：
+2. 先准备完整、关闭写入的 SQLite 离线快照，在隔离目录显式指定其绝对路径：
+
+   ```bash
+   DB_PATH=/absolute/private/snapshot.db npm run eval:opportunity-export -- qualified-snapshot.json <UTC>
+   ```
+
+   导出器必须以只读且文件必须存在的连接打开快照，在同一读事务内取得全量合格线索、证据计数和方向词表；不调用应用初始化、迁移、孤儿 Run 清理、effect reconciliation 或方向播种。缺失/相对 `DB_PATH`、文件不存在、schema 不兼容、空合格集或不满足 v2 契约时均失败，不能自动建库或修复快照。导出前后数据库内容、Run 状态和方向记录必须保持不变；输出只创建一次，权限为仅所有者读写（0600）。验证需覆盖超过 500 条的全量导出及无效证据排除。
+
+   导出通过后再运行：
 
    ```bash
    npm run eval:opportunity-sample -- qualified-snapshot.json blind-manifest.json <fixed-seed> 20
