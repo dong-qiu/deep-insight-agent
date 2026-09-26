@@ -44,6 +44,7 @@
     "eval:opportunity-mapping-export": "node --import tsx evals/export-opportunity-dogfood-v2-mapping.ts",
     "eval:opportunity-seal": "node --import tsx evals/seal-opportunity-dogfood-v2.ts",
     "eval:opportunity-materialize": "node --import tsx evals/materialize-opportunity-dogfood-v2.ts",
+    "eval:podcast-shadow-input": "node --import tsx evals/build-podcast-shadow-eval-input.ts",
     "eval:build-local": "tsx evals/build-local-eval.ts",
     "eval:compose-expanded-quality": "tsx evals/compose-a1-v2-expanded-quality.ts",
     "eval:prepare-controlled-v2-snapshot": "tsx evals/prepare-controlled-v2-snapshot.ts",
