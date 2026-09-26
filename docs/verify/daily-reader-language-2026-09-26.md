@@ -55,7 +55,9 @@ a1-run SHA-256：`00c8f5f71cdb294e5ca564c53bc4cf20fad1f40aaf29fa0a472008da2fa9f3
   P2“失败时丢翻译阶段”已增加受控状态与源哈希。
 - 第二轮剩余 P2“预检失败缺译文哈希”已补 `translated_draft_sha256`，并重跑上述 253 项测试和 typecheck；
   此最后补丁由主 agent 验证，不宣称第三轮独立 review。
-- 待 PR CI/最终 diff 复核；本记录不代表合入、部署或生产日报验收。
+- 实现提交：`ce0f68c`；[PR #352](https://github.com/dong-qiu/deep-insight-agent/pull/352)。
+  PR 已补齐机器检查要求的风险摘要与指标表，明确基线不可比；等待 CI/最终 diff 复核。
+  本记录不代表合入、部署或生产日报验收。
 
 ## 上线后验收
 
