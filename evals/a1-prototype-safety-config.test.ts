@@ -11,6 +11,12 @@ describe("prototype safety A1 configuration", () => {
     expect(env.A1_QUOTE_SELF_CONTAINED_LIMIT).toBe("0");
     expect(env.A1_DISPLAY_COVERAGE_IDS).toContain("controlled-poc-to-blackbox");
     expect(env.A1_DISPLAY_COVERAGE_IDS).toContain("generic-subject-direct-positive");
+    for (const id of [
+      "source-quote-projects-synthetic-scope",
+      "source-quote-explicit-synthetic-positive",
+      "source-quote-paraphrased-synthetic-positive",
+      "source-quote-chinese-synthetic-positive",
+    ]) expect(env.A1_DISPLAY_COVERAGE_IDS?.split(",")).toContain(id);
     expect(env.A1_QUOTE_SELF_CONTAINED_IDS).toContain("anaphora-it");
     expect(env.A1_QUOTE_SELF_CONTAINED_IDS).toContain("explicit-subject");
   });

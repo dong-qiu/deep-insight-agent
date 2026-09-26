@@ -33,7 +33,7 @@ for (const row of cases) {
   assert.equal(result.length, row.keep ? 1 : 0, `${row.id}: expected keep/drop`);
   if (row.keep) {
     assert(containsChinese(result[0].reader_statement ?? ""));
-    assert(auditSupportsReaderStatement(decisions[0], result[0].reader_statement));
+    assert(auditSupportsReaderStatement({ gate_version: decisions[0].gate_version, decision: decisions[0] }, result[0].reader_statement));
     assert.equal(result[0].statement, row.quote);
     assert.equal(result[0].citations[0].quote, row.quote);
     assert.deepEqual(result[0].citations[0].locator, { paragraph_index: 0, char_start: 0, char_end: row.quote.length });

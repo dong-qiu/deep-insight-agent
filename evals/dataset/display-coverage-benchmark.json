@@ -243,13 +243,42 @@
     },
     {
       "id": "source-quote-projects-synthetic-scope",
+      "expected": "reject",
+      "field": "statement",
+      "facets": ["source_projection", "scope", "bilingual"],
+      "statement": "SynAE 检测合成数据。",
+      "statement_citation_index": 1,
+      "citations": [{ "claim": "SynAE 检测合成数据", "quote": "SynAE detects data in text benchmarks." }]
+    },
+    {
+      "id": "source-quote-explicit-synthetic-positive",
       "expected": "accept",
       "field": "statement",
       "facets": ["source_projection", "scope", "bilingual"],
       "statement": "SynAE 检测合成数据。",
       "statement_citation_index": 1,
-      "expected_statement": "SynAE detects data in text benchmarks.",
-      "citations": [{ "claim": "SynAE 检测合成数据", "quote": "SynAE detects data in text benchmarks." }]
+      "expected_statement": "SynAE detects synthetic data in text benchmarks.",
+      "citations": [{ "claim": "SynAE 检测合成数据", "quote": "SynAE detects synthetic data in text benchmarks." }]
+    },
+    {
+      "id": "source-quote-paraphrased-synthetic-positive",
+      "expected": "accept",
+      "field": "statement",
+      "facets": ["source_projection", "scope", "bilingual", "paraphrase"],
+      "statement": "SynAE 检测合成数据。",
+      "statement_citation_index": 1,
+      "expected_statement": "SynAE detects artificially generated data in text benchmarks.",
+      "citations": [{ "claim": "SynAE 检测合成数据", "quote": "SynAE detects artificially generated data in text benchmarks." }]
+    },
+    {
+      "id": "source-quote-chinese-synthetic-positive",
+      "expected": "accept",
+      "field": "statement",
+      "facets": ["source_projection", "scope", "chinese"],
+      "statement": "SynAE 检测合成数据。",
+      "statement_citation_index": 1,
+      "expected_statement": "SynAE 在文本基准中检测合成数据。",
+      "citations": [{ "claim": "SynAE 检测合成数据", "quote": "SynAE 在文本基准中检测合成数据。" }]
     },
     {
       "id": "source-quote-projects-explicit-architecture",

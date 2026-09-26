@@ -48,14 +48,18 @@ type ReaderVisibleRow = {
   statement_citation_index: number | null;
   statement_citation_ref: string | null;
   display_coverage_decision: string;
+  display_coverage_gate_version: string;
 };
 
 function parseReaderVisibleDecision(decision: string): unknown | null {
   try { return JSON.parse(decision); } catch { return null; }
 }
 
-function auditMatchesPersistedBinding(row: Pick<ReaderVisibleRow, "statement" | "statement_quote" | "headline" | "importance_basis" | "statement_citation_index" | "statement_citation_ref" | "display_coverage_decision">): boolean {
-  return auditSupportsStatementBinding(parseReaderVisibleDecision(row.display_coverage_decision), {
+function auditMatchesPersistedBinding(row: Pick<ReaderVisibleRow, "statement" | "statement_quote" | "headline" | "importance_basis" | "statement_citation_index" | "statement_citation_ref" | "display_coverage_decision" | "display_coverage_gate_version">): boolean {
+  return auditSupportsStatementBinding({
+    gate_version: row.display_coverage_gate_version,
+    decision: parseReaderVisibleDecision(row.display_coverage_decision),
+  }, {
     citation_index: row.statement_citation_index,
     citation_ref: row.statement_citation_ref,
     statement: row.statement,
@@ -66,7 +70,8 @@ function auditMatchesPersistedBinding(row: Pick<ReaderVisibleRow, "statement" | 
 /** 轻量加载：只取 reader-visible 图所需的 entities，不查 citation（图装配热路径，避免 N+1）。 */
 function loadTopicEntityRows(db: DB, topicId: string, since?: string): { entities: Entity[] }[] {
   const sql = `SELECT i.statement, i.headline, i.importance_basis, i.entities, i.statement_citation_index, statement_citation.quote AS statement_quote,
-      statement_citation.citation_ref AS statement_citation_ref, d.decision AS display_coverage_decision
+      statement_citation.citation_ref AS statement_citation_ref, d.decision AS display_coverage_decision,
+      d.gate_version AS display_coverage_gate_version
     FROM insight i ${READER_VISIBLE_INSIGHT_JOINS}
     WHERE i.topic_id = ?${since ? " AND b.created_at >= ?" : ""} AND ${READER_VISIBLE_INSIGHT_WHERE}`;
   const rows = db.prepare(sql).all(...(since ? [topicId, since] : [topicId])) as ReaderVisibleRow[];
@@ -77,11 +82,11 @@ function loadTopicEntityRows(db: DB, topicId: string, since?: string): { entitie
 /** 加载某主题的洞察（含 citation，溯源用）；since（batch.created_at 下界，ISO）可选限定时间窗。 */
 export function loadTopicInsights(db: DB, topicId: string, since?: string): Insight[] {
   const sql = `SELECT i.*, statement_citation.citation_ref AS statement_citation_ref, statement_citation.quote AS statement_quote,
-      d.decision AS display_coverage_decision
+      d.decision AS display_coverage_decision, d.gate_version AS display_coverage_gate_version
     FROM insight i ${READER_VISIBLE_INSIGHT_JOINS}
     WHERE i.topic_id = ?${since ? " AND b.created_at >= ?" : ""} AND ${READER_VISIBLE_INSIGHT_WHERE}
     ORDER BY i.rowid`;
-  const rows = db.prepare(sql).all(...(since ? [topicId, since] : [topicId])) as Array<InsightRow & Pick<ReaderVisibleRow, "statement_citation_ref" | "statement_quote" | "display_coverage_decision">>;
+  const rows = db.prepare(sql).all(...(since ? [topicId, since] : [topicId])) as Array<InsightRow & Pick<ReaderVisibleRow, "statement_citation_ref" | "statement_quote" | "display_coverage_decision" | "display_coverage_gate_version">>;
   const insights: Insight[] = [];
   for (const r of rows) {
     if (!auditMatchesPersistedBinding({
@@ -92,6 +97,7 @@ export function loadTopicInsights(db: DB, topicId: string, since?: string): Insi
       headline: r.headline,
       importance_basis: r.importance_basis,
       display_coverage_decision: r.display_coverage_decision,
+      display_coverage_gate_version: r.display_coverage_gate_version,
     })) continue;
     const insight = rowToInsight(db, r);
     insights.push({ ...insight, entities: entitiesMentionedInStatement(insight.statement, insight.entities) });

@@ -1,6 +1,15 @@
 import type { Insight } from "../types.js";
 import { DISPLAY_PROJECTION_VERSION, isExactSourceQuoteProjection, sourceQuoteHash } from "./source-quote-projection.js";
 
+// Consumer compatibility is explicit, not a >= comparison with the producer's latest version.
+// Add a version only after its persisted decision semantics have been reviewed and tested.
+const SUPPORTED_READER_GATE_VERSIONS: readonly string[] = ["display-coverage-v6"];
+type ReaderAudit = { gate_version?: unknown; decision: unknown };
+
+function supportsReaderGate(audit: ReaderAudit): boolean {
+  return typeof audit.gate_version === "string" && SUPPORTED_READER_GATE_VERSIONS.includes(audit.gate_version);
+}
+
 type AuditClaim = {
   claim_id?: unknown;
   field?: unknown;
@@ -36,9 +45,11 @@ export function requiredAuditCitationIndexes(audit: { decision: unknown }): Set<
 /** A graph/drill card publishes only the persisted statement binding. Verify that the kept audit
  * made exactly that same binding before trusting a stored terminal label. */
 export function auditSupportsStatementBinding(
-  decision: unknown,
+  audit: ReaderAudit,
   binding: { citation_index: number | null; citation_ref: string | null; statement: string; quote: string },
 ): boolean {
+  if (!supportsReaderGate(audit)) return false;
+  const { decision } = audit;
   if (!Number.isInteger(binding.citation_index) || binding.citation_index == null || binding.citation_index < 1 || !binding.citation_ref) return false;
   if (!decision || typeof decision !== "object") return false;
   const record = decision as {
@@ -69,7 +80,9 @@ export function auditSupportsStatementBinding(
  * allowed only when it is byte-for-byte the draft that the same v6 audit approved before quote
  * projection. This deliberately does not attempt translation, normalization, or a fresh model
  * rewrite on a database read path. */
-export function auditSupportsReaderStatement(decision: unknown, readerStatement: string | undefined): boolean {
+export function auditSupportsReaderStatement(audit: ReaderAudit, readerStatement: string | undefined): boolean {
+  if (!supportsReaderGate(audit)) return false;
+  const { decision } = audit;
   if (!readerStatement?.trim() || !decision || typeof decision !== "object") return false;
   const record = decision as {
     display_projection_version?: unknown; draft_statement_sha256?: unknown; claims?: unknown;
@@ -108,13 +121,13 @@ export function hasSafeReaderMetadata(input: Pick<Insight, "headline" | "importa
 /** Shared persistence boundary for every reader-visible derivative. A correct statement hash is
  * insufficient if a stale headline or free-text importance field can reintroduce facts. */
 export function auditSupportsReaderProjection(
-  decision: unknown,
+  audit: ReaderAudit,
   insight: Pick<Insight, "statement" | "statement_citation_index" | "citations" | "headline" | "importance_facts" | "importance_basis">,
 ): boolean {
   const citationIndex = insight.statement_citation_index;
   const citation = citationIndex == null ? undefined : insight.citations[citationIndex - 1];
   return Boolean(citation)
-    && auditSupportsStatementBinding(decision, {
+    && auditSupportsStatementBinding(audit, {
       citation_index: citationIndex ?? null,
       citation_ref: citation!.citation_ref ?? null,
       statement: insight.statement,

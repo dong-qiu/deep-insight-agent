@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getReport, queryReportIndex } from "../db/reports.js";
-import { saveAnalysisBatch, saveValidationResult } from "../db/analysis.js";
+import { getAnalysisBatch, saveAnalysisBatch, saveValidationResult } from "../db/analysis.js";
 import { openDb, type DB } from "../db/index.js";
 import { insertContentItem, insertSource, insertTopic, listRuns } from "../db/repos.js";
 import { applyProvenanceMigrations } from "../db/provenance-migrations.js";
@@ -77,6 +77,31 @@ afterEach(() => {
 });
 
 describe("runReportGen production persistence path", () => {
+  it.each(["", "display-coverage-v5", "display-coverage-v9", "display-coverage-v999"])(
+    "DB round-trip audit gate %s cannot enter the report, index or publication ledger", async (version) => {
+      const actual = await vi.importActual<typeof import("./report-gen.js")>("./report-gen.js");
+      buildReportMock.mockImplementation(actual.buildReport);
+      const mixed = structuredClone(batch);
+      mixed.insights.push({ ...structuredClone(batch.insights[0]!), id: "old", importance: 5 });
+      mixed.display_coverage_audits!.push({
+        ...structuredClone(batch.display_coverage_audits![0]!), insight_id: "old", candidate_id: "old", gate_version: version,
+      });
+      const checks = { ...structuredClone(validation), checks: [validation.checks[0], { ...validation.checks[0], insight_id: "old" }] };
+      checks.report = { ...checks.report, total: 2, pass: 2, insights_total: 2, insights_includable: 2 };
+      const traceId = seedCompleteTrace(mixed, checks);
+      const persisted = getAnalysisBatch(db, mixed.id)!;
+      expect(persisted.display_coverage_audits?.find((audit) => audit.insight_id === "old")?.gate_version).toBe(version);
+      const report = await runReportGen(db, { topic, batch: persisted, validation: checks, type: "brief", traceId });
+      expect(buildReportMock).toHaveBeenCalledOnce();
+      expect(report.insight_ids).toEqual(["i1"]);
+      expect(getReport(db, report.id)?.insight_ids).toEqual(["i1"]);
+      expect(queryReportIndex(db, { topic: topic.id })[0]?.importance).toBe(3);
+      expect(db.prepare("SELECT decision,reason_code FROM report_selection_decision WHERE report_id=? AND insight_id='old'").get(report.id))
+        .toEqual({ decision: "excluded", reason_code: "projection_or_citation_gate" });
+      expect(getAnalysisBatch(db, mixed.id)?.insights).toHaveLength(2);
+    },
+  );
+
   it("publishes a validated report that the normal reader and index can consume", async () => {
     const report: Report = {
       id: "rep_1", type: "brief", topic_id: topic.id, status: "done", generated_at: "2026-08-02T00:00:00Z", title: "Brief",

@@ -193,7 +193,7 @@ function selectReaderEligibleInsights(batch: AnalysisBatch, validation: Validati
       if (!audit || (audit.terminal_reason !== "kept" && audit.terminal_reason !== "kept_degraded")) continue;
       const citationIndex = ins.statement_citation_index;
       const citation = citationIndex == null ? undefined : ins.citations[citationIndex - 1];
-      if (!citation || !auditSupportsReaderProjection(audit.decision, ins)) continue;
+      if (!citation || !auditSupportsReaderProjection(audit, ins)) continue;
       requiredAuditCitations = requiredAuditCitationIndexes(audit);
       if (!requiredAuditCitations) continue;
     }
@@ -223,7 +223,7 @@ function selectReaderEligibleInsights(batch: AnalysisBatch, validation: Validati
       // evidence for a v6 source-quote statement. Rendering them would duplicate the binding quote
       // or imply that a second quote independently states this exact reader-visible fact.
       const readerCitationIndices = audited ? [ins.statement_citation_index! - 1] : kept;
-      const reader_statement = ins.reader_statement && audit && auditSupportsReaderStatement(audit.decision, ins.reader_statement)
+      const reader_statement = ins.reader_statement && audit && auditSupportsReaderStatement(audit, ins.reader_statement)
         ? ins.reader_statement
         : undefined;
       out.push({
