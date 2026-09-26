@@ -18,7 +18,7 @@
     },
     "display_coverage": {
       "path": "evals/dataset/display-coverage-benchmark.json",
-      "sha256": "05552c40dae013cfaceea0990b7d4864b8fb9c5f85a9f83525820e1eb1e3e9b8"
+      "sha256": "c54e791e958674b697e8f0b23893846b5a17f49bd0033c20f66592d008f393c4"
     }
   },
   "quality_contract": {

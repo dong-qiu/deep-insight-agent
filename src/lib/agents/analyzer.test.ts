@@ -845,9 +845,11 @@ describe("filterByQuoteCoverage（展示 quote 覆盖门）", () => {
   });
 
   it.each([
-    ["SynAE 检测合成数据。", "SynAE detects data in text benchmarks."],
+    ["SynAE 检测合成数据。", "SynAE detects synthetic data in text benchmarks."],
+    ["SynAE 检测合成数据。", "SynAE detects artificially generated data in text benchmarks."],
+    ["SynAE 检测合成数据。", "SynAE 在文本基准中检测合成数据。"],
     ["DASH 架构提升吞吐量。", "The DASH architecture improves throughput."],
-  ])("v6 投影剥离模型草稿的隐藏范围或类别：%s", async (draft, quote) => {
+  ])("语义审查通过后保留双语结论并逐字投影原文（mock 仅验证接线）：%s / %s", async (draft, quote) => {
     vi.mocked(callStructured).mockResolvedValue(coverageVerdictsFor(quote, true));
     const row = insight(draft, [{
       content_item_id: "ci", claim: draft.replace(/[。.]$/u, ""), quote,
@@ -856,7 +858,26 @@ describe("filterByQuoteCoverage（展示 quote 覆盖门）", () => {
 
     await expect(filterByQuoteCoverage([row])).resolves.toEqual([row]);
     expect(row.statement).toBe(quote);
+    expect(row.reader_statement).toBe(draft);
     expect(row.entities).toEqual([]);
+  });
+
+  it("原始合成数据限定被 primary 拒绝时，quote-only 通过也不能靠投影救回结论", async () => {
+    const draft = "SynAE 检测合成数据。";
+    const quote = "SynAE detects data in text benchmarks.";
+    vi.mocked(callStructured)
+      .mockResolvedValueOnce(coverageVerdictsFor(quote, false))
+      .mockResolvedValueOnce(coverageVerdictsFor(quote, true));
+    const row = insight(draft, [{
+      content_item_id: "ci", claim: draft.replace(/。$/u, ""), quote,
+      locator: { paragraph_index: 0, char_start: 0, char_end: quote.length },
+    }]);
+    await expect(filterByQuoteCoverage([row])).resolves.toEqual([]);
+    const requests = vi.mocked(callStructured).mock.calls.map(([request]) => request);
+    expect(requests.map((request) => request.role)).toEqual(["validator", "coverage"]);
+    expect(requests[0].user).toContain("合成数据");
+    expect(requests[1].user).not.toContain("合成数据");
+    expect(row.reader_statement).toBeUndefined();
   });
 
   it("v6 在投影前拒绝以未解析 it 开头的 quote，不能把它补成特定差距", async () => {
