@@ -136,3 +136,13 @@ a1-run SHA256 `79e1713189d9bcfc169d63e7314f62169c36e36c04388bd626fe719269fd4ac4`
 Blocking 0、Warning 0；独立 95 项测试通过，确认上一轮 catch 保存译文残项已修复。
 Suggestion：新 helper 加入 ratio runner 源码指纹清单，已处理，旧产物不改写。
 生产代码在固定三次/11条/prototype-safety 期间不变；后续仅完善文档。
+
+## PR 交接
+
+[PR #356](https://github.com/dong-qiu/deep-insight-agent/pull/356) 的代码提交为 `f29f81e`。
+PR 后独立复核代码 Blocking 0 / Warning 0，另跑 8 文件 199 项测试通过；未读取私有评测产物，
+仅核对版本化记录与 PR 声明一致。该复核确认 pending 排除、primary 快照、catch 保留译文、
+incomplete 脱敏及 dirty source 非发布证据的边界。CI 全绿后方可合入，不等于可部署。
+初次 pr-policy 因 PR body 未用机器要求的中文字段/表头而失败；已补齐格式并通过本地同款检查。
+该检查读取原事件的 body，简单重跑旧 run 不会获取更新说明，因此以本次纯文档交接提交触发
+新的 PR CI，不改运行代码、不重跑模型、不删除旧失败记录。
