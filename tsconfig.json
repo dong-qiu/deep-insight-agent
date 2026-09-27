@@ -34,8 +34,6 @@
     "next-env.d.ts",
     "src",
     "evals",
-    "ops/**/*.ts",
-    "tests/**/*.ts",
     ".next/types/**/*.ts",
     ".next/dev/types/**/*.ts"
   ],

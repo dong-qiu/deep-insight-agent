@@ -47,7 +47,8 @@
 2. 包含 cleanup、forward observation、gen-env、Multica 及测试入口自身的回归测试。
 3. 子进程失败、信号退出、启动失败及空测试清单不得返回成功。
 4. `npm test` 与 `npm run test:coverage` 调用同一个入口，CI 无需另维护一份列表。
-5. 双版本类型检查包含 ops 和 tests 的 TypeScript 文件；不把 JS 文件误称为接受严格类型检查。
+5. 双版本类型检查通过独立 `tsconfig.tools.json` 包含 ops 和 tests 的 TypeScript 文件；
+   不扩展 Next 的应用构建根文件，保持 Docker 排除 evals/tests 的边界；不把 JS 文件误称为接受严格类型检查。
 
 ### A2：成功后发布连接
 

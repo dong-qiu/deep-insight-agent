@@ -7,7 +7,7 @@
 
 - 落地 [20 项分批实施计划](../plan/specs/technical-debt-remediation.md)，本批仅实施 A1/A2/A3。
 - `test` / `test:coverage` 共用 Node 运维测试自动发现入口，补上 gen-env、forward observation、branch cleanup 等测试。
-- 双 TypeScript 检查纳入 ops/tests。由此发现的 S3 重载返回类型误用改为 `GetObjectCommandOutput`，前后转译 JavaScript 完全相同。
+- 双 TypeScript 检查通过独立 `tsconfig.tools.json` 纳入 ops/tests，Next 应用构建范围不扩展。由此发现的 S3 重载返回类型误用改为 `GetObjectCommandOutput`，前后转译 JavaScript 完全相同。
 - `getDb` 完成全部初始化后才发布单例，失败关闭临时连接；`openDb` 的自身初始化失败也释放连接。
 - 6 项危险数值配置拒绝非法值；`chunkWindows` 保护显式 size 参数，合法输入算法保持不变。
 
@@ -19,9 +19,9 @@
 |---|---|
 | 新增 DB 反例在修复前运行 | 5/5 失败：连续 guard 拒绝被绕过、失败连接未关闭、修正配置后仍返回旧连接 |
 | 修复后的 10 文件定向回归 | 329 tests 通过，涵盖初始化、迁移、部署、env、Analyzer、Validator、LLM |
-| `npm run test:coverage` | 212 个 Vitest 文件，2,142 tests 通过；随后实际运行 Node 运维测试 23/23 通过 |
+| `npm run test:coverage` | Docker 边界修正后重跑：212 个 Vitest 文件，2,142 tests 通过；随后实际运行 Node 运维测试 24/24 通过 |
 | 覆盖率 | statements 76.48%、branches 69.03%、functions 76.75%、lines 80.38%，现有阈值未调整 |
-| `npm run typecheck` | TS7、TS6 均通过，包含新纳入的 ops/tests |
+| `npm run typecheck` | TS7、TS6 的应用/工具共 4 项检查均通过，包含新纳入的 ops/tests |
 | `npm run lint` | 通过 |
 | `npm run build` | 通过；存在仓库已有 middleware → proxy 弃用提示，本批未迁移 |
 | `npx vitest run --config vitest.e2e.config.ts` | 复用刚构建的应用，3 文件 / 3 tests 通过；分别使用测试数据库 |
@@ -62,6 +62,22 @@
 - 审查确认调用链没有初始化期间重新进入 `getDb`；成功路径顺序未变；6 项合法配置解析、读取时机及窗口算法未变。
 
 Blocking: 0; Warning: 0
+
+## Docker CI 首轮发现与修正
+
+[首轮 CI](https://github.com/dong-qiu/deep-insight-agent/actions/runs/36326511865) 的主验证作业全部通过，
+包括完整性、容量、读取性能、E2E 和依赖审计；Docker build 失败，不能称为 CI 全绿。
+
+原因：直接扩展应用 `tsconfig.json` 的根文件让 Next 检查 `ops/prototype-release.ts`，但 Docker
+按既有约定排除了该脚本所依赖的 `evals/prototype-safety.ts`。完整 checkout 的本地构建不能复现这个裁剪边界。
+
+修正：恢复应用 tsconfig 的原始范围，新增 `tsconfig.tools.json`，让 TS6/TS7 在普通 CI 中分别检查
+应用与工具。新增测试通过 TypeScript 配置解析 API 确认两者根文件边界，未放宽 `.dockerignore` 或关闭类型检查。
+修正后重新运行全量覆盖率（2,142 + 24 tests）、双版本应用/工具类型检查、lint、production build
+及 3 个 E2E，全部通过；覆盖率数值不变。远程 Docker 以新提交 CI 为准。
+
+独立 reviewer 针对该 delta 再次审查通过，Blocking / Warning 均为 0；独立运行 TS6/TS7 的
+应用/工具 4 项检查（关闭增量缓存）、配置边界测试 4/4、运维测试 24/24 及 diff check，均通过。
 
 ## AI 输出质量
 

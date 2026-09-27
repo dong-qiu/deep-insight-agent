@@ -4,9 +4,29 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import ts from "typescript";
 import { discoverNodeTests, runNodeTests } from "./run-node-tests.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
+
+test("both compilers check tools separately from the production application build", () => {
+  const { scripts } = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+  for (const compiler of ["ts6", "ts7"]) assert.ok(scripts[`typecheck:${compiler}`].includes("--noEmit -p tsconfig.tools.json"));
+  function inputs(config) {
+    const path = join(root, config);
+    const { config: json, error } = ts.readConfigFile(path, ts.sys.readFile);
+    assert.equal(error, undefined);
+    const parsed = ts.parseJsonConfigFileContent(json, ts.sys, root);
+    assert.deepEqual(parsed.errors, []);
+    return parsed.fileNames;
+  }
+  const app = inputs("tsconfig.json");
+  const tools = inputs("tsconfig.tools.json");
+  for (const path of ["ops/record-deployment.ts", "ops/prototype-release.ts", "ops/replay-redaction-registry.ts", "tests/e2e/report-review.e2e.ts"]) {
+    assert.ok(!app.includes(join(root, path)), `${path} must not become a Next build root`);
+    assert.ok(tools.includes(join(root, path)), `${path} must remain typechecked`);
+  }
+});
 
 test("test and coverage use the same inventory, including all existing ops suites", () => {
   const { scripts } = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
