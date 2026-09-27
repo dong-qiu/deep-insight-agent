@@ -13,6 +13,8 @@ const REASONS = new Set([
   "self_contained_invalid_citation_indexes", "self_contained_invalid_evidence_span", "quote_self_contained",
   "controlled_reason_pruned_anchor", "controlled_reason_anchored", "invalid_or_unpassed_importance_anchor",
   "invalid_importance_contract", "reader_language_repair_unavailable", "reader_language_repair_invalid",
+  "translation_ratio_denominator_lost",
+  "translation_ratio_baseline_unverified",
 ]);
 const TERMINALS = new Set([
   "kept", "kept_degraded", "dropped_truncated", "dropped_invalid_citation",

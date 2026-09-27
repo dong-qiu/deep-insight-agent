@@ -22,5 +22,10 @@ describe("coverageDiagnostic whitelist", () => {
     expect(result.candidate_sha256).toMatch(/^[a-f0-9]{64}$/);
     expect(result.reader_language_repair).toEqual({ status: "rejected", prompt_hash: "c".repeat(64), source_draft_sha256: "b".repeat(64), source_audit_input_hash: "d".repeat(64), translated_draft_sha256: null });
     expect(JSON.stringify(result)).not.toContain("PRIVATE");
+    decision.claims[0].reason = "translation_ratio_denominator_lost";
+    expect(coverageDiagnostic(decision).claim_reasons).toEqual(["translation_ratio_denominator_lost"]);
+    decision.claims[0].reason = "translation_ratio_baseline_unverified";
+    expect(coverageDiagnostic(decision).claim_reasons).toEqual(["translation_ratio_baseline_unverified"]);
+    expect(JSON.stringify(coverageDiagnostic(decision))).not.toContain("PRIVATE");
   });
 });

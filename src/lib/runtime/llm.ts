@@ -16,6 +16,8 @@ import { llmMaxRetries, llmTimeoutMs, llmTransientRetries, llmTransientRetryBack
 import { isTransientApiError } from "./errors.js";
 import { llmProvider, requireLlmApiKey, requireLlmBaseUrl } from "./llm-provider.js";
 import { callVolcengineResponses, VolcengineResponsesError } from "./volcengine-responses.js";
+import { classifyTransportFailure, TRANSPORT_FAILURE_LABELS } from "./transport-diagnostics.js";
+import { sanitizeIncompleteDiagnostic, type IncompleteDiagnostic } from "./responses-incomplete-diagnostics.js";
 
 // 已警告过的未知模型集合（每模型仅警告一次，防日志刷屏）
 const warnedUnpriced = new Set<string>();
@@ -147,6 +149,9 @@ export interface CallTelemetryAggregate {
   provider_sse_done: Record<string, number>;
   /** Forced function-arguments completion, stored only as aggregate boolean counts. */
   provider_function_arguments_done: Record<string, number>;
+  /** First 16 sanitized incomplete observations; never a request identifier or response body. */
+  provider_incomplete_diagnostics: IncompleteDiagnostic[];
+  provider_incomplete_diagnostics_dropped: number;
   latency_ms: { p50: number; p95: number; max: number };
 }
 
@@ -165,6 +170,8 @@ type MutableCallTelemetryAggregate = {
   providerHttpStatuses: Map<string, number>;
   providerSseDone: Map<string, number>;
   providerFunctionArgumentsDone: Map<string, number>;
+  incompleteDiagnostics: IncompleteDiagnostic[];
+  incompleteDiagnosticsDropped: number;
   latency: number[];
 };
 
@@ -183,6 +190,8 @@ function emptyMutableCallTelemetry(): MutableCallTelemetryAggregate {
     providerHttpStatuses: new Map<string, number>(),
     providerSseDone: new Map<string, number>(),
     providerFunctionArgumentsDone: new Map<string, number>(),
+    incompleteDiagnostics: [],
+    incompleteDiagnosticsDropped: 0,
     latency: [],
   };
 }
@@ -197,6 +206,8 @@ function readonlyCallTelemetry(aggregate: MutableCallTelemetryAggregate): CallTe
     provider_http_statuses: Object.fromEntries([...aggregate.providerHttpStatuses.entries()].sort(([a], [b]) => a.localeCompare(b))),
     provider_sse_done: Object.fromEntries([...aggregate.providerSseDone.entries()].sort(([a], [b]) => a.localeCompare(b))),
     provider_function_arguments_done: Object.fromEntries([...aggregate.providerFunctionArgumentsDone.entries()].sort(([a], [b]) => a.localeCompare(b))),
+    provider_incomplete_diagnostics: aggregate.incompleteDiagnostics.map(sanitizeIncompleteDiagnostic),
+    provider_incomplete_diagnostics_dropped: aggregate.incompleteDiagnosticsDropped,
     latency_ms: {
       p50: percentile(aggregate.latency, 0.5),
       p95: percentile(aggregate.latency, 0.95),
@@ -212,14 +223,18 @@ export interface CallTransportTelemetry {
   httpStatuses?: readonly number[];
   sseDone?: readonly boolean[];
   functionArgumentsDone?: readonly boolean[];
+  incompleteDiagnostics?: readonly IncompleteDiagnostic[];
 }
 
 const PROVIDER_STREAM_FAILURE_LABELS = new Set([
+  ...TRANSPORT_FAILURE_LABELS,
   "completed_invalid_status",
   "completed_missing_function_arguments",
   "completed_protocol_violation",
+  "completed_invalid_schema",
   "eof_before_terminal",
   "error",
+  "invalid_json",
   "failed",
   "incomplete",
 ]);
@@ -260,6 +275,10 @@ function recordCallTelemetry(
   );
   increment(aggregate.providerSseDone, (transport.sseDone ?? []).map(String));
   increment(aggregate.providerFunctionArgumentsDone, (transport.functionArgumentsDone ?? []).map(String));
+  for (const diagnostic of transport.incompleteDiagnostics ?? []) {
+    if (aggregate.incompleteDiagnostics.length < 16) aggregate.incompleteDiagnostics.push(sanitizeIncompleteDiagnostic(diagnostic));
+    else aggregate.incompleteDiagnosticsDropped++;
+  }
   aggregate.latency.push(Math.max(0, latencyMs));
 }
 
@@ -541,11 +560,13 @@ async function callVolcengineStructured<T extends z.ZodType>(
   const providerHttpStatuses: number[] = [];
   const providerSseDone: boolean[] = [];
   const providerFunctionArgumentsDone: boolean[] = [];
+  const incompleteDiagnostics: IncompleteDiagnostic[] = [];
   const providerTransport: CallTransportTelemetry = {
     streamFailures: providerStreamFailures,
     httpStatuses: providerHttpStatuses,
     sseDone: providerSseDone,
     functionArgumentsDone: providerFunctionArgumentsDone,
+    incompleteDiagnostics,
   };
   try {
     const model = MODELS[opts.role];
@@ -593,21 +614,32 @@ async function callVolcengineStructured<T extends z.ZodType>(
             if (error.streamDiagnostic) {
               providerSseDone.push(error.streamDiagnostic.sawDone);
               providerFunctionArgumentsDone.push(error.streamDiagnostic.functionArgumentsDone);
+              if (terminal === "incomplete" && error.streamDiagnostic.incompleteDetails) {
+                incompleteDiagnostics.push(sanitizeIncompleteDiagnostic(error.streamDiagnostic.incompleteDetails));
+              }
             }
             // Terminal Responses events can include paid usage even when their structured output
             // is rejected. Account it before any retry or fail-closed propagation so failed
             // requests remain visible in the cost ledger and A1 evidence.
+            const stopReason = terminal === "incomplete"
+              ? error.streamDiagnostic?.incompleteReason ?? "incomplete"
+              : terminal === "failed" ? "failed"
+                : terminal === "completed" || terminal === "completed_protocol_violation" ? "completed"
+                  : terminal === "completed_invalid_status" ? "other"
+                    : undefined;
+            // Protocol status is evidence even when the provider omits a usage envelope.
+            if (stopReason) outputStopReasons.push(stopReason);
             if (error.usage) {
-              const stopReason = terminal === "incomplete"
-                ? error.streamDiagnostic?.incompleteReason ?? "incomplete"
-                : terminal === "failed"
-                  ? "failed"
-                    : terminal === "completed" || terminal === "completed_protocol_violation" ? "completed"
-                    : terminal === "completed_invalid_status" ? "other"
-                      : undefined;
-              if (stopReason) outputStopReasons.push(stopReason);
               account(error.usage);
             }
+          }
+          if (!(error instanceof VolcengineResponsesError)) {
+            const failure = request.signal.aborted
+              ? opts.signal?.aborted
+                ? classifyTransportFailure(opts.signal.reason) === "transport_timeout" ? "transport_timeout" : "transport_aborted"
+                : "transport_timeout"
+              : classifyTransportFailure(error);
+            if (failure) providerStreamFailures.push(failure);
           }
           throw error;
         }
@@ -662,6 +694,7 @@ async function callVolcengineStructured<T extends z.ZodType>(
         succeeded = true;
         return { data: retry.data, usage: response.usage, cost };
       }
+      providerStreamFailures.push("completed_invalid_schema");
       throw new Error(
         `结构化输出 schema 校验失败（role=${opts.role}）：${parsed.error.issues
           .slice(0, 3)

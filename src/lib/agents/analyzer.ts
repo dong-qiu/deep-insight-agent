@@ -15,7 +15,7 @@ import { collapseWithMap, compareKey } from "../runtime/text-normalize.js";
 import { insightFingerprint } from "../runtime/statement-fingerprint.js";
 import { entitiesMentionedInStatement } from "../utils/reader-visible-entities.js";
 import { DISPLAY_PROJECTION_VERSION, sourceQuoteHash } from "../utils/source-quote-projection.js";
-import { containsChinese, READER_LANGUAGE_EQUIVALENCE_RULE, READER_LANGUAGE_REPAIR_PROMPT_HASH, rewriteReaderStatementChinese } from "./reader-language.js";
+import { containsChinese, hasUnverifiedRatioBaseline, losesAccuracyRatioDenominator, READER_LANGUAGE_EQUIVALENCE_RULE, READER_LANGUAGE_REPAIR_PROMPT_HASH, rewriteReaderStatementChinese } from "./reader-language.js";
 import {
   AnalyzerOutputSchema, type AnalysisBatch,
   CoverageRepairSchema,
@@ -136,7 +136,8 @@ ${CITATION_CLAUSE_AUDIT}
 // v23 audits the bound draft claim before source-quote projection can erase an unsupported scope;
 // v24 persists that audited draft separately for the Chinese-conclusion + source-evidence reader mode;
 // v25 repairs entirely non-Chinese zh drafts only after support, then re-audits before publication.
-export const ANALYZER_OUTPUT_VERSION = 25;
+// v26 preserves ratio denominators/units and leaves unstated translation baselines unspecified.
+export const ANALYZER_OUTPUT_VERSION = 26;
 
 /** 分析缓存版本（ADR-0009）：analyzer 模型 + SYSTEM prompt 哈希 + 输出契约版本——任一变 → 版本变 → 旧分析缓存
  *  自动失效（不复用陈旧 prompt/schema/派生的洞察）。镜像 validator.consistencyCacheVersion 的版本隔离口径。 */
@@ -490,6 +491,8 @@ function escapePromptData(value: string): string {
 interface CoverageVerification {
   covered: boolean;
   claims: CoverageClaimDecision[];
+  /** Diagnostic snapshot before the independent AND gate; never a publication authority. */
+  primary_decisions: Array<Pick<CoverageClaimDecision, "claim_id" | "supports" | "reason">>;
   input_hash: string;
   prompt_hash: string;
   checked_at: string;
@@ -818,6 +821,7 @@ export async function verifyDisplayedQuoteCoverage(
   if (!claims.length || !citations.length) return {
     covered: false,
     claims: [],
+    primary_decisions: [],
     input_hash: "",
     prompt_hash: promptHash,
     checked_at,
@@ -825,6 +829,7 @@ export async function verifyDisplayedQuoteCoverage(
   const evidence = citations.map((citation, i) => `${i + 1}.\ncitation_claim：${escapePromptData(citation.claim ?? "")}\ndisplayed_quote：${escapePromptData(citation.quote)}`).join("\n\n");
   const inputHashes: string[] = [];
   const byIndex = new Map<number, QuoteCoverage["verdicts"][number]>();
+  const ratioRejected = new Map<number, string>();
   let primaryUnavailable = false;
   let primaryInvalidVerdictSet = false;
   // A complete verdict set is still required for every call.  Keeping local indices 1..N in
@@ -836,6 +841,16 @@ export async function verifyDisplayedQuoteCoverage(
     const user = `<atomic_claims>\n${atomicClaims}\n</atomic_claims>\n\n<citation_evidence>\n${evidence}\n</citation_evidence>`
       + (translationSourceClaim === undefined ? "" : `\n\n<translation_source_claim>\n${escapePromptData(translationSourceClaim)}\n</translation_source_claim>`);
     inputHashes.push(createHash("sha256").update(`${DISPLAY_COVERAGE_PROMPT_VERSION}\n${user}`).digest("hex"));
+    const ratioReason = translationSourceClaim !== undefined && claimBatch.length === 1 && claimBatch[0].field === "statement"
+      ? losesAccuracyRatioDenominator(translationSourceClaim, claimBatch[0].text) ? "translation_ratio_denominator_lost"
+        : hasUnverifiedRatioBaseline(translationSourceClaim, claimBatch[0].text) ? "translation_ratio_baseline_unverified" : null
+      : null;
+    if (ratioReason) {
+      // Keep exact input provenance and the independent quote-only countercheck below, but do
+      // not ask a probabilistic primary to override a known loss of the ratio denominator.
+      ratioRejected.set(start + 1, ratioReason);
+      continue;
+    }
     let data: QuoteCoverage | undefined;
     for (let attempt = 0; attempt <= validatorRetries(); attempt++) {
       try {
@@ -877,6 +892,7 @@ export async function verifyDisplayedQuoteCoverage(
   // terminal record (and still collect the independent verdict) so A1 can distinguish an
   // infrastructure failure from a semantic rejection. Neither condition is publishable.
   const decisions = claims.map((claim, i): CoverageClaimDecision => {
+    if (ratioRejected.has(i + 1)) return { claim_id: claim.id, field: claim.field, text: claim.text, kind: "factual", supports: false, citation_indexes: [], evidence_spans: [], reason: ratioRejected.get(i + 1)! };
     if (primaryUnavailable) return { claim_id: claim.id, field: claim.field, text: claim.text, kind: "factual", supports: false, citation_indexes: [], evidence_spans: [], reason: "primary_unavailable" };
     if (primaryInvalidVerdictSet) return { claim_id: claim.id, field: claim.field, text: claim.text, kind: "factual", supports: false, citation_indexes: [], evidence_spans: [], reason: "primary_invalid_verdict_set" };
     const verdict = byIndex.get(i + 1);
@@ -914,6 +930,7 @@ export async function verifyDisplayedQuoteCoverage(
     return { claim_id: claim.id, field: claim.field, text: claim.text, kind: "factual", supports: true, citation_indexes: citationIndexes, evidence_spans: spans, reason: "judge_supported" };
   });
 
+  const primaryDecisions = decisions.map(({ claim_id, supports, reason }) => ({ claim_id, supports, reason }));
   // Do not short-circuit when the primary validator rejects: the second model's verdict is part
   // of the audit record and lets A1 measure disagreement.  A missing/invalid countercheck is
   // deliberately a rejection, never a fallback to the primary verdict.
@@ -971,6 +988,7 @@ export async function verifyDisplayedQuoteCoverage(
   return {
     covered: decisions.length > 0 && decisions.every((decision) => decision.supports),
     claims: decisions,
+    primary_decisions: primaryDecisions,
     input_hash,
     prompt_hash: promptHash,
     checked_at,
