@@ -11,9 +11,11 @@
 !public/
 !public/**
 !vendor/
+vendor/**
 !vendor/image-size/
 !vendor/image-size/**
 !ops/
+ops/**
 !ops/run-provenance-migrations.ts
 !ops/record-deployment.ts
 !ops/replay-redaction-registry.ts

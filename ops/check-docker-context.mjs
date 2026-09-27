@@ -18,6 +18,7 @@ const required = ["package.json", "package-lock.json", "tsconfig.json", "next.co
 const excluded = [".env", ".env.local", ".env.local.bak", ".npmrc", ".aws/credentials", ".ssh/id_rsa",
   ".codex/config.toml", ".claude/settings.json", ".data/insight.db", "deep-insight-cli_accessKeys.csv",
   "arbitrary-local-notes.json", "ops/aws/config.sh", "ops/aws/key.pem", "ops/local-accessKeys.csv",
+  "ops/unlisted-script.mjs", "ops/nested/unlisted-script.mjs", "vendor/unlisted/index.js",
   "src/.env.local", "src/nested/.aws/credentials", "src/nested/private.key", "src/backup.sqlite-wal",
   "src/backup.db-shm", "src/private-credentials.json", "src/local.log", "src/example.test.ts",
   "public/accessKeys.csv", "public/private.pem", "vendor/image-size/.npmrc", "vendor/image-size/node_modules/x.js",
