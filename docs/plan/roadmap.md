@@ -55,6 +55,7 @@
   - [x] P0a 报告纵切已在生产 Deep Dive 与非空正常 Brief 验收通过（trace、实体引用、部署事实、admin/viewer 边界）；Brief 证据见 `docs/verify/p0a-brief-production-acceptance-2026-08-08.md`。
   - [x] P0b 采集与规划链路已在生产验收通过（自动 Opportunity → Lead / Direction revision / mapping lane / priority，以及人工 Direction 决定、审计与历史 revision）；证据见 `docs/verify/p0b-production-planning-acceptance-2026-08-12.md`。
   - [x] P0c 容量与受限视图已完成生产规模匿名测量、受限查询计划复验与性能门验收（2026-08-17）。证据见 `docs/verify/p0c-production-capacity-acceptance-2026-08-17.md`。
+  - [x] 运维补充：日报选择漏斗完成生产抽样验收（2026-09-27），覆盖历史计数、单报告管理页面及对应飞书告警送达。证据与抽样限制见 [验收记录](../verify/daily-brief-selection-observability-acceptance-2026-09-27.md)；Linear 状态同步与新版本日报生成回归分别待核实，不重开原 P0 验收，也不启用 P1。
 - [x] 技术线索 V1：从成功校验引用确定性派生可追溯的模型、框架、论文、基准、工具、方法与安全信号（2026-07-23）。
 - [x] 技术机会与方向工作台 V1：方向档案、核心 / 相邻 / 校准 / 反证通道、人工状态、词项预览与显式重投影已上线（2026-07-24）。
 - [~] P0-1 两周 dogfood：累计 50–100 条人工方向 / 通道标签，评估映射准确率与错分原因；窗口 2026-07-24 ～ 2026-08-07，见 `docs/verify/technology-planning-dogfood-2026-07-24.md`。
