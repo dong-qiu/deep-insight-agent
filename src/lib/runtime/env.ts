@@ -3,8 +3,30 @@
  * 此前 `VALIDATOR_RETRIES ?? 2` / `VALIDATOR_RETRY_BACKOFF_MS ?? 800` 各读 2 处、
  * `VALIDATOR_THINKING !== "0"` 读 4 处（validator×3 + analyzer×1）——改默认须同步多处、易漂移。
  *
- * 每个 getter **原样搬运** call site 的表达式（含 Math.max / `??` vs `||` 各自语义不动）→ 行为中性；
- * 且 **call-time 读 process.env**（不在 import 期定值），保证测试动态 set env 仍生效。 */
+ * getter 在调用时读 process.env（不在 import 期定值），保证测试动态 set env 仍生效。
+ * 本批数值保护保留缺失时的默认值及合法配置；显式非法配置拒绝执行，且错误不回显配置值。
+ * 既有 LLM SDK / transient retry 回退策略保持独立，不在本批改变。 */
+
+export class RuntimeConfigError extends Error {
+  constructor(name: string, requirement: string) {
+    super(`${name} ${requirement}`);
+    this.name = "RuntimeConfigError";
+  }
+}
+
+function numericEnv(name: string, fallback: number, min: number, max = Number.MAX_SAFE_INTEGER, integer = true): number {
+  const raw = process.env[name];
+  if (raw === undefined) return fallback;
+  const value = Number(raw);
+  if (raw.trim() === "" || !Number.isFinite(value) || value < min || value > max || (integer && !Number.isSafeInteger(value))) {
+    throw new RuntimeConfigError(name, `必须是 ${min}–${max} 范围内的${integer ? "安全整数" : "有限数值"}`);
+  }
+  return value;
+}
+
+/** Analyzer 保持模块加载时取值；非法长度不得进入切分循环。 */
+export const analyzeBodyChars = (): number => numericEnv("ANALYZE_BODY_CHARS", 10_000, 1);
+export const selectWindowChars = (): number => numericEnv("SELECT_WINDOW_CHARS", 1_000, 1);
 
 /** 校验器思考模式：默认开，VALIDATOR_THINKING=0 关。analyzer 补引校验与 judge 同源。 */
 export const validatorThinking = (): boolean => process.env.VALIDATOR_THINKING !== "0";
@@ -38,13 +60,13 @@ export const coverageMaxTokens = (): number => {
 };
 
 /** 校验器重试次数（指数退避），默认 2。 */
-export const validatorRetries = (): number => Math.max(0, Number(process.env.VALIDATOR_RETRIES ?? 2));
+export const validatorRetries = (): number => numericEnv("VALIDATOR_RETRIES", 2, 0);
 
 /** 校验器重试退避基数 ms，默认 800。 */
-export const validatorBackoffMs = (): number => Math.max(0, Number(process.env.VALIDATOR_RETRY_BACKOFF_MS ?? 800));
+export const validatorBackoffMs = (): number => numericEnv("VALIDATOR_RETRY_BACKOFF_MS", 800, 0);
 
 /** 一致性大面积失败告警阈值（errored/total），默认 0.5。 */
-export const validationDegradedRate = (): number => Number(process.env.VALIDATION_DEGRADED_ALERT_RATE ?? 0.5);
+export const validationDegradedRate = (): number => numericEnv("VALIDATION_DEGRADED_ALERT_RATE", 0.5, 0, 1, false);
 
 /**
  * 批量一致性校验是成本优化，不是发布前提；只有经当前配置的安全门验证后才允许显式启用。
@@ -53,7 +75,7 @@ export const validationDegradedRate = (): number => Number(process.env.VALIDATIO
 export const validatorBatchOn = (): boolean => process.env.VALIDATOR_BATCH === "1";
 
 /** LLM 单次调用超时 ms，默认 120000。 */
-export const llmTimeoutMs = (): number => Number(process.env.LLM_TIMEOUT_MS) || 120_000;
+export const llmTimeoutMs = (): number => numericEnv("LLM_TIMEOUT_MS", 120_000, 1, 2_147_483_647);
 
 /** LLM SDK 内置重试次数，默认 2。0 是有效配置，用于排障时禁用 SDK 重试。 */
 export const llmMaxRetries = (): number => {
