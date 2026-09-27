@@ -2,7 +2,7 @@
  *  只被 auth.ts 的 Credentials authorize（Node 路由）与 /api/admin/users（Node）调用，绝不进 Edge middleware。
  *
  *  账号两源：
- *   - **bootstrap admin**：ADMIN_EMAIL / ADMIN_PASSWORD（env、明文、不可删、不入库）——永远第一、不会被锁死。
+ *   - **bootstrap admin**：ADMIN_EMAIL / ADMIN_PASSWORD（env、明文、不可删、不入库）——优先于同名 DB 账号；登录仍受短时限速。
  *   - **后加用户**：app_user 表（密码 scrypt 哈希存储），admin 在设置页增删，缺省 role=viewer。
  *  密码哈希格式 `scrypt$<salt>$<hash>`，verify 用 timingSafeEqual 防时序侧信。 */
 import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
@@ -80,7 +80,7 @@ export function authenticateUser(db: DB, email: string | undefined, password: st
   const e = normEmail(email);
   const { ADMIN_EMAIL, ADMIN_PASSWORD } = process.env;
   // 内置 admin 邮箱被**保留**（大小写不敏感）：仅 env 密码可登 admin，绝不回落到库内同名记录——
-  // root 账号既不可被锁死，也不会被同邮箱的影子库记录冒用/降级（即便库里存了同名 viewer）。
+  // 同邮箱的影子库记录不能覆盖/冒用/降级 env admin（即便库里存了同名 viewer）；登录限速仍适用。
   if (ADMIN_EMAIL && e === normEmail(ADMIN_EMAIL)) {
     return ADMIN_PASSWORD && password === ADMIN_PASSWORD
       ? { id: "admin", email: ADMIN_EMAIL, name: "Admin", role: "admin" }
