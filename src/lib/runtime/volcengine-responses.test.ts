@@ -324,6 +324,14 @@ describe("Volcengine Responses structured adapter", () => {
     expect(JSON.stringify(error)).not.toContain("req-7e1d");
   });
 
+  it("distinguishes malformed JSON from a provider error without retaining the payload or retrying", async () => {
+    globalThis.fetch = vi.fn(async () => rawSse(["private-invalid-json"]));
+    const error = await callVolcengineResponses(request).catch((caught: unknown) => caught);
+    expect(error).toMatchObject({ retryable: false, streamDiagnostic: { terminal: "invalid_json" } });
+    expect(JSON.stringify(error)).not.toContain("private-invalid-json");
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+  });
+
   it("classifies failed and generic error terminal events as non-retryable while retaining only paid usage", async () => {
     for (const type of ["response.failed", "error"]) {
       globalThis.fetch = vi.fn(async () => sse([{

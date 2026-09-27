@@ -8,6 +8,7 @@
  */
 import type { TokenUsage } from "./cost.js";
 import { llmBaseUrl } from "./llm-provider.js";
+import { readIncompleteDiagnostic, type IncompleteDiagnostic, type IncompleteReason } from "./responses-incomplete-diagnostics.js";
 
 export const STRUCTURED_RESPONSE_TOOL_NAME = "respond_with_structured_output";
 
@@ -15,14 +16,15 @@ export const STRUCTURED_RESPONSE_TOOL_NAME = "respond_with_structured_output";
  * Bounded, protocol-only evidence for a failed Responses stream. It deliberately excludes
  * event payloads: those payloads may contain the prompt, source material, or model output.
  */
-export type VolcengineResponsesTerminal = "completed" | "completed_invalid_status" | "completed_protocol_violation" | "incomplete" | "failed" | "error" | "eof_before_terminal";
+export type VolcengineResponsesTerminal = "completed" | "completed_invalid_status" | "completed_protocol_violation" | "incomplete" | "failed" | "error" | "invalid_json" | "eof_before_terminal";
 
 export interface VolcengineResponsesStreamDiagnostic {
   terminal: VolcengineResponsesTerminal;
   sawDone: boolean;
   functionArgumentsDone: boolean;
   /** Provider vocabulary is allowlisted before it can leave the SSE reader. */
-  incompleteReason?: "max_output_tokens" | "max_tokens" | "other";
+  incompleteReason?: IncompleteReason;
+  incompleteDetails?: IncompleteDiagnostic;
 }
 
 export class VolcengineResponsesError extends Error {
@@ -79,9 +81,7 @@ type StreamEvent = {
 };
 
 function incompleteReason(body: ResponseBody | undefined): VolcengineResponsesStreamDiagnostic["incompleteReason"] {
-  const value = body?.incomplete_details?.reason;
-  if (value === "max_output_tokens" || value === "max_tokens") return value;
-  return value == null ? undefined : "other";
+  return readIncompleteDiagnostic(body).reason;
 }
 
 function asNonNegativeInt(value: unknown): number {
@@ -181,7 +181,7 @@ async function readResponsesStream(
       terminal,
       sawDone,
       functionArgumentsDone,
-      ...(terminal === "incomplete" ? { incompleteReason: incompleteReason(body) } : {}),
+      ...(terminal === "incomplete" ? { incompleteReason: incompleteReason(body), incompleteDetails: readIncompleteDiagnostic(body) } : {}),
     },
     body ? normalizeUsage(body) : undefined,
   );
@@ -214,7 +214,7 @@ async function readResponsesStream(
       if (completed) {
         throw completedProtocolError("Volcengine Responses 完成事件后包含无效 JSON");
       }
-      throw streamError("Volcengine Responses 流式响应包含无效 JSON", "error");
+      throw streamError("Volcengine Responses 流式响应包含无效 JSON", "invalid_json");
     }
     if (event.type === "response.function_call_arguments.done" && event.name === STRUCTURED_RESPONSE_TOOL_NAME) {
       functionArgumentsDone = true;

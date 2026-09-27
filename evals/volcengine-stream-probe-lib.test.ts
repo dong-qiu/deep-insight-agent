@@ -70,13 +70,13 @@ describe("Volcengine stream probe helpers", () => {
     expect(probePassed([])).toBe(false);
   });
 
-  it("keeps a completed-stream protocol violation as a fixed probe category", () => {
+  it.each(["completed_protocol_violation", "invalid_json"] as const)("keeps %s as a fixed probe category", (terminal) => {
     const summary = summarizeProbeProfile(VOLCENGINE_STREAM_PROBE_PROFILES[2]!, [{
       profile_id: "coverage_2048",
       duration_ms: 10,
-      failure: { error_type: "VolcengineResponsesError", terminal: "completed_protocol_violation" },
+      failure: { error_type: "VolcengineResponsesError", terminal },
     }]);
-    expect(summary.terminal_events).toEqual({ completed_protocol_violation: 1 });
+    expect(summary.terminal_events).toEqual({ [terminal]: 1 });
   });
 
   it("does not serialize mutable error metadata as a probe category", () => {

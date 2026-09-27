@@ -1,4 +1,5 @@
 /** Pure helpers for the live Volcengine stream probe. No provider call or env access lives here. */
+import type { VolcengineResponsesTerminal, VolcengineResponsesStreamDiagnostic } from "../src/lib/runtime/volcengine-responses.js";
 
 export const VOLCENGINE_STREAM_PROBE_SCHEMA_VERSION = "volcengine-stream-probe-v1";
 
@@ -24,8 +25,8 @@ export const VOLCENGINE_STREAM_PROBE_PROFILES: readonly VolcengineStreamProbePro
 
 export type ProbeFailure = {
   error_type: string;
-  terminal?: "completed" | "completed_invalid_status" | "completed_protocol_violation" | "incomplete" | "failed" | "error" | "eof_before_terminal";
-  incomplete_reason?: "max_output_tokens" | "max_tokens" | "other";
+  terminal?: VolcengineResponsesTerminal;
+  incomplete_reason?: VolcengineResponsesStreamDiagnostic["incompleteReason"];
   http_status?: number;
   saw_done?: boolean;
   function_arguments_done?: boolean;

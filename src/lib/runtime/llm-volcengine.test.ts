@@ -95,6 +95,9 @@ describe("callStructured through Volcengine Responses", () => {
       role: "analyzer", system: "system", user: "user", schema: z.object({ ok: z.boolean() }), maxTokens: 2048,
     })).rejects.toThrow("schema 校验失败");
     expect(getCostReport().byModel).toEqual([expect.objectContaining({ model: "glm-5.3", calls: 1, input: 9, output: 4, unpriced: true })]);
+    expect(getRoleCallTelemetry().analyzer).toMatchObject({ calls: 1, failures: 1, requests: 1,
+      output_stop_reasons: { completed: 1 }, provider_stream_failures: { completed_invalid_schema: 1 } });
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
   });
 
   it("accounts and fails closed for a paid completion that omitted the final function event", async () => {
@@ -290,20 +293,47 @@ describe("callStructured through Volcengine Responses", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it("does not retry a Volcengine fetch failure even when the generic relay policy would", async () => {
+  it.each([
+    [undefined, "transport_unknown"], ["ENOTFOUND", "transport_dns"],
+    ["CERT_HAS_EXPIRED", "transport_tls"], ["ECONNRESET", "transport_connection"],
+    ["UND_ERR_CONNECT_TIMEOUT", "transport_timeout"], ["UND_ERR_DESTROYED", "transport_client_closed"],
+    ["UND_ERR_INVALID_ARG", "transport_invalid_argument"], ["credential-must-not-escape", "transport_unknown"],
+  ])("diagnoses %s without retrying a Volcengine fetch failure", async (code, label) => {
     process.env.LLM_PROVIDER = "volcengine-responses";
     process.env.LLM_API_KEY = "not-a-real-key";
     process.env.LLM_BASE_URL = "https://ark.cn-beijing.volces.com/api/coding/v3";
     process.env.LLM_TRANSIENT_RETRIES = "1";
     process.env.LLM_TRANSIENT_RETRY_BACKOFF_MS = "0";
     Object.assign(MODELS, { analyzer: "glm-5.3" });
-    const fetchMock = vi.fn(async () => { throw new TypeError("fetch failed"); });
+    const fetchMock = vi.fn(async () => { throw new TypeError("fetch failed", { cause: { code, address: "credential-must-not-escape" } }); });
     globalThis.fetch = fetchMock as typeof fetch;
 
     await expect(callStructured({
       role: "analyzer", telemetryOperation: "provider_transport_test", system: "system", user: "user", schema: z.object({ ok: z.boolean() }), maxTokens: 2048,
     })).rejects.toThrow("fetch failed");
     expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(getRoleCallTelemetry().analyzer).toMatchObject({ failures: 1, requests: 1, provider_stream_failures: { [label]: 1 } });
+    expect(JSON.stringify(getRoleCallTelemetry())).not.toContain("credential-must-not-escape");
+  });
+
+  it.each(["AbortError", "TimeoutError"])("records caller %s without retry or raw reason", async (name) => {
+    process.env.LLM_PROVIDER = "volcengine-responses";
+    process.env.LLM_API_KEY = "not-a-real-key";
+    process.env.LLM_BASE_URL = "https://ark.cn-beijing.volces.com/api/coding/v3";
+    const controller = new AbortController();
+    const reason = new DOMException("private-cancellation-message", name);
+    globalThis.fetch = vi.fn(async () => {
+      controller.abort(reason);
+      throw reason;
+    }) as typeof fetch;
+    await expect(callStructured({ role: "validator", system: "system", user: "user",
+      schema: z.object({ ok: z.boolean() }), signal: controller.signal,
+    })).rejects.toBe(reason);
+    expect(globalThis.fetch).toHaveBeenCalledOnce();
+    expect(getRoleCallTelemetry().validator.provider_stream_failures).toEqual({
+      [name === "TimeoutError" ? "transport_timeout" : "transport_aborted"]: 1,
+    });
+    expect(JSON.stringify(getRoleCallTelemetry())).not.toContain("private-cancellation-message");
   });
 
   it("propagates the full callStructured wall-clock deadline through an endlessly buffered Responses stream", async () => {
@@ -320,5 +350,6 @@ describe("callStructured through Volcengine Responses", () => {
       role: "analyzer", system: "system", user: "user", schema: z.object({ ok: z.boolean() }), maxTokens: 2048,
     })).rejects.toThrow("LLM stream exceeded wall-clock timeout of 5ms");
     expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    expect(getRoleCallTelemetry().analyzer.provider_stream_failures).toEqual({ transport_timeout: 1 });
   });
 });

@@ -210,6 +210,7 @@ describe("Volcengine Responses EOF recovery", () => {
 
   it("does not retry a provider-declared incomplete response", async () => {
     await withVolcengineEnvironment(async () => {
+      resetRoleCallTelemetry();
       const fetchMock = vi.fn().mockResolvedValue(sse([
         { type: "response.incomplete", response: { status: "incomplete", incomplete_details: { reason: "max_output_tokens" } } },
       ]));
@@ -222,12 +223,79 @@ describe("Volcengine Responses EOF recovery", () => {
         schema: z.object({ ok: z.boolean() }),
       })).rejects.toMatchObject({ retryable: false, streamDiagnostic: { terminal: "incomplete" } });
       expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(getRoleCallTelemetry().analyzer).toMatchObject({ failures: 1,
+        provider_stream_failures: { incomplete: 1 }, output_stop_reasons: { max_output_tokens: 1 } });
+      resetRoleCallTelemetry();
+    });
+  });
+
+  it("records malformed JSON separately and never retries or persists its body", async () => {
+    await withVolcengineEnvironment(async () => {
+      resetRoleCallTelemetry();
+      const fetchMock = vi.fn().mockResolvedValue(new Response("data: private-invalid-json\n\n", { headers: { "Content-Type": "text/event-stream" } }));
+      globalThis.fetch = fetchMock;
+      await expect(callStructured({ role: "coverage", system: "Return boolean", user: "ok", schema: z.object({ ok: z.boolean() }) }))
+        .rejects.toMatchObject({ streamDiagnostic: { terminal: "invalid_json" }, retryable: false });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(getRoleCallTelemetry().coverage).toMatchObject({ calls: 1, failures: 1, requests: 1, provider_stream_failures: { invalid_json: 1 } });
+      expect(JSON.stringify(getRoleCallTelemetry())).not.toContain("private-invalid-json");
+      resetRoleCallTelemetry();
+    });
+  });
+
+  it("records filtered incomplete evidence without retrying or retaining private fields", async () => {
+    await withVolcengineEnvironment(async () => {
+      resetRoleCallTelemetry();
+      const fetchMock = vi.fn().mockResolvedValue(sse([{ type: "response.incomplete", response: {
+        id: "private-id", incomplete_details: { reason: "content_filter", content_filter: { details: "private-source" } },
+        usage: { input_tokens: 10, output_tokens: 42, output_tokens_details: { reasoning_tokens: 30 } },
+      } }]));
+      globalThis.fetch = fetchMock;
+      await expect(callStructured({ role: "coverage", system: "Return boolean", user: "ok", schema: z.object({ ok: z.boolean() }),
+        telemetryOperation: "display_quote_countercheck" })).rejects.toThrow();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const diagnostic = { reason: "content_filter", reasonShape: "string", contentFilterPresent: true, usagePresent: true,
+        inputTokens: 10, outputTokens: 42, reasoningTokens: 30 };
+      expect(getRoleCallTelemetry().coverage).toMatchObject({ failures: 1, requests: 1, output_stop_reasons: { content_filter: 1 },
+        provider_incomplete_diagnostics: [diagnostic], provider_incomplete_diagnostics_dropped: 0,
+        by_operation: { display_quote_countercheck: { provider_incomplete_diagnostics: [diagnostic] } } });
+      expect(JSON.stringify(getRoleCallTelemetry())).not.toContain("private");
+      resetRoleCallTelemetry();
+    });
+  });
+
+  it("records unknown versus missing incomplete reasons without usage or private reason text", async () => {
+    await withVolcengineEnvironment(async () => {
+      for (const reason of ["private-provider-reason", undefined]) {
+        resetRoleCallTelemetry();
+        const fetchMock = vi.fn().mockResolvedValue(sse([{ type: "response.incomplete", response: { incomplete_details: { reason } } }]));
+        globalThis.fetch = fetchMock;
+        await expect(callStructured({ role: "coverage", system: "Return boolean", user: "ok", schema: z.object({ ok: z.boolean() }) })).rejects.toThrow();
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(getRoleCallTelemetry().coverage).toMatchObject({ failures: 1, output_stop_reasons: { [reason ? "other" : "incomplete"]: 1 } });
+        expect(JSON.stringify(getRoleCallTelemetry())).not.toContain("private-provider-reason");
+      }
+      resetRoleCallTelemetry();
     });
   });
 });
 
 describe("role-level LLM telemetry", () => {
   afterEach(() => resetRoleCallTelemetry());
+
+  it("caps incomplete observations, counts overflow and returns detached safe snapshots", () => {
+    resetRoleCallTelemetry();
+    for (let i = 0; i < 18; i++) recordRoleCallTelemetry("coverage", 1, 1, true, [], "display_quote_countercheck", {
+      incompleteDiagnostics: [{ reason: "other", reasonShape: "string", contentFilterPresent: false, usagePresent: true, outputTokens: i }],
+    });
+    const snapshot = getRoleCallTelemetry().coverage;
+    expect(snapshot.provider_incomplete_diagnostics).toHaveLength(16);
+    expect(snapshot.provider_incomplete_diagnostics_dropped).toBe(2);
+    snapshot.provider_incomplete_diagnostics[0]!.outputTokens = 999;
+    expect(getRoleCallTelemetry().coverage.provider_incomplete_diagnostics[0]!.outputTokens).toBe(0);
+    resetRoleCallTelemetry();
+    expect(getRoleCallTelemetry().coverage.provider_incomplete_diagnostics).toEqual([]);
+  });
 
   it("records attempts, failures and percentile latency separately for each role", () => {
     recordRoleCallTelemetry("coverage", 10, 1, false, [], "display_quote_countercheck");
