@@ -52,8 +52,9 @@
 归档自校验被当作版本绑定、无 batch 输入缺口未计入统计；均已修复并加入反例。
 第二轮发现窗口结束后、asOf 前完成的 batch 可能重复计为无 batch 尝试；已修复并加入边界测试。
 另修正测试夹具的 quote 字符长度，保留严格 locator 断言。
+最终自查将被拒候选进一步区分为“审计仍有草案片段”与“无文本”，保留对应 claim 文本但不提升为可发布成员。
 
-- `npx vitest run evals/brief-density/export.test.ts`：10/10 通过。
+- `npx vitest run evals/brief-density/export.test.ts`：11/11 通过。
 - `npm run typecheck`：TS7 与 TS6 均通过。
 - `npx eslint evals/brief-density --max-warnings=0`：通过。
 - 未运行 A1：本次没有修改 prompt、模型、数据源、评测集或发布语义，A1 不执行该只读导出路径。

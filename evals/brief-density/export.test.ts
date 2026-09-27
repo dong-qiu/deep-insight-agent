@@ -73,7 +73,7 @@ describe("private Brief density export", () => {
     expect(record.input_evidence[0].gaps).toEqual([]);
     expect(record.input_evidence[0].archive.content_version_verified).toBe(true);
     expect(record.candidates[0].citations[0].locator_verified).toBe(true);
-    expect(record.candidates[1].candidate_text_status).toBe("rejected_text_not_persisted");
+    expect(record.candidates[1].candidate_text_status).toBe("not_persisted");
     expect(readFileSync(opts.dbPath)).toEqual(before);
     expect(existsSync(`${opts.dbPath}-wal`)).toBe(false);
     expect(statSync(opts.outputDir).mode & 0o777).toBe(0o700);
@@ -95,6 +95,16 @@ describe("private Brief density export", () => {
     const candidate = readPool(opts.outputDir)[0].candidates[0];
     expect(candidate.terminal).toBe("published");
     expect(candidate.report_outcomes.map((r: { terminal: string }) => r.terminal)).toEqual(["published", "history_or_freshness_filtered"]);
+  });
+  it("preserves rejected draft text present in coverage audits without approving it", () => {
+    const { opts } = setup(); const db = new Database(opts.dbPath);
+    db.prepare("UPDATE display_coverage_candidate_audit SET decision=? WHERE candidate_id='rejected'").run(JSON.stringify({ claims: [{ claim_id: "statement:1", field: "statement", text: "Unverified draft", supports: false }] })); db.close();
+    exportBriefDensity(opts); const rejected = readPool(opts.outputDir)[0].candidates[1];
+    expect(rejected.candidate_text_status).toBe("audit_claim_text_available");
+    expect(rejected.audit_claims[0].text).toBe("Unverified draft");
+    expect(rejected.insight).toBeNull();
+    expect(rejected.experiment_eligibility).toBe("not_evaluated");
+    expect(rejected.terminal).toBe("display_audit_rejected");
   });
   it("rejects a correctly hashed archive envelope for a different source version", () => {
     const { opts } = setup({ wrongArchive: true }); exportBriefDensity(opts);

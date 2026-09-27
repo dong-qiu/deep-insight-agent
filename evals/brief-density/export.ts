@@ -163,6 +163,9 @@ export function exportBriefDensity(o: ExportOptions): { batches: number; candida
           const citations = insight ? rows(db, "SELECT * FROM citation WHERE insight_id=? ORDER BY citation_index", String(insight.id)).map((c) => quoteEvidence(c, sources)) : [];
           const keptAudit = insight ? rows(db, "SELECT * FROM display_coverage_audit WHERE batch_id=? AND insight_id=?", batchId, String(insight.id))[0] ?? null : null;
           const selection = insight ? decisions.filter((d) => d.insight_id === insight.id) : [];
+          const auditDecision = obj(parsed(audit?.decision));
+          const auditClaims = Array.isArray(auditDecision?.claims) ? auditDecision.claims.filter((claim) => obj(claim) && typeof claim.text === "string") : [];
+          const auditTextAvailable = auditClaims.length > 0 || typeof auditDecision?.statement_citation_claim === "string";
           const terminal = terminalBucket(audit, insight, checks, selection, publishedIds.has(insight?.id));
           const reportOutcomes = reviews.map((r) => ({ report_id: r.report_id, status: r.status, generated_at: r.generated_at,
             terminal: terminalBucket(audit, insight, checks, selection.filter((d) => d.report_id === r.report_id),
@@ -170,7 +173,8 @@ export function exportBriefDensity(o: ExportOptions): { batches: number; candida
           counts[topic][terminal] = (counts[topic][terminal] ?? 0) + 1;
           candidateTotal++;
           return { audit, insight, kept_audit: keptAudit, checks, citations, selection, terminal, report_outcomes: reportOutcomes,
-            candidate_text_status: insight ? "retained_text_available" : "rejected_text_not_persisted",
+            candidate_text_status: insight ? "retained_text_available" : auditTextAvailable ? "audit_claim_text_available" : "not_persisted",
+            audit_claims: auditClaims, // Rejected drafts are diagnostic text, never approved report members.
             experiment_eligibility: "not_evaluated", // S0 does not approve evidence for publication.
           };
         });

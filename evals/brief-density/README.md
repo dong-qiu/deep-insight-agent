@@ -44,7 +44,8 @@ CLI 只打印记录数量；正文、候选和来源 URL 均写入私有产物�
 文件 SHA/size、envelope 版本、structured hash/body kind、生产 normalizeBody 和对应长度上限处理后的正文。
 这些检查不能代替展示审计或 validator。所有候选的 `experiment_eligibility` 均为 not_evaluated。
 
-失败诊断只有 hashes/reason，不含完整候选文本；即使成功解引用，也只报告已观测候选下限。
+被拒候选的完整 coverage audit 可能保留 claim 文本，单独标为 audit_claim_text_available；缺 Insight 不等于缺一切文本。
+失败尝试的有损 diagnostics 只有 hashes/reason，不含完整候选文本；即使成功解引用，也只报告已观测候选下限。
 未提取事实、事件边界、互补性及阅读价值需要来源标注，不能从候选审计数量推算。
 证据 gaps 按每条导出记录内的输入 revision occurrence 计数，另外按有/无 batch 分层，不能当独立文章数。
 
