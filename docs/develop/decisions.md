@@ -1632,3 +1632,22 @@ Responses SSE 在已收到 `response.completed` 后仍可能缺少 forced functi
 运行结果和成本边界更可预测；偶发 completed-protocol defect 会使当前调用失败，而不会被额外请求掩盖。
 该行为涉及 provider/validator 运行时，必须在精确提交上重新执行 provider canary、probe 与 prototype-safety
 eval；它不改变引用白名单或报告发布的 fail-closed 语义。
+
+---
+
+## ADR-0035: 内部原型 reader 微基准采用相对与绝对双预算
+
+- **日期**: 2026-09-27
+- **状态**: Accepted（用户批准 10% 与 0.1 ms）
+
+旧 CI 对约 0.2 ms 的 reader 微基准采用 5% 相对硬门；主干一次从 0.219 ms 增至 0.264 ms
+即阻断镜像发布。该事实不能单独证明噪声，也不能把微基准当成 HTTP/整页 P95。
+
+保留 5% 作为告警；只有相对增加严格超过 10% **且**绝对增加严格超过 0.1 ms 才性能阻断。
+这是一项原型阶段接受的预算调整，不是性能优化或统计显著性结论。沿用冻结 P0c reader、v3 fixture、
+预热/轮次和交替采样；benchmark 输出升至 v4，保存绝对和相对变化，旧证据不改写。
+CI 重算判定、保留 warning，并继续阻断执行失败、无效或不适用的证据。诊断 A/A 不可用于放行。
+
+正确性、权限、引用白名单、raw archive 及生产隔离门不变，不因此准入 P1 或扩展原型范围。
+固定三次本地跨进程 A/A 仅供测量观察；后续若规模/负载目标变化，另行重新定标预算。
+验收与测量边界见 [报告读取性能预算](../plan/specs/report-reader-performance-budget.md)。
