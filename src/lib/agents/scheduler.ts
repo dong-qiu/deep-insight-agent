@@ -5,6 +5,7 @@
  *  待分析项选择见 analysis-selection.ts；源健康自愈（熔断/半开/零产出）见 source-health.ts。 */
 import { getEffectiveSources, loadStaticConfig } from "../config/index.js";
 import type { DB } from "../db/index.js";
+import { safeError } from "../runtime/diagnostics.js";
 import { finishRun, getTopic, listTopics } from "../db/repos.js";
 import { NOOP_P1_TELEMETRY_SINK, type P1TelemetrySink } from "../capabilities/p1-telemetry.js";
 import { claimSourceCollectTrace, createSourceCollectTrace, createScheduledSourceCollectTrace, createScheduledTraceRequest } from "../db/provenance.js";
@@ -71,7 +72,7 @@ export function reportPlan(
     : { type: warm.type, windowHours: warm.windowHours, items: warm.items };
 }
 
-const errMsg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+const errMsg = (e: unknown): string => safeError(e).message;
 
 function utcIsoWeek(now: Date): string {
   const date = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
@@ -270,7 +271,7 @@ export async function runScheduledTopicPipeline(
   try {
     runTechLeadExtraction(db, batch, validation, endIso, { traceId: input.traceId, assertWrite: input.assertWrite });
   } catch (e) {
-    runLogger({ stage: "tech-leads" }).warn({ topicId: topic.id, batchId: batch.id, err: errMsg(e) }, "技术线索派生失败，继续生成报告");
+    runLogger({ stage: "tech-leads" }).warn({ topicId: topic.id, batchId: batch.id, err: e }, "技术线索派生失败，继续生成报告");
   }
   const prevReportId = previousReportForTopic(db, topic.id, input.reportType);
   const freshItems = input.reportType === "brief" ? items.filter((item) => contentObservedAt(item) >= freshnessSince) : [];
@@ -344,7 +345,7 @@ export async function runPipelineForTopic(
   const validation = await runValidation(db, batch, items, { traceId: opts.traceId, assertWrite: opts.assertWrite, telemetry });
   // 规划派生是 non-blocking：保留报告主链路，即使线索阶段失败也由 trace 记录为可解释的 partial。
   try { runTechLeadExtraction(db, batch, validation, endIso, { traceId: opts.traceId, assertWrite: opts.assertWrite }); } catch (error) {
-    runLogger({ stage: "tech-leads" }).warn({ topicId: topic.id, batchId: batch.id, err: errMsg(error) }, "深挖技术线索派生失败，继续生成报告");
+    runLogger({ stage: "tech-leads" }).warn({ topicId: topic.id, batchId: batch.id, err: error }, "深挖技术线索派生失败，继续生成报告");
   }
   const prevReportId = previousReportForTopic(db, topic.id, "deep_dive");
   return runReportGen(db, { topic, batch, validation, type: "deep_dive", prevReportId, traceId: opts.traceId, assertWrite: opts.assertWrite, anchor: opts.anchor });

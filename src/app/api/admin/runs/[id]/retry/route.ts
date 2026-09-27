@@ -8,6 +8,7 @@
 import { NextResponse } from "next/server";
 import { collectSource } from "../../../../../../lib/agents/collector.js";
 import { getDb } from "../../../../../../lib/db/index.js";
+import { safeError } from "../../../../../../lib/runtime/diagnostics.js";
 import { claimSourceCollectTrace, createSourceCollectTrace } from "../../../../../../lib/db/provenance.js";
 import { getRun, getSource } from "../../../../../../lib/db/repos.js";
 import { p1TelemetrySinkForApp } from "../../../../../p1-telemetry-composition.js";
@@ -61,7 +62,7 @@ export async function POST(
     } catch (e) {
       // collectSource 内部 runJob 已落 failed Run + 触发告警；这里只汇报给 UI
       return NextResponse.json(
-        { status: "failed", error: (e as Error).message.slice(0, 200) },
+        { status: "failed", error: safeError(e).message },
         { status: 502 },
       );
     }

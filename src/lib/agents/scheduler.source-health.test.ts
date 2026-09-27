@@ -210,7 +210,7 @@ describe("采集阶段接线", () => {
     const summary = await runScheduledPipeline(db);
 
     expect(summary.collected).toContainEqual(expect.objectContaining({ source: "s_good", status: "done", traceId: expect.any(String), fetched: 3, inserted: 2, updated: 1 }));
-    expect(summary.collected).toContainEqual({ source: "s_bad", error: "fetch failed" });
-    expect(summary.errors).toContain("collect s_bad: fetch failed");
+    expect(summary.collected).toContainEqual({ source: "s_bad", error: "operation_failed" });
+    expect(summary.errors).toContain("collect s_bad: operation_failed");
   });
 });

@@ -11,6 +11,7 @@
  *  **成本**：复用 ANALYZER_MODEL（默认 Opus tier）。典型 5-10 条重点 + 1 Executive ≈ \$0.05–0.15，
  *  低于单 PPT \$0.20 上限。并发跑（Promise.all），中转站不稳时自动走重试链路。 */
 import { z } from "zod/v4";
+import { safeError } from "../runtime/diagnostics.js";
 import { callStructured } from "../runtime/llm.js";
 import { facetLabel } from "../topics/facets.js";
 import type { Cost, Insight, Topic } from "../types.js";
@@ -66,7 +67,7 @@ ${ins.importance_basis}
     // 我方主动 abort：任何错误都按"取消"语义处理（SDK 实际抛 APIUserAbortError 而非 AbortError）
     if (signal?.aborted) return null;
     const err = e as Error;
-    console.warn(`  ⚠️ ppt-polish 失败（insight=${ins.id}）：${err.message.slice(0, 80)} → A fallback`);
+    console.warn(`  ⚠️ ppt-polish 失败：${safeError(err).message} → A fallback`);
     return null;
   }
 }
@@ -101,7 +102,7 @@ ${numbered}
   } catch (e) {
     if (signal?.aborted) return null;
     const err = e as Error;
-    console.warn(`  ⚠️ ppt-polish 执行摘要失败：${err.message.slice(0, 80)} → 跳过 Executive 页`);
+    console.warn(`  ⚠️ ppt-polish 执行摘要失败：${safeError(err).message} → 跳过 Executive 页`);
     return null;
   }
 }

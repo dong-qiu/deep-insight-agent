@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Insight, Topic } from "../types.js";
 import { type DB, openDb } from "./index.js";
 import {
@@ -110,9 +110,14 @@ describe("getPolishCacheEntry / upsertPolishCacheEntry", () => {
   });
 
   it("polish_json 损坏 → 返 null + warn（不抛）", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     // 手动塞个非法 JSON
     db.prepare("INSERT INTO ppt_polish_cache (report_id, inputs_hash, polish_json, tokens, amount, created_at) VALUES (?,?,?,?,?,datetime('now'))")
-      .run("rep_bad", "h", "{not json", 0, 0);
-    expect(getPolishCacheEntry(db, "rep_bad")).toBeNull();
+      .run("rep_bad", "h", "{synthetic-private-ppt", 0, 0);
+    try {
+      expect(getPolishCacheEntry(db, "rep_bad")).toBeNull();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("operation_failed"));
+      expect(JSON.stringify(warn.mock.calls)).not.toContain("synthetic-private");
+    } finally { warn.mockRestore(); }
   });
 });

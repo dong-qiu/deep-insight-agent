@@ -29,7 +29,7 @@ function metricFactOccurredAt(db: DB, kind: Exclude<FactKind, "funnel">, id: str
 }
 function safelyRecord(label: string, write: () => void): void {
   try { write(); } catch (error) {
-    runLogger({ stage: "p1-metrics" }).warn({ err: error instanceof Error ? error.message : String(error) }, `${label} 指标事实写入失败（不影响主流水线）`);
+    runLogger({ stage: "p1-metrics" }).warn({ err: error }, `${label} 指标事实写入失败（不影响主流水线）`);
   }
 }
 function alertIfQuarantined(db: DB, kind: FactKind, id: string, occurredAt: string): void {

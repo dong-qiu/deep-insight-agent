@@ -1,6 +1,6 @@
 /** analysis-cache（ADR-0009 切片1）单测 —— 内存库，无需 API key，CI 可跑。
  *  重点：键稳定 + 版本隔离、单源归属、hit_count 计 would-be 命中、命中率度量、行为中性（异常吞）。 */
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ContentItem, Insight } from "../types.js";
 import type { HistoricalEvent } from "../agents/analyzer.js";
 import {
@@ -121,6 +121,16 @@ describe("recordAnalysisCache", () => {
 });
 
 describe("行为中性 / 健壮", () => {
+  it("SQLite failure remains nonfatal and never logs its private payload", () => {
+    recordAnalysisCache(db, "t1", [mkItem("ci1", "h1")], [], "v1");
+    db.exec("UPDATE analysis_cache SET created_at='2000-01-01'; CREATE TRIGGER fail_cache_delete BEFORE DELETE ON analysis_cache BEGIN SELECT RAISE(FAIL, 'synthetic-private-analysis'); END");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(recordAnalysisCache(db, "t1", [], [], "v1")).toEqual({ writes: 0, wouldHit: 0 });
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("sqlite_constraint"));
+      expect(JSON.stringify(warn.mock.calls)).not.toContain("synthetic-private");
+    } finally { warn.mockRestore(); }
+  });
   it("空 items → 不报错、零写入", () => {
     expect(recordAnalysisCache(db, "t1", [], [], "v1")).toEqual({ writes: 0, wouldHit: 0 });
     expect(analysisCacheStats(db)).toEqual({ distinctKeys: 0, totalAnalyses: 0, wouldHit: 0, wouldHitRate: 0 });

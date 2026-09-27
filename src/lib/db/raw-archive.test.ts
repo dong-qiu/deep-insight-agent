@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { closeDb, getDb, openDb, type DB } from "./index.js";
 import { applyProvenanceMigrations } from "./provenance-migrations.js";
 import { getContentItem, insertContentItem, insertSource } from "./repos.js";
-import { planRawArchive, reconcileRawArchiveEffects, writePlannedRawArchive } from "./raw-archive.js";
+import { markRawArchiveUnknown, planRawArchive, reconcileRawArchiveEffects, writePlannedRawArchive } from "./raw-archive.js";
 import type { ContentItem, Source } from "../types.js";
 
 const source: Source = { id: "source_raw", name: "raw", type: "rss", endpoint: "https://raw.test/feed", topic_ids: [], fetch_interval: "1h", backfill: null, enabled: true };
@@ -20,6 +20,15 @@ beforeEach(() => {
 afterEach(() => { closeDb(); delete process.env.DATA_DIR; delete process.env.DB_PATH; db.close(); });
 
 describe("raw archive generation effects", () => {
+  it("persists only known archive reason codes, never arbitrary filesystem error details", () => {
+    insertContentItem(db, item("ci_private_error"));
+    const plan = planRawArchive(db, { contentId: "ci_private_error", raw: "original raw" });
+    markRawArchiveUnknown(db, plan.effectId, "synthetic-private-filesystem-path");
+    const row = db.prepare("SELECT error FROM generation_effect WHERE id=?").get(plan.effectId) as { error: string };
+    expect(JSON.parse(row.error)).toEqual({ reason_code: "raw_archive_write_failed" });
+    expect(row.error).not.toContain("synthetic-private");
+    expect(getContentItem(db, "ci_private_error")).toBeNull();
+  });
   it("writes intent, stages, hashes, finalizes, and is idempotently reconciled", () => {
     insertContentItem(db, item("ci_raw_write"));
     const plan = planRawArchive(db, { contentId: "ci_raw_write", raw: "original raw" });

@@ -5,6 +5,7 @@ import { performance } from "node:perf_hooks";
 import type { DB } from "../db/index.js";
 import { finishRun, getRun, insertRun } from "../db/repos.js";
 import { notifyFailure } from "./alert.js";
+import { safeError } from "./diagnostics.js";
 import type { Cost, Run } from "../types.js";
 
 export interface JobSpec {
@@ -63,16 +64,16 @@ export async function runJob<T>(
     finishRun(db, runId, { status: "done", cost, duration_ms: elapsed() });
     return { run: getRun(db, runId)!, result };
   } catch (e) {
-    const err = e as Error;
+    const err = safeError(e);
     spec.assertWrite?.();
     finishRun(db, runId, {
       status: "failed", cost, duration_ms: elapsed(),
-      error: { type: err.name, message: err.message, stack: err.stack },
+      error: err,
     });
     // 失败告警（运维附条件②）：fire-and-forget，ALERT_WEBHOOK 未配置则 no-op，永不连累抛出。
     // silent（半开探测）→ 跳过：探测失败属预期、不刷告警（ADR-0008 决定② / 切片3b-2，评审🔴）。
     if (!spec.silent) {
-      notifyFailure({ runId, kind: spec.kind, target: spec.target, errorType: err.name, message: err.message });
+      notifyFailure({ runId, kind: spec.kind, target: spec.target, errorType: err.type, message: err.message });
     }
     throw e;
   }

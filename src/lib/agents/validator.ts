@@ -5,6 +5,7 @@
  *  - 处置矩阵 / verdict：见 architecture「数据模型 · 校验结果 · 校验判定流程」。
  */
 import { createHash } from "node:crypto";
+import { safeError } from "../runtime/diagnostics.js";
 import {
   validationDegradedRate, validatorBackoffMs, validatorBatchOn,
   validatorRetries, validatorThinking,
@@ -521,7 +522,7 @@ export async function validateBatch(
     try {
       cache?.set(key, cacheInput, out);
     } catch (e) {
-      console.warn(`  ⚠️ 一致性缓存写失败（已忽略，不影响判定）（${(e as Error).message}）`);
+      console.warn(`  ⚠️ 一致性缓存写失败（已忽略，不影响判定）（${safeError(e).message}）`);
     }
   };
 
@@ -542,7 +543,7 @@ export async function validateBatch(
             results.push(await judgeWithRetry(evidence.claim, body, onCost, metadata, evidence.quote, signal));
           } catch (error) {
             throwIfAborted(signal);
-            console.warn(`  ⚠️ 一致性校验失败，记为校验失败（${(error as Error).message}）`);
+            console.warn(`  ⚠️ 一致性校验失败，记为校验失败（${safeError(error).message}）`);
             results.push({ error: true });
           }
         }
@@ -567,7 +568,7 @@ export async function validateBatch(
             console.warn(`  ⚠️ relay 容量恢复耗尽，本组 ${group.length} 条不扇出逐条复判，记为校验失败`);
             results = group.map(() => ({ error: true }));
           } else {
-            console.warn(`  ⚠️ 批量一致性校验失败，本组 ${group.length} 条退回逐条复判（${(error as Error).message}）`);
+            console.warn(`  ⚠️ 批量一致性校验失败，本组 ${group.length} 条退回逐条复判（${safeError(error).message}）`);
             results = await judgeIndividually();
           }
         }

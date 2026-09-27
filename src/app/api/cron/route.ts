@@ -9,6 +9,7 @@ import { getDb } from "../../../lib/db/index.js";
 import { recoverOrphanedRuns } from "../../../lib/db/repos.js";
 import { deploymentAnchorPublicationIfEnabled } from "../../../lib/runtime/integrity-anchor-runtime.js";
 import { runLogger } from "../../../lib/runtime/logger.js";
+import { safeError } from "../../../lib/runtime/diagnostics.js";
 import { p1TelemetrySinkForApp } from "../../p1-telemetry-composition.js";
 
 export const dynamic = "force-dynamic";
@@ -62,8 +63,8 @@ export async function POST(req: Request): Promise<NextResponse> {
     log.info({ topics: summary.topics.length, errors: summary.errors.length }, "定时管线完成");
     return NextResponse.json({ ok: true, mode, summary });
   } catch (e) {
-    const message = e instanceof Error ? e.message : String(e);
-    log.error({ err: message }, "定时管线失败");
+    const message = safeError(e).message;
+    log.error({ err: e }, "定时管线失败");
     return NextResponse.json({ ok: false, error: message }, { status: 500 });
   }
 }

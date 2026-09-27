@@ -4,12 +4,13 @@
  *  纯决策逻辑在 run-stats.ts（evaluateCircuit/evaluateZeroYield）；接线特征化测试见 scheduler.source-health.test.ts。 */
 import { appendAudit } from "../db/audit.js";
 import type { DB } from "../db/index.js";
+import { safeError } from "../runtime/diagnostics.js";
 import { getSource, listProbeCandidates, listRuns, reviveSource, setCircuit, setLastProbe } from "../db/repos.js";
 import { notifySourceCircuit, notifySourceRevived, notifySourceZeroYield } from "../runtime/alert.js";
 import { circuitConfig, evaluateCircuit, evaluateZeroYield } from "../runtime/run-stats.js";
 import type { Run, Source } from "../types.js";
 
-const errMsg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+const errMsg = (e: unknown): string => safeError(e).message;
 
 /** source_id → 其 ingest run 列表（按传入 run 集分组）。 */
 function groupBySource(runs: Run[]): Map<string, Run[]> {

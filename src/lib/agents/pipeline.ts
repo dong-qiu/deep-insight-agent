@@ -2,6 +2,7 @@
  *  纯落库与状态机逻辑见 db/analysis.ts、runtime/jobs.ts（可无 key 测）；本文件含真模型调用，
  *  端到端需 ANTHROPIC_API_KEY，由团队/定时任务跑。 */
 import type { DB } from "../db/index.js";
+import { safeError } from "../runtime/diagnostics.js";
 import { saveAnalysisBatch, saveValidationResult } from "../db/analysis.js";
 import { NOOP_P1_TELEMETRY_SINK, type P1TelemetrySink } from "../capabilities/p1-telemetry.js";
 import {
@@ -280,7 +281,7 @@ export function runTechLeadExtraction(
     })();
   } catch (error) {
     emitTrace(db, opts.traceId, { stage: "map_direction", event_type: "failed", error: { reason_code: "map_direction_failed" } }, opts.assertWrite);
-    console.warn("⚠️ 技术机会投影失败（不影响技术线索与报告）", error);
+    console.warn("⚠️ 技术机会投影失败（不影响技术线索与报告）", safeError(error));
     return leads;
   }
   try {
@@ -298,7 +299,7 @@ export function runTechLeadExtraction(
     })();
   } catch (error) {
     emitTrace(db, opts.traceId, { stage: "derive_opportunity", event_type: "failed", error: { reason_code: "derive_opportunity_failed" } }, opts.assertWrite);
-    console.warn("⚠️ 技术机会投影失败（不影响技术线索与报告）", error);
+    console.warn("⚠️ 技术机会投影失败（不影响技术线索与报告）", safeError(error));
   }
   return leads;
 }

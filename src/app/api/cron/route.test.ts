@@ -34,6 +34,12 @@ beforeEach(() => {
 afterEach(() => { delete process.env.CRON_SECRET; });
 
 describe("POST /api/cron", () => {
+  it("failure responses contain bounded diagnostics instead of private provider text", async () => {
+    pipelineMock.mockRejectedValue(Object.assign(new Error("synthetic-private-provider-payload"), { status: 503 }));
+    const res = await call();
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({ ok: false, error: "http_error_503" });
+  });
   it("mode=collect 仅运行采集周期", async () => {
     const res = await call("collect");
     expect(res.status).toBe(200);

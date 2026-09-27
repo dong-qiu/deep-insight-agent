@@ -52,7 +52,7 @@ export async function POST(
   // 失败由 runJob 标 failed + notifyFailure 兜底；这里 promise rejection 进 logger 不阻塞 response。
   void collectSource(db, source, { traceClaim, telemetry: p1TelemetrySinkForApp() }).then(
     (out) => log.info({ runId: out.runId, fetched: out.fetched, inserted: out.inserted }, "立即抓取完成"),
-    (e) => log.error({ err: (e as Error).message }, "立即抓取失败（runJob 已落 failed Run）"),
+    (e) => log.error({ err: e }, "立即抓取失败（runJob 已落 failed Run）"),
   );
 
   return NextResponse.json(
