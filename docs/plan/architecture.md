@@ -47,7 +47,7 @@
 **主要组件**：
 
 - **Web UI** —— 用户阅读报告与配置主题 / 数据源的入口，详见 `product-definition.md`「UI / UX 设计」。
-- **API 层** —— Next.js API Routes + 中间件：鉴权（NextAuth）、限流（`rate-limit-flexible`）、审计日志、logger 强制脱敏。
+- **API 层** —— Next.js API Routes + 中间件：鉴权（NextAuth）、进程内限流（API 与 Credentials 各自入口）、审计日志、logger 强制脱敏。
 - **Agent 编排层** —— 四个核心 agent 串成端到端管线：`Source → ContentItem → AnalysisBatch → ValidationResult → Report`（实体见「数据模型」，行为见各 spec）。Agent 之间通过共用运行时调用 LLM 与持久化。
 - **共用运行时** —— `src/lib/runtime/`，所有 agent 共享的基础设施：
   - **LLM Client** —— 统一适配多提供商、重试 / 超时 / 限流 / token 计量 / Zod schema 校验；启动校验强制「分析模型 ID ≠ 校验模型 ID」（同源偏差约束）。
@@ -533,7 +533,7 @@ agent 执行单元的状态追踪；由 Job Runner 写入 SQLite，支撑管理�
 
 | 安全维度 | 实现路径 |
 |---|---|
-| 身份与隔离 | NextAuth（email magic link / credential）；session 落 SQLite；管理员路径 `/admin/*` 独立中间件鉴权 |
+| 身份与隔离 | Auth.js Credentials + JWT session（不落 SQLite）；env bootstrap admin 与 SQLite `app_user`；middleware 强制页面/API 角色权限；改密/删用户的旧会话撤销待 B1b，见 [认证保护](specs/auth-hardening.md) |
 | 密钥管理 | 唯一来源 = 环境变量；配置文件以 `${VAR_NAME}` 引用；启动校验缺失即拒；logger 中间件强制脱敏（`api_key` / `token` / `cookie` / `authorization`）；前端不直连外部 API |
 | 传输与存储 | 反向代理（Caddy / Nginx）终止 TLS（自动续证）；敏感字段经 `node:crypto` 字段级加密；持久卷加密（云提供商）；账号删除 → 级联删除 + 备份滞后窗口 30 天后清除 |
 | 输入防护（prompt injection） | 在 `runtime/llm.ts` 包装：外部内容包裹 `<untrusted-source url="…">` 标签 + 指令式文本剥离；用户输入 XSS 防护走 React 默认 + CSP |
@@ -541,7 +541,7 @@ agent 执行单元的状态追踪；由 Job Runner 写入 SQLite，支撑管理�
 | 合规与版权 | `robots.txt` 解析在 `lib/sources/` 适配层；遵守各源 ToS；引用必标来源（schema 强制 `Citation.content_item_id`）；账号注销走级联删除 |
 | 供应链 | GitHub Actions 跑 Dependabot + `npm audit`；lockfile 必 commit；Docker image tag 锁定；模型 SDK 限定官方 |
 | 审计与日志 | SQLite `audit_log` 表（append-only），记录登录 / 配置变更 / 源接入 / 报告生成 / 推送 / 删除；保留 90 天；敏感字段脱敏 |
-| 防滥用 | API 中间件 `rate-limit-flexible`（按账号 / IP / 主题）；超阈值告警 + 临时封禁；与 Cost Meter 联动 |
+| 防滥用 | API middleware 使用进程内 `RateLimiter`；Credentials 入口另设账号/全局密码校验预算与有界桶，见 [B1a](specs/auth-hardening.md)；非分布式限流，不宣称具备全量告警/封禁体系 |
 
 ### 成本控制实现路径（charter A5 落点）
 

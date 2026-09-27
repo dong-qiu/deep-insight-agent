@@ -15,7 +15,7 @@ export default function LoginPage() {
     const res = await signIn("credentials", { email, password, redirect: false });
     setBusy(false);
     if (res?.error) {
-      setErr("登录失败：邮箱或密码不正确");
+      setErr(res.code === "rate_limited" ? "登录尝试过多，请一分钟后重试" : "登录失败：邮箱或密码不正确");
     } else {
       const from = new URLSearchParams(window.location.search).get("from");
       window.location.href = from && from.startsWith("/admin") ? from : "/admin";

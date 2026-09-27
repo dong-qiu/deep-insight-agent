@@ -13,7 +13,7 @@
 
 ## 验证
 
-环境：隔离 worktree；Node `24.19.0`。未复制 `.data` 或 live SQLite，未调用付费模型或生产服务。
+本地验证环境：隔离 worktree；Node `24.19.0`。该阶段未复制 `.data` 或 live SQLite，未调用付费模型或生产服务；后续生产核验另见末节。
 
 | 命令 / 实验 | 结果 |
 |---|---|
@@ -88,7 +88,25 @@ Blocking: 0; Warning: 0
 ## 风险、发布和回退
 
 - **兼容性边界**：6 项环境变量的显式空值/空白、非数值、无穷值、越界或不允许的小数现在报配置错误。未设置仍使用原默认值；合法 `0` 重试 / `0` 退避继续支持。
-- 发布前只核验上述配置是否合法，不输出值。旧空值应删除以使用默认值，或填写合法值；本记录只核验本地隔离配置，不代替生产预检。
+- 发布前只核验上述配置是否合法，不输出值。旧空值应删除以使用默认值，或填写合法值；最初的本地检查已由下方生产预检补齐。
 - 不更改 schema、迁移历史、报告文件和存量记录。可回退代码；不要靠回退恢复非法窗口循环。
-- 未合入、未部署；远程 CI 由 PR 运行后单独核验。生产发布仍走现有不可变镜像流程。
-- B/C/D 批尚未实施；全局配置注册、认证、读者可见性规则、备份和任务取消等不能据此记为完成。
+- A 批已合入并部署，证据见下节；B1a 在后续独立分支启动。全局配置注册、旧会话撤销、读者可见性规则、备份和任务取消等不能据此记为完成。
+
+## 合入、生产核验与清理（2026-09-27）
+
+- [PR #359](https://github.com/dong-qiu/deep-insight-agent/pull/359) 于 15:14 UTC 合入，
+  merge SHA `5f8efa0da00e5658182c659dbfdc728c7f7f832c`；原分支 head 为 `c10dbcfd8bd84e05fe435c26de4acabced3f2c23`。
+- [主干 CI](https://github.com/dong-qiu/deep-insight-agent/actions/runs/36328803794)、
+  [不可变镜像构建](https://github.com/dong-qiu/deep-insight-agent/actions/runs/36329266918)、
+  [生产部署](https://github.com/dong-qiu/deep-insight-agent/actions/runs/36329479595) 均成功。
+- 生产预检执行本次 `env.ts` 的同一解析函数：六项变量均未显式设置、原默认值合法；不输出值，不改生产配置。
+- 15:24 UTC 切换前检查：运行 Run = 0，queued/claimed dispatch = 0；没有并行发布，避开 16:50–17:30 UTC 管线窗口。
+- 按指定 SHA 镜像 code-only 切换，未覆盖 `.env.local`。实际运行 SHA 与 merge 一致，digest 为
+  `sha256:affc0449caf326780457a1f05374fce7a561b088ccafb7268dccf00c0254758a`。
+- `/api/health` 200 / DB `ok`；worker 专用健康检查 200 / `ready`；app、worker 健康，cron 运行；
+  两次相隔超过 30 秒的检查均为零重启。
+- 只读 DB 查询报告数为 286，与发布前一致；最新完成报告的 md/html 文件可读且非空；
+  使用现有管理员凭据在内存中登录，真实报告页面返回 200、正文非空。未打印凭据、cookie 或正文；未生成新报告。
+- 清理前 dry-run 与 PR 元数据确认分支没有在合并后推进、worktree 干净且未锁定。
+  仅移除本批 `insight-agent-tech-debt-foundation` worktree 和 `fix/tech-debt-foundation` 本地分支；
+  远程 head 已自动删除。其他清理候选及并行日报信息密度工作均保留。
