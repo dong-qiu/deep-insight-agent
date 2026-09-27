@@ -1,8 +1,5 @@
-/** Auth.js v5 共享配置 —— **runtime-safe**（middleware 与完整 auth.ts 都基于它）。
- *  这里不含 DB、不含 Credentials 的 authorize 实现：middleware 只读 JWT 里的 role
- *  （由 jwt/session callback 搬运），无需 DB。真正查库验密码的 Credentials provider（Node-only、
- *  scrypt + better-sqlite3）在 auth.ts 里注入。这是 Auth.js「split your config」的标准拆法，
- *  让数据库后端鉴权与前置 middleware 保持解耦，也保留将来迁回 Edge 的兼容性。 */
+/** Auth.js runtime-safe 基础配置/公开类型。两处实际认证实例必须使用 auth.node-config：
+ * 它添加只读凭据版本检查；本文件本身不含 DB 或 Credentials，不可单独用作认证实例。 */
 import type { DefaultSession, NextAuthConfig } from "next-auth";
 
 export type Role = "admin" | "viewer";
@@ -21,11 +18,8 @@ export const authConfig = {
   pages: { signIn: "/login" },
   providers: [], // 真正的 Credentials provider 在 auth.ts 注入（Node 侧、带 DB authorize）
   callbacks: {
-    // role 随登录写入 JWT，再由 session 暴露给服务端组件 / middleware（分权唯一事实来源）。
-    jwt({ token, user }) {
-      if (user) token.role = (user as AppUser).role;
-      return token;
-    },
+    // Base-only authentication must fail closed if a future caller forgets Node verification.
+    jwt() { return null; },
     session({ session, token }) {
       if (session.user) session.user.role = (token.role as Role) ?? "viewer"; // 缺省最小权限
       return session;
