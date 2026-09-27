@@ -17,7 +17,9 @@ const at = "2026-09-24T17:00:00.000Z";
 function setup(options: { wrongArchive?: boolean; failedOnly?: boolean; diagnostics?: boolean; completedAfterWindow?: boolean } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "brief-density-")); dirs.push(dir);
   const dbPath = join(dir, "offline.db");
-  const db = openDb(dbPath); applyProvenanceMigrations(db);
+  // Build the real migrated schema in memory; the exporter still reads a real standalone file.
+  // Avoid hundreds of fixture-only fsyncs under CI coverage and parallel test load.
+  const db = openDb(":memory:"); applyProvenanceMigrations(db);
   db.exec(`INSERT INTO topic(id,name,language,brief_schedule) VALUES('t','Synthetic','en','daily');
     INSERT INTO source(id,name,type,endpoint,fetch_interval) VALUES('s','Synthetic','rss','https://example.test','daily');`);
   const body = "Acme released version 2. It supports offline operation.";
@@ -57,7 +59,7 @@ function setup(options: { wrongArchive?: boolean; failedOnly?: boolean; diagnost
     addReport("future", "brief", "2026-09-28T00:00:00.000Z", "already_published_event", false);
     addReport("deep", "deep_dive", at, "already_published_event", false);
   }
-  db.pragma("wal_checkpoint(TRUNCATE)"); db.pragma("journal_mode = DELETE"); db.close();
+  writeFileSync(dbPath, db.serialize()); db.close();
   const opts: ExportOptions = { dbPath, outputDir: join(dir, "out"), from: "2026-09-23T00:00:00.000Z", until: "2026-09-26T18:00:00.000Z", asOf: "2026-09-26T18:00:00.000Z", topics: ["t"], gitSha: "a".repeat(40), dataDir };
   return { dir, opts, rawPath: join(dataDir, "raw", target) };
 }
@@ -65,7 +67,7 @@ function readPool(outputDir: string) { return readFileSync(join(outputDir, "cand
 
 describe("private Brief density export", () => {
   it("exports rejected candidates, exact input evidence and only cutoff Brief decisions without changing DB", () => {
-    const { opts } = setup(); const before = readFileSync(opts.dbPath);
+    const { opts } = setup(); const before = createHash("sha256").update(readFileSync(opts.dbPath)).digest("hex");
     expect(exportBriefDensity(opts)).toEqual({ batches: 1, candidates: 2, tracesWithoutBatch: 0 });
     const [record] = readPool(opts.outputDir);
     expect(record.candidates.map((c: { terminal: string }) => c.terminal)).toEqual(["selection_budget_filtered", "display_audit_rejected"]);
@@ -74,7 +76,7 @@ describe("private Brief density export", () => {
     expect(record.input_evidence[0].archive.content_version_verified).toBe(true);
     expect(record.candidates[0].citations[0].locator_verified).toBe(true);
     expect(record.candidates[1].candidate_text_status).toBe("not_persisted");
-    expect(readFileSync(opts.dbPath)).toEqual(before);
+    expect(createHash("sha256").update(readFileSync(opts.dbPath)).digest("hex")).toBe(before);
     expect(existsSync(`${opts.dbPath}-wal`)).toBe(false);
     expect(statSync(opts.outputDir).mode & 0o777).toBe(0o700);
     for (const file of ["candidate-pool.jsonl", "stage-loss.json", "snapshot-manifest.json"]) expect(statSync(join(opts.outputDir, file)).mode & 0o777).toBe(0o600);
