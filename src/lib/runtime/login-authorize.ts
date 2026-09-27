@@ -10,11 +10,11 @@ export class LoginRateLimited extends Error {
 
 /** Keep the guard inside authorize so both the HTTP callback and server signIn use it.
  * authenticate is synchronous (SQLite + scrypt); admission is consumed before any DB/hash work. */
-export function createLoginAuthorizer(
-  authenticate: (email: string, password: string) => AppUser | null,
+export function createLoginAuthorizer<T extends AppUser>(
+  authenticate: (email: string, password: string) => T | null,
   throttle = new LoginThrottle(),
 ) {
-  return (credentials: Partial<Record<"email" | "password", unknown>> | undefined): AppUser | null => {
+  return (credentials: Partial<Record<"email" | "password", unknown>> | undefined): T | null => {
     const email = credentials?.email, password = credentials?.password;
     if (typeof email !== "string" || typeof password !== "string" || !email.trim() || !password) return null;
     const normalized = normEmail(email);

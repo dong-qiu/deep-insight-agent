@@ -1,7 +1,7 @@
 # 技术债 B1a：登录限速验证
 
 基线：`5f8efa0da00e5658182c659dbfdc728c7f7f832c`；分支 `fix/auth-login-throttle`。
-范围：[B1a spec](../plan/specs/auth-hardening.md)。B1b 会话撤销尚未实现，不把本批当作 TD-03 全部关闭。
+范围：[B1a spec](../plan/specs/auth-hardening.md)。B1b 会话撤销由后续独立分支实施，不把本批当作 TD-03 全部关闭。
 
 ## 实现与边界
 
@@ -64,9 +64,24 @@ Node `24.19.0`；新 worktree 仅复制 `.env.local`，权限 600，DB_PATH/DATA
 - 只读核对 PR #359 及 CI/镜像/部署的 GitHub 元数据一致；运行时生产检查由主执行会话完成，不宣称 reviewer 再次访问生产。
 - 不影响 AI 输出路径，无模型 A1 / baseline 变更；没有把认证测试称为模型质量证明。
 
-Blocking：0；Warning：0。提交后仍需核对最终 PR diff 与本摘要一致，并等 CI。
+Blocking：0；Warning：0。最终远程 13 文件 diff 与已审内容一致，已在 PR 留痕。
 
 ## 交接
 
-本记录为本地验证及独立审查收据，不代替合入或生产部署。下一切片 B1b 先明确旧会话撤销的
-凭据版本和中间件校验契约，再实现改密/降权/删除后的真实 API 拒绝测试。
+## 合入与生产核验（2026-09-28 本地 / 09-27 UTC）
+
+- [PR #361](https://github.com/dong-qiu/deep-insight-agent/pull/361) 合入为
+  `1ebd9461bffc6912bb4200cc6afac45d8b444213`（16:14:51 UTC）。
+- [PR CI](https://github.com/dong-qiu/deep-insight-agent/actions/runs/36331373647)、
+  [主干 CI](https://github.com/dong-qiu/deep-insight-agent/actions/runs/36332521815)、
+  [镜像](https://github.com/dong-qiu/deep-insight-agent/actions/runs/36332957775)、
+  [发布](https://github.com/dong-qiu/deep-insight-agent/actions/runs/36333433842) 均成功。
+- 16:27 UTC 发布前只读复查：旧运行版本 `5f8efa0`，运行 Run = 0，queued/claimed dispatch = 0，报告数 286；
+  无并行发布，避开 16:50–17:30 UTC 窗口。指定 SHA 发布，未覆盖配置。
+- 实际版本 `1ebd9461bffc6912bb4200cc6afac45d8b444213`，镜像 digest
+  `sha256:381e8bd7b4e28f63bc92eafffbd4fd662f7c5e7f6333a88c30aaacd04e621dfa`。
+- app/worker 健康，cron 运行，超过 30 秒的两次观测均零重启；DB `ok`、worker `ready`，各自健康接口 200。
+- 管理员真实 Credentials 登录成功、admin users API 200；匿名 reports API 401；已登录最新报告页面 200。
+  报告文件可读、报告数仍为 286、无新运行任务。凭据/cookie/正文仅在内存中处理，不输出。
+- 未在生产用错误密码耗尽管理员预算，也未新建或删除生产用户；viewer/限速反例由隔离 E2E 证明。
+- B1b 仍须独立 PR/CI/上线核验；本次部署没有旧会话撤销功能，也没有改变模型或触发模型评测。

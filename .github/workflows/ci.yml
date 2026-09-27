@@ -308,7 +308,36 @@ jobs:
               redirect: 'manual',
             });
             absorbCookies(signInResponse);
-            if (signInResponse.status >= 400 || !cookieHeader()) throw new Error('admin credentials sign-in failed');
+            if (signInResponse.status >= 400 || ![...cookies.keys()].some(key => key.includes('authjs.session-token'))) throw new Error('admin credentials sign-in failed');
+            // A hidden 404 alone also succeeds for anonymous callers. First prove
+            // that the actual standalone Node middleware accepts this admin session.
+            const users = await fetch(base + '/api/admin/users', { headers: { cookie: cookieHeader() } });
+            if (users.status !== 200) throw new Error('standalone authenticated admin read failed');
+            const saveReader = async password => {
+              const response = await fetch(base + '/api/admin/users', { method: 'POST',
+                headers: { cookie: cookieHeader(), 'content-type': 'application/json' },
+                body: JSON.stringify({ email: 'ci-reader@example.test', password }) });
+              if (response.status !== 201) throw new Error('standalone reader setup failed');
+            };
+            await saveReader('reader-password');
+            const readerCookies = new Map();
+            const readCsrf = await fetch(base + '/api/auth/csrf');
+            for (const raw of readCsrf.headers.getSetCookie()) {
+              const pair = raw.split(';', 1)[0], sep = pair.indexOf('=');
+              readerCookies.set(pair.slice(0, sep), pair.slice(sep + 1));
+            }
+            const readerHeader = () => [...readerCookies].map(([key, value]) => key + '=' + value).join('; ');
+            const readerLogin = await fetch(base + '/api/auth/callback/credentials', { method: 'POST', redirect: 'manual',
+              headers: { 'content-type': 'application/x-www-form-urlencoded', cookie: readerHeader() },
+              body: new URLSearchParams({ csrfToken: (await readCsrf.json()).csrfToken, email: 'ci-reader@example.test', password: 'reader-password', callbackUrl: base }) });
+            for (const raw of readerLogin.headers.getSetCookie()) {
+              const pair = raw.split(';', 1)[0], sep = pair.indexOf('=');
+              readerCookies.set(pair.slice(0, sep), pair.slice(sep + 1));
+            }
+            const readReports = () => fetch(base + '/api/reports', { headers: { cookie: readerHeader() } });
+            if ((await readReports()).status !== 200) throw new Error('standalone reader session failed');
+            await saveReader('changed-reader-password');
+            if ((await readReports()).status !== 401) throw new Error('standalone password change did not revoke reader session');
             const check = await fetch(base + '/api/admin/integrity-checks/artifact_1/v1', { method: 'POST', headers: { cookie: cookieHeader() } });
             if (check.status !== 404 || (await check.json())?.error !== 'not_found') throw new Error('disabled integrity check did not stay hidden');
             const dashboard = await fetch(base + '/api/admin/metrics', { headers: { cookie: cookieHeader() } });

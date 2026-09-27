@@ -260,7 +260,15 @@ record ID。实现会在外部条件写前先在 `provenance_redaction_request` 
 `REDACTION_HMAC_SECRET_ARN`、`REDACTION_HMAC_KEY_VERSION` 和独立 `REDACTION_RECOVERY_ROLE` 后，才可显式运行 `--apply`。
 脚本不会创建 HMAC secret 或 recovery role 的信任策略，避免把密钥或跨账号主体猜进基础设施代码。
 
-从本机或 S3 DR 取回备份时，先停止 `app`、`cron` 和 `generation-dispatch-worker`，复制数据库/报告，再运行同镜像的
+**B1b 会话撤销后的附加恢复前置条件（ADR-0037）**：旧 SQLite 快照可能恢复旧密码哈希和角色，使旧 JWT
+再次匹配。因此恢复旧库/凭据前，先限制外部访问并停止服务，通过受控密钥配置渠道生成新的随机
+`AUTH_SECRET`，更新服务器配置（不输出值、不入仓，也不把旧密钥保留为 JWT 验签兼容项）。不得从备份
+恢复旧 AUTH_SECRET；这与下文 redaction registry 的 HMAC 密钥不同，**不要**轮换或丢失后者的历史版本。
+恢复和 replay 完成后，按 §8 固定镜像重新创建 app 容器，使新环境配置生效；仅 `restart` 不重读 env_file。
+解除外部访问限制前，用恢复前旧 cookie 确认报告 API 为 401、页面跳登录，新凭据重新登录后正常读取；
+cookie 只在内存处理，不写日志。不能在未轮换密钥时把“DB replay 成功”视为完整恢复通过。
+
+从本机或 S3 DR 取回备份时，先完成上述会话密钥前置检查、停止 `app`、`cron` 和 `generation-dispatch-worker`，复制数据库/报告，再运行同镜像的
 `node /app/ops/replay-redaction-registry.cjs --restore-time <UTC RFC3339>`。runner 要求
 `REDACTION_REGISTRY_BUCKET`、`REDACTION_RECOVERY_ROLE_ARN` 与 HMAC secret ARN/version；它必须在**独立 recovery
 identity**（临时凭据、专用 profile 或受控 runner）中运行，应用实例角色没有也不得拥有 `sts:AssumeRole` 到 recovery role 的权限，
@@ -277,7 +285,8 @@ P0a 发布包必须把上述 runner 与 `generation-dispatch-worker` 纳入 comp
 
 > ⚠️ **P0a 后的恢复禁止直接解包后 `docker compose up -d`。** 旧快照可能早于删除登记；必须先回放
 > §6.1.2 的 registry，且只可通过受控生产发布流程重新成为 writer。任何 replay、版本身份或 health gate 失败都保持
-> `app`、`cron`、`generation-dispatch-worker` 停止。
+> `app`、`cron`、`generation-dispatch-worker` 停止。B1b 后还必须完成上方 AUTH_SECRET 轮换与旧 cookie 拒绝核验，
+> 全卷恢复不能把备份中的旧凭据配置直接恢复为当前认证密钥。
 
 ```bash
 docker compose stop app cron generation-dispatch-worker   # 静默 SQLite WAL 写入
@@ -327,6 +336,16 @@ docker compose run --rm --no-deps migrate \
 1. `main` 的 CI 成功后，`Publish Production Image` 在 GitHub 托管 runner 构建并发布 `linux/amd64` GHCR 镜像，附 OCI `source` / `revision` 标签、SBOM 和 provenance。镜像只使用 `sha-<commit>` 不可变标签，**不**发布 `latest`。
 2. operator 在 Actions 手动运行 `Deploy Production Image`，可留空（当前 main）或指定已发布的 `sha-<commit>` 进行精确发布/回退；没有 `v*` tag 自动上线。
 3. workflow 经 GitHub OIDC 取得最小 AWS SSM 角色，在生产机 `/opt/app` 下载与镜像同一 SHA 的 compose 文件、`docker pull`、核对 OCI revision。停止 writer 前会检查 `.env.local` 中生产必需的 `DISPATCH_WORKER_SECRET` 为非空（只检查存在性，绝不输出值）；随后使用不可变 digest 执行 migration / deployment-record / app 健康切换。最后连续 30 秒核验 `generation-dispatch-worker` 持续运行且重启数为 0。任一检查失败都会恢复先前 compose 和已验证镜像，并使 workflow 失败。
+
+**B1b 跨认证安全边界发布/回退**：首次上线会使没有版本标记的旧 cookie 失效，应通知用户重新登录。
+回退到 B1a 或更旧代码会失去服务端撤销检查；必须在恢复对外服务前轮换 AUTH_SECRET、按指定已验证镜像
+重新创建 app 容器（只 restart 无效），验证回退前旧 cookie 被拒绝、新登录与权限正常，才能解除维护限制。
+同样适用于主动回填旧密码哈希/角色或重新使用旧 bootstrap 密码，不能仅靠状态指纹防止旧会话复活。
+
+该要求**也适用于 deploy.yml 自动回退**：workflow 自动恢复旧镜像并保留 `.env.local`，不会替 operator
+轮换认证密钥或隔离外部流量。跨 B1b 边界发布前须安排有人值守的维护窗口、先限制外部访问；若发生自动回退，
+保持外部限制，完成上述密钥轮换、容器重建和 cookie 验收后才恢复访问。自动回退恢复健康不等于安全验收通过。
+不在正常 code-only 发布中盲目轮换其他密钥，不用全量 deploy.sh 覆盖生产配置。
 
 > ⚠️ 生产故障恢复时，不要直接执行未带变量的 `docker compose up`：Compose 会回退到 `deep-insight:0.1.0`。优先重跑 `Deploy Production Image`；确有紧急人工操作时，必须显式传入已验证的 `INSIGHT_IMAGE=ghcr.io/<owner>/<repo>@sha256:…`、`INSIGHT_IMAGE_DIGEST=sha256:…` 与 `PROVENANCE_DEPLOYMENT_REQUIRED=1`，并在启动后按本节核验运行镜像、deployment record、app health 和 worker 稳定性。
 
