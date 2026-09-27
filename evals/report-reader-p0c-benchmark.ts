@@ -17,6 +17,7 @@ import { P0C_READER_BASELINE_COMMIT, getP0cBaselineReport } from "../src/lib/db/
 import { applyProvenanceMigrations } from "../src/lib/db/provenance-migrations.js";
 import { insertTopic } from "../src/lib/db/repos.js";
 import { getReport } from "../src/lib/db/reports.js";
+import { evaluateReaderPerformance } from "./report-reader-performance-policy.js";
 
 interface P0cFixture { traces: number; database_target_bytes?: number; }
 interface Fixture {
@@ -32,6 +33,9 @@ interface Fixture {
 }
 
 const argument = process.argv.find((value) => value.startsWith("--fixture="));
+// Diagnostic-only A/A: both lanes call the current production reader. Never admit this as CI evidence.
+const diagnosticAA = process.argv.includes("--diagnostic-aa");
+if (diagnosticAA && process.argv.includes("--enforce")) throw new Error("diagnostic_aa_is_not_gate_evidence");
 const fixturePath = argument?.slice("--fixture=".length) ?? "./report-reader-p0c-fixture.v3.json";
 const fixture = JSON.parse(readFileSync(new URL(fixturePath, import.meta.url), "utf8")) as Fixture;
 const p0cPath = join(fileURLToPath(new URL(".", import.meta.url)), fixture.p0c_fixture);
@@ -93,7 +97,7 @@ try {
     }
   }
   const reportId = "p0c-report-0";
-  const baselineReader = () => getP0cBaselineReport(db, reportId);
+  const baselineReader = diagnosticAA ? () => getReport(db, reportId) : () => getP0cBaselineReport(db, reportId);
   const currentReader = () => getReport(db, reportId);
   for (let index = 0; index < fixture.warmup_samples; index += 1) {
     for (let operation = 0; operation < fixture.operations_per_sample; operation += 1) { baselineReader(); currentReader(); }
@@ -111,18 +115,18 @@ try {
     baselineP95Rounds.push(percentile(baseline, 0.95));
     currentP95Rounds.push(percentile(current, 0.95));
   }
-  // A single P95 near 0.1ms is dominated by runner scheduling noise. The
-  // median of independently interleaved P95 rounds preserves the 5% contract
-  // while making the CI signal reproducible.
+  // Each sample is an average of batched calls, not a single-request or HTTP P95.
+  // Retain the median of interleaved rounds; the v4 policy adds an absolute budget
+  // without changing this measurement method or claiming to eliminate runner noise.
   const baselineP95 = median(baselineP95Rounds);
   const currentP95 = median(currentP95Rounds);
   const result = {
-    benchmark_version: "report-reader-p0c-v3",
-    baseline: { commit: fixture.baseline_commit, reader: "getReport", p95_ms: baselineP95, p95_rounds_ms: baselineP95Rounds },
+    benchmark_version: diagnosticAA ? "report-reader-p0c-v4-aa-diagnostic" : "report-reader-p0c-v4",
+    comparison_mode: diagnosticAA ? "current-vs-current" : "baseline-vs-current",
+    gate_eligible: !diagnosticAA,
+    baseline: { commit: diagnosticAA ? process.env.GITHUB_SHA ?? process.env.CI_COMMIT_SHA ?? "local-worktree" : fixture.baseline_commit, reader: "getReport", p95_ms: baselineP95, p95_rounds_ms: baselineP95Rounds },
     current: { commit: process.env.GITHUB_SHA ?? process.env.CI_COMMIT_SHA ?? "local-worktree", reader: "getReport", p95_ms: currentP95, p95_rounds_ms: currentP95Rounds },
-    allowed_regression_ratio: 1.05,
-    allowed_current_p95_ms: baselineP95 * 1.05,
-    passed: currentP95 <= baselineP95 * 1.05,
+    ...evaluateReaderPerformance(baselineP95, currentP95),
     dataset: { p0c_fixture: fixture.p0c_fixture, p0c_fixture_sha256: fixture.p0c_fixture_sha256, p0c_trace_count: p0c.traces, report_snapshot_count: p0c.traces, report_body_bytes: fixture.report_body_bytes },
     execution_environment: { node: process.version, sqlite: (db.prepare("SELECT sqlite_version() AS version").get() as { version: string }).version, platform: platform(), arch: arch(), cpu: cpus()[0]?.model ?? "unknown", cpu_count: cpus().length },
     warmup_samples: fixture.warmup_samples,

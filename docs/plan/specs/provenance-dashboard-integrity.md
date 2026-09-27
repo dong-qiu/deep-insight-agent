@@ -185,7 +185,9 @@ P1a 的 gate 是确定性、版本化的 `provenance-dashboard-integrity-v1` fix
 3. 对正常、篡改 artifact、篡改 manifest、替换二者、缺件、错误签名/撤销 key、并发发布半途失败，100% 得到指定终态；“同时替换 artifact + manifest”必须被该版本自身外部已签名 anchor 检出。fixture 还须覆盖 anchor 条件写的重放/冲突、anchor 写成但 SQLite 提交失败后的精确重试/孤儿告警，以及 daily root 缺失、幂等恢复和不影响 reader 的展示。
 4. 对报告可读/归档期长于 100 天的 fixture，生命周期任务在 `retain_until` 前删除 anchor、历史公钥或其他验证材料必须失败并留下审计；legal hold 期间删除同样失败。归档期结束后的销毁必须生成可验签 `retention_tombstone`，viewer 返回 404，admin 只得到“内容保留期已结束，原始内容不再可验证”的脱敏结论；验证材料不可用时必须产生 `verification_material_unavailable` 与 critical 告警而不阻断 reader。
 5. 固定测试向量的 manifest 与 anchor JCS UTF-8 bytes、SHA-256 值和 Ed25519 signatures 必须精确匹配；对 identity、locator、`binding_kind` 或 `binding.manifest_hash` 的任一单点篡改必须失败。该向量证明 digest 仅在 anchor binding 出现、不会参与自身 manifest preimage。
-6. report reader 在聚合库不可用、队列积压、checker/anchor 超时和告警失败时仍只读取已提交快照；端到端读取 P95 不劣于 P0c 基线超过 5%。
+6. report reader 在聚合库不可用、队列积压、checker/anchor 超时和告警失败时仍只读取已提交快照；
+   reader 微基准超过 P0c 基线 5% 告警，仅在相对增幅超过 10% **且**绝对增加超过 0.1 ms 时阻断。
+   测量粒度、边界与证据要求见 [报告读取性能预算](report-reader-performance-budget.md)；此项不是 HTTP/整页端到端 P95。
 7. 关键 dashboard 查询在容量 fixture 上命中规定索引；31 天明细与 400 天聚合均在 P0c 记录硬件上 P95 ≤2 秒；告警去重和阈值边界逐项通过。
 
 人工评审须确认：本 spec 与 `generation-provenance.md` 的术语/权限/发布原子性一致、保留常量符合业务及法务要求、KMS/HSM 与 Object-Lock 权限边界可由运维落地、以及上述 gate 产物可复现。INSI-27 实现准入签核前不得启动 P1 实现子任务；INSI-25 生产准入签核前不得部署、启用或完成 P1 的生产验收。
