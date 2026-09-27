@@ -8,7 +8,7 @@
  */
 import { DecryptCommand, KMSClient } from "@aws-sdk/client-kms";
 import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
-import { GetObjectCommand, ListObjectsV2Command, S3Client } from "@aws-sdk/client-s3";
+import { GetObjectCommand, ListObjectsV2Command, S3Client, type GetObjectCommandOutput } from "@aws-sdk/client-s3";
 import { openDb } from "../src/lib/db/index.js";
 import { applyProvenanceMigrations } from "../src/lib/db/provenance-migrations.js";
 import { applyRedactionTombstone } from "../src/lib/db/redaction.js";
@@ -82,8 +82,8 @@ function parseRecord(body: string): RedactionRegistryRecord {
   }
 }
 
-async function objectText(output: Awaited<ReturnType<S3Client["send"]>>): Promise<string> {
-  const body = (output as { Body?: { transformToString?: (encoding?: string) => Promise<string> } }).Body;
+async function objectText(output: GetObjectCommandOutput): Promise<string> {
+  const body = output.Body;
   if (!body?.transformToString) fail("registry_object_body_unreadable");
   return body.transformToString("utf8");
 }
