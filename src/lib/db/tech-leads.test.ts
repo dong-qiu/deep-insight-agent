@@ -3,14 +3,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { extractLeadCandidates } from "../agents/tech-leads.js";
+import type { OpportunityCandidate } from "../agents/opportunity-planning.js";
 import { saveAnalysisBatch, saveValidationResult } from "./analysis.js";
 import { openDb } from "./index.js";
 import { applyProvenanceMigrations } from "./provenance-migrations.js";
+import { listTechnologyOpportunities, upsertTechnologyOpportunities } from "./planning.js";
 import { planRawArchive, writePlannedRawArchive } from "./raw-archive.js";
 import { insertContentItem, insertSource, insertTopic } from "./repos.js";
 import { getTechLead, listPlanningTechLeads, listTechLeadEvidence, listTechLeadEvidenceBatch, listTechLeads, setTechLeadStatus, upsertTechLeads } from "./tech-leads.js";
 import { createReaderEvidenceContext } from "./reader-evidence.js";
-import type { AnalysisBatch, ContentItem, Source, Topic, ValidationResult } from "../types.js";
+import type { AnalysisBatch, ContentItem, Source, TechLead, Topic, ValidationResult } from "../types.js";
 import { DISPLAY_PROJECTION_VERSION, sourceQuoteHash } from "../utils/source-quote-projection.js";
 import { contentHash } from "../sources/normalize.js";
 
@@ -32,6 +34,35 @@ it("upsert 追加 pass 证据、保留用户忽略状态且读取证据可回溯
   const candidates = extractLeadCandidates(batch, validation, new Map([["c", ci("c")]]), "2026-07-23T01:00:00Z");
   const [lead] = upsertTechLeads(db, candidates, "2026-07-23T01:00:00Z");
   expect(listTechLeadEvidence(db, lead.id)).toMatchObject([{ source_name: "Source", url: "https://x/c", quote: "Agent tool" }]);
+  // A raw SQL limit must not hide a lower-ranked item whose evidence passes the current reader gate.
+  const unsupportedLeads = upsertTechLeads(db, Array.from({ length: 629 }, (_, index) => ({
+    topic_id: topic.id, canonical_key: `unsupported-${index}`, kind: "tool", title: "Unsupported", summary: "Unsupported",
+    evidence: [], observed_at: "2026-07-23T02:00:00Z", score: 1000 - index,
+    score_detail: { freshness: 1, evidence: 1, importance: 1, relevance: 1, total: 4, reason: "unsupported" },
+  })), "2026-07-23T02:00:00Z");
+  expect(listTechLeads(db, { limit: 1 }).map((item) => item.id)).toEqual([lead.id]);
+  expect(listTechLeads(db).map((item) => item.id)).toEqual([lead.id]);
+  expect(listTechLeads(db, { limit: -1 }).map((item) => item.id)).toEqual([lead.id]);
+  const opportunityFor = (linkedLead: TechLead, key: string, priority: number): OpportunityCandidate => ({
+    lead_id: linkedLead.id, topic_id: topic.id, direction_id: null, canonical_key: key,
+    lane: "horizon", planning_effect: "new_direction", title: key, hypothesis: key,
+    proposed_validation: key, uncertainties: [], priority_score: priority,
+    score_detail: { alignment: 1, evidence: 1, leverage: 1, verifiability: 1, timing: 1, total: priority, reason: key },
+    fit_score: 0, rationale: key, mapping_direction_version: null,
+  });
+  const opportunityCandidates = [
+    ...unsupportedLeads.map((unsupportedLead, index) => opportunityFor(unsupportedLead, `unsupported-${index}`, 1000 - index)),
+    opportunityFor(lead, "supported", 2),
+    opportunityFor(lead, "supported-lower", 1),
+  ];
+  const opportunities = upsertTechnologyOpportunities(db, opportunityCandidates, new Map([[lead.id, lead], ...unsupportedLeads.map((unsupportedLead) => [unsupportedLead.id, unsupportedLead] as const)]));
+  const visibleOpportunityIds = opportunities.slice(-2).map((item) => item.id);
+  expect(listTechnologyOpportunities(db).map((item) => item.id)).toEqual(visibleOpportunityIds);
+  expect(listTechnologyOpportunities(db, { limit: 1 }).map((item) => item.id)).toEqual(visibleOpportunityIds.slice(0, 1));
+  expect(listTechnologyOpportunities(db, { limit: -1 }).map((item) => item.id)).toEqual(visibleOpportunityIds);
+  expect(listTechnologyOpportunities(db, { topic: topic.id, lane: "horizon" }).map((item) => item.id)).toEqual(visibleOpportunityIds);
+  expect(listTechnologyOpportunities(db, { lane: "core" })).toEqual([]);
+  expect(listTechnologyOpportunities(db, { limit: 0 })).toEqual([]);
   const batchedEvidence = listTechLeadEvidenceBatch(db, [lead.id, ...Array.from({ length: 405 }, (_, i) => `absent_${i}`)], createReaderEvidenceContext(db));
   expect(batchedEvidence.get(lead.id)).toEqual(listTechLeadEvidence(db, lead.id));
   expect(batchedEvidence.get("absent_404")).toEqual([]);

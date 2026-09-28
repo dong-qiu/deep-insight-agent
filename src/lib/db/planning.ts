@@ -156,13 +156,15 @@ export function upsertTechnologyOpportunities(db: DB, candidates: OpportunityCan
 }
 
 export function listTechnologyOpportunities(db: DB, opts: { topic?: string; direction?: string; lane?: OpportunityLane; status?: TechnologyOpportunityStatus; includeClosed?: boolean; limit?: number } = {}, evidenceContext = createReaderEvidenceContext(db)): TechnologyOpportunity[] {
+  const limit = opts.limit ?? 100;
+  if (limit === 0) return [];
   const where: string[] = []; const args: unknown[] = [];
   if (opts.topic) { where.push("topic_id=?"); args.push(opts.topic); }
   if (opts.direction) { where.push("direction_id=?"); args.push(opts.direction); }
   if (opts.lane) { where.push("lane=?"); args.push(opts.lane); }
   if (opts.status) { where.push("status=?"); args.push(opts.status); }
   else if (!opts.includeClosed) where.push("status NOT IN ('rejected','archived')");
-  const opportunities = (db.prepare(`SELECT * FROM technology_opportunity${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY priority_score DESC,latest_evidence_at DESC LIMIT ?`).all(...args, opts.limit ?? 100) as any[])
+  const opportunities = (db.prepare(`SELECT * FROM technology_opportunity${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY priority_score DESC,latest_evidence_at DESC`).all(...args) as any[])
     .map(toOpportunity);
   if (!opportunities.length) return [];
   const leadsByOpportunity = new Map<string, string[]>();
@@ -179,13 +181,16 @@ export function listTechnologyOpportunities(db: DB, opts: { topic?: string; dire
   }
   const leadIds = [...new Set([...leadsByOpportunity.values()].flat())];
   const evidenceByLead = listTechLeadEvidenceBatch(db, leadIds, evidenceContext);
-  return opportunities
+  const visible = opportunities
     // Opportunity prose is derived from its lead. Hide a stale opportunity instead of exposing
     // an orphaned derivative after the lead's v6 binding is no longer reader-visible.
     .map((opportunity) => (leadsByOpportunity.get(opportunity.id) ?? []).some((id) => (evidenceByLead.get(id)?.length ?? 0) > 0)
       ? projectReaderVisibleOpportunity(opportunity)
       : null)
     .filter((opportunity): opportunity is TechnologyOpportunity => opportunity !== null);
+  // Keep the original score order, but apply the requested cap only after current evidence
+  // admission. Partitioned and default lists must not disagree because stale rows occupied a cap.
+  return limit < 0 ? visible : visible.slice(0, limit);
 }
 export function getTechnologyOpportunity(db: DB, id: string, context = createReaderEvidenceContext(db)): TechnologyOpportunity | null {
   const row = db.prepare("SELECT * FROM technology_opportunity WHERE id=?").get(id) as any;

@@ -63,23 +63,28 @@ export function upsertTechLeads(db: DB, candidates: LeadCandidate[], now = new D
 }
 
 export function listTechLeads(db: DB, opts: { topic?: string; status?: TechLeadStatus; includeDismissed?: boolean; since?: string; limit?: number } = {}, context = createReaderEvidenceContext(db)): TechLead[] {
+  const limit = opts.limit ?? 50;
+  if (limit === 0) return [];
   const where: string[] = [];
   const args: unknown[] = [];
   if (opts.topic) { where.push("topic_id=?"); args.push(opts.topic); }
   if (opts.status) { where.push("status=?"); args.push(opts.status); }
   else if (!opts.includeDismissed) where.push("status <> 'dismissed'");
   if (opts.since) { where.push("latest_evidence_at >= ?"); args.push(opts.since); }
-  const sql = `SELECT * FROM tech_lead${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY score DESC, latest_evidence_at DESC LIMIT ?`;
+  const sql = `SELECT * FROM tech_lead${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY score DESC, latest_evidence_at DESC`;
   // `tech_lead` is a durable cache, not a new evidence authority. A batch can later be
   // downgraded or found to contain unsafe display metadata, so every reader list rechecks that
-  // at least one of its persisted evidence bindings is still publishable.
-  return (db.prepare(sql).all(...args, opts.limit ?? 50) as any[])
-    .map(toLead)
+  // at least one of its persisted evidence bindings is still publishable. Limit the visible
+  // results, not raw candidates: old ineligible rows must not crowd out lower-ranked valid rows.
+  const leads = (db.prepare(sql).all(...args) as any[]).map(toLead);
+  const evidenceByLead = listTechLeadEvidenceBatch(db, leads.map((lead) => lead.id), context);
+  const visible = leads
     .map((lead) => {
-      const evidence = listTechLeadEvidence(db, lead.id, context);
+      const evidence = evidenceByLead.get(lead.id) ?? [];
       return evidence.length ? projectReaderVisibleTechLead(lead, evidence) : null;
     })
     .filter((lead): lead is TechLead => lead !== null);
+  return limit < 0 ? visible : visible.slice(0, limit);
 }
 
 export function getTechLead(db: DB, id: string, context = createReaderEvidenceContext(db)): TechLead | null {
