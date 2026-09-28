@@ -1,6 +1,6 @@
 # B3 运维写入口：历史报告预览与生产发布
 
-状态：实施验收。承接 [技术债治理计划](technical-debt-remediation.md) 的 TD-06/07。
+状态：已实施、合入并完成生产运行版本核验（2026-09-28）。承接 [技术债治理计划](technical-debt-remediation.md) 的 TD-06/07；发布证据见 [B3 验证收据](../../verify/ops-write-boundary-2026-09-28.md)。
 
 ## 边界与决策
 
