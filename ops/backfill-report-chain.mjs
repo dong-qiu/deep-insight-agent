@@ -17,7 +17,7 @@
  *  安全：只读预览。原地改 report.prev_report_id 会绕过发布溯源，旧写入口已停用。
  *
  *  用法：
- *    隔离预览：  DB_PATH=/path/to/standalone-snapshot.db node ops/backfill-report-chain.mjs
+ *    隔离预览：  REPORT_SNAPSHOT_DB_PATH=/path/to/standalone-snapshot.db node ops/backfill-report-chain.mjs
  */
 import { openReadonlyReportSnapshot } from "./readonly-report-snapshot.mjs";
 
@@ -29,7 +29,7 @@ if (process.argv.length !== 2) {
   process.exit(2);
 }
 function main() {
-  const db = openReadonlyReportSnapshot(process.env.DB_PATH);
+  const db = openReadonlyReportSnapshot(process.env.REPORT_SNAPSHOT_DB_PATH);
   const topics = db.prepare("SELECT DISTINCT topic_id FROM report WHERE status = 'done'").all();
 
   let linked = 0, chainsTouched = 0;

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -35,7 +35,7 @@ test("legacy report metadata and cleanup commands preview but cannot write", () 
 
     for (const name of scripts) {
       const preview = spawnSync(process.execPath, [scriptPath(name)], {
-        env: { ...process.env, DB_PATH: path }, encoding: "utf8",
+        env: { ...process.env, DB_PATH: join(root, "active.db"), REPORT_SNAPSHOT_DB_PATH: path }, encoding: "utf8",
       });
       assert.equal(preview.status, 0, `${name}: ${preview.stderr}`);
       assert.match(preview.stdout, /只读预览/);
@@ -45,7 +45,7 @@ test("legacy report metadata and cleanup commands preview but cannot write", () 
       assert.equal(readFileSync(body2, "utf8"), "second report\n");
       const missing = join(root, `missing-${name}.db`);
       const apply = spawnSync(process.execPath, [scriptPath(name), "--apply"], {
-        env: { ...process.env, DB_PATH: missing }, encoding: "utf8",
+        env: { ...process.env, DB_PATH: join(root, "active.db"), REPORT_SNAPSHOT_DB_PATH: missing }, encoding: "utf8",
       });
       assert.equal(apply.status, 2, `${name}: ${apply.stderr}`);
       assert.equal(existsSync(missing), false);
@@ -66,7 +66,7 @@ test("all historical previews refuse a live-style WAL database without touching 
     const before = Object.fromEntries(readdirSync(root).map((name) => [name, readFileSync(join(root, name))]));
     for (const name of [...scripts, "regenerate-reports-cites.mjs"]) {
       const result = spawnSync(process.execPath, [scriptPath(name)], {
-        env: { ...process.env, DB_PATH: path }, encoding: "utf8",
+        env: { ...process.env, DB_PATH: join(root, "active.db"), REPORT_SNAPSHOT_DB_PATH: path }, encoding: "utf8",
       });
       assert.notEqual(result.status, 0, name);
       assert.match(result.stderr, /拒绝读取带 WAL\/SHM 的库/);
@@ -88,11 +88,53 @@ test("highlights preview refuses old schema rather than adding columns", () => {
     db.close();
     const before = readFileSync(path);
     const result = spawnSync(process.execPath, [scriptPath("backfill-highlights.mjs")], {
-      env: { ...process.env, DB_PATH: path }, encoding: "utf8",
+      env: { ...process.env, DB_PATH: join(root, "active.db"), REPORT_SNAPSHOT_DB_PATH: path }, encoding: "utf8",
     });
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /不会自动补列/);
     assert.deepEqual(readFileSync(path), before);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("all historical previews ignore ambient DB_PATH and reject a snapshot alias of the active DB", () => {
+  const root = mkdtempSync(join(tmpdir(), "insight-active-db-reject-"));
+  try {
+    const path = join(root, "active.db");
+    const db = new Database(path);
+    db.exec("CREATE TABLE probe(id INTEGER); INSERT INTO probe VALUES(1)");
+    db.close();
+    const alias = join(root, "snapshot-alias.db");
+    symlinkSync(path, alias);
+    const hardlink = join(root, "snapshot-hardlink.db");
+    linkSync(path, hardlink);
+    const before = readFileSync(path);
+    const beforeFiles = readdirSync(root).sort();
+    for (const name of [...scripts, "regenerate-reports-cites.mjs"]) {
+      const missing = spawnSync(process.execPath, [scriptPath(name)], {
+        env: { ...process.env, DB_PATH: path, REPORT_SNAPSHOT_DB_PATH: "" }, encoding: "utf8",
+      });
+      assert.notEqual(missing.status, 0, `${name} used ambient DB_PATH`);
+      assert.match(missing.stderr, /显式指定隔离快照 REPORT_SNAPSHOT_DB_PATH/);
+      const same = spawnSync(process.execPath, [scriptPath(name)], {
+        env: { ...process.env, DB_PATH: path, REPORT_SNAPSHOT_DB_PATH: path }, encoding: "utf8",
+      });
+      assert.notEqual(same.status, 0, `${name} accepted the active DB as a snapshot`);
+      assert.match(same.stderr, /拒绝将活动库作为报告快照/);
+      const viaAlias = spawnSync(process.execPath, [scriptPath(name)], {
+        env: { ...process.env, DB_PATH: path, REPORT_SNAPSHOT_DB_PATH: alias }, encoding: "utf8",
+      });
+      assert.notEqual(viaAlias.status, 0, `${name} accepted a symlink to the active DB`);
+      assert.match(viaAlias.stderr, /拒绝将活动库作为报告快照/);
+      const viaHardlink = spawnSync(process.execPath, [scriptPath(name)], {
+        env: { ...process.env, DB_PATH: path, REPORT_SNAPSHOT_DB_PATH: hardlink }, encoding: "utf8",
+      });
+      assert.notEqual(viaHardlink.status, 0, `${name} accepted a hard link to the active DB`);
+      assert.match(viaHardlink.stderr, /拒绝将活动库作为报告快照/);
+    }
+    assert.deepEqual(readFileSync(path), before);
+    assert.deepEqual(readdirSync(root).sort(), beforeFiles);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

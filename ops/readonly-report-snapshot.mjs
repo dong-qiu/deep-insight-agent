@@ -1,12 +1,21 @@
 import { existsSync, realpathSync, statSync } from "node:fs";
+import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import Database from "better-sqlite3";
 
 /** Historical previews consume a standalone, static SQLite backup, never a live WAL database. */
-export function openReadonlyReportSnapshot(dbPath) {
-  if (!dbPath) throw new Error("必须显式指定隔离快照 DB_PATH；不能默认读取生产库");
-  const path = realpathSync(dbPath);
-  if (!statSync(path).isFile()) throw new Error("DB_PATH 必须指向现有的 SQLite 快照文件");
+export function openReadonlyReportSnapshot(snapshotPath) {
+  if (!snapshotPath) throw new Error("必须显式指定隔离快照 REPORT_SNAPSHOT_DB_PATH；不能默认读取生产库");
+  const path = realpathSync(snapshotPath);
+  const snapshotStat = statSync(path);
+  if (!snapshotStat.isFile()) throw new Error("REPORT_SNAPSHOT_DB_PATH 必须指向现有的 SQLite 快照文件");
+  for (const activeDbPath of [process.env.DB_PATH, "/data/insight.db"].filter(Boolean)) {
+    const activePath = existsSync(activeDbPath) ? realpathSync(activeDbPath) : resolve(activeDbPath);
+    const activeStat = existsSync(activeDbPath) ? statSync(activeDbPath) : null;
+    if (path === activePath || (activeStat && snapshotStat.dev === activeStat.dev && snapshotStat.ino === activeStat.ino)) {
+      throw new Error("拒绝将活动库作为报告快照；请先创建独立的 SQLite backup");
+    }
+  }
   if (existsSync(`${path}-wal`) || existsSync(`${path}-shm`)) {
     throw new Error("拒绝读取带 WAL/SHM 的库；请先用 SQLite backup 生成独立静止快照");
   }

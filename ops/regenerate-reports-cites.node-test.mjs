@@ -28,7 +28,7 @@ function withFixture(fn) {
     const before = readFileSync(dbPath);
     const beforeFiles = readdirSync(root).sort();
     const run = (args = [], overridePath = dbPath) => spawnSync(process.execPath, [script, ...args], {
-      env: { ...process.env, DB_PATH: overridePath }, encoding: "utf8",
+      env: { ...process.env, DB_PATH: join(root, "active.db"), REPORT_SNAPSHOT_DB_PATH: overridePath }, encoding: "utf8",
     });
     fn({ dbPath, root, oldPath, freshPath, oldBody, freshBody, before, beforeFiles, run });
   } finally {
@@ -75,8 +75,8 @@ test("valid but nonexistent report ID fails after a read-only lookup", () => {
 
 test("preview requires an explicit standalone snapshot path", () => {
   const result = spawnSync(process.execPath, [script], {
-    env: { ...process.env, DB_PATH: "" }, encoding: "utf8",
+    env: { ...process.env, DB_PATH: "/data/insight.db", REPORT_SNAPSHOT_DB_PATH: "" }, encoding: "utf8",
   });
   assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /显式指定隔离快照 DB_PATH/);
+  assert.match(result.stderr, /显式指定隔离快照 REPORT_SNAPSHOT_DB_PATH/);
 });

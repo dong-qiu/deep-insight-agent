@@ -8,14 +8,14 @@
  *
  *  旧删除实现没有 redaction registry/发布协议，现只保留候选预览。
  *
- *  用法：DB_PATH=/path/to/standalone-snapshot.db node ops/cleanup-reports.mjs（仅预览）。 */
+ *  用法：REPORT_SNAPSHOT_DB_PATH=/path/to/standalone-snapshot.db node ops/cleanup-reports.mjs（仅预览）。 */
 import { openReadonlyReportSnapshot } from "./readonly-report-snapshot.mjs";
 
 if (process.argv.length !== 2) {
   console.error("仅支持无参数预览；--apply 已停用，报告删除须走 redaction registry 协议。");
   process.exit(2);
 }
-const db = openReadonlyReportSnapshot(process.env.DB_PATH);
+const db = openReadonlyReportSnapshot(process.env.REPORT_SNAPSHOT_DB_PATH);
 
 // 1. 先收齐"应该删的 id 集合"
 const allReports = db.prepare(`

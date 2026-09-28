@@ -103,7 +103,7 @@ COPY --from=builder --chown=app:app /tmp/record-deployment.mjs ./ops/record-depl
 COPY --from=builder --chown=app:app /tmp/replay-redaction-registry.cjs ./ops/replay-redaction-registry.cjs
 COPY --chown=app:app ops/regenerate-reports-cites.mjs ./ops/regenerate-reports-cites.mjs
 COPY --chown=app:app ops/readonly-report-snapshot.mjs ./ops/readonly-report-snapshot.mjs
-# 一次性回填脚本（headline 方案）：容器内 docker compose exec app node /app/ops/backfill-highlights.mjs 跑
+# 历史 headline 仅隔离快照预览；须显式设置 REPORT_SNAPSHOT_DB_PATH，不得读取容器活动 DB_PATH 或 --apply
 COPY --chown=app:app ops/backfill-highlights.mjs ./ops/backfill-highlights.mjs
 # 历史前情链接脚本只读预览；旧 --apply 写入口已停用。
 COPY --chown=app:app ops/backfill-report-chain.mjs ./ops/backfill-report-chain.mjs

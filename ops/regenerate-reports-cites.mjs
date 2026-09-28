@@ -12,7 +12,7 @@
  *
  *  幂等：Pass 1 检测到 `  - [N] ` 跳过；Pass 2 检测到 `](http` 跳过。
  *
- *  用法：DB_PATH=/path/to/standalone-snapshot.db node ops/regenerate-reports-cites.mjs [--report-id rep_xxx]
+ *  用法：REPORT_SNAPSHOT_DB_PATH=/path/to/standalone-snapshot.db node ops/regenerate-reports-cites.mjs [--report-id rep_xxx]
  *  --apply 始终拒绝：直接改 .md 会绕过 report_index/FTS/generation_effect/完整性锚。 */
 import { readFileSync } from "node:fs";
 import { openReadonlyReportSnapshot } from "./readonly-report-snapshot.mjs";
@@ -34,7 +34,7 @@ for (let i = 0; i < args.length; i++) {
     process.exit(2);
   }
 }
-const db = openReadonlyReportSnapshot(process.env.DB_PATH);
+const db = openReadonlyReportSnapshot(process.env.REPORT_SNAPSHOT_DB_PATH);
 
 /** Pass 1：注入 [N] 行内 + 列表项前缀。返回 { md, changed }。幂等。 */
 function injectCiteNumbers(md) {

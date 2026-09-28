@@ -18,7 +18,7 @@
  *  安全：只读预览。旧 `--apply` 会修改已发布报告派生索引，已停用。
  *
  *  用法：
- *    隔离预览：  DB_PATH=/path/to/standalone-snapshot.db node ops/backfill-highlights.mjs
+ *    隔离预览：  REPORT_SNAPSHOT_DB_PATH=/path/to/standalone-snapshot.db node ops/backfill-highlights.mjs
  */
 import { openReadonlyReportSnapshot } from "./readonly-report-snapshot.mjs";
 
@@ -63,7 +63,7 @@ function main() {
     console.error("仅支持无参数预览；--apply 已停用，历史报告修复须走正式发布协议。");
     process.exit(2);
   }
-  const db = openReadonlyReportSnapshot(process.env.DB_PATH);
+  const db = openReadonlyReportSnapshot(process.env.REPORT_SNAPSHOT_DB_PATH);
   if (!hasColumn(db, "insight", "headline") || !hasColumn(db, "report_index", "highlights")) {
     db.close();
     throw new Error("预览需要已完成应用正式 schema 迁移；不会自动补列");
