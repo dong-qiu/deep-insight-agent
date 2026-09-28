@@ -13,6 +13,7 @@ import type { Entity, Insight } from "../types.js";
 import { auditSupportsStatementBinding, hasSafeReaderMetadata } from "../utils/display-coverage-audit.js";
 import { entitiesMentionedInStatement } from "../utils/reader-visible-entities.js";
 import { type InsightRow, rowToInsight } from "./analysis.js";
+import { createReaderEvidenceContext, type CurrentCitationEvidence } from "./reader-evidence.js";
 import type { DB } from "./index.js";
 
 /** Reader-visible graph membership is intentionally stricter than raw insight storage.  A graph
@@ -25,7 +26,10 @@ const READER_VISIBLE_INSIGHT_JOINS = `
   JOIN display_coverage_audit d ON d.batch_id = i.batch_id AND d.insight_id = i.id
     AND d.terminal_reason IN ('kept', 'kept_degraded')
   JOIN citation statement_citation ON statement_citation.insight_id = i.id
-    AND statement_citation.citation_index = i.statement_citation_index - 1`;
+    AND statement_citation.citation_index = i.statement_citation_index - 1
+  JOIN content_item current_content ON current_content.id = statement_citation.content_item_id
+    AND current_content.reader_eligible = 1
+  JOIN source current_source ON current_source.id = current_content.source_id`;
 
 const READER_VISIBLE_INSIGHT_WHERE = `
   b.status = 'done'
@@ -39,7 +43,7 @@ const READER_VISIBLE_INSIGHT_WHERE = `
       AND cc.reachability = 'pass' AND cc.consistency = 'support' AND cc.verdict = 'pass'
   )`;
 
-type ReaderVisibleRow = {
+type ReaderVisibleRow = CurrentCitationEvidence & {
   statement: string;
   statement_quote: string;
   headline: string | null;
@@ -71,23 +75,39 @@ function auditMatchesPersistedBinding(row: Pick<ReaderVisibleRow, "statement" | 
 function loadTopicEntityRows(db: DB, topicId: string, since?: string): { entities: Entity[] }[] {
   const sql = `SELECT i.statement, i.headline, i.importance_basis, i.entities, i.statement_citation_index, statement_citation.quote AS statement_quote,
       statement_citation.citation_ref AS statement_citation_ref, d.decision AS display_coverage_decision,
-      d.gate_version AS display_coverage_gate_version
+      d.gate_version AS display_coverage_gate_version,
+      statement_citation.content_item_id,current_content.raw_ref,current_content.body,current_content.body_kind,current_content.content_hash,
+      statement_citation.quote
     FROM insight i ${READER_VISIBLE_INSIGHT_JOINS}
     WHERE i.topic_id = ?${since ? " AND b.created_at >= ?" : ""} AND ${READER_VISIBLE_INSIGHT_WHERE}`;
   const rows = db.prepare(sql).all(...(since ? [topicId, since] : [topicId])) as ReaderVisibleRow[];
-  return rows.filter(auditMatchesPersistedBinding)
+  const evidence = createReaderEvidenceContext(db);
+  evidence.preload(rows);
+  return rows.filter((row) => auditMatchesPersistedBinding(row) && evidence.accepts(row))
     .map((r) => ({ entities: entitiesMentionedInStatement(r.statement, JSON.parse(r.entities ?? "[]") as Entity[]) }));
 }
 
-/** 加载某主题的洞察（含 citation，溯源用）；since（batch.created_at 下界，ISO）可选限定时间窗。 */
-export function loadTopicInsights(db: DB, topicId: string, since?: string): Insight[] {
+/** Load only prospective drill members before performing archive verification. A skipped row
+ * cannot be rendered; every retained row still passes the unchanged audit and evidence gates. */
+function loadTopicInsightsFiltered(db: DB, topicId: string, since?: string, requiredEntityKeys?: readonly string[]): Insight[] {
   const sql = `SELECT i.*, statement_citation.citation_ref AS statement_citation_ref, statement_citation.quote AS statement_quote,
-      d.decision AS display_coverage_decision, d.gate_version AS display_coverage_gate_version
+      d.decision AS display_coverage_decision, d.gate_version AS display_coverage_gate_version,
+      statement_citation.content_item_id,current_content.raw_ref,current_content.body,current_content.body_kind,current_content.content_hash,
+      statement_citation.quote
     FROM insight i ${READER_VISIBLE_INSIGHT_JOINS}
     WHERE i.topic_id = ?${since ? " AND b.created_at >= ?" : ""} AND ${READER_VISIBLE_INSIGHT_WHERE}
     ORDER BY i.rowid`;
-  const rows = db.prepare(sql).all(...(since ? [topicId, since] : [topicId])) as Array<InsightRow & Pick<ReaderVisibleRow, "statement_citation_ref" | "statement_quote" | "display_coverage_decision" | "display_coverage_gate_version">>;
+  const allRows = db.prepare(sql).all(...(since ? [topicId, since] : [topicId])) as Array<InsightRow & ReaderVisibleRow>;
+  const rows = requiredEntityKeys ? allRows.filter((row) => {
+    try {
+      const keys = new Set(entitiesMentionedInStatement(row.statement, JSON.parse(row.entities ?? "[]") as Entity[])
+        .map((entity) => canonKey(entity.name)));
+      return requiredEntityKeys.every((key) => keys.has(key));
+    } catch { return false; }
+  }) : allRows;
   const insights: Insight[] = [];
+  const evidence = createReaderEvidenceContext(db);
+  evidence.preload(rows);
   for (const r of rows) {
     if (!auditMatchesPersistedBinding({
       statement_citation_index: r.statement_citation_index,
@@ -98,11 +118,16 @@ export function loadTopicInsights(db: DB, topicId: string, since?: string): Insi
       importance_basis: r.importance_basis,
       display_coverage_decision: r.display_coverage_decision,
       display_coverage_gate_version: r.display_coverage_gate_version,
-    })) continue;
+    }) || !evidence.accepts(r)) continue;
     const insight = rowToInsight(db, r);
     insights.push({ ...insight, entities: entitiesMentionedInStatement(insight.statement, insight.entities) });
   }
   return insights;
+}
+
+/** 加载某主题的洞察（含 citation，溯源用）；since（batch.created_at 下界，ISO）可选限定时间窗。 */
+export function loadTopicInsights(db: DB, topicId: string, since?: string): Insight[] {
+  return loadTopicInsightsFiltered(db, topicId, since);
 }
 
 export interface TopicGraphOptions {
@@ -197,7 +222,7 @@ export function insightsMentioningEntity(
   // 按 canonKey 匹配——点击的是规范展示名（如 GPT-5.5），变体（GPT 5.5）的洞察也要纳入（S1.6）
   const target = canonKey(entityName);
   if (!target) return []; // 纯标点/空名 key 为空，无法稳定匹配——不归并（与图侧 canon 跳过一致）
-  return loadTopicInsights(db, topicId, since).filter((i) =>
+  return loadTopicInsightsFiltered(db, topicId, since, [target]).filter((i) =>
     (i.entities ?? []).some((e) => canonKey(e.name) === target),
   );
 }
@@ -213,7 +238,7 @@ export function insightsCooccurring(
   const ka = canonKey(a);
   const kb = canonKey(b);
   if (!ka || !kb) return []; // 空 key 不稳定匹配
-  return loadTopicInsights(db, topicId, since).filter((i) => {
+  return loadTopicInsightsFiltered(db, topicId, since, [ka, kb]).filter((i) => {
     const keys = new Set((i.entities ?? []).map((e) => canonKey(e.name)));
     return keys.has(ka) && keys.has(kb);
   });
