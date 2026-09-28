@@ -52,4 +52,11 @@
 
 PR/CI 通过不等于上线。产品负责人已在当前对话接受静态备份所示的严格隐藏范围；正式切换前仍须核对部署镜像的 Git SHA 与通过 CI 的提交一致，避开每日管线 `16:50–17:30 UTC`。上线后以同一类只读请求核对图谱、下钻、线索和机会输出集合：不出现旧纯原文归档内容，v1 正例仍可见，历史报告不被改写。将当前规模的读侧 P95 **250 ms**、完整页面/API P95 **1 s** 设为首轮观察阈值；若超过阈值、出现读路径 5xx、或可见集合与备份预估无解释地偏离，则停止推广并使用上一个通过 CI 的不可变镜像回退，之后分析批量查询/候选窗口，不降低证据门。阈值是本次发布的操作预算，不是已经测得的线上 SLO。
 
-尚未完成：最终 PR 复审、CI、合并、镜像发布、生产部署与上线后**完整图页/API**耗时实测；这些结果须追加在本记录或部署回执中，不能用本次静态备份测量替代。
+## 生产切换与上线后复核
+
+- [PR #366](https://github.com/dong-qiu/deep-insight-agent/pull/366) 经独立复审、PR CI 后合入；主干提交为 `8ac46eadbfde1c32aac74e294bd2b1088c06b5e1`。[主干 CI](https://github.com/dong-qiu/deep-insight-agent/actions/runs/36432320032) 全部通过，[不可变镜像发布](https://github.com/dong-qiu/deep-insight-agent/actions/runs/36433126899) 成功，镜像 digest 为 `sha256:63e1e37f644df23f84d4f89e9b2be0fc66455720f738719888a5d8fadb18e41f`。
+- [生产部署](https://github.com/dong-qiu/deep-insight-agent/actions/runs/36433492816) 于 14:06–14:08 UTC 在每日管线避让窗口外成功，SSM 回执 `22875a61-b86a-466f-8879-e2f48cd92bf1`。部署前运行修订号为 `a582ed32c8a4ef0db91b82c1012f93c95ea0a40e`；部署后独立只读核对（SSM `dd88b65a-1f17-46a7-ae03-1109fbf66311`）确认 app OCI revision 为 `8ac46eadbfde1c32aac74e294bd2b1088c06b5e1`，app 与 generation-dispatch-worker 均为 healthy、cron 为 running；内部 `/api/health` 返回 `status=ok`、`stale=false`，worker 自检成功。部署自动生成静态备份 `20260928-140745`。
+- 在该部署备份上，以合入提交的诊断脚本做只读聚合复测（SSM `75995a24-9258-4520-9872-70b93ec67ee2`）：图谱候选洞察仍为 **157→125**（按主题 25→21、105→81、27→23），潜在合格线索 **29→17**，潜在机会 **14→9**；43 份相关内容中 36 份 v1 归档可核验、7 份早期纯原文归档被隐藏，与上线前预测完全一致。该脚本的 SQL+归档暖态 P95 为 **198.78 ms**，低于 250 ms 读侧预算，但**不是**完整图页/API 耗时。初次复测命令因 SSM 默认 `sh` 不支持 `pipefail` 失败；一次 stdin 执行未输出结果；最终上述回执成功，前两次均未改变生产数据。
+- 2026-09-28 UTC 公网未登录冒烟：从当前操作机运行 `for route in api/health graph api/leads; do curl -sS -o /dev/null -w '%{http_code}\n' "https://insight.dolphinqd.dpdns.org/$route"; done`（不跟随跳转），依次得到 200、307、401；这些响应只验证存活与鉴权边界，不能证明登录后的页面内容或完整路径性能。
+
+仍待完成：在可用的管理员浏览器会话中核对图谱、节点/边下钻、线索与机会的实际输出集合，以及登录后的完整图页/API P95 **1 s** 观察阈值。本次会话没有可连接的浏览器，故不将静态备份复测或未登录 HTTP 冒烟冒充该项通过。若实测超阈值、出现读路径 5xx 或可见集合无解释地偏离，应按上节的回退条件处理。
