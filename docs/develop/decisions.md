@@ -1675,3 +1675,27 @@ CI 重算判定、保留 warning，并继续阻断执行失败、无效或不适
 不宣称测得零延迟或无限扩展。若迁回 Edge / 多实例 / 引入逐设备撤销，另设计共享会话版本存储。
 验收必须包含真实 HTTP cookie 的改密/降权/删除/轮换拒绝，以及 standalone/Docker Node 原生模块运行路径。
 详见 [B1b spec](../plan/specs/auth-hardening.md)。
+
+---
+
+## ADR-0038: 当前证据与历史报告快照分离读取
+
+- **日期**: 2026-09-28
+- **状态**: Proposed（B4 契约，待独立评审与验收）
+
+图谱和技术线索是当前读者面；已发布报告及管理员质量复盘是历史记录面。旧的 `pass/support`
+校验不保证今天的 `ContentItem` 仍指向同一份可读原文，尤其在同 URL 原地更新或 raw archive
+替换期间。另一方面，`content-v4` revision 只冻结脱敏元数据与正文哈希，没有旧正文或
+`raw_revision_ref`，不能被误用为可打开历史原文的能力。
+
+B4 拟将两者明确分开：当前图谱、下钻与线索必须同时满足既有 v6 审计/语义门、当前正文与
+绑定 quote 可定位、当前 `raw_ref` 精确绑定 committed 归档，且正文、归档 envelope 与内容哈希
+三方一致；任何缺口 fail-closed。已发布报告保留既有 Markdown 与引用摘录，但不宣称它们本身
+不可篡改；复盘在读取时校验冻结 revision 与 snapshot hash，不用当前正文回填，
+也不将旧报告当作当前图谱/线索的旁路。若将来需要打开历史原文，应另建按 revision 锁定且
+字节哈希匹配的授权归档，不用一个 `content_hash` 或存储的 quote 冒充。
+
+这个决定可能使没有可验证归档关联、或虽有 committed effect 但归档仍是早期纯原文的旧内容
+退出当前图谱/线索；先在隔离脱敏快照上按队列及读者面
+量化影响，并为“全部历史”图页的归档读取设实测预算，再实施及核验生产结果。
+验收矩阵见 [B4 读者侧证据可见性](../plan/specs/evidence-reader-visibility.md)。
