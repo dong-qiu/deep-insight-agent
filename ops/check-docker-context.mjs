@@ -14,7 +14,7 @@ const required = ["package.json", "package-lock.json", "tsconfig.json", "next.co
   "ops/run-provenance-migrations.ts", "ops/record-deployment.ts", "ops/replay-redaction-registry.ts",
   "ops/crontab", "ops/trigger.mjs", "ops/backup-db.mjs", "ops/cost-backfill.mjs", "ops/probe-alert.mjs",
   "ops/generation-dispatch-worker.mjs", "ops/generation-dispatch-healthcheck.mjs",
-  "ops/regenerate-reports-cites.mjs", "ops/backfill-highlights.mjs", "ops/backfill-report-chain.mjs"];
+  "ops/regenerate-reports-cites.mjs", "ops/readonly-report-snapshot.mjs", "ops/backfill-highlights.mjs", "ops/backfill-report-chain.mjs"];
 const excluded = [".env", ".env.local", ".env.local.bak", ".npmrc", ".aws/credentials", ".ssh/id_rsa",
   ".codex/config.toml", ".claude/settings.json", ".data/insight.db", "deep-insight-cli_accessKeys.csv",
   "arbitrary-local-notes.json", "ops/aws/config.sh", "ops/aws/key.pem", "ops/local-accessKeys.csv",

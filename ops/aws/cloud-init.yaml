@@ -2,8 +2,8 @@
 # Runs on VM first boot (AWS passes this file as EC2 user-data).
 # Infrastructure only: install Docker, create swap, install Caddy, create app dir.
 # NOTE: intentionally NO secrets and NO private-repo clone here -- user-data is
-#       readable from instance metadata. Code and secrets are delivered by deploy.sh
-#       over encrypted rsync/ssh instead.
+#       readable from instance metadata. Runtime secrets are separately installed
+#       by the operator; production releases use GitHub Actions immutable images.
 # ASCII-only for portability across cloud user-data encoders.
 
 package_update: true
@@ -22,14 +22,14 @@ runcmd:
   - usermod -aG docker ubuntu
   - systemctl enable --now docker
 
-  # --- Caddy (automatic HTTPS reverse proxy; Caddyfile written by deploy.sh once domain known) ---
+  # --- Caddy (operator configures TLS/reverse proxy separately when domain is known) ---
   - apt-get install -y debian-keyring debian-archive-keyring apt-transport-https curl
   - curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
   - curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-stable.list
   - apt-get update
   - apt-get install -y caddy
 
-  # --- Deploy dir (owned by ubuntu, for deploy.sh rsync) ---
+  # --- Deploy dir (owner-only runtime config, CD-managed compose) ---
   - mkdir -p /opt/app
   - chown -R ubuntu:ubuntu /opt/app
 
