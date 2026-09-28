@@ -30,6 +30,21 @@ it("runJob 失败 + 非 silent → 发 notifyFailure", async () => {
   expect(notifyFailure).toHaveBeenCalledTimes(1);
 });
 
+it("opaque provider payload never enters Run SQL or notification; original error is rethrown", async () => {
+  const error = Object.assign(new Error("synthetic-private-response"), { status: 503, cause: new Error("synthetic-private-cause") });
+  await expect(runJob(db, { kind: "analyze", target: { topic_id: "t1" } }, async () => { throw error; })).rejects.toBe(error);
+  const row = db.prepare("SELECT error FROM run").get() as { error: string };
+  expect(JSON.parse(row.error)).toEqual({ type: "Error", message: "http_error_503" });
+  expect(row.error).not.toContain("synthetic-private");
+  expect(JSON.stringify(vi.mocked(notifyFailure).mock.calls)).not.toContain("synthetic-private");
+  expect(error.message).toBe("synthetic-private-response");
+});
+
+it("non-Error throws still record failed Run and preserve the thrown value", async () => {
+  await expect(runJob(db, { kind: "ingest", target: {} }, async () => { throw "synthetic-private-string"; })).rejects.toBe("synthetic-private-string");
+  expect(listRuns(db)[0].error).toEqual({ type: "Error", message: "operation_failed" });
+});
+
 it("runJob 成功：Run done + 累加成本", async () => {
   const { run, result } = await runJob(db, { kind: "analyze", target: { topic_id: "t1" } }, async (ctx) => {
     ctx.recordCost({ tokens: 100, amount: 1 });
@@ -50,7 +65,7 @@ it("runJob 失败：Run failed + error，并 rethrow", async () => {
     }),
   ).rejects.toThrow("boom");
   const r = listRuns(db, { status: "failed" })[0];
-  expect(r.error?.message).toBe("boom");
+  expect(r.error?.message).toBe("operation_failed");
   expect(r.kind).toBe("ingest");
   expect(r.cost).toBeNull();
 });

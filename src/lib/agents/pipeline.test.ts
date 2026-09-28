@@ -387,7 +387,7 @@ describe("runAnalysis", () => {
     await expect(runAnalysis(db, topic, [], win)).rejects.toThrow("boom");
     const run = listRuns(db, { kind: "analyze" })[0];
     expect(run.status).toBe("failed");
-    expect(run.error?.message).toContain("boom");
+    expect(run.error?.message).toBe("operation_failed");
   });
 
   it("外部分析返回前若 worker 已失去 fencing，结果不得落库", async () => {

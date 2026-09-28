@@ -12,6 +12,7 @@
  *   - 版本隔离 + TTL 同 consistency_cache：改模型/prompt → 版本变 → 旧键不再撞 → 自然失效。
  *   - 单源洞察才入缓存（其全部 citation 指向同一 item；96% 洞察为单源，ADR-0009）；跨条洞察（4%）切片2 另处理。 */
 import { createHash } from "node:crypto";
+import { safeError } from "../runtime/diagnostics.js";
 import type { HistoricalEvent } from "../agents/analyzer.js";
 import type { ContentItem, Insight } from "../types.js";
 import type { DB } from "./index.js";
@@ -83,7 +84,7 @@ export function recordAnalysisCache(
   } catch (e) {
     // 纯度量旁路：绝不连累管线（契约）。但切片1 全部价值在这张表，持续静默失败会让命中率假性为 0
     // 而无人知 → 留一行 warn（不抛）便于排查。
-    console.warn(`[analysis-cache] recordAnalysisCache 失败（已忽略，不影响管线）：${e instanceof Error ? e.message : e}`);
+    console.warn(`[analysis-cache] recordAnalysisCache 失败（已忽略，不影响管线）：${safeError(e).message}`);
     return { writes: 0, wouldHit: 0 };
   }
 }

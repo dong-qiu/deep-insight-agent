@@ -55,7 +55,8 @@ describe("readTextCapped 大小封顶", () => {
     const text = await readTextCapped(streamResponse(["abc", "def", "ghij"]), 8, { truncate: true, label: "feed-x" });
     expect(text).toBe("abcdef"); // 第三块（使总数=10>8）被丢弃，干净边界
     expect(warn).toHaveBeenCalledOnce();
-    expect(warn.mock.calls[0][0]).toMatch(/已截断保留前 6 字节.*feed-x/);
+    expect(warn.mock.calls[0][0]).toMatch(/已截断保留前 6 字节/);
+    expect(warn.mock.calls[0][0]).not.toContain("feed-x"); // labels may contain signed URLs
   });
 });
 

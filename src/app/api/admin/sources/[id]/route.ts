@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { getDb } from "../../../../../lib/db/index.js";
 import { deleteSource, getSource, updateSource } from "../../../../../lib/db/repos.js";
 import { validateSourceInput } from "../../../../../lib/db/validate.js";
+import { safeError } from "../../../../../lib/runtime/diagnostics.js";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -32,9 +33,8 @@ export async function DELETE(
     deleteSource(db, id);
     return NextResponse.json({ status: "deleted", id });
   } catch (e) {
-    const err = e as Error;
     return NextResponse.json(
-      { error: "fk_constraint", message: `该数据源被 content_item 引用，无法删除（建议改 enabled=false 停用）：${err.message.slice(0, 80)}` },
+      { error: "fk_constraint", message: `该数据源被 content_item 引用，无法删除（建议改 enabled=false 停用）：${safeError(e).message}` },
       { status: 409 },
     );
   }

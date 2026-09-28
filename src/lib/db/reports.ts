@@ -5,6 +5,7 @@ import { join, relative, resolve } from "node:path";
 import { domainFacet, isDomainValue, isLensValue, lensFacet, parseFacets } from "../topics/facets.js";
 import type { Report, ReportIndexEntry } from "../types.js";
 import type { DB } from "./index.js";
+import { safeError } from "../runtime/diagnostics.js";
 import { appendGenerationEvent, captureRevision, entityKey, type EntityRef } from "./provenance-facts.js";
 import { anchorEnvelopeBytes, anchorMatchesManifest, manifestForArtifact, parseCanonicalAnchorEnvelope, parseCanonicalJsonBytes, type AnchorSigner, type AnchorStore, type ArtifactManifest } from "./integrity-anchors.js";
 import { assertAnchorPublicationKeyActive, commitAnchoredPublications, writePlannedAnchor } from "./integrity-publication.js";
@@ -181,7 +182,7 @@ function saveReportWithEffect(
     })();
   } catch (error) {
     // 已出现的半成品不进入 reader；保留 effect/failed Report 供后续 reconciliation 或人工诊断。
-    const message = error instanceof Error ? error.message.slice(0, 256) : String(error).slice(0, 256);
+    const message = safeError(error).message;
     db.transaction(() => {
       db.prepare("UPDATE generation_effect SET status='unknown',error=?,updated_at=? WHERE id=? AND status <> 'committed'")
         .run(j({ reason_code: "report_persistence_failed", message }), new Date().toISOString(), effectId);
@@ -241,7 +242,7 @@ async function saveAnchoredReportWithEffect(
       insertReportIndex(db, report, index); afterPublish?.();
     } });
   } catch (error) {
-    const message = error instanceof Error ? error.message.slice(0, 256) : String(error).slice(0, 256);
+    const message = safeError(error).message;
     const anchored = !!db.prepare("SELECT 1 FROM generation_anchor_effect WHERE generation_effect_id=? AND status='anchor_written'").get(effectId);
     if (!anchored) db.transaction(() => {
       db.prepare("UPDATE generation_effect SET status='unknown',error=?,updated_at=? WHERE id=? AND status <> 'committed'").run(j({ reason_code: "report_persistence_failed", message }), new Date().toISOString(), effectId);
@@ -327,7 +328,7 @@ export function saveReport(
     if (lifecycleSchema) {
       db.prepare(
         "UPDATE report SET status='failed', body_path=NULL, failure=? WHERE id=? AND status='generating'",
-      ).run(j({ reason_code: "report_persistence_failed", message: (e as Error).message.slice(0, 256) }), report.id);
+      ).run(j({ reason_code: "report_persistence_failed", message: safeError(e).message }), report.id);
     } else {
       db.prepare("UPDATE report SET status='failed', body_path='' WHERE id=? AND status='generating'").run(report.id);
     }
@@ -399,7 +400,7 @@ export function reconcileReportEffects(db: DB, opts: { dir?: string } = {}): { c
       })();
       committed += 1;
     } catch (error) {
-      const message = error instanceof Error ? error.message.slice(0, 256) : String(error).slice(0, 256);
+      const message = safeError(error).message;
       db.transaction(() => {
         db.prepare("UPDATE generation_effect SET status='unknown',error=?,updated_at=? WHERE id=?")
           .run(j({ reason_code: "report_reconcile_failed", message }), new Date().toISOString(), row.effect_id);
@@ -568,7 +569,7 @@ export function getReport(db: DB, id: string): Report | null {
     body_md = readFileSync(`${r.body_path}.md`, "utf8");
     body_html = readFileSync(`${r.body_path}.html`, "utf8");
   } catch (e) {
-    console.warn(`getReport: 报告 ${id} 正文文件缺失（${r.body_path}.*）：${(e as Error).message}`);
+    console.warn(`getReport: 报告正文文件缺失：${safeError(e).message}`);
     body_md = `# ${r.title}\n\n_正文文件缺失，请重新生成本报告。_`;
     body_html = `<h1>${r.title}</h1><p><em>正文文件缺失，请重新生成本报告。</em></p>`;
   }

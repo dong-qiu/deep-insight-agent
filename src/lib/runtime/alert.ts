@@ -10,6 +10,7 @@
 import { createHmac } from "node:crypto";
 import { notifyEmail } from "./email.js";
 import { runLogger } from "./logger.js";
+import { redactDiagnostic, redactDiagnosticText, safeError } from "./diagnostics.js";
 
 export interface FailureAlert {
   runId: string;
@@ -121,7 +122,7 @@ export function notifyBriefAcceptance(input: BriefAcceptanceInput): void {
       tags: [waiting ? "warning" : "rotating_light"],
     });
   } catch (e) {
-    runLogger({ stage: "alert" }).warn({ err: e instanceof Error ? e.message : String(e) }, "Brief 验收告警构造失败（已忽略）");
+    runLogger({ stage: "alert" }).warn({ err: e }, "Brief 验收告警构造失败（已忽略）");
   }
 }
 
@@ -188,7 +189,7 @@ export function notifyThinBrief(input: ThinBriefAlert): void {
   if (!isThinBrief(input) || briefThinAlertedReports.has(input.reportId)) return;
   briefThinAlertedReports.add(input.reportId);
   try { notify(thinBriefNotification(input)); }
-  catch (e) { runLogger({ stage: "alert" }).warn({ err: e instanceof Error ? e.message : String(e) }, "日报偏薄告警构造失败（已忽略）"); }
+  catch (e) { runLogger({ stage: "alert" }).warn({ err: e }, "日报偏薄告警构造失败（已忽略）"); }
 }
 
 /** Test-only reset for the per-report delivery guard. */
@@ -271,7 +272,7 @@ export function notifyReport(r: ReportPush): void {
   try {
     n = reportToNotification(r, process.env.PUBLIC_BASE_URL);
   } catch (e) {
-    runLogger({ stage: "alert" }).warn({ err: e instanceof Error ? e.message : String(e) }, "报告推送构造失败（已忽略）");
+    runLogger({ stage: "alert" }).warn({ err: e }, "报告推送构造失败（已忽略）");
     return;
   }
   // 扇出到所有已配渠道：飞书 webhook（ALERT_WEBHOOK）+ 邮件（SMTP_HOST+REPORT_EMAIL_TO）。各自内置
@@ -313,19 +314,20 @@ export function notifyBudget(a: BudgetAlert): void {
   try {
     notify(budgetToNotification(a));
   } catch (e) {
-    runLogger({ stage: "alert" }).warn({ err: e instanceof Error ? e.message : String(e) }, "预算告警构造失败（已忽略）");
+    runLogger({ stage: "alert" }).warn({ err: e }, "预算告警构造失败（已忽略）");
   }
 }
 
 /** 纯函数：Run 失败 → 中性通知（高优 + 🔴 tag；runId/目标内联进正文便于回查）。 */
 export function failureToNotification(a: FailureAlert): Notification {
+  const error = safeError({ type: a.errorType, message: a.message });
   const targetStr =
-    a.target == null ? "" : typeof a.target === "string" ? a.target : JSON.stringify(a.target);
-  const text = [`${a.errorType}：${a.message}`, targetStr ? `目标：${targetStr}` : "", `runId：${a.runId}`]
+    a.target == null ? "" : typeof a.target === "string" ? redactDiagnosticText(a.target) : JSON.stringify(redactDiagnostic(a.target));
+  const text = [`${error.type}：${error.message}`, targetStr ? `目标：${targetStr}` : "", `runId：${redactDiagnosticText(a.runId)}`]
     .filter(Boolean)
     .join("\n")
     .slice(0, 1000);
-  return { title: `🔴 Run 失败：${a.kind}`, text, priority: "high", tags: ["rotating_light"] };
+  return { title: `🔴 Run 失败：${redactDiagnosticText(a.kind)}`, text, priority: "high", tags: ["rotating_light"] };
 }
 
 /** 纯函数：按 URL（host + path）识别渠道；`override`（ALERT_CHANNEL）优先。无法解析 → generic 兜底。 */
@@ -442,13 +444,13 @@ export async function sendAlert(req: AlertRequest, timeoutMs = 5000): Promise<vo
     });
     const text = await res.text().catch(() => "");
     if (!res.ok) {
-      log.warn({ status: res.status, body: text.slice(0, 200) }, "告警 webhook 返回非 2xx");
+      log.warn({ status: res.status }, "告警 webhook 返回非 2xx");
       return;
     }
     const appErr = appLevelError(req.channel ?? detectChannel(req.url), text);
-    if (appErr) log.warn({ detail: appErr }, "告警 webhook 应用层拒绝（HTTP 2xx 但未送达）");
+    if (appErr) log.warn({ status: res.status, reason: "webhook_application_rejected" }, "告警 webhook 应用层拒绝（HTTP 2xx 但未送达）");
   } catch (e) {
-    log.warn({ err: e instanceof Error ? e.message : String(e) }, "告警发送失败（已忽略）");
+    log.warn({ err: e }, "告警发送失败（已忽略）");
   }
 }
 
@@ -466,7 +468,7 @@ export function notifySourceZeroYield(a: { sourceId: string; name: string; conse
       tags: ["warning"],
     });
   } catch (e) {
-    runLogger({ stage: "alert" }).warn({ err: e instanceof Error ? e.message : String(e) }, "源零产出告警构造失败（已忽略）");
+    runLogger({ stage: "alert" }).warn({ err: e }, "源零产出告警构造失败（已忽略）");
   }
 }
 
@@ -480,7 +482,7 @@ export function notifySourceRevived(a: { sourceId: string; name: string }): void
       tags: ["white_check_mark"],
     });
   } catch (e) {
-    runLogger({ stage: "alert" }).warn({ err: e instanceof Error ? e.message : String(e) }, "源复活告警构造失败（已忽略）");
+    runLogger({ stage: "alert" }).warn({ err: e }, "源复活告警构造失败（已忽略）");
   }
 }
 
@@ -490,12 +492,12 @@ export function notifySourceCircuit(a: { sourceId: string; name: string; consecu
   try {
     notify({
       title: `🚫 数据源自动停采：${a.name}`,
-      text: `源 ${a.sourceId}（${a.name}）连续失败 ${a.consecutiveFails} 次且多日无成功，已自动熔断停采。\n最近错误：${a.lastError ?? "未知"}\n恢复后会自动半开复活；也可在设置页手动重新启用。`,
+      text: `源 ${a.sourceId}（${a.name}）连续失败 ${a.consecutiveFails} 次且多日无成功，已自动熔断停采。\n最近错误：${safeError({ message: a.lastError }).message}\n恢复后会自动半开复活；也可在设置页手动重新启用。`,
       priority: "high",
       tags: ["warning"],
     });
   } catch (e) {
-    runLogger({ stage: "alert" }).warn({ err: e instanceof Error ? e.message : String(e) }, "源熔断告警构造失败（已忽略）");
+    runLogger({ stage: "alert" }).warn({ err: e }, "源熔断告警构造失败（已忽略）");
   }
 }
 
@@ -505,7 +507,7 @@ export function notifyFailure(a: FailureAlert): void {
   try {
     notify(failureToNotification(a));
   } catch (e) {
-    runLogger({ stage: "alert" }).warn({ err: e instanceof Error ? e.message : String(e) }, "失败告警构造失败（已忽略）");
+    runLogger({ stage: "alert" }).warn({ err: e }, "失败告警构造失败（已忽略）");
   }
 }
 
@@ -522,6 +524,6 @@ export function notify(n: Notification): void {
     const req = buildAlertRequest(url, n, channel, { feishuSecret: process.env.ALERT_FEISHU_SECRET });
     void sendAlert(req, timeoutMs);
   } catch (e) {
-    runLogger({ stage: "alert" }).warn({ err: e instanceof Error ? e.message : String(e) }, "告警构造失败（已忽略）");
+    runLogger({ stage: "alert" }).warn({ err: e }, "告警构造失败（已忽略）");
   }
 }

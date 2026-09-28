@@ -11,7 +11,7 @@
 - 不接触生产数据库，不复制 live SQLite，不因重构重写历史迁移或报告。
 - 不引入微服务、替换 SQLite 或建立新的合规平台。
 - 每个实施切片须有验收测试、独立审查和清晰回退边界；合入和部署分别核验。
-- A 批与 B1a 已合入并完成生产核验；当前实施独立切片 B1b 会话撤销。
+- A 批与 B1a/B1b 已合入并完成生产核验；当前实施独立切片 B2 信息边界。
   后续切片逐项确认前置条件，不将“已有方案”写成“已经完成”。
 
 ## 顺序和验收清单
@@ -89,5 +89,8 @@
   证据：[第一批验证记录](../../verify/technical-debt-foundation-2026-09-27.md)。
 - B1a：PR #361 已合入，主干 CI、镜像及生产发布/正常登录/权限/worker 核验通过。
   证据：[B1a 验证记录](../../verify/auth-login-throttle-2026-09-27.md)。
-- B1b：实现、本地回归和独立审查完成，尚未合入或部署；见 [B1b 收据](../../verify/auth-session-revocation-2026-09-28.md)。
+- B1b：PR #362 已合入并部署 `a8865ec`；真实旧 cookie=401、新登录=200、worker/报告可读核验通过。
+  见 [B1b 本地收据](../../verify/auth-session-revocation-2026-09-28.md) 与 [生产发布回执](https://github.com/dong-qiu/deep-insight-agent/pull/362#issuecomment-5858211607)。
+- B2：实现、本地验证及两轮独立审查完成，PR/CI 待核验；见 [信息边界验收](information-boundary.md)
+  与 [验证收据](../../verify/information-boundary-2026-09-28.md)。合入/生产发布待单独确认。
 - 其余 B/C/D 批：待实施。TD-04 的全局配置注册及有效配置摘要仍在 C4，不由 A3 代替。

@@ -534,7 +534,7 @@ agent 执行单元的状态追踪；由 Job Runner 写入 SQLite，支撑管理�
 | 安全维度 | 实现路径 |
 |---|---|
 | 身份与隔离 | Auth.js Credentials + JWT session（不落 SQLite）；env bootstrap admin 与 SQLite `app_user`；Node middleware 与 handler 共用只读凭据版本检查；变更密码/角色或删除后，后续请求拒绝旧会话，见 [认证保护 B1b](specs/auth-hardening.md) 与 ADR-0037；上线状态单独核验 |
-| 密钥管理 | 唯一来源 = 环境变量；配置文件以 `${VAR_NAME}` 引用；启动校验缺失即拒；logger 中间件强制脱敏（`api_key` / `token` / `cookie` / `authorization`）；前端不直连外部 API |
+| 密钥管理 | 唯一来源 = 环境变量；配置文件以 `${VAR_NAME}` 引用；启动校验缺失即拒；logger 在格式化前和最终 JSON 输出时递归脱敏，Error/Run/失败通知使用受控诊断而非原始堆栈或 SDK 正文；Docker 默认拒绝非构建输入，见 [B2 信息边界](specs/information-boundary.md)；前端不直连外部 API |
 | 传输与存储 | 反向代理（Caddy / Nginx）终止 TLS（自动续证）；敏感字段经 `node:crypto` 字段级加密；持久卷加密（云提供商）；账号删除 → 级联删除 + 备份滞后窗口 30 天后清除 |
 | 输入防护（prompt injection） | 在 `runtime/llm.ts` 包装：外部内容包裹 `<untrusted-source url="…">` 标签 + 指令式文本剥离；用户输入 XSS 防护走 React 默认 + CSP |
 | 输出防护 | LLM 输出走 Zod schema 校验；引用 URL 检查（黑名单 + SSRF 防护：禁止内网段 / 私有 IP / `file://`）；模型输出过滤敏感信息 |
