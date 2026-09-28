@@ -6,13 +6,17 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { saveAnalysisBatch, saveValidationResult } from "../../src/lib/db/analysis.js";
 import { openDb } from "../../src/lib/db/index.js";
-import { insertTopic } from "../../src/lib/db/repos.js";
+import { applyProvenanceMigrations } from "../../src/lib/db/provenance-migrations.js";
+import { planRawArchive, writePlannedRawArchive } from "../../src/lib/db/raw-archive.js";
+import { insertContentItem, insertSource, insertTopic } from "../../src/lib/db/repos.js";
 import { upsertUser } from "../../src/lib/db/users.js";
-import type { AnalysisBatch, Insight, Topic, ValidationResult } from "../../src/lib/types.js";
+import { contentHash } from "../../src/lib/sources/normalize.js";
+import type { AnalysisBatch, Insight, Source, Topic, ValidationResult } from "../../src/lib/types.js";
 import { DISPLAY_PROJECTION_VERSION, sourceQuoteHash } from "../../src/lib/utils/source-quote-projection.js";
 
 const tempRoot = mkdtempSync(join(tmpdir(), "insight-graph-drill-e2e-"));
 const dbPath = join(tempRoot, "insight.db");
+const previousDataDir = process.env.DATA_DIR;
 let app: ChildProcess | undefined;
 let baseUrl = "";
 type CookieJar = Map<string, string>;
@@ -70,7 +74,9 @@ async function signIn(email: string, password: string): Promise<CookieJar> {
 }
 
 beforeAll(async () => {
+  process.env.DATA_DIR = tempRoot;
   const db = openDb(dbPath);
+  applyProvenanceMigrations(db);
   const topic: Topic = { id: "t1", name: "T", keywords: ["OpenAI"], language: "zh", brief_schedule: "daily", enabled: true };
   const statement = "OpenAI 发布了产品。";
   const occurrence = (id: string): Insight => ({
@@ -104,6 +110,18 @@ beforeAll(async () => {
     },
   }));
   insertTopic(db, topic);
+  insertSource(db, { id: "s1", name: "Source", type: "rss", endpoint: "https://example.test/feed", topic_ids: [topic.id],
+    fetch_interval: "6h", backfill: null, enabled: true } satisfies Source);
+  for (const insight of batch.insights) {
+    const contentId = insight.citations[0]!.content_item_id;
+    insertContentItem(db, { id: contentId, source_id: "s1", url: `https://example.test/${contentId}`, title: contentId,
+      author: null, published_at: "2026-09-08T00:00:00Z", fetched_at: "2026-09-08T00:00:00Z", language: "zh",
+      topic_ids: [topic.id], tags: [], body: statement, body_kind: "article", raw_ref: "",
+      content_hash: contentHash(statement), fetch_status: "ok" });
+    const raw = `${JSON.stringify({ schema_version: "content-raw-archive-v1", source_body_origin: "feed", source_body: statement,
+      source_body_kind: "article", source_item_raw: `<item>${contentId}</item>`, structured_body_sha256: contentHash(statement) })}\n`;
+    writePlannedRawArchive(db, planRawArchive(db, { contentId, raw }), raw);
+  }
   upsertUser(db, "viewer@example.test", "viewer-password", "viewer");
   saveAnalysisBatch(db, batch);
   const validation: ValidationResult = {
@@ -130,7 +148,7 @@ beforeAll(async () => {
   baseUrl = `http://127.0.0.1:${port}`;
   app = spawn(process.execPath, ["./node_modules/next/dist/bin/next", "start", "--port", String(port)], {
     cwd: process.cwd(),
-    env: { ...process.env, DB_PATH: dbPath, AUTH_SECRET: "e2e-auth-secret", ADMIN_EMAIL: "admin@example.test", ADMIN_PASSWORD: "admin-password" },
+    env: { ...process.env, DATA_DIR: tempRoot, DB_PATH: dbPath, AUTH_SECRET: "e2e-auth-secret", ADMIN_EMAIL: "admin@example.test", ADMIN_PASSWORD: "admin-password" },
     stdio: "pipe",
   });
   await waitForApp();
@@ -142,6 +160,8 @@ afterAll(async () => {
     await new Promise<void>((resolve) => app!.once("exit", () => resolve()));
   }
   rmSync(tempRoot, { recursive: true, force: true });
+  if (previousDataDir === undefined) delete process.env.DATA_DIR;
+  else process.env.DATA_DIR = previousDataDir;
 });
 
 describe("graph drill live application", () => {
