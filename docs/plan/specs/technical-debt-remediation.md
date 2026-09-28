@@ -11,7 +11,7 @@
 - 不接触生产数据库，不复制 live SQLite，不因重构重写历史迁移或报告。
 - 不引入微服务、替换 SQLite 或建立新的合规平台。
 - 每个实施切片须有验收测试、独立审查和清晰回退边界；合入和部署分别核验。
-- A 批、B1a/B1b 与 B2 已合入并完成生产核验；当前实施独立切片 B3 运维写入口。
+- A 批、B1a/B1b、B2 与 B3 已合入并完成生产核验；下一切片是 B4 读取规则，须先明确历史快照例外。
   后续切片逐项确认前置条件，不将“已有方案”写成“已经完成”。
 
 ## 顺序和验收清单
@@ -93,6 +93,6 @@
   见 [B1b 本地收据](../../verify/auth-session-revocation-2026-09-28.md) 与 [生产发布回执](https://github.com/dong-qiu/deep-insight-agent/pull/362#issuecomment-5858211607)。
 - B2：PR #363 已合入并完成主干 CI、镜像与生产核验；见 [信息边界验收](information-boundary.md)
   与 [验证收据](../../verify/information-boundary-2026-09-28.md)。
-- B3：按 [运维写入口验收](ops-write-boundary.md) 实施；历史脚本只读预览、旧源码部署入口停用，
-  仅在隔离库验证。PR/CI/合入/部署状态见对应验证收据，未完成前不得宣称生产已修复。
-- 其余 B/C/D 批：待实施。TD-04 的全局配置注册及有效配置摘要仍在 C4，不由 A3 代替。
+- B3：PR [#364](https://github.com/dong-qiu/deep-insight-agent/pull/364) 已合入并发布 `a582ed32c8a4ef0db91b82c1012f93c95ea0a40e`；主干 CI、镜像发布、生产部署和实际运行版本核验通过。
+  历史脚本的拒写行为仅在隔离库验证，生产未运行历史修复；证据见 [运维写入口验收](ops-write-boundary.md) 与 [验证收据](../../verify/ops-write-boundary-2026-09-28.md)。
+- B4 与 C/D 批：待实施。TD-04 的全局配置注册及有效配置摘要仍在 C4，不由 A3 代替。
