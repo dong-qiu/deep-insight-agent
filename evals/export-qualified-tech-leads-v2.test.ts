@@ -2,16 +2,19 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { saveAnalysisBatch, saveValidationResult } from "../src/lib/db/analysis.js";
 import { openDb } from "../src/lib/db/index.js";
+import { applyProvenanceMigrations } from "../src/lib/db/provenance-migrations.js";
+import { planRawArchive, writePlannedRawArchive } from "../src/lib/db/raw-archive.js";
 import { createTopicDirection } from "../src/lib/db/planning.js";
 import { insertContentItem, insertSource, insertTopic } from "../src/lib/db/repos.js";
 import { upsertTechLeads } from "../src/lib/db/tech-leads.js";
 import type { AnalysisBatch, ContentItem } from "../src/lib/types.js";
 import { DISPLAY_PROJECTION_VERSION, sourceQuoteHash } from "../src/lib/utils/source-quote-projection.js";
+import { contentHash } from "../src/lib/sources/normalize.js";
 import { validateQualifiedTechLeadSnapshot, type QualifiedTechLeadSnapshot } from "./technology-opportunities/dogfood-v2.js";
 
 const roots: string[] = [];
@@ -29,6 +32,7 @@ function runExport(dbPath: string | undefined, output: string, timestamp = at, c
   const env: NodeJS.ProcessEnv = { ...process.env, NODE_ENV: "test", PROVENANCE_SCHEMA_REQUIRED: "0", PROVENANCE_DEPLOYMENT_REQUIRED: "0" };
   delete env.DB_PATH;
   if (dbPath !== undefined) env.DB_PATH = dbPath;
+  if (dbPath && dbPath.startsWith("/")) env.DATA_DIR = dirname(dbPath);
   return spawnSync(process.execPath, ["--import", join(rootDir, "node_modules/tsx/dist/loader.mjs"),
     join(rootDir, "evals/export-qualified-tech-leads-v2.ts"), output, timestamp], {
     cwd, env, encoding: "utf8", timeout: 20_000,
@@ -37,14 +41,22 @@ function runExport(dbPath: string | undefined, output: string, timestamp = at, c
 
 /** Current real schema and persisted audit/evidence joins; no mocked qualification functions. */
 function fixture(path: string, count = 1) {
+  const previousDataDir = process.env.DATA_DIR;
+  process.env.DATA_DIR = dirname(path);
   const db = openDb(path);
+  applyProvenanceMigrations(db);
   insertTopic(db, { id: "t_code_agents", name: "Synthetic", keywords: [], language: "en", brief_schedule: "daily", enabled: true });
   insertSource(db, { id: "s", name: "Synthetic", type: "rss", endpoint: "https://example.test/feed", topic_ids: ["t_code_agents"], fetch_interval: "6h", backfill: null, enabled: true });
   for (const id of ["c", "hidden"]) {
     const item: ContentItem = { id, source_id: "s", url: `https://example.test/${id}`, title: id, author: null,
       published_at: at, fetched_at: at, language: "en", topic_ids: ["t_code_agents"], tags: [], body: quote,
-      body_kind: "article", raw_ref: "", content_hash: id, fetch_status: "ok" };
+      body_kind: "article", raw_ref: "", content_hash: contentHash(quote), fetch_status: "ok" };
     insertContentItem(db, item);
+    if (id === "c") {
+      const raw = `${JSON.stringify({ schema_version: "content-raw-archive-v1", source_body_origin: "feed", source_body: quote,
+        source_body_kind: "article", source_item_raw: "<item>Atlas</item>", structured_body_sha256: contentHash(quote) })}\n`;
+      writePlannedRawArchive(db, planRawArchive(db, { contentId: id, raw }), raw);
+    }
   }
   db.prepare("UPDATE content_item SET reader_eligible=0 WHERE id='hidden'").run();
   const insightIds = ["good", "unsupported", "hidden"];
@@ -91,6 +103,8 @@ function fixture(path: string, count = 1) {
   // Match a closed, standalone offline backup, without live WAL/SHM dependencies.
   db.pragma("journal_mode = DELETE");
   db.close();
+  if (previousDataDir === undefined) delete process.env.DATA_DIR;
+  else process.env.DATA_DIR = previousDataDir;
 }
 
 describe("qualified TechLead CLI export from a read-only snapshot", () => {

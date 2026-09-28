@@ -1,12 +1,20 @@
-import { beforeEach, describe, expect, it } from "vitest";
-import type { AnalysisBatch, Entity, Insight, Topic, ValidationResult } from "../types.js";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { AnalysisBatch, ContentItem, Entity, Insight, Source, Topic, ValidationResult } from "../types.js";
 import { saveAnalysisBatch, saveValidationResult } from "./analysis.js";
 import { buildTopicGraph, groupDrillInsights, insightsCooccurring, insightsMentioningEntity, loadTopicInsights, reportLinkMap, reportLinksByInsight } from "./graph.js";
 import { type DB, openDb } from "./index.js";
-import { insertTopic } from "./repos.js";
+import { insertContentItem, insertSource, insertTopic } from "./repos.js";
+import { applyProvenanceMigrations } from "./provenance-migrations.js";
+import { planRawArchive, writePlannedRawArchive } from "./raw-archive.js";
+import { contentHash } from "../sources/normalize.js";
 import { DISPLAY_PROJECTION_VERSION, sourceQuoteHash } from "../utils/source-quote-projection.js";
 
 let db: DB;
+let dataDir: string;
+const previousDataDir = process.env.DATA_DIR;
 const topic: Topic = {
   id: "t1", name: "T", keywords: ["k"], language: "zh", brief_schedule: "daily", enabled: true,
 };
@@ -38,6 +46,19 @@ function validAuditDecision(insight: Insight) {
 }
 
 function saveBatch(id: string, insights: Insight[], visibility: ReaderVisibility = "visible") {
+  for (const insight of insights) {
+    for (const citation of insight.citations) {
+    const body = citation.quote;
+    const item: ContentItem = { id: citation.content_item_id, source_id: "graph_source", url: `https://example.test/${citation.content_item_id}`,
+      title: citation.content_item_id, author: null, published_at: "2026-05-07T00:00:00Z", fetched_at: "2026-05-07T00:00:00Z",
+      language: "en", topic_ids: [topic.id], tags: [], body, body_kind: "article", raw_ref: "",
+      content_hash: contentHash(body), fetch_status: "ok" };
+    insertContentItem(db, item);
+    const raw = `${JSON.stringify({ schema_version: "content-raw-archive-v1", source_body_origin: "feed", source_body: body,
+      source_body_kind: "article", source_item_raw: `<item>${insight.id}</item>`, structured_body_sha256: contentHash(body) })}\n`;
+    writePlannedRawArchive(db, planRawArchive(db, { contentId: item.id, raw }), raw);
+    }
+  }
   const batch: AnalysisBatch = {
     id, topic_id: "t1", time_window: { start: "2026-05-01", end: "2026-05-07" },
     status: "done", no_significant_event: false, insights,
@@ -75,8 +96,19 @@ function saveBatch(id: string, insights: Insight[], visibility: ReaderVisibility
 }
 
 beforeEach(() => {
+  dataDir = mkdtempSync(join(tmpdir(), "graph-reader-evidence-"));
+  process.env.DATA_DIR = dataDir;
   db = openDb(":memory:");
+  applyProvenanceMigrations(db);
   insertTopic(db, topic);
+  insertSource(db, { id: "graph_source", name: "Source", type: "rss", endpoint: "https://example.test/feed",
+    topic_ids: [topic.id], fetch_interval: "6h", backfill: null, enabled: true } as Source);
+});
+afterEach(() => {
+  db.close();
+  if (previousDataDir === undefined) delete process.env.DATA_DIR;
+  else process.env.DATA_DIR = previousDataDir;
+  rmSync(dataDir, { recursive: true, force: true });
 });
 
 describe("buildTopicGraph", () => {

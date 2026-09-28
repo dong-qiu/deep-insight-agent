@@ -60,15 +60,12 @@ function sameRefs(left: StoredRef[], right: StoredRef[]): boolean {
       && JSON.stringify(ref.locator) === JSON.stringify(other.locator);
   });
 }
-function isV4ContentSnapshot(db: DB, ref: StoredRef): boolean {
-  if (ref.type !== "content_item" || ref.role !== "input" || ref.locator?.kind !== "id" || !ref.locator.id
-    || !/^content-v4:[a-f0-9]{64}$/.test(ref.revision)) return false;
-  const entityRef: EntityRef = { type: "content_item", locator: { kind: "id", id: ref.locator.id }, revision: ref.revision, role: "input" };
-  const row = db.prepare("SELECT snapshot FROM provenance_revision WHERE entity_type=? AND entity_key=? AND revision=?")
-    .get(ref.type, entityKey(entityRef), ref.revision) as { snapshot: string } | undefined;
-  if (!row) return false;
+/** Recheck historical admin metadata on every read; an append-only revision can still be
+ * corrupted on disk, and neither its URL nor its body hash proves old source bytes survive. */
+export function verifyV4ContentSnapshot(snapshotJson: string, snapshotHash: string, revision: string): Record<string, unknown> | null {
+  if (!/^content-v4:[a-f0-9]{64}$/.test(revision) || !/^[a-f0-9]{64}$/.test(snapshotHash)) return null;
   try {
-    const snapshot = JSON.parse(row.snapshot) as Record<string, unknown>;
+    const snapshot = JSON.parse(snapshotJson) as Record<string, unknown>;
     const expectedKeys = ["body_kind", "body_length", "content_hash", "fetch_status", "fetched_at", "published_at", "source_id", "title", "url"];
     if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)
       || Object.keys(snapshot).sort().join("\0") !== expectedKeys.join("\0")
@@ -77,9 +74,19 @@ function isV4ContentSnapshot(db: DB, ref: StoredRef): boolean {
       || !(typeof snapshot.fetched_at === "string" || snapshot.fetched_at === null)
       || typeof snapshot.body_kind !== "string" || typeof snapshot.fetch_status !== "string"
       || !Number.isSafeInteger(snapshot.body_length) || (snapshot.body_length as number) < 0
-      || typeof snapshot.content_hash !== "string") return false;
-    return ref.revision === `content-v4:${canonicalHash(snapshot)}`;
-  } catch { return false; }
+      || typeof snapshot.content_hash !== "string") return null;
+    const actualHash = canonicalHash(snapshot);
+    return snapshotHash === actualHash && revision === `content-v4:${actualHash}` ? snapshot : null;
+  } catch { return null; }
+}
+function isV4ContentSnapshot(db: DB, ref: StoredRef): boolean {
+  if (ref.type !== "content_item" || ref.role !== "input" || ref.locator?.kind !== "id" || !ref.locator.id
+    || !/^content-v4:[a-f0-9]{64}$/.test(ref.revision)) return false;
+  const entityRef: EntityRef = { type: "content_item", locator: { kind: "id", id: ref.locator.id }, revision: ref.revision, role: "input" };
+  const row = db.prepare("SELECT snapshot,snapshot_hash FROM provenance_revision WHERE entity_type=? AND entity_key=? AND revision=?")
+    .get(ref.type, entityKey(entityRef), ref.revision) as { snapshot: string; snapshot_hash: string } | undefined;
+  if (!row) return false;
+  return verifyV4ContentSnapshot(row.snapshot, row.snapshot_hash, ref.revision) !== null;
 }
 type EventMeta = { sequence: number; attempt: number; version_context: string; context_completeness: string };
 function eventMeta(db: DB, id: string): EventMeta {

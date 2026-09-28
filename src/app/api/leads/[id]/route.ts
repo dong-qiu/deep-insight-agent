@@ -2,6 +2,7 @@
 import { NextResponse } from "next/server";
 import { requireAdminActor } from "../../../../lib/auth-guard.js";
 import { getDb } from "../../../../lib/db/index.js";
+import { createReaderEvidenceContext } from "../../../../lib/db/reader-evidence.js";
 import { hashIdempotencyKey, recordManualDecision } from "../../../../lib/db/provenance.js";
 import { techLeadRef, techLeadRevisionSnapshot } from "../../../../lib/db/provenance-revisions.js";
 import { getTechLead, listTechLeadEvidence, setTechLeadStatus } from "../../../../lib/db/tech-leads.js";
@@ -12,10 +13,11 @@ const STATUSES = new Set<TechLeadStatus>(["recommended", "watching", "dismissed"
 
 export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }): Promise<NextResponse> {
   const db = getDb();
+  const evidenceContext = createReaderEvidenceContext(db);
   const { id } = await params;
-  const lead = getTechLead(db, id);
+  const lead = getTechLead(db, id, evidenceContext);
   return lead
-    ? NextResponse.json({ lead, evidence: listTechLeadEvidence(db, id) })
+    ? NextResponse.json({ lead, evidence: listTechLeadEvidence(db, id, evidenceContext) })
     : NextResponse.json({ error: "lead_not_found" }, { status: 404 });
 }
 

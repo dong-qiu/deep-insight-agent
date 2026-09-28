@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { openDb } from "./index.js";
 import { applyProvenanceMigrations } from "./provenance-migrations.js";
 import { appendGenerationEvent, canonicalHash, captureRevision, entityKey, type EntityRef } from "./provenance-facts.js";
-import { assertReviewPackageForPublish, getPublishedReportReview, listPublishedReportReviewDecisions, persistReportReviewPackage, publishReviewPackage, REPORT_SELECTION_RULE_VERSION } from "./report-review.js";
+import { assertReviewPackageForPublish, getPublishedReportReview, listPublishedReportReviewDecisions, persistReportReviewPackage, publishReviewPackage, REPORT_SELECTION_RULE_VERSION, verifyV4ContentSnapshot } from "./report-review.js";
 
 function setup(opts: { contentSnapshot?: Record<string, unknown>; reuseAnalyzeInputs?: boolean; completeContext?: boolean } = {}) {
   const db = openDb(":memory:"); applyProvenanceMigrations(db);
@@ -38,6 +38,16 @@ function packageFor(events: ReturnType<typeof setup>) {
 }
 
 describe("report review package", () => {
+  it("rechecks historical input metadata against both its revision and stored hash at read time", () => {
+    const events = setup();
+    const row = events.db.prepare("SELECT snapshot,snapshot_hash,revision FROM provenance_revision WHERE entity_type='content_item'")
+      .get() as { snapshot: string; snapshot_hash: string; revision: string };
+    expect(verifyV4ContentSnapshot(row.snapshot, row.snapshot_hash, row.revision)).toMatchObject({ title: "C" });
+    expect(verifyV4ContentSnapshot(row.snapshot.replace('"title":"C"', '"title":"Forged"'), row.snapshot_hash, row.revision)).toBeNull();
+    expect(verifyV4ContentSnapshot(row.snapshot, "0".repeat(64), row.revision)).toBeNull();
+    expect(verifyV4ContentSnapshot(row.snapshot, row.snapshot_hash, `content-v4:${"0".repeat(64)}`)).toBeNull();
+    expect(verifyV4ContentSnapshot(JSON.stringify({ ...JSON.parse(row.snapshot), body: "historical raw text" }), row.snapshot_hash, row.revision)).toBeNull();
+  });
   it("requires one decision and matching support whitelist before publish", () => {
     const events = setup(); const { db } = events;
     persistReportReviewPackage(db, packageFor(events));

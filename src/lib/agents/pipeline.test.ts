@@ -1,13 +1,18 @@
 /** 管线编排集成测试（质量 Q4）：覆盖 pipeline.ts 的 runAnalysis/runValidation/runReportGen 接线——
  *  此前零测试。mock LLM agents（analyze/validateBatch）+ buildReport + FS/alert 副作用，
  *  保留**真 runJob + 真落库（内存 DB）**，验：Run 生命周期、跨阶段数据流、成本透传、失败传播。 */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getAnalysisBatch, getValidationResult, saveAnalysisBatch, saveValidationResult } from "../db/analysis.js";
 import { type DB, openDb } from "../db/index.js";
 import { insertContentItem, insertSource, insertTopic, listRuns } from "../db/repos.js";
 import { listPlanningTechLeads, listTechLeadEvidence, listTechLeads } from "../db/tech-leads.js";
 import { createTopicDirection, getTechnologyOpportunity, listOpportunityLeads, listTechnologyOpportunities, previewTopicDirectionMapping, reprojectTopicDirection } from "../db/planning.js";
 import { applyProvenanceMigrations } from "../db/provenance-migrations.js";
+import { planRawArchive, writePlannedRawArchive } from "../db/raw-archive.js";
+import { contentHash } from "../sources/normalize.js";
 import { SQLITE_P1_TELEMETRY_SINK } from "../capabilities/p1-telemetry-sqlite.js";
 import { captureRevision, entityKey, type EntityRef } from "../db/provenance-facts.js";
 import { contentItemRef, contentItemRevision } from "../db/provenance-revisions.js";
@@ -64,6 +69,8 @@ vi.mock("../runtime/alert.js", async (orig) => ({
 import { runAnalysis, runReportGen, runTechLeadExtraction, runValidation } from "./pipeline.js";
 
 let db: DB;
+let dataDir: string;
+const previousDataDir = process.env.DATA_DIR;
 const topic: Topic = {
   id: "t1", name: "T", keywords: ["k"], language: "zh", brief_schedule: "daily", enabled: true,
   facets: ["domain:software-engineering"],
@@ -161,6 +168,8 @@ function seedConflictingContentRevision(item: ContentItem): void {
 }
 
 beforeEach(() => {
+  dataDir = mkdtempSync(join(tmpdir(), "pipeline-reader-evidence-"));
+  process.env.DATA_DIR = dataDir;
   db = openDb(":memory:");
   insertTopic(db, topic);
   analyzeMock.mockReset();
@@ -170,6 +179,20 @@ beforeEach(() => {
   seedDefaultDirectionsMock.mockReset();
   upsertTechnologyOpportunitiesMock.mockReset();
 });
+afterEach(() => {
+  db.close();
+  if (previousDataDir === undefined) delete process.env.DATA_DIR;
+  else process.env.DATA_DIR = previousDataDir;
+  rmSync(dataDir, { recursive: true, force: true });
+});
+
+function archiveReaderLeadContent(): void {
+  applyProvenanceMigrations(db);
+  const body = "Agent tool release";
+  const raw = `${JSON.stringify({ schema_version: "content-raw-archive-v1", source_body_origin: "feed", source_body: body,
+    source_body_kind: "article", source_item_raw: "<item>Agent tool release</item>", structured_body_sha256: contentHash(body) })}\n`;
+  writePlannedRawArchive(db, planRawArchive(db, { contentId: "ci1", raw }), raw);
+}
 
 describe("runAnalysis", () => {
   it.each([false, true])("全拒绝保留脱敏诊断而不创建 batch（cache read=%s）", async (cacheRead) => {
@@ -606,7 +629,8 @@ describe("runReportGen", () => {
 describe("runTechLeadExtraction", () => {
   function seedLeadInput(): { batch: AnalysisBatch; validation: ValidationResult } {
     insertSource(db, { id: "s1", name: "Source", type: "rss", endpoint: "https://x", topic_ids: [topic.id], fetch_interval: "6h", backfill: null, enabled: true } as Source);
-    insertContentItem(db, { id: "ci1", source_id: "s1", url: "https://x/ci1", title: "Agent tool", author: null, published_at: "2026-06-07T00:00:00Z", fetched_at: "2026-06-07T00:00:00Z", language: "en", topic_ids: [topic.id], tags: [], body: "q", body_kind: "article", raw_ref: "", content_hash: "h", fetch_status: "ok" });
+    insertContentItem(db, { id: "ci1", source_id: "s1", url: "https://x/ci1", title: "Agent tool", author: null, published_at: "2026-06-07T00:00:00Z", fetched_at: "2026-06-07T00:00:00Z", language: "en", topic_ids: [topic.id], tags: [], body: "Agent tool release", body_kind: "article", raw_ref: "", content_hash: contentHash("Agent tool release"), fetch_status: "ok" });
+    archiveReaderLeadContent();
     const batch = mkBatch();
     batch.insights[0].headline = "Agent tool";
     batch.insights[0].tags = ["tool"];
@@ -618,8 +642,9 @@ describe("runTechLeadExtraction", () => {
 
   it("真实 batch + validation + DB content 接线后，只把 pass 证据持久化为线索", () => {
     insertSource(db, { id: "s1", name: "Source", type: "rss", endpoint: "https://x", topic_ids: [topic.id], fetch_interval: "6h", backfill: null, enabled: true } as Source);
-    const content: ContentItem = { id: "ci1", source_id: "s1", url: "https://x/ci1", title: "Agent tool", author: null, published_at: "2026-06-07T00:00:00Z", fetched_at: "2026-06-07T00:00:00Z", language: "en", topic_ids: [topic.id], tags: [], body: "q", body_kind: "article", raw_ref: "", content_hash: "h", fetch_status: "ok" };
+    const content: ContentItem = { id: "ci1", source_id: "s1", url: "https://x/ci1", title: "Agent tool", author: null, published_at: "2026-06-07T00:00:00Z", fetched_at: "2026-06-07T00:00:00Z", language: "en", topic_ids: [topic.id], tags: [], body: "Agent tool release", body_kind: "article", raw_ref: "", content_hash: contentHash("Agent tool release"), fetch_status: "ok" };
     insertContentItem(db, content);
+    archiveReaderLeadContent();
     const batch = mkBatch();
     batch.insights[0].headline = "Agent tool";
     batch.insights[0].tags = ["tool"];

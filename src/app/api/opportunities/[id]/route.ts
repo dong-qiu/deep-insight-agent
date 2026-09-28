@@ -2,6 +2,7 @@
 import { NextResponse } from "next/server";
 import { requireAdminActor } from "../../../../lib/auth-guard.js";
 import { getDb } from "../../../../lib/db/index.js";
+import { createReaderEvidenceContext } from "../../../../lib/db/reader-evidence.js";
 import { hashIdempotencyKey, recordManualDecision } from "../../../../lib/db/provenance.js";
 import { technologyOpportunityRef, technologyOpportunityRevisionSnapshot } from "../../../../lib/db/provenance-revisions.js";
 import { getTechnologyOpportunity, listOpportunityLeads, setTechnologyOpportunityStatus } from "../../../../lib/db/planning.js";
@@ -16,10 +17,11 @@ const STATUSES = new Set<TechnologyOpportunityStatus>([
 export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }): Promise<NextResponse> {
   const { id } = await params;
   const db = getDb();
-  const opportunity = getTechnologyOpportunity(db, id);
+  const evidenceContext = createReaderEvidenceContext(db);
+  const opportunity = getTechnologyOpportunity(db, id, evidenceContext);
   if (!opportunity) return NextResponse.json({ error: "opportunity_not_found" }, { status: 404 });
-  const leads = listOpportunityLeads(db, id);
-  return NextResponse.json({ opportunity, leads: leads.map((lead) => ({ ...lead, evidence: listTechLeadEvidence(db, lead.id) })) });
+  const leads = listOpportunityLeads(db, id, evidenceContext);
+  return NextResponse.json({ opportunity, leads: leads.map((lead) => ({ ...lead, evidence: listTechLeadEvidence(db, lead.id, evidenceContext) })) });
 }
 
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }): Promise<NextResponse> {
