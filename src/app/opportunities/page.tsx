@@ -7,6 +7,7 @@ import { listTechLeadEvidence } from "../../lib/db/tech-leads.js";
 import { listTopics } from "../../lib/db/repos.js";
 import { findGenerationTraceForEntity } from "../../lib/db/provenance.js";
 import { OpportunityActions } from "./_components/opportunity-actions.js";
+import { OpportunityEvidence } from "./_components/opportunity-evidence.js";
 import { DirectionWorkbench, type DirectionMetric } from "./_components/direction-workbench.js";
 import { PlanningTabs } from "./_components/planning-tabs.js";
 import { ProvenanceTimeline } from "../reports/[id]/_components/provenance-timeline.js";
@@ -54,7 +55,7 @@ export default async function OpportunitiesPage(): Promise<React.ReactElement> {
             <div className="card-meta"><span className="tag-chip">{LANE[opportunity.lane]}</span>{opportunity.mapping_state === "stale" ? <span className="tag-chip">规则已更新 · 待复核</span> : null}<span className="imp-badge imp-4">{Math.round(opportunity.priority_score)} 分</span><span className="muted">{topicNames.get(opportunity.topic_id) ?? opportunity.topic_id} · {direction?.name ?? "待校准方向"} · {EFFECT[opportunity.planning_effect]}</span></div>
             <h3>{opportunity.title}</h3><p><strong>待验证假设：</strong>{opportunity.hypothesis.replace(/^待验证假设：/, "")}</p><p><strong>建议验证：</strong>{opportunity.proposed_validation}</p>
             <p className="muted">{opportunity.score_detail.reason} · 当前状态：{opportunity.status}</p>
-            <details><summary>可追溯事实证据（{evidence.length}）</summary><ul>{evidence.map((item) => <li key={`${item.lead_id}:${item.insight_id}:${item.citation_index}`}><a href={item.url} target="_blank" rel="noreferrer">{item.source_name}</a> · {item.observed_at.slice(0, 10)}<br />「{item.quote}」</li>)}</ul></details>
+            <OpportunityEvidence evidence={evidence} />
             <details><summary>不确定性（{opportunity.uncertainties.length}）</summary><ul>{opportunity.uncertainties.map((item) => <li key={item}>{item}</li>)}</ul></details>
             {traceId ? <ProvenanceTimeline traceId={traceId} /> : null}
             {isAdmin ? <p><OpportunityActions id={opportunity.id} status={opportunity.status} /></p> : null}
