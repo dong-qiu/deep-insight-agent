@@ -28,7 +28,7 @@ export SSH_KEY="$HOME/.ssh/deep-insight.pem"
 # —— 应用部署 ——
 export ADMIN_USER="ubuntu"                # AWS Ubuntu AMI 默认登录用户（Azure 是 azureuser）
 export APP_DIR_REMOTE="/opt/app"          # VM 上的部署目录（cloud-init 已建好、归 ubuntu）
-export GIT_REPO="https://github.com/dong-qiu/deep-insight-agent.git"  # 仅备查；deploy.sh 走 rsync 本地代码
+export GIT_REPO="https://github.com/dong-qiu/deep-insight-agent.git"  # 仅历史备查；旧 deploy.sh 已停用
 
 # 域名（要 HTTPS 才填；留空则用 http://<IP>:3000 临时访问，需在安全组临时放行 3000）
 export APP_DOMAIN=""

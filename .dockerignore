@@ -27,6 +27,7 @@ ops/**
 !ops/generation-dispatch-worker.mjs
 !ops/generation-dispatch-healthcheck.mjs
 !ops/regenerate-reports-cites.mjs
+!ops/readonly-report-snapshot.mjs
 !ops/backfill-highlights.mjs
 !ops/backfill-report-chain.mjs
 

@@ -102,9 +102,10 @@ COPY --from=builder --chown=app:app /tmp/run-provenance-migrations.mjs ./ops/run
 COPY --from=builder --chown=app:app /tmp/record-deployment.mjs ./ops/record-deployment.mjs
 COPY --from=builder --chown=app:app /tmp/replay-redaction-registry.cjs ./ops/replay-redaction-registry.cjs
 COPY --chown=app:app ops/regenerate-reports-cites.mjs ./ops/regenerate-reports-cites.mjs
+COPY --chown=app:app ops/readonly-report-snapshot.mjs ./ops/readonly-report-snapshot.mjs
 # 一次性回填脚本（headline 方案）：容器内 docker compose exec app node /app/ops/backfill-highlights.mjs 跑
 COPY --chown=app:app ops/backfill-highlights.mjs ./ops/backfill-highlights.mjs
-# 一次性回填脚本（前情链接）：容器内 docker compose exec app node /app/ops/backfill-report-chain.mjs --apply 跑
+# 历史前情链接脚本只读预览；旧 --apply 写入口已停用。
 COPY --chown=app:app ops/backfill-report-chain.mjs ./ops/backfill-report-chain.mjs
 
 # 持久卷挂载点（SQLite 库 + 报告正文 + 原文归档）

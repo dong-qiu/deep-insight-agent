@@ -37,8 +37,8 @@
 ## 部署 / 运维核验（生产在 AWS EC2，工具在 `ops/aws/`）
 
 - **合入 ≠ 上线：验证任何"修好了"之前，先核生产真在跑哪版**——查运行镜像 `created` 时间 / bundle 内容 / **字面量特征**（grep 一个该改动引入的独特字符串，如某新功能的中文/emoji 串），别信"合了 main 就上线了"。并行开发下还要防"上线的那版不是我部署的"（可能已被别的会话部署，别重复部署）。
-- **code-only 重部走 SSM 隧道 + rsync + 容器内 `docker compose up -d --build`，别跑 `deploy.sh`**——后者全量覆盖生产 `.env.local`，会抹掉只在生产配的运行时键（`COST_LIMIT_*` / `REPORT_PUSH` / `PUBLIC_BASE_URL` / SMTP）致静默降级（熔断失效 = 意外高成本、推送失效 = 用户收不到）。
-- **破坏性 sync（`rsync --delete`）先 `--dry-run` 看会删哪些**——`/opt/app` 常有手动沉积、不在仓库里的密钥文件（`.env.local`、`deep-insight-cli_accessKeys.csv`），无脑 `--delete` 会连它们一起删；排除 `.env* / .data / *.csv / *.pem / .claude` 再跑。
+- **生产 code-only 发布只走 GitHub Actions `Deploy Production Image`**——等 main CI / GHCR 不可变镜像就绪，在受控窗口触发健康切换；旧 `deploy.sh` 已停用，不能以 SSM+rsync 源码构建替代。历史上源码投递会覆盖生产 `.env.local` 并令成本熔断/推送静默失效。
+- **生产配置与发布分离**——`/opt/app/.env.local` 由 operator 单独维护；不要对该目录运行 `rsync --delete` 或从本地开发环境全量覆盖。历史同步风险仍见 `docs/practice-log.md`。
 - **部署避开每日管线窗**（brief 钉 17:00 UTC，避 **16:50–17:30 UTC**）——撞窗会孤儿化在途 run、当天 brief 整个不出；撞了用 `ops/trigger.mjs` 补跑。
 - **查生产真值走 `aws ssm send-command`**（read-only：`docker exec deep-insight-app-1` + `node` 读 `/data/insight.db`）——GFW 直连受阻、SSH 走 SSM 隧道；cloud 定时 agent 无 aws 凭证不能查，须本会话 / 手动。
 - 经验来源：memory `verify-check-deployed-version-first` / `deploy-collides-with-cron-window` / `aws-deploy` / `prod-db-is-docker-volume`；`docs/practice-log.md`（#47/#57/#142 及 07-04 #154 部署）。

@@ -15,21 +15,17 @@
  *  - 按 importance 降序取前 HIGHLIGHTS_MAX 条 headline，写 report_index.highlights。
  *
  *  幂等：highlights 已非空（'[]' 以外）的报告跳过；insight.headline 已非空的洞察不覆盖。
- *  安全：默认 **dry-run**（只打印将改什么，不写库）；加 `--apply` 才真正落库。
+ *  安全：只读预览。旧 `--apply` 会修改已发布报告派生索引，已停用。
  *
  *  用法：
- *    本地预览：  DB_PATH=.data/insight.db node ops/backfill-highlights.mjs
- *    本地落库：  DB_PATH=.data/insight.db node ops/backfill-highlights.mjs --apply
- *    容器内：    docker compose exec -T app node /app/ops/backfill-highlights.mjs --apply
+ *    隔离预览：  DB_PATH=/path/to/standalone-snapshot.db node ops/backfill-highlights.mjs
  */
-import Database from "better-sqlite3";
+import { openReadonlyReportSnapshot } from "./readonly-report-snapshot.mjs";
 
 // report-gen.ts 同名常量的对齐口径（改那边记得同步）
 const HIGHLIGHTS_MAX = 5;
 const HEADLINE_MAX = 40; // 一句话要点上限（CJK 按字计）
 
-const APPLY = process.argv.includes("--apply");
-const dbPath = process.env.DB_PATH || "/data/insight.db";
 
 /** 把完整 statement 浓缩成一句话要点（≤HEADLINE_MAX 字）。确定性、无 LLM：
  *  1. 去首尾空白 + 去结尾句末标点（headline 不需要句号）；
@@ -56,17 +52,22 @@ export function toHeadline(statement, max = HEADLINE_MAX) {
   return (cut > 0 ? text.slice(0, cut) : text).trimEnd() + "…";
 }
 
-/** 幂等补列（与 db/index.ts migrate 同款）：脚本可能在 app 重启迁移**之前**跑，
- *  raw better-sqlite3 不会触发应用层 migrate，故自带列存在性保障，独立可跑。 */
-function ensureColumn(db, table, column, ddl) {
+/** 预览不能补列；缺少目标 schema 时须先走应用的正式迁移。 */
+function hasColumn(db, table, column) {
   const cols = db.prepare(`PRAGMA table_info(${table})`).all();
-  if (!cols.some((c) => c.name === column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+  return cols.some((c) => c.name === column);
 }
 
 function main() {
-  const db = new Database(dbPath, { readonly: false });
-  ensureColumn(db, "insight", "headline", "headline TEXT NOT NULL DEFAULT ''");
-  ensureColumn(db, "report_index", "highlights", "highlights TEXT NOT NULL DEFAULT '[]'");
+  if (process.argv.length !== 2) {
+    console.error("仅支持无参数预览；--apply 已停用，历史报告修复须走正式发布协议。");
+    process.exit(2);
+  }
+  const db = openReadonlyReportSnapshot(process.env.DB_PATH);
+  if (!hasColumn(db, "insight", "headline") || !hasColumn(db, "report_index", "highlights")) {
+    db.close();
+    throw new Error("预览需要已完成应用正式 schema 迁移；不会自动补列");
+  }
   // 旧报告：highlights 缺省（'[]' / NULL）。已有要点的（手动 / 新管线）跳过，保证幂等。
   const reports = db
     .prepare(
@@ -78,11 +79,9 @@ function main() {
     .all();
 
   const getIns = db.prepare("SELECT id, statement, importance, headline FROM insight WHERE id = ?");
-  const setHeadline = db.prepare("UPDATE insight SET headline = ? WHERE id = ?");
-  const setHighlights = db.prepare("UPDATE report_index SET highlights = ? WHERE report_id = ?");
 
   let changed = 0, skippedNoIns = 0, headlinesFilled = 0;
-  const apply = db.transaction(() => {
+  try {
     for (const r of reports) {
       let ids;
       try {
@@ -99,7 +98,6 @@ function main() {
       for (const row of rows) {
         if (!row.headline || !row.headline.trim()) {
           row.headline = toHeadline(row.statement);
-          if (APPLY) setHeadline.run(row.headline, row.id);
           headlinesFilled += 1;
         }
       }
@@ -108,18 +106,17 @@ function main() {
         .sort((a, b) => b.importance - a.importance)
         .slice(0, HIGHLIGHTS_MAX)
         .map((row) => (row.headline?.trim() ? row.headline.trim() : row.statement));
-      if (APPLY) setHighlights.run(JSON.stringify(highlights), r.report_id);
       changed += 1;
-      console.log(`  ${APPLY ? "✓" : "·"} ${r.report_id} → ${highlights.length} 条要点`);
+      console.log(`  · ${r.report_id} → ${highlights.length} 条要点`);
       for (const h of highlights) console.log(`      • ${h}`);
     }
-  });
-  apply();
+  } finally {
+    db.close();
+  }
 
-  console.log(`\n${APPLY ? "完成（已落库）" : "DRY-RUN（未写库，加 --apply 落库）"}：`);
+  console.log("\n只读预览（未写库；旧 --apply 已停用）：");
   console.log(`  待回填报告：${reports.length} · 回填 ${changed} · 无洞察跳过 ${skippedNoIns}`);
   console.log(`  填充洞察 headline：${headlinesFilled} 条`);
-  db.close();
 }
 
 // 作为脚本直接运行时执行 main；被 import（单测 toHeadline）时不跑。

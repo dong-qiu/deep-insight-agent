@@ -1,10 +1,10 @@
-/** 一次性脚本：把 C-2 + 后续 dogfood feedback 之前生成的报告 body_md 升级到最新格式。
+/** 历史报告格式差异预览：不得原地改写已发布 artifact。
  *
  *  两件事：
  *  1. [N] 行内引用标记（C-2 commit 61b04da 加的）
  *  2. quote 包成 markdown 链接 [「quote」](url) + 源名替代 ci_xxx 显示（dogfood feedback）
  *
- *  报告 markdown 是 FS 落盘——已生成的不会动态重渲染。本脚本：
+ *  报告 markdown 是 FS 落盘——已生成的不会动态重渲染。本脚本仅预览：
  *  - Pass 1（[N] 注入）：解析 heading + `- 引用（M）：` + M 条 `  - 「quote」— \`ci\`` 列表项，
  *    全局连续 [k] 注入 heading 末尾 + 列表项前缀；
  *  - Pass 2（quote 链接 + 源名）：从 DB 查 ci_id → {source_name, url, published_at}，
@@ -12,13 +12,29 @@
  *
  *  幂等：Pass 1 检测到 `  - [N] ` 跳过；Pass 2 检测到 `](http` 跳过。
  *
- *  用法（容器内）：docker compose exec -T app node /app/ops/regenerate-reports-cites.mjs
- *  本地：DB_PATH=.data/insight.db node ops/regenerate-reports-cites.mjs */
-import { readFileSync, writeFileSync } from "node:fs";
-import Database from "better-sqlite3";
+ *  用法：DB_PATH=/path/to/standalone-snapshot.db node ops/regenerate-reports-cites.mjs [--report-id rep_xxx]
+ *  --apply 始终拒绝：直接改 .md 会绕过 report_index/FTS/generation_effect/完整性锚。 */
+import { readFileSync } from "node:fs";
+import { openReadonlyReportSnapshot } from "./readonly-report-snapshot.mjs";
 
-const dbPath = process.env.DB_PATH || "/data/insight.db";
-const db = new Database(dbPath, { readonly: false });
+const args = process.argv.slice(2);
+if (args.includes("--apply")) {
+  console.error("拒绝 --apply：已发布报告不可原地改写；请通过正式报告重生成流程创建新 Report/Trace。");
+  process.exit(2);
+}
+let reportId;
+for (let i = 0; i < args.length; i++) {
+  if (args[i] !== "--report-id" || reportId !== undefined || i + 1 >= args.length) {
+    console.error("用法：regenerate-reports-cites.mjs [--report-id rep_xxx]（仅预览）");
+    process.exit(2);
+  }
+  reportId = args[++i];
+  if (!/^rep_[a-z0-9]+$/.test(reportId)) {
+    console.error("报告 ID 格式无效；仅接受 rep_ 后跟小写字母或数字。");
+    process.exit(2);
+  }
+}
+const db = openReadonlyReportSnapshot(process.env.DB_PATH);
 
 /** Pass 1：注入 [N] 行内 + 列表项前缀。返回 { md, changed }。幂等。 */
 function injectCiteNumbers(md) {
@@ -136,48 +152,53 @@ function stripSourceLatestSuffix(md) {
   return { md: newMd, changed: newMd !== md };
 }
 
-const reports = db.prepare("SELECT id, body_path FROM report ORDER BY generated_at DESC").all();
-console.log(`扫描 ${reports.length} 份报告…\n`);
+try {
+  const reports = reportId
+    ? db.prepare("SELECT id, body_path FROM report WHERE id = ?").all(reportId)
+    : db.prepare("SELECT id, body_path FROM report ORDER BY generated_at DESC").all();
+  if (reportId && reports.length === 0) throw new Error(`未找到报告 ${reportId}`);
+  console.log(`只读预览：扫描 ${reports.length} 份报告…\n`);
 
-let stats = { p1Done: 0, p1Skip: 0, p2Done: 0, p2Skip: 0, p3Done: 0, p3Skip: 0, p4Done: 0, p4Skip: 0, missedTotal: 0, fileMiss: 0 };
-for (const r of reports) {
-  const mdPath = `${r.body_path}.md`;
-  let md;
-  try {
-    md = readFileSync(mdPath, "utf8");
-  } catch (e) {
-    console.log(`  ⚠ ${r.id} 跳过：FS 正文缺失`);
-    stats.fileMiss++;
-    continue;
-  }
-  const p1 = injectCiteNumbers(md);
-  if (p1.changed) stats.p1Done++; else stats.p1Skip++;
-  const p2 = enrichCitations(p1.md);
-  if (p2.changed) stats.p2Done++; else stats.p2Skip++;
-  stats.missedTotal += p2.missed;
-  const p3 = reformatCitationDates(p2.md);
-  if (p3.changed) stats.p3Done++; else stats.p3Skip++;
-  const p4 = stripSourceLatestSuffix(p3.md);
-  if (p4.changed) stats.p4Done++; else stats.p4Skip++;
+  const stats = { p1Done: 0, p1Skip: 0, p2Done: 0, p2Skip: 0, p3Done: 0, p3Skip: 0, p4Done: 0, p4Skip: 0, missedTotal: 0, fileMiss: 0 };
+  for (const r of reports) {
+    const mdPath = `${r.body_path}.md`;
+    let md;
+    try {
+      md = readFileSync(mdPath, "utf8");
+    } catch {
+      console.log(`  ⚠ ${r.id} 跳过：FS 正文缺失`);
+      stats.fileMiss++;
+      continue;
+    }
+    const p1 = injectCiteNumbers(md);
+    if (p1.changed) stats.p1Done++; else stats.p1Skip++;
+    const p2 = enrichCitations(p1.md);
+    if (p2.changed) stats.p2Done++; else stats.p2Skip++;
+    stats.missedTotal += p2.missed;
+    const p3 = reformatCitationDates(p2.md);
+    if (p3.changed) stats.p3Done++; else stats.p3Skip++;
+    const p4 = stripSourceLatestSuffix(p3.md);
+    if (p4.changed) stats.p4Done++; else stats.p4Skip++;
 
-  const finalMd = p4.md;
-  if (finalMd !== md) {
-    writeFileSync(mdPath, finalMd);
-    const parts = [];
-    if (p1.changed) parts.push("注入 [N]");
-    if (p2.changed) parts.push("富化引用");
-    if (p3.changed) parts.push("日期 → YYYY-MM-DD");
-    if (p4.changed) parts.push("去'最新'");
-    console.log(`  ✓ ${r.id} · ${parts.join(" + ")}${p2.missed > 0 ? ` · ${p2.missed} 条 ci 查不到` : ""}`);
-  } else {
-    console.log(`  · ${r.id} 跳过（已是最新格式 / 无引用）`);
+    if (p4.md !== md) {
+      const parts = [];
+      if (p1.changed) parts.push("注入 [N]");
+      if (p2.changed) parts.push("富化引用");
+      if (p3.changed) parts.push("日期 → YYYY-MM-DD");
+      if (p4.changed) parts.push("去'最新'");
+      console.log(`  ◇ ${r.id} · 待变更：${parts.join(" + ")}${p2.missed > 0 ? ` · ${p2.missed} 条 ci 查不到` : ""}`);
+    } else {
+      console.log(`  · ${r.id} 跳过（已是最新格式 / 无引用）`);
+    }
   }
+
+  console.log(`\n预览完成，未写入正文或数据库：`);
+  console.log(`  Pass 1 [N] 注入：${stats.p1Done} 改 / ${stats.p1Skip} 跳`);
+  console.log(`  Pass 2 富化：${stats.p2Done} 改 / ${stats.p2Skip} 跳`);
+  console.log(`  Pass 3 日期 → YYYY-MM-DD：${stats.p3Done} 改 / ${stats.p3Skip} 跳`);
+  console.log(`  Pass 4 去'最新'后缀：${stats.p4Done} 改 / ${stats.p4Skip} 跳`);
+  console.log(`  累计查不到 ci 的引用：${stats.missedTotal}`);
+  console.log(`  FS 文件缺失：${stats.fileMiss}`);
+} finally {
+  db.close();
 }
-
-console.log(`\n完成：`);
-console.log(`  Pass 1 [N] 注入：${stats.p1Done} 改 / ${stats.p1Skip} 跳`);
-console.log(`  Pass 2 富化：${stats.p2Done} 改 / ${stats.p2Skip} 跳`);
-console.log(`  Pass 3 日期 → YYYY-MM-DD：${stats.p3Done} 改 / ${stats.p3Skip} 跳`);
-console.log(`  Pass 4 去'最新'后缀：${stats.p4Done} 改 / ${stats.p4Skip} 跳`);
-console.log(`  累计查不到 ci 的引用：${stats.missedTotal}`);
-console.log(`  FS 文件缺失：${stats.fileMiss}`);
