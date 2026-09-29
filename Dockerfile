@@ -94,6 +94,7 @@ COPY --from=builder --chown=app:app /app/src/lib/config/defaults.yaml ./config/d
 COPY --chown=app:app ops/crontab ./ops/crontab
 COPY --chown=app:app ops/trigger.mjs ./ops/trigger.mjs
 COPY --chown=app:app ops/backup-db.mjs ./ops/backup-db.mjs
+COPY --chown=app:app ops/backup-integrity.mjs ./ops/backup-integrity.mjs
 COPY --chown=app:app ops/cost-backfill.mjs ./ops/cost-backfill.mjs
 COPY --chown=app:app ops/probe-alert.mjs ./ops/probe-alert.mjs
 COPY --chown=app:app ops/generation-dispatch-worker.mjs ./ops/generation-dispatch-worker.mjs
