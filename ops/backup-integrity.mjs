@@ -59,6 +59,20 @@ function regularFile(path) {
   try { return lstatSync(path).isFile(); } catch { return false; }
 }
 
+function assertStandaloneSqlite(dbPath) {
+  const header = Buffer.alloc(20);
+  const fd = openSync(dbPath, "r");
+  try {
+    if (readSync(fd, header, 0, header.length, 0) !== header.length
+      || header.subarray(0, 16).toString("ascii") !== "SQLite format 3\0") {
+      throw new Error("backup_db_invalid_header");
+    }
+  } finally { closeSync(fd); }
+  // SQLite may create -wal/-shm even for a readonly handle to a WAL-mode DB.
+  // Reject it before opening so the verifier cannot change the snapshot it inspects.
+  if (header[18] !== 1 || header[19] !== 1) throw new Error("backup_wal_mode_unsupported");
+}
+
 function fileHash(path) {
   const hash = createHash("sha256");
   const buffer = Buffer.allocUnsafe(64 * 1024);
@@ -100,6 +114,7 @@ export function inspectBackup(backupDir, dataDir = "/data") {
   const root = resolve(backupDir);
   const dbPath = join(root, "insight.db");
   if (!regularFile(dbPath)) throw new Error("backup_db_missing");
+  assertStandaloneSqlite(dbPath);
   const files = listedFiles(root).map((name) => ({ path: name, ...fileHash(join(root, name)) }));
   const fileMap = new Map(files.map((file) => [file.path, file]));
   const summary = {

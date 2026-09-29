@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
 import Database from "better-sqlite3";
-import { planBackupPrune, verifyBackup } from "./backup-integrity.mjs";
+import { inspectBackup, planBackupPrune, verifyBackup } from "./backup-integrity.mjs";
 
 function fixture(t, { rawRef, report = true } = {}) {
   const root = mkdtempSync(join(tmpdir(), "insight-backup-integrity-"));
@@ -56,6 +56,33 @@ test("default backup includes raw, seals file hashes, and verifies an isolated c
   assert.equal(verifyBackup(isolated, f.dataDir).complete, true);
   writeFileSync(join(isolated, "raw", f.rawName), "different bytes");
   assert.equal(verifyBackup(isolated, f.dataDir).reason, "manifest_mismatch");
+});
+
+test("a WAL source produces a standalone sealed backup without generated SQLite sidecars", (t) => {
+  const f = fixture(t);
+  const db = new Database(f.dbPath);
+  assert.equal(db.pragma("journal_mode = WAL", { simple: true }), "wal");
+  db.close();
+  const dir = backup(f);
+  assert.equal(existsSync(join(dir, "insight.db-wal")), false);
+  assert.equal(existsSync(join(dir, "insight.db-shm")), false);
+  const snapshot = new Database(join(dir, "insight.db"), { readonly: true });
+  assert.equal(snapshot.pragma("journal_mode", { simple: true }), "delete");
+  snapshot.close();
+  assert.equal(verifyBackup(dir, f.dataDir).complete, true);
+});
+
+test("verification refuses an unnormalized WAL backup before SQLite can create sidecars", async (t) => {
+  const f = fixture(t);
+  const db = new Database(f.dbPath);
+  assert.equal(db.pragma("journal_mode = WAL", { simple: true }), "wal");
+  const dir = join(f.root, "unsealed-wal-backup");
+  mkdirSync(dir);
+  try { await db.backup(join(dir, "insight.db")); }
+  finally { db.close(); }
+  assert.throws(() => inspectBackup(dir, f.dataDir), /backup_wal_mode_unsupported/);
+  assert.equal(existsSync(join(dir, "insight.db-wal")), false);
+  assert.equal(existsSync(join(dir, "insight.db-shm")), false);
 });
 
 test("explicit raw opt-out keeps a partial backup but never passes recovery verification", (t) => {
