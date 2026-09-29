@@ -87,6 +87,19 @@ try {
   } finally {
     db.close();
   }
+  // 在线备份继承 live DB 的 WAL journal_mode。只读打开 WAL 快照也可能在备份目录
+  // 创建 -wal/-shm；必须在封存清单之前将离线副本切为单文件 DELETE 模式。
+  const snapshot = new Database(join(staging, "insight.db"), { fileMustExist: true });
+  try {
+    if (snapshot.pragma("journal_mode = DELETE", { simple: true }) !== "delete") {
+      throw new Error("backup_journal_mode_not_normalized");
+    }
+  } finally {
+    snapshot.close();
+  }
+  if (existsSync(join(staging, "insight.db-wal")) || existsSync(join(staging, "insight.db-shm"))) {
+    throw new Error("backup_sqlite_sidecars_remain");
+  }
   dbKb = (statSync(join(staging, "insight.db")).size / 1024).toFixed(0);
 
   // 2) 报告正文 FS（reports/<id>.md|.html；DB 只存 body_path，不拷就丢正文）。
