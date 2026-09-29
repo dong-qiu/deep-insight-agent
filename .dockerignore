@@ -22,6 +22,7 @@ ops/**
 !ops/crontab
 !ops/trigger.mjs
 !ops/backup-db.mjs
+!ops/backup-integrity.mjs
 !ops/cost-backfill.mjs
 !ops/probe-alert.mjs
 !ops/generation-dispatch-worker.mjs

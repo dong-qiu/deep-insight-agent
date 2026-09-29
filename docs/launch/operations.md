@@ -175,43 +175,38 @@ ADR-0027 以逐源策略取代它。**本说明 PR 不部署镜像或修改 AWS 
 `cron` 服务每日 **18:00 UTC**（管线 17:00 跑完后 1 小时，确保当日 brief 已落库）跑 `ops/backup-db.mjs`：
 
 - 用 **SQLite 在线备份 API**（`db.backup()`，对 app 并发写安全，产出**一致**的单文件，避免 tar 活库拿到半截 WAL）导出 `insight.db`；
-- 连同 `reports/` 正文一并落到 `/data/backups/<UTC时间戳>/{insight.db, reports/}`；
-- **保留最近 14 份**（`BACKUP_KEEP` 可调），更早自动删除；
-- `raw/` 原文默认不备（可重抓、体量大），`BACKUP_INCLUDE_RAW=1` 才纳入。
+- 连同 `reports/` 正文和 `raw/` 原文字节一并落到 `/data/backups/<UTC时间戳>/`；
+- 写入 `backup-manifest.json`（文件 SHA-256、大小和 DB 引用检查计数）。历史缺文件不会销毁仍有价值的部分备份，但该份标为 `incomplete`，**不得作为完整恢复点**；
+- 新格式备份滚动保留最近 14 份（`BACKUP_KEEP` 可调），额外保护最近一份经校验的完整恢复点；
+  新格式恢复点最长 90 天。**旧格式/人工备份不会被新脚本自动删除**，须先清单化审查，不能作为完整恢复点直接使用；
+- `raw/` 默认纳入；只有显式 `BACKUP_INCLUDE_RAW=0` 才排除，结果必为部分备份。重新抓取不能充当原字节恢复。
 
 ```bash
 # 手动立即备份（容器内）
 docker compose exec -T cron node --no-warnings /app/ops/backup-db.mjs
 # 查看现有备份
 docker compose exec -T cron ls -1 /data/backups
+# 对某份新备份做只读完整性检查；退出码 0 才表示清单、哈希和 DB 引用全部通过
+docker compose exec -T cron node /app/ops/backup-integrity.mjs --backup-dir /data/backups/<时间戳>
 ```
 
-**恢复某份备份（当前生产；P0a 前）**（停写 → 覆盖 → 起）：
-
-> P0a generation provenance 上线后，不能再直接执行本段“覆盖 → 起”流程；必须改用 6.1.2 的脱敏重放恢复流程。
-
-```bash
-docker compose stop app cron
-TS=20260613-180000   # 选定 /data/backups 下的目标时间戳
-docker compose run --rm -T cron sh -c "
-  rm -f /data/insight.db /data/insight.db-wal /data/insight.db-shm
-  cp /data/backups/$TS/insight.db /data/insight.db
-  # 仅当该份确有 reports/ 才覆盖（早期/空库的备份可能没拷 reports，避免 rm 后 cp 失败、把现网正文清空）
-  if [ -d /data/backups/$TS/reports ]; then rm -rf /data/reports && cp -r /data/backups/$TS/reports /data/reports; fi
-"
-docker compose up -d
-```
+**生产恢复不能直接覆盖后启动。**先在隔离目录校验所选备份；再按 §6.1.2
+停止所有写者、回放独立脱敏登记册并验证 tombstone，成功后才能重新启动。
+旧备份没有清单，或 DB 有原文引用但备份缺少 `raw/` 时，不得报告为“完整恢复”。
+超过 90 天的备份即使文件完好也不得恢复：届时脱敏登记册记录可能已到期。
 
 > ⚠️ **6.1 的备份落在同一持久卷**：可防 DB 损坏 / 坏迁移 / 误删（点时恢复），**不防整卷丢失**（EBS 卷损坏 / 实例销毁 / 误删卷）。整卷丢失由 6.1.1 的 off-box DR 兜底。
 
 #### 6.1.1 off-box DR —— 每日异地同步到 S3（生产已启用）
 
-在 6.1 同卷备份之上多一层**异地副本**：host cron 每日把 `/data/backups` 同步到 S3。
+在 6.1 同卷备份之上多一层**异地副本**。现有生产 host cron 仍会同步整个
+`/data/backups`；C1 的选择性同步脚本须在首份新格式备份生成后单独更新 host cron，
+**未完成该迁移前不能把异地备份视为 C1 验收通过**。
 
 - **S3 桶**：`deep-insight-backups-<账号ID>`（ap-southeast-1，与 EC2 同区→上传**免流量费**）；阻断公开访问 + 版本控制 + SSE-S3 默认加密 + 生命周期（对象 90 天过期、旧版本 30 天清，限成本）。
 - **权限**：EC2 实例角色 `deep-insight-ssm` 加最小内联策略 `s3-dr-backups`（仅本桶 `ListBucket`/`PutObject`/`GetObject`）；**无长期密钥**，走实例角色。
-- **调度**：host `/etc/cron.d/deep-insight-dr`，每日 **18:30 UTC**（在 6.1 容器内 18:00 备份之后）`aws s3 sync /var/lib/docker/volumes/deep-insight_insight-data/_data/backups s3://<桶>/ec2/`（不带 `--delete`→S3 留更长历史，由生命周期限 90 天）；日志 `/var/log/deep-insight-dr.log`。
-- **一次性搭建**（含建桶 / 改 IAM / 装 awscli / 装 cron）：`ops/aws/setup-dr.sh`（幂等，可重跑）。成本：~分厘/月，详见该脚本头注。
+- **目标调度**：host `/etc/cron.d/deep-insight-dr`，每日 **18:30 UTC**（在 6.1 容器内 18:00 备份之后）运行 `/usr/local/bin/deep-insight-dr-sync`。仅同步 90 天内有 C1 清单、文件清单和哈希一致的目录；不上传旧格式、暂存目录或额外文件。部分备份仍保留，但不得标为完整恢复点。同步不带 `--delete`；S3 对象由 90 天生命周期清理。日志 `/var/log/deep-insight-dr.log`。
+- **host 迁移**：先发布含 C1 的镜像，在 18:00 UTC 备份后确认产生新清单、核验状态及磁盘余量；再由管理员重跑 `ops/aws/setup-dr.sh` 更新 host cron 并执行首次选择性同步。此脚本会更新 S3/IAM/cron，不属于 code-only 部署；须单独核对执行窗口和结果。若无合格备份，脚本以 `no_eligible_backup_for_dr_sync` 失败，不应绕过筛选改用全目录同步。
 
 桶名是 `<AWS_NAME>-backups-<账号ID>`（setup-dr.sh 计算）。**DR 现场先查出真实桶名**，免得对着占位符抓瞎：
 
@@ -219,10 +214,11 @@ docker compose up -d
 # 查真实桶名（按前缀匹配）
 BUCKET=$(aws s3 ls | awk '/deep-insight-backups-/{print $3}')
 echo "$BUCKET"
-# 手动立即异地同步（在 EC2 上跑）
-sudo AWS_DEFAULT_REGION=ap-southeast-1 /usr/local/bin/aws s3 sync \
-  /var/lib/docker/volumes/deep-insight_insight-data/_data/backups "s3://$BUCKET/ec2/" --no-progress
-# 整卷丢失后，从 S3 取回某份到本地，再按 6.1 恢复进新卷
+# C1 host 迁移后，手动立即异地同步（在 EC2 上跑）
+sudo AWS_DEFAULT_REGION=ap-southeast-1 \
+  DR_BACKUP_ROOT=/var/lib/docker/volumes/deep-insight_insight-data/_data/backups \
+  DR_BUCKET="$BUCKET" /usr/local/bin/deep-insight-dr-sync
+# 整卷丢失后，从 S3 取回某份到隔离目录，先校验清单，再按 §6.1.2 受控恢复
 aws s3 sync "s3://$BUCKET/ec2/20260613-105627/" ./restore-20260613-105627/
 ```
 
