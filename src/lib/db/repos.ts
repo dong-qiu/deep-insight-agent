@@ -7,6 +7,7 @@ import type { ContentItem, Cost, Run, Source, Topic, TranscriptAcquisitionFact }
 import type { DB } from "./index.js";
 import { canonicalHash, projectTrace } from "./provenance-facts.js";
 import { assertExplicitTranscriptPolicy } from "../transcript-policy.js";
+import { safeError } from "../runtime/diagnostics.js";
 
 const j = (v: unknown): string => JSON.stringify(v);
 const b = (v: boolean): number => (v ? 1 : 0);
@@ -463,7 +464,7 @@ export function insertRun(db: DB, run: Run): void {
   const fields = {
     id: run.id, kind: run.kind, target: j(run.target), status: run.status,
     started_at: run.started_at, ended_at: run.ended_at, duration_ms: run.duration_ms,
-    cost: run.cost ? j(run.cost) : null, error: run.error ? j(run.error) : null,
+    cost: run.cost ? j(run.cost) : null, error: run.error ? j(safeError(run.error)) : null,
     retry_of: run.retry_of, trace_id: run.trace_id ?? null,
   };
   const hasTrace = (db.prepare("PRAGMA table_info(run)").all() as { name: string }[]).some((column) => column.name === "trace_id");
@@ -492,7 +493,7 @@ export function finishRun(
       "UPDATE run SET status=@status, ended_at=@ended_at, duration_ms=@duration_ms, cost=@cost, error=@error WHERE id=@id",
     ).run({
       id, status: outcome.status, ended_at: ended, duration_ms: duration,
-      cost: outcome.cost ? j(outcome.cost) : null, error: outcome.error ? j(outcome.error) : null,
+      cost: outcome.cost ? j(outcome.cost) : null, error: outcome.error ? j(safeError(outcome.error)) : null,
     });
     if (row.trace_id) projectTrace(db, row.trace_id);
   })();

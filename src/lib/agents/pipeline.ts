@@ -2,6 +2,7 @@
  *  纯落库与状态机逻辑见 db/analysis.ts、runtime/jobs.ts（可无 key 测）；本文件含真模型调用，
  *  端到端需 ANTHROPIC_API_KEY，由团队/定时任务跑。 */
 import type { DB } from "../db/index.js";
+import { safeError } from "../runtime/diagnostics.js";
 import { saveAnalysisBatch, saveValidationResult } from "../db/analysis.js";
 import { NOOP_P1_TELEMETRY_SINK, type P1TelemetrySink } from "../capabilities/p1-telemetry.js";
 import {
@@ -9,8 +10,9 @@ import {
   isFullReanalyzeToday, lookupCachedInsights, recordAnalysisCache,
 } from "../db/analysis-cache.js";
 import { makeConsistencyCache } from "../db/consistency-cache.js";
-import { contentReaderEligibility, getContentItem, getSource } from "../db/repos.js";
-import { listRecentPublishedInsightOccurrences, saveFailedReport, saveReport, type ReportAnchorPublication } from "../db/reports.js";
+import { getContentItem, getSource } from "../db/repos.js";
+import { createReaderEvidenceContext } from "../db/reader-evidence.js";
+import { assertReportPublicationEvidence, listRecentPublishedInsightOccurrences, saveFailedReport, saveReport, type ReportAnchorPublication, type ReportCitationBinding } from "../db/reports.js";
 import { notifyBriefAcceptance, notifyFailure, notifyReport, notifyThinBrief } from "../runtime/alert.js";
 import { runJob } from "../runtime/jobs.js";
 import type { AnalysisBatch, ContentItem, Cost, Report, TechLead, Topic, ValidationResult } from "../types.js";
@@ -191,11 +193,23 @@ export async function runValidation(
     // 按 (模型+prompt) 版本隔离 + TTL（见 db/consistency-cache.ts）；CONSISTENCY_CACHE=0 可整体关闭（出事时的运维开关）。
     const cache =
       process.env.CONSISTENCY_CACHE === "0" ? undefined : makeConsistencyCache(db, consistencyCacheVersion());
-    // A collector can replace an archive after scheduler selection.  Re-read
-    // eligibility at the validation boundary so an in-memory stale item cannot
-    // validate a quote while its replacement raw file is still pending.
-    const readerItems = items.filter((item) => contentReaderEligibility(db, item.id) !== false);
-    const vr = await validateBatch(batch.insights, readerItems, recordCost, cache);
+    // A legacy row can still have reader_eligible=1 with an empty or dangling raw_ref.
+    // Re-read the current row and its authenticated archive before the LLM sees it;
+    // a body-only quote match must not convert an unavailable source into a pass.
+    const evidence = createReaderEvidenceContext(db);
+    const unavailableSourceIds = new Set<string>();
+    const readerItems = items.flatMap((item) => {
+      const current = getContentItem(db, item.id);
+      if (!current || current.body !== item.body || current.content_hash !== item.content_hash
+        || current.url !== item.url || current.published_at !== item.published_at
+        || !evidence.hasVerifiedSource({ content_item_id: current.id, raw_ref: current.raw_ref,
+          body: current.body, body_kind: current.body_kind, content_hash: current.content_hash })) {
+        unavailableSourceIds.add(item.id);
+        return [];
+      }
+      return [current];
+    });
+    const vr = await validateBatch(batch.insights, readerItems, recordCost, cache, undefined, unavailableSourceIds);
     if (opts.traceId) {
       const ref: EntityRef = { type: "validation_result", locator: { kind: "composite", key: { batch_id: batch.id } }, revision: batch.id, role: "output" };
       saveValidationResult(db, batch.id, vr, () => {
@@ -280,7 +294,7 @@ export function runTechLeadExtraction(
     })();
   } catch (error) {
     emitTrace(db, opts.traceId, { stage: "map_direction", event_type: "failed", error: { reason_code: "map_direction_failed" } }, opts.assertWrite);
-    console.warn("⚠️ 技术机会投影失败（不影响技术线索与报告）", error);
+    console.warn("⚠️ 技术机会投影失败（不影响技术线索与报告）", safeError(error));
     return leads;
   }
   try {
@@ -298,7 +312,7 @@ export function runTechLeadExtraction(
     })();
   } catch (error) {
     emitTrace(db, opts.traceId, { stage: "derive_opportunity", event_type: "failed", error: { reason_code: "derive_opportunity_failed" } }, opts.assertWrite);
-    console.warn("⚠️ 技术机会投影失败（不影响技术线索与报告）", error);
+    console.warn("⚠️ 技术机会投影失败（不影响技术线索与报告）", safeError(error));
   }
   return leads;
 }
@@ -323,12 +337,8 @@ export async function runReportGen(
     anchor?: ReportAnchorPublication;
   },
 ): Promise<Report> {
-  // Report generation can be retried after collection has updated a source.
-  // Refuse the whole reader derivative if any saved citation is now pending;
-  // its earlier validation result cannot grant that row reader eligibility.
-  for (const insight of opts.batch.insights) for (const citation of insight.citations) {
-    if (contentReaderEligibility(db, citation.content_item_id) === false) throw new Error("raw_archive_content_not_reader_eligible");
-  }
+  // A retried report rechecks its actual rendered citations below. Other saved citations
+  // (including pending secondary evidence) must not veto an otherwise valid reader output.
   const batchRef: EntityRef = { type: "analysis_batch", locator: { kind: "id", id: opts.batch.id }, revision: opts.batch.id, role: "input" };
   const validationRef: EntityRef = { type: "validation_result", locator: { kind: "composite", key: { batch_id: opts.batch.id } }, revision: opts.batch.id, role: "input" };
   const reportStarted = emitTrace(db, opts.traceId, { stage: "generate_report", event_type: "started", input_refs: [batchRef, validationRef], version_context: { report_selection_rule: REPORT_SELECTION_RULE_VERSION, report_renderer: "report-selection-v1" }, context_completeness: "complete" }, opts.assertWrite);
@@ -396,6 +406,16 @@ export async function runReportGen(
         prevReportId: opts.prevReportId,
         included: selection.included,
       });
+      // Persist only the citation bindings actually rendered by this report. Secondary
+      // pass/support checks remain audit evidence, not a reason to reject the reader output.
+      const selected = new Set(report.insight_ids);
+      const readerCitationBindings: ReportCitationBinding[] = selection.included
+        .filter((item) => selected.has(item.insight.id))
+        .flatMap((item) => item.citationIndices.map((citation_index) => ({ insight_id: item.insight.id, citation_index })));
+      const assertCurrentReportEvidence = (): void => {
+        assertReportPublicationEvidence(db, report, readerCitationBindings);
+      };
+      assertCurrentReportEvidence();
       const reviewPackage = opts.traceId && reportStarted ? (() => {
         const events = db.prepare(`SELECT id,sequence,attempt,stage,event_type,input_refs,output_refs FROM generation_event
           WHERE trace_id=? AND (stage='analyze' OR stage='validate' OR stage='generate_report') ORDER BY sequence`).all(opts.traceId) as Array<{ id: string; sequence: number; attempt: number; stage: string; event_type: string; input_refs: string; output_refs: string }>;
@@ -432,8 +452,12 @@ export async function runReportGen(
       await saveReport(db, report, index, {
         provenance: opts.traceId && reportStarted ? { traceId: opts.traceId, eventId: reportStarted.id } : undefined,
         anchor: opts.anchor,
+        readerCitationBindings,
         beforePublish: reviewPackage ? () => persistReportReviewPackage(db, reviewPackage) : undefined,
-        assertPublish: reviewPackage ? () => assertReviewPackageForPublish(db, report.id, report.insight_ids) : undefined,
+        assertPublish: () => {
+          if (reviewPackage) assertReviewPackageForPublish(db, report.id, report.insight_ids);
+          assertCurrentReportEvidence();
+        },
         afterPublish: opts.traceId ? () => {
           opts.assertWrite?.();
           const ref: EntityRef = { type: "report", locator: { kind: "id", id: report.id }, revision: report.id, role: "output", visibility_class: "public_evidence" };

@@ -6,6 +6,7 @@
  *
  *  契约：getPolishCacheEntry 返 null 视为 miss；hash 不一致也按 miss 处理（不抛、调用方覆写）。 */
 import { createHash } from "node:crypto";
+import { safeError } from "../runtime/diagnostics.js";
 import type { Cost, Insight, Topic } from "../types.js";
 import type { ExecutivePolish, InsightPolish } from "../services/ppt-polish.js";
 import type { DB } from "./index.js";
@@ -52,7 +53,7 @@ export function getPolishCacheEntry(db: DB, reportId: string): PolishCacheHit | 
     parsed = JSON.parse(r.polish_json);
   } catch (e) {
     // 损坏：返 null 当 miss，调用方会写入新条覆盖
-    console.warn(`ppt-polish-cache: report=${reportId} polish_json 解析失败：${(e as Error).message}`);
+    console.warn(`ppt-polish-cache: polish_json 解析失败：${safeError(e).message}`);
     return null;
   }
   return {

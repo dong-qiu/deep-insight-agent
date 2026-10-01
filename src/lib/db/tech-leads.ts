@@ -4,6 +4,7 @@ import type { TechLead, TechLeadEvidence, TechLeadStatus } from "../types.js";
 import type { LeadCandidate } from "../agents/tech-leads.js";
 import { auditSupportsStatementBinding, hasSafeReaderMetadata } from "../utils/display-coverage-audit.js";
 import { classifyTechLead } from "../utils/tech-lead-classify.js";
+import { createReaderEvidenceContext, type CurrentCitationEvidence, type ReaderEvidenceContext } from "./reader-evidence.js";
 import type { DB } from "./index.js";
 
 const toLead = (r: any): TechLead => ({
@@ -61,31 +62,36 @@ export function upsertTechLeads(db: DB, candidates: LeadCandidate[], now = new D
   return out;
 }
 
-export function listTechLeads(db: DB, opts: { topic?: string; status?: TechLeadStatus; includeDismissed?: boolean; since?: string; limit?: number } = {}): TechLead[] {
+export function listTechLeads(db: DB, opts: { topic?: string; status?: TechLeadStatus; includeDismissed?: boolean; since?: string; limit?: number } = {}, context = createReaderEvidenceContext(db)): TechLead[] {
+  const limit = opts.limit ?? 50;
+  if (limit === 0) return [];
   const where: string[] = [];
   const args: unknown[] = [];
   if (opts.topic) { where.push("topic_id=?"); args.push(opts.topic); }
   if (opts.status) { where.push("status=?"); args.push(opts.status); }
   else if (!opts.includeDismissed) where.push("status <> 'dismissed'");
   if (opts.since) { where.push("latest_evidence_at >= ?"); args.push(opts.since); }
-  const sql = `SELECT * FROM tech_lead${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY score DESC, latest_evidence_at DESC LIMIT ?`;
+  const sql = `SELECT * FROM tech_lead${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY score DESC, latest_evidence_at DESC`;
   // `tech_lead` is a durable cache, not a new evidence authority. A batch can later be
   // downgraded or found to contain unsafe display metadata, so every reader list rechecks that
-  // at least one of its persisted evidence bindings is still publishable.
-  return (db.prepare(sql).all(...args, opts.limit ?? 50) as any[])
-    .map(toLead)
+  // at least one of its persisted evidence bindings is still publishable. Limit the visible
+  // results, not raw candidates: old ineligible rows must not crowd out lower-ranked valid rows.
+  const leads = (db.prepare(sql).all(...args) as any[]).map(toLead);
+  const evidenceByLead = listTechLeadEvidenceBatch(db, leads.map((lead) => lead.id), context);
+  const visible = leads
     .map((lead) => {
-      const evidence = listTechLeadEvidence(db, lead.id);
+      const evidence = evidenceByLead.get(lead.id) ?? [];
       return evidence.length ? projectReaderVisibleTechLead(lead, evidence) : null;
     })
     .filter((lead): lead is TechLead => lead !== null);
+  return limit < 0 ? visible : visible.slice(0, limit);
 }
 
-export function getTechLead(db: DB, id: string): TechLead | null {
+export function getTechLead(db: DB, id: string, context = createReaderEvidenceContext(db)): TechLead | null {
   const row = db.prepare("SELECT * FROM tech_lead WHERE id=?").get(id) as any;
   const lead = row ? toLead(row) : null;
   if (!lead) return null;
-  const evidence = listTechLeadEvidence(db, lead.id);
+  const evidence = listTechLeadEvidence(db, lead.id, context);
   return evidence.length ? projectReaderVisibleTechLead(lead, evidence) : null;
 }
 
@@ -95,6 +101,7 @@ export function getTechLead(db: DB, id: string): TechLead | null {
 export function listPlanningTechLeads(
   db: DB,
   opts: { topic?: string; includeDismissed?: boolean; limit?: number } = {},
+  context = createReaderEvidenceContext(db),
 ): TechLead[] {
   const where: string[] = [];
   const args: unknown[] = [];
@@ -104,7 +111,7 @@ export function listPlanningTechLeads(
   return (db.prepare(sql).all(...args, opts.limit ?? 500) as any[])
     .map(toLead)
     .map((lead) => {
-      const evidence = listTechLeadEvidence(db, lead.id);
+      const evidence = listTechLeadEvidence(db, lead.id, context);
       const quote = evidence[0]?.quote;
       if (!quote) return null;
       return {
@@ -122,7 +129,7 @@ export function setTechLeadStatus(db: DB, id: string, status: TechLeadStatus): b
   return db.prepare("UPDATE tech_lead SET status=? WHERE id=?").run(status, id).changes === 1;
 }
 
-type PersistedLeadEvidenceRow = TechLeadEvidence & {
+type PersistedLeadEvidenceRow = TechLeadEvidence & CurrentCitationEvidence & {
   statement: string;
   statement_citation_index: number | null;
   statement_citation_ref: string | null;
@@ -147,11 +154,18 @@ function isReaderVisibleLeadEvidence(row: PersistedLeadEvidenceRow): boolean {
   });
 }
 
-export function listTechLeadEvidence(db: DB, leadId: string): TechLeadEvidence[] {
-  const rows = db.prepare(`SELECT e.lead_id,e.insight_id,e.citation_index,s.name AS source_name,c.url,ci.quote,
+/** Batch the same reader predicate for opportunity lists without issuing one query per lead.
+ * Keep the single-lead accessor below on this exact path so the two cannot drift. */
+export function listTechLeadEvidenceBatch(db: DB, leadIds: readonly string[], context: ReaderEvidenceContext): Map<string, TechLeadEvidence[]> {
+  const result = new Map<string, TechLeadEvidence[]>(leadIds.map((id) => [id, []]));
+  const uniqueIds = [...result.keys()];
+  for (let offset = 0; offset < uniqueIds.length; offset += 400) {
+    const chunk = uniqueIds.slice(offset, offset + 400);
+    const rows = db.prepare(`SELECT e.lead_id,e.insight_id,e.citation_index,s.name AS source_name,c.url,ci.quote,
       COALESCE(c.published_at,c.fetched_at) AS observed_at
       ,i.statement,i.statement_citation_index,ci.citation_ref AS statement_citation_ref,
-      i.headline,i.importance_basis,d.decision AS display_coverage_decision,d.gate_version AS display_coverage_gate_version
+      i.headline,i.importance_basis,d.decision AS display_coverage_decision,d.gate_version AS display_coverage_gate_version,
+      ci.content_item_id,c.raw_ref,c.body,c.body_kind,c.content_hash
     FROM tech_lead_evidence e
     JOIN citation ci ON ci.insight_id=e.insight_id AND ci.citation_index=e.citation_index
     JOIN insight i ON i.id=ci.insight_id
@@ -160,14 +174,27 @@ export function listTechLeadEvidence(db: DB, leadId: string): TechLeadEvidence[]
       AND d.terminal_reason IN ('kept', 'kept_degraded')
     JOIN citation_check cc ON cc.batch_id=b.id AND cc.insight_id=ci.insight_id AND cc.citation_index=ci.citation_index
     JOIN content_item c ON c.id=ci.content_item_id AND c.reader_eligible=1 JOIN source s ON s.id=c.source_id
-    WHERE e.lead_id=?
+    WHERE e.lead_id IN (${chunk.map(() => "?").join(",")})
       AND b.status='done' AND b.display_coverage_state='audited' AND b.display_projection_version='source_quote_v1'
       AND e.citation_index=i.statement_citation_index - 1
       AND cc.verdict='pass' AND cc.consistency='support' AND cc.reachability='pass'
-    ORDER BY observed_at DESC`).all(leadId) as PersistedLeadEvidenceRow[];
-  return rows.filter(isReaderVisibleLeadEvidence).map(({
-    statement: _statement, statement_citation_index: _statementCitationIndex,
-    statement_citation_ref: _statementCitationRef, headline: _headline,
-    importance_basis: _importanceBasis, display_coverage_decision: _decision, ...evidence
-  }) => evidence);
+    ORDER BY e.lead_id, observed_at DESC`).all(...chunk) as PersistedLeadEvidenceRow[];
+    context.preload(rows);
+    for (const row of rows) {
+      if (!isReaderVisibleLeadEvidence(row) || !context.accepts(row)) continue;
+      const {
+        statement: _statement, statement_citation_index: _statementCitationIndex,
+        statement_citation_ref: _statementCitationRef, headline: _headline,
+        importance_basis: _importanceBasis, display_coverage_decision: _decision,
+        content_item_id: _contentItemId, raw_ref: _rawRef, body: _body, body_kind: _bodyKind, content_hash: _contentHash,
+        ...evidence
+      } = row;
+      result.get(row.lead_id)?.push(evidence);
+    }
+  }
+  return result;
+}
+
+export function listTechLeadEvidence(db: DB, leadId: string, context: ReaderEvidenceContext = createReaderEvidenceContext(db)): TechLeadEvidence[] {
+  return listTechLeadEvidenceBatch(db, [leadId], context).get(leadId) ?? [];
 }

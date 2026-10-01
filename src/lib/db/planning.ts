@@ -6,7 +6,8 @@ import type { OpportunityCandidate } from "../agents/opportunity-planning.js";
 import type { TechLead } from "../types.js";
 import type { DB } from "./index.js";
 import { deriveOpportunityCandidates } from "../agents/opportunity-planning.js";
-import { listPlanningTechLeads, listTechLeadEvidence, projectReaderVisibleTechLead } from "./tech-leads.js";
+import { listPlanningTechLeads, listTechLeadEvidence, listTechLeadEvidenceBatch, projectReaderVisibleTechLead } from "./tech-leads.js";
+import { createReaderEvidenceContext, type ReaderEvidenceContext } from "./reader-evidence.js";
 
 const json = (value: unknown): string => JSON.stringify(value);
 const parse = (value: unknown): string[] => value ? JSON.parse(value as string) : [];
@@ -154,38 +155,59 @@ export function upsertTechnologyOpportunities(db: DB, candidates: OpportunityCan
   return out;
 }
 
-export function listTechnologyOpportunities(db: DB, opts: { topic?: string; direction?: string; lane?: OpportunityLane; status?: TechnologyOpportunityStatus; includeClosed?: boolean; limit?: number } = {}): TechnologyOpportunity[] {
+export function listTechnologyOpportunities(db: DB, opts: { topic?: string; direction?: string; lane?: OpportunityLane; status?: TechnologyOpportunityStatus; includeClosed?: boolean; limit?: number } = {}, evidenceContext = createReaderEvidenceContext(db)): TechnologyOpportunity[] {
+  const limit = opts.limit ?? 100;
+  if (limit === 0) return [];
   const where: string[] = []; const args: unknown[] = [];
   if (opts.topic) { where.push("topic_id=?"); args.push(opts.topic); }
   if (opts.direction) { where.push("direction_id=?"); args.push(opts.direction); }
   if (opts.lane) { where.push("lane=?"); args.push(opts.lane); }
   if (opts.status) { where.push("status=?"); args.push(opts.status); }
   else if (!opts.includeClosed) where.push("status NOT IN ('rejected','archived')");
-  return (db.prepare(`SELECT * FROM technology_opportunity${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY priority_score DESC,latest_evidence_at DESC LIMIT ?`).all(...args, opts.limit ?? 100) as any[])
-    .map(toOpportunity)
+  const opportunities = (db.prepare(`SELECT * FROM technology_opportunity${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY priority_score DESC,latest_evidence_at DESC`).all(...args) as any[])
+    .map(toOpportunity);
+  if (!opportunities.length) return [];
+  const leadsByOpportunity = new Map<string, string[]>();
+  for (let offset = 0; offset < opportunities.length; offset += 400) {
+    const ids = opportunities.slice(offset, offset + 400).map((opportunity) => opportunity.id);
+    const rows = db.prepare(`SELECT ol.opportunity_id,ol.lead_id FROM opportunity_lead ol
+      JOIN tech_lead l ON l.id=ol.lead_id WHERE ol.opportunity_id IN (${ids.map(() => "?").join(",")})`)
+      .all(...ids) as { opportunity_id: string; lead_id: string }[];
+    for (const row of rows) {
+      const linked = leadsByOpportunity.get(row.opportunity_id) ?? [];
+      linked.push(row.lead_id);
+      leadsByOpportunity.set(row.opportunity_id, linked);
+    }
+  }
+  const leadIds = [...new Set([...leadsByOpportunity.values()].flat())];
+  const evidenceByLead = listTechLeadEvidenceBatch(db, leadIds, evidenceContext);
+  const visible = opportunities
     // Opportunity prose is derived from its lead. Hide a stale opportunity instead of exposing
     // an orphaned derivative after the lead's v6 binding is no longer reader-visible.
-    .map((opportunity) => listOpportunityLeads(db, opportunity.id).length > 0
+    .map((opportunity) => (leadsByOpportunity.get(opportunity.id) ?? []).some((id) => (evidenceByLead.get(id)?.length ?? 0) > 0)
       ? projectReaderVisibleOpportunity(opportunity)
       : null)
     .filter((opportunity): opportunity is TechnologyOpportunity => opportunity !== null);
+  // Keep the original score order, but apply the requested cap only after current evidence
+  // admission. Partitioned and default lists must not disagree because stale rows occupied a cap.
+  return limit < 0 ? visible : visible.slice(0, limit);
 }
-export function getTechnologyOpportunity(db: DB, id: string): TechnologyOpportunity | null {
+export function getTechnologyOpportunity(db: DB, id: string, context = createReaderEvidenceContext(db)): TechnologyOpportunity | null {
   const row = db.prepare("SELECT * FROM technology_opportunity WHERE id=?").get(id) as any;
   const opportunity = row ? toOpportunity(row) : null;
-  return opportunity && listOpportunityLeads(db, opportunity.id).length > 0
+  return opportunity && listOpportunityLeads(db, opportunity.id, context).length > 0
     ? projectReaderVisibleOpportunity(opportunity)
     : null;
 }
 export function setTechnologyOpportunityStatus(db: DB, id: string, status: TechnologyOpportunityStatus): boolean {
   return db.prepare("UPDATE technology_opportunity SET status=?,last_seen_at=? WHERE id=?").run(status, new Date().toISOString(), id).changes === 1;
 }
-export function listOpportunityLeads(db: DB, opportunityId: string): TechLead[] {
+export function listOpportunityLeads(db: DB, opportunityId: string, context: ReaderEvidenceContext = createReaderEvidenceContext(db)): TechLead[] {
   const rows = db.prepare(`SELECT l.* FROM opportunity_lead ol JOIN tech_lead l ON l.id=ol.lead_id WHERE ol.opportunity_id=? ORDER BY l.score DESC`).all(opportunityId) as any[];
   return rows
     .map((r) => ({ id:r.id,topic_id:r.topic_id,canonical_key:r.canonical_key,kind:r.kind,title:r.title,summary:r.summary,status:r.status,score:r.score,score_detail:JSON.parse(r.score_detail),first_seen_at:r.first_seen_at,last_seen_at:r.last_seen_at,latest_evidence_at:r.latest_evidence_at } as TechLead))
     .map((lead) => {
-      const evidence = listTechLeadEvidence(db, lead.id);
+      const evidence = listTechLeadEvidence(db, lead.id, context);
       return evidence.length ? projectReaderVisibleTechLead(lead, evidence) : null;
     })
     .filter((lead): lead is TechLead => lead !== null);

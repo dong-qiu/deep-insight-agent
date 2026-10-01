@@ -23,32 +23,42 @@ function tableExists(db: DB, table: string): boolean {
 export function openDb(path: string, opts: { bootstrap?: boolean } = {}): DB {
   if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
   const db = new Database(path);
-  db.pragma("journal_mode = WAL");
-  db.pragma("foreign_keys = ON");
-  const freshDatabase = !tableExists(db, "source");
-  // 多写者（并行 worktree/容器共享同一卷、或 cron+web 同进程外）抢锁时，
-  // 默认会立刻抛 SQLITE_BUSY；改为最多等 5s 让写串行化，而非直接失败。
-  db.pragma("busy_timeout = 5000");
-  if (opts.bootstrap !== false) {
-    // SCHEMA_SQL contains indexes over recently added columns. For an existing database,
-    // bring those columns forward before replaying the schema, otherwise SQLite rejects
-    // CREATE INDEX before migrate() gets a chance to add the column.
-    if (tableExists(db, "content_item")) migrate(db);
-    db.exec(SCHEMA_SQL);
-    migrate(db);
-    // A new local database has no migration ledger yet. Existing databases receive this v44
-    // contract only through the immutable provenance runner, never through schema replay.
-    if (freshDatabase) db.exec(PODCAST_TRANSCRIPT_POLICY_VERSION_IMMUTABILITY_SQL);
-  }
-  // review follow-up #1：进程重启后清扫上一次跑到一半被 SIGTERM 杀掉的孤儿 Run。
-  // 单例 DB 第一次创建时触发；测试用 :memory: 时此操作 no-op（无 running Run 可清）。
-  if (opts.bootstrap !== false) {
-    const orphaned = recoverOrphanedRuns(db);
-    if (orphaned > 0) {
-      console.warn(`⚠️ 启动清扫：${orphaned} 条孤儿 Run 已标 failed（OrphanedOnRestart）`);
+  try {
+    db.pragma("journal_mode = WAL");
+    db.pragma("foreign_keys = ON");
+    const freshDatabase = !tableExists(db, "source");
+    // 多写者（并行 worktree/容器共享同一卷、或 cron+web 同进程外）抢锁时，
+    // 默认会立刻抛 SQLITE_BUSY；改为最多等 5s 让写串行化，而非直接失败。
+    db.pragma("busy_timeout = 5000");
+    if (opts.bootstrap !== false) {
+      // SCHEMA_SQL contains indexes over recently added columns. For an existing database,
+      // bring those columns forward before replaying the schema, otherwise SQLite rejects
+      // CREATE INDEX before migrate() gets a chance to add the column.
+      if (tableExists(db, "content_item")) migrate(db);
+      db.exec(SCHEMA_SQL);
+      migrate(db);
+      // A new local database has no migration ledger yet. Existing databases receive this v44
+      // contract only through the immutable provenance runner, never through schema replay.
+      if (freshDatabase) db.exec(PODCAST_TRANSCRIPT_POLICY_VERSION_IMMUTABILITY_SQL);
     }
+    // review follow-up #1：进程重启后清扫上一次跑到一半被 SIGTERM 杀掉的孤儿 Run。
+    // 单例 DB 第一次创建时触发；测试用 :memory: 时此操作 no-op（无 running Run 可清）。
+    if (opts.bootstrap !== false) {
+      const orphaned = recoverOrphanedRuns(db);
+      if (orphaned > 0) {
+        console.warn(`⚠️ 启动清扫：${orphaned} 条孤儿 Run 已标 failed（OrphanedOnRestart）`);
+      }
+    }
+    return db;
+  } catch (error) {
+    closeFailedInitialization(db);
+    throw error;
   }
-  return db;
+}
+
+/** Cleanup must not hide the schema/deployment/reconciliation error that caused the failure. */
+function closeFailedInitialization(db: DB): void {
+  try { db.close(); } catch { /* Preserve the initialization error even if cleanup fails. */ }
 }
 
 /** 轻量幂等迁移：CREATE IF NOT EXISTS 不会给已存在的表补列，故对增列做显式 ALTER。
@@ -212,17 +222,26 @@ export function getDb(): DB {
   if (!_db) {
     const strictProvenance = process.env.PROVENANCE_SCHEMA_REQUIRED === "1";
     // 严格 writer 在触碰旧 schema、启动期补列或 orphan recovery 前，必须先验证 migration ledger。
-    _db = openDb(process.env.DB_PATH ?? ".data/insight.db", { bootstrap: !strictProvenance });
-    // P0a 发布编排在 migration runner 成功后设为 1；未迁移库不得悄悄成为生产 writer。
-    if (strictProvenance) assertProvenanceSchema(_db);
-    // deployment-record writer is a one-shot bootstrap process: it must be able to
-    // atomically append the new identity before the new Web writer validates it.
-    if (process.env.PROVENANCE_DEPLOYMENT_REQUIRED === "1" && process.env.PROVENANCE_DEPLOYMENT_WRITER !== "1") assertDeploymentIdentity(_db);
-    // 文件 rename 与 SQLite 不能组成一个事务；启动时只发布 hash 完整的双 artifact，其余 fail-closed。
-    reconcileReportEffects(_db);
-    reconcileRawArchiveEffects(_db);
-    // 已有生产库会立即补齐方向档案；空库会安全跳过，待配置层播种 topic 后再补。
-    seedDefaultDirections(_db);
+    const db = openDb(process.env.DB_PATH ?? ".data/insight.db", { bootstrap: !strictProvenance });
+    try {
+      // P0a 发布编排在 migration runner 成功后设为 1；未迁移库不得悄悄成为生产 writer。
+      if (strictProvenance) assertProvenanceSchema(db);
+      // deployment-record writer is a one-shot bootstrap process: it must be able to
+      // atomically append the new identity before the new Web writer validates it.
+      if (process.env.PROVENANCE_DEPLOYMENT_REQUIRED === "1" && process.env.PROVENANCE_DEPLOYMENT_WRITER !== "1") assertDeploymentIdentity(db);
+      // Report publication depends on its current source archive. Recover verified raw
+      // effects first so a resumable report is not failed merely due to startup order.
+      reconcileRawArchiveEffects(db);
+      // 文件 rename 与 SQLite 不能组成一个事务；启动时只发布 hash 完整的双 artifact，其余 fail-closed。
+      reconcileReportEffects(db);
+      // 已有生产库会立即补齐方向档案；空库会安全跳过，待配置层播种 topic 后再补。
+      seedDefaultDirections(db);
+      // Publish only a fully initialized connection; failed attempts must never become writers.
+      _db = db;
+    } catch (error) {
+      closeFailedInitialization(db);
+      throw error;
+    }
   }
   return _db;
 }

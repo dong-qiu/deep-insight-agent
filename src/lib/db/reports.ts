@@ -1,16 +1,18 @@
 /** 报告持久化：正文（.md/.html）落 FS，元数据 + 索引 + FTS5 落 SQLite。增量5。 */
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createHash, createPublicKey, randomUUID } from "node:crypto";
-import { join, relative, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { domainFacet, isDomainValue, isLensValue, lensFacet, parseFacets } from "../topics/facets.js";
 import type { Report, ReportIndexEntry } from "../types.js";
 import type { DB } from "./index.js";
+import { safeError } from "../runtime/diagnostics.js";
 import { appendGenerationEvent, captureRevision, entityKey, type EntityRef } from "./provenance-facts.js";
 import { anchorEnvelopeBytes, anchorMatchesManifest, manifestForArtifact, parseCanonicalAnchorEnvelope, parseCanonicalJsonBytes, type AnchorSigner, type AnchorStore, type ArtifactManifest } from "./integrity-anchors.js";
 import { assertAnchorPublicationKeyActive, commitAnchoredPublications, writePlannedAnchor } from "./integrity-publication.js";
 import { isReportReaderVisible, reportReaderVisibilitySql } from "./integrity-lifecycle.js";
 import { insightFingerprint } from "../runtime/statement-fingerprint.js";
 import { assertReviewPackageForPublish, isTerminalReviewPackageError, publishReviewPackage } from "./report-review.js";
+import { createReaderEvidenceContext } from "./reader-evidence.js";
 
 const j = (v: unknown): string => JSON.stringify(v);
 
@@ -26,6 +28,8 @@ function hasReportEffectTable(db: DB): boolean {
   return !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='generation_effect'").get();
 }
 interface ReportArtifact { target: string; sha256: string; size: number; report_id: string }
+export interface ReportCitationBinding { insight_id: string; citation_index: number }
+type PublicationPayload = ReportIndexEntry & { reader_citation_bindings?: ReportCitationBinding[] };
 interface ReportEffectProvenance { traceId: string; eventId: string }
 export interface ReportAnchorPublication { store: AnchorStore; signer: AnchorSigner; retainUntil: string; retentionEnds: readonly [string, string, string]; issuedAt?: string }
 const digest = (body: string): string => createHash("sha256").update(body, "utf8").digest("hex");
@@ -56,6 +60,44 @@ function safeTarget(root: string, target: string): string {
   const resolved = resolve(root, target);
   if (relative(root, resolved).startsWith("..")) throw new Error("report artifact escaped its root");
   return resolved;
+}
+
+/** The exact reader-visible citation set is persisted with the report intent so crash recovery
+ * cannot bypass the final source check. Old non-empty intents without this binding fail closed. */
+export function assertReportPublicationEvidence(db: DB, report: Pick<Report, "insight_ids" | "citation_count">, bindings: readonly ReportCitationBinding[] | undefined): void {
+  if (!bindings || bindings.length !== report.citation_count) {
+    if (report.insight_ids.length === 0 && report.citation_count === 0 && !bindings) return;
+    throw new Error("report_evidence_binding_missing_or_incomplete");
+  }
+  const selected = new Set(report.insight_ids);
+  if (selected.size !== report.insight_ids.length || (selected.size > 0 && bindings.length < selected.size)) {
+    throw new Error("report_evidence_binding_missing_or_incomplete");
+  }
+  const seen = new Set<string>();
+  const covered = new Set<string>();
+  const evidence = createReaderEvidenceContext(db);
+  const find = db.prepare(`SELECT c.content_item_id,c.quote,cc.verdict,cc.reachability,cc.consistency,
+      ci.id,ci.raw_ref,ci.body,ci.body_kind,ci.content_hash,ci.reader_eligible
+    FROM citation c JOIN insight i ON i.id=c.insight_id
+    JOIN citation_check cc ON cc.batch_id=i.batch_id AND cc.insight_id=c.insight_id AND cc.citation_index=c.citation_index
+    JOIN content_item ci ON ci.id=c.content_item_id
+    WHERE c.insight_id=? AND c.citation_index=?`);
+  for (const binding of bindings) {
+    if (!binding || typeof binding.insight_id !== "string" || !Number.isSafeInteger(binding.citation_index)
+      || binding.citation_index < 0 || !selected.has(binding.insight_id)) throw new Error("report_evidence_binding_invalid");
+    const key = `${binding.insight_id}:${binding.citation_index}`;
+    if (seen.has(key)) throw new Error("report_evidence_binding_invalid");
+    seen.add(key);
+    covered.add(binding.insight_id);
+    const row = find.get(binding.insight_id, binding.citation_index) as {
+      id: string; content_item_id: string; quote: string; verdict: string; reachability: string; consistency: string;
+      raw_ref: string; body: string; body_kind: string; content_hash: string; reader_eligible: number;
+    } | undefined;
+    if (!row || row.reader_eligible !== 1 || row.verdict !== "pass" || row.reachability !== "pass" || row.consistency !== "support"
+      || !evidence.accepts({ content_item_id: row.content_item_id, quote: row.quote, raw_ref: row.raw_ref,
+        body: row.body, body_kind: row.body_kind, content_hash: row.content_hash })) throw new Error("raw_archive_source_unavailable");
+  }
+  if (covered.size !== selected.size) throw new Error("report_evidence_binding_missing_or_incomplete");
 }
 
 function insertReportIndex(db: DB, report: Report, index: ReportIndexEntry): void {
@@ -118,7 +160,8 @@ export function saveFailedReport(
 /** P0a 已迁移库的发布协议：意图 + manifest 先入库，双 artifact 通过 staging 原子换名后才公开索引。 */
 function saveReportWithEffect(
   db: DB, report: Report, index: ReportIndexEntry, dir: string,
-  provenance: ReportEffectProvenance | undefined, beforePublish?: () => void, assertPublish?: () => void, afterPublish?: () => void,
+  provenance: ReportEffectProvenance | undefined, bindings: readonly ReportCitationBinding[] | undefined,
+  beforePublish?: () => void, assertPublish?: () => void, afterPublish?: () => void,
 ): void {
   const root = resolve(dir);
   const effectId = `effect_${randomUUID().replaceAll("-", "")}`;
@@ -145,7 +188,7 @@ function saveReportWithEffect(
       VALUES (@id,@trace_id,@event_id,@report_id,'report_file',@idempotency_key,@artifact_manifest,@publication_payload,'planned',NULL,@now,@now)`)
       .run({ id: effectId, trace_id: provenance?.traceId ?? null, event_id: provenance?.eventId ?? null,
         report_id: report.id, idempotency_key: `report_file:${report.id}`,
-        artifact_manifest: j(manifest), publication_payload: j(index), now });
+        artifact_manifest: j(manifest), publication_payload: j({ ...index, ...(bindings ? { reader_citation_bindings: bindings } : {}) }), now });
   })();
 
   const stagingRoot = resolve(root, ".staging", effectId);
@@ -181,7 +224,7 @@ function saveReportWithEffect(
     })();
   } catch (error) {
     // 已出现的半成品不进入 reader；保留 effect/failed Report 供后续 reconciliation 或人工诊断。
-    const message = error instanceof Error ? error.message.slice(0, 256) : String(error).slice(0, 256);
+    const message = safeError(error).message;
     db.transaction(() => {
       db.prepare("UPDATE generation_effect SET status='unknown',error=?,updated_at=? WHERE id=? AND status <> 'committed'")
         .run(j({ reason_code: "report_persistence_failed", message }), new Date().toISOString(), effectId);
@@ -199,7 +242,8 @@ function saveReportWithEffect(
  */
 async function saveAnchoredReportWithEffect(
   db: DB, report: Report, index: ReportIndexEntry, dir: string, anchor: ReportAnchorPublication,
-  provenance: ReportEffectProvenance | undefined, beforePublish?: () => void, assertPublish?: () => void, afterPublish?: () => void,
+  provenance: ReportEffectProvenance | undefined, bindings: readonly ReportCitationBinding[] | undefined,
+  beforePublish?: () => void, assertPublish?: () => void, afterPublish?: () => void,
 ): Promise<void> {
   const root = resolve(dir); const effectId = `effect_${randomUUID().replaceAll("-", "")}`; const created = new Date().toISOString();
   const artifacts: Array<{ target: string; body: string }> = [{ target: `${report.id}.md`, body: report.body_md }, { target: `${report.id}.html`, body: report.body_html }];
@@ -213,7 +257,8 @@ async function saveAnchoredReportWithEffect(
     db.prepare(`INSERT INTO generation_effect(id,trace_id,event_id,report_id,kind,idempotency_key,artifact_manifest,publication_payload,status,error,created_at,updated_at)
       VALUES (@id,@trace_id,@event_id,@report_id,'report_file',@idempotency_key,@artifact_manifest,@publication_payload,'planned',NULL,@now,@now)`).run({
       id: effectId, trace_id: provenance?.traceId ?? null, event_id: provenance?.eventId ?? null, report_id: report.id,
-      idempotency_key: `report_file:${report.id}`, artifact_manifest: j(effectManifest), publication_payload: j(index), now: created,
+      idempotency_key: `report_file:${report.id}`, artifact_manifest: j(effectManifest),
+      publication_payload: j({ ...index, ...(bindings ? { reader_citation_bindings: bindings } : {}) }), now: created,
     });
   })();
   const staging = resolve(root, ".staging", effectId);
@@ -241,7 +286,7 @@ async function saveAnchoredReportWithEffect(
       insertReportIndex(db, report, index); afterPublish?.();
     } });
   } catch (error) {
-    const message = error instanceof Error ? error.message.slice(0, 256) : String(error).slice(0, 256);
+    const message = safeError(error).message;
     const anchored = !!db.prepare("SELECT 1 FROM generation_anchor_effect WHERE generation_effect_id=? AND status='anchor_written'").get(effectId);
     if (!anchored) db.transaction(() => {
       db.prepare("UPDATE generation_effect SET status='unknown',error=?,updated_at=? WHERE id=? AND status <> 'committed'").run(j({ reason_code: "report_persistence_failed", message }), new Date().toISOString(), effectId);
@@ -259,7 +304,7 @@ export function saveReport(
   db: DB,
   report: Report,
   index: ReportIndexEntry,
-  opts: { dir?: string; provenance?: ReportEffectProvenance; beforePublish?: () => void; assertPublish?: () => void; afterPublish?: () => void; anchor?: ReportAnchorPublication } = {},
+  opts: { dir?: string; provenance?: ReportEffectProvenance; readerCitationBindings?: readonly ReportCitationBinding[]; beforePublish?: () => void; assertPublish?: () => void; afterPublish?: () => void; anchor?: ReportAnchorPublication } = {},
 ): void | Promise<void> {
   if (report.status !== "done") {
     // lifecycle 的非发布态只记录元数据；禁止给 failed/generating 写正文、索引或 FTS。
@@ -274,10 +319,10 @@ export function saveReport(
   const dir = opts.dir ?? defaultBodyDir();
   if (opts.anchor) {
     if (!hasReportEffectTable(db)) throw new Error("integrity_anchor_schema_required");
-    return saveAnchoredReportWithEffect(db, report, index, dir, opts.anchor, opts.provenance, opts.beforePublish, opts.assertPublish, opts.afterPublish);
+    return saveAnchoredReportWithEffect(db, report, index, dir, opts.anchor, opts.provenance, opts.readerCitationBindings, opts.beforePublish, opts.assertPublish, opts.afterPublish);
   }
   if (hasReportEffectTable(db)) {
-    saveReportWithEffect(db, report, index, dir, opts.provenance, opts.beforePublish, opts.assertPublish, opts.afterPublish);
+    saveReportWithEffect(db, report, index, dir, opts.provenance, opts.readerCitationBindings, opts.beforePublish, opts.assertPublish, opts.afterPublish);
     return;
   }
   const prefix = resolve(join(dir, report.id));
@@ -327,7 +372,7 @@ export function saveReport(
     if (lifecycleSchema) {
       db.prepare(
         "UPDATE report SET status='failed', body_path=NULL, failure=? WHERE id=? AND status='generating'",
-      ).run(j({ reason_code: "report_persistence_failed", message: (e as Error).message.slice(0, 256) }), report.id);
+      ).run(j({ reason_code: "report_persistence_failed", message: safeError(e).message }), report.id);
     } else {
       db.prepare("UPDATE report SET status='failed', body_path='' WHERE id=? AND status='generating'").run(report.id);
     }
@@ -347,7 +392,7 @@ export function reconcileReportEffects(db: DB, opts: { dir?: string } = {}): { c
   for (const row of rows) {
     try {
       const manifest = JSON.parse(row.artifact_manifest) as ReportArtifact[];
-      const index = JSON.parse(row.publication_payload) as ReportIndexEntry;
+      const index = JSON.parse(row.publication_payload) as PublicationPayload;
       const staging = resolve(root, ".staging", row.effect_id);
       for (const artifact of manifest) {
         const finalPath = safeTarget(root, artifact.target);
@@ -372,6 +417,9 @@ export function reconcileReportEffects(db: DB, opts: { dir?: string } = {}): { c
       db.transaction(() => {
         if (provenance) {
           assertReviewPackageForPublish(db, row.report_id, report.insight_ids, provenance);
+        }
+        assertReportPublicationEvidence(db, report, index.reader_citation_bindings);
+        if (provenance) {
           publishReviewPackage(db, row.report_id);
         }
         db.prepare("UPDATE report SET status='done',body_path=?,failure=NULL WHERE id=? AND status='generating'")
@@ -399,7 +447,7 @@ export function reconcileReportEffects(db: DB, opts: { dir?: string } = {}): { c
       })();
       committed += 1;
     } catch (error) {
-      const message = error instanceof Error ? error.message.slice(0, 256) : String(error).slice(0, 256);
+      const message = safeError(error).message;
       db.transaction(() => {
         db.prepare("UPDATE generation_effect SET status='unknown',error=?,updated_at=? WHERE id=?")
           .run(j({ reason_code: "report_reconcile_failed", message }), new Date().toISOString(), row.effect_id);
@@ -451,7 +499,7 @@ export async function reconcileAnchoredReportEffects(
     try {
       if (effect.idempotency_key !== `report_file:${effect.report_id}`) throw new Error("anchored_report_idempotency_conflict");
       const fileManifest = JSON.parse(effect.artifact_manifest) as ReportArtifact[];
-      const index = JSON.parse(effect.publication_payload) as ReportIndexEntry;
+      const index = JSON.parse(effect.publication_payload) as PublicationPayload;
       const report: Report = {
         id: effect.report_id, type: effect.type, topic_id: effect.topic_id, status: "done", generated_at: effect.generated_at,
         title: effect.title, body_md: readFileSync(safeTarget(root, `${effect.report_id}.md`), "utf8"),
@@ -512,6 +560,9 @@ export async function reconcileAnchoredReportEffects(
         finalize: () => {
           if (provenance) {
             assertReviewPackageForPublish(db, report.id, report.insight_ids, provenance);
+          }
+          assertReportPublicationEvidence(db, report, index.reader_citation_bindings);
+          if (provenance) {
             publishReviewPackage(db, report.id);
           }
           const published = db.prepare("UPDATE report SET status='done',body_path=?,failure=NULL WHERE id=? AND status='generating'")
@@ -533,7 +584,7 @@ export async function reconcileAnchoredReportEffects(
       // A review package is written atomically with the planned report effect.  Its
       // absence or a mismatched immutable trace cannot be repaired by retrying an
       // anchor write; retrying would only keep an invalid report intent alive.
-      const terminal = ["orphan_anchor_conflict", "anchored_report_manifest_incomplete", "anchored_report_artifact_invalid", "anchored_report_idempotency_conflict", "anchor_signature_invalid", "anchor_verification_key_unavailable", "anchor_signing_key_revoked", "generation_effect_provenance_binding_incomplete"].includes(message)
+      const terminal = ["orphan_anchor_conflict", "anchored_report_manifest_incomplete", "anchored_report_artifact_invalid", "anchored_report_idempotency_conflict", "anchor_signature_invalid", "anchor_verification_key_unavailable", "anchor_signing_key_revoked", "generation_effect_provenance_binding_incomplete", "raw_archive_source_unavailable", "report_evidence_binding_missing_or_incomplete", "report_evidence_binding_invalid"].includes(message)
         || isTerminalReviewPackageError(message);
       db.transaction(() => {
         for (const row of anchors) {
@@ -568,7 +619,7 @@ export function getReport(db: DB, id: string): Report | null {
     body_md = readFileSync(`${r.body_path}.md`, "utf8");
     body_html = readFileSync(`${r.body_path}.html`, "utf8");
   } catch (e) {
-    console.warn(`getReport: 报告 ${id} 正文文件缺失（${r.body_path}.*）：${(e as Error).message}`);
+    console.warn(`getReport: 报告正文文件缺失：${safeError(e).message}`);
     body_md = `# ${r.title}\n\n_正文文件缺失，请重新生成本报告。_`;
     body_html = `<h1>${r.title}</h1><p><em>正文文件缺失，请重新生成本报告。</em></p>`;
   }
@@ -840,6 +891,61 @@ export function listPassChecksForReport(db: DB, reportId: string): PassCheck[] {
     JOIN content_item ci ON ci.id=c.content_item_id AND ci.reader_eligible=1
     WHERE r.id=? AND r.status='done' AND cc.verdict='pass' AND cc.consistency='support'
     ORDER BY i.id,cc.citation_index`).all(reportId) as PassCheck[];
+}
+
+/** Historical reports are immutable. Surface a current *file availability* gap separately from
+ * their original pass/support verdict; this does not re-certify old plain archives or quotes. */
+export function reportArchiveGap(db: DB, reportId: string): { unavailableCitations: number; unavailableContents: number } {
+  const rows = db.prepare(`
+    SELECT DISTINCT c.insight_id,c.citation_index,c.content_item_id,ci.raw_ref,ci.reader_eligible
+    FROM report r
+    JOIN json_each(r.insight_ids) selected
+    JOIN insight i ON i.id=selected.value
+    JOIN citation c ON c.insight_id=i.id
+    JOIN citation_check cc ON cc.batch_id=i.batch_id AND cc.insight_id=c.insight_id AND cc.citation_index=c.citation_index
+    LEFT JOIN content_item ci ON ci.id=c.content_item_id
+    WHERE r.id=? AND r.status='done' AND cc.verdict='pass' AND cc.reachability='pass' AND cc.consistency='support'
+  `).all(reportId) as Array<{ insight_id: string; citation_index: number; content_item_id: string; raw_ref: string | null; reader_eligible: number | null }>;
+  const root = resolve(process.env.DATA_DIR ?? ".data", "raw");
+  const unavailable = new Set<string>();
+  let unavailableCitations = 0;
+  for (const row of rows) {
+    const ref = row.raw_ref;
+    if (!ref || row.reader_eligible !== 1) {
+      unavailableCitations++;
+      unavailable.add(row.content_item_id);
+      continue;
+    }
+    const file = resolve(process.env.DATA_DIR ?? ".data", ref);
+    const rel = relative(root, file);
+    if (!rel || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+      unavailableCitations++;
+      unavailable.add(row.content_item_id);
+      continue;
+    }
+    try {
+      if (lstatSync(root).isSymbolicLink()) throw new Error("archive_root_symlink");
+      // lstat on the final file alone follows symlinks in intermediate directories.
+      // Walk each archive component before opening/claiming historical availability.
+      let component = root;
+      for (const part of rel.split(sep)) {
+        component = join(component, part);
+        const stat = lstatSync(component);
+        if (stat.isSymbolicLink()) throw new Error("archive_symlink");
+        if (component === file ? !stat.isFile() : !stat.isDirectory()) throw new Error("not_regular_archive_path");
+      }
+      const realRoot = realpathSync(root);
+      const realFile = realpathSync(file);
+      const realRel = relative(realRoot, realFile);
+      if (!realRel || realRel === ".." || realRel.startsWith(`..${sep}`) || isAbsolute(realRel)) {
+        throw new Error("archive_path_escaped");
+      }
+    } catch {
+      unavailableCitations++;
+      unavailable.add(row.content_item_id);
+    }
+  }
+  return { unavailableCitations, unavailableContents: unavailable.size };
 }
 
 /** 每日节奏中已发布 event 的成功校验证据；brief 与 initial_digest 共用基线，deep_dive 不参与。 */

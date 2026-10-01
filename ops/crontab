@@ -16,7 +16,7 @@
 */5 * * * * CRON_MODE=integrity node --no-warnings /app/ops/trigger.mjs
 
 # 每日卷备份：管线（17:00 UTC）跑完后 1 小时备份，确保当日 brief 已落库再快照。
-# SQLite 在线备份（一致）+ reports/ 正文 → /data/backups/<时间戳>/，默认留最近 14 份
+# SQLite 在线备份（一致）+ reports/ 正文 + raw/ 原文字节与完整性清单 → /data/backups/<时间戳>/，默认留最近 14 份
 # （BACKUP_KEEP 可调）。备份在同卷——防损坏/误删，非防整卷丢失；真 DR 把 /data/backups
 # 拉到机器外（见 operations.md §6）。需 cron 服务挂 /data 卷（docker-compose.yml 已配）。
 0 18 * * * node --no-warnings /app/ops/backup-db.mjs

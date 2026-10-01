@@ -66,7 +66,7 @@ describe("P1 dashboard metric facts", () => {
     appendAnalysisMetricFacts(db, { batch, items: [], run_id: "run_1", costs: [{ tokens: 1, amount: 0.01 }] });
     db.exec("CREATE TRIGGER metric_fact_conflict_reject BEFORE INSERT ON metric_fact_conflict BEGIN SELECT RAISE(ABORT, 'audit unavailable'); END;");
     expect(() => appendAnalysisMetricFacts(db, { batch, items: [], run_id: "run_2", costs: [{ tokens: 1, amount: 0.02 }] })).not.toThrow();
-    expect(metricLogs.warn).toHaveBeenCalledWith(expect.objectContaining({ err: "metric_conflict_audit_write_failed" }), expect.stringContaining("指标事实写入失败"));
+    expect(metricLogs.warn).toHaveBeenCalledWith(expect.objectContaining({ err: expect.objectContaining({ message: "metric_conflict_audit_write_failed" }) }), expect.stringContaining("指标事实写入失败"));
   });
 
   it("never records an unverified provider-price fallback as known cost", () => {

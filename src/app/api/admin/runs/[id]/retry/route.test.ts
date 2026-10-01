@@ -77,9 +77,9 @@ describe("POST /api/admin/runs/[id]/retry", () => {
     vi.mocked(getRun).mockReturnValue({ id: "r1", kind: "ingest", target: { source_id: "s1" }, status: "failed", trace_id: "trace_original" });
     // @ts-expect-error stub
     vi.mocked(getSource).mockReturnValue({ id: "s1", name: "x" });
-    vi.mocked(collectSource).mockRejectedValue(new Error("fetch failed: ECONNRESET"));
+    vi.mocked(collectSource).mockRejectedValue(Object.assign(new Error("synthetic-private-response"), { code: "ECONNRESET" }));
     const res = await call("r1");
     expect(res.status).toBe(502);
-    expect((await res.json()).error).toContain("ECONNRESET");
+    expect((await res.json()).error).toBe("transport_connection");
   });
 });

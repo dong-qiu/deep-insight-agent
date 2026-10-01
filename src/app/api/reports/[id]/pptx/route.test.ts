@@ -55,9 +55,9 @@ describe("GET /api/reports/[id]/pptx", () => {
   });
 
   it("orchestrator 抛错 → 500 + JSON error", async () => {
-    vi.mocked(exportReportPptx).mockRejectedValue(new Error("db corrupted"));
+    vi.mocked(exportReportPptx).mockRejectedValue(new Error("synthetic-private-db-error"));
     const res = await callGet("http://x/api/reports/x/pptx", "x");
     expect(res.status).toBe(500);
-    expect(await res.json()).toEqual({ error: "db corrupted" });
+    expect(await res.json()).toEqual({ error: "operation_failed" });
   });
 });

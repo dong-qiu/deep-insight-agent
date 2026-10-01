@@ -94,6 +94,7 @@ COPY --from=builder --chown=app:app /app/src/lib/config/defaults.yaml ./config/d
 COPY --chown=app:app ops/crontab ./ops/crontab
 COPY --chown=app:app ops/trigger.mjs ./ops/trigger.mjs
 COPY --chown=app:app ops/backup-db.mjs ./ops/backup-db.mjs
+COPY --chown=app:app ops/backup-integrity.mjs ./ops/backup-integrity.mjs
 COPY --chown=app:app ops/cost-backfill.mjs ./ops/cost-backfill.mjs
 COPY --chown=app:app ops/probe-alert.mjs ./ops/probe-alert.mjs
 COPY --chown=app:app ops/generation-dispatch-worker.mjs ./ops/generation-dispatch-worker.mjs
@@ -102,9 +103,10 @@ COPY --from=builder --chown=app:app /tmp/run-provenance-migrations.mjs ./ops/run
 COPY --from=builder --chown=app:app /tmp/record-deployment.mjs ./ops/record-deployment.mjs
 COPY --from=builder --chown=app:app /tmp/replay-redaction-registry.cjs ./ops/replay-redaction-registry.cjs
 COPY --chown=app:app ops/regenerate-reports-cites.mjs ./ops/regenerate-reports-cites.mjs
-# 一次性回填脚本（headline 方案）：容器内 docker compose exec app node /app/ops/backfill-highlights.mjs 跑
+COPY --chown=app:app ops/readonly-report-snapshot.mjs ./ops/readonly-report-snapshot.mjs
+# 历史 headline 仅隔离快照预览；须显式设置 REPORT_SNAPSHOT_DB_PATH，不得读取容器活动 DB_PATH 或 --apply
 COPY --chown=app:app ops/backfill-highlights.mjs ./ops/backfill-highlights.mjs
-# 一次性回填脚本（前情链接）：容器内 docker compose exec app node /app/ops/backfill-report-chain.mjs --apply 跑
+# 历史前情链接脚本只读预览；旧 --apply 写入口已停用。
 COPY --chown=app:app ops/backfill-report-chain.mjs ./ops/backfill-report-chain.mjs
 
 # 持久卷挂载点（SQLite 库 + 报告正文 + 原文归档）

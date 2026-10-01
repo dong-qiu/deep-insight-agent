@@ -6,25 +6,16 @@
  *    citation_count 最多 + generated_at 最晚那一份，其余删；
  *  - FS 正文缺失（5 月历史包袱）不动，作"诚实空状态"测试样本保留。
  *
- *  幂等：删过的不会再删（按 id 决定）。
- *  事务：DB 删除 + FS 删除两段独立——DB 出错回滚，FS 删除是 best-effort。
+ *  旧删除实现没有 redaction registry/发布协议，现只保留候选预览。
  *
- *  用法：docker compose exec -T app node /app/ops/cleanup-reports.mjs --apply
- *        缺 --apply 则 dry-run（只打印不动）。 */
-import { existsSync, unlinkSync } from "node:fs";
-import Database from "better-sqlite3";
+ *  用法：REPORT_SNAPSHOT_DB_PATH=/path/to/standalone-snapshot.db node ops/cleanup-reports.mjs（仅预览）。 */
+import { openReadonlyReportSnapshot } from "./readonly-report-snapshot.mjs";
 
-const APPLY = process.argv.includes("--apply");
-const dbPath = process.env.DB_PATH || "/data/insight.db";
-const db = new Database(dbPath);
-
-// P0a 起报告删除必须先写不可变 redaction registry/effect；这个旧脚本没有外部 registry
-// 事务，继续执行会让恢复旧备份时重新暴露实体，故对已迁移库一律 fail-closed。
-const hasRedaction = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='provenance_redaction'").get();
-if (hasRedaction) {
-  console.error("拒绝执行：provenance 已启用，cleanup-reports.mjs 不具备 redaction registry 协议。");
-  process.exit(1);
+if (process.argv.length !== 2) {
+  console.error("仅支持无参数预览；--apply 已停用，报告删除须走 redaction registry 协议。");
+  process.exit(2);
 }
+const db = openReadonlyReportSnapshot(process.env.REPORT_SNAPSHOT_DB_PATH);
 
 // 1. 先收齐"应该删的 id 集合"
 const allReports = db.prepare(`
@@ -78,41 +69,5 @@ for (const r of allReports) {
   console.log(`  ✓ ${r.id} · ${r.topic_id.padEnd(22)} · ${r.d} · ${r.insight_count}洞察/${r.citation_count}引用`);
 }
 
-if (!APPLY) {
-  console.log(`\n[dry-run] 加 --apply 真正删除。`);
-  process.exit(0);
-}
-
-console.log(`\n=== 执行删除 ===`);
-const ids = [...toDelete];
-const tx = db.transaction(() => {
-  // FK：report_index 依赖 report、report_fts 是虚表无 FK 但需手动清；
-  // ppt_polish_cache 可能也引用了该报告。
-  for (const id of ids) {
-    db.prepare("DELETE FROM ppt_polish_cache WHERE report_id = ?").run(id);
-    db.prepare("DELETE FROM report_fts WHERE report_id = ?").run(id);
-    db.prepare("DELETE FROM report_index WHERE report_id = ?").run(id);
-    db.prepare("DELETE FROM report WHERE id = ?").run(id);
-  }
-});
-tx();
-console.log(`  ✓ DB 删 ${ids.length} 行（report + report_index + report_fts + ppt_polish_cache）`);
-
-// FS 文件 best-effort
-let fsCount = 0;
-for (const r of allReports) {
-  if (!toDelete.has(r.id)) continue;
-  for (const ext of [".md", ".html"]) {
-    const p = `${r.body_path}${ext}`;
-    try {
-      if (existsSync(p)) {
-        unlinkSync(p);
-        fsCount++;
-      }
-    } catch (e) {
-      console.warn(`  ⚠ ${p} 删失败: ${e.message}`);
-    }
-  }
-}
-console.log(`  ✓ FS 删 ${fsCount} 文件（.md + .html）`);
-console.log(`\n完成。`);
+db.close();
+console.log("\n只读预览完成；旧 --apply 已停用，未删除报告或文件。");

@@ -1,7 +1,8 @@
 # 云部署工具包（AWS EC2）
 
-把 Insight Agent 部署到 AWS EC2（t3.micro / Ubuntu 24.04 / Docker + 持久卷 + 容器内 cron）。
-脚本把"手工控制台操作"压缩成几条命令；只剩 3 个环节离不开你。
+AWS EC2 历史主机准备工具包（t3.micro / Ubuntu 24.04 / Docker + 持久卷 + 容器内 cron）。
+**当前 CD 仅支持已初始化、存在运行中 app/既有备份的生产实例**；下列主机准备步骤不是可直接执行的全新主机首发流程。
+全新主机的安全首次发布尚需单独设计和验证，不得把旧 `deploy.sh` 重新启用作为捷径。
 
 > 选 AWS 而非 Azure 的原因：Azure 新订阅 B1s 容量被封 + 公网 IP 收费；AWS t3.micro 一般随时可建、IPv4 含 750h/月免费。
 
@@ -11,10 +12,10 @@
 2. **`aws configure`**——填 Access Key / Secret / 默认区域（一次性；之后 provision 全自动）
 3. **DNS A 记录**——要 HTTPS 才需，把域名指向 EC2 公网 IP（在你的域名商后台）
 
-> 首次初始化可用 rsync 投递本地仓库，**不需要 GitHub PAT**。初始化完成后的生产发布必须通过
-> GitHub Actions `Deploy Production Image`：它只拉取 CI 已推送的 GHCR 不可变镜像，不在生产机拉源码或构建。
+> 生产发布的唯一入口是 GitHub Actions `Deploy Production Image`：它只拉取 CI 已推送的 GHCR 不可变镜像，
+> 不在生产机拉源码或构建。旧 `deploy.sh` 已停用，调用只会失败，不会传输本地配置。
 
-## 运行顺序
+## 历史主机准备步骤（首发流程未闭合）
 
 ```bash
 # 0) 前置：装 aws CLI 并配置凭据
@@ -36,23 +37,18 @@ LLM_API_KEY=sk-xxx ADMIN_PASSWORD=xxx ./gen-env.sh
 # LLM_BASE_URL=https://ark.cn-beijing.volces.com/api/coding/v3，再执行：
 LLM_API_KEY=<Coding-Plan-key> ADMIN_PASSWORD=xxx ./gen-env.sh
 
-# 4) 可选：迁移本机现有生产数据到云端卷（保留采集历史；务必在 deploy 之前）
-./migrate-db.sh
+# 4) 仅在另行批准的数据迁移任务中，核实目标卷确为空后再评估 migrate-db.sh；
+#    正常首次发布不需要迁移历史数据，也不运行此旧脚本。
 
-# 5) 首次投递代码 + 起服务 + 配 Caddy + 验证（仅 bootstrap）
-./deploy.sh
+# 5) 停在此处：全新主机还需要单独批准的安全首发流程。
+#    当前 GitHub Actions「Deploy Production Image」要求已有 app、compose 和备份，
+#    只能用于已初始化实例的后续发布；旧 deploy.sh 不得恢复使用。
+#    已有生产实例的发布与核验见 docs/launch/operations.md §8。
 
-# 6) 可选：off-box DR —— 建 S3 桶 + 实例角色加最小 S3 权限 + host cron 每日异地同步
-#    （在容器内每日备份 ops/backup-db.mjs 之上多一层异地副本；成本 ≈ $0，见脚本头注）
-./setup-dr.sh
-
-# 7) A1 v2 受控快照专用 bucket（默认仅核验；--apply 会创建 Object Lock/KMS/S3 资源）
-./setup-a1-eval-snapshot.sh --check
-./setup-a1-eval-snapshot.sh --apply
-
-# 止费（释放所有 EC2 资源，账单归零；注：DR 的 S3 桶不在此清理，需手动 aws s3 rb）
-./destroy.sh
 ```
+
+`setup-dr.sh`、`setup-a1-eval-snapshot.sh` 与 `destroy.sh` 分别涉及异地备份、评测资源和下线销毁，
+不是首次发布的连续步骤；仅在各自独立任务得到授权并核对目标后执行。
 
 ## 各脚本职责
 
@@ -62,8 +58,8 @@ LLM_API_KEY=<Coding-Plan-key> ADMIN_PASSWORD=xxx ./gen-env.sh
 | `cloud-init.yaml` | EC2 user-data：首次开机自装 Docker/swap/Caddy（**不含密钥、不 clone**） | — |
 | `provision.sh` | `aws ec2` 建密钥对 + 安全组 + 实例 + 公网 IP | 需 `aws configure` |
 | `gen-env.sh` | 生成 `.env` / `.env.local`（密钥用 openssl） | API key / 管理员密码 |
-| `migrate-db.sh` | 本机生产容器 `VACUUM INTO` 快照 → 写入云端卷 | SSH 私钥 |
-| `deploy.sh` | 首次 bootstrap：rsync 代码 + `docker compose up` + Caddy + 健康检查；日常发布改用 GitHub Actions | SSH 私钥 |
+| `migrate-db.sh` | 历史数据迁移工具；未强制校验空卷，**不得直接用于已有生产卷**，另行批准和加固 | SSH 私钥 |
+| `deploy.sh` | 已停用的旧入口：立即拒绝；不传代码或密钥，不覆盖生产配置 | 否 |
 | `setup-dr.sh` | off-box DR：建 S3 桶（加固）+ 实例角色挂最小 S3 策略 + 经 SSM 装 awscli/写 host cron 每日异地同步 | 需 `aws`（建桶/IAM/SSM） |
 | `setup-redaction-registry.sh` | P0a 独立 Object-Lock redaction registry + KMS + app/recovery 最小策略；默认只读检查，`--apply` 才变更 | 需 `aws`、预建 HMAC secret 与独立 recovery role |
 | `setup-a1-eval-snapshot.sh` | A1 v2 原文快照专用 bucket：私有、versioning、专用 KMS、Object Lock Compliance 90 天、到期 lifecycle；不接入生产 app role | 需 `aws`；仅由经授权 evaluator 上传 |
@@ -71,8 +67,8 @@ LLM_API_KEY=<Coding-Plan-key> ADMIN_PASSWORD=xxx ./gen-env.sh
 
 ## 设计要点 / 安全
 
-- **user-data 不放密钥**：实例元数据可读，故只做基础设施；代码/密钥经 `deploy.sh` 走加密 rsync/ssh。
-- **不 clone 私库**：`deploy.sh` 直接 rsync 本机这份仓库，免 PAT。
+- **user-data 不放密钥**：实例元数据可读，故只做基础设施；运行时配置由 operator 一次性置于服务器，发布只走 CD。
+- **不 clone 私库**：发布从 GHCR 拉取不可变镜像，生产机无需仓库 checkout 或 PAT。
 - **`.env.local` 永不入库**：`.gitignore` 已忽略 `.env.*`；`config.sh`、`.vm-ip`、`.vm-id` 也已忽略。
 - **工程名钉死** `COMPOSE_PROJECT_NAME=deep-insight` → 卷恒为 `deep-insight_insight-data`，换目录/重跑不孤立数据。
 - **模型校验**：`gen-env.sh` 要求 analyzer、validator、coverage 三个模型两两不同；缺失或重复会在写入运行时配置前失败。

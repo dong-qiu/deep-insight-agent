@@ -7,8 +7,9 @@
  * 不让模型编造。
  */
 import { createHash, randomUUID } from "node:crypto";
+import { safeError } from "../runtime/diagnostics.js";
 import { isTransientApiError, isVolcengineResponsesFailure } from "../runtime/errors.js";
-import { coverageBackfillOff, coverageMaxTokens, coverageThinking, coverageThinkingSource, validatorBackoffMs, validatorRetries, validatorThinking } from "../runtime/env.js";
+import { analyzeBodyChars, coverageBackfillOff, coverageMaxTokens, coverageThinking, coverageThinkingSource, selectWindowChars, validatorBackoffMs, validatorRetries, validatorThinking } from "../runtime/env.js";
 import { MODELS, assertCoverageModelSeparation, callStructured } from "../runtime/llm.js";
 import { llmProvider } from "../runtime/llm-provider.js";
 import { collapseWithMap, compareKey } from "../runtime/text-normalize.js";
@@ -741,7 +742,7 @@ export async function verifyQuoteSelfContained(
     reason,
     citation_indexes: [],
     evidence_spans: [],
-    ...(error ? { error: error instanceof Error ? error.message : String(error) } : {}),
+    ...(error ? { error: safeError(error).message } : {}),
   });
   let data: QuoteCoverage | undefined;
   let lastError: unknown;
@@ -1027,7 +1028,7 @@ export async function repairCoverage(
     try {
       supports = await verifyCandidates(ins.statement, cands.map((c) => ({ token: c.token, quote: c.quote })), onCost);
     } catch (e) {
-      console.warn(`  ⚠️ 补引校验失败，跳过本条补引（留外露 〔待补引〕）：${(e as Error).message.slice(0, 40)}`);
+      console.warn(`  ⚠️ 补引校验失败，跳过本条补引（留外露 〔待补引〕）：${safeError(e).message}`);
       continue;
     }
     cands.forEach((c, i) => {
@@ -1080,7 +1081,7 @@ export async function filterByQuoteCoverage(
     const displayableCitations = displayableCitationEntries.map(({ citation }) => citation);
     const pruned_citation_count = insight.citations.length - displayableCitations.length;
     if (pruned_citation_count) {
-      console.warn(`  ⚠️ 剔除不可作展示证据的引用：${insight.id || insight.statement.slice(0, 24)}`);
+      console.warn("  ⚠️ 剔除不可作展示证据的引用");
       insight.citations = displayableCitations;
       // source_count / multi_source 是 citation 的派生字段。不能因为被剔除的无效 quote 来自
       // 第二个 source，就把单源结论伪装成多源印证。
@@ -1095,7 +1096,7 @@ export async function filterByQuoteCoverage(
       }
     }
     if (!displayableCitations.length) {
-      console.warn(`  ⚠️ 丢弃无引用洞察：${insight.id || insight.statement.slice(0, 24)}`);
+      console.warn("  ⚠️ 丢弃无引用洞察");
       onDecision?.({
         candidate_id, gate_version: DISPLAY_COVERAGE_GATE_VERSION, terminal_reason: "dropped_no_displayable_citation",
         pruned_citation_count, projection_reasons, claims: [],
@@ -1109,7 +1110,7 @@ export async function filterByQuoteCoverage(
       ? declaredBinding
       : boundDisplayCitationIndex < 1 ? "statement_binding_citation_not_displayable" : undefined;
     if (bindingFailure) {
-      console.warn(`  ⚠️ 丢弃未绑定原子 citation claim 的 statement：${insight.statement.slice(0, 36)}…`);
+      console.warn("  ⚠️ 丢弃未绑定原子 citation claim 的 statement");
       onDecision?.({
         candidate_id,
         gate_version: DISPLAY_COVERAGE_GATE_VERSION,
@@ -1132,7 +1133,7 @@ export async function filterByQuoteCoverage(
       ...namedSubjectTypeLabelGaps(insight.statement, boundCitation),
     ];
     if (draftTokenGaps.length) {
-      console.warn(`  ⚠️ 丢弃内部 claim 超出绑定 quote 的候选：${insight.statement.slice(0, 36)}…`);
+      console.warn("  ⚠️ 丢弃内部 claim 超出绑定 quote 的候选");
       onDecision?.({
         candidate_id, gate_version: DISPLAY_COVERAGE_GATE_VERSION, terminal_reason: "dropped_coverage",
         pruned_citation_count, prompt_version: DISPLAY_COVERAGE_PROMPT_VERSION,
@@ -1149,7 +1150,7 @@ export async function filterByQuoteCoverage(
     // the missing referent, and running the draft-claim audit first would turn this cheap,
     // deterministic rejection into unnecessary model work.
     if (hasUnresolvedQuoteLead(boundCitation.quote)) {
-      console.warn(`  ⚠️ 丢弃无法独立理解的绑定 quote：${boundCitation.quote.slice(0, 36)}…`);
+      console.warn("  ⚠️ 丢弃无法独立理解的绑定 quote");
       onDecision?.({
         candidate_id, gate_version: DISPLAY_COVERAGE_GATE_VERSION, terminal_reason: "dropped_coverage",
         pruned_citation_count, prompt_version: DISPLAY_COVERAGE_COUNTERCHECK_PROMPT_VERSION,
@@ -1206,7 +1207,7 @@ export async function filterByQuoteCoverage(
       ...namedSubjectTypeLabelGaps(insight.statement, boundCitation),
     ];
     if (tokenGaps.length) {
-      console.warn(`  ⚠️ 丢弃绑定 quote 缺少稳定锚点的 statement：${insight.statement.slice(0, 36)}…`);
+      console.warn("  ⚠️ 丢弃绑定 quote 缺少稳定锚点的 statement");
       onDecision?.({
         candidate_id,
         gate_version: DISPLAY_COVERAGE_GATE_VERSION,
@@ -1260,7 +1261,7 @@ export async function filterByQuoteCoverage(
     // optional display facets may be safely removed below without throwing away the core fact.
     if (!coverage.claims.some((claim) => claim.field === "statement")
       || coverage.claims.some((claim) => claim.field === "statement" && !claim.supports)) {
-      console.warn(`  ⚠️ 丢弃 statement 未完整覆盖的洞察：${insight.statement.slice(0, 36)}…`);
+      console.warn("  ⚠️ 丢弃 statement 未完整覆盖的洞察");
       onDecision?.({ ...decisionBase, terminal_reason: "dropped_coverage" });
       return null;
     }
@@ -1285,7 +1286,7 @@ export async function filterByQuoteCoverage(
       // Do not auto-select a new anchor/reason. Even though the template is safe, repairing an
       // invalid evaluation contract would make a model-supplied, unpassed relationship appear
       // audited. P0 has no automatic rewrite path: missing/out-of-range/unpassed anchors reject.
-      console.warn(`  ⚠️ 丢弃重要性判断锚点无效的洞察：${insight.statement.slice(0, 36)}…`);
+      console.warn("  ⚠️ 丢弃重要性判断锚点无效的洞察");
       onDecision?.({ ...decisionBase, terminal_reason: "dropped_coverage" });
       return null;
     }
@@ -1447,7 +1448,7 @@ export function repairCitationSource(
 /** analyze 输入 body 上限（M3-3 降本 + 降时延）：富正文（Latent Space/Krebs 可达 5 万字）截到前 N 字喂分析。
  *  对 reachability 安全——截断 body 是全文前缀，quote 取自模型所见前缀 ⊂ 全文，仍逐字可达；
  *  且 abstract/导语信息密度最高，截短对洞察损失有限。env ANALYZE_BODY_CHARS 可调。 */
-export const ANALYZE_BODY_CHARS = Number(process.env.ANALYZE_BODY_CHARS) || 10_000;
+export const ANALYZE_BODY_CHARS = analyzeBodyChars();
 
 export function truncateForAnalyze(body: string): string {
   return body.length > ANALYZE_BODY_CHARS ? body.slice(0, ANALYZE_BODY_CHARS) : body;
@@ -1455,13 +1456,14 @@ export function truncateForAnalyze(body: string): string {
 
 /** 选段定长窗 + 段间分隔标记（ADR-0007 决定②）。转写经 stripTranscript 收敛成单行（无空行/说话人换行），
  *  故按定长窗切。分隔标记非 body 一部分 → 模型跨段引用的 quote 不在 body、被可达性闸门挡下（防 Major4 漂移）。 */
-export const SELECT_WINDOW_CHARS = Number(process.env.SELECT_WINDOW_CHARS) || 1000;
+export const SELECT_WINDOW_CHARS = selectWindowChars();
 // 分隔标记：`[…]` 对模型可读（表省略、勿跨段引用）+ 哨兵 ␟（UNIT SEPARATOR）防碰撞——
 // fold 后仍含 ␟（评审实证），而真实转写永不含它，故跨段拼接的 quote 必不可达、被闸门正确挡下（Major4）。
 export const SELECT_SEPARATOR = "\n[…]␟\n";
 
 /** 把长文按定长窗切分（窗边界就近 snap 到空格、不切词）；返回各窗 trim 后文本（仍是 body 的逐字连续切片）。 */
 export function chunkWindows(body: string, size: number = SELECT_WINDOW_CHARS): string[] {
+  if (!Number.isSafeInteger(size) || size <= 0) throw new RangeError("chunkWindows size must be a positive safe integer");
   const out: string[] = [];
   let start = 0;
   while (start < body.length) {
@@ -1794,7 +1796,7 @@ ${renderItems(items, topic.keywords)}`;
   // 产出守卫：丢弃疑似截断的洞察（结构化输出偶发把长 statement 提前收尾，JSON 仍合法，半句污染校验/人评）。
   const insights = built.filter((it, candidateIndex) => {
     if (isCompleteStatement(it.statement)) return true;
-    console.warn(`  ⚠️ 丢弃疑似截断洞察：…「${it.statement.trim().slice(-24)}」`);
+    console.warn("  ⚠️ 丢弃疑似截断洞察");
     onDecision?.({
       candidate_id: citationCandidateId(it, candidateIndex),
       gate_version: DISPLAY_COVERAGE_GATE_VERSION,
@@ -1825,7 +1827,7 @@ ${renderItems(items, topic.keywords)}`;
   for (const it of quoteCoveredInsights) {
     const gaps = coverageGaps(it.statement, (it.entities ?? []).map((e) => e.name), it.citations.map((c) => c.quote));
     if (gaps.length) {
-      console.warn(`  ⚠️ 覆盖残差（补引未果，外露 〔待补引〕）：${gaps.join("、")} ——「${it.statement.slice(0, 24)}…」`);
+      console.warn(`  ⚠️ 覆盖残差（补引未果，外露 〔待补引〕）：${gaps.length} 项`);
     }
   }
   return quoteCoveredInsights;
@@ -1858,7 +1860,7 @@ async function analyzeWithSplit(
     if (e instanceof QuoteCoverageAuditError || e instanceof QuoteCoverageRejectedError) throw e;
     if (isTransientApiError(e)) throw e; // 中转站抽风：抛上而非拆批丢内容
     if (items.length <= 1) {
-      console.warn(`  ⚠️ 丢弃 1 条（模型拒答/解析失败）：${(e as Error).message.slice(0, 40)}`);
+      console.warn(`  ⚠️ 丢弃 1 条（模型拒答/解析失败）：${safeError(e).message}`);
       return [];
     }
     const mid = Math.ceil(items.length / 2);

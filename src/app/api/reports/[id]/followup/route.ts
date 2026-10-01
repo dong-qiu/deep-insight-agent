@@ -15,6 +15,7 @@ import { listFollowups, saveFollowup } from "../../../../../lib/db/followup.js";
 import { getDb } from "../../../../../lib/db/index.js";
 import { getReport } from "../../../../../lib/db/reports.js";
 import { runLogger } from "../../../../../lib/runtime/logger.js";
+import { safeError } from "../../../../../lib/runtime/diagnostics.js";
 import { RateLimiter } from "../../../../../lib/runtime/rate-limit.js";
 import type { FollowupQA } from "../../../../../lib/types.js";
 
@@ -87,8 +88,8 @@ export async function POST(
     log.info({ reportId: id, citations: result.citations_used.length, cost: result.cost.amount }, "追问完成");
     return NextResponse.json(qa, { status: 200 });
   } catch (e) {
-    const message = (e as Error).message;
-    log.error({ reportId: id, err: message }, "追问失败");
+    const message = safeError(e).message;
+    log.error({ reportId: id, err: e }, "追问失败");
     appendAudit(db, { actor: "admin", action: "followup_failed", target: id, detail: { message } });
     return NextResponse.json({ error: "followup_failed", message }, { status: 500 });
   }

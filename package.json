@@ -73,11 +73,12 @@
     "review:ai-human-record": "tsx evals/record-a1-ai-insight-human-adjudication.ts",
     "lint": "eslint src ops evals eslint.config.mjs next.config.mjs vitest.config.ts --max-warnings=0",
     "typecheck": "npm run typecheck:ts7 && npm run typecheck:ts6",
-    "typecheck:ts7": "node ./node_modules/@typescript/native/bin/tsc --noEmit",
-    "typecheck:ts6": "node ./node_modules/typescript/bin/tsc --noEmit",
-    "test": "vitest run && node --test ops/multica-task-watch.node-test.mjs ops/p0-forward-observation.node-test.mjs ops/aws/gen-env.node-test.mjs",
+    "typecheck:ts7": "node ./node_modules/@typescript/native/bin/tsc --noEmit && node ./node_modules/@typescript/native/bin/tsc --noEmit -p tsconfig.tools.json",
+    "typecheck:ts6": "node ./node_modules/typescript/bin/tsc --noEmit && node ./node_modules/typescript/bin/tsc --noEmit -p tsconfig.tools.json",
+    "test": "vitest run && npm run test:ops",
+    "test:ops": "node ops/run-node-tests.mjs",
     "test:e2e": "npm run build && vitest run --config vitest.e2e.config.ts",
-    "test:coverage": "vitest run --coverage && node --test ops/multica-task-watch.node-test.mjs"
+    "test:coverage": "vitest run --coverage && npm run test:ops"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "0.127.0",
@@ -89,9 +90,9 @@
     "d3-force": "3.0.0",
     "fast-xml-parser": "5.11.1",
     "image-size": "file:vendor/image-size",
-    "next": "16.3.5",
+    "next": "16.3.8",
     "next-auth": "5.0.0-beta.32",
-    "nodemailer": "9.1.1",
+    "nodemailer": "10.0.13",
     "pino": "10.3.1",
     "pptxgenjs": "4.0.1",
     "react": "19.3.0",
@@ -110,7 +111,7 @@
     "@types/react-dom": "^19.3.0",
     "@vitest/coverage-v8": "^5.0.1",
     "eslint": "9.39.5",
-    "eslint-config-next": "16.3.5",
+    "eslint-config-next": "16.3.8",
     "tsx": "^4.23.15",
     "typescript": "^6.0.3",
     "vite": "^8.3.0",
@@ -120,7 +121,7 @@
     "image-size": "$image-size",
     "js-yaml": "4.3.2",
     "nanoid": "3.3.18",
-    "nodemailer": "9.1.1",
+    "nodemailer": "10.0.13",
     "sharp": "0.35.4",
     "postcss": "8.5.26"
   }

@@ -89,7 +89,7 @@ export function resolveRecipientEmails(): string {
   } catch (e) {
     // 库不可用（迁移未跑 / 连接异常）→ 回落 env，绝不让收件人解析抛断推送
     runLogger({ stage: "alert" }).warn(
-      { err: e instanceof Error ? e.message : String(e) },
+      { err: e },
       "读取邮件收件人表失败，回落 REPORT_EMAIL_TO",
     );
   }
@@ -106,9 +106,9 @@ export function notifyEmail(n: Notification): void {
   try {
     const mail = reportToEmail(n, from, to);
     void sendEmail(mail).catch((e) =>
-      runLogger({ stage: "alert" }).warn({ err: e instanceof Error ? e.message : String(e) }, "报告邮件发送失败（已忽略）"),
+      runLogger({ stage: "alert" }).warn({ err: e }, "报告邮件发送失败（已忽略）"),
     );
   } catch (e) {
-    runLogger({ stage: "alert" }).warn({ err: e instanceof Error ? e.message : String(e) }, "报告邮件构造失败（已忽略）");
+    runLogger({ stage: "alert" }).warn({ err: e }, "报告邮件构造失败（已忽略）");
   }
 }

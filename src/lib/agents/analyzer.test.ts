@@ -1224,7 +1224,7 @@ describe("filterByQuoteCoverage（展示 quote 覆盖门）", () => {
       expect(audits[0]?.claims[0]).toMatchObject({
         supports: false,
         reason: "self_contained_unavailable",
-        countercheck: { supports: false, reason: "self_contained_unavailable", error: "countercheck unavailable" },
+        countercheck: { supports: false, reason: "self_contained_unavailable", error: "operation_failed" },
       });
     } finally {
       if (priorRetries === undefined) delete process.env.VALIDATOR_RETRIES;

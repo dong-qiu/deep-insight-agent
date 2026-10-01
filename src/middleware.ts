@@ -2,18 +2,17 @@
  *  - matcher 排除静态资源 + NextAuth 自身，其余全过 middleware；
  *  - PUBLIC_PATHS 白名单（/login·/api/health·/api/cron[Bearer 在 handler 自查]）外，无 session 一律拦：
  *    页面 → 重定向 /login（带 from）；/api → 401 JSON；
- *  - middleware 保持配置/会话解析轻量，不导入 DB；审计/脱敏日志在路由处理。 */
+ *  - middleware 只读核对当前凭据版本，不执行 writer 初始化/密码校验；审计/脱敏日志在路由处理。 */
 import NextAuth from "next-auth";
 import { NextResponse } from "next/server";
-import { authConfig } from "./auth.config.js";
+import { authNodeConfig } from "./auth.node-config.js";
 import { isPublicPath } from "./lib/runtime/auth-paths.js";
 import { hasDispatchWorkerSecret } from "./lib/runtime/dispatch-auth.js";
 import { isAdminOnlyPath } from "./lib/runtime/role-paths.js";
 import { RateLimiter } from "./lib/runtime/rate-limit.js";
 
-// middleware 显式跑在 Node.js runtime（自托管 Docker 部署）。仍用配置-only 轻实例只读 session/JWT role，
-// 不引入带 DB/密码校验的 auth.ts，保持每个请求的鉴权前置路径轻量、可迁回 Edge。
-const { auth } = NextAuth(authConfig);
+// Node middleware 与完整 auth 共用撤销检查；仅打开短生命周期只读连接，绝不调用 getDb。
+const { auth } = NextAuth(authNodeConfig);
 
 /** Operational metrics deliberately use a uniform 404 at the network boundary.
  * Keep this narrow: the rest of the admin surface retains its documented 401/403. */

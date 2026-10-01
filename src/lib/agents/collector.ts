@@ -3,6 +3,7 @@
  *  （与 analyze/validate/report-gen 一致：单调时钟耗时 + 失败捕获 + 可重试）。 */
 import { appendTranscriptAcquisitionFact, getContentByUrl, getPendingOrEligibleContentItem, insertContentItem, listTopics, setRunInserted, transcriptAcquisitionEventKey, updateContentItem } from "../db/repos.js";
 import type { DB } from "../db/index.js";
+import { safeError } from "../runtime/diagnostics.js";
 import { markRawArchiveUnknown, planRawArchive, writePlannedRawArchive } from "../db/raw-archive.js";
 import {
   assertSourceCollectClaim,
@@ -71,7 +72,7 @@ function recordTranscriptFact(db: DB, fact: Omit<TranscriptAcquisitionFact, "eve
   try {
     appendTranscriptAcquisitionFact(db, { ...fact, event_key: transcriptAcquisitionEventKey(fact) });
   } catch (error) {
-    console.warn(`[transcript-acquisition] diagnostic fact not recorded: ${error instanceof Error ? error.message : "unknown_error"}`);
+    console.warn(`[transcript-acquisition] diagnostic fact not recorded: ${safeError(error).message}`);
   }
 }
 
@@ -124,7 +125,7 @@ function recordPodcastMetadataFacts(input: {
     // Observation facts are diagnostically useful but must never turn a malformed feed entry
     // into a failed P0 RSS run. Do not include the raw URL in logs: it may be a signed transport
     // URL or user-controlled malformed text.
-    console.warn(`[transcript-acquisition] podcast metadata fact skipped: ${error instanceof Error ? error.message : "unknown_error"}`);
+    console.warn(`[transcript-acquisition] podcast metadata fact skipped: ${safeError(error).message}`);
   }
 }
 
@@ -331,7 +332,7 @@ export async function collectSource(
           shadow.close();
         }
       } catch (error) {
-        console.warn(`[transcript-shadow] source=${source.id} sample failed: ${error instanceof Error ? error.message : "unknown_error"}`);
+        console.warn(`[transcript-shadow] sample failed: ${safeError(error).message}`);
       }
     }
     if (!opts.probe) {

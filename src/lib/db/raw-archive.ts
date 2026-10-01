@@ -96,8 +96,12 @@ function verify(path: string, artifact: RawArchiveArtifact): boolean {
 }
 /** A caller that observes an interrupted archive must close reader visibility. */
 export function markRawArchiveUnknown(db: DB, effectId: string, reasonCode: string): void {
+  const known = new Set(["raw_archive_manifest_invalid", "raw_archive_idempotency_conflict",
+    "raw_archive_effect_finalize_lost", "raw_archive_content_binding_missing", "raw_archive_payload_mismatch",
+    "raw_archive_staging_hash_mismatch", "raw_archive_final_hash_mismatch", "raw_archive_artifact_missing",
+    "raw_archive_write_failed", "raw_archive_reconcile_failed"]);
   db.prepare("UPDATE generation_effect SET status='unknown',error=?,updated_at=? WHERE id=? AND status <> 'committed'")
-    .run(JSON.stringify({ reason_code: reasonCode }), new Date().toISOString(), effectId);
+    .run(JSON.stringify({ reason_code: known.has(reasonCode) ? reasonCode : "raw_archive_write_failed" }), new Date().toISOString(), effectId);
 }
 
 /** Verify first; then publish the archive effect and reader eligibility together. */

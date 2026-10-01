@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { actor, get, evidence, set, record } = vi.hoisted(() => ({ actor: vi.fn(), get: vi.fn(), evidence: vi.fn(), set: vi.fn(), record: vi.fn() }));
+const { actor, get, evidence, set, record, readerContext } = vi.hoisted(() => ({ actor: vi.fn(), get: vi.fn(), evidence: vi.fn(), set: vi.fn(), record: vi.fn(), readerContext: { preload: vi.fn(), accepts: vi.fn() } }));
 vi.mock("../../../../lib/auth-guard.js", () => ({ requireAdminActor: actor }));
 vi.mock("../../../../lib/db/index.js", () => ({ getDb: vi.fn(() => ({})) }));
+vi.mock("../../../../lib/db/reader-evidence.js", () => ({ createReaderEvidenceContext: vi.fn(() => readerContext) }));
 vi.mock("../../../../lib/db/provenance.js", () => ({ hashIdempotencyKey: vi.fn(() => "hash"), recordManualDecision: record }));
 vi.mock("../../../../lib/db/provenance-revisions.js", () => ({ techLeadRef: vi.fn(() => ({})), techLeadRevisionSnapshot: vi.fn(() => ({})) }));
 vi.mock("../../../../lib/db/tech-leads.js", () => ({ getTechLead: get, listTechLeadEvidence: evidence, setTechLeadStatus: set }));
@@ -17,6 +18,8 @@ describe("/api/leads/[id]", () => {
   it("GET 返回线索及其可追溯证据", async () => {
     evidence.mockReturnValue([{ quote: "q" }]);
     expect(await (await GET(new Request("http://x"), ctx)).json()).toEqual({ lead, evidence: [{ quote: "q" }] });
+    expect(get).toHaveBeenCalledWith({}, "lead_1", readerContext);
+    expect(evidence).toHaveBeenCalledWith({}, "lead_1", readerContext);
   });
   it("POST 需要可信 admin、合法幂等键并登记人工 Trace", async () => {
     actor.mockResolvedValueOnce(null);

@@ -97,7 +97,7 @@ export async function readTextCapped(
       await reader.cancel();
       if (opts.truncate) {
         // chunks 不含触顶的这一块 → 已 ≤ maxBytes，干净边界返回（不切碎多字节字符）。
-        console.warn(`[readTextCapped] 响应超 ${maxBytes} 字节，已截断保留前 ${Buffer.concat(chunks).length} 字节${opts.label ? `（${opts.label}）` : ""}`);
+        console.warn(`[readTextCapped] 响应超 ${maxBytes} 字节，已截断保留前 ${Buffer.concat(chunks).length} 字节`);
         return Buffer.concat(chunks).toString("utf8");
       }
       throw new ResponseSizeLimitError(maxBytes, total);

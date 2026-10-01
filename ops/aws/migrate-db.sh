@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# 把本机现有生产库迁到云端卷（保留采集历史）。在 deploy.sh【之前】运行：写入空卷，
-# deploy 起容器时直接用现有数据，无需停机替换。
+# 历史数据迁移工具：写入目标卷，未内建空卷保护。不得用于已有生产卷；
+# 当前 CD 也不支持空主机首发，须另行设计/批准迁移与 bootstrap 流程。
 #
 # 关键：真生产库在本机【容器】deep-insight-app-1 的 /data/insight.db（不是本地 .data，见项目记忆）。
 # 故用容器内 better-sqlite3 跑 VACUUM INTO 导出干净单文件，再搬到云端卷（chown 到 uid 1001）。
@@ -42,4 +42,4 @@ docker run --rm -v $VOL:/data alpine ls -la /data/insight.db
 EOF
 
 rm -f /tmp/golden.db
-echo "==> 数据迁移完成。接着跑 ./deploy.sh（会复用此卷的现有数据）。"
+echo "==> 数据迁移完成。当前 CD 不能对空主机首发；请停止并按单独批准的 bootstrap 流程处理。"

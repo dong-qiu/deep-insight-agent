@@ -2,7 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { auth } from "../../../../../auth.js";
 import { getDb } from "../../../../../lib/db/index.js";
-import { getPublishedReportReview, listPublishedReportReviewDecisions } from "../../../../../lib/db/report-review.js";
+import { getPublishedReportReview, listPublishedReportReviewDecisions, verifyV4ContentSnapshot } from "../../../../../lib/db/report-review.js";
 import { safeExternalUrl } from "../../../../../lib/utils/safe-external-url.js";
 import { ProvenanceTimeline } from "../../../../reports/[id]/_components/provenance-timeline.js";
 
@@ -63,17 +63,18 @@ export default async function ReportQualityReviewPage({
   if (!snapshot) notFound(); // defensive: getPublishedReportReview and this bound read must agree
 
   const inputCount = countOf(db.prepare(`SELECT COUNT(*) AS count FROM generation_entity_ref er
-    JOIN provenance_revision pr ON pr.entity_type=er.entity_type AND pr.entity_key=er.entity_key AND pr.revision=er.revision
     WHERE er.trace_id=? AND er.event_id=? AND er.role='input' AND er.entity_type='content_item'`).get(review.trace_id, snapshot.analyze_started_event_id));
-  const inputs = db.prepare(`SELECT pr.snapshot FROM generation_entity_ref er
-    JOIN provenance_revision pr ON pr.entity_type=er.entity_type AND pr.entity_key=er.entity_key AND pr.revision=er.revision
+  const inputs = db.prepare(`SELECT er.revision,pr.snapshot,pr.snapshot_hash FROM generation_entity_ref er
+    LEFT JOIN provenance_revision pr ON pr.entity_type=er.entity_type AND pr.entity_key=er.entity_key AND pr.revision=er.revision
     WHERE er.trace_id=? AND er.event_id=? AND er.role='input' AND er.entity_type='content_item'
-    ORDER BY er.rowid LIMIT ? OFFSET ?`).all(review.trace_id, snapshot.analyze_started_event_id, PAGE_SIZE, (inputPage - 1) * PAGE_SIZE) as Array<{ snapshot: string }>;
+    ORDER BY er.rowid LIMIT ? OFFSET ?`).all(review.trace_id, snapshot.analyze_started_event_id, PAGE_SIZE, (inputPage - 1) * PAGE_SIZE) as Array<{ revision: string; snapshot: string | null; snapshot_hash: string | null }>;
   const snapshots = inputs.map((row) => {
-    const value = parseRecord(row.snapshot);
+    const value = row.snapshot && row.snapshot_hash ? verifyV4ContentSnapshot(row.snapshot, row.snapshot_hash, row.revision) : null;
+    if (!value) return { invalid: true, title: "历史输入元数据完整性校验失败", url: "", href: null,
+      source_id: "", published_at: null, fetched_at: null, body_kind: "", fetch_status: "", body_length: null, content_hash: "" };
     const rawUrl = typeof value.url === "string" ? value.url : "";
     const url = cap(rawUrl, 300);
-    return { title: cap(value.title), url, href: safeExternalUrl(rawUrl), source_id: cap(value.source_id, 80), published_at: value.published_at, fetched_at: value.fetched_at, body_kind: value.body_kind, fetch_status: value.fetch_status, body_length: value.body_length, content_hash: value.content_hash };
+    return { invalid: false, title: cap(value.title), url, href: safeExternalUrl(rawUrl), source_id: cap(value.source_id, 80), published_at: value.published_at, fetched_at: value.fetched_at, body_kind: value.body_kind, fetch_status: value.fetch_status, body_length: value.body_length, content_hash: value.content_hash };
   });
 
   const decisionRows = listPublishedReportReviewDecisions(db, id, { limit: PAGE_SIZE, offset: (decisionPage - 1) * PAGE_SIZE });
@@ -110,6 +111,7 @@ export default async function ReportQualityReviewPage({
     <p className="muted">{review.report_title} · 规则 {review.selection_rule_version} · 复盘包 {review.created_at}</p>
     <ProvenanceTimeline traceId={review.trace_id} showBriefFunnel={review.report_type === "brief"} />
     <details className="audit" open><summary>分析输入快照 · 本页 {snapshots.length} / {inputCount}</summary>
+      <p className="muted">仅保留当时的输入元数据与内容哈希；历史原文未保留在此快照中，不能据此核验原文字节。</p>
       <table className="stats"><thead><tr><th>标题</th><th>来源</th><th>抓取</th><th>形态/状态</th><th>长度</th><th>内容哈希</th></tr></thead><tbody>
         {snapshots.map((item, index) => <tr key={`${String(item.content_hash)}-${index}`}><td>{item.href ? <a href={item.href} target="_blank" rel="noreferrer">{item.title || item.url}</a> : item.title || item.url}</td><td>{String(item.source_id ?? "")}</td><td>{String(item.published_at ?? item.fetched_at ?? "")}</td><td>{String(item.body_kind ?? "")} / {String(item.fetch_status ?? "")}</td><td>{String(item.body_length ?? "")}</td><td><code>{String(item.content_hash ?? "").slice(0, 16)}</code></td></tr>)}
       </tbody></table><PageNav reportId={id} param="inputs_page" page={inputPage} total={inputCount} />

@@ -4,6 +4,8 @@ import { NextResponse } from "next/server";
 import { forbidNonAdmin } from "../../../../../lib/auth-guard.js";
 import { getDb } from "../../../../../lib/db/index.js";
 import { exportReportPptx } from "../../../../../lib/services/ppt-export.js";
+import { safeError } from "../../../../../lib/runtime/diagnostics.js";
+import { runLogger } from "../../../../../lib/runtime/logger.js";
 
 export const dynamic = "force-dynamic";
 // pptxgenjs 依赖 Node API（Buffer/zip），不可在 Edge 跑——显式锁 Node 运行时
@@ -25,8 +27,8 @@ export async function GET(
   try {
     result = await exportReportPptx(getDb(), id);
   } catch (e) {
-    console.error(`[pptx] 报告 ${id} 导出失败：`, e);
-    return NextResponse.json({ error: (e as Error).message }, { status: 500 });
+    runLogger({ stage: "pptx" }).error({ reportId: id, err: e }, "报告导出失败");
+    return NextResponse.json({ error: safeError(e).message }, { status: 500 });
   }
   if (!result) return NextResponse.json({ error: "report_not_found" }, { status: 404 });
 

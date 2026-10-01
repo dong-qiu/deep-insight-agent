@@ -6,9 +6,9 @@
 #      阻断公开访问 + 版本控制 + SSE-S3 默认加密 + 生命周期（对象 90 天 / 旧版本 30 天，限成本）。
 #   2) 给 EC2 实例角色 <AWS_NAME>-ssm 挂最小内联策略 s3-dr-backups（仅本桶 List/Put/Get）。
 #   3) 经 SSM（免 SSH、穿 GFW）在实例上：装 awscli v2（缺则装）+ 写 host cron
-#      /etc/cron.d/deep-insight-dr，每日 18:30 UTC `aws s3 sync /data/backups → s3://桶/ec2/`。
+#      /etc/cron.d/deep-insight-dr，每日 18:30 UTC 只同步有 C1 清单且未超 90 天的备份。
 #
-# 成本：备份 ~6MB/天、留 90 天 ≈ 0.5GB → 存储 ~$0.01/月；同区上传免流量费；走 AWS 额度 ≈ $0。
+# 容量随 DB/报告/raw 增长；上线前核对实际磁盘与 S3 用量，不沿用早期 6MB/天估值。
 #
 # 前置：aws configure 已配（同 provision.sh 的凭据）；实例已 provision 且 SSM 在线。
 # 用法：cd ops/aws && ./setup-dr.sh
@@ -71,10 +71,11 @@ echo "==> 已挂 IAM 内联策略 s3-dr-backups → $ROLE"
 
 # 3) 实例侧：装 awscli + host cron（经 SSM）
 VOL='/var/lib/docker/volumes/deep-insight_insight-data/_data'
-# cron 文件内容 base64（避免 SSM/JSON/shell 多层引号）
+# host sync 脚本及 cron 文件内容 base64（避免 SSM/JSON/shell 多层引号）
+SCRIPT_B64="$(gzip -c < sync-dr-backups.sh | base64 | tr -d '\n')"
 CRON_B64="$(printf '%s\n' \
-"# Deep Insight off-box DR: 每日 18:30 UTC 把卷内备份 /data/backups 同步到 S3（容器内 18:00 备份之后）" \
-"30 18 * * * root AWS_DEFAULT_REGION=${AWS_REGION} /usr/local/bin/aws s3 sync ${VOL}/backups s3://${BUCKET}/ec2/ --no-progress >> /var/log/deep-insight-dr.log 2>&1" \
+"# Deep Insight off-box DR: 每日 18:30 UTC 仅同步未超 90 天且有 C1 清单的备份" \
+"30 18 * * * root AWS_DEFAULT_REGION=${AWS_REGION} DR_BACKUP_ROOT=${VOL}/backups DR_BUCKET=${BUCKET} /usr/local/bin/deep-insight-dr-sync >> /var/log/deep-insight-dr.log 2>&1" \
 | base64 | tr -d '\n')"
 
 PARAMS="$(mktemp)"; trap 'rm -f "$POL" "$PARAMS"' EXIT
@@ -82,9 +83,11 @@ cat > "$PARAMS" <<JSON
 { "commands": [
   "if ! command -v aws >/dev/null; then sudo apt-get update -qq && sudo apt-get install -y -qq unzip && curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o /tmp/awscliv2.zip && cd /tmp && unzip -oq awscliv2.zip && sudo ./aws/install && cd /; fi",
   "/usr/local/bin/aws --version",
+  "echo '${SCRIPT_B64}' | base64 -d | gzip -d | sudo tee /usr/local/bin/deep-insight-dr-sync >/dev/null",
+  "sudo chmod 755 /usr/local/bin/deep-insight-dr-sync && sudo chown root:root /usr/local/bin/deep-insight-dr-sync",
   "echo '${CRON_B64}' | base64 -d | sudo tee /etc/cron.d/deep-insight-dr",
   "sudo chmod 644 /etc/cron.d/deep-insight-dr && sudo chown root:root /etc/cron.d/deep-insight-dr",
-  "sudo AWS_DEFAULT_REGION=${AWS_REGION} /usr/local/bin/aws s3 sync ${VOL}/backups s3://${BUCKET}/ec2/ --no-progress",
+  "sudo AWS_DEFAULT_REGION=${AWS_REGION} DR_BACKUP_ROOT=${VOL}/backups DR_BUCKET=${BUCKET} /usr/local/bin/deep-insight-dr-sync",
   "AWS_DEFAULT_REGION=${AWS_REGION} /usr/local/bin/aws s3 ls s3://${BUCKET}/ec2/ --recursive --summarize | tail -3"
 ] }
 JSON

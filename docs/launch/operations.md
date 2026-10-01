@@ -53,7 +53,9 @@ INSI-25 的可执行准入步骤与可审计记录模板分别见
 
 数据流：`cron → POST /api/cron →` 采集 + 每主题 durable dispatch `→ generation-dispatch-worker →` Job Runner → 分析 → 校验 → report-gen → 落库（Run/成本/溯源审计）。
 
-## 2. 首次上线
+## 2. 本地/隔离环境首次运行
+
+以下源码构建命令仅适用于本地或隔离环境。**已初始化生产实例**的后续升级走 §8 的 GitHub Actions 不可变镜像流程；全新主机首发尚需单独设计验证，旧 `ops/aws/deploy.sh` 已停用。
 
 ```bash
 cp .env.example .env.local        # 按 §3 填全（尤其 CRON_SECRET、中转站 Opus 模型）
@@ -173,43 +175,38 @@ ADR-0027 以逐源策略取代它。**本说明 PR 不部署镜像或修改 AWS 
 `cron` 服务每日 **18:00 UTC**（管线 17:00 跑完后 1 小时，确保当日 brief 已落库）跑 `ops/backup-db.mjs`：
 
 - 用 **SQLite 在线备份 API**（`db.backup()`，对 app 并发写安全，产出**一致**的单文件，避免 tar 活库拿到半截 WAL）导出 `insight.db`；
-- 连同 `reports/` 正文一并落到 `/data/backups/<UTC时间戳>/{insight.db, reports/}`；
-- **保留最近 14 份**（`BACKUP_KEEP` 可调），更早自动删除；
-- `raw/` 原文默认不备（可重抓、体量大），`BACKUP_INCLUDE_RAW=1` 才纳入。
+- 连同 `reports/` 正文和 `raw/` 原文字节一并落到 `/data/backups/<UTC时间戳>/`；
+- 写入 `backup-manifest.json`（文件 SHA-256、大小和 DB 引用检查计数）。历史缺文件不会销毁仍有价值的部分备份，但该份标为 `incomplete`，**不得作为完整恢复点**；
+- 新格式备份滚动保留最近 14 份（`BACKUP_KEEP` 可调），额外保护最近一份经校验的完整恢复点；
+  新格式恢复点最长 90 天。**旧格式/人工备份不会被新脚本自动删除**，须先清单化审查，不能作为完整恢复点直接使用；
+- `raw/` 默认纳入；只有显式 `BACKUP_INCLUDE_RAW=0` 才排除，结果必为部分备份。重新抓取不能充当原字节恢复。
 
 ```bash
 # 手动立即备份（容器内）
 docker compose exec -T cron node --no-warnings /app/ops/backup-db.mjs
 # 查看现有备份
 docker compose exec -T cron ls -1 /data/backups
+# 对某份新备份做只读完整性检查；退出码 0 才表示清单、哈希和 DB 引用全部通过
+docker compose exec -T cron node /app/ops/backup-integrity.mjs --backup-dir /data/backups/<时间戳>
 ```
 
-**恢复某份备份（当前生产；P0a 前）**（停写 → 覆盖 → 起）：
-
-> P0a generation provenance 上线后，不能再直接执行本段“覆盖 → 起”流程；必须改用 6.1.2 的脱敏重放恢复流程。
-
-```bash
-docker compose stop app cron
-TS=20260613-180000   # 选定 /data/backups 下的目标时间戳
-docker compose run --rm -T cron sh -c "
-  rm -f /data/insight.db /data/insight.db-wal /data/insight.db-shm
-  cp /data/backups/$TS/insight.db /data/insight.db
-  # 仅当该份确有 reports/ 才覆盖（早期/空库的备份可能没拷 reports，避免 rm 后 cp 失败、把现网正文清空）
-  if [ -d /data/backups/$TS/reports ]; then rm -rf /data/reports && cp -r /data/backups/$TS/reports /data/reports; fi
-"
-docker compose up -d
-```
+**生产恢复不能直接覆盖后启动。**先在隔离目录校验所选备份；再按 §6.1.2
+停止所有写者、回放独立脱敏登记册并验证 tombstone，成功后才能重新启动。
+旧备份没有清单，或 DB 有原文引用但备份缺少 `raw/` 时，不得报告为“完整恢复”。
+超过 90 天的备份即使文件完好也不得恢复：届时脱敏登记册记录可能已到期。
 
 > ⚠️ **6.1 的备份落在同一持久卷**：可防 DB 损坏 / 坏迁移 / 误删（点时恢复），**不防整卷丢失**（EBS 卷损坏 / 实例销毁 / 误删卷）。整卷丢失由 6.1.1 的 off-box DR 兜底。
 
 #### 6.1.1 off-box DR —— 每日异地同步到 S3（生产已启用）
 
-在 6.1 同卷备份之上多一层**异地副本**：host cron 每日把 `/data/backups` 同步到 S3。
+在 6.1 同卷备份之上多一层**异地副本**。现有生产 host cron 仍会同步整个
+`/data/backups`；C1 的选择性同步脚本须在首份新格式备份生成后单独更新 host cron，
+**未完成该迁移前不能把异地备份视为 C1 验收通过**。
 
 - **S3 桶**：`deep-insight-backups-<账号ID>`（ap-southeast-1，与 EC2 同区→上传**免流量费**）；阻断公开访问 + 版本控制 + SSE-S3 默认加密 + 生命周期（对象 90 天过期、旧版本 30 天清，限成本）。
 - **权限**：EC2 实例角色 `deep-insight-ssm` 加最小内联策略 `s3-dr-backups`（仅本桶 `ListBucket`/`PutObject`/`GetObject`）；**无长期密钥**，走实例角色。
-- **调度**：host `/etc/cron.d/deep-insight-dr`，每日 **18:30 UTC**（在 6.1 容器内 18:00 备份之后）`aws s3 sync /var/lib/docker/volumes/deep-insight_insight-data/_data/backups s3://<桶>/ec2/`（不带 `--delete`→S3 留更长历史，由生命周期限 90 天）；日志 `/var/log/deep-insight-dr.log`。
-- **一次性搭建**（含建桶 / 改 IAM / 装 awscli / 装 cron）：`ops/aws/setup-dr.sh`（幂等，可重跑）。成本：~分厘/月，详见该脚本头注。
+- **目标调度**：host `/etc/cron.d/deep-insight-dr`，每日 **18:30 UTC**（在 6.1 容器内 18:00 备份之后）运行 `/usr/local/bin/deep-insight-dr-sync`。仅同步 90 天内有 C1 清单、文件清单和哈希一致的目录；不上传旧格式、暂存目录或额外文件。部分备份仍保留，但不得标为完整恢复点。同步不带 `--delete`；S3 对象由 90 天生命周期清理。日志 `/var/log/deep-insight-dr.log`。
+- **host 迁移**：先发布含 C1 的镜像，在 18:00 UTC 备份后确认产生新清单、核验状态及磁盘余量；再由管理员重跑 `ops/aws/setup-dr.sh` 更新 host cron 并执行首次选择性同步。此脚本会更新 S3/IAM/cron，不属于 code-only 部署；须单独核对执行窗口和结果。若无合格备份，脚本以 `no_eligible_backup_for_dr_sync` 失败，不应绕过筛选改用全目录同步。
 
 桶名是 `<AWS_NAME>-backups-<账号ID>`（setup-dr.sh 计算）。**DR 现场先查出真实桶名**，免得对着占位符抓瞎：
 
@@ -217,10 +214,11 @@ docker compose up -d
 # 查真实桶名（按前缀匹配）
 BUCKET=$(aws s3 ls | awk '/deep-insight-backups-/{print $3}')
 echo "$BUCKET"
-# 手动立即异地同步（在 EC2 上跑）
-sudo AWS_DEFAULT_REGION=ap-southeast-1 /usr/local/bin/aws s3 sync \
-  /var/lib/docker/volumes/deep-insight_insight-data/_data/backups "s3://$BUCKET/ec2/" --no-progress
-# 整卷丢失后，从 S3 取回某份到本地，再按 6.1 恢复进新卷
+# C1 host 迁移后，手动立即异地同步（在 EC2 上跑）
+sudo AWS_DEFAULT_REGION=ap-southeast-1 \
+  DR_BACKUP_ROOT=/var/lib/docker/volumes/deep-insight_insight-data/_data/backups \
+  DR_BUCKET="$BUCKET" /usr/local/bin/deep-insight-dr-sync
+# 整卷丢失后，从 S3 取回某份到隔离目录，先校验清单，再按 §6.1.2 受控恢复
 aws s3 sync "s3://$BUCKET/ec2/20260613-105627/" ./restore-20260613-105627/
 ```
 
@@ -260,7 +258,15 @@ record ID。实现会在外部条件写前先在 `provenance_redaction_request` 
 `REDACTION_HMAC_SECRET_ARN`、`REDACTION_HMAC_KEY_VERSION` 和独立 `REDACTION_RECOVERY_ROLE` 后，才可显式运行 `--apply`。
 脚本不会创建 HMAC secret 或 recovery role 的信任策略，避免把密钥或跨账号主体猜进基础设施代码。
 
-从本机或 S3 DR 取回备份时，先停止 `app`、`cron` 和 `generation-dispatch-worker`，复制数据库/报告，再运行同镜像的
+**B1b 会话撤销后的附加恢复前置条件（ADR-0037）**：旧 SQLite 快照可能恢复旧密码哈希和角色，使旧 JWT
+再次匹配。因此恢复旧库/凭据前，先限制外部访问并停止服务，通过受控密钥配置渠道生成新的随机
+`AUTH_SECRET`，更新服务器配置（不输出值、不入仓，也不把旧密钥保留为 JWT 验签兼容项）。不得从备份
+恢复旧 AUTH_SECRET；这与下文 redaction registry 的 HMAC 密钥不同，**不要**轮换或丢失后者的历史版本。
+恢复和 replay 完成后，按 §8 固定镜像重新创建 app 容器，使新环境配置生效；仅 `restart` 不重读 env_file。
+解除外部访问限制前，用恢复前旧 cookie 确认报告 API 为 401、页面跳登录，新凭据重新登录后正常读取；
+cookie 只在内存处理，不写日志。不能在未轮换密钥时把“DB replay 成功”视为完整恢复通过。
+
+从本机或 S3 DR 取回备份时，先完成上述会话密钥前置检查、停止 `app`、`cron` 和 `generation-dispatch-worker`，复制数据库/报告，再运行同镜像的
 `node /app/ops/replay-redaction-registry.cjs --restore-time <UTC RFC3339>`。runner 要求
 `REDACTION_REGISTRY_BUCKET`、`REDACTION_RECOVERY_ROLE_ARN` 与 HMAC secret ARN/version；它必须在**独立 recovery
 identity**（临时凭据、专用 profile 或受控 runner）中运行，应用实例角色没有也不得拥有 `sts:AssumeRole` 到 recovery role 的权限，
@@ -277,7 +283,8 @@ P0a 发布包必须把上述 runner 与 `generation-dispatch-worker` 纳入 comp
 
 > ⚠️ **P0a 后的恢复禁止直接解包后 `docker compose up -d`。** 旧快照可能早于删除登记；必须先回放
 > §6.1.2 的 registry，且只可通过受控生产发布流程重新成为 writer。任何 replay、版本身份或 health gate 失败都保持
-> `app`、`cron`、`generation-dispatch-worker` 停止。
+> `app`、`cron`、`generation-dispatch-worker` 停止。B1b 后还必须完成上方 AUTH_SECRET 轮换与旧 cookie 拒绝核验，
+> 全卷恢复不能把备份中的旧凭据配置直接恢复为当前认证密钥。
 
 ```bash
 docker compose stop app cron generation-dispatch-worker   # 静默 SQLite WAL 写入
@@ -318,9 +325,9 @@ docker compose run --rm --no-deps migrate \
 > 验证别只看 `HTTP 200`（跨服务调用里 200 ≠ 成功，如飞书回 200+错误码）；用 `docker exec deep-insight-app-1 node /app/ops/probe-alert.mjs` 看渠道 + `code=0` + 真到达。
 
 > ⚠️ **运行时配置持久化（成本熔断 / 报告推送 / 转写采集 / 日报偏薄提醒）**：`COST_LIMIT_DAILY`/`COST_LIMIT_MONTHLY`/`COST_ALERT_PCT`/`REPORT_PUSH`/`PUBLIC_BASE_URL`/`TRANSCRIPT_FETCH`/`TRANSCRIPT_SHADOW_FETCH`/`BRIEF_THIN_REPORT_ALERT`/`BRIEF_THIN_MIN_SELECTED`/`BRIEF_THIN_MAX_PUBLISHED` 这几个常在生产手动配。播客逐源策略是 SQLite 中的 Source 配置事实，不能用环境变量代替或由全局开关推断。
-> - **`ops/aws/deploy.sh` 路径**：scp **全量覆盖**远程 `.env.local`（源 = 本地 `.env.local`，仅剔除 `DB_PATH`/`DATA_DIR`）。故生产值必须落进**本地** `.env.local`，否则下次 deploy 静默抹掉熔断/推送。已加两道护栏：`gen-env.sh` 重生成时**继承**旧 `.env.local` 的这些值；`deploy.sh` 投递前**体检缺失即告警**。
-> - **`deploy.yml`（CD）路径**：只下载版本化 `docker-compose.yml` 并拉取 GHCR 镜像，绝不覆盖 `.env.local`；首次仍需由 operator 在服务器配置好该文件。
-> - 仅调这几个值时：直接编辑服务器 `.env.local` 后 `docker compose up -d --force-recreate`（§7），**别重跑 `deploy.sh`/`gen-env.sh` 以免连带覆盖**；同时把值同步回本地 `.env.local` 留底。教训见 `docs/verify/mvp-gap-2026-06-07.md` §2.1。
+> - **唯一生产发布路径**：`Deploy Production Image`（`deploy.yml`）只下载版本化 `docker-compose.yml` 并拉取 GHCR 镜像，绝不覆盖 `.env.local`。旧 `ops/aws/deploy.sh` 已改为拒绝入口；历史上它曾全量覆盖生产配置，事故背景见 `docs/verify/mvp-gap-2026-06-07.md` §2.1。
+> - **当前 CD 只适用于已初始化生产实例**：workflow 在切换前需要已有 `deep-insight-app-1`、现存 compose 和最新备份来做迁移演练。仅在这些前置条件满足时触发 Actions；全新主机仅放置 `.env.local`/`.env` 仍无法首发，须另立安全 bootstrap 流程并验证，不得恢复旧 `deploy.sh`。已有生产环境只核对配置存在和权限，不重做主机准备。
+> - **仅调整运行时配置**：由 operator 编辑服务器 `.env.local`，在值班窗口按受控 Compose 重建与本节核验，不通过旧源码部署入口覆盖它。敏感值不写入版本库、日志或发布回执。
 
 ### CI 预构建镜像 → GHCR → 生产健康切换
 
@@ -328,9 +335,19 @@ docker compose run --rm --no-deps migrate \
 2. operator 在 Actions 手动运行 `Deploy Production Image`，可留空（当前 main）或指定已发布的 `sha-<commit>` 进行精确发布/回退；没有 `v*` tag 自动上线。
 3. workflow 经 GitHub OIDC 取得最小 AWS SSM 角色，在生产机 `/opt/app` 下载与镜像同一 SHA 的 compose 文件、`docker pull`、核对 OCI revision。停止 writer 前会检查 `.env.local` 中生产必需的 `DISPATCH_WORKER_SECRET` 为非空（只检查存在性，绝不输出值）；随后使用不可变 digest 执行 migration / deployment-record / app 健康切换。最后连续 30 秒核验 `generation-dispatch-worker` 持续运行且重启数为 0。任一检查失败都会恢复先前 compose 和已验证镜像，并使 workflow 失败。
 
+**B1b 跨认证安全边界发布/回退**：首次上线会使没有版本标记的旧 cookie 失效，应通知用户重新登录。
+回退到 B1a 或更旧代码会失去服务端撤销检查；必须在恢复对外服务前轮换 AUTH_SECRET、按指定已验证镜像
+重新创建 app 容器（只 restart 无效），验证回退前旧 cookie 被拒绝、新登录与权限正常，才能解除维护限制。
+同样适用于主动回填旧密码哈希/角色或重新使用旧 bootstrap 密码，不能仅靠状态指纹防止旧会话复活。
+
+该要求**也适用于 deploy.yml 自动回退**：workflow 自动恢复旧镜像并保留 `.env.local`，不会替 operator
+轮换认证密钥或隔离外部流量。跨 B1b 边界发布前须安排有人值守的维护窗口、先限制外部访问；若发生自动回退，
+保持外部限制，完成上述密钥轮换、容器重建和 cookie 验收后才恢复访问。自动回退恢复健康不等于安全验收通过。
+不在正常 code-only 发布中盲目轮换其他密钥；旧 `deploy.sh` 已停用，不得恢复源码/配置全量覆盖路径。
+
 > ⚠️ 生产故障恢复时，不要直接执行未带变量的 `docker compose up`：Compose 会回退到 `deep-insight:0.1.0`。优先重跑 `Deploy Production Image`；确有紧急人工操作时，必须显式传入已验证的 `INSIGHT_IMAGE=ghcr.io/<owner>/<repo>@sha256:…`、`INSIGHT_IMAGE_DIGEST=sha256:…` 与 `PROVENANCE_DEPLOYMENT_REQUIRED=1`，并在启动后按本节核验运行镜像、deployment record、app health 和 worker 稳定性。
 
-首次配置在有 AWS 管理权限的终端执行 `ops/aws/setup-github-oidc.sh`。它创建/更新仅限 `production` Environment 的 OIDC 信任和仅能对该实例执行 SSM / 查询结果的 IAM 权限；输出并可通过 `SET_GITHUB_VARIABLES=1` 写入三个 GitHub Actions repository variables：`AWS_REGION`、`AWS_DEPLOY_ROLE_ARN`、`PROD_INSTANCE_ID`。公共仓库还需由 owner 一次性使用带 `write:packages` scope 的 GitHub CLI 执行 `SET_GITHUB_PACKAGE_PUBLIC=1 ops/aws/setup-github-oidc.sh`，让生产机可匿名拉取；CI 的 `GITHUB_TOKEN` 只负责推送，不能变更 owner-level 包可见性。部署机前置条件仅是 Docker、Compose、SSM Agent 和既有 `/opt/app/.env.local` / 数据卷；不需要 checkout、Git remote、SSH 私钥或 GHCR 读取令牌。
+OIDC 首次配置在有 AWS 管理权限的终端执行 `ops/aws/setup-github-oidc.sh`。它创建/更新仅限 `production` Environment 的 OIDC 信任和仅能对该实例执行 SSM / 查询结果的 IAM 权限；输出并可通过 `SET_GITHUB_VARIABLES=1` 写入三个 GitHub Actions repository variables：`AWS_REGION`、`AWS_DEPLOY_ROLE_ARN`、`PROD_INSTANCE_ID`。公共仓库还需由 owner 一次性使用带 `write:packages` scope 的 GitHub CLI 执行 `SET_GITHUB_PACKAGE_PUBLIC=1 ops/aws/setup-github-oidc.sh`，让生产机可匿名拉取；CI 的 `GITHUB_TOKEN` 只负责推送，不能变更 owner-level 包可见性。当前后续发布要求部署机已有 Docker、Compose、SSM Agent、`/opt/app/.env.local` / `docker-compose.yml`、运行中的 `deep-insight-app-1` 与可供演练的最新备份；不需要 checkout、Git remote、SSH 私钥或 GHCR 读取令牌。全新主机不满足这些条件，不能直接触发此 workflow。
 
 生产 Environment 应保留 required reviewers / protection rules。部署完成后检查 workflow 的 SSM 输出（compose 状态和 `/api/health`）；如需业务级告警验证，再运行 `probe-alert.mjs`。旧的 `DEPLOY_*` SSH secrets 可在至少一次成功 GHCR 发布和部署后移除。
 
@@ -362,7 +379,7 @@ Oracle 的 **Always Free** ARM Ampere A1 实例（永久免费、最高 4 OCPU /
 
 > ⚠️ 免费主机省的是"机器钱"，**省不掉模型调用钱**（每轮管线走中转站 Opus ≈ ¥14–26，每 6h 一轮，见 §4）。
 
-**与通用步骤的关系**：§2 首次上线 / §6 备份 / §8 CD（`deploy.yml`，`DEPLOY_HOST` 填公网 IP）全部适用；下面只列 **Oracle/ARM 特有**注意点。
+> 历史备选主机资料，**不是当前生产部署操作指引**。现有 `deploy.yml` 使用 AWS OIDC+SSM，不能把 `DEPLOY_HOST` 改为 Oracle IP 即部署；迁移到 Oracle 需另立、评审并验证适配方案。以下旧操作片段不得直接用于现有生产实例。
 
 1. **开实例**：选 **Ampere A1（arm64）· Always Free** shape + Ubuntu LTS。ARM 免费容量常被抢光——多试几次 / 换可用域（AD）/ 换区域。需绑卡做身份验证（不扣费）。
 2. **网络放行（Oracle 双层防火墙，经典坑）**：要同时开两处，否则外部访问不通——
@@ -377,7 +394,7 @@ Oracle 的 **Always Free** ARM Ampere A1 实例（永久免费、最高 4 OCPU /
    Ampere RAM 充足，`next build` + better-sqlite3 编译无内存压力（不像 1GB 微型机需加 swap）。
 4. **持久化（自动）**：这是 VM，Docker 命名卷 `insight-data` 落在持久启动盘 → 重启 / 重部署 / `up` 都在，**无需** PaaS 式持久卷设置。（可选：挂独立块卷再把 `/var/lib/docker/volumes` 或 compose 卷指过去，非必需。）
 5. **反代 + TLS**：VM 无自带域名 → 自备域名、A 记录指向实例**公网 IP**，按 §2 反代说明上 Caddy（自动证书）。
-6. **CD**：`deploy.yml` 直接可用——`DEPLOY_HOST` = 公网 IP；workflow 内 `TARGETARCH=$(uname -m …)` 会在 ARM 上自动解析为 `arm64`，无需额外配置。
+6. **CD**：当前 AWS 专用 `deploy.yml` 不适用于 Oracle；须另立发布适配方案。
 
 ## 11. 在 Google Cloud e2-micro（Always Free · 1GB）上部署（免费选项）
 
@@ -385,7 +402,7 @@ GCP 的 **e2-micro**（2 vCPU 共享 / **1 GB RAM** / 30GB 标准盘）是三大
 
 > ⚠️ 同 §10：免费主机省"机器钱"，**省不掉模型调用钱**（每轮中转站 Opus ≈ ¥14–26，见 §4）。
 
-**与通用步骤的关系**：§2 上线 / §6 备份 / §8 CD 全部适用；下面只列 **e2-micro/1GB 特有**注意点（核心是 1GB 内存）。
+> 历史备选主机资料，**不是当前生产部署操作指引**。现有 `deploy.yml` 使用 AWS OIDC+SSM，不支持仅填 GCP IP 即发布；迁移到 GCP 需另立、评审并验证适配方案。
 
 1. **开实例**：Compute Engine → e2-micro，**区域必须选 `us-central1` / `us-east1` / `us-west1` 之一**（仅这三个美国区永久免费，开在别处即按量计费）；Ubuntu LTS、30GB 标准持久盘（免费额度内）。
 
@@ -396,7 +413,7 @@ GCP 的 **e2-micro**（2 vCPU 共享 / **1 GB RAM** / 30GB 标准盘）是三大
      sudo mkswap /swapfile && sudo swapon /swapfile
      echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab   # 重启自动挂
      ```
-   - 或**改 CD 为预构建镜像**：CI 里 build → push 到 registry → 服务器只 `docker compose pull`（运行时 1GB 够，不在小机上编译）。当前 `deploy.yml` 是服务器侧 `up --build`，走这条路必须先配 swap。
+   - 当前 AWS 生产 CD 已使用预构建不可变镜像，但不能直接用于 GCP；需要单独的 GCP 发布适配。
 
 3. **运行时内存可控（设计本就轻）**：管线 14–42 分钟几乎全在等中转站 LLM 的 HTTP 往返，非内存密集——源**串行采集**（`ingestConcurrency: 1`）、单次抓取封顶 8MB 且流式不整体入内存（`safe-fetch.ts`）、每条正文截断 50KB（`normalize.ts`）、单批最多 25 条 ≈ 1.25MB 文本、LLM 走流式且输出有界。实测预算 ~0.5–0.8GB，**塞进 1GB 但余量不大**。建议给 app 服务设堆上限兜底，避免 V8 默认堆顶满触发 OOM-killer：
    ```yaml
@@ -406,7 +423,7 @@ GCP 的 **e2-micro**（2 vCPU 共享 / **1 GB RAM** / 30GB 标准盘）是三大
    ```
    配合 §11.2 的 swap，运行时偶发峰值有去处。
 
-4. **持久化 / 反代 / CD**：同 §10 第 4–6 点——Docker 命名卷落持久启动盘自动持久；防火墙（GCP **VPC Firewall**）放行入站 80/443、3000 不对公网开；自备域名 A 记录指向公网 IP 上 Caddy；`deploy.yml` 的 `DEPLOY_HOST` = 公网 IP，x86 机 `TARGETARCH` 自动解析为 `amd64`。
+4. **持久化 / 反代**：同 §10 的宿主机网络与持久卷注意点；当前 AWS CD 不支持 GCP，不能使用旧 `DEPLOY_HOST` 参数。
 
 > 一句话：e2-micro **够用、余量小**——构建用 swap/预构建绕开、运行时设 `--max-old-space-size` 兜底即可长期免费跑。要零调优 + 大余量，§10 的 Oracle Ampere（24GB）更舒服。
 

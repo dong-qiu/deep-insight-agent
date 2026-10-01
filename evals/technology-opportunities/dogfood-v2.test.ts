@@ -1,15 +1,18 @@
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { extractLeadCandidates } from "../../src/lib/agents/tech-leads.js";
 import { saveAnalysisBatch, saveValidationResult } from "../../src/lib/db/analysis.js";
 import { openDb } from "../../src/lib/db/index.js";
+import { applyProvenanceMigrations } from "../../src/lib/db/provenance-migrations.js";
+import { planRawArchive, writePlannedRawArchive } from "../../src/lib/db/raw-archive.js";
 import { insertContentItem, insertSource, insertTopic } from "../../src/lib/db/repos.js";
 import { upsertTechLeads } from "../../src/lib/db/tech-leads.js";
 import type { AnalysisBatch, ContentItem, Source, Topic, ValidationResult } from "../../src/lib/types.js";
 import { DISPLAY_PROJECTION_VERSION, sourceQuoteHash } from "../../src/lib/utils/source-quote-projection.js";
+import { contentHash } from "../../src/lib/sources/normalize.js";
 import { createBlindSampleManifest, createDeterministicMappingExport, createSealedExpectedArtifact, materializeActualLabels, scoreDogfoodLabels, validateDogfoodLabels, validateManifest, validateQualifiedTechLeadSnapshot, validateSealedExpectedArtifact, type ExpectedLabel, type QualifiedTechLeadSnapshot } from "./dogfood-v2.js";
 
 const source = (): QualifiedTechLeadSnapshot => ({ snapshot_version: "qualified-tech-leads-snapshot-v2", snapshot_at: "2026-09-10T12:00:00.000Z", source: "listPlanningTechLeads", qualification: "current_pass_evidence_and_not_dismissed", pagination: "unbounded", total_count: 4,
@@ -25,18 +28,26 @@ const options = { generatedAt: "2026-09-10T12:00:00.000Z", seed: "fixed-seed", c
 const expected = (manifest: ReturnType<typeof createBlindSampleManifest>): ExpectedLabel[] => manifest.rows.map((row, index) => ({ ...row, expected_candidate: index === 0, expected_direction_id: index === 0 ? "d1" : null, expected_lane: index === 0 ? "core" : null, not_enough_evidence: false, exclusion_reason: index === 0 ? null : "direction_not_applicable" }));
 
 function seedQualifiedDatabase(path: string) {
+  const previousDataDir = process.env.DATA_DIR;
+  process.env.DATA_DIR = dirname(path);
   const db = openDb(path);
+  applyProvenanceMigrations(db);
   const topic: Topic = { id: "t", name: "T", keywords: ["agent"], language: "en", brief_schedule: "daily", enabled: true };
-  const content: ContentItem = { id: "c", source_id: "s", url: "https://x/c", title: "c", author: null, published_at: "2026-09-09T00:00:00.000Z", fetched_at: "2026-09-09T00:00:00.000Z", language: "en", topic_ids: ["t"], tags: [], body: "Agent tool", body_kind: "article", raw_ref: "", content_hash: "c", fetch_status: "ok" };
+  const content: ContentItem = { id: "c", source_id: "s", url: "https://x/c", title: "c", author: null, published_at: "2026-09-09T00:00:00.000Z", fetched_at: "2026-09-09T00:00:00.000Z", language: "en", topic_ids: ["t"], tags: [], body: "Agent tool", body_kind: "article", raw_ref: "", content_hash: contentHash("Agent tool"), fetch_status: "ok" };
   const batch: AnalysisBatch = { id: "b", topic_id: "t", time_window: { start: "2026-09-08", end: "2026-09-09" }, status: "done", no_significant_event: false, display_coverage_state: "audited", display_projection_version: DISPLAY_PROJECTION_VERSION, insights: [{ id: "i", topic_id: "t", type: "aggregation", event_id: "e", statement: "Agent tool", statement_citation_index: 1, headline: "", importance: 4, importance_basis: "系统重要性判断：该结果可为工程选型提供参考。", citations: [{ content_item_id: "c", citation_ref: "binding", claim: "Agent tool", quote: "Agent tool", locator: { paragraph_index: 0, char_start: 0, char_end: 10 } }], source_count: 1, multi_source: false, time_window: { start: "2026-09-08", end: "2026-09-09" }, confidence: null, language: "en", tags: ["tool"] }], display_coverage_audits: [{ insight_id: "i", candidate_id: "i", gate_version: "display-coverage-v6", terminal_reason: "kept", prompt_version: "v6", input_hash: "x", validator_model: "coverage", decision: { statement_citation_index: 1, statement_citation_ref: "binding", display_projection_version: DISPLAY_PROJECTION_VERSION, statement_sha256: sourceQuoteHash("Agent tool"), quote_sha256: sourceQuoteHash("Agent tool"), claims: [{ claim_id: "statement:1", field: "statement", kind: "factual", supports: true, citation_indexes: [1], countercheck: { supports: true } }] }, created_at: "2026-09-09T00:00:00.000Z" }] };
   const validation: ValidationResult = { checks: [{ insight_id: "i", citation_index: 0, reachability: "pass", reachability_reason: "ok", consistency: "support", consistency_reason: "ok", verdict: "pass" }], report: { total: 1, pass: 1, blocked: 0, flagged: 0, errored: 0, consistency_failure_rate: 0, flagged_rate: 0, insights_total: 1, insights_includable: 1, releasable: true } };
   insertTopic(db, topic);
   insertSource(db, { id: "s", name: "Source", type: "rss", endpoint: "x", topic_ids: ["t"], fetch_interval: "6h", backfill: null, enabled: true } as Source);
   insertContentItem(db, content);
+  const raw = `${JSON.stringify({ schema_version: "content-raw-archive-v1", source_body_origin: "feed", source_body: content.body,
+    source_body_kind: "article", source_item_raw: "<item>Agent tool</item>", structured_body_sha256: contentHash(content.body) })}\n`;
+  writePlannedRawArchive(db, planRawArchive(db, { contentId: content.id, raw }), raw);
   saveAnalysisBatch(db, batch);
   saveValidationResult(db, batch.id, validation);
   upsertTechLeads(db, extractLeadCandidates(batch, validation, new Map([[content.id, content]]), "2026-09-10T00:00:00.000Z"), "2026-09-10T00:00:00.000Z");
   db.close();
+  if (previousDataDir === undefined) delete process.env.DATA_DIR;
+  else process.env.DATA_DIR = previousDataDir;
 }
 
 describe("technology opportunity dogfood v2", () => {
@@ -78,7 +89,7 @@ describe("technology opportunity dogfood v2", () => {
     try {
       const paths = ["seeded.db", "snapshot.json", "manifest.json", "expected.json", "sealed.json", "mapping.json", "labels.json"].map((name) => join(dir, name));
       seedQualifiedDatabase(paths[0]);
-      const run = (script: string, args: string[]) => execFileSync("npm", ["run", script, "--", ...args], { cwd: process.cwd(), encoding: "utf8", env: { ...process.env, DB_PATH: paths[0] } });
+      const run = (script: string, args: string[]) => execFileSync("npm", ["run", script, "--", ...args], { cwd: process.cwd(), encoding: "utf8", env: { ...process.env, DB_PATH: paths[0], DATA_DIR: dir } });
       run("eval:opportunity-export", [paths[1], options.generatedAt]);
       const snapshot = JSON.parse(readFileSync(paths[1], "utf8")) as QualifiedTechLeadSnapshot;
       expect(snapshot.total_count).toBe(1);

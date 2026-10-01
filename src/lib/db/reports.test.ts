@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createHash, generateKeyPairSync } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AnalysisBatch, ContentItem, Report, ReportIndexEntry, Source, Topic, ValidationResult } from "../types.js";
 import { saveAnalysisBatch, saveValidationResult } from "./analysis.js";
 import { type DB, openDb } from "./index.js";
@@ -205,9 +205,22 @@ it("anchored publication makes report, index, FTS, event effect, and manifest vi
   expect(queryReportIndex(db, { topic: topic.id }).map((row) => row.report_id)).toContain("rep_anchor");
 });
 
+it("report write failure preserves the original throw but stores no opaque private message", async () => {
+  const failed = { ...report, id: "rep_private_failure" };
+  const error = new Error("synthetic-private-publication-error");
+  expect(() => saveReport(db, failed, { ...index, report_id: failed.id }, {
+    dir, afterPublish: () => { throw error; },
+  })).toThrow(error);
+  const effect = db.prepare("SELECT error FROM generation_effect WHERE report_id=?").get(failed.id) as { error: string };
+  const row = db.prepare("SELECT failure FROM report WHERE id=?").get(failed.id) as { failure: string };
+  expect(effect.error + row.failure).not.toContain("synthetic-private");
+  expect(JSON.parse(row.failure)).toEqual({ reason_code: "report_persistence_failed", message: "operation_failed" });
+  expect(getReport(db, failed.id)).toBeNull();
+});
+
 it("report-level anchored reconciliation restores both artifacts and every reader projection together", async () => {
   const keys = generateKeyPairSync("ed25519"); const store = new MemoryAnchorStore();
-  const anchored = { ...report, id: "rep_anchor_recover" };
+  const anchored = { ...report, id: "rep_anchor_recover", insight_ids: [], citation_count: 0 };
   await expect(saveReport(db, anchored, { ...index, report_id: anchored.id }, {
     dir, anchor: { store, signer: { key_id: "test-key-v1", private_key: keys.privateKey }, retainUntil: "2027-01-01T00:00:00Z", retentionEnds: ["2027-01-01T00:00:00Z", "2027-02-01T00:00:00Z", "2027-03-01T00:00:00Z"], issuedAt: "2026-05-07T00:00:01Z" },
     afterPublish: () => { throw new Error("sqlite_commit_failure"); },
@@ -310,7 +323,7 @@ it("resumes a one-of-two anchor write using the original effect and idempotency 
       return object && (version == null || version === object.provider_version_id) ? object : null;
     },
   };
-  const partial = { ...report, id: "rep_anchor_partial" };
+  const partial = { ...report, id: "rep_anchor_partial", insight_ids: [], citation_count: 0 };
   const anchor = { store, signer: { key_id: "test-key-v1", private_key: keys.privateKey }, retainUntil: "2027-01-01T00:00:00Z", retentionEnds: ["2027-01-01T00:00:00Z", "2027-02-01T00:00:00Z", "2027-03-01T00:00:00Z"] as const, issuedAt: "2026-05-07T00:00:01Z" };
   await expect(saveReport(db, partial, { ...index, report_id: partial.id }, { dir, anchor })).rejects.toThrow("temporary_store_failure");
   expect(db.prepare("SELECT status FROM report WHERE id=?").get(partial.id)).toEqual({ status: "generating" });
@@ -356,6 +369,16 @@ it("reconcile 对带 trace 但缺复盘包的遗留 intent fail-closed", () => {
   expect(reconciled).toEqual({ committed: 0, failed: 1 });
   expect(db.prepare("SELECT status FROM generation_effect WHERE id=?").get(effectId)).toEqual({ status: "unknown" });
   expect(db.prepare("SELECT status FROM report WHERE id=?").get(recovery.id)).toEqual({ status: "failed" });
+});
+
+it("does not publish a legacy non-empty recovery intent without persisted reader citation bindings", () => {
+  const recovery = { ...report, id: "rep_legacy_unbound_recovery" };
+  seedPendingReportEffect(recovery, { ...index, report_id: recovery.id }, "effect_legacy_unbound", null, null);
+  expect(reconcileReportEffects(db, { dir })).toEqual({ committed: 0, failed: 1 });
+  expect(getReport(db, recovery.id)).toBeNull();
+  expect(db.prepare("SELECT failure FROM report WHERE id=?").get(recovery.id)).toEqual({
+    failure: JSON.stringify({ reason_code: "report_reconcile_failed", message: "operation_failed" }),
+  });
 });
 
 it("reconcile refuses a single-sided provenance binding rather than treating it as legacy", () => {
@@ -570,10 +593,16 @@ it("FS 正文缺失（孤儿 DB 行）→ getReport 兜底占位、不抛", () =
   saveReport(db, report, index, { dir });
   rmSync(join(dir, `${report.id}.md`), { force: true });
   rmSync(join(dir, `${report.id}.html`), { force: true });
-  const r = getReport(db, "rep_test1");
-  expect(r).not.toBeNull();
-  expect(r!.body_md).toContain("正文文件缺失");
-  expect(r!.title).toBe("Code Agent Brief"); // 元数据仍来自 DB
+  db.prepare("UPDATE report SET body_path=? WHERE id=?").run(join(dir, "synthetic-private-path"), report.id);
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    const r = getReport(db, "rep_test1");
+    expect(r).not.toBeNull();
+    expect(r!.body_md).toContain("正文文件缺失");
+    expect(r!.title).toBe("Code Agent Brief"); // 元数据仍来自 DB
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("operation_failed"));
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("synthetic-private");
+  } finally { warn.mockRestore(); }
 });
 
 describe("queryReportIndex（B-1+2 报告库筛/搜/排）", () => {

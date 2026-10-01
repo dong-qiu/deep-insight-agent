@@ -92,17 +92,28 @@ const FAIL = { runId: "run_1", kind: "analyze", target: { topic_id: "t1" }, erro
 const N: Notification = { title: "🔴 标题", text: "正文 detail", priority: "high", tags: ["rotating_light"], link: "https://app/x" };
 
 describe("failureToNotification", () => {
+  it("opaque failure text and nested credentials never enter the notification payload", async () => {
+    process.env.ALERT_WEBHOOK = "https://open.feishu.cn/open-apis/bot/v2/hook/synthetic";
+    const mock = vi.fn(() => Promise.resolve(new Response("{}", { status: 200 })));
+    vi.stubGlobal("fetch", mock);
+    notifyFailure({ ...FAIL, message: "opaque-private-provider-text", target: { source_id: "s1", nested: [{ Authorization: "private-auth-header", password: "private-password" }] } });
+    await vi.waitFor(() => expect(mock).toHaveBeenCalledOnce());
+    expect(JSON.stringify(mock.mock.calls)).not.toMatch(/opaque-private|private-auth|private-password/);
+    expect(JSON.stringify(mock.mock.calls)).toContain("operation_failed");
+    expect(JSON.stringify(mock.mock.calls)).toContain("s1");
+  });
   it("高优 + 🔴 tag；errorType/message/目标/runId 进正文", () => {
     const n = failureToNotification(FAIL);
     expect(n.priority).toBe("high");
     expect(n.tags).toEqual(["rotating_light"]);
     expect(n.title).toContain("analyze");
-    expect(n.text).toContain("boom");
+    expect(n.text).toContain("operation_failed");
+    expect(n.text).not.toContain("boom");
     expect(n.text).toContain("t1"); // target 序列化进正文
     expect(n.text).toContain("run_1");
   });
   it("正文截断到 1000 字", () => {
-    const n = failureToNotification({ ...FAIL, message: "x".repeat(2000) });
+    const n = failureToNotification({ ...FAIL, target: "x".repeat(2000) });
     expect(n.text.length).toBe(1000);
   });
   it("target 为 null 时不出'目标'行", () => {
