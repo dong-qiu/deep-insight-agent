@@ -220,7 +220,7 @@ it("report write failure preserves the original throw but stores no opaque priva
 
 it("report-level anchored reconciliation restores both artifacts and every reader projection together", async () => {
   const keys = generateKeyPairSync("ed25519"); const store = new MemoryAnchorStore();
-  const anchored = { ...report, id: "rep_anchor_recover" };
+  const anchored = { ...report, id: "rep_anchor_recover", insight_ids: [], citation_count: 0 };
   await expect(saveReport(db, anchored, { ...index, report_id: anchored.id }, {
     dir, anchor: { store, signer: { key_id: "test-key-v1", private_key: keys.privateKey }, retainUntil: "2027-01-01T00:00:00Z", retentionEnds: ["2027-01-01T00:00:00Z", "2027-02-01T00:00:00Z", "2027-03-01T00:00:00Z"], issuedAt: "2026-05-07T00:00:01Z" },
     afterPublish: () => { throw new Error("sqlite_commit_failure"); },
@@ -323,7 +323,7 @@ it("resumes a one-of-two anchor write using the original effect and idempotency 
       return object && (version == null || version === object.provider_version_id) ? object : null;
     },
   };
-  const partial = { ...report, id: "rep_anchor_partial" };
+  const partial = { ...report, id: "rep_anchor_partial", insight_ids: [], citation_count: 0 };
   const anchor = { store, signer: { key_id: "test-key-v1", private_key: keys.privateKey }, retainUntil: "2027-01-01T00:00:00Z", retentionEnds: ["2027-01-01T00:00:00Z", "2027-02-01T00:00:00Z", "2027-03-01T00:00:00Z"] as const, issuedAt: "2026-05-07T00:00:01Z" };
   await expect(saveReport(db, partial, { ...index, report_id: partial.id }, { dir, anchor })).rejects.toThrow("temporary_store_failure");
   expect(db.prepare("SELECT status FROM report WHERE id=?").get(partial.id)).toEqual({ status: "generating" });
@@ -369,6 +369,16 @@ it("reconcile 对带 trace 但缺复盘包的遗留 intent fail-closed", () => {
   expect(reconciled).toEqual({ committed: 0, failed: 1 });
   expect(db.prepare("SELECT status FROM generation_effect WHERE id=?").get(effectId)).toEqual({ status: "unknown" });
   expect(db.prepare("SELECT status FROM report WHERE id=?").get(recovery.id)).toEqual({ status: "failed" });
+});
+
+it("does not publish a legacy non-empty recovery intent without persisted reader citation bindings", () => {
+  const recovery = { ...report, id: "rep_legacy_unbound_recovery" };
+  seedPendingReportEffect(recovery, { ...index, report_id: recovery.id }, "effect_legacy_unbound", null, null);
+  expect(reconcileReportEffects(db, { dir })).toEqual({ committed: 0, failed: 1 });
+  expect(getReport(db, recovery.id)).toBeNull();
+  expect(db.prepare("SELECT failure FROM report WHERE id=?").get(recovery.id)).toEqual({
+    failure: JSON.stringify({ reason_code: "report_reconcile_failed", message: "operation_failed" }),
+  });
 });
 
 it("reconcile refuses a single-sided provenance binding rather than treating it as legacy", () => {

@@ -7,16 +7,17 @@ import { MAX_BODY_CHARS, MAX_TRANSCRIPT_CHARS, contentHash, normalizeBody } from
 import { compareKey } from "../runtime/text-normalize.js";
 import type { DB } from "./index.js";
 
-export interface CurrentCitationEvidence {
+export interface CurrentSourceEvidence {
   content_item_id: string;
-  quote: string;
   raw_ref: string;
   body: string;
   body_kind: string;
   content_hash: string;
 }
+export interface CurrentCitationEvidence extends CurrentSourceEvidence { quote: string }
 export interface ReaderEvidenceContext {
   preload(rows: readonly CurrentCitationEvidence[]): void;
+  hasVerifiedSource(row: CurrentSourceEvidence): boolean;
   accepts(row: CurrentCitationEvidence): boolean;
 }
 
@@ -39,7 +40,7 @@ export function createReaderEvidenceContext(db: DB): ReaderEvidenceContext {
   const hasEffectTable = !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='generation_effect'").get();
   const hasContentBinding = hasEffectTable && (db.prepare("PRAGMA table_info(generation_effect)").all() as { name: string }[])
     .some((column) => column.name === "raw_content_id");
-  if (!hasContentBinding) return { preload: () => {}, accepts: () => false };
+  if (!hasContentBinding) return { preload: () => {}, hasVerifiedSource: () => false, accepts: () => false };
   const effects = db.prepare(`SELECT status,idempotency_key,artifact_manifest FROM generation_effect
     WHERE kind='raw_archive' AND raw_content_id=?`);
   const effectCache = new Map<string, RawArchiveEffect[]>();
@@ -59,7 +60,7 @@ export function createReaderEvidenceContext(db: DB): ReaderEvidenceContext {
     }
   }
 
-  function sourceAvailable(row: CurrentCitationEvidence): boolean {
+  function sourceAvailable(row: CurrentSourceEvidence): boolean {
     if (!CONTENT_ID.test(row.content_item_id) || !SHA256.test(row.content_hash)
       || typeof row.body !== "string" || !row.body.trim()
       || !["article", "show_notes", "transcript"].includes(row.body_kind)
@@ -114,16 +115,21 @@ export function createReaderEvidenceContext(db: DB): ReaderEvidenceContext {
     return normalizeBody(archived.source_body).slice(0, cap) === row.body;
   }
 
+  function hasVerifiedSource(row: CurrentSourceEvidence): boolean {
+    let available = sourceCache.get(row.content_item_id);
+    if (available === undefined) {
+      available = sourceAvailable(row);
+      sourceCache.set(row.content_item_id, available);
+    }
+    return available;
+  }
+
   return {
     preload,
+    hasVerifiedSource,
     accepts(row) {
       if (typeof row.quote !== "string" || !row.quote.trim()) return false;
-      let available = sourceCache.get(row.content_item_id);
-      if (available === undefined) {
-        available = sourceAvailable(row);
-        sourceCache.set(row.content_item_id, available);
-      }
-      return available && compareKey(row.body).includes(compareKey(row.quote));
+      return hasVerifiedSource(row) && compareKey(row.body).includes(compareKey(row.quote));
     },
   };
 }

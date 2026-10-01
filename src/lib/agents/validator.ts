@@ -38,7 +38,9 @@ const normalize = compareKey;
 export function checkReachability(
   citation: Pick<Citation, "content_item_id" | "quote">,
   itemsById: Map<string, ContentItem>,
+  unavailableSourceIds?: ReadonlySet<string>,
 ): { reachability: "pass" | "fail"; reason: CitationCheck["reachability_reason"] } {
+  if (unavailableSourceIds?.has(citation.content_item_id)) return { reachability: "fail", reason: "source_unreachable" };
   const item = itemsById.get(citation.content_item_id);
   if (!item) return { reachability: "fail", reason: "source_not_found" };
   if (normalize(item.body).includes(normalize(citation.quote))) {
@@ -448,6 +450,7 @@ export async function validateBatch(
   onCost?: (cost: Cost) => void,
   cache?: ConsistencyCache,
   signal?: AbortSignal,
+  unavailableSourceIds?: ReadonlySet<string>,
 ): Promise<ValidationResult> {
   throwIfAborted(signal);
   const byId = new Map(items.map((i) => [i.id, i]));
@@ -470,7 +473,7 @@ export async function validateBatch(
   for (const ins of insights) {
     for (let ci = 0; ci < ins.citations.length; ci++) {
       const cit = ins.citations[ci];
-      const { reachability, reason } = checkReachability(cit, byId);
+      const { reachability, reason } = checkReachability(cit, byId, unavailableSourceIds);
       const claim = cit.claim?.trim() || ins.statement;
       const quote = cit.claim?.trim() ? cit.quote : undefined;
       refs.push({

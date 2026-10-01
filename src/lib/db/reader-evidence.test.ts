@@ -12,6 +12,7 @@ import { buildTopicGraph, insightsMentioningEntity } from "./graph.js";
 import { type DB, openDb } from "./index.js";
 import { applyProvenanceMigrations } from "./provenance-migrations.js";
 import { markRawArchiveUnknown, planRawArchive, writePlannedRawArchive } from "./raw-archive.js";
+import { createReaderEvidenceContext } from "./reader-evidence.js";
 import { insertContentItem, insertSource, insertTopic } from "./repos.js";
 import { listTechLeadEvidence, listTechLeads, upsertTechLeads } from "./tech-leads.js";
 
@@ -118,6 +119,32 @@ it("rejects missing and corrupted current archive bytes", () => {
   expectHidden();
   writeFileSync(file, original);
   expect(listTechLeadEvidence(db, leadId)).toHaveLength(1);
+});
+
+it("rejects a legacy eligible row with an empty raw_ref", () => {
+  saveEvidence();
+  db.prepare("UPDATE content_item SET raw_ref='',reader_eligible=1 WHERE id=?").run(item.id);
+  expect(db.prepare("SELECT reader_eligible FROM content_item WHERE id=?").get(item.id)).toEqual({ reader_eligible: 1 });
+  expectHidden();
+});
+
+it("rejects a legacy eligible row whose raw_ref points to a missing file", () => {
+  const file = saveEvidence()!;
+  rmSync(file);
+  expect(db.prepare("SELECT reader_eligible FROM content_item WHERE id=?").get(item.id)).toEqual({ reader_eligible: 1 });
+  expectHidden();
+});
+
+it("rejects a body-matching quote when archived source_body still contains an omitted qualifier", () => {
+  const raw = `${JSON.stringify({ schema_version: "content-raw-archive-v1", source_body_origin: "feed",
+    source_body: `${statement} Only under a limited condition.`, source_body_kind: "article",
+    source_item_raw: "<item>Original with qualifier</item>", structured_body_sha256: contentHash(statement) })}\n`;
+  saveEvidence(true, raw);
+  expect(db.prepare("SELECT reader_eligible FROM content_item WHERE id=?").get(item.id)).toEqual({ reader_eligible: 1 });
+  expect(createReaderEvidenceContext(db).accepts({ content_item_id: item.id, quote: statement,
+    raw_ref: (db.prepare("SELECT raw_ref FROM content_item WHERE id=?").get(item.id) as { raw_ref: string }).raw_ref,
+    body: statement, body_kind: "article", content_hash: contentHash(statement) })).toBe(false);
+  expectHidden();
 });
 
 it("rejects a changed body even if it still contains the old quote", () => {
