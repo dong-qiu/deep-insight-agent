@@ -120,6 +120,10 @@ describe("validation cancellation", () => {
 });
 
 describe("checkReachability", () => {
+  it("does not accept a body-matching quote when its archive was marked unavailable", () => {
+    expect(checkReachability({ content_item_id: "ci_1", quote: "reduced regressions by 38%" }, items, new Set(["ci_1"])))
+      .toEqual({ reachability: "fail", reason: "source_unreachable" });
+  });
   it("逐字命中 → pass", () => {
     expect(
       checkReachability({ content_item_id: "ci_1", quote: "reduced regressions by 38%" }, items),

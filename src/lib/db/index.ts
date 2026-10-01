@@ -229,9 +229,11 @@ export function getDb(): DB {
       // deployment-record writer is a one-shot bootstrap process: it must be able to
       // atomically append the new identity before the new Web writer validates it.
       if (process.env.PROVENANCE_DEPLOYMENT_REQUIRED === "1" && process.env.PROVENANCE_DEPLOYMENT_WRITER !== "1") assertDeploymentIdentity(db);
+      // Report publication depends on its current source archive. Recover verified raw
+      // effects first so a resumable report is not failed merely due to startup order.
+      reconcileRawArchiveEffects(db);
       // 文件 rename 与 SQLite 不能组成一个事务；启动时只发布 hash 完整的双 artifact，其余 fail-closed。
       reconcileReportEffects(db);
-      reconcileRawArchiveEffects(db);
       // 已有生产库会立即补齐方向档案；空库会安全跳过，待配置层播种 topic 后再补。
       seedDefaultDirections(db);
       // Publish only a fully initialized connection; failed attempts must never become writers.

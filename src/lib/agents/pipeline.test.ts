@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getAnalysisBatch, getValidationResult, saveAnalysisBatch, saveValidationResult } from "../db/analysis.js";
 import { type DB, openDb } from "../db/index.js";
-import { insertContentItem, insertSource, insertTopic, listRuns } from "../db/repos.js";
+import { getContentItem, insertContentItem, insertSource, insertTopic, listRuns } from "../db/repos.js";
 import { listPlanningTechLeads, listTechLeadEvidence, listTechLeads } from "../db/tech-leads.js";
 import { createTopicDirection, getTechnologyOpportunity, listOpportunityLeads, listTechnologyOpportunities, previewTopicDirectionMapping, reprojectTopicDirection } from "../db/planning.js";
 import { applyProvenanceMigrations } from "../db/provenance-migrations.js";
@@ -192,6 +192,33 @@ function archiveReaderLeadContent(): void {
   const raw = `${JSON.stringify({ schema_version: "content-raw-archive-v1", source_body_origin: "feed", source_body: body,
     source_body_kind: "article", source_item_raw: "<item>Agent tool release</item>", structured_body_sha256: contentHash(body) })}\n`;
   writePlannedRawArchive(db, planRawArchive(db, { contentId: "ci1", raw }), raw);
+}
+
+function archiveCurrentItem(id: string, body: string): ContentItem {
+  applyProvenanceMigrations(db);
+  const raw = `${JSON.stringify({ schema_version: "content-raw-archive-v1", source_body_origin: "feed", source_body: body,
+    source_body_kind: "article", source_item_raw: `<item>${body}</item>`, structured_body_sha256: contentHash(body) })}\n`;
+  writePlannedRawArchive(db, planRawArchive(db, { contentId: id, raw }), raw);
+  return getContentItem(db, id)!;
+}
+
+function seedReportContent(): ContentItem {
+  insertSource(db, { id: "s1", name: "S", type: "rss", endpoint: "https://x", topic_ids: ["t1"],
+    fetch_interval: "1h", backfill: null, enabled: true });
+  const body = "q Agent tool release";
+  insertContentItem(db, { id: "ci1", source_id: "s1", url: "https://x/a", title: "A", author: null,
+    published_at: null, fetched_at: "2026-06-07T00:00:00Z", language: "en", topic_ids: ["t1"], tags: [],
+    body, body_kind: "article", raw_ref: "", content_hash: contentHash(body), fetch_status: "ok" });
+  return archiveCurrentItem("ci1", body);
+}
+
+function seedReaderReportBatch(): { batch: AnalysisBatch; validation: ValidationResult } {
+  const batch = mkBatch();
+  makeLeadReaderVisible(batch);
+  const validation = mkValidation();
+  saveAnalysisBatch(db, batch);
+  saveValidationResult(db, batch.id, validation);
+  return { batch, validation };
 }
 
 describe("runAnalysis", () => {
@@ -458,14 +485,49 @@ describe("runAnalysis", () => {
 });
 
 describe("runValidation", () => {
+  it.each(["empty_ref", "dangling_file", "source_body_mismatch"] as const)(
+    "blocks a legacy eligible source with %s before the consistency model runs", async (failure) => {
+      applyProvenanceMigrations(db);
+      insertSource(db, { id: "s1", name: "S", type: "rss", endpoint: "https://x", topic_ids: ["t1"],
+        fetch_interval: "1h", backfill: null, enabled: true });
+      const item: ContentItem = { id: "ci1", source_id: "s1", url: "https://x/a", title: "A", author: null,
+        published_at: null, fetched_at: "2026-06-07T00:00:00Z", language: "en", topic_ids: ["t1"], tags: [],
+        body: "q", body_kind: "article", raw_ref: failure === "dangling_file" ? "raw/missing.txt" : "",
+        content_hash: contentHash("q"), fetch_status: "ok" };
+      insertContentItem(db, item);
+      let selected = item;
+      if (failure === "source_body_mismatch") {
+        const raw = `${JSON.stringify({ schema_version: "content-raw-archive-v1", source_body_origin: "feed",
+          source_body: "q, but only for a limited case", source_body_kind: "article",
+          source_item_raw: "<item>q, but only for a limited case</item>",
+          structured_body_sha256: contentHash("q") })}\n`;
+        writePlannedRawArchive(db, planRawArchive(db, { contentId: item.id, raw }), raw);
+        selected = getContentItem(db, item.id)!;
+      }
+      expect(db.prepare("SELECT reader_eligible FROM content_item WHERE id=?").get(item.id))
+        .toEqual({ reader_eligible: 1 });
+      saveAnalysisBatch(db, mkBatch());
+      const actual = await vi.importActual<typeof import("./validator.js")>("./validator.js");
+      validateBatchMock.mockImplementation(actual.validateBatch);
+
+      const result = await runValidation(db, mkBatch(), [selected]);
+
+      expect(result.checks).toMatchObject([{ reachability: "fail", reachability_reason: "source_unreachable",
+        consistency: "not_evaluated", verdict: "blocked" }]);
+      expect(validateBatchMock).toHaveBeenCalledWith(mkBatch().insights, [], expect.any(Function), expect.anything(),
+        undefined, new Set([item.id]));
+    },
+  );
+
   it("落 validation + validate Run(done)，按 batch.id 关联", async () => {
     applyProvenanceMigrations(db);
     const source: Source = { id: "s1", name: "S", type: "rss", endpoint: "https://x", topic_ids: ["t1"], fetch_interval: "1h", backfill: null, enabled: true };
-    const item: ContentItem = { id: "ci1", source_id: "s1", url: "https://x/a", title: "A", author: null, published_at: null, fetched_at: "2026-06-07T00:00:00.000Z", language: "zh", topic_ids: ["t1"], tags: [], body: "body", body_kind: "article", raw_ref: "raw", content_hash: "hash_ci1", fetch_status: "ok" };
+    const item: ContentItem = { id: "ci1", source_id: "s1", url: "https://x/a", title: "A", author: null, published_at: null, fetched_at: "2026-06-07T00:00:00.000Z", language: "zh", topic_ids: ["t1"], tags: [], body: "body", body_kind: "article", raw_ref: "", content_hash: contentHash("body"), fetch_status: "ok" };
     insertSource(db, source); insertContentItem(db, item);
+    const archived = archiveCurrentItem(item.id, item.body);
     saveAnalysisBatch(db, mkBatch()); // 先落 batch（validation_result/citation_check 需 FK 到 batch/insight）
     validateBatchMock.mockResolvedValue(mkValidation());
-    const vr = await runValidation(db, mkBatch(), [item], { telemetry: SQLITE_P1_TELEMETRY_SINK });
+    const vr = await runValidation(db, mkBatch(), [archived], { telemetry: SQLITE_P1_TELEMETRY_SINK });
     expect(vr.report.releasable).toBe(true);
     expect(getValidationResult(db, "b1")?.report.pass).toBe(1); // 真落库
     const run = listRuns(db, { kind: "validate" }).find((r) => r.target.batch_id === "b1")!;
@@ -477,14 +539,15 @@ describe("runValidation", () => {
   it("dormant 默认值完成分析和校验，但绝不写入 P1 指标事实", async () => {
     applyProvenanceMigrations(db);
     const source: Source = { id: "s_dormant", name: "Dormant", type: "rss", endpoint: "https://dormant.test", topic_ids: ["t1"], fetch_interval: "1h", backfill: null, enabled: true };
-    const item: ContentItem = { id: "ci_dormant", source_id: source.id, url: "https://dormant.test/a", title: "A", author: null, published_at: null, fetched_at: "2026-06-07T00:00:00.000Z", language: "zh", topic_ids: ["t1"], tags: [], body: "body", body_kind: "article", raw_ref: "raw", content_hash: "hash_dormant", fetch_status: "ok" };
+    const item: ContentItem = { id: "ci_dormant", source_id: source.id, url: "https://dormant.test/a", title: "A", author: null, published_at: null, fetched_at: "2026-06-07T00:00:00.000Z", language: "zh", topic_ids: ["t1"], tags: [], body: "body", body_kind: "article", raw_ref: "", content_hash: contentHash("body"), fetch_status: "ok" };
     insertSource(db, source); insertContentItem(db, item);
+    const archived = archiveCurrentItem(item.id, item.body);
     const batch = { ...mkBatch(), id: "b_dormant", insights: [mkInsight("i_dormant")] };
     analyzeMock.mockResolvedValue(batch);
     validateBatchMock.mockResolvedValue(mkValidation("i_dormant"));
 
-    const analyzed = await runAnalysis(db, topic, [item], win);
-    await runValidation(db, analyzed, [item]);
+    const analyzed = await runAnalysis(db, topic, [archived], win);
+    await runValidation(db, analyzed, [archived]);
 
     expect(db.prepare(`SELECT
       (SELECT COUNT(*) FROM funnel_event) AS funnel,
@@ -517,10 +580,37 @@ describe("runValidation", () => {
 });
 
 describe("runReportGen", () => {
+  beforeEach(() => { seedReportContent(); });
+
+  it("refuses publication when a passed source archive disappears after validation", async () => {
+    const { batch, validation } = seedReaderReportBatch();
+    const current = getContentItem(db, "ci1")!;
+    rmSync(join(dataDir, current.raw_ref));
+    buildReportMock.mockReturnValue({ report: mkReport(), index: mkReportIndex() });
+
+    await expect(runReportGen(db, { topic, batch, validation, type: "brief" }))
+      .rejects.toThrow("raw_archive_source_unavailable");
+    expect(buildReportMock).toHaveBeenCalledOnce();
+    expect(saveReportMock).not.toHaveBeenCalled();
+    expect(db.prepare("SELECT COUNT(*) AS n FROM report").get()).toEqual({ n: 0 });
+  });
+
+  it("rechecks archive bytes at the final publication callback rather than reusing a positive cache", async () => {
+    const { batch, validation } = seedReaderReportBatch();
+    const current = getContentItem(db, "ci1")!;
+    buildReportMock.mockReturnValue({ report: mkReport(), index: mkReportIndex() });
+    saveReportMock.mockImplementation((_db, _report, _index, hooks) => {
+      rmSync(join(dataDir, current.raw_ref));
+      hooks?.assertPublish?.();
+    });
+
+    await expect(runReportGen(db, { topic, batch, validation, type: "brief" }))
+      .rejects.toThrow("raw_archive_source_unavailable");
+  });
+
   it("建报告 + report-gen Run(done)；buildReport 收到 batch+validation、saveReport 被调", async () => {
     buildReportMock.mockReturnValue({ report: mkReport(), index: mkReportIndex() });
-    const batch = mkBatch();
-    const validation = mkValidation();
+    const { batch, validation } = seedReaderReportBatch();
     const report = await runReportGen(db, { topic, batch, validation, type: "brief" });
     expect(report.id).toBe("r1");
     expect(buildReportMock).toHaveBeenCalledWith(expect.objectContaining({ batch, validation, type: "brief" }));
@@ -533,9 +623,13 @@ describe("runReportGen", () => {
     seedPublishedInitialDigest("evt_cached", "ci1");
     buildReportMock.mockReturnValue({ report: mkReport(), index: mkReportIndex() });
     const batch = mkBatch();
-    batch.insights[0].event_id = "evt_cached";
+    makeLeadReaderVisible(batch);
+    batch.insights[0].event_id = "evt_new";
+    const validation = mkValidation();
+    saveAnalysisBatch(db, batch);
+    saveValidationResult(db, batch.id, validation);
 
-    await runReportGen(db, { topic, batch, validation: mkValidation(), type: "brief" });
+    await runReportGen(db, { topic, batch, validation, type: "brief" });
 
     expect(buildReportMock).toHaveBeenCalledWith(expect.objectContaining({
       publishedEventEvidence: [expect.objectContaining({
@@ -606,6 +700,8 @@ describe("runReportGen", () => {
     const batch = mkBatch();
     makeLeadReaderVisible(batch);
     batch.insights[0].event_id = "event_unpublished";
+    saveAnalysisBatch(db, batch);
+    saveValidationResult(db, batch.id, mkValidation());
 
     const report = await runReportGen(db, { topic, batch, validation: mkValidation(), type: "brief", briefFreshness: freshness });
     expect(report.insight_ids).toEqual(["i1"]);
@@ -741,7 +837,10 @@ describe("runTechLeadExtraction", () => {
 
 describe("端到端编排", () => {
   it("runAnalysis → runValidation → runReportGen 串起来，3 个 Run 都 done、数据贯穿", async () => {
-    analyzeMock.mockResolvedValue(mkBatch());
+    seedReportContent();
+    const analyzedBatch = mkBatch();
+    makeLeadReaderVisible(analyzedBatch);
+    analyzeMock.mockResolvedValue(analyzedBatch);
     validateBatchMock.mockResolvedValue(mkValidation());
     buildReportMock.mockReturnValue({ report: mkReport(), index: mkReportIndex() });
 

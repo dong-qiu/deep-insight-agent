@@ -1,18 +1,22 @@
 /** Eval-Gate scoped：真实 runReportGen → saveReport 双 artifact/索引 → reader 的生产路径回归。 */
 import { mkdtempSync, rmSync } from "node:fs";
+import { generateKeyPairSync } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { getReport, queryReportIndex } from "../db/reports.js";
+import { getReport, queryReportIndex, reconcileAnchoredReportEffects, reconcileReportEffects, saveReport, type ReportAnchorPublication } from "../db/reports.js";
+import { MemoryAnchorStore } from "../db/integrity-anchors.js";
 import { getAnalysisBatch, saveAnalysisBatch, saveValidationResult } from "../db/analysis.js";
 import { openDb, type DB } from "../db/index.js";
 import { insertContentItem, insertSource, insertTopic, listRuns } from "../db/repos.js";
+import { planRawArchive, writePlannedRawArchive } from "../db/raw-archive.js";
 import { applyProvenanceMigrations } from "../db/provenance-migrations.js";
 import { appendGenerationEvent, captureRevision, entityKey, type EntityRef } from "../db/provenance-facts.js";
 import { listGenerationTraceTimeline } from "../db/provenance.js";
 import { contentItemRef, contentItemRevisionSnapshot } from "../db/provenance-revisions.js";
 import type { AnalysisBatch, ContentItem, Report, ReportIndexEntry, Source, Topic, ValidationResult } from "../types.js";
 import { DISPLAY_PROJECTION_VERSION, sourceQuoteHash } from "../utils/source-quote-projection.js";
+import { contentHash } from "../sources/normalize.js";
 import { summarizeBriefSelection } from "./report-gen.js";
 
 const { buildReportMock } = vi.hoisted(() => ({ buildReportMock: vi.fn() }));
@@ -42,9 +46,7 @@ const validation: ValidationResult = {
 };
 
 function seedCompleteTrace(inputBatch: AnalysisBatch = batch, inputValidation: ValidationResult = validation): string {
-  const source: Source = { id: "s1", name: "Source", type: "rss", endpoint: "https://example.test/feed", topic_ids: [topic.id], fetch_interval: "1h", backfill: null, enabled: true };
-  const item: ContentItem = { id: "ci1", source_id: source.id, url: "https://example.test/item", title: "Item", author: null, published_at: null, fetched_at: "2026-08-02T00:00:00Z", language: "en", topic_ids: [topic.id], tags: [], body: "A validated statement", body_kind: "article", raw_ref: "raw", content_hash: "content-hash", fetch_status: "ok" };
-  insertSource(db, source); insertContentItem(db, item);
+  const item: ContentItem = { id: "ci1", source_id: "s1", url: "https://example.test/item", title: "Item", author: null, published_at: null, fetched_at: "2026-08-02T00:00:00Z", language: "en", topic_ids: [topic.id], tags: [], body: "A validated statement", body_kind: "article", raw_ref: "", content_hash: contentHash("A validated statement"), fetch_status: "ok" };
   saveAnalysisBatch(db, inputBatch); saveValidationResult(db, inputBatch.id, inputValidation);
   db.prepare(`INSERT INTO generation_trace(id,scope_kind,trigger_kind,status,completion_policy,coverage,runtime_version,summary,started_at)
     VALUES ('trace_1','topic_pipeline','api','running','{}','complete','{}','{}','2026-08-02T00:00:00Z')`).run();
@@ -61,12 +63,25 @@ function seedCompleteTrace(inputBatch: AnalysisBatch = batch, inputValidation: V
   return "trace_1";
 }
 
+function archiveFixture(id: string, body: string): void {
+  const raw = `${JSON.stringify({ schema_version: "content-raw-archive-v1", source_body_origin: "feed", source_body: body,
+    source_body_kind: "article", source_item_raw: `<item>${body}</item>`, structured_body_sha256: contentHash(body) })}\n`;
+  writePlannedRawArchive(db, planRawArchive(db, { contentId: id, raw }), raw);
+}
+
 beforeEach(() => {
   dataDir = mkdtempSync(join(tmpdir(), "insight-reportgen-"));
   process.env.DATA_DIR = dataDir;
   db = openDb(":memory:");
   applyProvenanceMigrations(db);
   insertTopic(db, topic);
+  const source: Source = { id: "s1", name: "Source", type: "rss", endpoint: "https://example.test/feed", topic_ids: [topic.id], fetch_interval: "1h", backfill: null, enabled: true };
+  const body = "A validated statement";
+  insertSource(db, source);
+  insertContentItem(db, { id: "ci1", source_id: source.id, url: "https://example.test/item", title: "Item",
+    author: null, published_at: null, fetched_at: "2026-08-02T00:00:00Z", language: "en", topic_ids: [topic.id],
+    tags: [], body, body_kind: "article", raw_ref: "", content_hash: contentHash(body), fetch_status: "ok" });
+  archiveFixture("ci1", body);
   buildReportMock.mockReset();
 });
 afterEach(() => {
@@ -77,6 +92,74 @@ afterEach(() => {
 });
 
 describe("runReportGen production persistence path", () => {
+  it("does not reject a v6 report for an unrendered secondary pass/support archive", async () => {
+    const actual = await vi.importActual<typeof import("./report-gen.js")>("./report-gen.js");
+    buildReportMock.mockImplementation(actual.buildReport);
+    insertContentItem(db, { id: "ci_secondary", source_id: "s1", url: "https://example.test/secondary", title: "Secondary",
+      author: null, published_at: null, fetched_at: "2026-08-02T00:00:00Z", language: "en", topic_ids: [topic.id],
+      tags: [], body: "A secondary statement", body_kind: "article", raw_ref: "raw/missing.txt",
+      content_hash: contentHash("A secondary statement"), fetch_status: "ok" });
+    const twoCitations = structuredClone(batch);
+    twoCitations.insights[0]!.citations.push({ content_item_id: "ci_secondary", citation_ref: "secondary",
+      claim: "A secondary statement", quote: "A secondary statement",
+      locator: { paragraph_index: 0, char_start: 0, char_end: 21 } });
+    const twoChecks = structuredClone(validation);
+    twoChecks.checks.push({ ...validation.checks[0]!, citation_index: 1 });
+    twoChecks.report = { ...twoChecks.report, total: 2, pass: 2 };
+    saveAnalysisBatch(db, twoCitations);
+    saveValidationResult(db, twoCitations.id, twoChecks);
+    db.prepare("UPDATE content_item SET reader_eligible=0 WHERE id='ci_secondary'").run();
+
+    const report = await runReportGen(db, { topic, batch: twoCitations, validation: twoChecks, type: "brief" });
+    expect(report.insight_ids).toEqual(["i1"]);
+    expect(report.citation_count).toBe(1);
+    expect(getReport(db, report.id)).not.toBeNull();
+  });
+
+  async function pendingReportWithBinding(anchored: boolean): Promise<{ report: Report; anchor?: Pick<ReportAnchorPublication, "store" | "signer"> }> {
+    saveAnalysisBatch(db, batch);
+    saveValidationResult(db, batch.id, validation);
+    const report: Report = { id: anchored ? "rep_anchor_recovery_gap" : "rep_file_recovery_gap", type: "brief", topic_id: topic.id,
+      status: "done", generated_at: "2026-10-01T00:00:00Z", title: "Recovery", body_md: "A validated statement [1]",
+      body_html: "<p>A validated statement [1]</p>", insight_ids: ["i1"], event_ids: [], prev_report_id: null,
+      citation_count: 1, cost: { tokens: 0, amount: 0 } };
+    const index: ReportIndexEntry = { report_id: report.id, type: report.type, topic_id: topic.id, facets: [], date: "2026-10-01",
+      source_ids: ["s1"], title: report.title, summary: "A validated statement", highlights: [], tags: [],
+      entity_names: [], importance: 3, event_ids: [], milestone_count: 0 };
+    const keys = generateKeyPairSync("ed25519");
+    const anchor = anchored ? { store: new MemoryAnchorStore(), signer: { key_id: "test-key-v1", private_key: keys.privateKey } } : undefined;
+    await expect(async () => await saveReport(db, report, index, {
+      dir: join(dataDir, "reports"), readerCitationBindings: [{ insight_id: "i1", citation_index: 0 }],
+      ...(anchor ? { anchor: { ...anchor, retainUntil: "2027-06-01T00:00:00Z",
+        retentionEnds: ["2027-06-01T00:00:00Z", "2027-07-01T00:00:00Z", "2027-08-01T00:00:00Z"] as const } } : {}),
+      afterPublish: () => { throw new Error("simulated_commit_interruption"); },
+    })).rejects.toThrow("simulated_commit_interruption");
+    if (!anchored) db.prepare("UPDATE report SET status='generating',failure=NULL WHERE id=?").run(report.id);
+    return { report, anchor };
+  }
+
+  it("rechecks persisted bindings when a file-effect report resumes after archive loss", async () => {
+    const { report } = await pendingReportWithBinding(false);
+    const rawRef = (db.prepare("SELECT raw_ref FROM content_item WHERE id='ci1'").get() as { raw_ref: string }).raw_ref;
+    rmSync(join(dataDir, rawRef));
+    expect(reconcileReportEffects(db, { dir: join(dataDir, "reports") })).toEqual({ committed: 0, failed: 1 });
+    expect(getReport(db, report.id)).toBeNull();
+  });
+
+  it("rechecks persisted bindings when an anchored report resumes after archive loss", async () => {
+    const { report, anchor } = await pendingReportWithBinding(true);
+    const rawRef = (db.prepare("SELECT raw_ref FROM content_item WHERE id='ci1'").get() as { raw_ref: string }).raw_ref;
+    rmSync(join(dataDir, rawRef));
+    expect(await reconcileAnchoredReportEffects(db, anchor!, { dir: join(dataDir, "reports") })).toEqual({ committed: 0, failed: 1 });
+    expect(getReport(db, report.id)).toBeNull();
+  });
+
+  it("resumes a report with a still-valid persisted source binding", async () => {
+    const { report } = await pendingReportWithBinding(false);
+    expect(reconcileReportEffects(db, { dir: join(dataDir, "reports") })).toEqual({ committed: 1, failed: 0 });
+    expect(getReport(db, report.id)?.status).toBe("done");
+  });
+
   it.each(["", "display-coverage-v5", "display-coverage-v9", "display-coverage-v999"])(
     "DB round-trip audit gate %s cannot enter the report, index or publication ledger", async (version) => {
       const actual = await vi.importActual<typeof import("./report-gen.js")>("./report-gen.js");
@@ -103,6 +186,8 @@ describe("runReportGen production persistence path", () => {
   );
 
   it("publishes a validated report that the normal reader and index can consume", async () => {
+    saveAnalysisBatch(db, batch);
+    saveValidationResult(db, batch.id, validation);
     const report: Report = {
       id: "rep_1", type: "brief", topic_id: topic.id, status: "done", generated_at: "2026-08-02T00:00:00Z", title: "Brief",
       body_md: "# Brief\nvalidated", body_html: "<h1>Brief</h1><p>validated</p>", insight_ids: ["i1"], event_ids: [], prev_report_id: null, citation_count: 1, cost: { tokens: 0, amount: 0 },
@@ -193,8 +278,9 @@ describe("runReportGen production persistence path", () => {
     insertContentItem(db, {
       id: "ci2", source_id: "s1", url: "https://example.test/item-2", title: "Item 2", author: null,
       published_at: null, fetched_at: "2026-08-02T00:00:00Z", language: "en", topic_ids: [topic.id], tags: [],
-      body: "A validated statement", body_kind: "article", raw_ref: "raw", content_hash: "content-hash-2", fetch_status: "ok",
+      body: "A validated statement", body_kind: "article", raw_ref: "", content_hash: contentHash("A validated statement"), fetch_status: "ok",
     });
+    archiveFixture("ci2", "A validated statement");
     const report = await runReportGen(db, {
       topic, batch: duplicateBatch, validation: duplicateValidation, type: "brief", traceId,
     });

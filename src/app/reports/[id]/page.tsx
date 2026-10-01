@@ -3,7 +3,7 @@ import Link from "next/link";
 import { auth } from "../../../auth.js";
 import { getDb } from "../../../lib/db/index.js";
 import { listFollowups } from "../../../lib/db/followup.js";
-import { getReport, listBlockedChecksForReport, listPassChecksForReport, reportNeighbors } from "../../../lib/db/reports.js";
+import { getReport, listBlockedChecksForReport, listPassChecksForReport, reportArchiveGap, reportNeighbors } from "../../../lib/db/reports.js";
 import { findGenerationTraceForReport } from "../../../lib/db/provenance.js";
 import { Markdown } from "../../_components/markdown.js";
 import { CitePreview } from "./_components/cite-preview.js";
@@ -31,6 +31,7 @@ export default async function ReportPage({ params }: { params: Promise<{ id: str
   const db = getDb();
   const report = getReport(db, id);
   if (!report) notFound();
+  const archiveGap = reportArchiveGap(db, id);
   const blocked = isAdmin ? listBlockedChecksForReport(db, id) : [];
   const passChecks = isAdmin ? listPassChecksForReport(db, id) : [];
   const followups = listFollowups(db, id);
@@ -52,6 +53,13 @@ export default async function ReportPage({ params }: { params: Promise<{ id: str
         {isAdmin ? <ExportPptButton reportId={id} /> : null}
         {isAdmin ? <Link href={`/admin/reports/${id}/review`} style={{ marginLeft: "0.75rem" }}>质量复盘</Link> : null}
       </p>
+      {archiveGap.unavailableCitations > 0 ? (
+        <p role="status" className="muted">
+          ⚠️ 此历史报告关联的 {archiveGap.unavailableCitations} 条已通过引用，其本地原文归档目前不可用
+          （涉及 {archiveGap.unavailableContents} 个来源条目）。报告正文和历史校验记录保留原样，
+          不代表这些引用已按现时网页重新核验；来源链接也不能替代生成时的原文归档。
+        </p>
+      ) : null}
       <Markdown md={report.body_md} />
       <hr />
       <p className="muted">
@@ -84,11 +92,11 @@ export default async function ReportPage({ params }: { params: Promise<{ id: str
         <p className="muted">本期为空并不等于未采集；展开“生成溯源”可查看分析输入、校验通过数以及新鲜度/已发布去重的过滤计数。</p>
       ) : null}
 
-      {isAdmin && passChecks.length ? <details className="audit"><summary>发布引用下钻 · {passChecks.length} 条 pass/support 证据（点击展开）</summary>
+      {isAdmin && passChecks.length ? <details className="audit"><summary>关联引用下钻 · {passChecks.length} 条 pass/support 证据（点击展开）</summary>
         {passChecks.map((check) => <article className="audit-row" key={`${check.insight_id}-${check.citation_index}`}>
           <p><strong>洞察</strong> <code>{check.insight_id}</code>：{check.statement.slice(0, 120)}</p>
           <blockquote>「{check.quote}」</blockquote>
-          <p className="muted">Content <code>{check.content_item_id}</code> · <a href={check.url} target="_blank" rel="noreferrer">查看原文</a></p>
+          <p className="muted">Content <code>{check.content_item_id}</code> · <a href={check.url} target="_blank" rel="noreferrer">查看现时来源网页</a></p>
         </article>)}
       </details> : null}
 
