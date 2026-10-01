@@ -11,9 +11,14 @@
 - 文件路径全部为绝对路径；输入目录 0700、实验快照建议 0400；不复制主 worktree 的 `.data/`。
 - 如需核对原始归档，只读取得所选输入的 `raw/<id>.<sha256>.txt`，放在独立目录，文件 0600。
   缺归档保持 gap，不访问原站补抓、不将当前网页替代历史版本。
-- 备份的 `asOf` 必须记录真实捕获时间。备份中的 redaction 或 pending request 会阻断本导出器；
+- 从备份清单核验快照捕获时间，分别传入 `asOf` 与 `snapshot-capture-utc`，两者必须相等。
+  不能用较晚捕获的快照重放更早的 `asOf`：Insight 没有创建时间，报告状态也可能在捕获前改变。
+  这两个参数是操作者对备份时间的声明；导出器不自行验证外部备份清单。
+  导出前须在私有取样记录中核对备份清单的 `created_at`、原始 `insight.db` SHA，
+  以及本地 DELETE-journal 副本的 SHA 和转换来源；复核者据此检查传入时间与输入版本。
+  备份中的 redaction 或 pending request 会阻断本导出器；
   导出后用于人评前，操作者还必须只读确认当前撤回状态，避免旧备份恢复已撤回内容。存在撤回时另做受控取样。
-- 私有目录及全部输出均不得加入 Git。输出路径必须尚不存在，不覆盖旧实验。
+- 私有目录及全部输出均不得加入 Git。输出路径必须尚不存在；若位于 Git worktree 内，必须由 Git 忽略规则覆盖。
 
 ```bash
 DB_PATH=/absolute/private/offline.db \
@@ -22,10 +27,10 @@ npx tsx evals/brief-density/export.ts \
   /absolute/private/new-export \
   2026-09-23T00:00:00.000Z 2026-09-26T18:00:00.000Z \
   topic-a,topic-b,topic-c \
-  2026-09-26T18:00:00.000Z <40-character-checkout-sha>
+  2026-09-26T18:00:00.000Z 2026-09-26T18:00:00.000Z <40-character-checkout-sha>
 ```
 
-最后两个时间分别为输入队列窗口的排他截止及证据观测 `asOf`；不得使用晚于快照捕获的观察时间。
+三个时间分别为输入队列窗口的排他截止、证据观测 `asOf`、已核验的快照捕获时间。
 `BRIEF_DENSITY_DATA_DIR` 可省略，此时原文归档检查标 missing，不表示原文已经验证。
 CLI 只打印记录数量；正文、候选和来源 URL 均写入私有产物。
 

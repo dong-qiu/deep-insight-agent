@@ -1,7 +1,8 @@
 /** Private, read-only S0 diagnostics. Never opens the application's bootstrap DB. */
 import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import Database from "better-sqlite3";
 import { canonicalHash, entityKey, type EntityRef } from "../../src/lib/db/provenance-facts.js";
@@ -20,13 +21,31 @@ function refs(event: Row, field: string): Ref[] {
 const idOf = (ref: Ref) => ref.locator.kind === "id" ? ref.locator.id : null;
 export interface ExportOptions {
   dbPath: string; outputDir: string; from: string; until: string; topics: string[];
-  asOf: string; gitSha: string; dataDir?: string;
+  asOf: string; snapshotCapturedAt: string; gitSha: string; dataDir?: string;
+}
+function requirePrivateOutput(outputDir: string): void {
+  if (existsSync(outputDir)) throw new Error("output_dir_exists");
+  const parent = realpathSync(dirname(outputDir));
+  const target = join(parent, basename(outputDir));
+  let cursor = parent;
+  while (!existsSync(join(cursor, ".git"))) {
+    const next = dirname(cursor);
+    if (next === cursor) return; // Confirmed outside any Git worktree.
+    cursor = next;
+  }
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) if (key.startsWith("GIT_")) delete env[key];
+  const ignored = spawnSync("git", ["-C", parent, "check-ignore", "-q", "--no-index", "--", target], { encoding: "utf8", env });
+  if (ignored.error) throw ignored.error;
+  if (ignored.status !== 0) throw new Error("output_dir_must_be_gitignored");
 }
 function validateOptions(o: ExportOptions): void {
   for (const p of [o.dbPath, o.outputDir, ...(o.dataDir ? [o.dataDir] : [])]) if (!isAbsolute(p)) throw new Error("absolute_paths_required");
-  for (const d of [o.from, o.until, o.asOf]) if (!Number.isFinite(Date.parse(d)) || new Date(d).toISOString() !== d) throw new Error("canonical_utc_required");
+  for (const d of [o.from, o.until, o.asOf, o.snapshotCapturedAt]) if (!Number.isFinite(Date.parse(d)) || new Date(d).toISOString() !== d) throw new Error("canonical_utc_required");
   if (o.from >= o.until || o.asOf < o.until || !o.topics.length || new Set(o.topics).size !== o.topics.length) throw new Error("invalid_cohort");
+  if (o.asOf !== o.snapshotCapturedAt) throw new Error("as_of_must_equal_snapshot_capture");
   if (!/^[a-f0-9]{40}$/.test(o.gitSha)) throw new Error("git_sha_required");
+  requirePrivateOutput(o.outputDir);
   if (existsSync(`${o.dbPath}-wal`) || existsSync(`${o.dbPath}-shm`)) throw new Error("standalone_offline_snapshot_required");
   const header = readFileSync(o.dbPath).subarray(0, 20);
   if (header[18] !== 1 || header[19] !== 1) throw new Error("delete_journal_snapshot_required");
@@ -39,11 +58,12 @@ function sourceEvidence(db: Database.Database, ref: Ref, dataDir?: string): Row 
   const gaps: string[] = [];
   const revision = rows(db, "SELECT * FROM provenance_revision WHERE entity_type='content_item' AND entity_key=? AND revision=?", entityKey(ref), ref.revision)[0];
   const snapshot = obj(parsed(revision?.snapshot));
-  if (!snapshot || ref.revision !== `content-v4:${canonicalHash(snapshot)}` || revision?.snapshot_hash !== canonicalHash(snapshot)) gaps.push("revision_missing_or_invalid");
+  const revisionValid = Boolean(snapshot && ref.revision === `content-v4:${canonicalHash(snapshot)}` && revision?.snapshot_hash === canonicalHash(snapshot));
+  if (!revisionValid) gaps.push("revision_missing_or_invalid");
   const source = rows(db, "SELECT id,source_id,url,title,published_at,fetched_at,body,body_kind,fetch_status,content_hash,raw_ref,reader_eligible FROM content_item WHERE id=?", id)[0];
   let body: string | null = null;
   if (!source) gaps.push("source_row_missing");
-  else if (typeof source.body !== "string" || !snapshot || source.content_hash !== snapshot.content_hash
+  else if (typeof source.body !== "string" || !revisionValid || !snapshot || source.content_hash !== snapshot.content_hash
     || contentHash(source.body) !== snapshot.content_hash || source.body.length !== snapshot.body_length) gaps.push("source_version_mismatch");
   else body = source.body;
   if (source?.reader_eligible !== 1) gaps.push("source_not_reader_eligible");
@@ -198,7 +218,7 @@ export function exportBriefDensity(o: ExportOptions): { batches: number; candida
       }
       const countsResult = { batches: batches.length, candidates: candidateTotal, tracesWithoutBatch: pool.filter((p) => p.kind === "trace_without_batch").length };
       return { pool, loss: { ...countsResult, by_topic: counts, input_evidence_gaps: gaps, input_evidence_gaps_by_kind: gapsByKind, gap_denominator: "input_revision_occurrences_per_export_record", terminal_aggregation: "ever_published_brief_by_as_of_else_unambiguous_observed_reason", observed_candidates_without_batch: pool.filter((p) => p.kind === "trace_without_batch").reduce((n, p) => n + Number(p.observed_candidate_count), 0), missing_extracted_facts: "requires_source_labels", qualified_complementary_events: "pending_human_labels_and_eligibility_replay" }, manifest: {
-        format_version: "brief-density-s0-v1", as_of: o.asOf, window: { from_inclusive: o.from, until_exclusive: o.until }, topics: o.topics, git_sha: o.gitSha,
+        format_version: "brief-density-s0-v1", as_of: o.asOf, snapshot_captured_at: o.snapshotCapturedAt, window: { from_inclusive: o.from, until_exclusive: o.until }, topics: o.topics, git_sha: o.gitSha,
         exporter_sha256: sha(readFileSync(new URL(import.meta.url))), snapshot_sha256: hashBefore, snapshot_bytes: lstatSync(o.dbPath).size,
         schema: rows(db, "SELECT * FROM schema_migration ORDER BY version"),
         deployment: rows(db, "SELECT git_sha,image_digest,deployed_at FROM deployment_record ORDER BY deployed_at DESC LIMIT 1"),
@@ -219,7 +239,7 @@ export function exportBriefDensity(o: ExportOptions): { batches: number; candida
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  const [outputDir, from, until, topics, asOf, gitSha] = process.argv.slice(2);
-  if (!outputDir || !from || !until || !topics || !asOf || !gitSha || !process.env.DB_PATH) throw new Error("Usage: DB_PATH=/abs/offline.db tsx evals/brief-density/export.ts /abs/new-output from-utc until-utc topic1,topic2 as-of-utc git-sha (optional BRIEF_DENSITY_DATA_DIR=/abs/archive-copy)");
-  console.log(JSON.stringify(exportBriefDensity({ dbPath: process.env.DB_PATH, outputDir, from, until, topics: topics.split(","), asOf, gitSha, dataDir: process.env.BRIEF_DENSITY_DATA_DIR })));
+  const [outputDir, from, until, topics, asOf, snapshotCapturedAt, gitSha] = process.argv.slice(2);
+  if (!outputDir || !from || !until || !topics || !asOf || !snapshotCapturedAt || !gitSha || !process.env.DB_PATH) throw new Error("Usage: DB_PATH=/abs/offline.db tsx evals/brief-density/export.ts /abs/new-output from-utc until-utc topic1,topic2 as-of-utc snapshot-capture-utc git-sha (optional BRIEF_DENSITY_DATA_DIR=/abs/archive-copy)");
+  console.log(JSON.stringify(exportBriefDensity({ dbPath: process.env.DB_PATH, outputDir, from, until, topics: topics.split(","), asOf, snapshotCapturedAt, gitSha, dataDir: process.env.BRIEF_DENSITY_DATA_DIR })));
 }

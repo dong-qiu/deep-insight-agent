@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync, existsSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import Database from "better-sqlite3";
 import { openDb } from "../../src/lib/db/index.js";
@@ -14,7 +15,7 @@ import { exportBriefDensity, terminalBucket, type ExportOptions } from "./export
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 const at = "2026-09-24T17:00:00.000Z";
-function setup(options: { wrongArchive?: boolean; failedOnly?: boolean; diagnostics?: boolean; completedAfterWindow?: boolean } = {}) {
+function setup(options: { wrongArchive?: boolean; failedOnly?: boolean; diagnostics?: boolean; completedAfterWindow?: boolean; invalidRevision?: boolean } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "brief-density-")); dirs.push(dir);
   const dbPath = join(dir, "offline.db");
   // Build the real migrated schema in memory; the exporter still reads a real standalone file.
@@ -26,6 +27,7 @@ function setup(options: { wrongArchive?: boolean; failedOnly?: boolean; diagnost
   const snapshot = { url: "https://example.test/a", title: "Release", source_id: "s", published_at: at, fetched_at: at, body_kind: "article", fetch_status: "ok", body_length: body.length, content_hash: contentHash(body) };
   const ref: EntityRef = { type: "content_item", locator: { kind: "id", id: "c" }, revision: `content-v4:${canonicalHash(snapshot)}`, role: "input" };
   captureRevision(db, { entity_type: ref.type, entity_key: entityKey(ref), revision: ref.revision, snapshot });
+  const inputRef = options.invalidRevision ? { ...ref, revision: `content-v4:${"0".repeat(64)}` } : ref;
   const raw = JSON.stringify({ schema_version: "content-raw-archive-v1", structured_body_sha256: options.wrongArchive ? "0".repeat(64) : snapshot.content_hash, source_body_kind: "article", source_body: body });
   const rawHash = createHash("sha256").update(raw).digest("hex"), target = `c.${rawHash}.txt`;
   const dataDir = join(dir, "archive"); mkdirSync(join(dataDir, "raw"), { recursive: true }); writeFileSync(join(dataDir, "raw", target), raw);
@@ -35,7 +37,7 @@ function setup(options: { wrongArchive?: boolean; failedOnly?: boolean; diagnost
     VALUES('raw','raw_archive','c',?,?,'{}','committed',?,?)`).run(`raw_archive:c:${rawHash}`, JSON.stringify([{ target, sha256: rawHash, size: Buffer.byteLength(raw) }]), at, at);
   db.prepare(`INSERT INTO generation_trace(id,topic_id,scope_kind,trigger_kind,status,completion_policy,started_at)
     VALUES('tr','t','topic_pipeline','scheduler','done','{}',?)`).run(at);
-  const started = appendGenerationEvent(db, { trace_id: "tr", stage: "analyze", event_type: "started", input_refs: [ref], occurred_at: at });
+  const started = appendGenerationEvent(db, { trace_id: "tr", stage: "analyze", event_type: "started", input_refs: [inputRef], occurred_at: at });
   if (options.failedOnly) {
     const diag = { schema_version: 1, candidates: [{ candidate_sha256: "a".repeat(64), terminal_reason: "dropped_coverage" }] };
     const diagRef: EntityRef = { type: "analysis_coverage_diagnostics", locator: { kind: "id", id: "tr" }, revision: canonicalHash(diag), role: "evidence" };
@@ -49,7 +51,7 @@ function setup(options: { wrongArchive?: boolean; failedOnly?: boolean; diagnost
       INSERT INTO citation_check VALUES('b','i',0,'pass','ok','support','ok','pass');`);
     const audit = db.prepare(`INSERT INTO display_coverage_candidate_audit(batch_id,candidate_id,insight_id,gate_version,terminal_reason,prompt_version,input_hash,validator_model,decision,created_at) VALUES('b',?,?,'v6',?,'p','h','m','{}',?)`);
     audit.run("kept", "i", "kept", at); audit.run("rejected", null, "dropped_coverage", at);
-    const completed = appendGenerationEvent(db, { trace_id: "tr", stage: "analyze", event_type: "completed", input_refs: [ref], output_refs: [{ type: "analysis_batch", locator: { kind: "id", id: "b" }, revision: "b", role: "output" }], occurred_at: options.completedAfterWindow ? "2026-09-26T19:00:00.000Z" : at });
+    const completed = appendGenerationEvent(db, { trace_id: "tr", stage: "analyze", event_type: "completed", input_refs: [inputRef], output_refs: [{ type: "analysis_batch", locator: { kind: "id", id: "b" }, revision: "b", role: "output" }], occurred_at: options.completedAfterWindow ? "2026-09-26T19:00:00.000Z" : at });
     const addReport = (id: string, type: string, generated: string, reason: string, published: boolean) => {
       db.prepare(`INSERT INTO report(id,type,topic_id,status,generated_at,title,insight_ids,citation_count,cost) VALUES(?,?,'t','done',?,'R',?,1,'{}')`).run(id, type, generated, published ? '["i"]' : '[]');
       db.prepare(`INSERT INTO report_review_snapshot VALUES(?,'tr','b',?,?,?,?,?,'v1','complete','published',?)`).run(id, started.id, completed.id, started.id, completed.id, started.id, generated);
@@ -60,7 +62,7 @@ function setup(options: { wrongArchive?: boolean; failedOnly?: boolean; diagnost
     addReport("deep", "deep_dive", at, "already_published_event", false);
   }
   writeFileSync(dbPath, db.serialize()); db.close();
-  const opts: ExportOptions = { dbPath, outputDir: join(dir, "out"), from: "2026-09-23T00:00:00.000Z", until: "2026-09-26T18:00:00.000Z", asOf: "2026-09-26T18:00:00.000Z", topics: ["t"], gitSha: "a".repeat(40), dataDir };
+  const opts: ExportOptions = { dbPath, outputDir: join(dir, "out"), from: "2026-09-23T00:00:00.000Z", until: "2026-09-26T18:00:00.000Z", asOf: "2026-09-26T18:00:00.000Z", snapshotCapturedAt: "2026-09-26T18:00:00.000Z", topics: ["t"], gitSha: "a".repeat(40), dataDir };
   return { dir, opts, rawPath: join(dataDir, "raw", target) };
 }
 function readPool(outputDir: string) { return readFileSync(join(outputDir, "candidate-pool.jsonl"), "utf8").trim().split("\n").map((s) => JSON.parse(s)); }
@@ -85,6 +87,7 @@ describe("private Brief density export", () => {
   it("does not duplicate a batch whose completion is after the cohort window but before asOf", () => {
     const { opts } = setup({ completedAfterWindow: true });
     opts.asOf = "2026-09-26T20:00:00.000Z";
+    opts.snapshotCapturedAt = opts.asOf;
     expect(exportBriefDensity(opts)).toEqual({ batches: 1, candidates: 2, tracesWithoutBatch: 0 });
     expect(readPool(opts.outputDir)).toHaveLength(1);
   });
@@ -124,6 +127,14 @@ describe("private Brief density export", () => {
     expect(record.input_evidence[0].gaps).toContain("source_version_mismatch");
     expect(record.candidates[0].citations[0].locator_verified).toBe(false);
   });
+  it("does not expose a body or verify a quote against an invalid source revision", () => {
+    const { opts } = setup({ invalidRevision: true });
+    exportBriefDensity(opts); const [record] = readPool(opts.outputDir);
+    expect(record.input_evidence[0].gaps).toContain("revision_missing_or_invalid");
+    expect(record.input_evidence[0].body).toBeNull();
+    expect(record.input_evidence[0].archive.content_version_verified).toBe(false);
+    expect(record.candidates[0].citations[0].locator_verified).toBe(false);
+  });
   it("exports known failed diagnostics while leaving the unobserved total unknown", () => {
     const { opts } = setup({ failedOnly: true, diagnostics: true }); opts.dataDir = undefined;
     exportBriefDensity(opts); const [record] = readPool(opts.outputDir);
@@ -142,10 +153,29 @@ describe("private Brief density export", () => {
     const { opts, dir } = setup();
     expect(() => exportBriefDensity({ ...opts, dbPath: "relative.db" })).toThrow("absolute_paths_required");
     expect(() => exportBriefDensity({ ...opts, topics: ["t", "t"] })).toThrow("invalid_cohort");
+    expect(() => exportBriefDensity({ ...opts, snapshotCapturedAt: "2026-09-27T18:00:00.000Z" })).toThrow("as_of_must_equal_snapshot_capture");
+    expect(() => exportBriefDensity({ ...opts, outputDir: resolve("docs", "unsafe-brief-export") })).toThrow("output_dir_must_be_gitignored");
+    const priorCeiling = process.env.GIT_CEILING_DIRECTORIES;
+    try {
+      process.env.GIT_CEILING_DIRECTORIES = process.cwd();
+      expect(() => exportBriefDensity({ ...opts, outputDir: resolve("docs", "unsafe-brief-export") })).toThrow("output_dir_must_be_gitignored");
+    } finally {
+      if (priorCeiling === undefined) delete process.env.GIT_CEILING_DIRECTORIES;
+      else process.env.GIT_CEILING_DIRECTORIES = priorCeiling;
+    }
     const link = join(dir, "link.db"); symlinkSync(opts.dbPath, link);
     expect(() => exportBriefDensity({ ...opts, dbPath: link })).toThrow("snapshot_symlink_forbidden");
     writeFileSync(`${opts.dbPath}-wal`, "");
     expect(() => exportBriefDensity(opts)).toThrow("standalone_offline_snapshot_required");
+  });
+  it("allows a private output path covered by Git ignore rules", () => {
+    const { opts } = setup();
+    const repo = mkdtempSync(join(tmpdir(), "brief-density-git-")); dirs.push(repo);
+    execFileSync("git", ["init", "-q", repo]);
+    writeFileSync(join(repo, ".gitignore"), "private/\n");
+    mkdirSync(join(repo, "private"));
+    opts.outputDir = join(repo, "private", "out");
+    expect(exportBriefDensity(opts).candidates).toBe(2);
   });
   it("fails closed on redacted snapshots", () => {
     const { opts } = setup(); const db = new Database(opts.dbPath);
