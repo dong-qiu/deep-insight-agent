@@ -199,14 +199,17 @@ docker compose exec -T cron node /app/ops/backup-integrity.mjs --backup-dir /dat
 
 #### 6.1.1 off-box DR —— 每日异地同步到 S3（生产已启用）
 
-在 6.1 同卷备份之上多一层**异地副本**。现有生产 host cron 仍会同步整个
-`/data/backups`；C1 的选择性同步脚本须在首份新格式备份生成后单独更新 host cron，
-**未完成该迁移前不能把异地备份视为 C1 验收通过**。
+在 6.1 同卷备份之上多一层**异地副本**。截至 2026-10-01，生产 host cron
+已迁移到 C1 选择性同步脚本。9 月 30 日本地备份及其 S3 隔离副本的核验结果一致，
+但因历史引用缺口仍为 `incomplete`，**不能视为完整恢复点**。10 月 1 日新备份也为
+`incomplete`，核验时尚未到当日异地同步时间；9 月 29 日首份 C1 备份另有 WAL 异常，
+不能使用。见 [C1 生产核验收据](../verify/c1-backup-production-2026-10-01.md)。其他环境仍须逐项核对
+脚本版本、cron、对象及隔离副本，不能套用生产结论。
 
 - **S3 桶**：`deep-insight-backups-<账号ID>`（ap-southeast-1，与 EC2 同区→上传**免流量费**）；阻断公开访问 + 版本控制 + SSE-S3 默认加密 + 生命周期（对象 90 天过期、旧版本 30 天清，限成本）。
 - **权限**：EC2 实例角色 `deep-insight-ssm` 加最小内联策略 `s3-dr-backups`（仅本桶 `ListBucket`/`PutObject`/`GetObject`）；**无长期密钥**，走实例角色。
 - **目标调度**：host `/etc/cron.d/deep-insight-dr`，每日 **18:30 UTC**（在 6.1 容器内 18:00 备份之后）运行 `/usr/local/bin/deep-insight-dr-sync`。仅同步 90 天内有 C1 清单、文件清单和哈希一致的目录；不上传旧格式、暂存目录或额外文件。部分备份仍保留，但不得标为完整恢复点。同步不带 `--delete`；S3 对象由 90 天生命周期清理。日志 `/var/log/deep-insight-dr.log`。
-- **host 迁移**：先发布含 C1 的镜像，在 18:00 UTC 备份后确认产生新清单、核验状态及磁盘余量；再由管理员重跑 `ops/aws/setup-dr.sh` 更新 host cron 并执行首次选择性同步。此脚本会更新 S3/IAM/cron，不属于 code-only 部署；须单独核对执行窗口和结果。若无合格备份，脚本以 `no_eligible_backup_for_dr_sync` 失败，不应绕过筛选改用全目录同步。
+- **host 迁移（仅未迁移环境）**：先发布含 C1 的镜像，在 18:00 UTC 备份后确认产生新清单、核验状态及磁盘余量；再由管理员运行 `ops/aws/setup-dr.sh` 更新 host cron 并执行首次选择性同步。此脚本会更新 S3/IAM/cron，不属于 code-only 部署；须单独核对执行窗口和结果。若无合格备份，脚本以 `no_eligible_backup_for_dr_sync` 失败，不应绕过筛选改用全目录同步。
 
 桶名是 `<AWS_NAME>-backups-<账号ID>`（setup-dr.sh 计算）。**DR 现场先查出真实桶名**，免得对着占位符抓瞎：
 
