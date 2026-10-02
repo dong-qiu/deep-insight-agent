@@ -67,7 +67,8 @@ describe("C1 isolated synthetic recovery core (not production restore)", () => {
       if (scenario === "backup") f.db.exec("UPDATE report SET title='changed'");
       if (scenario === "duplicate") input.objects.push(input.objects[0]);
       const before = f.db.serialize();
-      expect(() => replaySynthetic(f.db, input)).toThrow(); expect(f.db.serialize()).toEqual(before);
+      // Native exact byte comparison avoids Vitest traversing ~1.2 MB of Buffer properties.
+      expect(() => replaySynthetic(f.db, input)).toThrow(); expect(f.db.serialize().equals(before)).toBe(true);
       expect(getReport(f.db, "r")).not.toBeNull();
     } finally { f.db.close(); }
   });
@@ -102,14 +103,14 @@ describe("C1 isolated synthetic recovery core (not production restore)", () => {
       const backup = f.authority.backup(f.db, "2026-01-02T00:00:00Z");
       f.commit(); f.commit(f.object({}, "other")); const input = { ...f.options(), backup }, before = f.db.serialize();
       expect(() => replaySynthetic(f.db, input)).toThrow("record_conflict");
-      expect(f.db.serialize()).toEqual(before); expect(getReport(f.db, "r")).not.toBeNull();
+      expect(f.db.serialize().equals(before)).toBe(true); expect(getReport(f.db, "r")).not.toBeNull();
     } finally { f.db.close(); }
   });
   it("rejects mismatched receipt signing keys before mutating the DB", () => {
     const f = fixture(); try {
       f.commit(); const input = f.options(), before = f.db.serialize();
       input.trustedRecovery = generateKeyPairSync("ed25519").publicKey;
-      expect(() => replaySynthetic(f.db, input)).toThrow("signature_invalid"); expect(f.db.serialize()).toEqual(before);
+      expect(() => replaySynthetic(f.db, input)).toThrow("signature_invalid"); expect(f.db.serialize().equals(before)).toBe(true);
     } finally { f.db.close(); }
   });
   it("cannot attest sampling before the synthetic origin or while a write is pending", () => {
@@ -130,4 +131,12 @@ describe("C1 isolated synthetic recovery core (not production restore)", () => {
   });
   it.each(["2026-02-30T00:00:00Z", "2026-01-01T00:00:00+08:00", "not-time"])("rejects noncanonical or invalid UTC %s", (time) => expect(() => utc(time)).toThrow("time_invalid"));
   it("normalizes second and millisecond UTC values numerically", () => expect(utc("2026-01-01T00:00:00Z")).toBe(utc("2026-01-01T00:00:00.000Z")));
+  it("exact Buffer comparison detects one changed byte in a same-length DB snapshot", () => {
+    const f = fixture(); try {
+      const before = f.db.serialize(), changed = Buffer.from(before);
+      expect(changed.equals(before)).toBe(true);
+      changed[changed.length - 1] ^= 1;
+      expect(changed.length).toBe(before.length); expect(changed.equals(before)).toBe(false);
+    } finally { f.db.close(); }
+  });
 });
