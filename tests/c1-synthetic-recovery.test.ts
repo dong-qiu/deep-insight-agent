@@ -84,6 +84,17 @@ describe("C1 isolated synthetic recovery core (not production restore)", () => {
       expect(f.db.prepare("SELECT name FROM sqlite_master WHERE name='c1_synthetic_deletion'").get()).toBeUndefined();
     } finally { f.db.close(); }
   });
+  it("repairs stale real report/index/FTS even when an identical tombstone is already in the trusted snapshot", () => {
+    const f = fixture(); try {
+      const object = f.object(), record = JSON.parse(object.body) as { record_id: string };
+      f.db.prepare(`INSERT INTO provenance_redaction(record_id,entity_key,scope,reason_code,effective_at,expiry_at,registry_ref,created_at)
+        VALUES (?,'report:r','report','user_erasure','2026-01-03T00:00:00Z','2026-02-01T00:00:00Z','synthetic','2026-01-03T00:00:00Z')`).run(record.record_id);
+      const backup = f.authority.backup(f.db, "2026-01-04T00:00:00Z"); f.commit(object);
+      replaySynthetic(f.db, { ...f.options(), backup });
+      expect(getReport(f.db, "r")).toBeNull(); expect(queryReportIndex(f.db, { topic: "t" })).toEqual([]);
+      expect(searchReports(f.db, "synthetic")).toEqual([]); expect(permanentlyHidden(f.db, "r")).toBe(true);
+    } finally { f.db.close(); }
+  });
   it("rolls back an earlier valid report deletion when a later record conflicts with an existing tombstone", () => {
     const f = fixture(); try {
       f.db.prepare(`INSERT INTO provenance_redaction(record_id,entity_key,scope,reason_code,effective_at,expiry_at,registry_ref,created_at)

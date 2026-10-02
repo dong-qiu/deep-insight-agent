@@ -124,6 +124,13 @@ export function replaySynthetic(db: DB, input: {
         row.effective_at !== record.effective_at || row.expiry_at !== record.expiry_at)) fail("record_conflict");
       db.prepare("INSERT INTO c1_synthetic_deletion VALUES (?,?,?) ON CONFLICT(record_id) DO NOTHING").run(record.record_id, record.entity_key, hash);
       applyRedactionTombstone(db, { ...record, registry_ref: ref });
+      // The real primitive cleans only newly inserted tombstones. A recovered snapshot may
+      // already contain an identical tombstone but stale projections, so repair them here too.
+      const reportId = record.entity_key.slice("report:".length);
+      db.prepare("UPDATE report SET status='deleted',body_path=NULL WHERE id=?").run(reportId);
+      for (const table of ["report_fts", "report_index", "report_review_snapshot", "report_selection_decision", "ppt_polish_cache"]) {
+        db.prepare(`DELETE FROM ${table} WHERE report_id=?`).run(reportId);
+      }
     }
   })();
   return signed({ protocol: "synthetic-c1-v1", backupHash, checkpointHash, image: input.image,
