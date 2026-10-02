@@ -127,6 +127,66 @@ test("historical and unsafe raw refs cannot be silently mapped", (t) => {
   assert.equal(verifyBackup(backup(h), h.dataDir).summary.references_unmapped, 3);
 });
 
+test("mixed current and legacy references cannot turn a new-data check into complete recovery", (t) => {
+  const f = fixture(t);
+  const db = new Database(f.dbPath);
+  db.prepare("INSERT INTO content_item(raw_ref) VALUES (?)").run(".data/raw/legacy.txt");
+  db.close();
+  const result = verifyBackup(backup(f), f.dataDir);
+  assert.equal(result.complete, false);
+  assert.equal(result.reason, "references_incomplete");
+  assert.equal(result.summary.references_present, 3);
+  assert.equal(result.summary.references_unmapped, 1);
+});
+
+test("copying a same-name legacy candidate and sealing its current hash cannot authenticate or map it", (t) => {
+  const f = fixture(t, { rawRef: ".data/raw/legacy.txt" });
+  const dir = backup(f);
+  mkdirSync(join(dir, ".data", "raw"), { recursive: true });
+  writeFileSync(join(dir, ".data", "raw", "legacy.txt"), "same-name candidate bytes");
+  const path = join(dir, "backup-manifest.json");
+  const manifest = JSON.parse(readFileSync(path, "utf8"));
+  const inspected = inspectBackup(dir, f.dataDir);
+  // Synthetic fixture only; a fresh seal does not repair the unmapped historical DB reference.
+  writeFileSync(path, JSON.stringify({ ...manifest, files: inspected.files, summary: inspected.summary }));
+  const result = verifyBackup(dir, f.dataDir);
+  assert.equal(result.complete, false);
+  assert.equal(result.reason, "references_incomplete");
+  assert.equal(result.summary.references_unmapped, 1);
+});
+
+test("a complete declaration cannot override historical reference gaps", (t) => {
+  const f = fixture(t, { rawRef: "" });
+  const dir = backup(f);
+  const path = join(dir, "backup-manifest.json");
+  const manifest = JSON.parse(readFileSync(path, "utf8"));
+  writeFileSync(path, JSON.stringify({ ...manifest, status: "complete" }));
+  const result = verifyBackup(dir, f.dataDir);
+  assert.equal(result.complete, false);
+  assert.equal(result.reason, "references_incomplete");
+  assert.equal(result.summary.references_unmapped, 1);
+});
+
+test("historical gap verification preserves DB/report bytes and past citation verdicts", (t) => {
+  const f = fixture(t, { rawRef: "raw/missing-original.txt" });
+  const db = new Database(f.dbPath);
+  db.exec("CREATE TABLE citation_check(verdict TEXT,reachability TEXT,consistency TEXT)");
+  db.prepare("INSERT INTO citation_check VALUES (?,?,?)").run("pass", "pass", "support");
+  db.close();
+  const dir = backup(f);
+  const files = ["insight.db", "reports/rep1.md", "reports/rep1.html"];
+  const before = files.map(path => readFileSync(join(dir, path)));
+  const result = verifyBackup(dir, f.dataDir);
+  assert.equal(result.complete, false);
+  assert.equal(result.summary.references_missing, 1);
+  files.forEach((path, i) => assert.deepEqual(readFileSync(join(dir, path)), before[i]));
+  const snapshot = new Database(join(dir, "insight.db"), { readonly: true });
+  try {
+    assert.deepEqual(snapshot.prepare("SELECT * FROM citation_check").all(), [{ verdict: "pass", reachability: "pass", consistency: "support" }]);
+    assert.equal(snapshot.prepare("SELECT raw_ref FROM content_item").get().raw_ref, "raw/missing-original.txt");
+  } finally { snapshot.close(); }
+});
+
 test("old snapshots without a manifest fail closed", (t) => {
   const f = fixture(t);
   const dir = backup(f);
