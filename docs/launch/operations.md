@@ -269,6 +269,8 @@ record ID。实现会在外部条件写前先在 `provenance_redaction_request` 
 解除外部访问限制前，用恢复前旧 cookie 确认报告 API 为 401、页面跳登录，新凭据重新登录后正常读取；
 cookie 只在内存处理，不写日志。不能在未轮换密钥时把“DB replay 成功”视为完整恢复通过。
 
+> **2026-10-02 已知恢复阻塞项**：现有 runner 将目标快照时间作为删除截止时间，会漏掉快照之后的删除；有限登记 expiry 也不能覆盖所有长期保留备份。下面的旧命令即使退出 0，亦不构成安全恢复或启动许可。保持恢复服务停止；新协议设计见 [恢复时间与覆盖契约](../plan/specs/recovery-time-coverage.md)（Proposed，未实现），不得直接套用于生产或把参数改成当前时间当作修复。
+
 从本机或 S3 DR 取回备份时，先完成上述会话密钥前置检查、停止 `app`、`cron` 和 `generation-dispatch-worker`，复制数据库/报告，再运行同镜像的
 `node /app/ops/replay-redaction-registry.cjs --restore-time <UTC RFC3339>`。runner 要求
 `REDACTION_REGISTRY_BUCKET`、`REDACTION_RECOVERY_ROLE_ARN` 与 HMAC secret ARN/version；它必须在**独立 recovery
