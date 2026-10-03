@@ -1739,3 +1739,24 @@ literal symlink 根路径由 stat 支持；glob 扫描发现的 symlink 目录�
 default-deny context 白名单必须一并包含 adapter；合成 Docker context 检查同时防止 vendor 内凭据混入。
 
 验收和 30 天上游检查/退出条件见 [工具链安全替换](../plan/specs/next-eslint-glob-security.md)。
+
+---
+
+## ADR-0041: 本地报告删除事实永久约束真实 reader 与发布提交
+
+- **日期**: 2026-10-03
+- **状态**: Proposed（生产代码切片；待代码评审/CI，不授权部署或恢复）
+
+复用现有 append-only `provenance_redaction`，不新建可漂移的第二份删除状态。已生效 report 删除
+不因原签名 expiry 到期而允许内容重现，合法重复回放仍原子修复派生模型；同记录冲突拒绝。
+新增冻结 v47 migration 验证全部既有 report 记录、补偿旧读模型并安装 report/index/review/PPT
+普通表提交约束；旧 migration 不变，旧镜像不允许绕过新边界读恢复副本。
+
+FTS5 virtual table 不可直接加 trigger，选择最小方案：清理事务内删除 FTS，发布事务校验删除门，
+所有 FTS reader JOIN 真实 report 及可见性门。残留/直接写入的 FTS 不作为可公开事实。
+未来记录依生效时间动态判定；报告身份或派生 report_id 更新、OR REPLACE 不得绕过约束。
+
+PPT 构建与删除可交错，首次加载不授予最终发送许可。构建结束、HTTP handler 构造响应前再次
+核验，以最后同步检查为交付授权线性化点；不宣称可以收回已授权在途响应或已下载副本。
+允许必要的管理员历史诊断，不删除独立可核验的关联洞察。此切片不签发 coverage/checkpoint，
+不改旧恢复 CLI，不证明生产历史覆盖；后续可信发行、闸门、启动收据及同镜像验收另行收口。

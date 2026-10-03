@@ -1,6 +1,7 @@
 /** Bounded report-quality review package.  This module only binds existing
  * provenance rows; it never copies source bodies, raw fetch handles or prompts. */
 import type { DB } from "./index.js";
+import { reportReaderVisibilitySql } from "./integrity-lifecycle.js";
 import { canonicalHash, entityKey, type EntityRef } from "./provenance-facts.js";
 
 export const REPORT_SELECTION_RULE_VERSION = "report-selection-v1";
@@ -220,7 +221,7 @@ export function getPublishedReportReview(db: DB, reportId: string): ReportReview
       s.trace_id,s.analysis_batch_id,s.selection_rule_version,s.created_at,COUNT(d.insight_id) AS decision_count
     FROM report_review_snapshot s JOIN report r ON r.id=s.report_id
     LEFT JOIN report_selection_decision d ON d.report_id=s.report_id
-    WHERE s.report_id=? AND r.status='done' AND s.publication_state='published'
+    WHERE s.report_id=? AND r.status='done' AND s.publication_state='published' AND ${reportReaderVisibilitySql(db, "r.id")}
       AND s.review_trace_status='complete' AND s.validate_started_event_id IS NOT NULL
     GROUP BY s.report_id`).get(reportId) as ReportReviewRow | undefined) ?? null;
 }
@@ -237,7 +238,7 @@ export function listPublishedReportReviewDecisions(
   const offset = Number.isSafeInteger(opts.offset) ? Math.max(0, Math.min(opts.offset, 1_000_000)) : 0;
   const published = db.prepare(`SELECT 1 FROM report_review_snapshot s
     JOIN report r ON r.id=s.report_id
-    WHERE s.report_id=? AND r.status='done' AND s.publication_state='published'
+    WHERE s.report_id=? AND r.status='done' AND s.publication_state='published' AND ${reportReaderVisibilitySql(db, "r.id")}
       AND review_trace_status='complete' AND validate_started_event_id IS NOT NULL`).get(reportId);
   if (!published) return null;
   const total = (db.prepare("SELECT COUNT(*) AS count FROM report_selection_decision WHERE report_id=?").get(reportId) as { count: number }).count;

@@ -9,6 +9,8 @@ import { saveAnalysisBatch, saveValidationResult } from "../db/analysis.js";
 import { type DB, openDb } from "../db/index.js";
 import { insertContentItem, insertSource, insertTopic } from "../db/repos.js";
 import { saveReport } from "../db/reports.js";
+import { applyProvenanceMigrations } from "../db/provenance-migrations.js";
+import { applyRedactionTombstone } from "../db/redaction.js";
 import { DISPLAY_PROJECTION_VERSION, sourceQuoteHash } from "../utils/source-quote-projection.js";
 
 // 把 ppt-polish 整体 mock：测试无 API key、CI 可跑；polish 路径只验调用契约
@@ -97,6 +99,12 @@ beforeEach(() => {
 });
 
 describe("exportReportPptx", () => {
+  it("real deck construction cannot return content after deletion commits during its await", async () => {
+    applyProvenanceMigrations(db);
+    const exporting = exportReportPptx(db, "rep_t1");
+    applyRedactionTombstone(db, { record_id: "ppt_deleted", entity_key: "report:rep_t1", scope: "report", reason_code: "user_erasure", effective_at: "2020-01-01T00:00:00.000Z", expiry_at: "2020-02-01T00:00:00.000Z", registry_ref: "records/ppt_deleted.json" });
+    expect(await exporting).toBeNull();
+  });
   it("不存在的报告 → null", async () => {
     const r = await exportReportPptx(db, "nope");
     expect(r).toBeNull();

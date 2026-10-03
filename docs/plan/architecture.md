@@ -197,6 +197,15 @@ P1c 的 SQLite DDL 唯一事实源是 `src/lib/db/schema.ts`；provenance migrat
 | `integrity_legal_hold_material` | `(tenant_id, report_id, hold_id, material_kind, material_id)` | legal hold 放置时追加的验证材料快照（manifest、Object-Lock anchor、历史签名 key、check）；全程不可改删。active hold 令 lifecycle purge fail-closed，release 后才按既有 retention 恢复受控清理。 |
 | `integrity_retention_tombstone` | `(tenant_id, report_id)` | 销毁前签名的 canonical proof；与签名公钥一起保留至 registry receipt 的 `retain_until`，到期的独立 purge 才可移除，最终仅留 P0 redaction tombstone。 |
 
+C1 报告删除边界复用 append-only `provenance_redaction`，不增加第二份删除状态。
+`scope=report`、精确 `report:<id>` 且已生效的记录永久阻止同 ID 对外可读，不以 expiry 重新放行。
+显式 v47 migration 验证旧记录、原子修复 report/index/FTS/review/PPT 投影并安装提交约束；DDL
+事实源在 `schema.ts`，migration 冻结其初版，应用启动不通过 SCHEMA_SQL 偷装。动态 view
+`report_redaction_boundary` 只计算当前生效集合，不存新状态。普通 report/index/review/PPT 表
+拒绝重新发布及 ID 重绑定；FTS5 不支持普通表 trigger，读时必须 JOIN report 并应用可见性门。
+未来生效记录在 reader/提交边界自动生效；只保留允许的管理员诊断，不把 trace locator 当正文。
+PPT 异步构建结束及 HTTP 响应构造前重新检查。此本地约束不证明外部登记册完整性、历史备份覆盖或恢复启动许可。
+
 manifest 和 binding 均为闭合 schema，JSON 必须为原始 RFC 8785 JCS UTF-8 bytes（拒绝空白、重排、重复 key、
 未声明字段与孤立 surrogate）。每次读回 anchor 均以 `artifact_manifest` / effect 记录的 `key_id`
 从保留的 public-key/certificate/revocation 历史中查找 Ed25519 公钥，并以指定 provider `VersionId` 读取后逐字段验证

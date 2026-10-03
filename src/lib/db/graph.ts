@@ -15,6 +15,7 @@ import { entitiesMentionedInStatement } from "../utils/reader-visible-entities.j
 import { type InsightRow, rowToInsight } from "./analysis.js";
 import { createReaderEvidenceContext, type CurrentCitationEvidence } from "./reader-evidence.js";
 import type { DB } from "./index.js";
+import { reportReaderVisibilitySql } from "./integrity-lifecycle.js";
 
 /** Reader-visible graph membership is intentionally stricter than raw insight storage.  A graph
  * node/edge and its drill card are reader-facing claims, so they need the same core evidence as
@@ -281,7 +282,7 @@ export function reportLinksByInsight(db: DB, topicId: string): Map<string, Insig
     .prepare(
       `SELECT r.id AS report_id, ri.date AS date, r.insight_ids AS insight_ids
        FROM report r JOIN report_index ri ON r.id = ri.report_id
-       WHERE r.topic_id = ? AND r.status = 'done' ORDER BY ri.date ASC`,
+       WHERE r.topic_id = ? AND r.status = 'done' AND ${reportReaderVisibilitySql(db, "r.id")} ORDER BY ri.date ASC`,
     )
     .all(topicId) as { report_id: string; date: string; insight_ids: string }[];
   const map = new Map<string, InsightReportLink[]>();

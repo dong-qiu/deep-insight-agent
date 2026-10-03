@@ -4,6 +4,44 @@ import type { DB } from "./index.js";
 import { merkleRoot } from "./integrity-anchors.js";
 import { INTEGRITY_ANCHOR_HARDENING_SCHEMA_SQL, INTEGRITY_ANCHOR_IMMUTABILITY_SQL, INTEGRITY_ANCHOR_LEGACY_SCHEMA_SQL, INTEGRITY_ANCHOR_RECOVERY_SCHEMA_SQL, INTEGRITY_CHECK_KEY_REVOCATION_SCHEMA_SQL, INTEGRITY_CHECK_SCHEMA_SQL, INTEGRITY_LIFECYCLE_COMPLETION_PROOF_SCHEMA_SQL, INTEGRITY_LIFECYCLE_DAILY_ROOT_MATERIAL_BACKFILL_SQL, INTEGRITY_LIFECYCLE_EXTERNAL_HOLD_SCHEMA_SQL, INTEGRITY_LIFECYCLE_HOLD_AND_TOMBSTONE_RETENTION_SCHEMA_SQL, INTEGRITY_LIFECYCLE_HOLD_TOMBSTONE_SNAPSHOT_SCHEMA_SQL, INTEGRITY_LIFECYCLE_PURGE_SCHEMA_SQL, INTEGRITY_LIFECYCLE_REGISTRY_PROOF_SCHEMA_SQL, INTEGRITY_LIFECYCLE_SCHEMA_SQL, INTEGRITY_MAINTENANCE_LEASE_SCHEMA_SQL, P1_DASHBOARD_COST_READ_MODEL_V1_SCHEMA_SQL, P1_DASHBOARD_READ_MODEL_V1_FOLLOWUP_SQL, P1_DASHBOARD_TRACE_READ_MODEL_V1_SCHEMA_SQL, P1_METRICS_CONFLICT_AUDIT_SCHEMA_SQL, P1_METRICS_FOLLOWUP_SCHEMA_SQL, P1_METRICS_SCHEMA_SQL, PODCAST_TRANSCRIPT_POLICY_VERSION_IMMUTABILITY_SQL } from "./schema.js";
 import { migratePodcastTranscriptContracts } from "./podcast-transcript-migrations.js";
+import { applyRedactionTombstone, redactionUtc, type RedactionTombstone } from "./redaction.js";
+
+// Immutable v47 snapshot of schema.ts's contract. Do not modify after release.
+const REPORT_REDACTION_BOUNDARY_V1_FROZEN_SQL = `
+CREATE VIEW report_redaction_boundary AS SELECT substr(entity_key,8) AS report_id
+  FROM provenance_redaction WHERE scope='report' AND julianday(effective_at)<=julianday('now');
+CREATE TRIGGER redaction_no_replace BEFORE INSERT ON provenance_redaction
+  WHEN EXISTS (SELECT 1 FROM provenance_redaction WHERE record_id=NEW.record_id OR (entity_key=NEW.entity_key AND scope=NEW.scope))
+  BEGIN SELECT RAISE(ABORT,'redaction_record_conflict'); END;
+CREATE TRIGGER redaction_report_valid BEFORE INSERT ON provenance_redaction WHEN NEW.scope='report' AND (
+  NEW.entity_key NOT GLOB 'report:?*' OR substr(NEW.entity_key,8) GLOB '*[^A-Za-z0-9_-]*'
+  OR strftime('%Y-%m-%dT%H:%M:%fZ',NEW.effective_at) IS NOT CASE WHEN length(NEW.effective_at)=20 THEN substr(NEW.effective_at,1,19)||'.000Z' ELSE NEW.effective_at END
+  OR strftime('%Y-%m-%dT%H:%M:%fZ',NEW.expiry_at) IS NOT CASE WHEN length(NEW.expiry_at)=20 THEN substr(NEW.expiry_at,1,19)||'.000Z' ELSE NEW.expiry_at END
+  OR julianday(NEW.expiry_at)<=julianday(NEW.effective_at))
+  BEGIN SELECT RAISE(ABORT,'redaction_time_or_key_invalid'); END;
+CREATE TRIGGER redacted_report_insert BEFORE INSERT ON report
+  WHEN EXISTS (SELECT 1 FROM report_redaction_boundary WHERE report_id=NEW.id) AND (NEW.status<>'deleted' OR NEW.body_path IS NOT NULL)
+  BEGIN SELECT RAISE(ABORT,'report_redacted'); END;
+CREATE TRIGGER redacted_report_update BEFORE UPDATE ON report
+  WHEN EXISTS (SELECT 1 FROM report_redaction_boundary WHERE report_id IN (OLD.id,NEW.id)) AND (NEW.id<>OLD.id OR NEW.status<>'deleted' OR NEW.body_path IS NOT NULL)
+  BEGIN SELECT RAISE(ABORT,'report_redacted'); END;
+CREATE TRIGGER redacted_index_insert BEFORE INSERT ON report_index WHEN EXISTS (SELECT 1 FROM report_redaction_boundary WHERE report_id=NEW.report_id)
+  BEGIN SELECT RAISE(ABORT,'report_redacted'); END;
+CREATE TRIGGER redacted_index_update BEFORE UPDATE ON report_index WHEN EXISTS (SELECT 1 FROM report_redaction_boundary WHERE report_id IN (OLD.report_id,NEW.report_id))
+  BEGIN SELECT RAISE(ABORT,'report_redacted'); END;
+CREATE TRIGGER redacted_review_insert BEFORE INSERT ON report_review_snapshot WHEN EXISTS (SELECT 1 FROM report_redaction_boundary WHERE report_id=NEW.report_id)
+  BEGIN SELECT RAISE(ABORT,'report_redacted'); END;
+CREATE TRIGGER redacted_review_update BEFORE UPDATE ON report_review_snapshot WHEN EXISTS (SELECT 1 FROM report_redaction_boundary WHERE report_id IN (OLD.report_id,NEW.report_id))
+  BEGIN SELECT RAISE(ABORT,'report_redacted'); END;
+CREATE TRIGGER redacted_selection_insert BEFORE INSERT ON report_selection_decision WHEN EXISTS (SELECT 1 FROM report_redaction_boundary WHERE report_id=NEW.report_id)
+  BEGIN SELECT RAISE(ABORT,'report_redacted'); END;
+CREATE TRIGGER redacted_selection_update BEFORE UPDATE ON report_selection_decision WHEN EXISTS (SELECT 1 FROM report_redaction_boundary WHERE report_id IN (OLD.report_id,NEW.report_id))
+  BEGIN SELECT RAISE(ABORT,'report_redacted'); END;
+CREATE TRIGGER redacted_ppt_insert BEFORE INSERT ON ppt_polish_cache WHEN EXISTS (SELECT 1 FROM report_redaction_boundary WHERE report_id=NEW.report_id)
+  BEGIN SELECT RAISE(ABORT,'report_redacted'); END;
+CREATE TRIGGER redacted_ppt_update BEFORE UPDATE ON ppt_polish_cache WHEN EXISTS (SELECT 1 FROM report_redaction_boundary WHERE report_id IN (OLD.report_id,NEW.report_id))
+  BEGIN SELECT RAISE(ABORT,'report_redacted'); END;
+`;
 
 // Immutable migration input. This feature enters after main's v40-v44 ledger
 // entries, so its v45 DDL must never be derived from the mutable fresh-schema
@@ -450,6 +488,7 @@ DELETE FROM dashboard_cost_fact_v1 WHERE tenant_id='default' AND EXISTS (
   // under its old branch-local v40/v41 numbers, so it enters as v45.
   { version: "20260916_45_report_quality_review_trace_v1", sql: REPORT_REVIEW_TRACE_V1_FROZEN_SQL },
   { version: "20260924_46_reader_statement", sql: READER_STATEMENT_SQL },
+  { version: "20261003_47_report_redaction_boundary", sql: REPORT_REDACTION_BOUNDARY_V1_FROZEN_SQL },
 ];
 
 function hasColumn(db: DB, table: string, column: string): boolean {
@@ -634,6 +673,16 @@ export function applyProvenanceMigrations(db: DB): void {
         if (!hasColumn(db, "insight", "reader_statement")) {
           db.exec(migration.sql);
         }
+      } else if (migration.version === "20261003_47_report_redaction_boundary") {
+        const records = db.prepare("SELECT record_id,entity_key,scope,reason_code,effective_at,expiry_at,registry_ref FROM provenance_redaction WHERE scope='report'").all() as RedactionTombstone[];
+        // Validate the entire set before repairing anything; the surrounding
+        // exclusive transaction also rolls back DDL, repairs and ledger on error.
+        for (const record of records) {
+          if (!/^report:[A-Za-z0-9_-]+$/.test(record.entity_key)) throw new Error("redaction_report_key_invalid");
+          if (redactionUtc(record.expiry_at) <= redactionUtc(record.effective_at)) throw new Error("redaction_time_invalid");
+        }
+        for (const record of records) applyRedactionTombstone(db, record);
+        db.exec(migration.sql);
       } else if (migration.version === "20260910_40_raw_archive_effect") {
         migrateRawArchiveEffect(db);
       } else if (migration.version === "20260911_41_content_reader_eligibility") {

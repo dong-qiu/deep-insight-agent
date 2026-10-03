@@ -1,6 +1,7 @@
 /** SQLite visibility and recovery protocol for P1c anchors. */
 import { createPublicKey, randomUUID, verify, type KeyObject } from "node:crypto";
 import type { DB } from "./index.js";
+import { assertReportNotRedacted } from "./redaction.js";
 import { anchorEnvelopeBytes, anchorIdempotencyKey, anchorMatchesManifest, anchorSignerPublicKey, parseCanonicalAnchorEnvelope, parseCanonicalJsonBytes, signAnchor, signAnchorBytes, type AnchorSigner, type AnchorStore, type ArtifactManifest, type SignedAnchor, jcs, merkleRoot, sha256, utf8, validateManifest } from "./integrity-anchors.js";
 
 const tenant = "default";
@@ -102,6 +103,7 @@ export function revokeAnchorSigningKey(db: DB, keyId: string, reason = "revoked"
 
 /** Persist exact candidate bytes before calling an external store. */
 export async function planAnchorPublication(db: DB, input: AnchorPublication, signer: AnchorSigner): Promise<StoredAnchorEffect> {
+  assertReportNotRedacted(db, input.manifest.report_id);
   validateManifest(input.manifest); const manifestHash = sha256(utf8(input.manifest)); const prior = stored(db, input.generation_effect_id, input.manifest);
   const parent = db.prepare("SELECT report_id FROM generation_effect WHERE id=?").get(input.generation_effect_id) as { report_id: string } | undefined;
   if (!parent || parent.report_id !== input.manifest.report_id) throw new Error("anchor_effect_report_mismatch");
@@ -114,6 +116,7 @@ export async function planAnchorPublication(db: DB, input: AnchorPublication, si
   const candidate = await signAnchor(input.manifest, input.issued_at, signer);
   const created = now(); const canonical = jcs(input.manifest);
   const manifestSignature = await signAnchorBytes(signer, Buffer.concat([Buffer.from("manifest-v1\0"), Buffer.from(canonical)]));
+  assertReportNotRedacted(db, input.manifest.report_id);
   const result = { id: id("anchor_effect"), generation_effect_id: input.generation_effect_id, report_id: input.manifest.report_id, artifact_id: input.manifest.artifact_id, artifact_version: input.manifest.artifact_version, manifest_hash: manifestHash, manifest_canonical: canonical, content_hash: input.manifest.content_hash, content_length: input.manifest.length, media_type: input.manifest.media_type, object_key: input.manifest.external_anchor.object_key, anchor_payload: jcs(candidate), anchor_provider_version_id: null, manifest_signature: Buffer.from(manifestSignature).toString("base64url"), manifest_key_id: signer.key_id, manifest_algorithm: "ed25519", manifest_issued_at: input.issued_at, retain_until: input.retain_until, status: "planned", retry_count: 0, created_at: created };
   db.prepare(`INSERT INTO generation_anchor_effect(id,generation_effect_id,tenant_id,report_id,artifact_id,artifact_version,manifest_hash,manifest_canonical,content_hash,content_length,media_type,anchor_idempotency_key,object_key,anchor_payload,anchor_provider_version_id,manifest_signature,manifest_key_id,manifest_algorithm,manifest_issued_at,retain_until,status,retry_count,error,created_at,updated_at)
     VALUES (@id,@generation_effect_id,@tenant,@report_id,@artifact_id,@artifact_version,@manifest_hash,@manifest_canonical,@content_hash,@content_length,@media_type,@anchor_idempotency_key,@object_key,@anchor_payload,NULL,@manifest_signature,@manifest_key_id,@manifest_algorithm,@manifest_issued_at,@retain_until,'planned',0,NULL,@created,@updated)`).run({ ...result, tenant, anchor_idempotency_key: anchorIdempotencyKey(input.manifest), created, updated: created });
@@ -146,6 +149,8 @@ function verifyManifestMaterial(db: DB, row: StoredAnchorEffect): void {
 export async function writePlannedAnchor(db: DB, store: AnchorStore, input: AnchorPublication, signer: AnchorSigner): Promise<{ reused: boolean; provider_version_id: string | null }> {
   const row = await planAnchorPublication(db, input, signer); const candidate = parseCandidate(db, row);
   assertAnchorPublicationKeyActive(db, candidate.key_id);
+  // Signing/planning awaits can race a committed deletion. Check at the actual external-write boundary.
+  assertReportNotRedacted(db, input.manifest.report_id);
   let providerVersion: string | null = null; let reused = false;
   try {
     const result = await store.putIfAbsent(row.object_key, anchorEnvelopeBytes(candidate), input.retain_until);
