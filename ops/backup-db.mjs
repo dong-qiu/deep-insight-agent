@@ -78,12 +78,24 @@ const staging = mkdtempSync(join(dirname(BACKUP_ROOT), ".backup-staging-"));
 let dbKb = "0";
 let reportFiles = 0;
 let manifest;
+let dbSnapshotInterval;
 try {
   // 1) SQLite 在线备份（对活库安全，产出一致单文件；优于 readonly VACUUM INTO——
   //    后者在 app 并发写时跨连接易遇锁/-shm 问题）。
   const db = new Database(DB_PATH);
   try {
+    const sourceDataVersionBefore = db.pragma("data_version", { simple: true });
+    const startedAt = new Date().toISOString();
     await db.backup(join(staging, "insight.db"));
+    const completedAt = new Date().toISOString();
+    const sourceDataVersionAfter = db.pragma("data_version", { simple: true });
+    dbSnapshotInterval = {
+      started_at: startedAt,
+      completed_at: completedAt,
+      source_data_version_before: sourceDataVersionBefore,
+      source_data_version_after: sourceDataVersionAfter,
+      source_data_version_unchanged: sourceDataVersionBefore === sourceDataVersionAfter,
+    };
   } finally {
     db.close();
   }
@@ -115,7 +127,7 @@ try {
     if (existsSync(rawDir)) cpSync(rawDir, join(staging, "raw"), { recursive: true });
   }
   // 4) 对备份快照自身建清单；历史缺口如实标 incomplete，不销毁有用的部分备份。
-  manifest = writeBackupManifest(staging, DATA_DIR, { rawIncluded: INCLUDE_RAW });
+  manifest = writeBackupManifest(staging, DATA_DIR, { rawIncluded: INCLUDE_RAW, dbSnapshotInterval });
   if (existsSync(dest)) throw new Error("backup_target_appeared_during_staging");
   renameSync(staging, dest);
 } catch (e) {

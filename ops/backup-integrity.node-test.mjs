@@ -50,12 +50,96 @@ test("default backup includes raw, seals file hashes, and verifies an isolated c
   const f = fixture(t);
   const original = backup(f);
   assert.ok(existsSync(join(original, "raw", f.rawName)));
+  const manifest = JSON.parse(readFileSync(join(original, "backup-manifest.json"), "utf8"));
+  const interval = manifest.db_snapshot_interval;
+  assert.ok(interval);
+  assert.ok(interval.started_at <= interval.completed_at && interval.completed_at <= manifest.created_at);
+  assert.equal(interval.source_data_version_unchanged, interval.source_data_version_before === interval.source_data_version_after);
+  assert.equal(interval.db_sha256, createHash("sha256").update(readFileSync(join(original, "insight.db"))).digest("hex"));
   assert.equal(verifyBackup(original, f.dataDir).complete, true);
+  assert.equal(verifyBackup(original, f.dataDir).snapshot_time_evidence, "db_interval_no_external_commit_observed");
   const isolated = join(f.root, "isolated-restore");
   cpSync(original, isolated, { recursive: true });
   assert.equal(verifyBackup(isolated, f.dataDir).complete, true);
   writeFileSync(join(isolated, "raw", f.rawName), "different bytes");
   assert.equal(verifyBackup(isolated, f.dataDir).reason, "manifest_mismatch");
+});
+
+test("snapshot time receipt is bound to the backed-up database and data-version observation", (t) => {
+  const f = fixture(t);
+  const dir = backup(f);
+  const path = join(dir, "backup-manifest.json");
+  const original = JSON.parse(readFileSync(path, "utf8"));
+  const changedSha = structuredClone(original);
+  changedSha.db_snapshot_interval.db_sha256 = "0".repeat(64);
+  writeFileSync(path, JSON.stringify(changedSha));
+  assert.equal(verifyBackup(dir, f.dataDir).reason, "snapshot_interval_invalid");
+  const changedObservation = structuredClone(original);
+  changedObservation.db_snapshot_interval.source_data_version_unchanged = !changedObservation.db_snapshot_interval.source_data_version_unchanged;
+  writeFileSync(path, JSON.stringify(changedObservation));
+  assert.equal(verifyBackup(dir, f.dataDir).reason, "snapshot_interval_invalid");
+});
+
+test("legacy manifests remain restorable without gaining snapshot-time evidence", (t) => {
+  const f = fixture(t);
+  const dir = backup(f);
+  const path = join(dir, "backup-manifest.json");
+  const manifest = JSON.parse(readFileSync(path, "utf8"));
+  delete manifest.db_snapshot_interval;
+  writeFileSync(path, JSON.stringify(manifest));
+  const result = verifyBackup(dir, f.dataDir);
+  assert.equal(result.complete, true);
+  assert.equal(result.snapshot_time_evidence, "legacy_unattested");
+});
+
+test("a second SQLite connection changes data_version and marks the observed interval", (t) => {
+  const f = fixture(t);
+  const dir = backup(f);
+  const observer = new Database(f.dbPath);
+  const writer = new Database(f.dbPath);
+  try {
+    const before = observer.pragma("data_version", { simple: true });
+    writer.prepare("INSERT INTO content_item(raw_ref) VALUES (?)").run("raw/another.txt");
+    const after = observer.pragma("data_version", { simple: true });
+    assert.notEqual(before, after);
+    const path = join(dir, "backup-manifest.json");
+    const manifest = JSON.parse(readFileSync(path, "utf8"));
+    manifest.db_snapshot_interval.source_data_version_before = before;
+    manifest.db_snapshot_interval.source_data_version_after = after;
+    manifest.db_snapshot_interval.source_data_version_unchanged = false;
+    writeFileSync(path, JSON.stringify(manifest));
+    const result = verifyBackup(dir, f.dataDir);
+    assert.equal(result.complete, true);
+    assert.equal(result.snapshot_time_evidence, "db_interval_external_commit_observed");
+  } finally {
+    writer.close();
+    observer.close();
+  }
+});
+
+test("data_version detects a second connection's commit during the online backup call", async (t) => {
+  const f = fixture(t);
+  const observer = new Database(f.dbPath);
+  const writer = new Database(f.dbPath);
+  try {
+    const before = observer.pragma("data_version", { simple: true });
+    let wroteDuringBackup = false;
+    await observer.backup(join(f.root, "concurrent.db"), {
+      progress() {
+        if (!wroteDuringBackup) {
+          writer.prepare("INSERT INTO content_item(raw_ref) VALUES (?)").run("raw/another.txt");
+          wroteDuringBackup = true;
+        }
+        return 1;
+      },
+    });
+    const after = observer.pragma("data_version", { simple: true });
+    assert.equal(wroteDuringBackup, true);
+    assert.notEqual(after, before);
+  } finally {
+    writer.close();
+    observer.close();
+  }
 });
 
 test("a WAL source produces a standalone sealed backup without generated SQLite sidecars", (t) => {
@@ -274,8 +358,25 @@ test("a sealed snapshot older than the redaction-safe restore window is not admi
   const manifestPath = join(dir, "backup-manifest.json");
   const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
   manifest.created_at = new Date(Date.now() - 91 * 24 * 60 * 60 * 1000).toISOString();
+  manifest.db_snapshot_interval.started_at = manifest.created_at;
+  manifest.db_snapshot_interval.completed_at = manifest.created_at;
   writeFileSync(manifestPath, JSON.stringify(manifest));
   assert.equal(verifyBackup(dir, f.dataDir).reason, "backup_outside_restore_window");
+});
+
+test("new manifests use the interval start for the 90-day restore boundary", (t) => {
+  const f = fixture(t);
+  const dir = backup(f);
+  const path = join(dir, "backup-manifest.json");
+  const manifest = JSON.parse(readFileSync(path, "utf8"));
+  manifest.db_snapshot_interval.started_at = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000 - 1000).toISOString();
+  writeFileSync(path, JSON.stringify(manifest));
+  assert.equal(verifyBackup(dir, f.dataDir).reason, "backup_outside_restore_window");
+  const legacy = structuredClone(manifest);
+  delete legacy.db_snapshot_interval;
+  writeFileSync(path, JSON.stringify(legacy));
+  assert.equal(verifyBackup(dir, f.dataDir).complete, true);
+  assert.equal(verifyBackup(dir, f.dataDir).snapshot_time_evidence, "legacy_unattested");
 });
 
 test("malformed calendar-stamp directories do not crash retention planning", (t) => {
