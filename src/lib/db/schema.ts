@@ -1310,3 +1310,40 @@ CREATE TRIGGER IF NOT EXISTS c1_synthetic_deletion_no_update BEFORE UPDATE ON c1
 CREATE TRIGGER IF NOT EXISTS c1_synthetic_deletion_no_delete BEFORE DELETE ON c1_synthetic_deletion
   BEGIN SELECT RAISE(ABORT,'synthetic deletion immutable'); END;
 `;
+
+/** Explicit v47 migration only: never installed by legacy SCHEMA_SQL replay. */
+export const REPORT_REDACTION_BOUNDARY_SCHEMA_SQL = `
+CREATE VIEW report_redaction_boundary AS SELECT substr(entity_key,8) AS report_id
+  FROM provenance_redaction WHERE scope='report' AND julianday(effective_at)<=julianday('now');
+CREATE TRIGGER redaction_no_replace BEFORE INSERT ON provenance_redaction
+  WHEN EXISTS (SELECT 1 FROM provenance_redaction WHERE record_id=NEW.record_id OR (entity_key=NEW.entity_key AND scope=NEW.scope))
+  BEGIN SELECT RAISE(ABORT,'redaction_record_conflict'); END;
+CREATE TRIGGER redaction_report_valid BEFORE INSERT ON provenance_redaction WHEN NEW.scope='report' AND (
+  NEW.entity_key NOT GLOB 'report:?*' OR substr(NEW.entity_key,8) GLOB '*[^A-Za-z0-9_-]*'
+  OR strftime('%Y-%m-%dT%H:%M:%fZ',NEW.effective_at) IS NOT CASE WHEN length(NEW.effective_at)=20 THEN substr(NEW.effective_at,1,19)||'.000Z' ELSE NEW.effective_at END
+  OR strftime('%Y-%m-%dT%H:%M:%fZ',NEW.expiry_at) IS NOT CASE WHEN length(NEW.expiry_at)=20 THEN substr(NEW.expiry_at,1,19)||'.000Z' ELSE NEW.expiry_at END
+  OR julianday(NEW.expiry_at)<=julianday(NEW.effective_at))
+  BEGIN SELECT RAISE(ABORT,'redaction_time_or_key_invalid'); END;
+CREATE TRIGGER redacted_report_insert BEFORE INSERT ON report
+  WHEN EXISTS (SELECT 1 FROM report_redaction_boundary WHERE report_id=NEW.id) AND (NEW.status<>'deleted' OR NEW.body_path IS NOT NULL)
+  BEGIN SELECT RAISE(ABORT,'report_redacted'); END;
+CREATE TRIGGER redacted_report_update BEFORE UPDATE ON report
+  WHEN EXISTS (SELECT 1 FROM report_redaction_boundary WHERE report_id IN (OLD.id,NEW.id)) AND (NEW.id<>OLD.id OR NEW.status<>'deleted' OR NEW.body_path IS NOT NULL)
+  BEGIN SELECT RAISE(ABORT,'report_redacted'); END;
+CREATE TRIGGER redacted_index_insert BEFORE INSERT ON report_index WHEN EXISTS (SELECT 1 FROM report_redaction_boundary WHERE report_id=NEW.report_id)
+  BEGIN SELECT RAISE(ABORT,'report_redacted'); END;
+CREATE TRIGGER redacted_index_update BEFORE UPDATE ON report_index WHEN EXISTS (SELECT 1 FROM report_redaction_boundary WHERE report_id IN (OLD.report_id,NEW.report_id))
+  BEGIN SELECT RAISE(ABORT,'report_redacted'); END;
+CREATE TRIGGER redacted_review_insert BEFORE INSERT ON report_review_snapshot WHEN EXISTS (SELECT 1 FROM report_redaction_boundary WHERE report_id=NEW.report_id)
+  BEGIN SELECT RAISE(ABORT,'report_redacted'); END;
+CREATE TRIGGER redacted_review_update BEFORE UPDATE ON report_review_snapshot WHEN EXISTS (SELECT 1 FROM report_redaction_boundary WHERE report_id IN (OLD.report_id,NEW.report_id))
+  BEGIN SELECT RAISE(ABORT,'report_redacted'); END;
+CREATE TRIGGER redacted_selection_insert BEFORE INSERT ON report_selection_decision WHEN EXISTS (SELECT 1 FROM report_redaction_boundary WHERE report_id=NEW.report_id)
+  BEGIN SELECT RAISE(ABORT,'report_redacted'); END;
+CREATE TRIGGER redacted_selection_update BEFORE UPDATE ON report_selection_decision WHEN EXISTS (SELECT 1 FROM report_redaction_boundary WHERE report_id IN (OLD.report_id,NEW.report_id))
+  BEGIN SELECT RAISE(ABORT,'report_redacted'); END;
+CREATE TRIGGER redacted_ppt_insert BEFORE INSERT ON ppt_polish_cache WHEN EXISTS (SELECT 1 FROM report_redaction_boundary WHERE report_id=NEW.report_id)
+  BEGIN SELECT RAISE(ABORT,'report_redacted'); END;
+CREATE TRIGGER redacted_ppt_update BEFORE UPDATE ON ppt_polish_cache WHEN EXISTS (SELECT 1 FROM report_redaction_boundary WHERE report_id IN (OLD.report_id,NEW.report_id))
+  BEGIN SELECT RAISE(ABORT,'report_redacted'); END;
+`;

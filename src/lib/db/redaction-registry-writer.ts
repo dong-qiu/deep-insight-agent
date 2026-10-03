@@ -169,26 +169,31 @@ export async function registerRedaction(
   }
   // provenance_redaction 对 (entity_key,scope) 也是 append-only 唯一约束；实体已经脱敏时不得再写一个
   // 永久不可删除的外部对象，直接复用已登记的事实即可。
-  const existingTombstone = db.prepare("SELECT record_id,registry_ref,effective_at,reason_code,expiry_at FROM provenance_redaction WHERE entity_key=? AND scope=?")
-    .get(input.entity_key, input.scope) as { record_id: string; registry_ref: string; effective_at: string; reason_code: string; expiry_at: string } | undefined;
+  const existingTombstone = db.prepare("SELECT record_id,entity_key,scope,registry_ref,effective_at,reason_code,expiry_at FROM provenance_redaction WHERE entity_key=? AND scope=?")
+    .get(input.entity_key, input.scope) as import("./redaction.js").RedactionTombstone | undefined;
   if (existingTombstone) {
     if (existingTombstone.reason_code !== input.reason_code || existingTombstone.expiry_at !== input.expiry_at) registryError("redaction_existing_tombstone_conflict");
     const durableRequest = db.prepare(`SELECT 1 FROM provenance_redaction_request
       WHERE record_id=? AND status='registered' AND ? = 's3://' || ? || '/' || registry_key`).get(
       existingTombstone.record_id, existingTombstone.registry_ref, config.bucket,
     );
-    if (onRegistered && durableRequest) db.transaction(() => onRegistered(existingTombstone))();
+    db.transaction(() => {
+      applyRedactionTombstone(db, existingTombstone);
+      if (onRegistered && durableRequest) onRegistered(existingTombstone);
+    })();
     return { record_id: existingTombstone.record_id, registry_ref: existingTombstone.registry_ref, already_registered: true };
   }
   let pending = loadPending(db, input.deletion_request_id);
   if (pending && !sameRequest(pending, input)) registryError("redaction_request_conflict");
   if (pending?.status === "registered") {
     const registered = pending;
-    if (onRegistered) db.transaction(() => onRegistered({
-      record_id: registered.record_id,
-      registry_ref: `s3://${config.bucket}/${registered.registry_key}`,
-      effective_at: registered.effective_at,
-    }))();
+    db.transaction(() => {
+      const registryRef = `s3://${config.bucket}/${registered.registry_key}`;
+      applyRedactionTombstone(db, { record_id: registered.record_id, entity_key: registered.entity_key,
+        scope: registered.scope, reason_code: registered.reason_code, effective_at: registered.effective_at,
+        expiry_at: registered.expiry_at, registry_ref: registryRef });
+      onRegistered?.({ record_id: registered.record_id, registry_ref: registryRef, effective_at: registered.effective_at });
+    })();
     return { record_id: registered.record_id, registry_ref: `s3://${config.bucket}/${registered.registry_key}`, already_registered: true };
   }
   if (!pending) pending = await buildPending(db, input, config, clients);

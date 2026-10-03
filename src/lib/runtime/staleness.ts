@@ -12,6 +12,7 @@
 import { notify, type Notification } from "./alert.js";
 import { runLogger } from "./logger.js";
 import type { DB } from "../db/index.js";
+import { reportReaderVisibilitySql } from "../db/integrity-lifecycle.js";
 
 const MS_PER_HOUR = 3_600_000;
 
@@ -24,7 +25,7 @@ export interface Freshness {
 
 /** 读最新 done 报告 + 最新采集内容的时间，算距今小时数（纯读，无 LLM）。 */
 export function getFreshness(db: DB, now: number = Date.now()): Freshness {
-  const r = db.prepare("SELECT MAX(generated_at) AS m FROM report WHERE status='done'").get() as { m: string | null };
+  const r = db.prepare(`SELECT MAX(generated_at) AS m FROM report WHERE status='done' AND ${reportReaderVisibilitySql(db, "report.id")}`).get() as { m: string | null };
   const c = db.prepare("SELECT MAX(fetched_at) AS m FROM content_item").get() as { m: string | null };
   const ageH = (iso: string | null): number | null => {
     if (!iso) return null;
@@ -90,7 +91,7 @@ export function checkDailyTopicStaleness(
     SELECT t.id AS topic_id,t.name AS topic_name,t.created_at AS topic_created_at,
       MAX(r.generated_at) AS latest_report_at
     FROM topic t
-    LEFT JOIN report r ON r.topic_id=t.id AND r.type='brief' AND r.status='done'
+    LEFT JOIN report r ON r.topic_id=t.id AND r.type='brief' AND r.status='done' AND ${reportReaderVisibilitySql(db, "r.id")}
     WHERE t.enabled=1 AND t.brief_schedule='daily'
     GROUP BY t.id,t.name,t.created_at
     ORDER BY t.id ASC
