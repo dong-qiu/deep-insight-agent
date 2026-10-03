@@ -6,6 +6,7 @@
  * capacity/routing failure opens the gate.  A gate is process-local and keyed by endpoint+model,
  * so concurrent validators wait for one half-open probe instead of stampeding the relay.
  */
+import { abortableDelay, awaitWithSignal, throwIfAborted } from "./cancellation.js";
 export const RELAY_RECOVERY_POLICY_VERSION = "relay-half-open-v1";
 export const RELAY_RECOVERY_PROBE_DELAYS_MS = [10_000, 20_000, 40_000] as const;
 export const RELAY_RECOVERY_MAX_PROBES = RELAY_RECOVERY_PROBE_DELAYS_MS.length;
@@ -60,40 +61,8 @@ function abortError(signal: AbortSignal): Error {
   return signal.reason instanceof Error ? signal.reason : new Error("relay recovery wait aborted");
 }
 
-function sleep(ms: number, signal?: AbortSignal): Promise<void> {
-  if (signal?.aborted) return Promise.reject(abortError(signal));
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(done, ms);
-    const onAbort = (): void => {
-      clearTimeout(timer);
-      reject(abortError(signal!));
-    };
-    function done(): void {
-      signal?.removeEventListener("abort", onAbort);
-      resolve();
-    }
-    signal?.addEventListener("abort", onAbort, { once: true });
-  });
-}
-
-function waitFor<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
-  if (!signal) return promise;
-  if (signal.aborted) return Promise.reject(abortError(signal));
-  return new Promise<T>((resolve, reject) => {
-    const onAbort = (): void => reject(abortError(signal));
-    signal.addEventListener("abort", onAbort, { once: true });
-    void promise.then(
-      (value) => {
-        signal.removeEventListener("abort", onAbort);
-        resolve(value);
-      },
-      (error: unknown) => {
-        signal.removeEventListener("abort", onAbort);
-        reject(error);
-      },
-    );
-  });
-}
+const sleep = abortableDelay;
+const waitFor = awaitWithSignal;
 
 function newStats(): RelayRecoveryStats {
   return {
@@ -123,6 +92,7 @@ export interface RelayRecoveryGateOptions {
  * a second fast loop: it waits 10/20/40 seconds (plus bounded jitter) and probes serially. */
 export class RelayRecoveryGate {
   private recovery: Promise<unknown> | null = null;
+  private recoverySignal?: AbortSignal;
   private open: { error: RelayUnavailableError; retryAfterMs: number } | null = null;
   private readonly delaysMs: readonly number[];
   private readonly maxJitterMs: number;
@@ -152,72 +122,92 @@ export class RelayRecoveryGate {
       // Register the probe synchronously before it calls `operation()`.  At the cooldown boundary
       // concurrent callers must wait behind this promise, never each send an optimistic probe.
       this.open = null;
-      return this.shareRecovery(Promise.resolve().then(() => this.resumeAfterCooldown(operation)), signal);
+      return this.shareRecovery(Promise.resolve().then(() => this.resumeAfterCooldown(operation, signal)), signal);
     }
     const inProgress = this.recovery;
     if (inProgress) {
-      await waitFor(inProgress, signal);
+      await this.waitForRecovery(inProgress, signal);
       return this.execute(operation, signal);
     }
     try {
-      return await operation();
+      const result = await operation();
+      throwIfAborted(signal);
+      return result;
     } catch (error) {
+      throwIfAborted(signal);
       if (!isRelayCapacityError(error)) throw error;
       this.stats.capacity_errors++;
       // A concurrent request can fail before the first failure's catch continuation gets here.
       // Re-check after the await boundary so only that first continuation opens the gate.
       const recoveryStartedByPeer = this.recovery;
       if (recoveryStartedByPeer) {
-        await waitFor(recoveryStartedByPeer, signal);
+        await this.waitForRecovery(recoveryStartedByPeer, signal);
         return this.execute(operation, signal);
       }
       // JavaScript executes this assignment without an await boundary, so every later caller sees
       // the same promise and cannot create a competing half-open probe sequence.
-      // A probe belongs to the gate, not the leader: cancelling one caller must only cancel that
-      // caller's wait, never the probe on which every follower depends.
-      return this.shareRecovery(this.recover(operation, error), signal);
+      // Recovery uses the leader's task inputs. Never probe them after that task cancels;
+      // followers resume with their own operations when its recovery is interrupted.
+      return this.shareRecovery(this.recover(operation, error, true, signal), signal);
+    }
+  }
+
+  private async waitForRecovery(recovery: Promise<unknown>, signal?: AbortSignal): Promise<void> {
+    const ownerSignal = this.recoverySignal;
+    try { await waitFor(recovery, signal); }
+    catch (error) {
+      throwIfAborted(signal);
+      if (!ownerSignal?.aborted) throw error;
+      // A cancelled leader is not a relay outage or a failure of the follower's inputs.
     }
   }
 
   private shareRecovery<T>(recovering: Promise<T>, signal?: AbortSignal): Promise<T> {
     this.recovery = recovering;
+    this.recoverySignal = signal;
     void recovering.then(
-      () => { if (this.recovery === recovering) this.recovery = null; },
-      () => { if (this.recovery === recovering) this.recovery = null; },
+      () => { if (this.recovery === recovering) { this.recovery = null; this.recoverySignal = undefined; } },
+      () => { if (this.recovery === recovering) { this.recovery = null; this.recoverySignal = undefined; } },
     );
     return waitFor(recovering, signal);
   }
 
   /** The first request after cooldown is itself a half-open probe and is counted even if the relay
    * has already recovered. A fresh capacity error resumes the bounded delayed probes. */
-  private async resumeAfterCooldown<T>(operation: () => Promise<T>): Promise<T> {
+  private async resumeAfterCooldown<T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    throwIfAborted(signal);
     this.stats.recovery_cycles++;
     this.stats.probes++;
     try {
       const result = await operation();
+      throwIfAborted(signal);
       this.stats.recovered++;
       return result;
     } catch (error) {
       if (!isRelayCapacityError(error)) throw error;
       this.stats.capacity_errors++;
-      return this.recover(operation, error, false);
+      throwIfAborted(signal);
+      return this.recover(operation, error, false, signal);
     }
   }
 
-  private async recover<T>(operation: () => Promise<T>, initialError: unknown, countCycle = true): Promise<T> {
+  private async recover<T>(operation: () => Promise<T>, initialError: unknown, countCycle = true, signal?: AbortSignal): Promise<T> {
     if (countCycle) this.stats.recovery_cycles++;
     let lastError = initialError;
     for (const delay of this.delaysMs) {
       const jitter = Math.floor(Math.max(0, Math.min(1, this.random())) * this.maxJitterMs);
       const waitMs = delay + jitter;
       this.stats.total_backoff_wait_ms += waitMs;
-      await this.sleep(waitMs);
+      await awaitWithSignal(this.sleep(waitMs, signal), signal);
+      throwIfAborted(signal);
       this.stats.probes++;
       try {
         const result = await operation();
+        throwIfAborted(signal);
         this.stats.recovered++;
         return result;
       } catch (error) {
+        throwIfAborted(signal);
         lastError = error;
         if (!isRelayCapacityError(error)) throw error;
         this.stats.capacity_errors++;
