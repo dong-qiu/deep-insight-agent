@@ -14,7 +14,7 @@
 
 回放适用集合为登记册中 `effective_at <= replay_cutoff` 的已生效删除，**不以 snapshot_time 排除后续删除，也不以 expiry_at 静默排除旧删除**。所有检查点记录先做结构/时间/解密/HMAC 核验，再应用集合；未来记录或错误记录不能绕过核验后被静默跳过。
 
-`expiry_at` 是既有登记记录的有限保留信息，不是“用户希望已删除内容重新出现”的授权。当前 resolver 仍使用 expiry 判定、报告读模型也有独立撤下动作，因此只改 runner 筛选不够；须设计恢复使用的持久删除约束，在 resolver 与报告/索引读模型一致生效。不能篡改已签名 expiry、伪造 registry 签名、把 expiry 随意延长到 2099 年，或用一个新时间字段绕过读者门。
+`expiry_at` 是既有登记记录的有限保留信息，不是“用户希望已删除内容重新出现”的授权。2026-10-03 代码范围核对：`activeRedaction()` 按 expiry 判定，但当前生产读路径没有调用它；报告主要通过 `status='done'` 与 `integrity_report_lifecycle` 的可见性门控制，并由删除事务撤下派生读模型。因此不能将问题归因于一个已经接入的 expiry resolver；只改 runner 筛选或这个未接入的函数都不够。须使恢复使用的持久删除约束在真实报告/索引读路径一致生效。不能篡改已签名 expiry、伪造 registry 签名、把 expiry 随意延长到 2099 年，或用一个新时间字段绕过读者门。
 
 ## 2. 覆盖证明，而非人工填写日期
 
@@ -49,6 +49,43 @@
 5. 独立审查、PR/CI、脱敏收据；另行授权实际生产部署/恢复。TD-09 的合成恢复证据与真实登记册/IAM/历史数据恢复证据分开记录。
 
 ## 5. 必须落为可执行测试的矩阵
+
+### 下一实现切片：报告持久删除边界（生产代码，先离线验收）
+
+PR #391/#392 已实现隔离合成回放与持久 sidecar；它们不提供生产历史覆盖、独立新鲜度锚或生产启动许可。下一切片仅把本地报告删除事实接入真实读写路径，不新增删除 HTTP 入口，不执行 S3/KMS 写入、生产迁移或恢复。
+
+**最小数据模型**：优先复用现有 append-only `provenance_redaction` 的 `scope='report'` / 精确 `report:<id>` 事实，不另造一份可漂移的删除状态表。原始 effective/expiry/registry_ref 不修改；expiry 不成为报告重新公开的条件。新生产约束 DDL 的事实源置于 `schema.ts`，显式 migration 使用冻结副本、追加新版本；旧 migration 与合成 sidecar DDL 不修改。正常部署迁移不签发 coverage/checkpoint，也不将本地事实升级成外部登记完整性证明。
+
+| 路径 | 当前缺口 / 下一切片要求 |
+| --- | --- |
+| `redaction.ts:applyRedactionTombstone` | 仅新 INSERT 才清理；改为合法重复也修复旧 status/index/FTS/复盘/PPT 缓存，比较完整不可变字段并拒绝同 ID 冲突；约束登记与清理原子完成 |
+| `redaction-registry-writer.ts:registerRedaction` | 既有 tombstone 的快速返回不重做撤下；在本地事务中复用同一修复原语，不重复外部登记，不因重试刷新 effective/expiry |
+| `integrity-lifecycle.ts` 的点查与 SQL 可见性门 | lifecycle 缺行/active 不得覆盖已生效 report 删除事实；增加独立于 expiry 的精确报告约束，并保持 pending/hold/destroyed 原有语义 |
+| `reports.ts` 阅读、FTS、索引/筛选/统计 | 统一使用上述门；即使残留正文文件、旧索引或 lifecycle 被恢复为 active，也不返回删除报告 |
+| `reports.ts` 最新报告、前后链与发布事件证据 | 补目前仅依赖 done 的查询；隐藏删除报告及其读者可见标题/链接，删除报告不能重新作为发布去重或前情证据；管理员生命周期诊断须另列边界，不能整表无差别隐藏审计历史 |
+| `saveReport`、普通/anchored effect reconciliation | 写文件、发布外部 anchor 前做本地拒绝检查；实际 SQLite 发布事务再检查，防检查后竞争。DDL 阻止受约束 report 恢复可读状态和普通 index/复盘/PPT 表派生写入；FTS5 virtual table 不支持直接创建 trigger，FTS 写入须在已受约束的发布事务内检查，FTS 读路径始终 JOIN 真实 report 并应用可见性门；不声称 DDL 能禁止任意直接 FTS 写入 |
+| `graph.ts:reportLinksByInsight` → `/api/graph/drill` | 报告链接仅有 done/index 筛选，须加报告可见性门；洞察自身的已校验事实可独立可见，不能因为报告被删除而无依据删除所有关联洞察 |
+| `repos.ts:sourceContribution`、`runtime/staleness.ts` 直接 SQL | 逐调用方分类。读者可见的来源贡献/新鲜度指标不能计入删除报告；纯管理员历史诊断可保留允许的计数，不输出删除正文或通过链接绕过 reader 门 |
+| 报告页、质量复盘、PPT 导出/缓存、trace 引用下钻 | 核对真实入口与直接 SQL，不能只测 `getReport`；trace 的实体 locator/历史状态不等于正文 resolver，不声称现有引用接口已提供通用脱敏 resolver |
+
+边界与失败策略：
+
+- report 首切不支持其他 scope 的恢复，整批拒绝；现有其他 scope 本地历史不自动解释为 report 删除。
+- 生效时间须严格解析验证；未来生效记录不得误作为当前删除授权。迁移发现无法安全解释的 report 删除行须拒绝并回滚，不静默跳过；不得以字符串排序或日期截断替代验证。
+- 合法未来记录跨过 effective_at 后，reader 与提交约束均须自动生效，不能仅按 migration 执行时刻一次性归类。提交反例覆盖 INSERT/UPDATE/INSERT OR REPLACE，包括修改 report ID 或派生行 report_id 绕过约束。
+- 迁移在服务停止的独立副本先验收，补偿所有已生效 report 删除行（含已过 expiry）；不存在的 report 也保留约束，阻止稍后同 ID 再发布。
+- 永久约束是本地非复活保护，不证明旧快照包含全部删除。旧 CLI 的 expiry 跳过、可信覆盖/闸门/收据不足仍为未解决项；本切片不撤掉 KNOWN GAP、不开放生产恢复。
+- 发布事务失败不得重置删除状态；外部 orphan anchor 或残留文件按现有 reconciliation/audit 流程处理，不因本地隐藏而声称物理删除完成。
+- PPT 的异步构建不能把首次 `getReport` 当作发送授权：构建完成后、HTTP handler 构造响应前，重新核验报告可见性，最后核验至构造响应间不再 await。该核验是交付授权的线性化点；删除已先提交则拒绝返回 deck。已在该点获准交付、随后发生删除的在途响应及已下载副本不可撤回，不宣称网络上的字节能被追溯回收。以“加载成功 → 删除提交 → 构建完成”的真实 orchestrator/handler 反例验收。
+- 旧镜像不能安全消费新约束；不提供移除约束的降级回滚。回退时保持服务停止，用兼容约束的修复镜像；旧备份仍须重新经过可信回放与启动门。
+
+执行顺序（以下均待实现，不是测试通过记录）：
+
+1. 先固定真实迁移与 counterexample：过期 tombstone + done 报告 + active/missing lifecycle + 残留正文/index/FTS；重复回放后的脏派生模型；同 ID 内容冲突；report 不存在后又试图发布；迁移中途失败全部回滚。
+2. 实现原子重复修复与新增冻结 migration/数据库约束，再接点查和 SQL reader 门；运行真实数据库路径，不用合成 resolver 替身作为验收。
+3. 补普通/anchored 发布、崩溃恢复、PPT 缓存和相邻导航反例；验证删除与发布竞争、合法未删除报告仍可读、管理员只获允许的诊断信息。
+4. 运行受影响 DB/service/API 测试、Node 24 typecheck/build、读侧性能回归；独立审查、PR/CI。此切片不变更 AI/引用一致性判断，不以 A1 当删除安全证据。
+5. 随后独立实现生产 issuer/新鲜度锚/覆盖基线、维护闸门、CLI 全调用方和启动收据。同镜像 HTTP/auth/启动验收通过且另获授权后，才可进入生产部署/恢复。
 
 ### 合成持久登记子阶段（不授权生产使用）
 
