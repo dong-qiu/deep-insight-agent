@@ -1,7 +1,7 @@
 import Database from "better-sqlite3";
 import { fork } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
-import { mkdtempSync, rmSync, statSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -31,6 +31,21 @@ function fixture() {
 }
 
 describe("durable synthetic registry (no production files/cloud)", () => {
+  it("characterizes v1: a complete valid same-epoch rollback is not detected without an independent anchor", async () => {
+    const f = fixture(); const snapshot = `${f.path}.old`;
+    try {
+      const raw = new Database(f.path);
+      try { await raw.backup(snapshot); chmodSync(snapshot, 0o600); } finally { raw.close(); }
+      const a = f.open();
+      a.commit(a.begin(), { key: "later", version: "v1", body: "synthetic" }); a.freeze(cutoff); a.close();
+      copyFileSync(snapshot, f.path);
+      const rolledBack = f.open();
+      try {
+        expect(rolledBack.objects()).toEqual([]);
+        expect(rolledBack.freeze(cutoff).payload.entries).toEqual([]);
+      } finally { rolledBack.close(); }
+    } finally { f.cleanup(); }
+  });
   it("persists concurrent process commits without lost updates or sequence gaps", async () => {
     const f = fixture(); try {
       await Promise.all([f.child("batch", "a", 6), f.child("batch", "b", 6), f.child("batch", "c", 6)]);
