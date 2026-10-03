@@ -48,6 +48,8 @@ C1 供给不足备选仅定义比较口径，未启动提取。三份均为 S0 �
 随后 15:45:50 UTC 依据生产 `runScheduledTopicPipeline` 将历史截点明确为实际传入的冻结 `endIso`，
 不以较晚备份时间或 report `generated_at` 替代，澄清 SHA-256
 `d854c86f2cdeb7f9f5cfdeb9fd9399753a5d969f7b0239785d636a87cdf690cc`。
+旧备份的 10 月 2 日软件工程 batch 可只读核验：其 `time_window.end` 为 17:00:50.341 UTC，
+并非字面计划的 17:00:00 UTC；因此每次均须取实际冻结截点，不能凭日程时间推断。
 独立审阅者对三项警告定向复核后均关闭，新增 Blocking/Warning 为 0；这是文档审查，
 不把它当新格式的测试或 S1 收益证明。摘要见[PR 前审查记录](daily-brief-density-s0-pre-pr-review-2026-10-03.md)。
 
