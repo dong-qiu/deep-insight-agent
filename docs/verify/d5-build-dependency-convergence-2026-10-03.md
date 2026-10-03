@@ -1,6 +1,6 @@
 # D5 / TD-18：构建依赖收敛收据
 
-验收见 [D5 spec](../plan/specs/build-dependency-convergence.md)。本收据区分本地结果、候选 PR CI 和主干/生产状态；本会话仅 D5，不合并、不部署、不清理分支。
+验收见 [D5 spec](../plan/specs/build-dependency-convergence.md)。本收据区分本地结果、候选 PR CI 和主干/生产状态。初始实施阶段仅创建 Draft PR；后续用户授权仅完成 D5 集成与主干收据归档。不部署、不清理分支，不实施其他切片。
 
 ## 现场基线与隔离
 
@@ -72,17 +72,30 @@
 
 PR 创建后独立复核通过：GitHub 最终五文件 diff、head 与前置审查/PR 摘要一致，Blocking 0 / Warning 0。没有评论、审批或修改 PR；这项 AI 审查不代替 GitHub 人工 approval。
 
-## Draft PR 与 CI / Docker 验收
+## 实施阶段 Draft PR 与 CI / Docker 验收
 
 - Draft PR [#398](https://github.com/dong-qiu/deep-insight-agent/pull/398)，实施候选 `06d9d7c45f319184d3da19a9f4813d21cc2b3eb7`，基线仍为 `1c40eac4ebd018cce4874d75332ed3f8dc97cabf`。推送经过仓库 hooks，无 bypass。
 - 候选 [CI 37133527417](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37133527417)：completed / success，四项检查全部 success（eval-gate、PR policy、verify、独立 Docker）。以下结果绑定上述实施 SHA；收据归档仅修改本文，PR 最新 head 的检查以 PR checks 为准。
 - verify 在 Node 24.19.0 下执行干净 npm ci、lint、TS7/TS6 app/tools、coverage 231 文件 / 2,345 用例、ops 109/109，以及 P1 共用边界 integrity/capacity、report reader 性能门和 audit，全通过。audit 0。
 - CI 的真实应用构建记录 `build_ms=52830, builds=1`，紧接 E2E 使用同一个收据，`additional_builds=0`，真实 E2E 6/6 通过。不是运维套件中毫秒级模拟构建的计数；C5 的单次构建和身份校验未退化。
 - 独立 Linux amd64 Docker 作业全部通过：synthetic secret context 拒绝、镜像构建（不 push）、dispatch worker/runtime assets 与 build-info/profile、真实 HTTP/NextAuth/admin/reader 撤销及 P1 fail-closed、dispatch readiness 与 prototype Docker evidence。镜像构建使用 Dockerfile 的三个 esbuild runner 和固定 Node 24.19.0，完整容器证据补齐本地 Docker 不可用的缺口。
-- 没有触发生产发布、修改 Dependabot PR 或合并 #398。PR 保持 Draft。
+- 初始实施阶段没有执行生产部署、手动修改 Dependabot PR 或合并 #398；当时 PR 保持 Draft。后续合并状态见下节。
+
+## 后续授权集成与主干验收
+
+- 用户后续明确授权“先只完成第1点，收口D5”，覆盖初始阶段不合并的限制；范围仅 #398 的评审/集成、合并后 main CI 与完成收据归档，不包含生产部署、Dependabot 集成、C4a 或分支清理。
+- 合并前现场复核：PR head 仍为最终审查的 `559fe0f0d015087ee5831fb72cb9bd95936a8e8d`，基线 `1c40eac4ebd018cce4874d75332ed3f8dc97cabf` 未推进；[最终候选 CI 37134163981](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37134163981) 四项检查全绿。独立审查与 PR 后复核均 Blocking 0 / Warning 0，没有未审查的实现变化。
+- 现场 main 保护要求 verify、Docker、eval-gate 三项检查且分支最新，所需 approving review 数为 0。本次未代写人工 approval、绕过保护或使用 `--admin`。
+- [PR #398](https://github.com/dong-qiu/deep-insight-agent/pull/398) 已转 Ready，使用锁定 head 的正常 squash 合并，于 `2026-10-03T15:52:00Z` 合入，主干提交为 `254aada6e72d90c736e3dde75378ceb9bf2ae27a`。合并提交保留 Eval-Gate skip trailer，D5 manifest/lockfile/策略及 C5 内容与已审查候选一致。
+- 合并后 [main CI 37134757999](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37134757999) 绑定上述 merge SHA，completed / success。verify、eval-gate、独立 Docker 全部 success；PR advisory 在 main push 按设计 skipped，不是漏跑必需检查。未以 PR CI 代替主干验收。
+- main verify：Node 24.19.0 干净 npm ci、lint、TS7/TS6 app/tools、231 文件 / 2,345 用例、ops 109/109、P1 integrity/capacity 与 report reader 性能门、audit 0，全通过。真实 E2E 6/6；应用构建 `build_ms=30257, builds=1`，随后 `additional_builds=0`，保留 C5 构建复用及身份校验。计时为单次观察，不宣称受控性能提升。
+- main 独立 Docker：context、Linux amd64 镜像构建（不 push）、worker/runtime assets、真实 HTTP/auth/reader 撤销/P1 fail-closed/dispatch readiness、prototype Docker evidence 均通过。
+- 本收据归档分支 `docs/d5-main-ci-closeout` 从上述最新 main 建立，复用本会话自己的隔离 worktree，仅改 D5 spec 的阶段边界和本收据，不改依赖、应用、CI、Docker、共享 roadmap/ADR 或其他工作区。文档归档仍走独立审查 → PR → CI → merge，不直接推送 main。
+- main CI 成功后的 GHCR 镜像发布由既有 workflow 自动处理，不代表生产已上线；本次没有调用 `Deploy Production Image`、SSM 或任何生产部署/诊断。D5 不需要生产部署，也不宣称实际生产运行版本改变。
+- GitHub 仓库 `delete_branch_on_merge=true`；#398 的远端短生命周期 head 由 GitHub 自动删除，已只读确认不存在。本次没有运行本地分支清理命令、删除本地分支/worktree，其他会话工作区和未提交文档保留。
 
 ## 风险与收口边界
 
 后续 #382 的 Node 26 types hunk 需要重算，不能覆盖本次 24 系约束；后续工具升级须重验 esbuild 兼容性。双编译器和 vendor 是有退出条件的保留项，不是本次删除目标。回退仅依赖 manifest/lockfile 与 Dependabot 策略，无数据库迁移。
 
-D5 实施、本地验证、独立前置与 PR 后审查、实施候选 CI / Docker 验收和 Draft PR 已完成。未合入，不把 TD-18 写成主干关闭；无生产部署、C4a 或其他切片实施，也没有修改/清理其他工作区、共享 roadmap/ADR。后续仅需按仓库流程评审/集成，并沿登记队列串行处理依赖 PR；本会话不执行这些后续动作。
+D5 实施、反例、本地验证、独立前置与 PR 后审查、候选 CI / Docker、PR #398 合入及对应 main CI 全部完成，TD-18 的 D5 主干验收关闭。本次仅补专属完成收据；无生产部署、C4a 或其他切片实施，也没有修改/清理其他工作区、共享 roadmap/ADR。后续 Dependabot 队列及双编译器/vendor 复查仍按 spec 保留，不纳入本次收口。

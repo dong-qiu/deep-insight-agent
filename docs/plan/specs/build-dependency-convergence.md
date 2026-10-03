@@ -28,7 +28,7 @@
 
 Eval-Gate：依赖声明与类型约束不改变合法输入的 AI 输出及评测口径，不调用模型；A1 不执行本次构建收敛路径，使用确定性回归、类型检查、应用和容器证据。
 
-回退为成对还原 package/lockfile 与本切片 Dependabot 约束，无 schema 或生产数据操作；仍保留 C5 和必要 vendor 补丁。本会话只创建 Draft PR 和验证，不合并、不部署、不清理分支/worktree。
+回退为成对还原 package/lockfile 与本切片 Dependabot 约束，无 schema 或生产数据操作；仍保留 C5 和必要 vendor 补丁。初始实施阶段只创建 Draft PR 和验证；后续仅在用户授权下完成 D5 合并与主干收据归档，见 [完成收据](../../verify/d5-build-dependency-convergence-2026-10-03.md)。不部署、不清理分支/worktree，不实施其他切片。
 
 ## 保留项与退出登记
 
