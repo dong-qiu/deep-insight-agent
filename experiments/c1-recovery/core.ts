@@ -5,10 +5,10 @@ import { applyRedactionTombstone } from "../../src/lib/db/redaction.js";
 import { decryptEntityKey, verifyRedactionRecord, type RedactionRegistryRecord } from "../../src/lib/db/redaction-registry.js";
 import { C1_SYNTHETIC_DELETION_SCHEMA_SQL } from "../../src/lib/db/schema.js";
 
-type Signed<T> = { payload: T; signature: string };
-type Entry = { sequence: number; key: string; version: string; hash: string };
-type Checkpoint = { protocol: "synthetic-c1-v1"; epoch: string; origin: string; cutoff: string; baseline: "empty-at-origin"; entries: Entry[] };
-type Backup = { protocol: "synthetic-c1-v1"; epoch: string; sampledAt: string; sequence: number; digest: string };
+export type Signed<T> = { payload: T; signature: string };
+export type Entry = { sequence: number; key: string; version: string; hash: string };
+export type Checkpoint = { protocol: "synthetic-c1-v1"; epoch: string; origin: string; cutoff: string; baseline: "empty-at-origin"; entries: Entry[] };
+export type Backup = { protocol: "synthetic-c1-v1"; epoch: string; sampledAt: string; sequence: number; digest: string };
 type Receipt = { protocol: "synthetic-c1-v1"; backupHash: string; checkpointHash: string; image: string; resultHash: string; applied: number };
 export type ObjectVersion = { key: string; version: string; body: string };
 
@@ -21,11 +21,11 @@ export function utc(value: string): number {
   if (!Number.isFinite(n) || new Date(n).toISOString() !== value.replace(/Z$/, value.includes(".") ? "Z" : ".000Z")) fail("time_invalid");
   return n;
 }
-function signed<T>(payload: T, key: KeyObject): Signed<T> {
+export function signed<T>(payload: T, key: KeyObject): Signed<T> {
   if (key.asymmetricKeyType !== "ed25519") fail("key_invalid");
   return { payload: structuredClone(payload), signature: sign(null, Buffer.from(encode(payload)), key).toString("base64url") };
 }
-function authenticated<T>(item: Signed<T>, key: KeyObject): T {
+export function authenticated<T>(item: Signed<T>, key: KeyObject): T {
   if (key.asymmetricKeyType !== "ed25519" || !verify(null, Buffer.from(encode(item.payload)), key, Buffer.from(item.signature, "base64url"))) fail("signature_invalid");
   return structuredClone(item.payload);
 }
@@ -70,8 +70,10 @@ export class SyntheticAuthority {
   }
 }
 
+export interface FrozenAuthority { readonly epoch: string; assertFrozen(checkpoint: Signed<Checkpoint>): void }
+
 export function replaySynthetic(db: DB, input: {
-  authority: SyntheticAuthority; trustedIssuer: KeyObject; recoverySigner: KeyObject; trustedRecovery: KeyObject;
+  authority: FrozenAuthority; trustedIssuer: KeyObject; recoverySigner: KeyObject; trustedRecovery: KeyObject;
   backup: Signed<Backup>; checkpoint: Signed<Checkpoint>; objects: ObjectVersion[];
   hmacKeys: Map<string, Buffer>; dataKeys: Map<string, Buffer>; now: string; image: string;
   previousReceipt?: Signed<Receipt>;
