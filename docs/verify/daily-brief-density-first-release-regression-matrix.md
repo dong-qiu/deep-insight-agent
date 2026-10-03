@@ -7,7 +7,8 @@
 | 阶段 | 场景与注入点 | 必须观察到的结果 | 主要测试落点 |
 |---|---|---|---|
 | S2 | 试点开关 off，旧 batch 包含同事件多条候选 | 选择顺序、引用、decision reason 与现版一致；非试点 topic、deep dive、initial digest 不变 | `report-gen.test.ts`、`pipeline-reportgen.integration.test.ts` |
-| S2 | 新格式每成员分别有 kept 展示审计和 `pass/support`；再逐一改成缺审计、flagged、blocked、`not_support` | 仅全部成员合格时成组；任何不合格成员不能借另一成员引用发布；拒绝原因保留在候选级 | `report-gen.test.ts`、`report-review.test.ts`、pipeline 集成 |
+| S2 | 新格式每成员分别有 `kept`/`kept_degraded` 展示审计和 `pass/support`；再逐一改成缺审计、flagged、blocked、`not_support` | 仅全部成员合格时成组；任何不合格成员不能借另一成员引用发布；拒绝原因保留在候选级 | `report-gen.test.ts`、`report-review.test.ts`、pipeline 集成 |
+| S2 | `kept_degraded` 成员没有获准的中文 `reader_statement`；另测有 hash 绑定的中文结论 | 前者只展示已审 source-quote 投影，后者只展示精确绑定的结论；两者的最终文本/hash、quote/locator 与引用编号均进入同一 guard | `report-gen.test.ts`、`reader-evidence.test.ts`、pipeline 集成 |
 | S2 | quote locator 错位、来源 revision 改变、raw archive 缺失/字节 hash 或 envelope 不符 | 意图前或发布 guard 拦截；不能以 URL 可达、当前正文子串或另一版本归档过关 | `reports.test.ts`、`reader-evidence.test.ts`、pipeline 集成 |
 | S2 | 同 URL 多事件、同实体不同产品/版本、同研究不同 `event_id`、相同 `event_id` 不同事件 | 正确归组或保守退回；不把事件 ID/URL/实体单独当归组证明 | `report-gen.test.ts` 加人工标注反例 |
 | S2 | 历史同命题跨来源重述、旧报告缺新身份、近 14 天窗口边界、on→off→on | 不把来源变化当新事实；无法证明新颖时回退；关回旧模式后仍识别已刊新成员 | `report-gen.test.ts`、`pipeline-reportgen.integration.test.ts`、`reports.test.ts` |

@@ -41,6 +41,15 @@ E04 是已刊探索事件，不能证明新切片有足够多事实素材；正�
 [单主题评测协议草案](../plan/specs/daily-brief-density-one-topic-eval-protocol-draft.md)；
 C1 供给不足备选仅定义比较口径，未启动提取。三份均为 S0 准备，
 没有填写或降低正式留出的适用样本、收益、阅读/事实预算、连续运行等数值门，也没有启动 S2 生产接线。
+独立 PR 前审查指出三项可验证警告，已据此分离 B1 执行器与人工评分金标、补 `kept_degraded`/quote-only
+成员路径，并在首轮 17:00 UTC 运行前以保留原件的私有预登记修订限定每次备份上界与历史截点；
+无区间备份或无法证明出版时点仍记 `unknown`。修订于 15:43:49 UTC 注册，SHA-256
+`6213607d4e35d9bb7f8292dd88b78abac033ff238605c9617369e872fa00ee96`；
+随后 15:45:50 UTC 依据生产 `runScheduledTopicPipeline` 将历史截点明确为实际传入的冻结 `endIso`，
+不以较晚备份时间或 report `generated_at` 替代，澄清 SHA-256
+`d854c86f2cdeb7f9f5cfdeb9fd9399753a5d969f7b0239785d636a87cdf690cc`。
+独立审阅者对三项警告定向复核后均关闭，新增 Blocking/Warning 为 0；这是文档审查，
+不把它当新格式的测试或 S1 收益证明。摘要见[PR 前审查记录](daily-brief-density-s0-pre-pr-review-2026-10-03.md)。
 
 ### 留出来源补样进展（截至 2026-10-03，尚未分区）
 
