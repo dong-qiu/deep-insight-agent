@@ -64,8 +64,9 @@ SQLite 文件 SHA 与备份清单一致、`quick_check=ok`；96 个所需原文�
 S0 分支已为将来的备份清单加入与 DB SHA 绑定的在线备份起止时间和前后 `data_version` 观测，
 并使清单核验检查该绑定、区分旧清单与有区间的新清单；`data_version` 相同只表明观测连接未发现其他连接提交。
 这不会追认旧快照的捕获时刻，也尚未产生新的生产备份验收样本。
-当前 T02 导出器仍只比较两个操作者输入的时间参数，尚未自行核验备份区间及隔离副本的来源链；
-其输出的 `snapshot_captured_at` 不是独立时间证明，正式 T02 签认前必须补该契约。
+S0 导出器已去掉单点 `snapshot_captured_at` 字段：旧快照模式明确标记操作者时间未证实；
+新版清单模式核验备份 DB、隔离副本 SHA 与稳定区间，并将区间终点用作逻辑 `asOf`。
+这只是供将来固定窗口使用的证据契约；尚未产生新版生产备份样本，不追认旧窗口，也不构成 T02 完成签认。
 本窗口 12 个 batch、431 个候选记录；按 `topic + content_item_id + revision` 有 101 个输入来源版本单元，
 其中 39 个与原窗口精确重复、58 个是新且通过逐来源证据校验的版本、4 个新版本有来源/归档版本错配。
 新完整来源中有 17 个正文短于 500 字符、6 个综述型标题、7 个 `src_arxiv_cr` 论文摘要；这些类别会重叠，
@@ -388,12 +389,12 @@ B0 提高理解率、缩短阅读时间，或达到正式生产界面与留出�
 另修正测试夹具的 quote 字符长度，保留严格 locator 断言。
 最终自查将被拒候选进一步区分为“审计仍有草案片段”与“无文本”，保留对应 claim 文本但不提升为可发布成员。
 本轮独立 PR 复核另发现晚快照回放、无效 revision 仍提供正文、私有输出误入未忽略 Git 路径三项 Warning；
-导出器现要求 `asOf` 与调用方提供的 `snapshotCapturedAt` 相等；这只检查参数一致，
+旧版导出器曾要求 `asOf` 与调用方提供的 `snapshotCapturedAt` 相等；这只检查参数一致，
 不能验证备份实际捕获时刻。无效 revision 不导出正文或通过 locator 检查，
 Git worktree 内的输出须通过 ignore 规则（含环境变量绕过反例）。复核无 Blocking；
 两种声明时间下的聚合相同，实际 SQLite 捕获时间仍未证实。
 
-- `npx vitest run evals/brief-density/export.test.ts`：Node 24 下 13/13 通过。
+- `npx vitest run evals/brief-density/export.test.ts`：Node 24 下 15/15 通过（含新版清单区间与 DB 字节绑定正反例）。
 - `npm run typecheck`：TS7 与 TS6 均通过。
 - `npx eslint evals/brief-density --max-warnings=0`：通过。
 - 首轮 CI 的 exporter 集成测试在全量 coverage 并发时超过 5 秒；将合成库的完整迁移放到内存，

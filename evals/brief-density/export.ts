@@ -21,7 +21,7 @@ function refs(event: Row, field: string): Ref[] {
 const idOf = (ref: Ref) => ref.locator.kind === "id" ? ref.locator.id : null;
 export interface ExportOptions {
   dbPath: string; outputDir: string; from: string; until: string; topics: string[];
-  asOf: string; snapshotCapturedAt: string; gitSha: string; dataDir?: string;
+  asOf: string; gitSha: string; dataDir?: string; backupManifestPath?: string;
 }
 function requirePrivateOutput(outputDir: string): void {
   if (existsSync(outputDir)) throw new Error("output_dir_exists");
@@ -40,16 +40,50 @@ function requirePrivateOutput(outputDir: string): void {
   if (ignored.status !== 0) throw new Error("output_dir_must_be_gitignored");
 }
 function validateOptions(o: ExportOptions): void {
-  for (const p of [o.dbPath, o.outputDir, ...(o.dataDir ? [o.dataDir] : [])]) if (!isAbsolute(p)) throw new Error("absolute_paths_required");
-  for (const d of [o.from, o.until, o.asOf, o.snapshotCapturedAt]) if (!Number.isFinite(Date.parse(d)) || new Date(d).toISOString() !== d) throw new Error("canonical_utc_required");
+  for (const p of [o.dbPath, o.outputDir, ...(o.dataDir ? [o.dataDir] : []), ...(o.backupManifestPath ? [o.backupManifestPath] : [])]) if (!isAbsolute(p)) throw new Error("absolute_paths_required");
+  for (const d of [o.from, o.until, o.asOf]) if (!Number.isFinite(Date.parse(d)) || new Date(d).toISOString() !== d) throw new Error("canonical_utc_required");
   if (o.from >= o.until || o.asOf < o.until || !o.topics.length || new Set(o.topics).size !== o.topics.length) throw new Error("invalid_cohort");
-  if (o.asOf !== o.snapshotCapturedAt) throw new Error("as_of_must_equal_snapshot_capture");
   if (!/^[a-f0-9]{40}$/.test(o.gitSha)) throw new Error("git_sha_required");
   requirePrivateOutput(o.outputDir);
   if (existsSync(`${o.dbPath}-wal`) || existsSync(`${o.dbPath}-shm`)) throw new Error("standalone_offline_snapshot_required");
   const header = readFileSync(o.dbPath).subarray(0, 20);
   if (header[18] !== 1 || header[19] !== 1) throw new Error("delete_journal_snapshot_required");
   if (lstatSync(o.dbPath).isSymbolicLink()) throw new Error("snapshot_symlink_forbidden");
+}
+
+function snapshotTimeEvidence(o: ExportOptions, dbSha256: string, dbBytes: number): Row {
+  if (!o.backupManifestPath) return { status: "operator_as_of_unattested" };
+  const path = o.backupManifestPath;
+  if (lstatSync(path).isSymbolicLink()) throw new Error("backup_manifest_symlink_forbidden");
+  const manifestBytes = readFileSync(path);
+  const manifest = obj(parsed(manifestBytes.toString("utf8")));
+  if (manifest?.schema_version !== 1 || !Array.isArray(manifest.files)
+    || typeof manifest.status !== "string" || !["complete", "incomplete"].includes(manifest.status)) throw new Error("backup_manifest_invalid");
+  const files = manifest.files.map(obj);
+  const dbEntries = files.filter((file) => file?.path === "insight.db");
+  const dbEntry = dbEntries.length === 1 ? dbEntries[0] : null;
+  const interval = obj(manifest.db_snapshot_interval);
+  const utc = (value: unknown): value is string => typeof value === "string" && Number.isFinite(Date.parse(value))
+    && new Date(value).toISOString() === value;
+  const before = interval?.source_data_version_before;
+  const after = interval?.source_data_version_after;
+  if (!dbEntry || dbEntry.sha256 !== dbSha256 || dbEntry.size !== dbBytes
+    || !interval || !utc(interval.started_at) || !utc(interval.completed_at) || !utc(manifest.created_at)
+    || interval.started_at > interval.completed_at || interval.completed_at > manifest.created_at
+    || !Number.isSafeInteger(before) || Number(before) < 0 || !Number.isSafeInteger(after) || Number(after) < 0
+    || interval.source_data_version_unchanged !== (before === after) || interval.db_sha256 !== dbSha256) {
+    throw new Error("backup_interval_or_db_binding_invalid");
+  }
+  const sourceDbPath = join(dirname(path), "insight.db");
+  if (lstatSync(sourceDbPath).isSymbolicLink()) throw new Error("backup_db_symlink_forbidden");
+  const sourceDb = readFileSync(sourceDbPath);
+  if (sourceDb.length !== dbBytes || sha(sourceDb) !== dbSha256) throw new Error("backup_source_db_mismatch");
+  if (interval.source_data_version_unchanged !== true) throw new Error("backup_interval_external_commit_observed");
+  if (o.asOf !== interval.completed_at) throw new Error("as_of_must_equal_stable_interval_end");
+  return { status: "db_interval_no_external_commit_observed", backup_manifest_sha256: sha(manifestBytes),
+    backup_db_sha256: dbSha256, started_at: interval.started_at, completed_at: interval.completed_at,
+    source_data_version_before: before, source_data_version_after: after,
+    declared_backup_status: manifest.status, verification_scope: "db_and_interval_only" };
 }
 
 function sourceEvidence(db: Database.Database, ref: Ref, dataDir?: string): Row {
@@ -130,6 +164,7 @@ function quoteEvidence(citation: Row, sources: Row[]): Row {
 export function exportBriefDensity(o: ExportOptions): { batches: number; candidates: number; tracesWithoutBatch: number } {
   validateOptions(o);
   const hashBefore = sha(readFileSync(o.dbPath));
+  const timeEvidence = snapshotTimeEvidence(o, hashBefore, lstatSync(o.dbPath).size);
   const db = new Database(o.dbPath, { readonly: true, fileMustExist: true });
   let result: { pool: Row[]; manifest: Row; loss: Row };
   try {
@@ -218,7 +253,7 @@ export function exportBriefDensity(o: ExportOptions): { batches: number; candida
       }
       const countsResult = { batches: batches.length, candidates: candidateTotal, tracesWithoutBatch: pool.filter((p) => p.kind === "trace_without_batch").length };
       return { pool, loss: { ...countsResult, by_topic: counts, input_evidence_gaps: gaps, input_evidence_gaps_by_kind: gapsByKind, gap_denominator: "input_revision_occurrences_per_export_record", terminal_aggregation: "ever_published_brief_by_as_of_else_unambiguous_observed_reason", observed_candidates_without_batch: pool.filter((p) => p.kind === "trace_without_batch").reduce((n, p) => n + Number(p.observed_candidate_count), 0), missing_extracted_facts: "requires_source_labels", qualified_complementary_events: "pending_human_labels_and_eligibility_replay" }, manifest: {
-        format_version: "brief-density-s0-v1", as_of: o.asOf, snapshot_captured_at: o.snapshotCapturedAt, window: { from_inclusive: o.from, until_exclusive: o.until }, topics: o.topics, git_sha: o.gitSha,
+        format_version: "brief-density-s0-v2", as_of: o.asOf, snapshot_time_evidence: timeEvidence, window: { from_inclusive: o.from, until_exclusive: o.until }, topics: o.topics, git_sha: o.gitSha,
         exporter_sha256: sha(readFileSync(new URL(import.meta.url))), snapshot_sha256: hashBefore, snapshot_bytes: lstatSync(o.dbPath).size,
         schema: rows(db, "SELECT * FROM schema_migration ORDER BY version"),
         deployment: rows(db, "SELECT git_sha,image_digest,deployed_at FROM deployment_record ORDER BY deployed_at DESC LIMIT 1"),
@@ -227,6 +262,8 @@ export function exportBriefDensity(o: ExportOptions): { batches: number; candida
     })();
   } finally { db.close(); }
   if (sha(readFileSync(o.dbPath)) !== hashBefore) throw new Error("snapshot_changed_during_export");
+  if (o.backupManifestPath && (sha(readFileSync(o.backupManifestPath)) !== timeEvidence.backup_manifest_sha256
+    || sha(readFileSync(join(dirname(o.backupManifestPath), "insight.db"))) !== hashBefore)) throw new Error("backup_evidence_changed_during_export");
   // Refuse reuse, even if a previous export stopped partway. A manifest marks completion.
   mkdirSync(o.outputDir, { mode: 0o700 });
   const write = (name: string, text: string) => writeFileSync(join(o.outputDir, name), text, { flag: "wx", mode: 0o600 });
@@ -239,7 +276,7 @@ export function exportBriefDensity(o: ExportOptions): { batches: number; candida
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  const [outputDir, from, until, topics, asOf, snapshotCapturedAt, gitSha] = process.argv.slice(2);
-  if (!outputDir || !from || !until || !topics || !asOf || !snapshotCapturedAt || !gitSha || !process.env.DB_PATH) throw new Error("Usage: DB_PATH=/abs/offline.db tsx evals/brief-density/export.ts /abs/new-output from-utc until-utc topic1,topic2 as-of-utc snapshot-capture-utc git-sha (optional BRIEF_DENSITY_DATA_DIR=/abs/archive-copy)");
-  console.log(JSON.stringify(exportBriefDensity({ dbPath: process.env.DB_PATH, outputDir, from, until, topics: topics.split(","), asOf, snapshotCapturedAt, gitSha, dataDir: process.env.BRIEF_DENSITY_DATA_DIR })));
+  const [outputDir, from, until, topics, asOf, gitSha] = process.argv.slice(2);
+  if (!outputDir || !from || !until || !topics || !asOf || !gitSha || !process.env.DB_PATH) throw new Error("Usage: DB_PATH=/abs/offline.db tsx evals/brief-density/export.ts /abs/new-output from-utc until-utc topic1,topic2 as-of-utc git-sha (optional BRIEF_DENSITY_DATA_DIR=/abs/archive-copy BRIEF_DENSITY_BACKUP_MANIFEST=/abs/backup-manifest.json)");
+  console.log(JSON.stringify(exportBriefDensity({ dbPath: process.env.DB_PATH, outputDir, from, until, topics: topics.split(","), asOf, gitSha, dataDir: process.env.BRIEF_DENSITY_DATA_DIR, backupManifestPath: process.env.BRIEF_DENSITY_BACKUP_MANIFEST })));
 }

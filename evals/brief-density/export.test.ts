@@ -62,10 +62,26 @@ function setup(options: { wrongArchive?: boolean; failedOnly?: boolean; diagnost
     addReport("deep", "deep_dive", at, "already_published_event", false);
   }
   writeFileSync(dbPath, db.serialize()); db.close();
-  const opts: ExportOptions = { dbPath, outputDir: join(dir, "out"), from: "2026-09-23T00:00:00.000Z", until: "2026-09-26T18:00:00.000Z", asOf: "2026-09-26T18:00:00.000Z", snapshotCapturedAt: "2026-09-26T18:00:00.000Z", topics: ["t"], gitSha: "a".repeat(40), dataDir };
+  const opts: ExportOptions = { dbPath, outputDir: join(dir, "out"), from: "2026-09-23T00:00:00.000Z", until: "2026-09-26T18:00:00.000Z", asOf: "2026-09-26T18:00:00.000Z", topics: ["t"], gitSha: "a".repeat(40), dataDir };
   return { dir, opts, rawPath: join(dataDir, "raw", target) };
 }
 function readPool(outputDir: string) { return readFileSync(join(outputDir, "candidate-pool.jsonl"), "utf8").trim().split("\n").map((s) => JSON.parse(s)); }
+function attachBackupReceipt(opts: ExportOptions, dir: string) {
+  const backupDir = join(dir, "backup"); mkdirSync(backupDir);
+  const bytes = readFileSync(opts.dbPath);
+  writeFileSync(join(backupDir, "insight.db"), bytes);
+  const digest = createHash("sha256").update(bytes).digest("hex");
+  const manifest = {
+    schema_version: 1, created_at: "2026-09-26T18:00:01.000Z", status: "incomplete",
+    files: [{ path: "insight.db", size: bytes.length, sha256: digest }],
+    db_snapshot_interval: { started_at: "2026-09-26T17:59:59.000Z", completed_at: opts.asOf,
+      source_data_version_before: 1, source_data_version_after: 1, source_data_version_unchanged: true, db_sha256: digest },
+  };
+  const path = join(backupDir, "backup-manifest.json");
+  writeFileSync(path, JSON.stringify(manifest));
+  opts.backupManifestPath = path;
+  return { manifest, path };
+}
 
 describe("private Brief density export", () => {
   it("exports rejected candidates, exact input evidence and only cutoff Brief decisions without changing DB", () => {
@@ -78,6 +94,7 @@ describe("private Brief density export", () => {
     expect(record.input_evidence[0].archive.content_version_verified).toBe(true);
     expect(record.candidates[0].citations[0].locator_verified).toBe(true);
     expect(record.candidates[1].candidate_text_status).toBe("not_persisted");
+    expect(JSON.parse(readFileSync(join(opts.outputDir, "snapshot-manifest.json"), "utf8")).snapshot_time_evidence.status).toBe("operator_as_of_unattested");
     expect(createHash("sha256").update(readFileSync(opts.dbPath)).digest("hex")).toBe(before);
     expect(existsSync(`${opts.dbPath}-wal`)).toBe(false);
     expect(statSync(opts.outputDir).mode & 0o777).toBe(0o700);
@@ -87,9 +104,48 @@ describe("private Brief density export", () => {
   it("does not duplicate a batch whose completion is after the cohort window but before asOf", () => {
     const { opts } = setup({ completedAfterWindow: true });
     opts.asOf = "2026-09-26T20:00:00.000Z";
-    opts.snapshotCapturedAt = opts.asOf;
     expect(exportBriefDensity(opts)).toEqual({ batches: 1, candidates: 2, tracesWithoutBatch: 0 });
     expect(readPool(opts.outputDir)).toHaveLength(1);
+  });
+  it("binds an attested asOf to a stable backup interval and byte-identical offline DB", () => {
+    const { opts, dir } = setup();
+    const { path } = attachBackupReceipt(opts, dir);
+    exportBriefDensity(opts);
+    const result = JSON.parse(readFileSync(join(opts.outputDir, "snapshot-manifest.json"), "utf8"));
+    expect(result.snapshot_time_evidence.status).toBe("db_interval_no_external_commit_observed");
+    expect(result.snapshot_time_evidence.backup_manifest_sha256).toBe(createHash("sha256").update(readFileSync(path)).digest("hex"));
+    expect(result.snapshot_time_evidence.completed_at).toBe(opts.asOf);
+    expect(result.snapshot_time_evidence.backup_db_sha256).toBe(result.snapshot_sha256);
+    expect(result.snapshot_time_evidence.declared_backup_status).toBe("incomplete");
+    expect(result.snapshot_time_evidence.verification_scope).toBe("db_and_interval_only");
+  });
+  it("rejects missing, changed or nonstable backup time evidence before creating output", () => {
+    const { opts, dir } = setup();
+    const { manifest, path } = attachBackupReceipt(opts, dir);
+    const write = () => writeFileSync(path, JSON.stringify(manifest));
+    manifest.db_snapshot_interval.source_data_version_after = 2;
+    manifest.db_snapshot_interval.source_data_version_unchanged = false;
+    write();
+    expect(() => exportBriefDensity(opts)).toThrow("backup_interval_external_commit_observed");
+    manifest.db_snapshot_interval.source_data_version_after = 1;
+    manifest.db_snapshot_interval.source_data_version_unchanged = true;
+    manifest.db_snapshot_interval.completed_at = "2026-09-26T17:59:59.000Z";
+    write();
+    expect(() => exportBriefDensity(opts)).toThrow("as_of_must_equal_stable_interval_end");
+    manifest.db_snapshot_interval.completed_at = opts.asOf;
+    manifest.db_snapshot_interval.db_sha256 = "0".repeat(64);
+    write();
+    expect(() => exportBriefDensity(opts)).toThrow("backup_interval_or_db_binding_invalid");
+    manifest.db_snapshot_interval.db_sha256 = manifest.files[0].sha256;
+    write();
+    writeFileSync(join(dir, "backup", "insight.db"), "wrong bytes");
+    expect(() => exportBriefDensity(opts)).toThrow("backup_source_db_mismatch");
+    manifest.status = "invalid";
+    write();
+    expect(() => exportBriefDensity(opts)).toThrow("backup_manifest_invalid");
+    writeFileSync(path, JSON.stringify({ ...manifest, status: ["complete"] }));
+    expect(() => exportBriefDensity(opts)).toThrow("backup_manifest_invalid");
+    expect(existsSync(opts.outputDir)).toBe(false);
   });
   it("records both publication and later exclusion without rewriting the earlier publication", () => {
     const { opts } = setup(); const db = new Database(opts.dbPath);
@@ -153,7 +209,7 @@ describe("private Brief density export", () => {
     const { opts, dir } = setup();
     expect(() => exportBriefDensity({ ...opts, dbPath: "relative.db" })).toThrow("absolute_paths_required");
     expect(() => exportBriefDensity({ ...opts, topics: ["t", "t"] })).toThrow("invalid_cohort");
-    expect(() => exportBriefDensity({ ...opts, snapshotCapturedAt: "2026-09-27T18:00:00.000Z" })).toThrow("as_of_must_equal_snapshot_capture");
+    expect(() => exportBriefDensity({ ...opts, backupManifestPath: "relative-manifest.json" })).toThrow("absolute_paths_required");
     expect(() => exportBriefDensity({ ...opts, outputDir: resolve("docs", "unsafe-brief-export") })).toThrow("output_dir_must_be_gitignored");
     const priorCeiling = process.env.GIT_CEILING_DIRECTORIES;
     try {
