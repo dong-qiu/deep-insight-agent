@@ -54,10 +54,23 @@ npm run lint
 - 独立定向验证：第一轮三文件 20 项；修复复查 Node24 两文件15项通过。根会话最终21文件393项通过。
 - reviewer 曾误用 npm test 触发全套测试；Node25 与 SQLite 原生模块 ABI 不兼容，未将失败当作本切片回归证据，已纠正执行环境并限定定向复查。
 
-## 尚未完成的集成与测量
+## 初始实施阶段的待办（历史记录）
 
 D5 [PR #398](https://github.com/dong-qiu/deep-insight-agent/pull/398) 截至最终本地验证仍 OPEN / Draft，未合入。当前证据仅覆盖 1c40eac 基线；**不宣称 D5 后最终集成通过**。Draft PR 必须在 D5 合入后 fetch 最新 main、仅更新本分支、按新依赖重新 npm ci，并重跑上述测试/typecheck/lint；若合并引入新构建风险再补 build。合入 C4a 前再次提醒并补该收据，不由本会话合并任一 PR。
 
 限制：main 起点不包含模块加载；finalizing 终态采样不包含最后 progress/manifest 原子发布 I/O。配置是启动采样，保留原调用时读取语义，不宣称动态 env 改变后每请求配置均被追踪。SIGKILL/断电只保留最后已写 running snapshot，不能据此推算终态。缺配置/计时为缺失；现有 role P95 为逻辑调用（含重试）延迟，逐 SDK attempt latency 未提供。
 
 C4b 需另获固定输入、模型/provider/配置、预算与范围授权；测量完整 main wall、阶段 wall、role/by-operation call/request/failure/retry 与调用延迟，同时注明环境、冷启动、cache/恢复条件和成功/失败终态。当前没有真实模型完整配置计时样本，不承诺加速比例，不据此改变并发或阈值。
+
+## 2026-10-04：D5 后最终集成与合入授权
+
+用户明确授权「D5已经合入，请合入C4a的实现」，覆盖初始实施阶段不合并的限制；授权范围是 C4a #399 的集成、验证、正常 PR 合并与主干 CI 核验，不扩展至部署、真实模型或其他切片。
+
+- fetch 后最新 `origin/main` 为 `6cdb3df331591fddc84cc3864128b4fb8562e85f`；已包含 D5 #398 的 `254aada6e72d90c736e3dde75378ceb9bf2ae27a` 和 D5 关闭收据 #403。
+- 仅在本会话 C4a worktree 将上述 main 正常 merge 入本分支，无冲突；集成候选 `5dee26bea94519d04acacc9f0c0bf0d546dfb0a0`。未更新、删除或清理其他工作区。
+- 与初始 C4a `32b3d8b` 逐文件比较，七个 evals 文件与 spec 均无变化；上述内容指纹仍有效。相对最新 main 的 diff 仅 C4a 九文件；D5 的 package/lock/Dependabot 变更只来自已合入主干，不由本切片修改。
+- Node 24.19.0 / npm 11.17.0 下，按 D5 新 lockfile 重新 `npm ci` 成功，audit 0，lockfile 无漂移。
+- 重跑上文相同 21 文件定向命令：393/393 通过。双版本 typecheck（四项 app/tools）、lint、diff-check 全通过。没有真实模型、完整 A1 或生产数据访问。
+- 已重新应用 eval-gate 核对：C4a 仍只增加观测，不改变 AI、评分或 checkpoint/cache 语义；沿用有确定性证据的 skip 理由。
+- 按 pre-pr-ai-review 在独立新上下文复查完整 C4a diff 与收据：基线 6cdb3df、候选 5dee26b，风险中，Blocking=0、Warning=0，结论通过；原审查结论在 D5 集成后仍成立。独立 diff-check 通过，不重复运行已证实的测试。
+- 候选 CI / Docker 和最终合并前核验将按提交收据后的最新 head 完成；初始 #399 的旧 CI 不作为 D5 后最终证据。
