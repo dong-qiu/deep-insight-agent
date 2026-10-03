@@ -50,7 +50,7 @@ Linux CI 安装用 `npx playwright install --with-deps chromium`。两个 built 
 | npm run test:browser | 默认实际 build 一次（13,260ms 单次观察）+ C5 verify + Chromium 5/5，通过，additional_builds=0 |
 | npm run test:e2e:built | 同一 build 收据通过，HTTP E2E 6/6；additional_builds=0 |
 | git diff --check | 通过 |
-| 本地 Docker | daemon socket 不存在；没有启动/修改其他会话 Docker 环境。候选 CI 独立 Docker 补证据，尚待执行 |
+| 本地 Docker | daemon socket 不存在；没有启动/修改其他会话 Docker 环境。由候选 CI 的独立 Docker 门补证据（状态见下方 PR Checks），不把本地工具路径当容器通过 |
 
 浏览器 smoke 最终本地单次约 6 秒，仅功能执行时间；没有浏览器性能样本，P95 未测。未覆盖 Firefox/WebKit、多设备、完整业务流程、模型生成、报告 hover/导出、图谱边下钻/缩放性能、生产或恢复矩阵。
 
@@ -61,3 +61,10 @@ Linux CI 安装用 `npx playwright install --with-deps chromium`。两个 built 
 Pre-PR AI Review 使用新上下文独立审查最终 diff，初审 Blocking 0 / Warning 1：图谱只有节点名和边数量断言，不能识别错误连边。已补按现有 SVG line title 精确核对 Atlas–Beacon / Cedar–Delta / Echo–Foxtrot 端点集合；不依赖布局坐标、不改页面。修后独立定向复查通过，Blocking 0 / Warning 0 未解决；初审 1 项已处理。
 
 reviewer 已独立复跑原候选 Chromium 5/5、lint、TS7/TS6 app/tools、diff check 与 lockfile entry 比较，全部通过，临时根目录为 0。修后 reviewer 另复跑图谱 1/1，C5 verify 保持 additional_builds=0，临时目录为 0。Draft PR 的候选 CI/Docker 状态及 SHA 绑定另见其验证摘要与 Checks；本地结果不冒充容器或生产证据。
+
+
+## Draft PR 与候选 CI
+
+Draft PR [#404](https://github.com/dong-qiu/deep-insight-agent/pull/404) 承载本切片。最终候选的 CI/Docker run 链接、tested head SHA 和状态记录在 PR 的验证摘要与 [Checks](https://github.com/dong-qiu/deep-insight-agent/pull/404/checks)，与本地验证表分开；必须以最终候选完整通过为准，不以 superseded/取消的运行放行。此处归档只补专属收据，不改测试源码。
+
+CI 的 verify 作业仍只有一次 build:e2e，之后 HTTP E2E 和 browser smoke 各自校验同一 C5 收据；浏览器步骤位于 audit 与 prototype CI evidence 前，失败不能写成功收据。Docker 保持独立 needs:verify 作业与原门，不因本机 daemon 缺失而跳过。PR 保持 Draft；没有合并、部署、SSM、生产 DB 操作或分支/worktree 清理。
