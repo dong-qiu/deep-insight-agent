@@ -528,7 +528,9 @@ P0 的图查询采用硬预算：时间线最多 100 条事件一页，因果图
   外部成功而 SQLite 事务失败时保留孤立 immutable record，重试必须复用同一 record_id；遇到 412 仅引用既有对象，不能删除、新建第二条
   或覆盖原对象。
 
-  恢复 runner 必须在复制任一 SQLite/报告备份后、启动 app 前，从 registry 读取 `effective_at <= restore_time < expiry_at` 的记录，
+  **2026-10-02 更正提示**：下面的旧时间公式与“恢复点早于删除”的目标冲突，现有 runner 的成功退出不可作为安全恢复通过。新设计见 [恢复时间与覆盖契约](recovery-time-coverage.md)，尚未实施；在安全门闭合前禁止启动恢复服务。
+
+  恢复 runner 的旧协议在复制任一 SQLite/报告备份后、启动 app 前，从 registry 读取 `effective_at <= restore_time < expiry_at` 的记录，
   解密、验证 HMAC 并以幂等事务重放到本地 `provenance_redaction`；registry 不可读、KMS 不可用、签名不合法、记录缺失或重放失败时
   必须终止恢复，app/worker 保持停止。恢复日志仅输出 record count、key version 和 reason code，不输出 entity key。所有删除命令、
   backup/restore、S3 DR 和 viewer resolver 必须接入此协议；归档/备份不得保存可还原的个人资料、正文或已清理文件路径。

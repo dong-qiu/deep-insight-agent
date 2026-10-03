@@ -11,6 +11,7 @@ const root = mkdtempSync(join(tmpdir(), "insight-docker-context-"));
 const context = join(root, "context"), output = join(root, "output");
 const required = ["package.json", "package-lock.json", "tsconfig.json", "next.config.mjs", "postcss.config.mjs",
   "src/app/page.tsx", "src/lib/config/defaults.yaml", "public/logo.svg", "vendor/image-size/package.json",
+  "vendor/next-root-glob/package.json", "vendor/next-root-glob/index.cjs",
   "ops/run-provenance-migrations.ts", "ops/record-deployment.ts", "ops/replay-redaction-registry.ts",
   "ops/crontab", "ops/trigger.mjs", "ops/backup-db.mjs", "ops/cost-backfill.mjs", "ops/probe-alert.mjs",
   "ops/generation-dispatch-worker.mjs", "ops/generation-dispatch-healthcheck.mjs",
@@ -22,6 +23,7 @@ const excluded = [".env", ".env.local", ".env.local.bak", ".npmrc", ".aws/creden
   "src/.env.local", "src/nested/.aws/credentials", "src/nested/private.key", "src/backup.sqlite-wal",
   "src/backup.db-shm", "src/private-credentials.json", "src/local.log", "src/example.test.ts",
   "public/accessKeys.csv", "public/private.pem", "vendor/image-size/.npmrc", "vendor/image-size/node_modules/x.js",
+  "vendor/next-root-glob/.npmrc", "vendor/next-root-glob/node_modules/x.js", "vendor/next-root-glob/.env.local",
   "node_modules/example/index.js", "docs/private.md", "evals/private.jsonl", "tests/private.json"];
 try {
   mkdirSync(context);

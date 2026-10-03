@@ -1292,3 +1292,21 @@ CREATE TABLE IF NOT EXISTS followup_qa (
 CREATE INDEX IF NOT EXISTS idx_followup_report ON followup_qa(report_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_followup_thread ON followup_qa(thread_id, turn_index);
 `;
+
+/** Independent synthetic sidecar only; never run by production bootstrap/migrations. */
+export const C1_SYNTHETIC_REGISTRY_SCHEMA_SQL = `
+CREATE TABLE c1_registry_state (id INTEGER PRIMARY KEY CHECK(id=1), signed_state TEXT NOT NULL);
+CREATE TABLE c1_registry_object (sequence INTEGER PRIMARY KEY, object_key TEXT NOT NULL UNIQUE, signed_object TEXT NOT NULL);
+CREATE TRIGGER c1_registry_object_no_update BEFORE UPDATE ON c1_registry_object BEGIN SELECT RAISE(ABORT,'synthetic registry immutable'); END;
+CREATE TRIGGER c1_registry_object_no_delete BEFORE DELETE ON c1_registry_object BEGIN SELECT RAISE(ABORT,'synthetic registry immutable'); END;
+`;
+
+/** Synthetic recovery experiment only; deliberately NOT part of SCHEMA_SQL or production migrations. */
+export const C1_SYNTHETIC_DELETION_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS c1_synthetic_deletion (
+  record_id TEXT PRIMARY KEY, entity_key TEXT NOT NULL, record_hash TEXT NOT NULL);
+CREATE TRIGGER IF NOT EXISTS c1_synthetic_deletion_no_update BEFORE UPDATE ON c1_synthetic_deletion
+  BEGIN SELECT RAISE(ABORT,'synthetic deletion immutable'); END;
+CREATE TRIGGER IF NOT EXISTS c1_synthetic_deletion_no_delete BEFORE DELETE ON c1_synthetic_deletion
+  BEGIN SELECT RAISE(ABORT,'synthetic deletion immutable'); END;
+`;

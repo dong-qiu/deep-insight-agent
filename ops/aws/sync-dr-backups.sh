@@ -8,6 +8,9 @@ set -euo pipefail
 AWS_BIN="${DR_AWS_BIN:-/usr/local/bin/aws}"
 now="$(date -u +%s)"
 synced=0
+latest_synced=""
+rejected_names=()
+rejected_count=0
 shopt -s nullglob
 for dir in "$DR_BACKUP_ROOT"/*; do
   [ -d "$dir" ] && [ ! -L "$dir" ] || continue
@@ -16,7 +19,7 @@ for dir in "$DR_BACKUP_ROOT"/*; do
   [ -f "$manifest" ] && [ ! -L "$manifest" ] || continue
   # The container writes the manifest last and atomically renames the completed directory.
   # Check both ages and the version marker; full hash/reference verification is the recovery gate.
-  python3 - "$manifest" "$name" "$now" <<'PY' || continue
+  if python3 - "$manifest" "$name" "$now" <<'PY'
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -28,7 +31,9 @@ try:
     assert stamp is not None
     created = datetime.strptime(sys.argv[2], "%Y%m%d-%H%M%S").replace(tzinfo=timezone.utc)
     age = int(sys.argv[3]) - int(created.timestamp())
-    assert 0 <= age < 90 * 24 * 60 * 60
+    assert age >= 0
+    if age >= 90 * 24 * 60 * 60:
+        sys.exit(3)
     with open(sys.argv[1], encoding="utf-8") as handle:
         manifest = json.load(handle)
     assert manifest.get("schema_version") == 1
@@ -36,6 +41,7 @@ try:
     assert isinstance(manifest.get("files"), list)
     manifest_created = datetime.fromisoformat(manifest["created_at"].replace("Z", "+00:00"))
     assert manifest_created.tzinfo is not None
+    assert manifest_created.timestamp() <= int(sys.argv[3]) + 1
     has_interval = "db_snapshot_interval" in manifest
     interval = manifest.get("db_snapshot_interval")
     age_reference = manifest_created
@@ -57,7 +63,9 @@ try:
         assert interval["source_data_version_unchanged"] is (before == after)
         age_reference = started
     manifest_age = int(sys.argv[3]) - int(age_reference.timestamp())
-    assert 0 <= manifest_age < 90 * 24 * 60 * 60
+    assert manifest_age >= 0
+    if manifest_age >= 90 * 24 * 60 * 60:
+        sys.exit(3)
     root = os.path.dirname(sys.argv[1])
     expected = {}
     for item in manifest["files"]:
@@ -93,12 +101,35 @@ try:
 except (OSError, ValueError, TypeError, KeyError, AssertionError, OverflowError):
     sys.exit(1)
 PY
-  "$AWS_BIN" s3 sync "$dir/" "s3://${DR_BUCKET}/ec2/${name}/" --only-show-errors --no-progress
-  synced=$((synced + 1))
+  then
+    "$AWS_BIN" s3 sync "$dir/" "s3://${DR_BUCKET}/ec2/${name}/" --only-show-errors --no-progress
+    synced=$((synced + 1))
+    latest_synced="$name"
+  else
+    status=$?
+    if (( status != 3 )); then
+      rejected_names+=("$name")
+      rejected_count=$((rejected_count + 1))
+    fi
+  fi
 done
 
+echo "dr_sync_snapshots=$synced"
+failed_newest=0
+for ((i = 0; i < rejected_count; i++)); do
+  name="${rejected_names[i]}"
+  if [[ -z "$latest_synced" || "$name" > "$latest_synced" ]]; then
+    echo "dr_sync_rejected_snapshot=$name" >&2
+    failed_newest=$((failed_newest + 1))
+  else
+    echo "dr_sync_skipped_invalid_historical_snapshot=$name" >&2
+  fi
+done
 if (( synced == 0 )); then
   echo "no_eligible_backup_for_dr_sync" >&2
   exit 2
 fi
-echo "dr_sync_snapshots=$synced"
+if (( failed_newest > 0 )); then
+  echo "dr_sync_rejected_snapshots=$failed_newest" >&2
+  exit 2
+fi
