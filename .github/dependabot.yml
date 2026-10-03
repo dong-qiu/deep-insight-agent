@@ -15,18 +15,22 @@ updates:
         patterns: ["next", "next-auth", "react", "react-dom", "eslint", "eslint-*", "@eslint/*"]
         update-types: [minor, patch]
       test-tooling:
-        patterns: ["vitest", "@vitest/*", "vite", "tsx", "typescript", "@typescript/*"]
+        patterns: ["vitest", "@vitest/*", "vite", "tsx", "esbuild", "typescript", "@typescript/*"]
         update-types: [minor, patch]
       source-parsers:
         patterns: ["fast-xml-parser", "@extractus/*"]
         update-types: [minor, patch]
       other-minor-and-patch:
         patterns: ["*"]
-        exclude-patterns: ["@aws-sdk/*", "next", "next-auth", "react", "react-dom", "eslint", "eslint-*", "@eslint/*", "vitest", "@vitest/*", "vite", "tsx", "typescript", "@typescript/*", "fast-xml-parser", "@extractus/*"]
+        exclude-patterns: ["@aws-sdk/*", "next", "next-auth", "react", "react-dom", "eslint", "eslint-*", "@eslint/*", "vitest", "@vitest/*", "vite", "tsx", "esbuild", "typescript", "@typescript/*", "fast-xml-parser", "@extractus/*"]
         update-types: [minor, patch]
     # Node 24 已满足 better-sqlite3 13 的 engine，但它是原生 SQLite 模块：major 升级仍需
     # 单独验证 ABI、迁移与备份/恢复路径，不能混入常规依赖更新。
     ignore:
+      # types 主版本随 engines/CI/Docker 的 Node 主版本迁移；Node 24 不能借 Node 26
+      # 的声明接受运行时不存在的 API。24.x 更新仍正常提出 PR。
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
       - dependency-name: "better-sqlite3"
         update-types: ["version-update:semver-major"]
       # Next 16 当前的 ESLint 插件链只支持 ESLint 9。
