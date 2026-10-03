@@ -1717,3 +1717,25 @@ runner 仍成功退出；此外有限 expiry 与长期保留备份不构成安�
 该方案需要可信检查点和持久删除约束，并约束所有删除写入口；不是改 runner 一行筛选即可完成。
 现有生产协议保持未修改，但其成功退出不作为恢复安全通过证明。实际云保留调整、生产恢复和部署
 另行授权。验收及实施拆分见 [恢复时间与覆盖契约](../plan/specs/recovery-time-coverage.md)。
+
+---
+
+## ADR-0040: Next ESLint 的未修复 glob 漏洞采用窄范围依赖替换
+
+- **日期**: 2026-10-03
+- **状态**: Proposed（待独立 review / CI；不涉及生产部署）
+
+全依赖 audit 的 GHSA-vfj7-8cjw-p6xm 阻塞 C1 PR #392：braces <=3.0.3 无已发布补丁，
+Next ESLint 16.3.8 与 canary 仍经 fast-glob/micromatch 使用它。生产 omit-dev audit 为 0 不足以绕过
+既有全依赖门。强制 audit fix 会降级 Next lint 工具链，不能作为自动修复。
+
+仅 override 当前 Next 插件的 fast-glob 为本地 `vendor/next-root-glob`，使用已在锁图内的 tinyglobby
+0.2.17 实现唯一目录 globSync 调用；不 fork Next 全部规则，不更改 lint 配置。实测直接 alias 不兼容：
+默认目录递归扩张、尾随斜杠及绝对输入相对输出均需校正。适配层校正这些差异，在解析前限制 pattern
+长度/brace 深度，未知调用契约拒绝。漏洞代码实际退出安装图，不靠 audit 例外或改包名伪装。
+
+literal symlink 根路径由 stat 支持；glob 扫描发现的 symlink 目录与旧行为不等价，显式拒绝并要求
+配置 literal roots。目录读取权限等错误也不能被 crawler 转换成空列表成功。Docker deps COPY 与
+default-deny context 白名单必须一并包含 adapter；合成 Docker context 检查同时防止 vendor 内凭据混入。
+
+验收和 30 天上游检查/退出条件见 [工具链安全替换](../plan/specs/next-eslint-glob-security.md)。

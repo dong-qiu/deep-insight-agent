@@ -14,6 +14,8 @@
 vendor/**
 !vendor/image-size/
 !vendor/image-size/**
+!vendor/next-root-glob/
+!vendor/next-root-glob/**
 !ops/
 ops/**
 !ops/run-provenance-migrations.ts
