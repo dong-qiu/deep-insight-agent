@@ -1,18 +1,21 @@
+import Database from "better-sqlite3";
 import { createCipheriv, generateKeyPairSync, randomBytes } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DurableSyntheticAuthority } from "../experiments/c1-recovery/durable.js";
+import { SyntheticFreshnessAnchor } from "../experiments/c1-recovery/freshness.js";
 import { openDb } from "../src/lib/db/index.js";
 import { applyProvenanceMigrations } from "../src/lib/db/provenance-migrations.js";
 import { entityKeyHmac, redactionRecordId } from "../src/lib/db/redaction-registry.js";
 import { getReport, queryReportIndex, searchReports } from "../src/lib/db/reports.js";
 import { permanentlyHidden, replaySynthetic, SyntheticAuthority, utc } from "../experiments/c1-recovery/core.js";
 
-function fixture(durablePath?: string) {
+function fixture(durablePath?: string, anchor?: SyntheticFreshnessAnchor) {
   const issuer = generateKeyPairSync("ed25519"), recovery = generateKeyPairSync("ed25519");
-  const authority = durablePath ? DurableSyntheticAuthority.create(durablePath, "2026-01-01T00:00:00Z", issuer.privateKey, issuer.publicKey)
+  const authority = durablePath ? (anchor ? DurableSyntheticAuthority.createAnchored(durablePath, "2026-01-01T00:00:00Z", issuer.privateKey, issuer.publicKey, anchor)
+    : DurableSyntheticAuthority.create(durablePath, "2026-01-01T00:00:00Z", issuer.privateKey, issuer.publicKey))
     : new SyntheticAuthority("2026-01-01T00:00:00Z", issuer.privateKey);
   const db = openDb(":memory:"); applyProvenanceMigrations(db);
   db.prepare("INSERT INTO topic(id,name,keywords,language,brief_schedule,enabled) VALUES ('t','Synthetic','[]','en','daily',1)").run();
@@ -42,6 +45,27 @@ function fixture(durablePath?: string) {
 }
 
 describe("C1 isolated synthetic recovery core (not production restore)", () => {
+  it("actual expired-record replay checks the reopened independent anchor and real report readers", () => {
+    const dir = mkdtempSync(join(tmpdir(), "c1-anchored-replay-")), path = join(dir, "registry.sqlite"), anchorPath = join(dir, "anchor.sqlite");
+    const witness = generateKeyPairSync("ed25519"), anchor = SyntheticFreshnessAnchor.create(anchorPath, witness.privateKey, witness.publicKey);
+    const f = fixture(path, anchor), a = f.authority as DurableSyntheticAuthority;
+    let reopened: DurableSyntheticAuthority | undefined, fresh: SyntheticFreshnessAnchor | undefined;
+    try {
+      f.commit(); const options = f.options(); a.close(); anchor.close();
+      fresh = SyntheticFreshnessAnchor.open(anchorPath, anchor.id, witness.privateKey, witness.publicKey);
+      reopened = DurableSyntheticAuthority.openAnchored(path, a.epoch, f.issuer.privateKey, f.issuer.publicKey, fresh);
+      const input = { ...options, authority: reopened, objects: reopened.objects() }, receipt = replaySynthetic(f.db, input);
+      expect(receipt.payload.applied).toBe(1); expect(getReport(f.db, "r")).toBeNull();
+      expect(queryReportIndex(f.db, { topic: "t" })).toEqual([]); expect(searchReports(f.db, "synthetic")).toEqual([]);
+      expect(replaySynthetic(f.db, { ...input, previousReceipt: receipt }).payload.resultHash).toBe(receipt.payload.resultHash);
+      const before = f.db.serialize(), rawAnchor = new Database(anchorPath);
+      try {
+        rawAnchor.prepare("UPDATE c1_freshness_state SET signed_state=?").run('{"payload":{},"signature":"bad"}');
+        expect(() => replaySynthetic(f.db, { ...input, previousReceipt: receipt })).toThrow("signature_invalid");
+        expect(f.db.serialize().equals(before)).toBe(true);
+      } finally { rawAnchor.close(); }
+    } finally { reopened?.close(); fresh?.close(); a.close(); anchor.close(); f.db.close(); rmSync(dir, { recursive: true }); }
+  });
   it("replays against a reopened independent registry and its persistent frozen gate", () => {
     const dir = mkdtempSync(join(tmpdir(), "c1-replay-durable-")), path = join(dir, "registry.sqlite");
     const f = fixture(path), a = f.authority as DurableSyntheticAuthority;
@@ -101,6 +125,7 @@ describe("C1 isolated synthetic recovery core (not production restore)", () => {
     const f = fixture(); try {
       expect(f.db.prepare("SELECT name FROM sqlite_master WHERE name='c1_synthetic_deletion'").get()).toBeUndefined();
       expect(f.db.prepare("SELECT name FROM sqlite_master WHERE name LIKE 'c1_registry_%'").get()).toBeUndefined();
+      expect(f.db.prepare("SELECT name FROM sqlite_master WHERE name='c1_freshness_state'").get()).toBeUndefined();
     } finally { f.db.close(); }
   });
   it("repairs stale real report/index/FTS even when an identical tombstone is already in the trusted snapshot", () => {

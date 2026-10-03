@@ -1302,6 +1302,11 @@ CREATE TRIGGER c1_registry_object_no_delete BEFORE DELETE ON c1_registry_object 
 `;
 
 /** Synthetic recovery experiment only; deliberately NOT part of SCHEMA_SQL or production migrations. */
+export const C1_SYNTHETIC_FRESHNESS_SCHEMA_SQL = `
+CREATE TABLE c1_freshness_state (id INTEGER PRIMARY KEY CHECK(id=1), signed_state TEXT NOT NULL);
+`;
+
+/** Synthetic recovery experiment only; deliberately NOT part of SCHEMA_SQL or production migrations. */
 export const C1_SYNTHETIC_DELETION_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS c1_synthetic_deletion (
   record_id TEXT PRIMARY KEY, entity_key TEXT NOT NULL, record_hash TEXT NOT NULL);

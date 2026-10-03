@@ -1,39 +1,34 @@
 /** Same-host, synthetic-only SQLite authority. Not an AWS adapter or production trust root. */
 import Database from "better-sqlite3";
 import { randomUUID, type KeyObject } from "node:crypto";
-import { closeSync, lstatSync, openSync } from "node:fs";
-import { dirname, isAbsolute } from "node:path";
+import { closeSync, openSync, realpathSync } from "node:fs";
 import type { DB } from "../../src/lib/db/index.js";
 import { C1_SYNTHETIC_REGISTRY_SCHEMA_SQL } from "../../src/lib/db/schema.js";
 import { authenticated, digest, signed, utc, type Backup, type Checkpoint, type Entry, type FrozenAuthority, type ObjectVersion, type Signed } from "./core.js";
+import { privateSyntheticPath } from "./private-store.js";
+import { publicKeyDigest, type SyntheticFreshnessAnchor } from "./freshness.js";
 
 type State = { protocol: "synthetic-registry-v1"; epoch: string; origin: string; sequence: number; head: string;
-  pending: string[]; checkpoint: Signed<Checkpoint> | null };
+  pending: string[]; checkpoint: Signed<Checkpoint> | null; anchorId?: string | null };
 type LogObject = { epoch: string; sequence: number; previous: string; object: ObjectVersion };
 function fail(code: string): never { throw new Error(`synthetic_registry_${code}`); }
 const encode = (v: unknown) => JSON.stringify(v);
-
-function privatePath(path: string, existing: boolean) {
-  if (!isAbsolute(path)) fail("path_invalid");
-  const parent = lstatSync(dirname(path));
-  if (!parent.isDirectory() || (parent.mode & 0o077) !== 0) fail("directory_not_private");
-  if (existing) {
-    const file = lstatSync(path);
-    if (!file.isFile() || file.nlink !== 1 || (file.mode & 0o077) !== 0) fail("file_not_private");
-  }
-}
 
 export class DurableSyntheticAuthority implements FrozenAuthority {
   readonly epoch: string;
   #db: DB;
   #signer: KeyObject;
   #trust: KeyObject;
+  #anchor: SyntheticFreshnessAnchor | undefined;
   private constructor(db: DB, epoch: string, signer: KeyObject, trust: KeyObject) {
     this.#db = db; this.epoch = epoch; this.#signer = signer; this.#trust = trust;
     authenticated(signed({ probe: "synthetic-registry-key-pair" }, signer), trust);
   }
   static create(path: string, origin: string, signer: KeyObject, trust: KeyObject): DurableSyntheticAuthority {
-    utc(origin); privatePath(path, false);
+    return this.initialize(path, origin, signer, trust);
+  }
+  private static initialize(path: string, origin: string, signer: KeyObject, trust: KeyObject, anchor?: SyntheticFreshnessAnchor): DurableSyntheticAuthority {
+    utc(origin); privateSyntheticPath(path, false);
     authenticated(signed({ probe: "synthetic-registry-key-pair" }, signer), trust);
     // Exclusive creation: never replace/reinitialize an existing registry, even an empty file.
     closeSync(openSync(path, "wx", 0o600));
@@ -45,18 +40,41 @@ export class DurableSyntheticAuthority implements FrozenAuthority {
         db.exec(C1_SYNTHETIC_REGISTRY_SCHEMA_SQL);
         db.prepare("INSERT INTO c1_registry_state VALUES (1,?)").run(encode(signed({
           protocol: "synthetic-registry-v1", epoch, origin, sequence: 0, head: "genesis", pending: [], checkpoint: null,
+          anchorId: anchor?.id ?? null,
         } satisfies State, signer)));
       }).immediate();
+      if (anchor) {
+        if (realpathSync(path) === realpathSync(anchor.path)) fail("anchor_not_independent");
+        anchor.enroll(epoch, publicKeyDigest(trust), authority.stateHash());
+        authority.#anchor = anchor;
+      }
       return authority;
     } catch (error) { db.close(); throw error; }
   }
   static open(path: string, expectedEpoch: string, signer: KeyObject, trust: KeyObject): DurableSyntheticAuthority {
-    privatePath(path, true);
+    return this.connect(path, expectedEpoch, signer, trust);
+  }
+  private static connect(path: string, expectedEpoch: string, signer: KeyObject, trust: KeyObject, anchor?: SyntheticFreshnessAnchor): DurableSyntheticAuthority {
+    privateSyntheticPath(path, true);
     const db = new Database(path, { fileMustExist: true });
     try {
       const authority = new DurableSyntheticAuthority(db, expectedEpoch, signer, trust);
+      if (anchor && realpathSync(path) === realpathSync(anchor.path)) fail("anchor_not_independent");
+      authority.#anchor = anchor;
       authority.configure(); authority.checked(() => undefined); return authority;
     } catch (error) { db.close(); throw error; }
+  }
+  static createAnchored(path: string, origin: string, signer: KeyObject, trust: KeyObject, anchor: SyntheticFreshnessAnchor): DurableSyntheticAuthority {
+    if (!anchor) fail("anchor_required");
+    return this.initialize(path, origin, signer, trust, anchor);
+  }
+  static openAnchored(path: string, epoch: string, signer: KeyObject, trust: KeyObject, anchor: SyntheticFreshnessAnchor): DurableSyntheticAuthority {
+    if (!anchor) fail("anchor_required");
+    return this.connect(path, epoch, signer, trust, anchor);
+  }
+  private stateHash(): string {
+    const row = this.#db.prepare("SELECT signed_state FROM c1_registry_state WHERE id=1").get() as { signed_state: string };
+    return digest(row.signed_state);
   }
   private configure() {
     this.#db.pragma("busy_timeout = 5000");
@@ -67,6 +85,8 @@ export class DurableSyntheticAuthority implements FrozenAuthority {
     const row = this.#db.prepare("SELECT signed_state FROM c1_registry_state WHERE id=1").get() as { signed_state: string } | undefined;
     if (!row) fail("state_missing");
     const state = authenticated(JSON.parse(row.signed_state) as Signed<State>, this.#trust);
+    // Old APIs remain only for unanchored fixtures; they cannot downgrade an enrolled registry.
+    if ((state.anchorId ?? null) !== (this.#anchor?.id ?? null)) fail("anchor_required");
     if (state.protocol !== "synthetic-registry-v1" || state.epoch !== this.epoch || !Number.isSafeInteger(state.sequence) ||
       state.sequence < 0 || !Array.isArray(state.pending) || new Set(state.pending).size !== state.pending.length ||
       state.pending.some((token) => typeof token !== "string" || !token)) fail("state_invalid");
@@ -96,7 +116,22 @@ export class DurableSyntheticAuthority implements FrozenAuthority {
   }
   private checked<T>(fn: (view: ReturnType<DurableSyntheticAuthority["read"]>) => T): T {
     // BEGIN IMMEDIATE serializes verification, sequence allocation, gate checks and commit acknowledgement.
-    return this.#db.transaction(() => fn(this.read())).immediate();
+    this.#db.exec("BEGIN IMMEDIATE");
+    try {
+      const view = this.read(), before = this.stateHash(), issuer = publicKeyDigest(this.#trust);
+      this.#anchor?.assertCurrent(this.epoch, issuer, before);
+      const value = fn(view), after = this.stateHash();
+      if (this.#anchor && before !== after) {
+        const reservation = this.#anchor.reserve(this.epoch, issuer, before, after);
+        // Reserve is already durable. Finalize holds the anchor lock across registry COMMIT;
+        // any failure leaves pending, never returns a successful token/checkpoint/backup.
+        this.#anchor.finalize(reservation, () => this.#db.exec("COMMIT"));
+      } else this.#db.exec("COMMIT");
+      return value;
+    } catch (error) {
+      if (this.#db.inTransaction) this.#db.exec("ROLLBACK");
+      throw error;
+    }
   }
   private save(state: State) {
     this.#db.prepare("UPDATE c1_registry_state SET signed_state=? WHERE id=1").run(encode(signed(state, this.#signer)));
