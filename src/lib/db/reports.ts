@@ -1,3 +1,4 @@
+import { throwIfAborted } from "../runtime/cancellation.js";
 /** 报告持久化：正文（.md/.html）落 FS，元数据 + 索引 + FTS5 落 SQLite。增量5。 */
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createHash, createPublicKey, randomUUID } from "node:crypto";
@@ -160,10 +161,17 @@ export function saveFailedReport(
 }
 
 /** P0a 已迁移库的发布协议：意图 + manifest 先入库，双 artifact 通过 staging 原子换名后才公开索引。 */
+interface ReportWriteControl { assertWrite?: () => void; signal?: AbortSignal; /** Checks absolute deadline even before a delayed timer can fire. */ checkCancellation?: () => void }
+function assertReportWriteActive(control: ReportWriteControl): void {
+  control.assertWrite?.();
+  control.checkCancellation?.();
+  throwIfAborted(control.signal);
+}
+
 function saveReportWithEffect(
   db: DB, report: Report, index: ReportIndexEntry, dir: string,
   provenance: ReportEffectProvenance | undefined, bindings: readonly ReportCitationBinding[] | undefined,
-  beforePublish?: () => void, assertPublish?: () => void, afterPublish?: () => void,
+  beforePublish?: () => void, assertPublish?: () => void, afterPublish?: () => void, control: ReportWriteControl = {},
 ): void {
   const root = resolve(dir);
   const effectId = `effect_${randomUUID().replaceAll("-", "")}`;
@@ -177,6 +185,7 @@ function saveReportWithEffect(
   }));
   // 先写 intent。publication_payload 仅存 index 元数据，正文只存在 staging/final artifact。
   db.transaction(() => {
+    assertReportWriteActive(control);
     assertEffectProvenanceBinding(provenance);
     if (provenance) {
       const event = db.prepare("SELECT 1 FROM generation_event WHERE id=? AND trace_id=?").get(provenance.eventId, provenance.traceId);
@@ -204,6 +213,7 @@ function saveReportWithEffect(
       }
     }
     mkdirSync(root, { recursive: true });
+    assertReportWriteActive(control);
     db.prepare("UPDATE generation_effect SET status='attempted',updated_at=? WHERE id=? AND status='planned'").run(new Date().toISOString(), effectId);
     for (const artifact of manifest) renameSync(safeTarget(stagingRoot, artifact.target), safeTarget(root, artifact.target));
     db.transaction(() => {
@@ -213,6 +223,7 @@ function saveReportWithEffect(
           throw new Error(`report artifact is incomplete: ${artifact.target}`);
         }
       }
+      assertReportWriteActive(control);
       assertPublish?.();
       assertTraceReviewPackage(db, report, provenance);
       if (provenance) publishReviewPackage(db, report.id);
@@ -226,6 +237,7 @@ function saveReportWithEffect(
     })();
   } catch (error) {
     // 已出现的半成品不进入 reader；保留 effect/failed Report 供后续 reconciliation 或人工诊断。
+    control.assertWrite?.();
     const message = safeError(error).message;
     db.transaction(() => {
       db.prepare("UPDATE generation_effect SET status='unknown',error=?,updated_at=? WHERE id=? AND status <> 'committed'")
@@ -245,12 +257,13 @@ function saveReportWithEffect(
 async function saveAnchoredReportWithEffect(
   db: DB, report: Report, index: ReportIndexEntry, dir: string, anchor: ReportAnchorPublication,
   provenance: ReportEffectProvenance | undefined, bindings: readonly ReportCitationBinding[] | undefined,
-  beforePublish?: () => void, assertPublish?: () => void, afterPublish?: () => void,
+  beforePublish?: () => void, assertPublish?: () => void, afterPublish?: () => void, control: ReportWriteControl = {},
 ): Promise<void> {
   const root = resolve(dir); const effectId = `effect_${randomUUID().replaceAll("-", "")}`; const created = new Date().toISOString();
   const artifacts: Array<{ target: string; body: string }> = [{ target: `${report.id}.md`, body: report.body_md }, { target: `${report.id}.html`, body: report.body_html }];
   const effectManifest: ReportArtifact[] = artifacts.map(({ target, body }) => ({ target, sha256: digest(body), size: Buffer.byteLength(body, "utf8"), report_id: report.id }));
   db.transaction(() => {
+    assertReportWriteActive(control);
     assertEffectProvenanceBinding(provenance);
     if (provenance && !db.prepare("SELECT 1 FROM generation_event WHERE id=? AND trace_id=?").get(provenance.eventId, provenance.traceId)) throw new Error("generation_effect_event_trace_mismatch");
     insertReportMetadata(db, { ...report, status: "generating" }, null);
@@ -268,6 +281,7 @@ async function saveAnchoredReportWithEffect(
     mkdirSync(staging, { recursive: true });
     for (const artifact of artifacts) { writeFileSync(safeTarget(staging, artifact.target), artifact.body); if (digest(readFileSync(safeTarget(staging, artifact.target), "utf8")) !== effectManifest.find((item) => item.target === artifact.target)!.sha256) throw new Error(`report artifact hash mismatch: ${artifact.target}`); }
     mkdirSync(root, { recursive: true });
+    assertReportWriteActive(control);
     db.prepare("UPDATE generation_effect SET status='attempted',updated_at=? WHERE id=? AND status='planned'").run(new Date().toISOString(), effectId);
     for (const artifact of effectManifest) renameSync(safeTarget(staging, artifact.target), safeTarget(root, artifact.target));
     const publications = artifacts.map(({ target, body }) => {
@@ -277,9 +291,11 @@ async function saveAnchoredReportWithEffect(
     });
     const issuedAt = anchor.issuedAt ?? new Date().toISOString();
     const retainUntil = requiredAnchorRetention(anchor, issuedAt);
-    const written = await Promise.all(publications.map(({ manifest }) => writePlannedAnchor(db, anchor.store, { generation_effect_id: effectId, manifest, issued_at: issuedAt, retain_until: retainUntil }, anchor.signer)));
+    const written = await Promise.all(publications.map(({ manifest }) => writePlannedAnchor(db, anchor.store, { generation_effect_id: effectId, manifest, issued_at: issuedAt, retain_until: retainUntil }, anchor.signer, () => assertReportWriteActive(control))));
+    assertReportWriteActive(control);
     commitAnchoredPublications(db, { generation_effect_id: effectId, publications: publications.map(({ manifest }, index) => ({ manifest, provider_version_id: written[index]!.provider_version_id })), finalize: () => {
       for (const artifact of effectManifest) { const finalPath = safeTarget(root, artifact.target); if (!existsSync(finalPath) || digest(readFileSync(finalPath, "utf8")) !== artifact.sha256) throw new Error(`report artifact is incomplete: ${artifact.target}`); }
+      assertReportWriteActive(control);
       assertPublish?.();
       assertTraceReviewPackage(db, report, provenance);
       if (provenance) publishReviewPackage(db, report.id);
@@ -288,6 +304,7 @@ async function saveAnchoredReportWithEffect(
       insertReportIndex(db, report, index); afterPublish?.();
     } });
   } catch (error) {
+    control.assertWrite?.();
     const message = safeError(error).message;
     const anchored = !!db.prepare("SELECT 1 FROM generation_anchor_effect WHERE generation_effect_id=? AND status='anchor_written'").get(effectId);
     if (!anchored) db.transaction(() => {
@@ -306,8 +323,9 @@ export function saveReport(
   db: DB,
   report: Report,
   index: ReportIndexEntry,
-  opts: { dir?: string; provenance?: ReportEffectProvenance; readerCitationBindings?: readonly ReportCitationBinding[]; beforePublish?: () => void; assertPublish?: () => void; afterPublish?: () => void; anchor?: ReportAnchorPublication } = {},
+  opts: { dir?: string; provenance?: ReportEffectProvenance; readerCitationBindings?: readonly ReportCitationBinding[]; beforePublish?: () => void; assertPublish?: () => void; afterPublish?: () => void; anchor?: ReportAnchorPublication } & ReportWriteControl = {},
 ): void | Promise<void> {
+  assertReportWriteActive(opts);
   assertReportNotRedacted(db, report.id);
   if (report.status !== "done") {
     // lifecycle 的非发布态只记录元数据；禁止给 failed/generating 写正文、索引或 FTS。
@@ -322,16 +340,17 @@ export function saveReport(
   const dir = opts.dir ?? defaultBodyDir();
   if (opts.anchor) {
     if (!hasReportEffectTable(db)) throw new Error("integrity_anchor_schema_required");
-    return saveAnchoredReportWithEffect(db, report, index, dir, opts.anchor, opts.provenance, opts.readerCitationBindings, opts.beforePublish, opts.assertPublish, opts.afterPublish);
+    return saveAnchoredReportWithEffect(db, report, index, dir, opts.anchor, opts.provenance, opts.readerCitationBindings, opts.beforePublish, opts.assertPublish, opts.afterPublish, opts);
   }
   if (hasReportEffectTable(db)) {
-    saveReportWithEffect(db, report, index, dir, opts.provenance, opts.readerCitationBindings, opts.beforePublish, opts.assertPublish, opts.afterPublish);
+    saveReportWithEffect(db, report, index, dir, opts.provenance, opts.readerCitationBindings, opts.beforePublish, opts.assertPublish, opts.afterPublish, opts);
     return;
   }
   const prefix = resolve(join(dir, report.id));
   const lifecycleSchema = hasFailureColumn(db);
   // 先持久化生成意图，任何文件/索引异常都会留下不可公开但可由 admin 生命周期页诊断的尝试。
   db.transaction(() => {
+    assertReportWriteActive(opts);
     insertReportMetadata(db, { ...report, status: "generating" }, null);
     opts.beforePublish?.();
     assertTraceReviewPackage(db, report, opts.provenance);
@@ -341,6 +360,7 @@ export function saveReport(
     writeFileSync(`${prefix}.md`, report.body_md);
     writeFileSync(`${prefix}.html`, report.body_html);
     db.transaction(() => {
+      assertReportWriteActive(opts);
       opts.assertPublish?.();
       assertTraceReviewPackage(db, report, opts.provenance);
       if (opts.provenance) publishReviewPackage(db, report.id);
