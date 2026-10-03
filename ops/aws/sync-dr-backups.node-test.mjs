@@ -75,3 +75,76 @@ test("off-box sync rejects corrupt, extra, and linked artifacts without making a
   assert.match(result.stderr, /no_eligible_backup_for_dr_sync/);
   assert.throws(() => readFileSync(f.log));
 });
+
+test("off-box sync uses the interval start and DB hash for new manifests", (t) => {
+  const f = setup(t);
+  const recent = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  const dir = addBackup(f, recent);
+  const path = join(dir, "backup-manifest.json");
+  const manifest = JSON.parse(readFileSync(path, "utf8"));
+  manifest.db_snapshot_interval = {
+    started_at: new Date(Date.now() - 91 * 24 * 60 * 60 * 1000).toISOString(),
+    completed_at: recent.toISOString(),
+    source_data_version_before: 1,
+    source_data_version_after: 1,
+    source_data_version_unchanged: true,
+    db_sha256: manifest.files[0].sha256,
+  };
+  writeFileSync(path, JSON.stringify(manifest));
+  assert.equal(run(f).status, 2);
+  manifest.db_snapshot_interval.started_at = recent.toISOString();
+  manifest.db_snapshot_interval.db_sha256 = "0".repeat(64);
+  writeFileSync(path, JSON.stringify(manifest));
+  assert.equal(run(f).status, 2);
+  manifest.db_snapshot_interval.db_sha256 = manifest.files[0].sha256;
+  writeFileSync(path, JSON.stringify(manifest));
+  assert.equal(run(f).status, 0);
+  manifest.db_snapshot_interval = null;
+  writeFileSync(path, JSON.stringify(manifest));
+  assert.equal(run(f).status, 2);
+});
+
+test("off-box sync reports a rejected recent snapshot even when an older one syncs", (t) => {
+  const f = setup(t);
+  const now = Date.now();
+  const prior = new Date(now - 2 * 86400000);
+  const recent = new Date(now - 86400000);
+  addBackup(f, prior);
+  const dir = addBackup(f, recent);
+  const path = join(dir, "backup-manifest.json");
+  const manifest = JSON.parse(readFileSync(path, "utf8"));
+  manifest.db_snapshot_interval = {
+    started_at: recent.toISOString(),
+    completed_at: recent.toISOString(),
+    source_data_version_before: 1,
+    source_data_version_after: 1,
+    source_data_version_unchanged: true,
+    db_sha256: "0".repeat(64),
+  };
+  writeFileSync(path, JSON.stringify(manifest));
+  const result = run(f);
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, new RegExp(`dr_sync_rejected_snapshot=${stamp(recent)}`));
+  assert.match(result.stderr, /dr_sync_rejected_snapshots=1/);
+  assert.match(result.stdout, /dr_sync_snapshots=1/);
+  const calls = readFileSync(f.log, "utf8").trim().split("\n");
+  assert.equal(calls.length, 1);
+  assert.ok(calls[0].includes(`/ec2/${stamp(prior)}/`));
+});
+
+test("off-box sync diagnoses an older invalid snapshot without failing a newer valid sync", (t) => {
+  const f = setup(t);
+  const now = Date.now();
+  const older = new Date(now - 4 * 86400000);
+  const recent = new Date(now - 86400000);
+  addBackup(f, older, { extra: true });
+  addBackup(f, recent);
+  const result = run(f);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, new RegExp(`dr_sync_skipped_invalid_historical_snapshot=${stamp(older)}`));
+  assert.doesNotMatch(result.stderr, /dr_sync_rejected_snapshot=/);
+  assert.match(result.stdout, /dr_sync_snapshots=1/);
+  const calls = readFileSync(f.log, "utf8").trim().split("\n");
+  assert.equal(calls.length, 1);
+  assert.ok(calls[0].includes(`/ec2/${stamp(recent)}/`));
+});

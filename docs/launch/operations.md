@@ -177,6 +177,14 @@ ADR-0027 以逐源策略取代它。**本说明 PR 不部署镜像或修改 AWS 
 - 用 **SQLite 在线备份 API**（`db.backup()`，对 app 并发写安全，产出**一致**的单文件，避免 tar 活库拿到半截 WAL）导出 `insight.db`；
 - 连同 `reports/` 正文和 `raw/` 原文字节一并落到 `/data/backups/<UTC时间戳>/`；
 - 写入 `backup-manifest.json`（文件 SHA-256、大小和 DB 引用检查计数）。历史缺文件不会销毁仍有价值的部分备份，但该份标为 `incomplete`，**不得作为完整恢复点**；
+- 新备份清单另记录 SQLite 在线备份的开始/完成时间、前后 `data_version` 观测及备份 DB 的 SHA-256；
+  `created_at` 仍是**清单生成时间**，不是 SQLite 捕获时刻。前后版本相同只表示该连接未观察到其他连接提交，
+  `source_data_version_unchanged` 不表示报告和 raw 文件静止，也不能为旧备份补造精确捕获时间；
+  缺此字段的既有清单仍按原备份完整性规则核验，但核验结果将其时间证据标为 `legacy_unattested`；
+  有区间的清单按前后版本观测分别标为 `db_interval_no_external_commit_observed` 或 `db_interval_external_commit_observed`，均不等于精确捕获时刻；
+- `verifyBackup.complete` 仅说明备份文件与引用通过本地完整性核验；它不证明可信采样边界或删除登记覆盖，不能单独作为 C1 恢复放行条件；
+- 新清单的 90 天恢复时限按备份区间**起点**保守计算；旧清单没有该起点，维持以 `created_at` 计算的既有兼容规则；
+  轮转与异地同步还会检查更早的目录启动时间，可能更早停止保留或同步，这是有意保守的窗口；
 - 新格式备份滚动保留最近 14 份（`BACKUP_KEEP` 可调），额外保护最近一份经校验的完整恢复点；
   新格式恢复点最长 90 天。**旧格式/人工备份不会被新脚本自动删除**，须先清单化审查，不能作为完整恢复点直接使用；
 - `raw/` 默认纳入；只有显式 `BACKUP_INCLUDE_RAW=0` 才排除，结果必为部分备份。重新抓取不能充当原字节恢复。
@@ -210,6 +218,8 @@ docker compose exec -T cron node /app/ops/backup-integrity.mjs --backup-dir /dat
 - **权限**：EC2 实例角色 `deep-insight-ssm` 加最小内联策略 `s3-dr-backups`（仅本桶 `ListBucket`/`PutObject`/`GetObject`）；**无长期密钥**，走实例角色。
 - **目标调度**：host `/etc/cron.d/deep-insight-dr`，每日 **18:30 UTC**（在 6.1 容器内 18:00 备份之后）运行 `/usr/local/bin/deep-insight-dr-sync`。仅同步 90 天内有 C1 清单、文件清单和哈希一致的目录；不上传旧格式、暂存目录或额外文件。部分备份仍保留，但不得标为完整恢复点。同步不带 `--delete`；S3 对象由上述版本化生命周期规则异步清理。日志 `/var/log/deep-insight-dr.log`。
 - **host 迁移（仅未迁移环境）**：先发布含 C1 的镜像，在 18:00 UTC 备份后确认产生新清单、核验状态及磁盘余量；再由管理员运行 `ops/aws/setup-dr.sh` 更新 host cron 并执行首次选择性同步。此脚本会更新 S3/IAM/cron，不属于 code-only 部署；须单独核对执行窗口和结果。若无合格备份，脚本以 `no_eligible_backup_for_dr_sync` 失败，不应绕过筛选改用全目录同步。
+- **已迁移 host 的脚本升级**：`/usr/local/bin/deep-insight-dr-sync` 是独立安装的副本；仓库或容器镜像更新不会替换它。上线新区间筛选时，先记录 host 现有脚本 SHA-256 并保存仅 root 可读的回滚副本；经受控 SSM 将本版本 `ops/aws/sync-dr-backups.sh` 写入 host 临时文件，运行 `bash -n`、核对其 SHA-256 与发布版本一致后，再以 root 所有、`0755` 权限原子替换。18:00 UTC 新备份完成后手动运行一次 host 同步，核对 `dr_sync_snapshots`、`dr_sync_rejected_snapshot`、S3 对应目录及下载到隔离目录的文件哈希；失败时恢复旧脚本并保留告警，不改用全目录同步。该 host 更新是独立运维步骤，须避开每日管线窗口并留存执行收据。
+- **同步告警**：有清单且仍在 90 天目录窗口内的最新备份若结构或哈希校验失败，即使较早备份已同步，脚本也输出 `dr_sync_rejected_snapshot=<目录>` 并以非零状态结束；较旧的坏备份只输出 `dr_sync_skipped_invalid_historical_snapshot=<目录>` 供追查，不使较新有效备份的同步失败。区间起点超期的备份和没有清单的旧目录继续跳过。cron 日志出现拒绝标记时应核对当日新备份及异地副本，不能把较早备份的重复同步当作当日成功。
 
 桶名是 `<AWS_NAME>-backups-<账号ID>`（setup-dr.sh 计算）。**DR 现场先查出真实桶名**，免得对着占位符抓瞎：
 
