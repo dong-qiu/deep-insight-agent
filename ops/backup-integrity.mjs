@@ -14,6 +14,12 @@ function withinRestoreWindow(createdAt, now) {
   return Number.isFinite(at) && age >= 0 && age < MAX_RESTORE_AGE_MS;
 }
 
+function restoreAgeReference(manifest) {
+  // A new manifest records an interval; use its earliest possible snapshot time.
+  // Legacy manifests retain their historical created_at policy for compatibility.
+  return manifest.db_snapshot_interval === undefined ? manifest.created_at : manifest.db_snapshot_interval?.started_at;
+}
+
 function stampTime(name) {
   const match = name.match(/^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})$/);
   if (!match) return NaN;
@@ -175,15 +181,33 @@ export function inspectBackup(backupDir, dataDir = "/data") {
   };
 }
 
-export function writeBackupManifest(backupDir, dataDir = "/data", { rawIncluded = true } = {}) {
+function validSnapshotInterval(interval, dbSha256, manifestCreatedAt) {
+  if (!interval || typeof interval !== "object" || Array.isArray(interval)) return false;
+  const canonical = (value) => typeof value === "string" && Number.isFinite(Date.parse(value))
+    && new Date(value).toISOString() === value;
+  const before = interval.source_data_version_before;
+  const after = interval.source_data_version_after;
+  return canonical(interval.started_at) && canonical(interval.completed_at)
+    && interval.started_at <= interval.completed_at && interval.completed_at <= manifestCreatedAt
+    && Number.isSafeInteger(before) && before >= 0 && Number.isSafeInteger(after) && after >= 0
+    && interval.source_data_version_unchanged === (before === after)
+    && interval.db_sha256 === dbSha256;
+}
+
+export function writeBackupManifest(backupDir, dataDir = "/data", { rawIncluded = true, dbSnapshotInterval } = {}) {
   const inventory = inspectBackup(backupDir, dataDir);
+  const createdAt = new Date().toISOString();
+  const dbSha256 = inventory.files.find((file) => file.path === "insight.db")?.sha256;
+  const interval = dbSnapshotInterval ? { ...dbSnapshotInterval, db_sha256: dbSha256 } : undefined;
+  if (interval && !validSnapshotInterval(interval, dbSha256, createdAt)) throw new Error("backup_snapshot_interval_invalid");
   const manifest = {
     schema_version: 1,
-    created_at: new Date().toISOString(),
+    created_at: createdAt,
     raw_included: rawIncluded,
     status: inventory.complete && rawIncluded ? "complete" : "incomplete",
     summary: inventory.summary,
     files: inventory.files,
+    ...(interval ? { db_snapshot_interval: interval } : {}),
   };
   writeFileSync(join(backupDir, MANIFEST), `${JSON.stringify(manifest)}\n`, { flag: "wx", mode: 0o600 });
   return manifest;
@@ -199,15 +223,22 @@ export function verifyBackup(backupDir, dataDir = "/data", now = new Date()) {
     || typeof manifest.raw_included !== "boolean" || !["complete", "incomplete"].includes(manifest.status)) {
     return { complete: false, reason: "manifest_invalid" };
   }
-  if (!withinRestoreWindow(manifest.created_at, now)) return { complete: false, reason: "backup_outside_restore_window" };
+  if (!withinRestoreWindow(restoreAgeReference(manifest), now)) return { complete: false, reason: "backup_outside_restore_window" };
   try {
     const actual = inspectBackup(backupDir, dataDir);
     if (JSON.stringify(actual.files) !== JSON.stringify(manifest.files)
       || JSON.stringify(actual.summary) !== JSON.stringify(manifest.summary)) {
       return { complete: false, reason: "manifest_mismatch", summary: actual.summary };
     }
+    if (manifest.db_snapshot_interval !== undefined && !validSnapshotInterval(manifest.db_snapshot_interval,
+      actual.files.find((file) => file.path === "insight.db")?.sha256, manifest.created_at)) {
+      return { complete: false, reason: "snapshot_interval_invalid", summary: actual.summary };
+    }
     const complete = actual.complete && manifest.raw_included && manifest.status === "complete";
-    return { complete, reason: complete ? null : !manifest.raw_included ? "raw_excluded" : actual.complete ? "manifest_declares_incomplete" : "references_incomplete", summary: actual.summary };
+    const snapshotTimeEvidence = manifest.db_snapshot_interval === undefined ? "legacy_unattested"
+      : manifest.db_snapshot_interval.source_data_version_unchanged
+        ? "db_interval_no_external_commit_observed" : "db_interval_external_commit_observed";
+    return { complete, reason: complete ? null : !manifest.raw_included ? "raw_excluded" : actual.complete ? "manifest_declares_incomplete" : "references_incomplete", summary: actual.summary, snapshot_time_evidence: snapshotTimeEvidence };
   } catch {
     return { complete: false, reason: "backup_check_failed" };
   }
@@ -235,7 +266,7 @@ export function planBackupPrune(backupRoot, keep, dataDir = "/data", now = new D
     if (!Number.isFinite(age) || age < 0 || age >= MAX_RESTORE_AGE_MS) return false;
     try {
       const manifest = JSON.parse(readFileSync(join(backupRoot, name, MANIFEST), "utf8"));
-      return withinRestoreWindow(manifest.created_at, now);
+      return withinRestoreWindow(restoreAgeReference(manifest), now);
     } catch { return false; }
   });
   const retained = new Set(inWindow.slice(0, keep));
