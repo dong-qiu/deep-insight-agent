@@ -36,6 +36,11 @@ E04 是已刊探索事件，不能证明新切片有足够多事实素材；正�
 等待首轮新刊期间，已把可并行的[发布证据契约、回归矩阵、单主题评测框架与提取备选路线](../plan/specs/daily-brief-density-fast-release.md#等待新刊窗口时可并行完成的准备)
 限定为 S0 准备。当前报告选择/发布相关 4 个测试文件共 189 项、只读导出器 15 项通过；
 这两组 before 基线不代替新格式测试、S1 收益或上线验收。
+已完成[成员发布契约](../plan/specs/daily-brief-density-member-publication-contract.md)的字段/事务/恢复设计、
+[生产路径回归矩阵](daily-brief-density-first-release-regression-matrix.md)和
+[单主题评测协议草案](../plan/specs/daily-brief-density-one-topic-eval-protocol-draft.md)；
+C1 供给不足备选仅定义比较口径，未启动提取。三份均为 S0 准备，
+没有填写或降低正式留出的适用样本、收益、阅读/事实预算、连续运行等数值门，也没有启动 S2 生产接线。
 
 ### 留出来源补样进展（截至 2026-10-03，尚未分区）
 
