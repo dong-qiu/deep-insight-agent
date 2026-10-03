@@ -1,14 +1,19 @@
 import { createCipheriv, generateKeyPairSync, randomBytes } from "node:crypto";
 import { describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DurableSyntheticAuthority } from "../experiments/c1-recovery/durable.js";
 import { openDb } from "../src/lib/db/index.js";
 import { applyProvenanceMigrations } from "../src/lib/db/provenance-migrations.js";
 import { entityKeyHmac, redactionRecordId } from "../src/lib/db/redaction-registry.js";
 import { getReport, queryReportIndex, searchReports } from "../src/lib/db/reports.js";
 import { permanentlyHidden, replaySynthetic, SyntheticAuthority, utc } from "../experiments/c1-recovery/core.js";
 
-function fixture() {
+function fixture(durablePath?: string) {
   const issuer = generateKeyPairSync("ed25519"), recovery = generateKeyPairSync("ed25519");
-  const authority = new SyntheticAuthority("2026-01-01T00:00:00Z", issuer.privateKey);
+  const authority = durablePath ? DurableSyntheticAuthority.create(durablePath, "2026-01-01T00:00:00Z", issuer.privateKey, issuer.publicKey)
+    : new SyntheticAuthority("2026-01-01T00:00:00Z", issuer.privateKey);
   const db = openDb(":memory:"); applyProvenanceMigrations(db);
   db.prepare("INSERT INTO topic(id,name,keywords,language,brief_schedule,enabled) VALUES ('t','Synthetic','[]','en','daily',1)").run();
   db.prepare(`INSERT INTO report(id,type,topic_id,status,generated_at,title,body_path,insight_ids,event_ids,citation_count,cost)
@@ -37,6 +42,18 @@ function fixture() {
 }
 
 describe("C1 isolated synthetic recovery core (not production restore)", () => {
+  it("replays against a reopened independent registry and its persistent frozen gate", () => {
+    const dir = mkdtempSync(join(tmpdir(), "c1-replay-durable-")), path = join(dir, "registry.sqlite");
+    const f = fixture(path), a = f.authority as DurableSyntheticAuthority;
+    let reopened: DurableSyntheticAuthority | undefined;
+    try {
+      f.commit(); const options = f.options(); a.close();
+      reopened = DurableSyntheticAuthority.open(path, a.epoch, f.issuer.privateKey, f.issuer.publicKey);
+      const receipt = replaySynthetic(f.db, { ...options, authority: reopened, objects: reopened.objects() });
+      expect(receipt.payload.applied).toBe(1); expect(getReport(f.db, "r")).toBeNull();
+      expect(permanentlyHidden(f.db, "r")).toBe(true);
+    } finally { reopened?.close(); f.db.close(); rmSync(dir, { recursive: true }); }
+  });
   it("replays post-snapshot deletion after expiry, removes real report/index/FTS, persists constraint and repeats safely", () => {
     const f = fixture(); try {
       f.commit(); const input = f.options(), receipt = replaySynthetic(f.db, input);
@@ -83,6 +100,7 @@ describe("C1 isolated synthetic recovery core (not production restore)", () => {
   it("does not add experimental tables through real schema bootstrap or production migrations", () => {
     const f = fixture(); try {
       expect(f.db.prepare("SELECT name FROM sqlite_master WHERE name='c1_synthetic_deletion'").get()).toBeUndefined();
+      expect(f.db.prepare("SELECT name FROM sqlite_master WHERE name LIKE 'c1_registry_%'").get()).toBeUndefined();
     } finally { f.db.close(); }
   });
   it("repairs stale real report/index/FTS even when an identical tombstone is already in the trusted snapshot", () => {
