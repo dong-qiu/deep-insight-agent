@@ -75,3 +75,31 @@ test("off-box sync rejects corrupt, extra, and linked artifacts without making a
   assert.match(result.stderr, /no_eligible_backup_for_dr_sync/);
   assert.throws(() => readFileSync(f.log));
 });
+
+test("off-box sync uses the interval start and DB hash for new manifests", (t) => {
+  const f = setup(t);
+  const recent = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  const dir = addBackup(f, recent);
+  const path = join(dir, "backup-manifest.json");
+  const manifest = JSON.parse(readFileSync(path, "utf8"));
+  manifest.db_snapshot_interval = {
+    started_at: new Date(Date.now() - 91 * 24 * 60 * 60 * 1000).toISOString(),
+    completed_at: recent.toISOString(),
+    source_data_version_before: 1,
+    source_data_version_after: 1,
+    source_data_version_unchanged: true,
+    db_sha256: manifest.files[0].sha256,
+  };
+  writeFileSync(path, JSON.stringify(manifest));
+  assert.equal(run(f).status, 2);
+  manifest.db_snapshot_interval.started_at = recent.toISOString();
+  manifest.db_snapshot_interval.db_sha256 = "0".repeat(64);
+  writeFileSync(path, JSON.stringify(manifest));
+  assert.equal(run(f).status, 2);
+  manifest.db_snapshot_interval.db_sha256 = manifest.files[0].sha256;
+  writeFileSync(path, JSON.stringify(manifest));
+  assert.equal(run(f).status, 0);
+  manifest.db_snapshot_interval = null;
+  writeFileSync(path, JSON.stringify(manifest));
+  assert.equal(run(f).status, 2);
+});

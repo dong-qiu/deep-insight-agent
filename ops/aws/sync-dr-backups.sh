@@ -36,7 +36,27 @@ try:
     assert isinstance(manifest.get("files"), list)
     manifest_created = datetime.fromisoformat(manifest["created_at"].replace("Z", "+00:00"))
     assert manifest_created.tzinfo is not None
-    manifest_age = int(sys.argv[3]) - int(manifest_created.timestamp())
+    has_interval = "db_snapshot_interval" in manifest
+    interval = manifest.get("db_snapshot_interval")
+    age_reference = manifest_created
+    if has_interval:
+        assert isinstance(interval, dict)
+        def canonical_utc(value):
+            assert isinstance(value, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z", value)
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            assert parsed.isoformat(timespec="milliseconds").replace("+00:00", "Z") == value
+            return parsed
+        assert canonical_utc(manifest["created_at"]) == manifest_created
+        started = canonical_utc(interval["started_at"])
+        completed = canonical_utc(interval["completed_at"])
+        assert started <= completed <= manifest_created
+        before = interval["source_data_version_before"]
+        after = interval["source_data_version_after"]
+        assert type(before) is int and 0 <= before <= 2**53 - 1
+        assert type(after) is int and 0 <= after <= 2**53 - 1
+        assert interval["source_data_version_unchanged"] is (before == after)
+        age_reference = started
+    manifest_age = int(sys.argv[3]) - int(age_reference.timestamp())
     assert 0 <= manifest_age < 90 * 24 * 60 * 60
     root = os.path.dirname(sys.argv[1])
     expected = {}
@@ -48,6 +68,8 @@ try:
         assert isinstance(item["size"], int) and item["size"] >= 0
         assert re.fullmatch(r"[0-9a-f]{64}", item["sha256"])
         expected[path] = item
+    if has_interval:
+        assert interval["db_sha256"] == expected["insight.db"]["sha256"]
     actual = set()
     for current, dirs, files in os.walk(root, followlinks=False):
         for name in dirs + files:

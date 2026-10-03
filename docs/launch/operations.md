@@ -177,6 +177,13 @@ ADR-0027 以逐源策略取代它。**本说明 PR 不部署镜像或修改 AWS 
 - 用 **SQLite 在线备份 API**（`db.backup()`，对 app 并发写安全，产出**一致**的单文件，避免 tar 活库拿到半截 WAL）导出 `insight.db`；
 - 连同 `reports/` 正文和 `raw/` 原文字节一并落到 `/data/backups/<UTC时间戳>/`；
 - 写入 `backup-manifest.json`（文件 SHA-256、大小和 DB 引用检查计数）。历史缺文件不会销毁仍有价值的部分备份，但该份标为 `incomplete`，**不得作为完整恢复点**；
+- 新备份清单另记录 SQLite 在线备份的开始/完成时间、前后 `data_version` 观测及备份 DB 的 SHA-256；
+  `created_at` 仍是**清单生成时间**，不是 SQLite 捕获时刻。前后版本相同只表示该连接未观察到其他连接提交，
+  `source_data_version_unchanged` 不表示报告和 raw 文件静止，也不能为旧备份补造精确捕获时间；
+  缺此字段的既有清单仍按原恢复规则核验，但核验结果将其时间证据标为 `legacy_unattested`；
+  有区间的清单按前后版本观测分别标为 `db_interval_no_external_commit_observed` 或 `db_interval_external_commit_observed`，均不等于精确捕获时刻；
+- 新清单的 90 天恢复时限按备份区间**起点**保守计算；旧清单没有该起点，维持以 `created_at` 计算的既有兼容规则；
+  轮转与异地同步还会检查更早的目录启动时间，可能更早停止保留或同步，这是有意保守的窗口；
 - 新格式备份滚动保留最近 14 份（`BACKUP_KEEP` 可调），额外保护最近一份经校验的完整恢复点；
   新格式恢复点最长 90 天。**旧格式/人工备份不会被新脚本自动删除**，须先清单化审查，不能作为完整恢复点直接使用；
 - `raw/` 默认纳入；只有显式 `BACKUP_INCLUDE_RAW=0` 才排除，结果必为部分备份。重新抓取不能充当原字节恢复。
