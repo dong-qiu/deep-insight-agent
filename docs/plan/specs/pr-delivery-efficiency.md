@@ -40,8 +40,8 @@ CI/ops 项执行干净 npm ci、TS6/TS7、lint、覆盖率、一次应用 build/
 
 | PR | 范围 | 提交前验收 | 集成验收位置 |
 | --- | --- | --- | --- |
-| 1 | 分类、轻量验证、必需门、镜像 admission | PR 1 专属收据 | PR 摘要、CI/发布 Actions |
-| 2 | 证据归档流程 | PR 2 专属收据 | PR 摘要、文档 CI/发布 Actions |
+| 1 | 分类、轻量验证、必需门、镜像 admission | [PR 1 收据](../../verify/pr-delivery-efficiency-1-2026-10-04.md) | [#405](https://github.com/dong-qiu/deep-insight-agent/pull/405)，main `f390343`，[完整 CI success](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37142631268)，[代码镜像发布 success](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37142970591) |
+| 2 | [证据归档流程](pr-delivery-evidence-workflow.md) | [PR 2 收据](../../verify/pr-delivery-efficiency-2-2026-10-04.md) | PR 摘要、文档 CI/发布 Actions |
 | 3 | Docker 与应用并行 | PR 3 专属收据 | PR 摘要、完整 CI/发布 Actions |
 
 ## 回退
