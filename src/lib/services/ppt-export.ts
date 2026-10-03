@@ -5,6 +5,7 @@
 import type { DB } from "../db/index.js";
 import { getAnalysisBatch, getValidationResult } from "../db/analysis.js";
 import { getReport } from "../db/reports.js";
+import { isReportReaderVisible } from "../db/integrity-lifecycle.js";
 import { getSource, getTopic } from "../db/repos.js";
 import type { AnalysisBatch, Report, Topic, ValidationResult } from "../types.js";
 import { DISPLAY_PROJECTION_VERSION } from "../utils/source-quote-projection.js";
@@ -123,6 +124,7 @@ export async function exportReportPptx(
     topic,
     citationSourceByCi,
   });
+  if (!isReportReaderVisible(db, reportId)) return null;
 
   return {
     ...out,

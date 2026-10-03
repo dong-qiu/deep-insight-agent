@@ -87,6 +87,21 @@ PR #391/#392 已实现隔离合成回放与持久 sidecar；它们不提供生�
 4. 运行受影响 DB/service/API 测试、Node 24 typecheck/build、读侧性能回归；独立审查、PR/CI。此切片不变更 AI/引用一致性判断，不以 A1 当删除安全证据。
 5. 随后独立实现生产 issuer/新鲜度锚/覆盖基线、维护闸门、CLI 全调用方和启动收据。同镜像 HTTP/auth/启动验收通过且另获授权后，才可进入生产部署/恢复。
 
+#### 本地实现验证记录（2026-10-03；非生产恢复证明）
+
+上述报告边界切片已实现 v47 冻结 migration、原子重复修复、真实 reader/发布提交约束、
+anchor 实际外部写入前复核与 PPT 实际 HTTP 返回前复核。首次 8 条反例在改动前均失败，
+改动后通过；追加测试覆盖未来激活、OR REPLACE/身份重绑定、迁移回滚、registry 快重试、
+普通/anchored 崩溃恢复、实际 anchor/PPT 等待期间删除、脏历史对真实 runReportGen/buildReport 的影响及管理员诊断。
+
+- Node 24.19.0：全量 coverage **2330 Vitest + 77 ops 通过**；lint、双编译器 typecheck、build 通过。
+- 单独运行 committed-reader P0c benchmark：基线 P95 0.07444 ms，当前 0.09277 ms，
+  增加 0.01834 ms（约 24.63%）；现有 10% / 0.1 ms 组合硬门通过，**相对性能 warning 保留**。
+  这是同进程合成数据的 DB/文件 reader 测量，不是浏览器端或生产实测。
+- 独立代码审查两轮：首轮 3 项 Warning 修正后复核 Blocking 0 / Warning 0。
+- PR/CI 状态另以 GitHub 为准；未执行生产迁移、部署或恢复，未改旧恢复 CLI。
+  完整恢复矩阵中覆盖基线、发行者/新鲜度、闸门、收据、身份轮换及同镜像验收仍待实施。
+
 ### 合成持久登记子阶段（不授权生产使用）
 
 独立 sidecar 仅在新建合成 epoch 下验收：独占创建、不从旧文件重建基线；重开由外部提供 epoch/发行者身份；签名密钥不落库；连续对象及签名 head 与 pending/冻结闸门同一事务提交。仅接受 owner-private 文件及目录，SQLite WAL/FULL + immediate 事务实现同主机跨进程序列化，不声明跨主机隔离或云不可变保留。

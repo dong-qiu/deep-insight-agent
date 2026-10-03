@@ -3,6 +3,7 @@
 import { NextResponse } from "next/server";
 import { forbidNonAdmin } from "../../../../../lib/auth-guard.js";
 import { getDb } from "../../../../../lib/db/index.js";
+import { isReportReaderVisible } from "../../../../../lib/db/integrity-lifecycle.js";
 import { exportReportPptx } from "../../../../../lib/services/ppt-export.js";
 import { safeError } from "../../../../../lib/runtime/diagnostics.js";
 import { runLogger } from "../../../../../lib/runtime/logger.js";
@@ -24,8 +25,11 @@ export async function GET(
   }
 
   let result;
+  const db = getDb();
   try {
-    result = await exportReportPptx(getDb(), id);
+    result = await exportReportPptx(db, id);
+    // Final response authorization: no await between this check and Response construction.
+    if (result && !isReportReaderVisible(db, id)) result = null;
   } catch (e) {
     runLogger({ stage: "pptx" }).error({ reportId: id, err: e }, "报告导出失败");
     return NextResponse.json({ error: safeError(e).message }, { status: 500 });

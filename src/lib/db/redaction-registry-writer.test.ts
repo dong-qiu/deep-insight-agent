@@ -46,6 +46,16 @@ const input = {
 };
 
 describe("redaction registry writer", () => {
+  it("existing-fact fast retry repairs stale FTS without a second external registration", async () => {
+    const db = openDb(":memory:"); applyProvenanceMigrations(db);
+    const fake = clients(); await registerRedaction(db, input, config, fake.clients);
+    // FTS5 permits direct stale writes; real retry must still clean this derivative.
+    db.prepare("INSERT INTO report_fts(report_id,title,summary,body) VALUES (?,?,?,?)").run("r_123", "private", "private", "private");
+    await registerRedaction(db, input, config, fake.clients);
+    expect(fake.puts).toHaveLength(1);
+    expect(db.prepare("SELECT count(*) n FROM report_fts WHERE report_id='r_123'").get()).toEqual({ n: 0 });
+    db.close();
+  });
   it("persists stable pending payload before conditional write and commits tombstone", async () => {
     const db = openDb(":memory:");
     applyProvenanceMigrations(db);

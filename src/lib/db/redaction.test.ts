@@ -44,6 +44,7 @@ describe("provenance redaction tombstones", () => {
       VALUES ('r','tr','b',?,?,?,?,?,'report-selection-v1','complete','published','2026-08-03T00:00:00Z')`).run(analyzeStart.id, analyzeComplete.id, validateStart.id, validateComplete.id, reportStart.id);
     db.prepare(`INSERT INTO report_selection_decision(report_id,insight_id,decision,reason_code,related_insight_id,published_rank,supporting_citation_indices,selection_rule_version,created_at)
       VALUES ('r','i','excluded','projection_or_citation_gate',NULL,NULL,'[]','report-selection-v1','2026-08-03T00:00:00Z')`).run();
+    db.exec("INSERT INTO ppt_polish_cache(report_id,inputs_hash,polish_json,tokens,amount) VALUES ('r','hash','{}',0,0)");
 
     applyRedactionTombstone(db, { record_id: "record_r", entity_key: "report:r", scope: "report", reason_code: "user_erasure", effective_at: "2026-08-03T00:00:00.000Z", expiry_at: "2026-11-11T00:00:00.000Z", registry_ref: "records/2026/08/record_r.json" });
     expect(getReport(db, "r")).toBeNull();
@@ -51,5 +52,7 @@ describe("provenance redaction tombstones", () => {
     expect(searchReports(db, "deleted")).toEqual([]);
     expect(db.prepare("SELECT COUNT(*) AS n FROM report_review_snapshot WHERE report_id='r'").get()).toEqual({ n: 0 });
     expect(db.prepare("SELECT COUNT(*) AS n FROM report_selection_decision WHERE report_id='r'").get()).toEqual({ n: 0 });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM ppt_polish_cache WHERE report_id='r'").get()).toEqual({ n: 0 });
+    expect(() => db.exec("INSERT INTO ppt_polish_cache(report_id,inputs_hash,polish_json,tokens,amount) VALUES ('r','hash','{}',0,0)")).toThrow("report_redacted");
   });
 });

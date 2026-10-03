@@ -11,6 +11,7 @@ import { openDb, type DB } from "../db/index.js";
 import { insertContentItem, insertSource, insertTopic, listRuns } from "../db/repos.js";
 import { planRawArchive, writePlannedRawArchive } from "../db/raw-archive.js";
 import { applyProvenanceMigrations } from "../db/provenance-migrations.js";
+import { applyRedactionTombstone } from "../db/redaction.js";
 import { appendGenerationEvent, captureRevision, entityKey, type EntityRef } from "../db/provenance-facts.js";
 import { listGenerationTraceTimeline } from "../db/provenance.js";
 import { contentItemRef, contentItemRevisionSnapshot } from "../db/provenance-revisions.js";
@@ -92,6 +93,23 @@ afterEach(() => {
 });
 
 describe("runReportGen production persistence path", () => {
+  it("real runReportGen excludes a deleted report from its DB-backed published history", async () => {
+    const actual = await vi.importActual<typeof import("./report-gen.js")>("./report-gen.js");
+    buildReportMock.mockImplementation(actual.buildReport);
+    const input = structuredClone(batch); input.insights[0]!.event_id = "event-deleted-history";
+    saveAnalysisBatch(db, input); saveValidationResult(db, input.id, validation);
+    const first = await runReportGen(db, { topic, batch: input, validation, type: "brief" });
+    expect(first.insight_ids).toEqual(["i1"]);
+    const priorCall = buildReportMock.mock.calls.at(-1)![0];
+    expect(priorCall.publishedEventEvidence).toEqual([]);
+    // Keep done/index deliberately dirty; reader history must consult the fact, not cleanup luck.
+    db.prepare(`INSERT INTO provenance_redaction(record_id,entity_key,scope,reason_code,effective_at,expiry_at,registry_ref,created_at)
+      VALUES ('history_deleted',?,'report','user_erasure','2020-01-01T00:00:00.000Z','2020-02-01T00:00:00.000Z','records/history_deleted.json','2020-01-01T00:00:00.000Z')`).run(`report:${first.id}`);
+    const next = await runReportGen(db, { topic, batch: input, validation, type: "brief" });
+    expect(buildReportMock.mock.calls.at(-1)![0].publishedEventEvidence).toEqual([]);
+    expect(next.insight_ids).toEqual(["i1"]);
+    expect(getReport(db, first.id)).toBeNull(); expect(getReport(db, next.id)).not.toBeNull();
+  });
   it("does not reject a v6 report for an unrendered secondary pass/support archive", async () => {
     const actual = await vi.importActual<typeof import("./report-gen.js")>("./report-gen.js");
     buildReportMock.mockImplementation(actual.buildReport);
@@ -144,6 +162,29 @@ describe("runReportGen production persistence path", () => {
     rmSync(join(dataDir, rawRef));
     expect(reconcileReportEffects(db, { dir: join(dataDir, "reports") })).toEqual({ committed: 0, failed: 1 });
     expect(getReport(db, report.id)).toBeNull();
+  });
+  it.each([false, true])("deleted report is not resurrected by real effect reconciliation (anchored=%s)", async (anchored) => {
+    const { report, anchor } = await pendingReportWithBinding(anchored);
+    applyRedactionTombstone(db, { record_id: "deleted_recovery", entity_key: `report:${report.id}`, scope: "report", reason_code: "user_erasure",
+      effective_at: "2020-01-01T00:00:00.000Z", expiry_at: "2020-02-01T00:00:00.000Z", registry_ref: "records/deleted_recovery.json" });
+    const result = anchored ? await reconcileAnchoredReportEffects(db, anchor!, { dir: join(dataDir, "reports") }) : reconcileReportEffects(db, { dir: join(dataDir, "reports") });
+    expect(result.committed).toBe(0);
+    expect(getReport(db, report.id)).toBeNull();
+    expect(db.prepare("SELECT status,body_path FROM report WHERE id=?").get(report.id)).toEqual({ status: "deleted", body_path: null });
+  });
+  it("deletion while real anchor signing awaits prevents subsequent external puts", async () => {
+    const report: Report = { id: "anchor_race", type: "brief", topic_id: topic.id, status: "done", generated_at: "2026-10-01T00:00:00Z",
+      title: "T", body_md: "# T", body_html: "<h1>T</h1>", insight_ids: [], event_ids: [], prev_report_id: null, citation_count: 0, cost: { tokens: 0, amount: 0 } };
+    const index: ReportIndexEntry = { report_id: report.id, type: "brief", topic_id: topic.id, facets: [], date: "2026-10-01",
+      source_ids: [], title: "T", summary: "", highlights: [], tags: [], entity_names: [], importance: 0, event_ids: [], milestone_count: 0 };
+    const store = new MemoryAnchorStore(); const puts = vi.spyOn(store, "putIfAbsent");
+    const signing = saveReport(db, report, index, { dir: join(dataDir, "reports"), anchor: { store,
+      signer: { key_id: "race-key", private_key: generateKeyPairSync("ed25519").privateKey }, retainUntil: "2027-08-01T00:00:00Z",
+      retentionEnds: ["2027-08-01T00:00:00Z", "2027-08-01T00:00:00Z", "2027-08-01T00:00:00Z"] } });
+    applyRedactionTombstone(db, { record_id: "deleted_anchor", entity_key: "report:anchor_race", scope: "report", reason_code: "user_erasure",
+      effective_at: "2020-01-01T00:00:00.000Z", expiry_at: "2020-02-01T00:00:00.000Z", registry_ref: "records/deleted_anchor.json" });
+    await expect(signing).rejects.toThrow("report_redacted");
+    expect(puts).not.toHaveBeenCalled(); expect(getReport(db, report.id)).toBeNull();
   });
 
   it("rechecks persisted bindings when an anchored report resumes after archive loss", async () => {

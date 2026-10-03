@@ -13,6 +13,7 @@ import { isReportReaderVisible, reportReaderVisibilitySql } from "./integrity-li
 import { insightFingerprint } from "../runtime/statement-fingerprint.js";
 import { assertReviewPackageForPublish, isTerminalReviewPackageError, publishReviewPackage } from "./report-review.js";
 import { createReaderEvidenceContext } from "./reader-evidence.js";
+import { assertReportNotRedacted } from "./redaction.js";
 
 const j = (v: unknown): string => JSON.stringify(v);
 
@@ -45,6 +46,7 @@ function effectProvenance(traceId: string | null, eventId: string | null): Repor
   return hasTrace ? { traceId: traceId!, eventId: eventId! } : undefined;
 }
 function assertTraceReviewPackage(db: DB, report: Report, provenance: ReportEffectProvenance | undefined): void {
+  assertReportNotRedacted(db, report.id);
   assertEffectProvenanceBinding(provenance);
   if (provenance) assertReviewPackageForPublish(db, report.id, report.insight_ids, provenance);
 }
@@ -306,6 +308,7 @@ export function saveReport(
   index: ReportIndexEntry,
   opts: { dir?: string; provenance?: ReportEffectProvenance; readerCitationBindings?: readonly ReportCitationBinding[]; beforePublish?: () => void; assertPublish?: () => void; afterPublish?: () => void; anchor?: ReportAnchorPublication } = {},
 ): void | Promise<void> {
+  assertReportNotRedacted(db, report.id);
   if (report.status !== "done") {
     // lifecycle 的非发布态只记录元数据；禁止给 failed/generating 写正文、索引或 FTS。
     insertReportMetadata(
@@ -386,7 +389,8 @@ export function reconcileReportEffects(db: DB, opts: { dir?: string } = {}): { c
   const root = resolve(opts.dir ?? defaultBodyDir());
   const rows = db.prepare(`SELECT e.id AS effect_id,e.trace_id,e.event_id,e.report_id,e.artifact_manifest,e.publication_payload,e.status AS effect_status,r.* FROM generation_effect e JOIN report r ON r.id=e.report_id
     WHERE e.kind='report_file' AND r.status='generating' AND e.status IN ('planned','attempted','unknown')
-      AND NOT EXISTS (SELECT 1 FROM generation_anchor_effect a WHERE a.generation_effect_id=e.id)`).all() as any[];
+      AND NOT EXISTS (SELECT 1 FROM generation_anchor_effect a WHERE a.generation_effect_id=e.id)
+      AND ${reportReaderVisibilitySql(db, "r.id")}`).all() as any[];
   let committed = 0;
   let failed = 0;
   for (const row of rows) {
@@ -489,7 +493,8 @@ export async function reconcileAnchoredReportEffects(
     FROM generation_effect e JOIN report r ON r.id=e.report_id
     WHERE e.kind='report_file' AND r.status='generating' AND e.status IN ('planned','attempted','unknown')
       AND EXISTS (SELECT 1 FROM generation_anchor_effect a WHERE a.tenant_id='default' AND a.generation_effect_id=e.id AND a.status IN ('planned','anchor_written'))
-      AND NOT EXISTS (SELECT 1 FROM generation_anchor_effect a WHERE a.tenant_id='default' AND a.generation_effect_id=e.id AND a.status NOT IN ('planned','anchor_written'))`).all() as any[];
+      AND NOT EXISTS (SELECT 1 FROM generation_anchor_effect a WHERE a.tenant_id='default' AND a.generation_effect_id=e.id AND a.status NOT IN ('planned','anchor_written'))
+      AND ${reportReaderVisibilitySql(db, "r.id")}`).all() as any[];
   let committed = 0;
   let failed = 0;
   const clock = opts.now ?? new Date();
@@ -635,7 +640,7 @@ export function getReport(db: DB, id: string): Report | null {
 
 /** 该主题是否已有任意报告——冷启动检测（无 → 首版综述 initial_digest）。 */
 export function topicHasReport(db: DB, topicId: string): boolean {
-  return !!db.prepare("SELECT 1 FROM report WHERE topic_id = ? AND status = 'done' LIMIT 1").get(topicId);
+  return !!db.prepare(`SELECT 1 FROM report WHERE topic_id = ? AND status = 'done' AND ${reportReaderVisibilitySql(db, "report.id")} LIMIT 1`).get(topicId);
 }
 
 /** 报告生命周期（admin 看板 · spec line 301）：全状态计数（含 draft/generating/failed/archived），
@@ -776,7 +781,7 @@ export function latestReportForTopicSince(
   const r = db
     .prepare(
       `SELECT id, title, type FROM report
-       WHERE topic_id = ? AND type = 'deep_dive' AND status = 'done' AND generated_at >= ?
+       WHERE topic_id = ? AND type = 'deep_dive' AND status = 'done' AND generated_at >= ? AND ${reportReaderVisibilitySql(db, "report.id")}
        ORDER BY generated_at DESC LIMIT 1`,
     )
     .get(topicId, sinceIso) as { id: string; title: string; type: string } | undefined;
@@ -800,7 +805,7 @@ export function previousReportForTopic(db: DB, topicId: string, type: string): s
   const r = db
     .prepare(
       `SELECT id FROM report
-       WHERE topic_id = ? AND type IN (${placeholders}) AND status = 'done'
+       WHERE topic_id = ? AND type IN (${placeholders}) AND status = 'done' AND ${reportReaderVisibilitySql(db, "report.id")}
        ORDER BY generated_at DESC, id DESC LIMIT 1`, // id 兜底：与 backfill 脚本同序，防同秒落两篇时在线/回填选出不同 prev
     )
     .get(topicId, ...types) as { id: string } | undefined;
@@ -824,14 +829,14 @@ export function reportNeighbors(
 ): { prev: ReportNeighbor | null; next: ReportNeighbor | null } {
   const prev = report.prev_report_id
     ? (db
-        .prepare("SELECT id, title, type FROM report WHERE id = ? AND status = 'done'")
+        .prepare(`SELECT id, title, type FROM report WHERE id = ? AND status = 'done' AND ${reportReaderVisibilitySql(db, "report.id")}`)
         .get(report.prev_report_id) as ReportNeighbor | undefined) ?? null
     : null;
   const next =
     (db
       .prepare(
         `SELECT id, title, type FROM report
-         WHERE prev_report_id = ? AND status = 'done'
+         WHERE prev_report_id = ? AND status = 'done' AND ${reportReaderVisibilitySql(db, "report.id")}
          ORDER BY generated_at DESC, id DESC LIMIT 1`, // 分叉（同 prev 被重生成多篇引用）取最新，id 兜底防同秒抖动
       )
       .get(report.id) as ReportNeighbor | undefined) ?? null;
@@ -985,7 +990,7 @@ export function listRecentPublishedInsightOccurrences(
     LEFT JOIN citation c ON c.insight_id=i.id
     LEFT JOIN content_item ci ON ci.id=c.content_item_id
     LEFT JOIN citation_check cc ON cc.batch_id=i.batch_id AND cc.insight_id=c.insight_id AND cc.citation_index=c.citation_index
-    WHERE ri.topic_id=? AND ri.type IN ('brief','initial_digest') AND r.status='done' AND ri.date>=? AND i.event_id IS NOT NULL
+    WHERE ri.topic_id=? AND ri.type IN ('brief','initial_digest') AND r.status='done' AND ri.date>=? AND i.event_id IS NOT NULL AND ${reportReaderVisibilitySql(db, "r.id")}
     ORDER BY ri.date DESC,r.generated_at DESC,r.id DESC,i.id ASC,c.citation_index ASC
   `).all(topicId, since) as Array<{ report_id: string; insight_id: string; event_id: string; statement: string; insight_type: "aggregation" | "trend"; date: string; content_item_id: string | null; verdict: string | null; consistency: string | null }>;
   const byInsight = new Map<string, PublishedInsightOccurrence>();

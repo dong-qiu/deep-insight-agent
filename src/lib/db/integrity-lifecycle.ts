@@ -9,6 +9,7 @@ import { KMSClient } from "@aws-sdk/client-kms";
 import { S3Client } from "@aws-sdk/client-s3";
 import { SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import type { DB } from "./index.js";
+import { reportRedactionVisibilitySql } from "./redaction.js";
 import { jcs, sha256, signAnchorBytes, type AnchorSigner, type AnchorStore } from "./integrity-anchors.js";
 import { registerAnchorSigningKey } from "./integrity-publication.js";
 import {
@@ -77,6 +78,8 @@ function audit(db: DB, reportId: string, eventType: "deletion_requested" | "dele
 /** A missing lifecycle table is a pre-P1d database. Its legacy reports remain
  * visible, preserving backwards compatibility until the migration is applied. */
 export function isReportReaderVisible(db: DB, reportId: string): boolean {
+  const deletion = db.prepare(`SELECT ${reportRedactionVisibilitySql(db, "candidate.report_id")} AS visible FROM (SELECT ? AS report_id) candidate`).get(reportId) as { visible: number };
+  if (!deletion.visible) return false;
   if (!tableExists(db, "integrity_report_lifecycle")) return true;
   const row = lifecycleRow(db, reportId);
   return !row || row.reader_state === "active";
@@ -85,8 +88,9 @@ export function isReportReaderVisible(db: DB, reportId: string): boolean {
 /** SQL fragment for list/search resolvers. `reportIdColumn` is an internal
  * identifier, never client input. */
 export function reportReaderVisibilitySql(db: DB, reportIdColumn: string): string {
-  if (!tableExists(db, "integrity_report_lifecycle")) return "1=1";
-  return `NOT EXISTS (SELECT 1 FROM integrity_report_lifecycle irl WHERE irl.tenant_id='default' AND irl.report_id=${reportIdColumn} AND irl.reader_state <> 'active')`;
+  const deletion = reportRedactionVisibilitySql(db, reportIdColumn);
+  if (!tableExists(db, "integrity_report_lifecycle")) return deletion;
+  return `(${deletion}) AND NOT EXISTS (SELECT 1 FROM integrity_report_lifecycle irl WHERE irl.tenant_id='default' AND irl.report_id=${reportIdColumn} AND irl.reader_state <> 'active')`;
 }
 
 function activeHolds(db: DB, reportId: string): string[] {

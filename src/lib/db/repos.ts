@@ -8,6 +8,7 @@ import type { DB } from "./index.js";
 import { canonicalHash, projectTrace } from "./provenance-facts.js";
 import { assertExplicitTranscriptPolicy } from "../transcript-policy.js";
 import { safeError } from "../runtime/diagnostics.js";
+import { reportReaderVisibilitySql } from "./integrity-lifecycle.js";
 
 const j = (v: unknown): string => JSON.stringify(v);
 const b = (v: boolean): number => (v ? 1 : 0);
@@ -229,7 +230,7 @@ export function sourceContribution(db: DB, sinceIso: string): Map<string, number
        JOIN insight i ON instr(r.insight_ids, '"' || i.id || '"') > 0
        JOIN citation c ON c.insight_id = i.id
        JOIN content_item ci ON ci.id = c.content_item_id AND ci.reader_eligible=1
-       WHERE r.status = 'done' AND r.generated_at >= @since
+       WHERE r.status = 'done' AND r.generated_at >= @since AND ${reportReaderVisibilitySql(db, "r.id")}
        GROUP BY ci.source_id`,
     )
     .all({ since: sinceIso }) as { source_id: string; cnt: number }[];
