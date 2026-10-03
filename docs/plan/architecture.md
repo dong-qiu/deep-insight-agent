@@ -206,6 +206,12 @@ C1 报告删除边界复用 append-only `provenance_redaction`，不增加第二
 未来生效记录在 reader/提交边界自动生效；只保留允许的管理员诊断，不把 trace locator 当正文。
 PPT 异步构建结束及 HTTP 响应构造前重新检查。此本地约束不证明外部登记册完整性、历史备份覆盖或恢复启动许可。
 
+C1 合成登记实验的 anchored API 使用第二个独立控制、独立密钥的 owner-private SQLite 锚，
+绑定 epoch、issuer 与完整 signed_state 摘要；reserve → 登记事务提交 → finalize 才返回产物。
+跨库不确定状态保持 pending 并拒绝全部消费，不自动重建锚。实验 schema 导出于 `schema.ts`，
+不进入生产 bootstrap/migration；锚必须排除在登记库/业务恢复集合外。
+它只检验“独立锚未回滚”的协议假设，不提供生产单调存储、历史覆盖或启动授权（ADR-0042）。
+
 manifest 和 binding 均为闭合 schema，JSON 必须为原始 RFC 8785 JCS UTF-8 bytes（拒绝空白、重排、重复 key、
 未声明字段与孤立 surrogate）。每次读回 anchor 均以 `artifact_manifest` / effect 记录的 `key_id`
 从保留的 public-key/certificate/revocation 历史中查找 Ed25519 公钥，并以指定 provider `VersionId` 读取后逐字段验证
