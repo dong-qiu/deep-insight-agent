@@ -7,7 +7,7 @@
 - fetch 后从 `origin/main` @ `bbd827688f9d9d8073bfecc596ffbf4742a4b83b` 新建 `fix/c5-reuse-ci-e2e-build` / `insight-agent-c5`。
 - 保留其他 worktree 和未提交改动；复制的 gitignored `.env.local` 权限 0600，DATA_DIR/DB_PATH 指向本 worktree。未复制原有数据、SQLite/WAL、报告或 `.env.development.local`。
 - 仅修改 CI/E2E 入口、增加构建收据与反例、同步 README 和专属 spec/收据。没有改 dependency、lockfile、runtime/types、vendor、应用、AI、schema、共享 roadmap/ADR。
-- 主干已有 CI [37124916833](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37124916833) success；本切片不涉及生产版本变化、部署、恢复、历史回填或清理。
+- 主干已有 CI [37124916833](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37124916833) success；本切片不涉及生产版本变化、部署、恢复或历史回填；合入后仅审核本地分支清理候选。
 
 ## 行为与失败边界
 
@@ -42,8 +42,30 @@
 
 独立 Pre-PR AI Review：通过，风险级别中，Blocking 0 / Warning 0。审查独立复跑最终 32 个用例及 diff 检查。初审指出新增构建配置/evals 类型检查输入遗漏与 NODE_OPTIONS 遗漏，均已加拒绝反例并修复；修正输入清单后显式排除生成的 .next，最终再次复跑构建、两条 E2E 入口、lint 和 Node 套件。
 
-PR/CI 结果待记录；Docker 验证由保留的下游 CI 作业执行，本地没有冒称容器验证完成。
+## PR 与主干验收
+
+- 实现 PR [#396](https://github.com/dong-qiu/deep-insight-agent/pull/396)，候选 `bb55b70583ceb7ce39a927c9499a101f3aa04b46`。
+- PR CI [37129819605](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37129819605)：4 项检查全部 success，包括完整 verify 与独立 Docker。coverage 执行 231 文件 / 2,345 用例通过，运维 Node 109 用例通过，真实应用 E2E 6/6 通过。
+- CI 日志确认 `build_ms=53072, builds=1`，紧接的 E2E 记录 `build_ms=53072, additional_builds=0`。主验证和 E2E 确实复用同次产物。
+- Docker 作业包含构建上下文、镜像构建、dispatch worker/runtime assets、真实 HTTP/auth 与 dispatch readiness、prototype Docker evidence，全部通过。本地没有执行容器验证，以上为 Actions 证据。
+- PR 创建后独立复核最终 7 文件 diff 与前置审查一致，Blocking 0 / Warning 0，无凭据、构建产物或 D5 变更。
+- 按用户授权，于 `2026-10-03T14:42:04Z` 转为 Ready 并 squash 合入，主干提交 `8723db8500fc265eefa951e288eb2d143468b6ff`。
+- 合并后主干 CI [37130548182](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37130548182)：success；eval-gate、verify 和独立 Docker 全部通过，main 的 PR advisory 按设计 skipped。核验绑定上述合并 SHA，不以 PR CI 代替主干结果。
+
+| CI 阶段观察 | 旧 main 37124916833 | C5 PR 37129819605 |
+| --- | ---: | ---: |
+| verify 总耗时 | 172 s | 221 s |
+| next build | 35 s | 54 s |
+| E2E（旧入口含内部 build） | 31 s | 10 s |
+| verify 应用 build 次数 | 2 | 1 |
+| 独立 Docker 作业 | 145 s | 204 s |
+
+不同源码、缓存及 runner 负载下的运行仅作现场观察，不是受控 before/after 或 P95；本轮确认构建次数减少，不宣称 CI 总耗时加速。
+
+## 发布与清理边界
+
+C5 只调整验证入口，无运行时行为、schema 或配置变化，不需要生产部署；没有执行部署、恢复或生产诊断。GitHub 仓库 `delete_branch_on_merge=true`，远程短生命周期 head 由 GitHub 删除。主干 CI 通过后，已运行 `npm run branches:cleanup` dry-run 审核候选。实现分支 HEAD 与 PR 合并时 head 一致，未在合并后推进；本地实现分支为删除候选。远程实现 head 已通过 `git ls-remote --heads` 确认不存在。本次未执行 `--apply`，保留本地分支及当前 worktree，不清理其他会话。
 
 ## 收口边界
 
-C5 本地实现与反例已完成；独立审查通过，待 PR CI（包含 Docker）核验。D5 未开始，TD-18 未关闭。无生产发布，本切片可通过回退 CI 到重复构建路径回退，不涉及数据迁移。
+C5 实现、反例、独立审查、PR CI 与合并后主干 CI 全部完成；PR #396 已合入，TD-17 关闭。完成收据通过专属文档 PR 保存，未修改其他会话占用的 roadmap/ADR 或计划。D5 未开始，TD-18 未关闭。无生产发布，本切片可通过回退 CI 到重复构建路径回退，不涉及数据迁移。
