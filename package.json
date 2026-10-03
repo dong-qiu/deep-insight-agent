@@ -77,7 +77,9 @@
     "typecheck:ts6": "node ./node_modules/typescript/bin/tsc --noEmit && node ./node_modules/typescript/bin/tsc --noEmit -p tsconfig.tools.json",
     "test": "vitest run && npm run test:ops",
     "test:ops": "node ops/run-node-tests.mjs",
-    "test:e2e": "npm run build && vitest run --config vitest.e2e.config.ts",
+    "build:e2e": "node ops/e2e-build.mjs build",
+    "test:e2e": "npm run build:e2e && npm run test:e2e:built",
+    "test:e2e:built": "node ops/e2e-build.mjs verify && vitest run --config vitest.e2e.config.ts",
     "test:coverage": "vitest run --coverage && npm run test:ops"
   },
   "dependencies": {

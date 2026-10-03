@@ -161,14 +161,14 @@ jobs:
           path: ${{ runner.temp }}/report-reader-p0c-evidence.json
           if-no-files-found: error
       - name: next build
-        run: npm run build
+        run: npm run build:e2e
         env:
           NEXT_TELEMETRY_DISABLED: "1"
       # Route/unit tests cannot prove the real NextAuth cookie flow, middleware,
       # or cursor pagination. Run the isolated live-app dashboard E2E after the
-      # production build on every PR that changes this surface.
+      # production build. The receipt rejects stale/missing output before any server starts.
       - name: admin metrics e2e
-        run: npm run test:e2e
+        run: npm run test:e2e:built
         env:
           NEXT_TELEMETRY_DISABLED: "1"
       # 供应链：整个 lockfile 的 high/critical 漏洞均阻断。开发/构建依赖同样会在 CI 与
