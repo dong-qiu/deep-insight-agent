@@ -148,3 +148,31 @@ test("off-box sync diagnoses an older invalid snapshot without failing a newer v
   assert.equal(calls.length, 1);
   assert.ok(calls[0].includes(`/ec2/${stamp(recent)}/`));
 });
+
+test("off-box sync rejects a newer snapshot whose manifest time is in the future", (t) => {
+  const f = setup(t);
+  const now = Date.now();
+  const prior = new Date(now - 2 * 86400000);
+  const recent = new Date(now - 86400000);
+  addBackup(f, prior);
+  const dir = addBackup(f, recent);
+  const path = join(dir, "backup-manifest.json");
+  const manifest = JSON.parse(readFileSync(path, "utf8"));
+  const future = new Date(now + 86400000).toISOString();
+  manifest.created_at = new Date(now + 2 * 86400000).toISOString();
+  manifest.db_snapshot_interval = {
+    started_at: future,
+    completed_at: future,
+    source_data_version_before: 1,
+    source_data_version_after: 1,
+    source_data_version_unchanged: true,
+    db_sha256: manifest.files[0].sha256,
+  };
+  writeFileSync(path, JSON.stringify(manifest));
+  const result = run(f);
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, new RegExp(`dr_sync_rejected_snapshot=${stamp(recent)}`));
+  const calls = readFileSync(f.log, "utf8").trim().split("\n");
+  assert.equal(calls.length, 1);
+  assert.ok(calls[0].includes(`/ec2/${stamp(prior)}/`));
+});

@@ -31,7 +31,8 @@ try:
     assert stamp is not None
     created = datetime.strptime(sys.argv[2], "%Y%m%d-%H%M%S").replace(tzinfo=timezone.utc)
     age = int(sys.argv[3]) - int(created.timestamp())
-    if not 0 <= age < 90 * 24 * 60 * 60:
+    assert age >= 0
+    if age >= 90 * 24 * 60 * 60:
         sys.exit(3)
     with open(sys.argv[1], encoding="utf-8") as handle:
         manifest = json.load(handle)
@@ -40,6 +41,7 @@ try:
     assert isinstance(manifest.get("files"), list)
     manifest_created = datetime.fromisoformat(manifest["created_at"].replace("Z", "+00:00"))
     assert manifest_created.tzinfo is not None
+    assert manifest_created.timestamp() <= int(sys.argv[3]) + 1
     has_interval = "db_snapshot_interval" in manifest
     interval = manifest.get("db_snapshot_interval")
     age_reference = manifest_created
@@ -61,7 +63,8 @@ try:
         assert interval["source_data_version_unchanged"] is (before == after)
         age_reference = started
     manifest_age = int(sys.argv[3]) - int(age_reference.timestamp())
-    if not 0 <= manifest_age < 90 * 24 * 60 * 60:
+    assert manifest_age >= 0
+    if manifest_age >= 90 * 24 * 60 * 60:
         sys.exit(3)
     root = os.path.dirname(sys.argv[1])
     expected = {}
