@@ -11,10 +11,18 @@ import { forbidNonAdmin } from "../../../../../lib/auth-guard.js";
 import { exportReportPptx } from "../../../../../lib/services/ppt-export.js";
 import { GET } from "./route.js";
 import { isReportReaderVisible } from "../../../../../lib/db/integrity-lifecycle.js";
+import { getDb } from "../../../../../lib/db/index.js";
 
 const callGet = (url: string, id: string): Promise<Response> => GET(new Request(url), { params: Promise.resolve({ id }) });
 
 describe("GET /api/reports/[id]/pptx", () => {
+  it("database initialization failure preserves the sanitized API error boundary", async () => {
+    vi.mocked(forbidNonAdmin).mockResolvedValueOnce(null);
+    vi.mocked(getDb).mockImplementationOnce(() => { throw new Error("private-db-initialization-error"); });
+    const res = await callGet("http://x/api/reports/r1/pptx", "r1");
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({ error: "operation_failed" });
+  });
   it("deletion committed before final response authorization rejects a completed deck", async () => {
     vi.mocked(forbidNonAdmin).mockResolvedValueOnce(null);
     vi.mocked(isReportReaderVisible).mockReturnValueOnce(false);

@@ -25,8 +25,8 @@ export async function GET(
   }
 
   let result;
-  const db = getDb();
   try {
+    const db = getDb();
     result = await exportReportPptx(db, id);
     // Final response authorization: no await between this check and Response construction.
     if (result && !isReportReaderVisible(db, id)) result = null;

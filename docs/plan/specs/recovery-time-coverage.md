@@ -94,7 +94,7 @@ anchor 实际外部写入前复核与 PPT 实际 HTTP 返回前复核。首次 8
 改动后通过；追加测试覆盖未来激活、OR REPLACE/身份重绑定、迁移回滚、registry 快重试、
 普通/anchored 崩溃恢复、实际 anchor/PPT 等待期间删除、脏历史对真实 runReportGen/buildReport 的影响及管理员诊断。
 
-- Node 24.19.0：全量 coverage **2330 Vitest + 77 ops 通过**；lint、双编译器 typecheck、build 通过。
+- Node 24.19.0：全量 coverage **2331 Vitest + 77 ops 通过**；lint、双编译器 typecheck、build 通过。
 - 单独运行 committed-reader P0c benchmark：基线 P95 0.07444 ms，当前 0.09277 ms，
   增加 0.01834 ms（约 24.63%）；现有 10% / 0.1 ms 组合硬门通过，**相对性能 warning 保留**。
   这是同进程合成数据的 DB/文件 reader 测量，不是浏览器端或生产实测。
