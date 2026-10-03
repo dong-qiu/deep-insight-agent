@@ -68,10 +68,21 @@
 
 按仓库 eval-gate 核对：本切片仅构建依赖声明/types/依赖更新策略，合法输入的 AI 输出与评测口径不变，没有修改模型、prompt、来源、validator 或评测集。未运行 A1，它不验证本次依赖收敛路径；使用以上确定性测试与构建证据。提交使用 `Eval-Gate: skip (D5 build dependencies/types only; AI output and eval semantics unchanged)`。
 
-独立 Pre-PR AI Review：新上下文按仓库 skill 审查完整五文件 diff，风险中，候选前置审查通过，Blocking 0 / Warning 0。reviewer 独立复跑四项 typecheck、vendor 10/10、ops 109/109、audit 0、diff/文档链接/Dependabot YAML 检查，并逐项比较 lockfile 628 entries，确认只有上述三项 entry 变化。审查没有修改文件。Draft PR 与候选 CI 尚待创建/执行，不能将本地结果记为 Docker 或主干验收。
+独立 Pre-PR AI Review：新上下文按仓库 skill 审查完整五文件 diff，风险中，候选前置审查通过，Blocking 0 / Warning 0。reviewer 独立复跑四项 typecheck、vendor 10/10、ops 109/109、audit 0、diff/文档链接/Dependabot YAML 检查，并逐项比较 lockfile 628 entries，确认只有上述三项 entry 变化。审查没有修改文件。
+
+PR 创建后独立复核通过：GitHub 最终五文件 diff、head 与前置审查/PR 摘要一致，Blocking 0 / Warning 0。没有评论、审批或修改 PR；这项 AI 审查不代替 GitHub 人工 approval。
+
+## Draft PR 与 CI / Docker 验收
+
+- Draft PR [#398](https://github.com/dong-qiu/deep-insight-agent/pull/398)，实施候选 `06d9d7c45f319184d3da19a9f4813d21cc2b3eb7`，基线仍为 `1c40eac4ebd018cce4874d75332ed3f8dc97cabf`。推送经过仓库 hooks，无 bypass。
+- 候选 [CI 37133527417](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37133527417)：completed / success，四项检查全部 success（eval-gate、PR policy、verify、独立 Docker）。以下结果绑定上述实施 SHA；收据归档仅修改本文，PR 最新 head 的检查以 PR checks 为准。
+- verify 在 Node 24.19.0 下执行干净 npm ci、lint、TS7/TS6 app/tools、coverage 231 文件 / 2,345 用例、ops 109/109，以及 P1 共用边界 integrity/capacity、report reader 性能门和 audit，全通过。audit 0。
+- CI 的真实应用构建记录 `build_ms=52830, builds=1`，紧接 E2E 使用同一个收据，`additional_builds=0`，真实 E2E 6/6 通过。不是运维套件中毫秒级模拟构建的计数；C5 的单次构建和身份校验未退化。
+- 独立 Linux amd64 Docker 作业全部通过：synthetic secret context 拒绝、镜像构建（不 push）、dispatch worker/runtime assets 与 build-info/profile、真实 HTTP/NextAuth/admin/reader 撤销及 P1 fail-closed、dispatch readiness 与 prototype Docker evidence。镜像构建使用 Dockerfile 的三个 esbuild runner 和固定 Node 24.19.0，完整容器证据补齐本地 Docker 不可用的缺口。
+- 没有触发生产发布、修改 Dependabot PR 或合并 #398。PR 保持 Draft。
 
 ## 风险与收口边界
 
 后续 #382 的 Node 26 types hunk 需要重算，不能覆盖本次 24 系约束；后续工具升级须重验 esbuild 兼容性。双编译器和 vendor 是有退出条件的保留项，不是本次删除目标。回退仅依赖 manifest/lockfile 与 Dependabot 策略，无数据库迁移。
 
-D5 本地实施、验证和独立前置审查已完成；仍需 Draft PR CI / Docker 证据及 PR 后独立复核。未合入，不把 TD-18 写成主干关闭；无生产部署、C4a 或其他切片实施，也没有修改/清理其他工作区、共享 roadmap/ADR。
+D5 实施、本地验证、独立前置与 PR 后审查、实施候选 CI / Docker 验收和 Draft PR 已完成。未合入，不把 TD-18 写成主干关闭；无生产部署、C4a 或其他切片实施，也没有修改/清理其他工作区、共享 roadmap/ADR。后续仅需按仓库流程评审/集成，并沿登记队列串行处理依赖 PR；本会话不执行这些后续动作。
