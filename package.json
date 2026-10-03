@@ -71,7 +71,7 @@
     "review:ai": "tsx evals/run-a1-ai-insight-reviewer.ts",
     "review:ai-compare": "tsx evals/compare-a1-ai-insight-reviews.ts",
     "review:ai-human-record": "tsx evals/record-a1-ai-insight-human-adjudication.ts",
-    "lint": "eslint src ops evals eslint.config.mjs next.config.mjs vitest.config.ts --max-warnings=0",
+    "lint": "eslint src ops evals tests/browser eslint.config.mjs next.config.mjs vitest.config.ts --max-warnings=0",
     "typecheck": "npm run typecheck:ts7 && npm run typecheck:ts6",
     "typecheck:ts7": "node ./node_modules/@typescript/native/bin/tsc --noEmit && node ./node_modules/@typescript/native/bin/tsc --noEmit -p tsconfig.tools.json",
     "typecheck:ts6": "node ./node_modules/typescript/bin/tsc --noEmit && node ./node_modules/typescript/bin/tsc --noEmit -p tsconfig.tools.json",
@@ -80,7 +80,9 @@
     "build:e2e": "node ops/e2e-build.mjs build",
     "test:e2e": "npm run build:e2e && npm run test:e2e:built",
     "test:e2e:built": "node ops/e2e-build.mjs verify && vitest run --config vitest.e2e.config.ts",
-    "test:coverage": "vitest run --coverage && npm run test:ops"
+    "test:coverage": "vitest run --coverage && npm run test:ops",
+    "test:browser": "npm run build:e2e && npm run test:browser:built",
+    "test:browser:built": "node ops/e2e-build.mjs verify && playwright test --config tests/browser/playwright.config.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "0.127.0",
@@ -119,7 +121,8 @@
     "tsx": "^4.23.15",
     "typescript": "^6.0.3",
     "vite": "^8.3.0",
-    "vitest": "^5.0.1"
+    "vitest": "^5.0.1",
+    "@playwright/test": "1.63.0"
   },
   "overrides": {
     "@next/eslint-plugin-next@16.3.8": {
