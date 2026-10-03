@@ -1,6 +1,6 @@
 # C2a 任务取消验证收据
 
-日期：2026-10-04。实施提交 `c6f7dc5ff952da4a9b45ff9db934c54b6e6c5399`，最终代码/测试提交 `2162a609913c13db2e627a9796d48ddf6afb4a3b`；最新 fetch 的主干基线 `065dd0cf7a8f06d4becd093da2f133fc552ce201`。本收据只归档 C2a，不关闭整个 TD-10，也不证明已上线。
+日期：2026-10-04。实施提交 `c6f7dc5ff952da4a9b45ff9db934c54b6e6c5399`，C2a 专属代码/测试提交 `2162a609913c13db2e627a9796d48ddf6afb4a3b`；启动 fetch 基线 `065dd0cf7a8f06d4becd093da2f133fc552ce201`，最终主干基线 `f390343df6ce604f5e8cbc2b79879b151c11410d`。本收据只归档 C2a，不关闭整个 TD-10，也不证明已上线。
 
 ## 起点与隔离
 
@@ -22,14 +22,14 @@ signal 经真实 dispatch → scheduler → pipeline → JobCtx → Analyzer/Val
 
 ## 最终验证
 
-环境 Node 24.19.0 / npm 11.17.0，所有命令显式使用其 bin PATH；干净 npm ci 成功，lockfile 无漂移。核心回归与实施提交字节一致；补充 drain 测试后运维全套和 lint 再次通过。最终 20 个源码/测试/spec 文件与最终代码/测试提交字节一致；按路径字典序拼接 `path + NUL + bytes + NUL` 的 SHA-256 为 `1c8903d71f40529aa085a985b1f8931328ed1fd5137967f1e08459f34786fb15`，不包含本收据。
+环境 Node 24.19.0 / npm 11.17.0，所有命令显式使用其 bin PATH；干净 npm ci 成功，lockfile 无漂移。核心回归与实施提交字节一致；补充 drain 测试后运维全套和 lint 再次通过。最终 20 个 C2a 源码/测试/spec 文件与专属代码/测试提交字节一致；按路径字典序拼接 `path + NUL + bytes + NUL` 的 SHA-256 为 `1c8903d71f40529aa085a985b1f8931328ed1fd5137967f1e08459f34786fb15`，不包含本收据。
 
 | 验证 | 结果 |
 | --- | --- |
 | 受影响 agents/runtime/report/integrity/provenance 回归 | 66 文件 / 1,098 项通过（开发候选） |
 | 最终 C2a 四个专属测试文件 | 36 项通过；包含零请求、实际底层 signal、各级退避、lease false/throw/真实接管、迟到 resolve/reject、同时取消、正常完成、timer/listener 清理、异常日志脱敏、同步 deadline |
 | `npx vitest run --coverage --maxWorkers=2` | 238 文件 / 2,402 项通过，覆盖率门通过：statements 78.45%、branches 70.87%、functions 78.62%、lines 82.39% |
-| `npm run test:ops` | 110/110 通过；新增真实 worker 的 SIGTERM drain 回归，既有运维、fencing 与入口保护全部通过 |
+| `npm run test:ops` | 最终主干 148/148 通过（初轮 110/110；#405 新增 38 项）；真实 worker SIGTERM drain 与既有 fencing/入口保护全部通过 |
 | `npm run typecheck` | TS7 + TS6 的 app/tools 四项通过 |
 | `npm run lint`、`git diff --check` | 通过 |
 | 初轮 `NEXT_TELEMETRY_DISABLED=1 npm run build:e2e` | build 通过；单次 build_ms=27138 / builds=1 |
@@ -37,6 +37,8 @@ signal 经真实 dispatch → scheduler → pipeline → JobCtx → Analyzer/Val
 | 禁改文件 / spec 链接 | package/lock、CI、Docker、浏览器基础设施、roadmap/ADR 无 diff；本地文档链接可定位 |
 
 首次默认并行全套 coverage 有一项既有 501 条导出测试触发 5 秒 timeout，2,398 项通过；该文件单独复跑 10/10，通过后以较低本地 worker 并行度完整重跑得到上表全绿。没有修改测试超时、全局 Vitest 配置、CI 或性能策略。首次 E2E verify 未传与 build 相同的 NEXT_TELEMETRY_DISABLED，C5 正确拒绝 environment 身份不匹配；相同环境重跑通过，没有绕过身份校验。计时仅单次功能观察，不作性能提升证明。
+
+Draft PR 创建时主干刚合入 #405（CI 交付调整），从 `065dd0c` 推进至 `f390343`。仅本 feature branch 无冲突 merge；#405 的 9 个文件与 C2a 零交集，C2a 内容指纹保持不变，最终 PR 不包含 CI/基础设施 diff。最新基线重跑完整 coverage、运维、双编译器 typecheck 与 lint；合并候选为 `0dc6bf791960684e14f63dffe22b452d9e20b99d`。本次收据更新为 docs-only；最终候选 HEAD 的 build/E2E、CI 与独立 PR 复核绑定见 [Draft PR #406](https://github.com/dong-qiu/deep-insight-agent/pull/406)。
 
 ## Eval-Gate 与独立审查
 
