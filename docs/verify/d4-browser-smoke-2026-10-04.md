@@ -84,7 +84,7 @@ Draft PR [#404](https://github.com/dong-qiu/deep-insight-agent/pull/404) 承载�
 
 回退本切片通过正常 revert PR 移除 D4 测试及浏览器接线，保留最新主干 CI 优化；无 schema/数据迁移。不部署、不访问生产，不清理其他分支/worktree。先前“不合并”的用户边界未因本地验证自动解除，是否 Ready/合并仍按用户明确授权。
 
-## 新 CI 失败与已复现缺陷（不得标为关闭）
+## 历史 CI 失败与已复现缺陷（修复前证据）
 
 首个优化 CI 候选 `715155d5c5608f4564855b1ba1c65177c05eb3a3` 在 [37167149073 / attempt 1](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37167149073) 为 failure。full scope；application 的 browser smoke 4/5，登录用例在退出后再次访问 `/opportunities` 没有跳回登录页；application 汇总必需门正确失败。独立 Docker 与其汇总门 success，不能替代应用证明。构建实际 52,517ms 一次，两个 built 入口 additional_builds=0；未执行的 audit / prototype CI evidence 不算通过。
 
@@ -92,10 +92,18 @@ Draft PR [#404](https://github.com/dong-qiu/deep-insight-agent/pull/404) 承载�
 
 加强版 build:e2e 实际 12,684ms 一次；Chromium 单次完整 5/5。但 `NEXT_TELEMETRY_DISABLED=1 npx playwright test --config tests/browser/playwright.config.ts --grep '登录、viewer' --repeat-each 20` 仅 **16/20**，重复项 1、3、4、10 失败。四次已通过退出 POST、cookie 为零、登录 DOM 和退出按钮消失，随后仍打开受保护机会页；合成 DOM 摘要包含 smoke@example.test · 只读、退出按钮、技术规划机会与待验证机会内容。该失败不含生产 cookie/凭据/数据，测试自己的临时目录均由 finally 清理。
 
-已确认可复现的退出后保护恢复缺陷，确切网络/cookie 竞争机制仍待确认。middleware 会话刷新与在途 RSC/预取响应是候选原因，尚非定论。独立修复范围见 [D4 spec](../plan/specs/browser-interaction-smoke.md#当前发现退出后保护恢复缺陷)。本分支仅提交更强的 smoke 与失败收据，保留严格门；即使最终 CI 单次偶然成功，该已知缺陷仍阻塞 D4 交付，不能宣布主干 TD-16 已关闭。
+已确认可复现的退出后保护恢复缺陷，确切网络/cookie 竞争机制仍待确认。middleware 会话刷新与在途 RSC/预取响应是候选原因，尚非定论。独立修复范围见 [D4 spec](../plan/specs/browser-interaction-smoke.md#退出后保护恢复缺陷历史发现与独立修复)。本分支仅提交更强的 smoke 与失败收据，保留严格门；即使最终 CI 单次偶然成功，该已知缺陷仍阻塞 D4 交付，不能宣布主干 TD-16 已关闭。
 
 最终候选的实际检查和独立定向复核按上述冻结流程写入 PR 摘要；不修改本 Session 约定外的认证或页面代码。
 
 冻结前主干前进至 `8a96b862894cbb65fdfd64f301469ad1ba37cdb4`（#406 C2a），已无冲突整合；完整最新基线到本工作树仍只有 D4 十文件，没有本 Session 对 C2a、认证或其他 src 的修改。认证/layout/middleware 与先前基线字节一致，因此不能用 C2a 合入推断上述问题已解决。整合后的 lint、TS7/TS6 app/tools 均通过；build:e2e 实际 15,302ms 一次，HTTP 6/6 与 Chromium 单次 5/5 复用该收据，additional_builds=0。单次通过不解除前述重复失败的阻塞；最终审查与候选 CI 结果见 PR 冻结候选摘要。
 
 最新基线下独立定向复查结论为**需修复**：Blocking 1（上述既有认证缺陷，未处理），Warning 0；原“未确认缺陷”的时点歧义已修正。测试增强与 CI 接线无绕过、最新基线到本分支无 src 差异。reviewer 仅只读核验，未重跑 runtime。保留 Draft；最终候选 CI 的单次结果不能解除已知阻塞。
+
+## 用户授权独立修复后复验
+
+独立认证 Draft PR [#409](https://github.com/dong-qiu/deep-insight-agent/pull/409) 以 origin/main 8a96 为基线，冻结 head 19c5b96；D4 合入该 feature 分支，并将 #404 base 设为 fix/auth-logout-protection，保持认证六文件与 D4 十文件分别可审查。没有合入 main、部署、触及生产或其他会话工作区。认证根因、真实 Auth.js 反例、普通页面不再滚动续期 JWT 的取舍及独立审查见 [认证收据](auth-logout-protection-2026-10-04.md)。此前单次/重复/CI 失败均保留为历史，不能用早期成功覆盖它们。
+
+D4 的浏览器源码、fixture、package/lockfile 与失败候选 0a49e57 字节一致；严格退出 POST、session 从存在变零、登录 DOM 及重新访问受保护页的断言不变，零自动重试，无清 cookie/skip/xfail。仅用独立修复候选重新验证。集成后顺序执行 lint、TS7/TS6 app/tools 全部通过；build:e2e 实际一次 20,094ms，HTTP 6 文件/7 项、四类 Chromium 5/5 与同一登录重复 20/20 全部通过，两个 built 入口 additional_builds=0。所有用例仍为零自动重试，临时资源由 finally 清理；不把这一单次 build 时间写成浏览器 P95。文档结构/链接、diff 检查通过；浏览器/依赖/CI 与 0a49e57 的比较无差异。最终 full CI 与独立 Docker 按候选 SHA/run/attempt 绑定到 PR 摘要，CI 后不为链接修改 head。
+
+认证修复本地 coverage 239 文件/2,407 项及 ops 150/150 通过；整合后对应代码/测试/config 相同，最终候选 CI 再检查完整 coverage、供应链与原门。本地 Docker daemon 不可用，由两个候选 CI 独立 Docker 门补证据。新上下文独立 reviewer 对认证基线到完整 D4 十文件复查通过：风险中，Blocking 0、Warning 0。独立核对真实 Auth.js positive control/四种迟到响应反例、原授权与撤销边界，确认修复依据不限于单次 browser 成功；D4 范围、严格断言与历史证据准确。reviewer 独立检查 diff/锚点和字节一致性，未重跑 runtime，运行结果来自主 agent。冻结后还需核对远端十文件 diff/body 与最终 CI，不沿用修复前审查作为修后证明。浏览器 P95 仍未测；主干 TD-16 状态待 PR 合入后的流程，不在本 Session 宣称已关闭。

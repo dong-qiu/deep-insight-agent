@@ -31,8 +31,10 @@ Dependabot #373/#400/#401/#402 在排队，均与 package/lockfile 重叠；本�
 
 冻结候选后按 [交付证据流程](pr-delivery-evidence-workflow.md) 将候选 SHA、实际测试 SHA、run/attempt、各项结果与 artifact 身份记录在 PR 摘要；不只为补 CI 链接更新 head。交付可重复命令、脱敏收据及 Draft PR；不合并、不部署、不访问生产库或清理其他分支/worktree。覆盖不包括 Firefox/WebKit、完整移动设备矩阵、全业务流程或浏览器性能；浏览器 P95 未测，不宣称通过。
 
-## 当前发现：退出后保护恢复缺陷
+## 退出后保护恢复缺陷：历史发现与独立修复
 
 优化 CI 首候选在退出后再次访问受保护机会页失败。加强测试为先观察真实退出 POST 响应、合成 session cookie 从存在变为零，再保留登录 DOM/退出按钮消失与再次访问保护断言；不清理 cookie、不重试导航、不增加测试 retry。加强版本本地单次 5/5，但登录重复 20 次仅 16/20，四次均在 cookie 为零和登录页呈现后再次访问成功，DOM 包含合成账户及受保护机会内容。因此不能以单次 CI 成功宣称该交互可靠或 D4 已关闭。
 
-独立修复范围：认证 middleware 的会话 cookie 刷新、退出 server action 与在途 RSC/预取响应的竞争；验证退出响应与迟到响应的身份/时序及保护页面实际响应，增加确定性回归。确切根因仍待确认。该修复应另立 spec/PR，不在本 D4 修改页面、认证或 runtime，不改 reader/AI/schema/C2a。修复并整合后，重新运行同一零重试 smoke 与最终候选 full CI 才可解除交付阻塞。
+独立修复范围：认证 middleware 的会话 cookie 刷新、退出 server action 与在途 RSC/预取响应的竞争；验证退出响应与迟到响应的身份/时序及保护页面实际响应，增加确定性回归。历史发现时确切根因尚待确认。该修复另立 spec/PR，不在本 D4 修改页面、认证或 runtime，不改 reader/AI/schema/C2a。修复并整合后，重新运行同一零重试 smoke 与最终候选 full CI 才可解除交付阻塞。
+
+用户随后授权独立修复。认证修复见 [#409](https://github.com/dong-qiu/deep-insight-agent/pull/409) 与 [专属 spec](auth-logout-protection.md)，基于 main 8a96，只让 middleware 校验会话时停止写 session cookie；真实 Auth.js 四种迟到响应反例修前失败、修后通过。D4 以该独立修复分支为 stacked PR 基线，完整差异仍是上述十个测试/工具/文档文件。原严格登录、证据、图谱、窄屏断言保持不变；复验及最终 CI 证明见收据/PR。普通页面不再滚动延长 JWT 的行为取舍由认证 PR 单独交付。不将两个未合入 Draft 写成主干 TD-16 已关闭。

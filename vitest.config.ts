@@ -12,6 +12,8 @@ export default defineConfig({
     },
   },
   test: {
+    // Auth.js imports extensionless Next subpaths; resolve its real middleware in Vite.
+    server: { deps: { inline: ["next-auth"] } },
     coverage: {
       provider: "v8",
       reporter: ["text-summary", "text"],

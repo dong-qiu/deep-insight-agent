@@ -3,8 +3,8 @@
  *  - PUBLIC_PATHS 白名单（/login·/api/health·/api/cron[Bearer 在 handler 自查]）外，无 session 一律拦：
  *    页面 → 重定向 /login（带 from）；/api → 401 JSON；
  *  - middleware 只读核对当前凭据版本，不执行 writer 初始化/密码校验；审计/脱敏日志在路由处理。 */
-import NextAuth from "next-auth";
-import { NextResponse } from "next/server";
+import NextAuth, { type NextAuthRequest } from "next-auth";
+import { NextResponse, type NextRequest, type NextFetchEvent } from "next/server";
 import { authNodeConfig } from "./auth.node-config.js";
 import { isPublicPath } from "./lib/runtime/auth-paths.js";
 import { hasDispatchWorkerSecret } from "./lib/runtime/dispatch-auth.js";
@@ -23,7 +23,7 @@ function isHiddenMetricsApi(pathname: string): boolean {
 // 默认每 IP 每分钟 120（与 config.rateLimit 对齐由后续接入）。每个应用进程独立计数。
 const limiter = new RateLimiter({ limit: 120, windowMs: 60_000 });
 
-export default auth((req) => {
+const authorizeRequest = auth((req: NextAuthRequest, _event: NextFetchEvent) => {
   const { pathname } = req.nextUrl;
   const trustedDispatchWorker = (pathname === "/api/internal/generation-dispatch"
     || pathname === "/api/internal/generation-dispatch/health")
@@ -58,6 +58,21 @@ export default auth((req) => {
 
   return NextResponse.next();
 });
+
+/** Authorization responses must not race logout by renewing the browser session.
+ * Auth.js endpoints/actions remain responsible for session-cookie writes. */
+export default async function middleware(request: NextRequest, event: NextFetchEvent) {
+  const response = await authorizeRequest(request, event);
+  if (!response) return response;
+  const cookies = response.headers.getSetCookie();
+  response.headers.delete("set-cookie");
+  for (const cookie of cookies) {
+    if (!/^(?:__Secure-)?authjs\.session-token(?:\.\d+)?=/.test(cookie)) {
+      response.headers.append("set-cookie", cookie);
+    }
+  }
+  return response;
+}
 
 // matcher：排除静态资源（_next/static、_next/image、favicon）和 NextAuth 自身（/api/auth/*）；其余全过。
 export const config = {
