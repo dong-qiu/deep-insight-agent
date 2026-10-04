@@ -29,7 +29,7 @@ Dependabot #373/#400/#401/#402 在排队，均与 package/lockfile 重叠；本�
 
 四类 browser smoke、现有 HTTP E2E、TS6/TS7 app/tools、lint、应用构建与 CI coverage/audit/Docker。新增测试和配置另做定向 ESLint。最终 diff 使用 pre-pr-ai-review 新上下文独立审查并修正复查。仅测试/工具接线不触发 AI eval；未运行不相关完整 A1。
 
-冻结候选后按 [交付证据流程](pr-delivery-evidence-workflow.md) 将候选 SHA、实际测试 SHA、run/attempt、各项结果与 artifact 身份记录在 PR 摘要；不只为补 CI 链接更新 head。交付可重复命令、脱敏收据及 Draft PR；不合并、不部署、不访问生产库或清理其他分支/worktree。覆盖不包括 Firefox/WebKit、完整移动设备矩阵、全业务流程或浏览器性能；浏览器 P95 未测，不宣称通过。
+冻结候选后按 [交付证据流程](pr-delivery-evidence-workflow.md) 将候选 SHA、实际测试 SHA、run/attempt、各项结果与 artifact 身份记录在 PR 摘要；不只为补 CI 链接更新 head。初切交付可重复命令、脱敏收据及 Draft PR；后续合入以末节新增授权和精确主干 CI 为准，不部署、不访问生产库或清理其他分支/worktree。覆盖不包括 Firefox/WebKit、完整移动设备矩阵、全业务流程或浏览器性能；浏览器 P95 未测，不宣称通过。
 
 ## 退出后保护恢复缺陷：历史发现与独立修复
 
@@ -38,3 +38,9 @@ Dependabot #373/#400/#401/#402 在排队，均与 package/lockfile 重叠；本�
 独立修复范围：认证 middleware 的会话 cookie 刷新、退出 server action 与在途 RSC/预取响应的竞争；验证退出响应与迟到响应的身份/时序及保护页面实际响应，增加确定性回归。历史发现时确切根因尚待确认。该修复另立 spec/PR，不在本 D4 修改页面、认证或 runtime，不改 reader/AI/schema/C2a。修复并整合后，重新运行同一零重试 smoke 与最终候选 full CI 才可解除交付阻塞。
 
 用户随后授权独立修复。认证修复见 [#409](https://github.com/dong-qiu/deep-insight-agent/pull/409) 与 [专属 spec](auth-logout-protection.md)，基于 main 8a96，只让 middleware 校验会话时停止写 session cookie；真实 Auth.js 四种迟到响应反例修前失败、修后通过。D4 以该独立修复分支为测试差异基线，完整测试增量仍是上述十个测试/工具/文档文件。现有 CI 只监听以 main 为目标的 PR，#404 保留 main 目标并明确依赖 #409；因此相对 main 暂时包含独立认证六文件，认证先合入后的 D4 差异才恢复十文件。本 Session 不合并。原严格登录、证据、图谱、窄屏断言保持不变；复验及最终 CI 证明见收据/PR。普通页面不再滚动延长 JWT 的行为取舍由认证 PR 单独交付。不将两个未合入 Draft 写成主干 TD-16 已关闭。
+
+## 顺序合入与正式收口
+
+2026-10-04 用户授权按建议顺序收口 D4，解除此前只交付 Draft 的合入限制；不授权部署、生产 DB 操作或清理其他工作区。先正常 squash 合入认证 #409（main 823b6d875ceecc66dc35ff4ef37a8699aadbec17），核验该 SHA 的 push CI；再整合 main 到 D4，确认独立认证六文件已从本 PR 的 main 差异消失。D4 测试/fixtures/package/lockfile/CI 保持原严格版本，仅补本 spec/收据与技术债清单的 D4 状态说明，不关闭其他技术债。
+
+最新候选通过顺序真实 build、HTTP/browser built 和 lint/types，独立复核完整差异后冻结并跑 full CI；C5 同次构建身份、覆盖率、供应链与独立 Docker 门全部保留。按已审查 head 转 Ready、正常 squash 合入 #404，再核验该实际合并 SHA 的 push CI。最终合并 SHA、run/attempt、scope、两份完整证明、artifact hash/有效期和关闭结论保存于 #404 交付摘要；不为 CI 链接再提交。PR CI 或生产镜像构建不能替代 main CI，D4 不以生产部署或浏览器 P95 为关闭条件。

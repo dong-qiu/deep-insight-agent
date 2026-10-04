@@ -1,6 +1,6 @@
 # D4 / TD-16：最小关键交互浏览器 smoke 收据
 
-验收见 [专属 spec](../plan/specs/browser-interaction-smoke.md)。本切片仅测试与必要工具/CI 接线；不合并、不部署、不读取生产，不关闭其他技术债。
+验收见 [专属 spec](../plan/specs/browser-interaction-smoke.md)。本切片仅测试与必要工具/CI 接线；初切仅交付 Draft，后续用户授权顺序合入见末节。不部署、不读取生产，不关闭其他技术债。
 
 ## 基线、文件归属与隔离
 
@@ -107,3 +107,11 @@ Draft PR [#404](https://github.com/dong-qiu/deep-insight-agent/pull/404) 承载�
 D4 的浏览器源码、fixture、package/lockfile 与失败候选 0a49e57 字节一致；严格退出 POST、session 从存在变零、登录 DOM 及重新访问受保护页的断言不变，零自动重试，无清 cookie/skip/xfail。仅用独立修复候选重新验证。集成后顺序执行 lint、TS7/TS6 app/tools 全部通过；build:e2e 实际一次 20,094ms，HTTP 6 文件/7 项、四类 Chromium 5/5 与同一登录重复 20/20 全部通过，两个 built 入口 additional_builds=0。所有用例仍为零自动重试，临时资源由 finally 清理；不把这一单次 build 时间写成浏览器 P95。文档结构/链接、diff 检查通过；浏览器/依赖/CI 与 0a49e57 的比较无差异。最终 full CI 与独立 Docker 按候选 SHA/run/attempt 绑定到 PR 摘要，CI 后不为链接修改 head。
 
 认证修复本地 coverage 239 文件/2,407 项及 ops 150/150 通过；整合后对应代码/测试/config 相同，最终候选 CI 再检查完整 coverage、供应链与原门。本地 Docker daemon 不可用，由两个候选 CI 独立 Docker 门补证据。新上下文独立 reviewer 对认证基线到完整 D4 十文件复查通过：风险中，Blocking 0、Warning 0。独立核对真实 Auth.js positive control/四种迟到响应反例、原授权与撤销边界，确认修复依据不限于单次 browser 成功；D4 范围、严格断言与历史证据准确。reviewer 独立检查 diff/锚点和字节一致性，未重跑 runtime，运行结果来自主 agent。冻结后还需核对远端 main 到候选十六文件（其中独立认证六文件不变）、认证基线到候选十文件及正文与最终 CI，不沿用修复前审查作为修后证明。浏览器 P95 仍未测；主干 TD-16 状态待 PR 合入后的流程，不在本 Session 宣称已关闭。
+
+## 用户授权顺序合入与收口
+
+2026-10-04 用户明确要求按建议顺序收口 D4，授权认证 #409 与 D4 #404 正常合入 main；此前各节的“不合并”和 Draft 状态是当时边界，历史失败与验证仍保留。未授权部署、生产 DB、其他分支/worktree 清理。认证 #409 已按冻结 head 19c5b96 正常 squash 合并为 main 823b6d875ceecc66dc35ff4ef37a8699aadbec17；对应 push CI 37190666460 / attempt 1 已 completed/success，full 六文件，tested_commit 等于该合并 SHA；应用/独立 Docker/必需汇总门成功。coverage 239 文件/2,407 项及 ops 150/150，HTTP 7/7，真实构建 39,291ms 一次，additional_builds=0，audit 0 漏洞；三原 JSON 身份/hash/有效期核验后保存于 #409 摘要，不拿 PR 成功替代 main 验证。
+
+认证 main CI 通过后，D4 整合该主干。原浏览器源码、fixture、package/lockfile、CI 接线继续保持与 39085a0 完全一致，认证六文件与主干一致，不作为 D4 重新提交；最终 main 到 D4 范围为原十文件加技术债清单一处 D4 状态记录。没有 runtime/agent/schema、UI、读取性能或证据/AI 规则增量。技术债清单记录技术验收与精确主干收口证明位置，不提前声明尚未执行的合入或 main CI 成功。
+
+本轮整合后顺序 lint、TS7/TS6 app/tools 通过；真实 build:e2e 一次 12,998ms，HTTP 6 文件/7 项与 Chromium 四类 5/5 通过，两个 built 入口 additional_builds=0，零自动重试。浏览器/依赖/CI 与前冻结候选字节一致；认证与 main 字节一致。文档三文件结构/链接与 diff 检查通过，自有浏览器临时根目录为 0。新上下文独立 reviewer 对 main 823b6d8 到完整十一文件复核通过：风险中，Blocking 0、Warning 0；独立核对浏览器/依赖/CI 字节一致、认证无增量、三文档的授权/历史/关闭条件与主干事实，未重跑 runtime。最终候选及合入后的 main SHA/run/attempt/full checks/三份原 JSON hash 和有效期在 PR 摘要记录，冻结后只补摘要，不为链接改 head；main 对应完整 CI 成功后正式关闭 TD-16。浏览器 P95 未测，不宣称生产已部署。
