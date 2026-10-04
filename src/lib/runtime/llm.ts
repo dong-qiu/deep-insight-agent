@@ -1,3 +1,4 @@
+import { withUsageCall, usageTrackedAnthropicFetch } from "./model-usage.js";
 import { safeError } from "./diagnostics.js";
 import { abortableDelay, awaitWithSignal, throwIfAborted } from "./cancellation.js";
 /**
@@ -111,6 +112,7 @@ function getClient(): Anthropic {
     apiKey: requireLlmApiKey("anthropic"),
     timeout,
     maxRetries,
+    fetch: usageTrackedAnthropicFetch,
     ...(baseURL ? { baseURL } : {}),
   })); // key from env
 }
@@ -699,7 +701,12 @@ async function callVolcengineStructured<T extends z.ZodType>(
   }
 }
 
-export async function callStructured<T extends z.ZodType>(
+export async function callStructured<T extends z.ZodType>(opts: StructuredCall<T>): Promise<StructuredResult<z.infer<T>>> {
+  throwIfAborted(opts.signal);
+  return withUsageCall(opts.role, MODELS[opts.role], llmProvider(), () => callStructuredImpl(opts));
+}
+
+async function callStructuredImpl<T extends z.ZodType>(
   opts: StructuredCall<T>,
 ): Promise<StructuredResult<z.infer<T>>> {
   throwIfAborted(opts.signal);

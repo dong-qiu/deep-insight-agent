@@ -485,6 +485,23 @@ admin 生命周期界面读取，且没有正文 artifact。
 经由 Lead 的 pass 证据查询；“假设 / 建议验证动作”与事实字段分开展示。
 方向词表更新先供工作台预览近期线索影响；只有管理员显式重投影才刷新已有候选，未再命中的候选保留为 `stale`。
 
+### 模型调用观测 (ModelUsageAttempt)
+
+C3 在 Job 内的 `callStructured` 为 logical call 分配 UUID，每次实际 provider fetch 分配独立
+attempt UUID/序号，包含 SDK 内部重试。`model_usage_attempt` 保存 run/trace、role/provider/model、
+开始与观测时间、nullable input/output/cache token、unknown/partial/reported 状态、观测编号/hash，
+以及 nullable USD 估价和本地价格快照；不保存输入输出正文、端点、密钥或 provider request id。
+DDL 事实源为 `schema.ts`，仅通过显式 v48 migration 创建，不回填历史用量。
+
+用量在事件边界提交，不等待 Run；部分快照不相加，重复幂等，完整观测冲突拒绝覆盖。
+取消后仅实际到达观测边界的用量可在原 ownership guard 允许时写入；租约丢失拒写。
+记录失败阻止当前 Job 新模型请求和业务提交，不自动重发已完成请求。未知/缺失用量不是零，
+未知价格金额为 NULL；已知本地价格也只产生 estimate，不代表账单或 Coding Plan 余额。
+
+新表是细粒度调用观测来源；Run.cost 仍是既有预算/运行展示来源，P1 cost_ledger/rollup 仍读既有
+阶段投影，三者不得相加。未接线的独立 followup、eval/probe 或直接 SDK 请求不自动开库或记录。
+详见 [C3 契约](specs/c3-model-usage-persistence.md)。
+
 ### 运行实体 (Run)
 
 agent 执行单元的状态追踪；由 Job Runner 写入 SQLite，支撑管理看板「流水线追踪 / 失败下钻 / 重试」。

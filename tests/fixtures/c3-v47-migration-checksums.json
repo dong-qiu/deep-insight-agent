@@ -1,0 +1,193 @@
+{
+  "baseline": "823b6d8",
+  "ledger": [
+    {
+      "version": "20260803_01_provenance_core",
+      "checksum": "69720a8660bf13a0a1bdb652648d131cc294f49d728a7d39a2db419a04eb98d4"
+    },
+    {
+      "version": "20260803_02_report_lifecycle",
+      "checksum": "007c6d89afadceeda51e6ff02772f89d234403c20ab92ec75938d4b4ebbf4119"
+    },
+    {
+      "version": "20260803_03_report_effect",
+      "checksum": "f50a4d52be58b102c78fcd88660e07d13b7702bae2470f7d0483e3c5f49e3705"
+    },
+    {
+      "version": "20260803_04_redaction_tombstone",
+      "checksum": "8a4bca92a54a5bfcee44e4b624eb0ceb72b3be45ab59a03cc2b248a1741fa715"
+    },
+    {
+      "version": "20260803_05_redaction_request",
+      "checksum": "2940500a649e181f6be36cc62d4e14994aaee69d1d08b01f979f73bdba2316bd"
+    },
+    {
+      "version": "20260803_06_provenance_facts",
+      "checksum": "554e06b02ea67ac1efdcc53b939b6e65a275da974fbffc94e73bb8bb2ddc0032"
+    },
+    {
+      "version": "20260803_07_deployment_record",
+      "checksum": "f059d1450c18eed4dfa0e147f4c51b0690051590f7476dd493e9016b4558b53c"
+    },
+    {
+      "version": "20260811_08_source_collect",
+      "checksum": "ef1bc00bc8ff3849c09580ad62f7d3faf0a4115e9ed95ecb6b9d10d1400deab8"
+    },
+    {
+      "version": "20260817_09_bounded_provenance_views",
+      "checksum": "0507752e65e95a114df73c9ede21fb081a6583019745a0d5fff03ce1b538718c"
+    },
+    {
+      "version": "20260817_10_bounded_provenance_view_index_fix",
+      "checksum": "5cec70cc3557050eaf47c108a4e2862cff21a1657e28b7e970ff6d7257f59c3c"
+    },
+    {
+      "version": "20260820_11_effect_event_link",
+      "checksum": "d0053b4794f599d7c1aac3d2195c332f2bfdd1a6b31ab29d2ed15a399924fdac"
+    },
+    {
+      "version": "20260823_12_source_credit_facts",
+      "checksum": "0ed0b07d790ec4ba5b334c36f0a53800cf6cfa24accbfe828ed700d357d8b68c"
+    },
+    {
+      "version": "20260823_13_source_credit_tenant_primary_keys",
+      "checksum": "f2312ddc8452a5a9769667acc9d2b14e533cc41f30c99db1170560074dd42134"
+    },
+    {
+      "version": "20260823_14_p1_metric_facts",
+      "checksum": "3c587f94b28cf81a66ec6dda6df5144ff1dd3cfc8fdc5a0494f9157ba2e0ce1d"
+    },
+    {
+      "version": "20260823_15_p1_metric_fact_contracts",
+      "checksum": "b91613110d35179bfb9a05c7ccd076775367d0566cf77391b633d1c1f758e875"
+    },
+    {
+      "version": "20260823_16_p1_metric_conflict_audit",
+      "checksum": "cb5d3d176ccea7c6465d347d57b78ae8a433d66acc1602d9a5f4d0d9a45e628b"
+    },
+    {
+      "version": "20260823_17_integrity_anchors",
+      "checksum": "8c0e75cece555b1823a8079e773330b16f76258d16f9b5df698d1346e0364d22"
+    },
+    {
+      "version": "20260823_18_integrity_anchor_immutability",
+      "checksum": "a754ee3097b61bb79a9737825184a5711929234b3aab335a527d433b703c8a7e"
+    },
+    {
+      "version": "20260824_19_integrity_anchor_recovery_material",
+      "checksum": "0690bcde379853ba24d9f4a2d363176b8b7f5793f7acab20f50feb62d42c1a76"
+    },
+    {
+      "version": "20260824_20_integrity_anchor_hardening",
+      "checksum": "06dcecaf499af5cafe3c8b3276420e88e89c7be761fd5f00302da7dbcfc23ba0"
+    },
+    {
+      "version": "20260824_21_integrity_anchor_tenant_reconcile_index",
+      "checksum": "be72995364fe5cc87ebe7dc874411d0d81d52aa469f4a86cf73b9db00ec1fc1f"
+    },
+    {
+      "version": "20260824_22_integrity_check_ledger",
+      "checksum": "23d68162f10821f4c778d5a0b30ad3715f4155eb3cc16a70cc732943a4a5eab7"
+    },
+    {
+      "version": "20260824_23_integrity_check_key_revocation",
+      "checksum": "ef110c6c7727f7b3ab73c66bd99c07b0711660584f504a8cb895686d8f56f596"
+    },
+    {
+      "version": "20260824_24_integrity_lifecycle",
+      "checksum": "ca97c89f8944c60764ac861bcc27c99ebd76320fe9d3274748c393fadc6aeb2b"
+    },
+    {
+      "version": "20260824_25_integrity_lifecycle_purge",
+      "checksum": "823f50166c20e130b58ff9cb1508848b4ba9330cf7fc45203aee5aa46f7a72b8"
+    },
+    {
+      "version": "20260825_26_integrity_lifecycle_completion_proof",
+      "checksum": "76795c272c9a69b3a30feee9f197a6e26ee8ea0e700ff624eb72298ecddbfc85"
+    },
+    {
+      "version": "20260825_27_integrity_lifecycle_registry_proof",
+      "checksum": "020e7f64c678116d1f904be918947b0cedbf227383935072d423a6ba9b85ffd7"
+    },
+    {
+      "version": "20260825_28_integrity_lifecycle_hold_and_tombstone_retention",
+      "checksum": "a706a169d7d20da46ed760f0ddb7b93a4ae5e5058e451d3fda0b9f3a2c2ceab7"
+    },
+    {
+      "version": "20260825_29_integrity_lifecycle_hold_tombstone_snapshot",
+      "checksum": "8f7d18874837e8b70a5a698e65d1bb951c69f2c8557dfd442ed58c6219177ecf"
+    },
+    {
+      "version": "20260825_30_integrity_lifecycle_external_hold",
+      "checksum": "f2ae91e6870e8c4d54cb3f95ef632788edbf2c8b2dc260023edc1a12deadd6ee"
+    },
+    {
+      "version": "20260825_31_integrity_daily_root_material_backfill",
+      "checksum": "aeb8cc487f12e6933a28e73188130be9ed01d84a22563c46360944d12cc1771c"
+    },
+    {
+      "version": "20260825_32_integrity_maintenance_lease",
+      "checksum": "b7f43a14e9ad97eafedaf835c11d9350f2688cf5a48f09b7881480b3316f9680"
+    },
+    {
+      "version": "20260826_33_dashboard_trace_read_model_v1",
+      "checksum": "a6f8acf6f3b9458b9644a05413e4b268868e9faf5d992472d3cef3541f577aad"
+    },
+    {
+      "version": "20260826_34_dashboard_cost_read_model_v1",
+      "checksum": "badbc1cb7c70b327428d992a3ddf642de7de2cb7376aa38f75676e41d0109712"
+    },
+    {
+      "version": "20260828_35_dashboard_late_visibility_and_dimensions",
+      "checksum": "e0ca19383046efbe678f9fb17ac9234c31a2abc23f69eb5cdd7283f2444b9734"
+    },
+    {
+      "version": "20260909_36_display_coverage_evidence",
+      "checksum": "f274856efe8f75562d50d20c2c42190f63ec785ce04a870241baf84062be64ac"
+    },
+    {
+      "version": "20260909_37_display_coverage_candidate_audit",
+      "checksum": "08f5698a43c90a0f8a4bebd4df0da77cb3278ddf7630f7b0364b3ebebfb93988"
+    },
+    {
+      "version": "20260909_38_statement_citation_binding",
+      "checksum": "15be32b33de361497361fab63c35edc430d8e2368f963e8e0524a9cb847cf6d0"
+    },
+    {
+      "version": "20260909_39_source_quote_projection",
+      "checksum": "02d3e4b10098ec6a211b0e5e26358cebdfb5955998774a2c3ca9d595bd42a808"
+    },
+    {
+      "version": "20260910_40_raw_archive_effect",
+      "checksum": "ff82df7aca75cb24785549c9ad727c87f147c4652e1628b21583d83530dfdfbb"
+    },
+    {
+      "version": "20260911_41_content_reader_eligibility",
+      "checksum": "ffeb5dde61f764db1f160f47a34ed86531e3856de5adfbb395bf04082ad22c50"
+    },
+    {
+      "version": "20260911_42_pending_raw_archive_reader_eligibility",
+      "checksum": "f4fe2d90ec4bd94766241ce38e6189370350d845b0e4e13fe4e643e6f7a529bd"
+    },
+    {
+      "version": "20260913_43_podcast_transcript_contracts",
+      "checksum": "27ddda98af4be7f07d060107c7b272ca17874ba330fc543447d5b0fba40989cb"
+    },
+    {
+      "version": "20260913_44_podcast_transcript_policy_version_immutability",
+      "checksum": "7fffa96b472a9640e4f8e07d8957d157497522a3a670c7916a727f09a0ee2468"
+    },
+    {
+      "version": "20260916_45_report_quality_review_trace_v1",
+      "checksum": "c667426fb9cf22b2d4b3688acdae08eb945e4ab1934c03500f9cdc3751673688"
+    },
+    {
+      "version": "20260924_46_reader_statement",
+      "checksum": "4d7534fa59da7fd92a3fed3ff5ea8ec19357115748c7e40f184f633db988e187"
+    },
+    {
+      "version": "20261003_47_report_redaction_boundary",
+      "checksum": "ad7e3de53688b145997047fa48881407dcb0b57d5718e896c84fc64754899284"
+    }
+  ]
+}

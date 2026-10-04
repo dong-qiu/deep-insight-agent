@@ -7,7 +7,7 @@ const TYPES = new Set(["Error", "TypeError", "RangeError", "SyntaxError", "Timeo
   "AuthenticationError", "PermissionDeniedError", "BadRequestError", "NotFoundError", "SqliteError",
   "ZodError", "ValidationDegraded", "OrphanedOnRestart", "VolcengineResponsesError",
   "cancelled", "RuntimeConfigError", "RelayUnavailableError", "QuoteCoverageAuditError", "QuoteCoverageRejectedError"]);
-const REASONS = new Set(["cancelled", "task_deadline_exceeded", "generation_fence_lost", "operation_failed", "sqlite_busy", "sqlite_constraint", "validation_failed",
+const REASONS = new Set(["usage_persistence_failed", "cancelled", "task_deadline_exceeded", "generation_fence_lost", "operation_failed", "sqlite_busy", "sqlite_constraint", "validation_failed",
   "authentication_failed", "orphaned_run", "no_releasable_insight", ...TRANSPORT_FAILURE_LABELS]);
 
 /** Only a bounded vocabulary survives; arbitrary provider messages, bodies and stacks do not. */

@@ -1,7 +1,7 @@
-# C3 / TD-13：最小模型调用用量持久化（候选契约）
+# C3 / TD-13：最小模型调用用量持久化
 
 日期：2026-10-04。基线 `origin/main` @ `8a96b862894cbb65fdfd64f301469ad1ba37cdb4`。
-状态：只读盘点完成；候选方案待独立评审、关键设计确认与 schema/migration 文件交接，尚未实现。
+状态：用户已确认关键设计及 C1/D1 schema/migration 文件交接；最小持久化及运行接线已实现，交付证据见 [C3 收据](../../verify/c3-model-usage-persistence-2026-10-04.md)。最终验证基线为 `origin/main` @ `142b1e3`，包含其他工作流已合入的认证 #409 与 D4 #404。
 承接 [技术债 TD-13](technical-debt-remediation.md)、[C2a 取消契约](c2a-task-cancellation.md)、
 [C2a 收据](../../verify/c2a-task-cancellation-2026-10-04.md)、[架构](../architecture.md)、
 [provider spec](volcengine-responses-provider.md) 与 ADR-0031。
@@ -21,14 +21,14 @@
   可在实际 fetch 边界观测。一次 messages.stream/finalMessage 不能冒充一次 HTTP attempt。
   仓库旧注释的 SDK 0.98 不是当前依赖事实。
 
-## 候选最小设计与待确认项
+## 已确认的最小设计
 
-建议一个独立 `model_usage_attempt` 表，保存调用观测而不建立第二套财务账本；复用 SQLite DB、
+采用一个独立 `model_usage_attempt` 表，保存调用观测而不建立第二套财务账本；复用 SQLite DB、
 provenance migration runner、canonical hash、现有价格纯函数与原 ownership guard。
 此表不写入 cost_ledger/rollup，不向 Run.cost 再加一次费用，也不保存 provider 账单、套餐余额或 request id。
 新表理由是现有 P1 不可变投影不能表达从未知到观测完成的请求状态；不是默认另造 cost ledger。
 
-实施前需确认这一关键设计及 schema/migration 交接。另一方案是在 cost_ledger 上追加 nullable 观测字段，
+用户已确认这一关键设计及 schema/migration 交接。另一方案是在 cost_ledger 上追加 nullable 观测字段，
 但仍要解决初始未知记录与 append-only 禁更新的矛盾，并改变 P1 reader/retention/rollup；不推荐本切片扩大至此。
 若这构成架构变更，按 L2 将已确认实体契约补进 architecture；ADR 的共享工作区内容不覆盖，必要时另行交接。
 
@@ -57,7 +57,7 @@ provenance migration runner、canonical hash、现有价格纯函数与原 owner
   C3 观测在归一化之前检查原 terminal event 字段：缺失、非安全整数、负数或小数均为缺失/partial，
   明确数值 0 才是真零。原业务 normalizer、终态接受和 Zod 规则保持原样；观测接口不持久化原事件正文。
   Anthropic message_start 的 output=0 是初始快照，不代表最终 output 为零；message_delta 提交 partial 快照，
-  message_stop/完整最终 envelope 才能提升 reported。cache 字段缺失保留 null；无法证明完整估价输入时金额 unknown。
+  message_stop 时还须有有效 message_delta.output_tokens，且没有超限丢帧或尚未被有效值替换的非法字段，才可提升 reported；不能用初始 output=0 代替最终用量。cache 字段缺失保留 null；无法证明完整估价输入时金额 unknown。
 - 进程重启后 started/partial 原样可读，查询显示未完整；不得把 orphan 清扫当作 usage 修复。
   已提交 reported 重启后可读，重放仍幂等。中断前未取得/未提交的使用量无法从数据库推断。
 
@@ -67,7 +67,7 @@ provenance migration runner、canonical hash、现有价格纯函数与原 owner
 | --- | --- | --- |
 | Anthropic message_start | input/output/cache 为该消息初始累计快照 | 已报告字段可存 partial；output 初始0不作完整事实；任何缺失计数字段保持 null |
 | Anthropic message_delta | output 及明确提供的 input/cache 为当前累计快照，非增量 | 新观测刷新明确字段，其他继承；仍 partial，不对 delta 相加 |
-| Anthropic message_stop/完整最终 envelope | 最后累计快照 | 已取得有效 input/output 才 reported；cache 缺失代表未报告/不支持，均不推断明确0；完整金额需要实际用到的 cache 字段可证明 |
+| Anthropic message_stop | 最后累计快照 | 有有效最终 output delta、input/output、无丢帧/尚未修复的非法观测才 reported；cache 缺失保留 null；完整金额另检所有 cache 输入 |
 | Responses completed/incomplete/failed/error terminal | raw usage 为该 attempt 的最终累计 envelope | input/output 均有效才能 reported，否则 unknown/partial；不因业务 terminal 失败而丢已报告用量 |
 | Responses input_tokens_details.cached_tokens | 该 envelope 的 cached-input 累计快照 | 缺失为未报告，null；明确0才零；不把它与 input_tokens 相加推断总输入 |
 | Responses cache creation | 当前协议未提供此计数字段 | null/不支持，不能借 Anthropic cache-write=0 假造 provider 返回值；Coding Plan 金额一直 unknown |
@@ -119,7 +119,7 @@ reported 的“完整”仅限 provider 最终 input/output envelope，不要求
 
 ### 观测接线及未覆盖范围
 
-候选接线：runJob 内调用 callStructured 的 analyzer、validator、coverage、语言修复与 judge。
+已接线：runJob 内调用 callStructured 的 analyzer、validator、coverage、语言修复与 judge。
 使用仅含 metadata 的 async context，避免给 agent/prompt 重写接口。Anthropic SDK 的自定义 fetch
 观测真实 dispatch；SSE usage observer 必须保留原 body 字节、背压、取消、错误和 SDK retry 参数，
 不得 clone/tee 后无界缓存，也不得把 SDK 隐藏请求伪计为可见 attempt。
@@ -127,7 +127,7 @@ Volcengine 在原 SSE parser 提取 usage 的事件处接同一观测接口；�
 
 独立 followup HTTP、脱离 Job 的直接 LLM/eval/probe 调用、任意独立 new Anthropic/fetch 入口不自动持久化；
 默认不打开 DB、不从 getDb 隐式取得全局库。provider 内部转发/计费、未进入本地 fetch 的服务端 retry 不可观测。
-正式范围须以最终入口测试和 diff 重核，不把候选接线写成全系统完成。
+真实 SDK transport、runAnalysis、judgeWithRetry 与 coverage 的接线由合成集成测试核验；语言修复/judge 复用同一 callStructured 上下文，但本切片没有逐个端到端演练全部子路径。不宣称全系统持久化覆盖。
 observer 若需 SSE framing buffer，必须有固定容量上限；超过上限仅记录观测不完整/受控故障，
 不能无界保留模型正文或改变合法业务 framing。容量边界与超大合成 chunk 需反例证明。
 C3 不启动新的 retention/删除任务；调用观测暂保留，容量与后续 retention 是明确运维风险，不借用 P1 删除 guard。
@@ -138,13 +138,14 @@ C3 不启动新的 retention/删除任务；调用观测暂保留，容量与后
 不放进启动 SCHEMA_SQL 偷迁移；通过现有 explicit runner 新建/升级，验证事务原子性和重复执行。
 未迁移库的 reader 只读返回 unavailable；不能建表、补列或读取时修复。writer 需在请求前明确拒绝
 未迁移库，不能静默禁用并宣称完整。合成测试迁移后再接线；getDb 的 ledger gate 保留。
+reader 每页最多 1000 条，以 nextOffset 显式指示后续页；只读连接不迁移、不修复。分页查询按开始时间、logical call、attempt 序号排序；进行中的 Run 翻页不是数据库快照，审计完整集应在 Run 静止后读取。
 现有测试使用未跑 provenance migration 的 openDb(:memory:) 需确认是否要在受影响 fixture 显式迁移，
 不能为了兼容测试把生产 writer 的 missing-schema 失败改成静默丢弃。
 
 代码回退保留新增表和历史已提交事实；不授权 drop 表/降级 ledger。新版本显式迁移前旧 writer 须按原
 运维 pause/drain 流程交接，此任务不实际执行生产迁移。历史旧 Run/P1 不回填。
 
-## 反例与验收计划（尚未运行）
+## 反例与验收矩阵
 
 | 反例 | 必须证明的结果 |
 | --- | --- |
