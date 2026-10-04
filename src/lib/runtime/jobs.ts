@@ -1,5 +1,6 @@
 /** Job Runner —— Run 实体编排：建 Run(running) → 跑 fn → 落 done/failed + 成本 + 错误。
  *  支撑管理看板「流水线追踪 / 失败下钻 / 重试」（architecture 运行实体 Run）。 */
+import { createTaskCancellation, type TaskCancellationOptions } from "./cancellation.js";
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import type { DB } from "../db/index.js";
@@ -8,7 +9,7 @@ import { notifyFailure } from "./alert.js";
 import { safeError } from "./diagnostics.js";
 import type { Cost, Run } from "../types.js";
 
-export interface JobSpec {
+export interface JobSpec extends TaskCancellationOptions {
   kind: Run["kind"];
   target: Run["target"];
   /** P0a：调用方必须显式传入已创建的 trace；历史调用可暂时省略。 */
@@ -21,6 +22,9 @@ export interface JobSpec {
   assertWrite?: () => void;
 }
 export interface JobCtx {
+  signal: AbortSignal;
+  /** Cancellation checkpoint only; never substitutes for assertWrite. */
+  checkCancellation(): void;
   runId: string;
   /** fn 内累加本次运行成本（多次调用累加，写入 Run.cost） */
   recordCost(cost: Cost): void;
@@ -35,48 +39,55 @@ export async function runJob<T>(
   spec: JobSpec,
   fn: (ctx: JobCtx) => Promise<T>,
 ): Promise<JobOutcome<T>> {
-  const runId = spec.existingRunId ?? `run_${randomUUID().slice(0, 8)}`;
-  // 单调时钟测耗时，避免墙钟 NTP 跳变让 duration 出现负值/突跳
-  const startedMono = performance.now();
-  if (!spec.existingRunId) {
-    spec.assertWrite?.();
-    insertRun(db, {
-      id: runId, kind: spec.kind, target: spec.target, status: "running",
-      started_at: new Date().toISOString(), ended_at: null, duration_ms: null,
-      cost: null, error: null, retry_of: spec.retryOf ?? null, trace_id: spec.traceId ?? null,
-    });
-  }
-
-  let cost: Cost | null = null;
-  const ctx: JobCtx = {
-    runId,
-    recordCost(c) {
-      cost = cost
-        ? { tokens: cost.tokens + c.tokens, amount: cost.amount + c.amount, ...(cost.estimated || c.estimated ? { estimated: true } : {}) }
-        : { ...c };
-    },
-  };
-  const elapsed = (): number => Math.round(performance.now() - startedMono);
-
+  const cancellation = createTaskCancellation(spec);
   try {
-    const result = await fn(ctx);
-    spec.assertWrite?.();
-    finishRun(db, runId, { status: "done", cost, duration_ms: elapsed() });
-    return { run: getRun(db, runId)!, result };
-  } catch (e) {
-    const err = safeError(e);
-    spec.assertWrite?.();
-    finishRun(db, runId, {
-      status: "failed", cost, duration_ms: elapsed(),
-      error: err,
-    });
-    // 失败告警（运维附条件②）：fire-and-forget，ALERT_WEBHOOK 未配置则 no-op，永不连累抛出。
-    // silent（半开探测）→ 跳过：探测失败属预期、不刷告警（ADR-0008 决定② / 切片3b-2，评审🔴）。
-    if (!spec.silent) {
-      notifyFailure({ runId, kind: spec.kind, target: spec.target, errorType: err.type, message: err.message });
+    const runId = spec.existingRunId ?? `run_${randomUUID().slice(0, 8)}`;
+    // 单调时钟测耗时，避免墙钟 NTP 跳变让 duration 出现负值/突跳
+    const startedMono = performance.now();
+    if (!spec.existingRunId) {
+      spec.assertWrite?.();
+      insertRun(db, {
+        id: runId, kind: spec.kind, target: spec.target, status: "running",
+        started_at: new Date().toISOString(), ended_at: null, duration_ms: null,
+        cost: null, error: null, retry_of: spec.retryOf ?? null, trace_id: spec.traceId ?? null,
+      });
     }
-    throw e;
-  }
+
+    let cost: Cost | null = null;
+    const ctx: JobCtx = {
+      runId, signal: cancellation.signal, checkCancellation: cancellation.check,
+      recordCost(c) {
+        cost = cost
+          ? { tokens: cost.tokens + c.tokens, amount: cost.amount + c.amount, ...(cost.estimated || c.estimated ? { estimated: true } : {}) }
+          : { ...c };
+      },
+    };
+    const elapsed = (): number => Math.round(performance.now() - startedMono);
+
+    try {
+      cancellation.check();
+      const result = await fn(ctx);
+      cancellation.check();
+      spec.assertWrite?.();
+      finishRun(db, runId, { status: "done", cost, duration_ms: elapsed() });
+      return { run: getRun(db, runId)!, result };
+    } catch (e) {
+      // A provider may reject with an opaque payload after cancellation. Fix the task reason.
+      const failure = cancellation.signal.aborted ? cancellation.signal.reason : e;
+      const err = safeError(failure);
+      spec.assertWrite?.();
+      finishRun(db, runId, {
+        status: "failed", cost, duration_ms: elapsed(),
+        error: err,
+      });
+      // 失败告警（运维附条件②）：fire-and-forget，ALERT_WEBHOOK 未配置则 no-op，永不连累抛出。
+      // silent（半开探测）→ 跳过：探测失败属预期、不刷告警（ADR-0008 决定② / 切片3b-2，评审🔴）。
+      if (!spec.silent) {
+        notifyFailure({ runId, kind: spec.kind, target: spec.target, errorType: err.type, message: err.message });
+      }
+      throw failure;
+    }
+  } finally { cancellation.dispose(); }
 }
 
 /** 重试失败的 Run：以新 Run（retry_of 指向原 Run）重跑 fn。 */

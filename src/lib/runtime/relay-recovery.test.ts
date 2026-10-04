@@ -150,7 +150,7 @@ describe("relay half-open recovery", () => {
     expect(counters).toMatchObject({ recovery_cycles: 1, probes: 1, recovered: 1, exhausted: 0 });
   });
 
-  it("leader 取消只取消自己的等待，不会取消共享 probe 或 follower", async () => {
+  it("leader 取消停止自身 recovery，follower 用自己的 operation 继续", async () => {
     let release!: () => void;
     let sleeping!: () => void;
     const enteredSleep = new Promise<void>((resolve) => { sleeping = resolve; });
