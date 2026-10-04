@@ -1,6 +1,7 @@
 /** Job Runner —— Run 实体编排：建 Run(running) → 跑 fn → 落 done/failed + 成本 + 错误。
  *  支撑管理看板「流水线追踪 / 失败下钻 / 重试」（architecture 运行实体 Run）。 */
 import { createTaskCancellation, type TaskCancellationOptions } from "./cancellation.js";
+import { createUsageJobScope } from "./model-usage.js";
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import type { DB } from "../db/index.js";
@@ -53,9 +54,10 @@ export async function runJob<T>(
       });
     }
 
+    const usageScope = createUsageJobScope({ db, runId, traceId: spec.traceId ?? null, signal: cancellation.signal, assertWrite: spec.assertWrite });
     let cost: Cost | null = null;
     const ctx: JobCtx = {
-      runId, signal: cancellation.signal, checkCancellation: cancellation.check,
+      runId, signal: cancellation.signal, checkCancellation: () => { cancellation.check(); usageScope.check(); },
       recordCost(c) {
         cost = cost
           ? { tokens: cost.tokens + c.tokens, amount: cost.amount + c.amount, ...(cost.estimated || c.estimated ? { estimated: true } : {}) }
@@ -66,7 +68,8 @@ export async function runJob<T>(
 
     try {
       cancellation.check();
-      const result = await fn(ctx);
+      const result = await usageScope.run(() => fn(ctx));
+      usageScope.check();
       cancellation.check();
       spec.assertWrite?.();
       finishRun(db, runId, { status: "done", cost, duration_ms: elapsed() });
@@ -86,7 +89,7 @@ export async function runJob<T>(
         notifyFailure({ runId, kind: spec.kind, target: spec.target, errorType: err.type, message: err.message });
       }
       throw failure;
-    }
+    } finally { usageScope.finish(); }
   } finally { cancellation.dispose(); }
 }
 

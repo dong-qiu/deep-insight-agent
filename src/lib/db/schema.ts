@@ -1352,3 +1352,43 @@ CREATE TRIGGER redacted_ppt_insert BEFORE INSERT ON ppt_polish_cache WHEN EXISTS
 CREATE TRIGGER redacted_ppt_update BEFORE UPDATE ON ppt_polish_cache WHEN EXISTS (SELECT 1 FROM report_redaction_boundary WHERE report_id IN (OLD.report_id,NEW.report_id))
   BEGIN SELECT RAISE(ABORT,'report_redacted'); END;
 `;
+
+/** C3 observation contract; created only by explicit provenance v48. */
+export const MODEL_USAGE_ATTEMPT_SCHEMA_SQL = `
+CREATE TABLE model_usage_attempt (
+  attempt_id TEXT PRIMARY KEY,
+  logical_call_id TEXT NOT NULL,
+  attempt_number INTEGER NOT NULL CHECK(attempt_number>0),
+  run_id TEXT NOT NULL REFERENCES run(id), trace_id TEXT,
+  role TEXT NOT NULL CHECK(role IN ('analyzer','validator','coverage','followup')),
+  provider TEXT NOT NULL CHECK(provider IN ('anthropic','volcengine-responses')),
+  model TEXT NOT NULL, started_at TEXT NOT NULL,
+  observation_number INTEGER NOT NULL DEFAULT 0 CHECK(observation_number>=0),
+  observed_at TEXT,
+  usage_status TEXT NOT NULL DEFAULT 'unknown' CHECK(usage_status IN ('unknown','partial','reported')),
+  input_tokens INTEGER CHECK(input_tokens>=0), output_tokens INTEGER CHECK(output_tokens>=0),
+  cache_creation_input_tokens INTEGER CHECK(cache_creation_input_tokens>=0),
+  cache_read_input_tokens INTEGER CHECK(cache_read_input_tokens>=0),
+  estimate_status TEXT NOT NULL DEFAULT 'unknown' CHECK(estimate_status IN ('unknown','estimated')),
+  estimate_usd REAL CHECK(estimate_usd>=0), price_source TEXT, price_snapshot TEXT,
+  semantic_hash TEXT,
+  UNIQUE(logical_call_id,attempt_number),
+  CHECK((estimate_status='unknown' AND estimate_usd IS NULL AND price_source IS NULL AND price_snapshot IS NULL)
+     OR (estimate_status='estimated' AND estimate_usd IS NOT NULL AND price_source IS NOT NULL AND price_snapshot IS NOT NULL AND usage_status='reported')),
+  CHECK(usage_status<>'reported' OR (input_tokens IS NOT NULL AND output_tokens IS NOT NULL))
+);
+CREATE INDEX model_usage_run_started ON model_usage_attempt(run_id,started_at,logical_call_id,attempt_number);
+CREATE TRIGGER model_usage_identity_immutable BEFORE UPDATE ON model_usage_attempt WHEN
+  NEW.attempt_id IS NOT OLD.attempt_id OR NEW.logical_call_id IS NOT OLD.logical_call_id OR NEW.attempt_number IS NOT OLD.attempt_number
+  OR NEW.run_id IS NOT OLD.run_id OR NEW.trace_id IS NOT OLD.trace_id OR NEW.role IS NOT OLD.role
+  OR NEW.provider IS NOT OLD.provider OR NEW.model IS NOT OLD.model OR NEW.started_at IS NOT OLD.started_at
+  BEGIN SELECT RAISE(ABORT,'usage_identity_immutable'); END;
+CREATE TRIGGER model_usage_observation_monotonic BEFORE UPDATE ON model_usage_attempt WHEN
+  NEW.observation_number<=OLD.observation_number OR OLD.usage_status='reported'
+  BEGIN SELECT RAISE(ABORT,'usage_observation_immutable'); END;
+CREATE TRIGGER model_usage_no_replace BEFORE INSERT ON model_usage_attempt WHEN
+  EXISTS(SELECT 1 FROM model_usage_attempt WHERE attempt_id=NEW.attempt_id OR (logical_call_id=NEW.logical_call_id AND attempt_number=NEW.attempt_number))
+  BEGIN SELECT RAISE(ABORT,'usage_identity_conflict'); END;
+CREATE TRIGGER model_usage_no_delete BEFORE DELETE ON model_usage_attempt
+  BEGIN SELECT RAISE(ABORT,'usage_delete_forbidden'); END;
+`;

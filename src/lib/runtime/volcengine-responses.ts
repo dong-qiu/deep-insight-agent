@@ -1,3 +1,4 @@
+import { beginUsageAttempt, readReportedUsage } from "./model-usage.js";
 /**
  * Narrow adapter for Volcengine's OpenAI Responses-compatible Coding Plan endpoint.
  *
@@ -133,6 +134,7 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 async function readResponsesStream(
   response: Response,
   signal?: AbortSignal,
+  observe?: (rawUsage: unknown) => void,
 ): Promise<{ body: ResponseBody; functionArguments: unknown; streamDiagnostic: Pick<VolcengineResponsesStreamDiagnostic, "sawDone" | "functionArgumentsDone"> }> {
   const reader = response.body?.getReader();
   if (!reader) throw new VolcengineResponsesError("Volcengine Responses 流式响应缺少 body");
@@ -233,19 +235,23 @@ async function readResponsesStream(
       if (!completedBody) throw completedProtocolError("Volcengine Responses 完成事件缺少 response");
       if (completed) throw completedProtocolError("Volcengine Responses 流式响应包含重复完成事件");
       completed = completedBody as ResponseBody;
+      observe?.(completed.usage);
       return;
     }
     if (event.type === "response.incomplete") {
       const body = asRecord(event.response) as ResponseBody | undefined;
       if (completed) throw completedProtocolError("Volcengine Responses 完成事件后收到矛盾终态");
+      observe?.(body?.usage);
       throw streamError("Volcengine Responses 流式请求未完成", "incomplete", false, body);
     }
     if (event.type === "response.failed") {
       if (completed) throw completedProtocolError("Volcengine Responses 完成事件后收到矛盾终态");
+      observe?.(asRecord(event.response)?.usage);
       throw streamError("Volcengine Responses 流式请求失败", "failed", false, asRecord(event.response) as ResponseBody | undefined);
     }
     if (event.type === "response.error" || event.type === "error") {
       if (completed) throw completedProtocolError("Volcengine Responses 完成事件后收到矛盾终态");
+      observe?.(asRecord(event.response)?.usage);
       throw streamError("Volcengine Responses 流式请求返回错误事件", "error", false, asRecord(event.response) as ResponseBody | undefined);
     }
   };
@@ -302,7 +308,9 @@ async function readResponsesStream(
 export async function callVolcengineResponses(
   request: VolcengineResponsesRequest,
 ): Promise<VolcengineResponsesResult> {
-  const response = await fetch(endpoint(request.baseUrl), {
+  const target = endpoint(request.baseUrl);
+  const attempt = beginUsageAttempt();
+  const response = await fetch(target, {
     method: "POST",
     // The admission check above applies to this request only. Node fetch strips Authorization on
     // a cross-origin redirect but still forwards the POST body, which contains prompts/source
@@ -342,7 +350,7 @@ export async function callVolcengineResponses(
     throw new VolcengineResponsesError(`Volcengine Responses 请求失败（HTTP ${response.status}）`, response.status);
   }
 
-  const { body, functionArguments, streamDiagnostic } = await readResponsesStream(response, request.signal);
+  const { body, functionArguments, streamDiagnostic } = await readResponsesStream(response, request.signal, attempt ? (raw) => attempt.observe(readReportedUsage(raw, "volcengine-responses"), true) : undefined);
   const usage = normalizeUsage(body);
   // A `response.completed` event is valid only when its own response status confirms completion.
   // Never allow contradictory, missing, or provider-private status text to carry schema-valid
