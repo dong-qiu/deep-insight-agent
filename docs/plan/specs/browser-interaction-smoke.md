@@ -37,4 +37,4 @@ Dependabot #373/#400/#401/#402 在排队，均与 package/lockfile 重叠；本�
 
 独立修复范围：认证 middleware 的会话 cookie 刷新、退出 server action 与在途 RSC/预取响应的竞争；验证退出响应与迟到响应的身份/时序及保护页面实际响应，增加确定性回归。历史发现时确切根因尚待确认。该修复另立 spec/PR，不在本 D4 修改页面、认证或 runtime，不改 reader/AI/schema/C2a。修复并整合后，重新运行同一零重试 smoke 与最终候选 full CI 才可解除交付阻塞。
 
-用户随后授权独立修复。认证修复见 [#409](https://github.com/dong-qiu/deep-insight-agent/pull/409) 与 [专属 spec](auth-logout-protection.md)，基于 main 8a96，只让 middleware 校验会话时停止写 session cookie；真实 Auth.js 四种迟到响应反例修前失败、修后通过。D4 以该独立修复分支为 stacked PR 基线，完整差异仍是上述十个测试/工具/文档文件。原严格登录、证据、图谱、窄屏断言保持不变；复验及最终 CI 证明见收据/PR。普通页面不再滚动延长 JWT 的行为取舍由认证 PR 单独交付。不将两个未合入 Draft 写成主干 TD-16 已关闭。
+用户随后授权独立修复。认证修复见 [#409](https://github.com/dong-qiu/deep-insight-agent/pull/409) 与 [专属 spec](auth-logout-protection.md)，基于 main 8a96，只让 middleware 校验会话时停止写 session cookie；真实 Auth.js 四种迟到响应反例修前失败、修后通过。D4 以该独立修复分支为测试差异基线，完整测试增量仍是上述十个测试/工具/文档文件。现有 CI 只监听以 main 为目标的 PR，#404 保留 main 目标并明确依赖 #409；因此相对 main 暂时包含独立认证六文件，认证先合入后的 D4 差异才恢复十文件。本 Session 不合并。原严格登录、证据、图谱、窄屏断言保持不变；复验及最终 CI 证明见收据/PR。普通页面不再滚动延长 JWT 的行为取舍由认证 PR 单独交付。不将两个未合入 Draft 写成主干 TD-16 已关闭。
