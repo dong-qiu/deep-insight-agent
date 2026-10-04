@@ -210,6 +210,13 @@ jobs:
         run: npm run test:e2e:built
         env:
           NEXT_TELEMETRY_DISABLED: "1"
+      # D4 reuses the same C5-verified production build; no second Next build.
+      - name: install smoke browser
+        run: npx playwright install --with-deps chromium
+      - name: browser interaction smoke
+        run: npm run test:browser:built
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
       # 供应链：整个 lockfile 的 high/critical 漏洞均阻断。开发/构建依赖同样会在 CI 与
       # 开发者机器执行，不能仅因不随生产镜像 ship 就忽略；Dependabot 负责提出升级，本门兜底。
       - name: npm audit (all deps, high+ blocking)
