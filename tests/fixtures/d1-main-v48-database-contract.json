@@ -1,0 +1,1862 @@
+{
+  "baseline": "c7648986d96e040dcad8c7e6dd01e75759c2bbee",
+  "description": "Synthetic fresh database from unchanged main runner, before D1 implementation; excludes applied_at timestamps",
+  "ledger": [
+    {
+      "version": "20260803_01_provenance_core",
+      "checksum": "69720a8660bf13a0a1bdb652648d131cc294f49d728a7d39a2db419a04eb98d4"
+    },
+    {
+      "version": "20260803_02_report_lifecycle",
+      "checksum": "007c6d89afadceeda51e6ff02772f89d234403c20ab92ec75938d4b4ebbf4119"
+    },
+    {
+      "version": "20260803_03_report_effect",
+      "checksum": "f50a4d52be58b102c78fcd88660e07d13b7702bae2470f7d0483e3c5f49e3705"
+    },
+    {
+      "version": "20260803_04_redaction_tombstone",
+      "checksum": "8a4bca92a54a5bfcee44e4b624eb0ceb72b3be45ab59a03cc2b248a1741fa715"
+    },
+    {
+      "version": "20260803_05_redaction_request",
+      "checksum": "2940500a649e181f6be36cc62d4e14994aaee69d1d08b01f979f73bdba2316bd"
+    },
+    {
+      "version": "20260803_06_provenance_facts",
+      "checksum": "554e06b02ea67ac1efdcc53b939b6e65a275da974fbffc94e73bb8bb2ddc0032"
+    },
+    {
+      "version": "20260803_07_deployment_record",
+      "checksum": "f059d1450c18eed4dfa0e147f4c51b0690051590f7476dd493e9016b4558b53c"
+    },
+    {
+      "version": "20260811_08_source_collect",
+      "checksum": "ef1bc00bc8ff3849c09580ad62f7d3faf0a4115e9ed95ecb6b9d10d1400deab8"
+    },
+    {
+      "version": "20260817_09_bounded_provenance_views",
+      "checksum": "0507752e65e95a114df73c9ede21fb081a6583019745a0d5fff03ce1b538718c"
+    },
+    {
+      "version": "20260817_10_bounded_provenance_view_index_fix",
+      "checksum": "5cec70cc3557050eaf47c108a4e2862cff21a1657e28b7e970ff6d7257f59c3c"
+    },
+    {
+      "version": "20260820_11_effect_event_link",
+      "checksum": "d0053b4794f599d7c1aac3d2195c332f2bfdd1a6b31ab29d2ed15a399924fdac"
+    },
+    {
+      "version": "20260823_12_source_credit_facts",
+      "checksum": "0ed0b07d790ec4ba5b334c36f0a53800cf6cfa24accbfe828ed700d357d8b68c"
+    },
+    {
+      "version": "20260823_13_source_credit_tenant_primary_keys",
+      "checksum": "f2312ddc8452a5a9769667acc9d2b14e533cc41f30c99db1170560074dd42134"
+    },
+    {
+      "version": "20260823_14_p1_metric_facts",
+      "checksum": "3c587f94b28cf81a66ec6dda6df5144ff1dd3cfc8fdc5a0494f9157ba2e0ce1d"
+    },
+    {
+      "version": "20260823_15_p1_metric_fact_contracts",
+      "checksum": "b91613110d35179bfb9a05c7ccd076775367d0566cf77391b633d1c1f758e875"
+    },
+    {
+      "version": "20260823_16_p1_metric_conflict_audit",
+      "checksum": "cb5d3d176ccea7c6465d347d57b78ae8a433d66acc1602d9a5f4d0d9a45e628b"
+    },
+    {
+      "version": "20260823_17_integrity_anchors",
+      "checksum": "8c0e75cece555b1823a8079e773330b16f76258d16f9b5df698d1346e0364d22"
+    },
+    {
+      "version": "20260823_18_integrity_anchor_immutability",
+      "checksum": "a754ee3097b61bb79a9737825184a5711929234b3aab335a527d433b703c8a7e"
+    },
+    {
+      "version": "20260824_19_integrity_anchor_recovery_material",
+      "checksum": "0690bcde379853ba24d9f4a2d363176b8b7f5793f7acab20f50feb62d42c1a76"
+    },
+    {
+      "version": "20260824_20_integrity_anchor_hardening",
+      "checksum": "06dcecaf499af5cafe3c8b3276420e88e89c7be761fd5f00302da7dbcfc23ba0"
+    },
+    {
+      "version": "20260824_21_integrity_anchor_tenant_reconcile_index",
+      "checksum": "be72995364fe5cc87ebe7dc874411d0d81d52aa469f4a86cf73b9db00ec1fc1f"
+    },
+    {
+      "version": "20260824_22_integrity_check_ledger",
+      "checksum": "23d68162f10821f4c778d5a0b30ad3715f4155eb3cc16a70cc732943a4a5eab7"
+    },
+    {
+      "version": "20260824_23_integrity_check_key_revocation",
+      "checksum": "ef110c6c7727f7b3ab73c66bd99c07b0711660584f504a8cb895686d8f56f596"
+    },
+    {
+      "version": "20260824_24_integrity_lifecycle",
+      "checksum": "ca97c89f8944c60764ac861bcc27c99ebd76320fe9d3274748c393fadc6aeb2b"
+    },
+    {
+      "version": "20260824_25_integrity_lifecycle_purge",
+      "checksum": "823f50166c20e130b58ff9cb1508848b4ba9330cf7fc45203aee5aa46f7a72b8"
+    },
+    {
+      "version": "20260825_26_integrity_lifecycle_completion_proof",
+      "checksum": "76795c272c9a69b3a30feee9f197a6e26ee8ea0e700ff624eb72298ecddbfc85"
+    },
+    {
+      "version": "20260825_27_integrity_lifecycle_registry_proof",
+      "checksum": "020e7f64c678116d1f904be918947b0cedbf227383935072d423a6ba9b85ffd7"
+    },
+    {
+      "version": "20260825_28_integrity_lifecycle_hold_and_tombstone_retention",
+      "checksum": "a706a169d7d20da46ed760f0ddb7b93a4ae5e5058e451d3fda0b9f3a2c2ceab7"
+    },
+    {
+      "version": "20260825_29_integrity_lifecycle_hold_tombstone_snapshot",
+      "checksum": "8f7d18874837e8b70a5a698e65d1bb951c69f2c8557dfd442ed58c6219177ecf"
+    },
+    {
+      "version": "20260825_30_integrity_lifecycle_external_hold",
+      "checksum": "f2ae91e6870e8c4d54cb3f95ef632788edbf2c8b2dc260023edc1a12deadd6ee"
+    },
+    {
+      "version": "20260825_31_integrity_daily_root_material_backfill",
+      "checksum": "aeb8cc487f12e6933a28e73188130be9ed01d84a22563c46360944d12cc1771c"
+    },
+    {
+      "version": "20260825_32_integrity_maintenance_lease",
+      "checksum": "b7f43a14e9ad97eafedaf835c11d9350f2688cf5a48f09b7881480b3316f9680"
+    },
+    {
+      "version": "20260826_33_dashboard_trace_read_model_v1",
+      "checksum": "a6f8acf6f3b9458b9644a05413e4b268868e9faf5d992472d3cef3541f577aad"
+    },
+    {
+      "version": "20260826_34_dashboard_cost_read_model_v1",
+      "checksum": "badbc1cb7c70b327428d992a3ddf642de7de2cb7376aa38f75676e41d0109712"
+    },
+    {
+      "version": "20260828_35_dashboard_late_visibility_and_dimensions",
+      "checksum": "e0ca19383046efbe678f9fb17ac9234c31a2abc23f69eb5cdd7283f2444b9734"
+    },
+    {
+      "version": "20260909_36_display_coverage_evidence",
+      "checksum": "f274856efe8f75562d50d20c2c42190f63ec785ce04a870241baf84062be64ac"
+    },
+    {
+      "version": "20260909_37_display_coverage_candidate_audit",
+      "checksum": "08f5698a43c90a0f8a4bebd4df0da77cb3278ddf7630f7b0364b3ebebfb93988"
+    },
+    {
+      "version": "20260909_38_statement_citation_binding",
+      "checksum": "15be32b33de361497361fab63c35edc430d8e2368f963e8e0524a9cb847cf6d0"
+    },
+    {
+      "version": "20260909_39_source_quote_projection",
+      "checksum": "02d3e4b10098ec6a211b0e5e26358cebdfb5955998774a2c3ca9d595bd42a808"
+    },
+    {
+      "version": "20260910_40_raw_archive_effect",
+      "checksum": "ff82df7aca75cb24785549c9ad727c87f147c4652e1628b21583d83530dfdfbb"
+    },
+    {
+      "version": "20260911_41_content_reader_eligibility",
+      "checksum": "ffeb5dde61f764db1f160f47a34ed86531e3856de5adfbb395bf04082ad22c50"
+    },
+    {
+      "version": "20260911_42_pending_raw_archive_reader_eligibility",
+      "checksum": "f4fe2d90ec4bd94766241ce38e6189370350d845b0e4e13fe4e643e6f7a529bd"
+    },
+    {
+      "version": "20260913_43_podcast_transcript_contracts",
+      "checksum": "27ddda98af4be7f07d060107c7b272ca17874ba330fc543447d5b0fba40989cb"
+    },
+    {
+      "version": "20260913_44_podcast_transcript_policy_version_immutability",
+      "checksum": "7fffa96b472a9640e4f8e07d8957d157497522a3a670c7916a727f09a0ee2468"
+    },
+    {
+      "version": "20260916_45_report_quality_review_trace_v1",
+      "checksum": "c667426fb9cf22b2d4b3688acdae08eb945e4ab1934c03500f9cdc3751673688"
+    },
+    {
+      "version": "20260924_46_reader_statement",
+      "checksum": "4d7534fa59da7fd92a3fed3ff5ea8ec19357115748c7e40f184f633db988e187"
+    },
+    {
+      "version": "20261003_47_report_redaction_boundary",
+      "checksum": "ad7e3de53688b145997047fa48881407dcb0b57d5718e896c84fc64754899284"
+    },
+    {
+      "version": "20261004_48_model_usage_attempt",
+      "checksum": "b53d8a92d3f7a1ac69c0dce20cb7f37e195966a128e843cc9b08ed97461a1a3c"
+    }
+  ],
+  "schema": [
+    {
+      "type": "index",
+      "name": "idx_analysis_batch_display_projection",
+      "tbl_name": "analysis_batch",
+      "sql": "CREATE INDEX idx_analysis_batch_display_projection ON analysis_batch(display_projection_version, id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_artifact_manifest_report",
+      "tbl_name": "artifact_manifest",
+      "sql": "CREATE INDEX idx_artifact_manifest_report ON artifact_manifest(tenant_id, report_id, committed_at)"
+    },
+    {
+      "type": "index",
+      "name": "idx_audit_at",
+      "tbl_name": "audit_log",
+      "sql": "CREATE INDEX idx_audit_at ON audit_log(at)"
+    },
+    {
+      "type": "index",
+      "name": "idx_batch_topic",
+      "tbl_name": "analysis_batch",
+      "sql": "CREATE INDEX idx_batch_topic ON analysis_batch(topic_id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_citation_ref",
+      "tbl_name": "citation",
+      "sql": "CREATE INDEX idx_citation_ref ON citation(citation_ref)"
+    },
+    {
+      "type": "index",
+      "name": "idx_content_reader_eligible",
+      "tbl_name": "content_item",
+      "sql": "CREATE INDEX idx_content_reader_eligible ON content_item(reader_eligible, fetched_at DESC)"
+    },
+    {
+      "type": "index",
+      "name": "idx_content_source",
+      "tbl_name": "content_item",
+      "sql": "CREATE INDEX idx_content_source ON content_item(source_id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_content_url",
+      "tbl_name": "content_item",
+      "sql": "CREATE UNIQUE INDEX idx_content_url ON content_item(url)"
+    },
+    {
+      "type": "index",
+      "name": "idx_cost_ledger_tenant_occurred_provider_model",
+      "tbl_name": "cost_ledger",
+      "sql": "CREATE INDEX idx_cost_ledger_tenant_occurred_provider_model ON cost_ledger(tenant_id,occurred_at,provider,model)"
+    },
+    {
+      "type": "index",
+      "name": "idx_cost_ledger_tenant_source_occurred",
+      "tbl_name": "cost_ledger",
+      "sql": "CREATE INDEX idx_cost_ledger_tenant_source_occurred ON cost_ledger(tenant_id,source_id,occurred_at DESC)"
+    },
+    {
+      "type": "index",
+      "name": "idx_cost_ledger_tenant_topic_occurred",
+      "tbl_name": "cost_ledger",
+      "sql": "CREATE INDEX idx_cost_ledger_tenant_topic_occurred ON cost_ledger(tenant_id,topic_id,occurred_at DESC)"
+    },
+    {
+      "type": "index",
+      "name": "idx_dashboard_cost_fact_v1_dimension_window",
+      "tbl_name": "dashboard_cost_fact_v1",
+      "sql": "CREATE INDEX idx_dashboard_cost_fact_v1_dimension_window ON dashboard_cost_fact_v1(tenant_id,projection_version,topic_id,source_id,pipeline_version,occurred_at,entry_id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_dashboard_cost_fact_v1_window",
+      "tbl_name": "dashboard_cost_fact_v1",
+      "sql": "CREATE INDEX idx_dashboard_cost_fact_v1_window ON dashboard_cost_fact_v1(tenant_id,projection_version,occurred_at,provider,model)"
+    },
+    {
+      "type": "index",
+      "name": "idx_dashboard_trace_fact_v1_dimension_window",
+      "tbl_name": "dashboard_trace_fact_v1",
+      "sql": "CREATE INDEX idx_dashboard_trace_fact_v1_dimension_window ON dashboard_trace_fact_v1(tenant_id,projection_version,topic_id,source_id,pipeline_version,occurred_at,trace_id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_dashboard_trace_fact_v1_kind_window",
+      "tbl_name": "dashboard_trace_fact_v1",
+      "sql": "CREATE INDEX idx_dashboard_trace_fact_v1_kind_window ON dashboard_trace_fact_v1(tenant_id,projection_version,fact_kind,occurred_at,trace_id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_dashboard_trace_fact_v1_terminal_window",
+      "tbl_name": "dashboard_trace_fact_v1",
+      "sql": "CREATE INDEX idx_dashboard_trace_fact_v1_terminal_window ON dashboard_trace_fact_v1(tenant_id,projection_version,fact_kind,event_type,occurred_at,trace_id,fact_id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_dashboard_trace_fact_v1_window",
+      "tbl_name": "dashboard_trace_fact_v1",
+      "sql": "CREATE INDEX idx_dashboard_trace_fact_v1_window ON dashboard_trace_fact_v1(tenant_id,projection_version,occurred_at,trace_id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_deployment_record_at",
+      "tbl_name": "deployment_record",
+      "sql": "CREATE INDEX idx_deployment_record_at ON deployment_record(deployed_at DESC)"
+    },
+    {
+      "type": "index",
+      "name": "idx_dispatch_claim",
+      "tbl_name": "generation_dispatch",
+      "sql": "CREATE INDEX idx_dispatch_claim ON generation_dispatch(state, lease_expires_at, created_at)"
+    },
+    {
+      "type": "index",
+      "name": "idx_display_coverage_audit_insight",
+      "tbl_name": "display_coverage_audit",
+      "sql": "CREATE INDEX idx_display_coverage_audit_insight ON display_coverage_audit(insight_id, created_at)"
+    },
+    {
+      "type": "index",
+      "name": "idx_display_coverage_candidate_audit_insight",
+      "tbl_name": "display_coverage_candidate_audit",
+      "sql": "CREATE INDEX idx_display_coverage_candidate_audit_insight ON display_coverage_candidate_audit(insight_id, created_at)"
+    },
+    {
+      "type": "index",
+      "name": "idx_followup_report",
+      "tbl_name": "followup_qa",
+      "sql": "CREATE INDEX idx_followup_report ON followup_qa(report_id, created_at)"
+    },
+    {
+      "type": "index",
+      "name": "idx_followup_thread",
+      "tbl_name": "followup_qa",
+      "sql": "CREATE INDEX idx_followup_thread ON followup_qa(thread_id, turn_index)"
+    },
+    {
+      "type": "index",
+      "name": "idx_funnel_event_conflict_tenant_event",
+      "tbl_name": "funnel_event_conflict",
+      "sql": "CREATE INDEX idx_funnel_event_conflict_tenant_event ON funnel_event_conflict(tenant_id,event_id,observed_at DESC)"
+    },
+    {
+      "type": "index",
+      "name": "idx_funnel_event_tenant_occurred",
+      "tbl_name": "funnel_event",
+      "sql": "CREATE INDEX idx_funnel_event_tenant_occurred ON funnel_event(tenant_id,occurred_at DESC)"
+    },
+    {
+      "type": "index",
+      "name": "idx_funnel_event_tenant_pipeline_occurred",
+      "tbl_name": "funnel_event",
+      "sql": "CREATE INDEX idx_funnel_event_tenant_pipeline_occurred ON funnel_event(tenant_id,pipeline_version,occurred_at DESC)"
+    },
+    {
+      "type": "index",
+      "name": "idx_funnel_event_tenant_report",
+      "tbl_name": "funnel_event",
+      "sql": "CREATE INDEX idx_funnel_event_tenant_report ON funnel_event(tenant_id,report_id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_funnel_event_tenant_source_occurred",
+      "tbl_name": "funnel_event",
+      "sql": "CREATE INDEX idx_funnel_event_tenant_source_occurred ON funnel_event(tenant_id,source_id,occurred_at DESC)"
+    },
+    {
+      "type": "index",
+      "name": "idx_funnel_event_trace_stage_attempt_type",
+      "tbl_name": "funnel_event",
+      "sql": "CREATE UNIQUE INDEX idx_funnel_event_trace_stage_attempt_type ON funnel_event(tenant_id,trace_id,stage,attempt,event_type)"
+    },
+    {
+      "type": "index",
+      "name": "idx_generation_anchor_effect_tenant_effect_artifact",
+      "tbl_name": "generation_anchor_effect",
+      "sql": "CREATE UNIQUE INDEX idx_generation_anchor_effect_tenant_effect_artifact ON generation_anchor_effect(tenant_id,generation_effect_id,artifact_id,artifact_version)"
+    },
+    {
+      "type": "index",
+      "name": "idx_generation_anchor_effect_tenant_reconcile",
+      "tbl_name": "generation_anchor_effect",
+      "sql": "CREATE INDEX idx_generation_anchor_effect_tenant_reconcile ON generation_anchor_effect(tenant_id,status,created_at)"
+    },
+    {
+      "type": "index",
+      "name": "idx_generation_edge_from",
+      "tbl_name": "generation_edge",
+      "sql": "CREATE INDEX idx_generation_edge_from ON generation_edge(from_type, from_key, trace_id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_generation_edge_to",
+      "tbl_name": "generation_edge",
+      "sql": "CREATE INDEX idx_generation_edge_to ON generation_edge(to_type, to_key, trace_id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_generation_edge_trace_from",
+      "tbl_name": "generation_edge",
+      "sql": "CREATE INDEX idx_generation_edge_trace_from ON generation_edge(trace_id, from_type, from_key, from_revision, event_id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_generation_edge_trace_to",
+      "tbl_name": "generation_edge",
+      "sql": "CREATE INDEX idx_generation_edge_trace_to ON generation_edge(trace_id, to_type, to_key, to_revision, event_id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_generation_effect_pending",
+      "tbl_name": "generation_effect",
+      "sql": "CREATE INDEX idx_generation_effect_pending ON generation_effect(status, created_at)"
+    },
+    {
+      "type": "index",
+      "name": "idx_generation_effect_raw_pending",
+      "tbl_name": "generation_effect",
+      "sql": "CREATE INDEX idx_generation_effect_raw_pending ON generation_effect(raw_content_id, status, created_at) WHERE kind='raw_archive'"
+    },
+    {
+      "type": "index",
+      "name": "idx_generation_effect_trace_event",
+      "tbl_name": "generation_effect",
+      "sql": "CREATE INDEX idx_generation_effect_trace_event ON generation_effect(trace_id, event_id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_generation_entity_ref_entity",
+      "tbl_name": "generation_entity_ref",
+      "sql": "CREATE INDEX idx_generation_entity_ref_entity ON generation_entity_ref(entity_type, entity_key, trace_id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_generation_entity_ref_trace_entity_event",
+      "tbl_name": "generation_entity_ref",
+      "sql": "CREATE INDEX idx_generation_entity_ref_trace_entity_event ON generation_entity_ref(trace_id, entity_type, entity_key, revision, event_id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_generation_entity_ref_trace_event",
+      "tbl_name": "generation_entity_ref",
+      "sql": "CREATE INDEX idx_generation_entity_ref_trace_event ON generation_entity_ref(trace_id, event_id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_generation_event_id",
+      "tbl_name": "generation_event",
+      "sql": "CREATE INDEX idx_generation_event_id ON generation_event(id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_generation_event_trace_sequence",
+      "tbl_name": "generation_event",
+      "sql": "CREATE INDEX idx_generation_event_trace_sequence ON generation_event(trace_id, sequence)"
+    },
+    {
+      "type": "index",
+      "name": "idx_generation_lease_active",
+      "tbl_name": "generation_lease",
+      "sql": "CREATE UNIQUE INDEX idx_generation_lease_active ON generation_lease(active_key) WHERE state IN ('reserved','owned')"
+    },
+    {
+      "type": "index",
+      "name": "idx_generation_trace_source_started",
+      "tbl_name": "generation_trace",
+      "sql": "CREATE INDEX idx_generation_trace_source_started ON generation_trace(source_id, started_at DESC)"
+    },
+    {
+      "type": "index",
+      "name": "idx_generation_trace_topic_started",
+      "tbl_name": "generation_trace",
+      "sql": "CREATE INDEX idx_generation_trace_topic_started ON generation_trace(topic_id, started_at DESC)"
+    },
+    {
+      "type": "index",
+      "name": "idx_insight_batch",
+      "tbl_name": "insight",
+      "sql": "CREATE INDEX idx_insight_batch ON insight(batch_id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_insight_batch_statement_citation",
+      "tbl_name": "insight",
+      "sql": "CREATE INDEX idx_insight_batch_statement_citation ON insight(batch_id, statement_citation_index)"
+    },
+    {
+      "type": "index",
+      "name": "idx_integrity_audit_pending",
+      "tbl_name": "integrity_audit_event",
+      "sql": "CREATE INDEX idx_integrity_audit_pending ON integrity_audit_event(tenant_id, event_type, created_at DESC)"
+    },
+    {
+      "type": "index",
+      "name": "idx_integrity_check_tenant_artifact_checked",
+      "tbl_name": "integrity_check",
+      "sql": "CREATE INDEX idx_integrity_check_tenant_artifact_checked ON integrity_check(tenant_id,artifact_id,artifact_version,checked_at DESC)"
+    },
+    {
+      "type": "index",
+      "name": "idx_integrity_daily_root_material_report",
+      "tbl_name": "integrity_daily_root_material",
+      "sql": "CREATE INDEX idx_integrity_daily_root_material_report ON integrity_daily_root_material(tenant_id,report_id,utc_date)"
+    },
+    {
+      "type": "index",
+      "name": "idx_integrity_legal_hold_report",
+      "tbl_name": "integrity_legal_hold_event",
+      "sql": "CREATE INDEX idx_integrity_legal_hold_report ON integrity_legal_hold_event(tenant_id,report_id,hold_id,occurred_at DESC)"
+    },
+    {
+      "type": "index",
+      "name": "idx_integrity_lifecycle_audit_report",
+      "tbl_name": "integrity_lifecycle_audit",
+      "sql": "CREATE INDEX idx_integrity_lifecycle_audit_report ON integrity_lifecycle_audit(tenant_id,report_id,created_at DESC)"
+    },
+    {
+      "type": "index",
+      "name": "idx_integrity_report_lifecycle_reader",
+      "tbl_name": "integrity_report_lifecycle",
+      "sql": "CREATE INDEX idx_integrity_report_lifecycle_reader ON integrity_report_lifecycle(tenant_id,reader_state,report_id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_metric_fact_conflict_tenant_kind_business",
+      "tbl_name": "metric_fact_conflict",
+      "sql": "CREATE INDEX idx_metric_fact_conflict_tenant_kind_business ON metric_fact_conflict(tenant_id,fact_kind,business_id,observed_at DESC)"
+    },
+    {
+      "type": "index",
+      "name": "idx_metric_late_event_tenant_occurred",
+      "tbl_name": "metric_late_event",
+      "sql": "CREATE INDEX idx_metric_late_event_tenant_occurred ON metric_late_event(tenant_id,occurred_at DESC)"
+    },
+    {
+      "type": "index",
+      "name": "idx_metric_late_reconciliation_tenant_event",
+      "tbl_name": "metric_late_reconciliation",
+      "sql": "CREATE INDEX idx_metric_late_reconciliation_tenant_event ON metric_late_reconciliation(tenant_id,fact_kind,event_id,recorded_at DESC)"
+    },
+    {
+      "type": "index",
+      "name": "idx_metric_rollup_tenant_grain_bucket",
+      "tbl_name": "metric_rollup",
+      "sql": "CREATE INDEX idx_metric_rollup_tenant_grain_bucket ON metric_rollup(tenant_id,grain,bucket_start DESC)"
+    },
+    {
+      "type": "index",
+      "name": "idx_metric_rollup_tenant_grain_source_bucket",
+      "tbl_name": "metric_rollup",
+      "sql": "CREATE INDEX idx_metric_rollup_tenant_grain_source_bucket ON metric_rollup(tenant_id,grain,source_id,bucket_start DESC)"
+    },
+    {
+      "type": "index",
+      "name": "idx_metric_rollup_tenant_grain_topic_bucket",
+      "tbl_name": "metric_rollup",
+      "sql": "CREATE INDEX idx_metric_rollup_tenant_grain_topic_bucket ON metric_rollup(tenant_id,grain,topic_id,bucket_start DESC)"
+    },
+    {
+      "type": "index",
+      "name": "idx_opportunity_direction",
+      "tbl_name": "technology_opportunity",
+      "sql": "CREATE INDEX idx_opportunity_direction ON technology_opportunity(direction_id, status)"
+    },
+    {
+      "type": "index",
+      "name": "idx_opportunity_topic_priority",
+      "tbl_name": "technology_opportunity",
+      "sql": "CREATE INDEX idx_opportunity_topic_priority ON technology_opportunity(topic_id, priority_score DESC)"
+    },
+    {
+      "type": "index",
+      "name": "idx_provenance_redaction_active",
+      "tbl_name": "provenance_redaction",
+      "sql": "CREATE INDEX idx_provenance_redaction_active ON provenance_redaction(entity_key, effective_at, expiry_at)"
+    },
+    {
+      "type": "index",
+      "name": "idx_provenance_redaction_request_status",
+      "tbl_name": "provenance_redaction_request",
+      "sql": "CREATE INDEX idx_provenance_redaction_request_status ON provenance_redaction_request(status, created_at)"
+    },
+    {
+      "type": "index",
+      "name": "idx_provenance_revision_entity",
+      "tbl_name": "provenance_revision",
+      "sql": "CREATE INDEX idx_provenance_revision_entity ON provenance_revision(entity_type, entity_key, captured_at DESC)"
+    },
+    {
+      "type": "index",
+      "name": "idx_report_daily_topic_freshness",
+      "tbl_name": "report",
+      "sql": "CREATE INDEX idx_report_daily_topic_freshness ON report(topic_id,type,status,generated_at DESC)"
+    },
+    {
+      "type": "index",
+      "name": "idx_report_index_date",
+      "tbl_name": "report_index",
+      "sql": "CREATE INDEX idx_report_index_date  ON report_index(date)"
+    },
+    {
+      "type": "index",
+      "name": "idx_report_index_topic",
+      "tbl_name": "report_index",
+      "sql": "CREATE INDEX idx_report_index_topic ON report_index(topic_id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_report_review_snapshot_trace",
+      "tbl_name": "report_review_snapshot",
+      "sql": "CREATE INDEX idx_report_review_snapshot_trace ON report_review_snapshot(trace_id, created_at DESC)"
+    },
+    {
+      "type": "index",
+      "name": "idx_report_selection_decision_report_rank",
+      "tbl_name": "report_selection_decision",
+      "sql": "CREATE INDEX idx_report_selection_decision_report_rank ON report_selection_decision(report_id, decision, published_rank)"
+    },
+    {
+      "type": "index",
+      "name": "idx_report_status",
+      "tbl_name": "report",
+      "sql": "CREATE INDEX idx_report_status ON report(status)"
+    },
+    {
+      "type": "index",
+      "name": "idx_report_topic",
+      "tbl_name": "report",
+      "sql": "CREATE INDEX idx_report_topic  ON report(topic_id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_run_kind",
+      "tbl_name": "run",
+      "sql": "CREATE INDEX idx_run_kind   ON run(kind)"
+    },
+    {
+      "type": "index",
+      "name": "idx_run_kind_started",
+      "tbl_name": "run",
+      "sql": "CREATE INDEX idx_run_kind_started ON run(kind, started_at)"
+    },
+    {
+      "type": "index",
+      "name": "idx_run_started",
+      "tbl_name": "run",
+      "sql": "CREATE INDEX idx_run_started      ON run(started_at)"
+    },
+    {
+      "type": "index",
+      "name": "idx_run_status",
+      "tbl_name": "run",
+      "sql": "CREATE INDEX idx_run_status ON run(status)"
+    },
+    {
+      "type": "index",
+      "name": "idx_run_trace",
+      "tbl_name": "run",
+      "sql": "CREATE INDEX idx_run_trace ON run(trace_id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_source_credit_conflict_tenant_event",
+      "tbl_name": "source_credit_conflict",
+      "sql": "CREATE INDEX idx_source_credit_conflict_tenant_event ON source_credit_conflict(tenant_id, event_id, observed_at DESC)"
+    },
+    {
+      "type": "index",
+      "name": "idx_source_credit_event_tenant_occurred",
+      "tbl_name": "source_credit_event",
+      "sql": "CREATE INDEX idx_source_credit_event_tenant_occurred ON source_credit_event(tenant_id, occurred_at DESC)"
+    },
+    {
+      "type": "index",
+      "name": "idx_source_credit_event_tenant_trace",
+      "tbl_name": "source_credit_event",
+      "sql": "CREATE INDEX idx_source_credit_event_tenant_trace ON source_credit_event(tenant_id, trace_id, occurred_at DESC)"
+    },
+    {
+      "type": "index",
+      "name": "idx_source_credit_fact_tenant_source_event",
+      "tbl_name": "source_credit_fact",
+      "sql": "CREATE INDEX idx_source_credit_fact_tenant_source_event ON source_credit_fact(tenant_id, source_id, event_id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_source_credit_late_event_tenant_lateness",
+      "tbl_name": "source_credit_late_event",
+      "sql": "CREATE INDEX idx_source_credit_late_event_tenant_lateness ON source_credit_late_event(tenant_id, lateness, recorded_at DESC)"
+    },
+    {
+      "type": "index",
+      "name": "idx_source_credit_late_reconciliation_tenant_event",
+      "tbl_name": "source_credit_late_reconciliation",
+      "sql": "CREATE INDEX idx_source_credit_late_reconciliation_tenant_event ON source_credit_late_reconciliation(tenant_id, event_id, recorded_at DESC)"
+    },
+    {
+      "type": "index",
+      "name": "idx_tech_lead_latest",
+      "tbl_name": "tech_lead",
+      "sql": "CREATE INDEX idx_tech_lead_latest ON tech_lead(latest_evidence_at DESC)"
+    },
+    {
+      "type": "index",
+      "name": "idx_tech_lead_topic_score",
+      "tbl_name": "tech_lead",
+      "sql": "CREATE INDEX idx_tech_lead_topic_score ON tech_lead(topic_id, score DESC)"
+    },
+    {
+      "type": "index",
+      "name": "idx_topic_direction_topic",
+      "tbl_name": "topic_direction",
+      "sql": "CREATE INDEX idx_topic_direction_topic ON topic_direction(topic_id, status, horizon)"
+    },
+    {
+      "type": "index",
+      "name": "idx_trace_request_idempotency",
+      "tbl_name": "generation_trace_request",
+      "sql": "CREATE INDEX idx_trace_request_idempotency ON generation_trace_request(idempotency_key_hash, retained_until)"
+    },
+    {
+      "type": "index",
+      "name": "idx_transcript_acquisition_conflict_event",
+      "tbl_name": "transcript_acquisition_conflict",
+      "sql": "CREATE INDEX idx_transcript_acquisition_conflict_event ON transcript_acquisition_conflict(event_key, observed_at DESC)"
+    },
+    {
+      "type": "index",
+      "name": "idx_transcript_acquisition_episode",
+      "tbl_name": "transcript_acquisition_fact",
+      "sql": "CREATE INDEX idx_transcript_acquisition_episode ON transcript_acquisition_fact(source_id, canonical_episode_url, attempt)"
+    },
+    {
+      "type": "index",
+      "name": "idx_transcript_acquisition_source_time",
+      "tbl_name": "transcript_acquisition_fact",
+      "sql": "CREATE INDEX idx_transcript_acquisition_source_time ON transcript_acquisition_fact(source_id, occurred_at DESC)"
+    },
+    {
+      "type": "index",
+      "name": "idx_validator_result_tenant_occurred",
+      "tbl_name": "validator_result_fact",
+      "sql": "CREATE INDEX idx_validator_result_tenant_occurred ON validator_result_fact(tenant_id,occurred_at DESC)"
+    },
+    {
+      "type": "index",
+      "name": "idx_validator_result_tenant_source_occurred",
+      "tbl_name": "validator_result_fact",
+      "sql": "CREATE INDEX idx_validator_result_tenant_source_occurred ON validator_result_fact(tenant_id,source_id,occurred_at DESC)"
+    },
+    {
+      "type": "index",
+      "name": "idx_validator_result_tenant_topic_occurred",
+      "tbl_name": "validator_result_fact",
+      "sql": "CREATE INDEX idx_validator_result_tenant_topic_occurred ON validator_result_fact(tenant_id,topic_id,occurred_at DESC)"
+    },
+    {
+      "type": "index",
+      "name": "idx_validator_result_tenant_validator_reason_occurred",
+      "tbl_name": "validator_result_fact",
+      "sql": "CREATE INDEX idx_validator_result_tenant_validator_reason_occurred ON validator_result_fact(tenant_id,validator,reason_code,occurred_at)"
+    },
+    {
+      "type": "index",
+      "name": "model_usage_run_started",
+      "tbl_name": "model_usage_attempt",
+      "sql": "CREATE INDEX model_usage_run_started ON model_usage_attempt(run_id,started_at,logical_call_id,attempt_number)"
+    },
+    {
+      "type": "table",
+      "name": "analysis_batch",
+      "tbl_name": "analysis_batch",
+      "sql": "CREATE TABLE analysis_batch (\n  id                   TEXT PRIMARY KEY,\n  topic_id             TEXT NOT NULL REFERENCES topic(id),\n  time_window          TEXT NOT NULL,\n  status               TEXT NOT NULL CHECK (status IN ('done','failed')),\n  no_significant_event INTEGER NOT NULL DEFAULT 0,\n  display_coverage_state TEXT NOT NULL DEFAULT 'legacy' CHECK (display_coverage_state IN ('legacy','audited')),\n  -- v6 source-quote projection. Existing batches stay legacy and are excluded from reader paths.\n  display_projection_version TEXT NOT NULL DEFAULT 'legacy' CHECK (display_projection_version IN ('legacy','source_quote_v1')),\n  created_at           TEXT NOT NULL DEFAULT (datetime('now')),\n  CHECK (NOT (no_significant_event = 1 AND status <> 'done'))\n)"
+    },
+    {
+      "type": "table",
+      "name": "analysis_cache",
+      "tbl_name": "analysis_cache",
+      "sql": "CREATE TABLE analysis_cache (\n  key            TEXT PRIMARY KEY,            -- sha256(analyzer_version ⊥ topic_id ⊥ content_hash)\n  topic_id       TEXT NOT NULL,\n  content_hash   TEXT NOT NULL,\n  insights_json  TEXT NOT NULL,               -- 该 item 的单源洞察数组（首写定；空数组=分析了但没产出）\n  hit_count      INTEGER NOT NULL DEFAULT 0,  -- 同键重复写入次数 = would-be 命中（切片1 命中率度量）\n  created_at     TEXT NOT NULL DEFAULT (datetime('now')),\n  last_seen      TEXT NOT NULL DEFAULT (datetime('now'))\n)"
+    },
+    {
+      "type": "table",
+      "name": "app_user",
+      "tbl_name": "app_user",
+      "sql": "CREATE TABLE app_user (\n  email         TEXT PRIMARY KEY,\n  password_hash TEXT NOT NULL,\n  role          TEXT NOT NULL CHECK (role IN ('admin','viewer')),\n  name          TEXT,\n  created_at    TEXT NOT NULL DEFAULT (datetime('now'))\n)"
+    },
+    {
+      "type": "table",
+      "name": "artifact_manifest",
+      "tbl_name": "artifact_manifest",
+      "sql": "CREATE TABLE artifact_manifest (\n  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),\n  artifact_id TEXT NOT NULL,\n  artifact_version TEXT NOT NULL,\n  report_id TEXT NOT NULL REFERENCES report(id),\n  manifest_canonical TEXT NOT NULL,\n  manifest_hash TEXT NOT NULL,\n  content_hash TEXT NOT NULL,\n  content_length INTEGER NOT NULL,\n  media_type TEXT NOT NULL,\n  anchor_object_key TEXT NOT NULL,\n  anchor_provider_version_id TEXT,\n  anchor_payload_hash TEXT,\n  anchor_signature TEXT,\n  anchor_key_id TEXT,\n  anchor_issued_at TEXT,\n  committed_at TEXT, anchor_algorithm TEXT, manifest_signature TEXT, manifest_key_id TEXT, manifest_algorithm TEXT, manifest_issued_at TEXT, retain_until TEXT,\n  PRIMARY KEY(tenant_id, artifact_id, artifact_version),\n  UNIQUE(tenant_id, report_id, artifact_id, artifact_version),\n  UNIQUE(tenant_id, manifest_hash)\n)"
+    },
+    {
+      "type": "table",
+      "name": "audit_log",
+      "tbl_name": "audit_log",
+      "sql": "CREATE TABLE audit_log (\n  id     INTEGER PRIMARY KEY AUTOINCREMENT,\n  at     TEXT NOT NULL DEFAULT (datetime('now')),\n  actor  TEXT,                 -- 用户 / 系统标识\n  action TEXT NOT NULL,        -- login / config_change / source_add / report_gen / push / delete ...\n  target TEXT,                 -- 关联对象\n  detail TEXT                  -- JSON 附加（调用方负责脱敏后再传入）\n)"
+    },
+    {
+      "type": "table",
+      "name": "citation",
+      "tbl_name": "citation",
+      "sql": "CREATE TABLE citation (\n  insight_id      TEXT NOT NULL REFERENCES insight(id),\n  citation_index  INTEGER NOT NULL,\n  content_item_id TEXT NOT NULL,\n  citation_ref    TEXT NOT NULL DEFAULT '',\n  claim           TEXT NOT NULL DEFAULT '',\n  -- NULL is a legacy/missing value. A new analyzer writes an explicit JSON status, including none.\n  speaker_attribution TEXT,\n  quote           TEXT NOT NULL,\n  locator         TEXT NOT NULL,\n  PRIMARY KEY (insight_id, citation_index)\n)"
+    },
+    {
+      "type": "table",
+      "name": "citation_check",
+      "tbl_name": "citation_check",
+      "sql": "CREATE TABLE citation_check (\n  batch_id            TEXT NOT NULL REFERENCES analysis_batch(id),\n  insight_id          TEXT NOT NULL,\n  citation_index      INTEGER NOT NULL,\n  reachability        TEXT NOT NULL CHECK (reachability IN ('pass','fail')),\n  reachability_reason TEXT NOT NULL CHECK (reachability_reason IN ('ok','source_not_found','source_unreachable','quote_not_in_source')),\n  consistency         TEXT NOT NULL CHECK (consistency IN ('support','not_support','uncertain','not_evaluated')),\n  consistency_reason  TEXT NOT NULL CHECK (consistency_reason IN ('ok','out_of_context','exaggeration','misattribution','speaker_attribution_unknown','uncertain','not_evaluated')),\n  verdict             TEXT NOT NULL CHECK (verdict IN ('pass','blocked','flagged')),\n  PRIMARY KEY (batch_id, insight_id, citation_index)\n)"
+    },
+    {
+      "type": "table",
+      "name": "consistency_cache",
+      "tbl_name": "consistency_cache",
+      "sql": "CREATE TABLE consistency_cache (\n  key                 TEXT PRIMARY KEY,\n  consistency         TEXT NOT NULL CHECK (consistency IN ('support','not_support','uncertain')),\n  consistency_reason  TEXT NOT NULL,\n  created_at          TEXT NOT NULL DEFAULT (datetime('now'))\n)"
+    },
+    {
+      "type": "table",
+      "name": "content_item",
+      "tbl_name": "content_item",
+      "sql": "CREATE TABLE content_item (\n  id           TEXT PRIMARY KEY,\n  source_id    TEXT NOT NULL REFERENCES source(id),\n  url          TEXT NOT NULL,\n  title        TEXT NOT NULL,\n  author       TEXT,\n  published_at TEXT,\n  fetched_at   TEXT NOT NULL,\n  language     TEXT NOT NULL CHECK (language IN ('zh','en','mixed')),\n  topic_ids    TEXT NOT NULL DEFAULT '[]',\n  tags         TEXT NOT NULL DEFAULT '[]',\n  body         TEXT NOT NULL,\n  body_kind    TEXT NOT NULL DEFAULT 'article' CHECK (body_kind IN ('article','show_notes','transcript')),\n  speaker_map_status TEXT NOT NULL DEFAULT 'not_applicable' CHECK (speaker_map_status IN ('not_applicable','unknown','verified')),\n  speaker_map_ref TEXT,\n  raw_ref      TEXT NOT NULL,\n  -- External raw archives must verify before the row reaches any reader.\n  reader_eligible INTEGER NOT NULL DEFAULT 1 CHECK (reader_eligible IN (0,1)),\n  content_hash TEXT NOT NULL,\n  fetch_status TEXT NOT NULL CHECK (fetch_status IN ('ok','partial')),\n  CHECK (\n    (body_kind = 'transcript' AND speaker_map_status IN ('unknown','verified'))\n    OR (body_kind <> 'transcript' AND speaker_map_status = 'not_applicable' AND speaker_map_ref IS NULL)\n  ),\n  CHECK (speaker_map_status <> 'verified' OR speaker_map_ref IS NOT NULL)\n)"
+    },
+    {
+      "type": "table",
+      "name": "cost_ledger",
+      "tbl_name": "cost_ledger",
+      "sql": "CREATE TABLE cost_ledger (\n  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'), entry_id TEXT NOT NULL,\n  trace_id TEXT NOT NULL, stage TEXT NOT NULL, attempt INTEGER NOT NULL CHECK(attempt > 0),\n  pipeline_version TEXT NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL, currency TEXT NOT NULL,\n  amount_minor INTEGER, cost_status TEXT NOT NULL CHECK(cost_status IN ('known','unknown')),\n  input_tokens INTEGER NOT NULL DEFAULT 0 CHECK(input_tokens >= 0), output_tokens INTEGER NOT NULL DEFAULT 0 CHECK(output_tokens >= 0),\n  occurred_at TEXT NOT NULL, ingested_at TEXT NOT NULL, schema_version TEXT NOT NULL CHECK(schema_version = 'cost-ledger-v1'),\n  producer_version TEXT NOT NULL, semantic_payload_hash TEXT NOT NULL, topic_id TEXT, source_id TEXT,\n  PRIMARY KEY(tenant_id,entry_id)\n)"
+    },
+    {
+      "type": "table",
+      "name": "dashboard_cost_fact_v1",
+      "tbl_name": "dashboard_cost_fact_v1",
+      "sql": "CREATE TABLE dashboard_cost_fact_v1 (\n  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),\n  entry_id TEXT NOT NULL,\n  trace_id TEXT NOT NULL,\n  stage TEXT NOT NULL,\n  pipeline_version TEXT NOT NULL,\n  provider TEXT NOT NULL,\n  model TEXT NOT NULL,\n  currency TEXT NOT NULL,\n  amount_minor INTEGER,\n  cost_status TEXT NOT NULL CHECK(cost_status IN ('known','unknown')),\n  occurred_at TEXT NOT NULL,\n  projection_version TEXT NOT NULL CHECK(projection_version = 'dashboard-cost-v1'), topic_id TEXT NOT NULL DEFAULT '', source_id TEXT NOT NULL DEFAULT '',\n  PRIMARY KEY(tenant_id,entry_id)\n)"
+    },
+    {
+      "type": "table",
+      "name": "dashboard_trace_fact_v1",
+      "tbl_name": "dashboard_trace_fact_v1",
+      "sql": "CREATE TABLE dashboard_trace_fact_v1 (\n  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),\n  fact_kind TEXT NOT NULL CHECK(fact_kind IN ('funnel','validator')),\n  fact_id TEXT NOT NULL,\n  trace_id TEXT NOT NULL,\n  attempt INTEGER NOT NULL CHECK(attempt > 0),\n  stage TEXT NOT NULL,\n  event_type TEXT NOT NULL CHECK(event_type IN ('entered','terminal','validator_result')),\n  pipeline_version TEXT NOT NULL,\n  validator TEXT NOT NULL DEFAULT '',\n  rule_version TEXT NOT NULL DEFAULT '',\n  reason_code TEXT NOT NULL DEFAULT '',\n  severity TEXT NOT NULL DEFAULT '',\n  terminal INTEGER NOT NULL DEFAULT 0 CHECK(terminal IN (0,1)),\n  occurred_at TEXT NOT NULL,\n  projection_version TEXT NOT NULL CHECK(projection_version = 'dashboard-trace-v1'), topic_id TEXT NOT NULL DEFAULT '', source_id TEXT NOT NULL DEFAULT '',\n  PRIMARY KEY(tenant_id,fact_kind,fact_id)\n)"
+    },
+    {
+      "type": "table",
+      "name": "deployment_record",
+      "tbl_name": "deployment_record",
+      "sql": "CREATE TABLE deployment_record (id TEXT PRIMARY KEY,image_digest TEXT NOT NULL,git_sha TEXT NOT NULL,deployed_at TEXT NOT NULL,actor TEXT NOT NULL)"
+    },
+    {
+      "type": "table",
+      "name": "display_coverage_audit",
+      "tbl_name": "display_coverage_audit",
+      "sql": "CREATE TABLE display_coverage_audit (\n  batch_id        TEXT NOT NULL REFERENCES analysis_batch(id),\n  insight_id      TEXT NOT NULL REFERENCES insight(id),\n  candidate_id    TEXT NOT NULL,\n  gate_version    TEXT NOT NULL,\n  terminal_reason TEXT NOT NULL,\n  prompt_version  TEXT NOT NULL,\n  input_hash      TEXT NOT NULL,\n  validator_model TEXT NOT NULL,\n  decision        TEXT NOT NULL,\n  created_at      TEXT NOT NULL,\n  PRIMARY KEY (batch_id, insight_id)\n)"
+    },
+    {
+      "type": "table",
+      "name": "display_coverage_candidate_audit",
+      "tbl_name": "display_coverage_candidate_audit",
+      "sql": "CREATE TABLE display_coverage_candidate_audit (\n  batch_id        TEXT NOT NULL REFERENCES analysis_batch(id),\n  candidate_id    TEXT NOT NULL,\n  insight_id      TEXT REFERENCES insight(id),\n  gate_version    TEXT NOT NULL,\n  terminal_reason TEXT NOT NULL,\n  prompt_version  TEXT NOT NULL,\n  input_hash      TEXT NOT NULL,\n  validator_model TEXT NOT NULL,\n  decision        TEXT NOT NULL,\n  created_at      TEXT NOT NULL,\n  PRIMARY KEY (batch_id, candidate_id)\n)"
+    },
+    {
+      "type": "table",
+      "name": "email_recipient",
+      "tbl_name": "email_recipient",
+      "sql": "CREATE TABLE email_recipient (\n  email      TEXT PRIMARY KEY,\n  label      TEXT,\n  enabled    INTEGER NOT NULL DEFAULT 1,\n  created_at TEXT NOT NULL DEFAULT (datetime('now'))\n)"
+    },
+    {
+      "type": "table",
+      "name": "followup_qa",
+      "tbl_name": "followup_qa",
+      "sql": "CREATE TABLE followup_qa (\n  id             TEXT PRIMARY KEY,\n  report_id      TEXT NOT NULL REFERENCES report(id),\n  thread_id      TEXT NOT NULL,\n  turn_index     INTEGER NOT NULL DEFAULT 0,\n  question       TEXT NOT NULL,\n  answer_md      TEXT NOT NULL,\n  citations_used TEXT NOT NULL DEFAULT '[]',\n  validation     TEXT NOT NULL DEFAULT '{}',\n  cost           TEXT NOT NULL,\n  status         TEXT NOT NULL CHECK (status IN ('done','failed')),\n  created_at     TEXT NOT NULL DEFAULT (datetime('now'))\n)"
+    },
+    {
+      "type": "table",
+      "name": "funnel_event",
+      "tbl_name": "funnel_event",
+      "sql": "CREATE TABLE funnel_event (\n  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'), event_id TEXT NOT NULL,\n  trace_id TEXT NOT NULL, run_id TEXT, report_id TEXT, topic_id TEXT, source_id TEXT, stage TEXT NOT NULL,\n  event_type TEXT NOT NULL CHECK(event_type IN ('entered','terminal')), attempt INTEGER NOT NULL CHECK(attempt > 0),\n  pipeline_version TEXT NOT NULL, skip_reason_code TEXT, reason_code TEXT,\n  occurred_at TEXT NOT NULL, ingested_at TEXT NOT NULL, schema_version TEXT NOT NULL CHECK(schema_version = 'funnel-v1'),\n  producer_version TEXT NOT NULL, semantic_payload_hash TEXT NOT NULL,\n  PRIMARY KEY(tenant_id,event_id)\n)"
+    },
+    {
+      "type": "table",
+      "name": "funnel_event_conflict",
+      "tbl_name": "funnel_event_conflict",
+      "sql": "CREATE TABLE funnel_event_conflict (\n  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'), id TEXT NOT NULL, event_id TEXT NOT NULL,\n  trace_id TEXT NOT NULL, stage TEXT NOT NULL, attempt INTEGER NOT NULL, event_type TEXT NOT NULL,\n  existing_semantic_payload_hash TEXT, received_semantic_payload_hash TEXT NOT NULL, observed_at TEXT NOT NULL,\n  PRIMARY KEY(tenant_id,id)\n)"
+    },
+    {
+      "type": "table",
+      "name": "generation_anchor_effect",
+      "tbl_name": "generation_anchor_effect",
+      "sql": "CREATE TABLE generation_anchor_effect (\n      id TEXT PRIMARY KEY,\n      generation_effect_id TEXT NOT NULL REFERENCES generation_effect(id),\n      tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),\n      report_id TEXT NOT NULL REFERENCES report(id),\n      artifact_id TEXT NOT NULL,\n      artifact_version TEXT NOT NULL,\n      manifest_hash TEXT NOT NULL,\n      manifest_canonical TEXT NOT NULL,\n      content_hash TEXT NOT NULL,\n      content_length INTEGER NOT NULL,\n      media_type TEXT NOT NULL,\n      anchor_idempotency_key TEXT NOT NULL UNIQUE,\n      object_key TEXT NOT NULL,\n      anchor_payload TEXT NOT NULL,\n      anchor_provider_version_id TEXT,\n      status TEXT NOT NULL CHECK(status IN ('planned','anchor_written','committed','unknown','failed')),\n      retry_count INTEGER NOT NULL DEFAULT 0,\n      error TEXT,\n      created_at TEXT NOT NULL,\n      updated_at TEXT NOT NULL,\n      manifest_signature TEXT,\n      manifest_key_id TEXT,\n      manifest_algorithm TEXT,\n      manifest_issued_at TEXT,\n      retain_until TEXT,\n      UNIQUE(generation_effect_id, artifact_id, artifact_version)\n    )"
+    },
+    {
+      "type": "table",
+      "name": "generation_dispatch",
+      "tbl_name": "generation_dispatch",
+      "sql": "CREATE TABLE generation_dispatch (id TEXT PRIMARY KEY,request_id TEXT NOT NULL UNIQUE REFERENCES generation_trace_request(id),trace_id TEXT NOT NULL UNIQUE REFERENCES generation_trace(id),kind TEXT NOT NULL,payload TEXT NOT NULL,state TEXT NOT NULL,attempt INTEGER NOT NULL DEFAULT 0,claim_epoch INTEGER NOT NULL DEFAULT 0,owner_token TEXT,claimed_at TEXT,heartbeat_at TEXT,lease_expires_at TEXT,last_error TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL)"
+    },
+    {
+      "type": "table",
+      "name": "generation_edge",
+      "tbl_name": "generation_edge",
+      "sql": "CREATE TABLE generation_edge (\n  trace_id TEXT NOT NULL REFERENCES generation_trace(id),\n  event_id TEXT NOT NULL REFERENCES generation_event(id),\n  from_type TEXT NOT NULL, from_key TEXT NOT NULL, from_revision TEXT NOT NULL,\n  to_type TEXT NOT NULL, to_key TEXT NOT NULL, to_revision TEXT NOT NULL,\n  relation TEXT NOT NULL CHECK(relation IN ('consumed','produced','validated','supports','filtered_by','derived_from','decided_on','delivered_as','supersedes','retry_of')),\n  visibility_class TEXT NOT NULL CHECK(visibility_class IN ('public_evidence','admin_only','redacted_at_write')),\n  PRIMARY KEY(event_id, from_type, from_key, from_revision, to_type, to_key, to_revision, relation)\n)"
+    },
+    {
+      "type": "table",
+      "name": "generation_effect",
+      "tbl_name": "generation_effect",
+      "sql": "CREATE TABLE generation_effect (\n      id TEXT PRIMARY KEY,\n      trace_id TEXT REFERENCES generation_trace(id),\n      event_id TEXT REFERENCES generation_event(id),\n      report_id TEXT UNIQUE REFERENCES report(id),\n      raw_content_id TEXT REFERENCES content_item(id),\n      kind TEXT NOT NULL CHECK (kind IN ('report_file','raw_archive')),\n      idempotency_key TEXT NOT NULL UNIQUE,\n      artifact_manifest TEXT NOT NULL,\n      publication_payload TEXT NOT NULL,\n      status TEXT NOT NULL CHECK (status IN ('planned','attempted','committed','unknown','abandoned')),\n      error TEXT,\n      created_at TEXT NOT NULL,\n      updated_at TEXT NOT NULL,\n      CHECK ((kind='report_file' AND report_id IS NOT NULL AND raw_content_id IS NULL)\n        OR (kind='raw_archive' AND report_id IS NULL AND raw_content_id IS NOT NULL))\n    )"
+    },
+    {
+      "type": "table",
+      "name": "generation_entity_ref",
+      "tbl_name": "generation_entity_ref",
+      "sql": "CREATE TABLE generation_entity_ref (\n  trace_id TEXT NOT NULL REFERENCES generation_trace(id),\n  event_id TEXT NOT NULL REFERENCES generation_event(id),\n  entity_type TEXT NOT NULL,\n  entity_key TEXT NOT NULL,\n  revision TEXT NOT NULL,\n  role TEXT NOT NULL CHECK(role IN ('input','output','evidence','filtered','superseded')),\n  visibility_class TEXT NOT NULL CHECK(visibility_class IN ('public_evidence','admin_only','redacted_at_write')),\n  PRIMARY KEY(event_id, entity_type, entity_key, revision, role)\n)"
+    },
+    {
+      "type": "table",
+      "name": "generation_event",
+      "tbl_name": "generation_event",
+      "sql": "CREATE TABLE generation_event (\n  id TEXT PRIMARY KEY,\n  trace_id TEXT NOT NULL REFERENCES generation_trace(id),\n  sequence INTEGER NOT NULL,\n  attempt INTEGER NOT NULL CHECK(attempt > 0),\n  parent_event_id TEXT REFERENCES generation_event(id),\n  run_id TEXT REFERENCES run(id),\n  stage TEXT NOT NULL CHECK(stage IN ('collect','normalize','select','analyze','validate','derive_lead','map_direction','derive_opportunity','generate_report','deliver','human_review','direction_change')),\n  event_type TEXT NOT NULL CHECK(event_type IN ('started','planned','attempted','completed','failed','skipped','retried','manual_decided','config_changed','published')),\n  occurred_at TEXT NOT NULL,\n  duration_ms INTEGER,\n  actor_type TEXT NOT NULL CHECK(actor_type IN ('system','user','scheduler')),\n  actor_id TEXT,\n  audit_log_id INTEGER REFERENCES audit_log(id),\n  reason_code TEXT,\n  input_refs TEXT NOT NULL,\n  output_refs TEXT NOT NULL,\n  metrics TEXT NOT NULL,\n  version_context TEXT NOT NULL,\n  context_completeness TEXT NOT NULL CHECK(context_completeness IN ('complete','partial')),\n  error TEXT,\n  payload_schema_version INTEGER NOT NULL DEFAULT 1,\n  semantic_payload_hash TEXT NOT NULL,\n  payload_hash TEXT NOT NULL,\n  UNIQUE(trace_id, sequence),\n  UNIQUE(trace_id, stage, attempt, event_type)\n)"
+    },
+    {
+      "type": "table",
+      "name": "generation_lease",
+      "tbl_name": "generation_lease",
+      "sql": "CREATE TABLE generation_lease (id TEXT PRIMARY KEY,active_key TEXT NOT NULL,scope_key TEXT NOT NULL,trace_id TEXT NOT NULL REFERENCES generation_trace(id),state TEXT NOT NULL,owner_token TEXT,fencing_epoch INTEGER NOT NULL DEFAULT 0,heartbeat_at TEXT,expires_at TEXT,created_at TEXT NOT NULL,released_at TEXT)"
+    },
+    {
+      "type": "table",
+      "name": "generation_trace",
+      "tbl_name": "generation_trace",
+      "sql": "CREATE TABLE generation_trace (id TEXT PRIMARY KEY,request_id TEXT UNIQUE,scope_kind TEXT NOT NULL,trigger_kind TEXT NOT NULL,topic_id TEXT REFERENCES topic(id),root_run_id TEXT REFERENCES run(id) DEFERRABLE INITIALLY DEFERRED,status TEXT NOT NULL,completion_policy TEXT NOT NULL,coverage TEXT NOT NULL DEFAULT 'complete',runtime_version TEXT NOT NULL DEFAULT '{}',summary TEXT NOT NULL DEFAULT '{}',next_sequence INTEGER NOT NULL DEFAULT 0,started_at TEXT NOT NULL,ended_at TEXT,retry_of_trace_id TEXT REFERENCES generation_trace(id), source_id TEXT REFERENCES source(id))"
+    },
+    {
+      "type": "table",
+      "name": "generation_trace_request",
+      "tbl_name": "generation_trace_request",
+      "sql": "CREATE TABLE generation_trace_request (id TEXT PRIMARY KEY,scope_key TEXT NOT NULL UNIQUE,active_key TEXT NOT NULL,idempotency_key_hash TEXT,request_sequence INTEGER NOT NULL DEFAULT 1,trace_id TEXT NOT NULL UNIQUE REFERENCES generation_trace(id),state TEXT NOT NULL,retained_until TEXT NOT NULL,created_at TEXT NOT NULL)"
+    },
+    {
+      "type": "table",
+      "name": "insight",
+      "tbl_name": "insight",
+      "sql": "CREATE TABLE insight (\n  id               TEXT PRIMARY KEY,\n  batch_id         TEXT NOT NULL REFERENCES analysis_batch(id),\n  topic_id         TEXT NOT NULL,\n  type             TEXT NOT NULL CHECK (type IN ('aggregation','trend')),\n  event_id         TEXT,\n  statement        TEXT NOT NULL,\n  -- 已通过展示覆盖审计的主题语言结论；缺省/旧行为空，读路径回退 statement 的绑定原文。\n  reader_statement TEXT NOT NULL DEFAULT '',\n  -- 1-based citation binding for reader-visible statement provenance. NULL means legacy/unverified.\n  statement_citation_index INTEGER,\n  headline         TEXT NOT NULL DEFAULT '',\n  importance       INTEGER NOT NULL CHECK (importance BETWEEN 1 AND 5),\n  importance_basis TEXT NOT NULL,\n  source_count     INTEGER NOT NULL,\n  multi_source     INTEGER NOT NULL,\n  time_window      TEXT NOT NULL,\n  confidence       TEXT CHECK (confidence IS NULL OR confidence IN ('high','medium','low')),\n  language         TEXT NOT NULL\n, is_followup INTEGER NOT NULL DEFAULT 0, entities TEXT NOT NULL DEFAULT '[]', tags TEXT NOT NULL DEFAULT '[]')"
+    },
+    {
+      "type": "table",
+      "name": "integrity_audit_event",
+      "tbl_name": "integrity_audit_event",
+      "sql": "CREATE TABLE integrity_audit_event (\n  id TEXT PRIMARY KEY,\n  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),\n  effect_id TEXT,\n  artifact_id TEXT,\n  artifact_version TEXT,\n  event_type TEXT NOT NULL CHECK(event_type IN ('anchor_written_sqlite_uncommitted','anchor_reconciled','orphan_anchor','daily_anchor_missing','daily_anchor_conflict','daily_anchor_recovered')),\n  severity TEXT NOT NULL CHECK(severity IN ('high','critical')),\n  details TEXT NOT NULL,\n  created_at TEXT NOT NULL\n)"
+    },
+    {
+      "type": "table",
+      "name": "integrity_check",
+      "tbl_name": "integrity_check",
+      "sql": "CREATE TABLE integrity_check (\n  id TEXT PRIMARY KEY,\n  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),\n  artifact_id TEXT NOT NULL,\n  artifact_version TEXT NOT NULL,\n  outcome TEXT NOT NULL CHECK(outcome IN ('pass','content_mismatch','manifest_mismatch','anchor_mismatch','verification_material_unavailable','missing_artifact','unreadable','unsupported_algorithm','authorization_denied')),\n  failure_step TEXT,\n  expected_hash_prefix TEXT,\n  actual_hash_prefix TEXT,\n  checker_version TEXT NOT NULL,\n  checked_at TEXT NOT NULL, key_revoked INTEGER NOT NULL DEFAULT 0 CHECK(key_revoked IN (0,1)),\n  FOREIGN KEY(tenant_id,artifact_id,artifact_version) REFERENCES artifact_manifest(tenant_id,artifact_id,artifact_version)\n)"
+    },
+    {
+      "type": "table",
+      "name": "integrity_check_alert_dedup",
+      "tbl_name": "integrity_check_alert_dedup",
+      "sql": "CREATE TABLE integrity_check_alert_dedup (\n  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),\n  artifact_id TEXT NOT NULL,\n  artifact_version TEXT NOT NULL,\n  window_start TEXT NOT NULL,\n  PRIMARY KEY(tenant_id,artifact_id,artifact_version,window_start)\n)"
+    },
+    {
+      "type": "table",
+      "name": "integrity_daily_root",
+      "tbl_name": "integrity_daily_root",
+      "sql": "CREATE TABLE integrity_daily_root (\n  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),\n  utc_date TEXT NOT NULL,\n  cutoff TEXT NOT NULL,\n  leaf_count INTEGER NOT NULL,\n  merkle_root TEXT NOT NULL,\n  object_key TEXT NOT NULL UNIQUE,\n  payload TEXT NOT NULL,\n  signature TEXT NOT NULL,\n  key_id TEXT NOT NULL,\n  status TEXT NOT NULL CHECK(status IN ('committed','recovered','missing','conflict')),\n  committed_at TEXT, algorithm TEXT, issued_at TEXT, provider_version_id TEXT, retain_until TEXT,\n  PRIMARY KEY(tenant_id, utc_date)\n)"
+    },
+    {
+      "type": "table",
+      "name": "integrity_daily_root_material",
+      "tbl_name": "integrity_daily_root_material",
+      "sql": "CREATE TABLE integrity_daily_root_material (\n  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),\n  utc_date TEXT NOT NULL,\n  report_id TEXT NOT NULL REFERENCES report(id),\n  artifact_id TEXT NOT NULL,\n  artifact_version TEXT NOT NULL,\n  manifest_hash TEXT NOT NULL,\n  PRIMARY KEY(tenant_id,utc_date,artifact_id,artifact_version),\n  FOREIGN KEY(tenant_id,utc_date) REFERENCES integrity_daily_root(tenant_id,utc_date)\n)"
+    },
+    {
+      "type": "table",
+      "name": "integrity_key_revocation",
+      "tbl_name": "integrity_key_revocation",
+      "sql": "CREATE TABLE integrity_key_revocation (\n  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),\n  key_id TEXT NOT NULL,\n  revoked_at TEXT NOT NULL,\n  reason TEXT NOT NULL,\n  PRIMARY KEY(tenant_id,key_id),\n  FOREIGN KEY(tenant_id,key_id) REFERENCES integrity_signing_key(tenant_id,key_id)\n)"
+    },
+    {
+      "type": "table",
+      "name": "integrity_legal_hold_event",
+      "tbl_name": "integrity_legal_hold_event",
+      "sql": "CREATE TABLE integrity_legal_hold_event (\n  id TEXT PRIMARY KEY,\n  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),\n  report_id TEXT NOT NULL REFERENCES report(id),\n  hold_id TEXT NOT NULL,\n  action TEXT NOT NULL CHECK(action IN ('placed','released')),\n  actor_id TEXT NOT NULL,\n  reason_code TEXT NOT NULL,\n  occurred_at TEXT NOT NULL,\n  UNIQUE(tenant_id,report_id,hold_id,action)\n)"
+    },
+    {
+      "type": "table",
+      "name": "integrity_legal_hold_extension_failure",
+      "tbl_name": "integrity_legal_hold_extension_failure",
+      "sql": "CREATE TABLE integrity_legal_hold_extension_failure (\n  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),\n  report_id TEXT NOT NULL REFERENCES report(id),\n  hold_id TEXT NOT NULL,\n  occurred_at TEXT NOT NULL,\n  reason_code TEXT NOT NULL,\n  PRIMARY KEY(tenant_id,report_id,hold_id,occurred_at)\n)"
+    },
+    {
+      "type": "table",
+      "name": "integrity_legal_hold_external_proof",
+      "tbl_name": "integrity_legal_hold_external_proof",
+      "sql": "CREATE TABLE integrity_legal_hold_external_proof (\n  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),\n  report_id TEXT NOT NULL REFERENCES report(id),\n  hold_id TEXT NOT NULL,\n  object_key TEXT NOT NULL,\n  provider_version_id TEXT,\n  retain_until TEXT NOT NULL,\n  recorded_at TEXT NOT NULL,\n  PRIMARY KEY(tenant_id,report_id,hold_id,object_key,provider_version_id)\n)"
+    },
+    {
+      "type": "table",
+      "name": "integrity_legal_hold_material",
+      "tbl_name": "integrity_legal_hold_material",
+      "sql": "CREATE TABLE \"integrity_legal_hold_material\" (\n  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'), report_id TEXT NOT NULL REFERENCES report(id), hold_id TEXT NOT NULL,\n  material_kind TEXT NOT NULL CHECK(material_kind IN ('artifact_manifest','anchor','daily_root','signing_key','integrity_check','retention_tombstone')),\n  material_id TEXT NOT NULL, retain_until TEXT, recorded_at TEXT NOT NULL,\n  PRIMARY KEY(tenant_id,report_id,hold_id,material_kind,material_id)\n)"
+    },
+    {
+      "type": "table",
+      "name": "integrity_lifecycle_audit",
+      "tbl_name": "integrity_lifecycle_audit",
+      "sql": "CREATE TABLE integrity_lifecycle_audit (\n  id TEXT PRIMARY KEY,\n  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),\n  report_id TEXT NOT NULL REFERENCES report(id),\n  event_type TEXT NOT NULL CHECK(event_type IN ('deletion_requested','deletion_blocked_legal_hold','retention_tombstone_written','retention_not_eligible')),\n  actor_id TEXT,\n  reason_code TEXT NOT NULL,\n  created_at TEXT NOT NULL\n)"
+    },
+    {
+      "type": "table",
+      "name": "integrity_maintenance_lease",
+      "tbl_name": "integrity_maintenance_lease",
+      "sql": "CREATE TABLE integrity_maintenance_lease (\n  tenant_id TEXT PRIMARY KEY CHECK(tenant_id = 'default'),\n  owner_token TEXT,\n  lease_expires_at TEXT,\n  heartbeat_at TEXT,\n  updated_at TEXT NOT NULL\n)"
+    },
+    {
+      "type": "table",
+      "name": "integrity_report_lifecycle",
+      "tbl_name": "integrity_report_lifecycle",
+      "sql": "CREATE TABLE \"integrity_report_lifecycle\" (\n  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),\n  report_id TEXT NOT NULL REFERENCES report(id),\n  reader_state TEXT NOT NULL CHECK(reader_state IN ('active','delete_pending','purge_pending','destroyed')),\n  readable_until TEXT NOT NULL,\n  archive_until TEXT NOT NULL,\n  delete_requested_at TEXT,\n  destroyed_at TEXT,\n  artifact_body_path TEXT,\n  PRIMARY KEY(tenant_id,report_id)\n)"
+    },
+    {
+      "type": "table",
+      "name": "integrity_retention_completion",
+      "tbl_name": "integrity_retention_completion",
+      "sql": "CREATE TABLE integrity_retention_completion (\n  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),\n  report_id TEXT NOT NULL REFERENCES report(id),\n  backup_reference TEXT NOT NULL,\n  registry_record_id TEXT NOT NULL,\n  registry_ref TEXT NOT NULL,\n  actor_id TEXT NOT NULL,\n  completed_at TEXT NOT NULL, backup_receipt TEXT NOT NULL DEFAULT '', backup_receipt_hash TEXT NOT NULL DEFAULT '', backup_receipt_signature TEXT NOT NULL DEFAULT '', backup_receipt_key_id TEXT NOT NULL DEFAULT '', registry_payload_hash TEXT NOT NULL DEFAULT '',\n  PRIMARY KEY(tenant_id,report_id)\n)"
+    },
+    {
+      "type": "table",
+      "name": "integrity_retention_purge_guard",
+      "tbl_name": "integrity_retention_purge_guard",
+      "sql": "CREATE TABLE integrity_retention_purge_guard (\n  id INTEGER PRIMARY KEY CHECK(id = 1),\n  enabled INTEGER NOT NULL CHECK(enabled IN (0,1))\n)"
+    },
+    {
+      "type": "table",
+      "name": "integrity_retention_tombstone",
+      "tbl_name": "integrity_retention_tombstone",
+      "sql": "CREATE TABLE integrity_retention_tombstone (\n  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),\n  report_id TEXT NOT NULL REFERENCES report(id),\n  payload TEXT NOT NULL,\n  payload_hash TEXT NOT NULL,\n  signature TEXT NOT NULL,\n  key_id TEXT NOT NULL,\n  algorithm TEXT NOT NULL CHECK(algorithm = 'ed25519'),\n  destroyed_at TEXT NOT NULL, retain_until TEXT NOT NULL DEFAULT '9999-12-31T23:59:59.999Z',\n  PRIMARY KEY(tenant_id,report_id)\n)"
+    },
+    {
+      "type": "table",
+      "name": "integrity_signing_key",
+      "tbl_name": "integrity_signing_key",
+      "sql": "CREATE TABLE integrity_signing_key (\n  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),\n  key_id TEXT NOT NULL,\n  public_key_pem TEXT NOT NULL,\n  certificate_pem TEXT,\n  created_at TEXT NOT NULL,\n  PRIMARY KEY(tenant_id,key_id)\n)"
+    },
+    {
+      "type": "table",
+      "name": "metric_fact_conflict",
+      "tbl_name": "metric_fact_conflict",
+      "sql": "CREATE TABLE metric_fact_conflict (\n  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'), id TEXT NOT NULL,\n  fact_kind TEXT NOT NULL CHECK(fact_kind IN ('cost','validator')), business_id TEXT NOT NULL,\n  existing_semantic_payload_hash TEXT NOT NULL, received_semantic_payload_hash TEXT NOT NULL,\n  reason_code TEXT NOT NULL CHECK(reason_code = 'semantic_payload_mismatch'), observed_at TEXT NOT NULL,\n  PRIMARY KEY(tenant_id,id)\n)"
+    },
+    {
+      "type": "table",
+      "name": "metric_late_event",
+      "tbl_name": "metric_late_event",
+      "sql": "CREATE TABLE metric_late_event (\n  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'), fact_kind TEXT NOT NULL, event_id TEXT NOT NULL,\n  occurred_at TEXT NOT NULL, ingested_at TEXT NOT NULL, reason_code TEXT NOT NULL CHECK(reason_code = 'late_event_outside_backfill_window'),\n  PRIMARY KEY(tenant_id,fact_kind,event_id)\n)"
+    },
+    {
+      "type": "table",
+      "name": "metric_late_reconciliation",
+      "tbl_name": "metric_late_reconciliation",
+      "sql": "CREATE TABLE metric_late_reconciliation (\n  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'), id TEXT NOT NULL, fact_kind TEXT NOT NULL, event_id TEXT NOT NULL,\n  action TEXT NOT NULL CHECK(action IN ('backfilled','declined')), actor_id TEXT NOT NULL, recorded_at TEXT NOT NULL,\n  PRIMARY KEY(tenant_id,id), FOREIGN KEY(tenant_id,fact_kind,event_id) REFERENCES metric_late_event(tenant_id,fact_kind,event_id)\n)"
+    },
+    {
+      "type": "table",
+      "name": "metric_maintenance_guard",
+      "tbl_name": "metric_maintenance_guard",
+      "sql": "CREATE TABLE metric_maintenance_guard (id INTEGER PRIMARY KEY CHECK(id = 1), retention_delete INTEGER NOT NULL CHECK(retention_delete IN (0,1)))"
+    },
+    {
+      "type": "table",
+      "name": "metric_rollup",
+      "tbl_name": "metric_rollup",
+      "sql": "CREATE TABLE \"metric_rollup\" (\n  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'), grain TEXT NOT NULL CHECK(grain IN ('hour','day')),\n  bucket_start TEXT NOT NULL, metric_kind TEXT NOT NULL CHECK(metric_kind IN ('funnel','cost','validator')),\n  topic_id TEXT NOT NULL DEFAULT '', source_id TEXT NOT NULL DEFAULT '', pipeline_version TEXT NOT NULL DEFAULT '', stage TEXT NOT NULL DEFAULT '', provider TEXT NOT NULL DEFAULT '', model TEXT NOT NULL DEFAULT '',\n  currency TEXT NOT NULL DEFAULT '', validator TEXT NOT NULL DEFAULT '', reason_code TEXT NOT NULL DEFAULT '', severity TEXT NOT NULL DEFAULT '', rule_version TEXT NOT NULL DEFAULT '',\n  received_traces INTEGER NOT NULL DEFAULT 0, reached_traces INTEGER NOT NULL DEFAULT 0, terminal_events INTEGER NOT NULL DEFAULT 0,\n  known_cost_minor INTEGER NOT NULL DEFAULT 0, known_cost_entries INTEGER NOT NULL DEFAULT 0, unknown_cost_entries INTEGER NOT NULL DEFAULT 0,\n  validator_results INTEGER NOT NULL DEFAULT 0, validator_traces INTEGER NOT NULL DEFAULT 0,\n  frozen_at TEXT, revised_at TEXT,\n  PRIMARY KEY(tenant_id,grain,bucket_start,metric_kind,topic_id,source_id,pipeline_version,stage,provider,model,currency,validator,reason_code,severity,rule_version)\n)"
+    },
+    {
+      "type": "table",
+      "name": "model_usage_attempt",
+      "tbl_name": "model_usage_attempt",
+      "sql": "CREATE TABLE model_usage_attempt (\n  attempt_id TEXT PRIMARY KEY,\n  logical_call_id TEXT NOT NULL,\n  attempt_number INTEGER NOT NULL CHECK(attempt_number>0),\n  run_id TEXT NOT NULL REFERENCES run(id), trace_id TEXT,\n  role TEXT NOT NULL CHECK(role IN ('analyzer','validator','coverage','followup')),\n  provider TEXT NOT NULL CHECK(provider IN ('anthropic','volcengine-responses')),\n  model TEXT NOT NULL, started_at TEXT NOT NULL,\n  observation_number INTEGER NOT NULL DEFAULT 0 CHECK(observation_number>=0),\n  observed_at TEXT,\n  usage_status TEXT NOT NULL DEFAULT 'unknown' CHECK(usage_status IN ('unknown','partial','reported')),\n  input_tokens INTEGER CHECK(input_tokens>=0), output_tokens INTEGER CHECK(output_tokens>=0),\n  cache_creation_input_tokens INTEGER CHECK(cache_creation_input_tokens>=0),\n  cache_read_input_tokens INTEGER CHECK(cache_read_input_tokens>=0),\n  estimate_status TEXT NOT NULL DEFAULT 'unknown' CHECK(estimate_status IN ('unknown','estimated')),\n  estimate_usd REAL CHECK(estimate_usd>=0), price_source TEXT, price_snapshot TEXT,\n  semantic_hash TEXT,\n  UNIQUE(logical_call_id,attempt_number),\n  CHECK((estimate_status='unknown' AND estimate_usd IS NULL AND price_source IS NULL AND price_snapshot IS NULL)\n     OR (estimate_status='estimated' AND estimate_usd IS NOT NULL AND price_source IS NOT NULL AND price_snapshot IS NOT NULL AND usage_status='reported')),\n  CHECK(usage_status<>'reported' OR (input_tokens IS NOT NULL AND output_tokens IS NOT NULL))\n)"
+    },
+    {
+      "type": "table",
+      "name": "opportunity_lead",
+      "tbl_name": "opportunity_lead",
+      "sql": "CREATE TABLE opportunity_lead (\n  opportunity_id TEXT NOT NULL REFERENCES technology_opportunity(id) ON DELETE CASCADE,\n  lead_id        TEXT NOT NULL REFERENCES tech_lead(id) ON DELETE CASCADE,\n  added_at       TEXT NOT NULL,\n  PRIMARY KEY (opportunity_id, lead_id)\n)"
+    },
+    {
+      "type": "table",
+      "name": "ppt_polish_cache",
+      "tbl_name": "ppt_polish_cache",
+      "sql": "CREATE TABLE ppt_polish_cache (\n  report_id   TEXT PRIMARY KEY,\n  inputs_hash TEXT NOT NULL,\n  polish_json TEXT NOT NULL,\n  tokens      INTEGER NOT NULL,\n  amount      REAL NOT NULL,\n  created_at  TEXT NOT NULL DEFAULT (datetime('now'))\n)"
+    },
+    {
+      "type": "table",
+      "name": "provenance_meta",
+      "tbl_name": "provenance_meta",
+      "sql": "CREATE TABLE provenance_meta (meta_key TEXT PRIMARY KEY, meta_value TEXT NOT NULL, created_at TEXT NOT NULL)"
+    },
+    {
+      "type": "table",
+      "name": "provenance_redaction",
+      "tbl_name": "provenance_redaction",
+      "sql": "CREATE TABLE provenance_redaction (\n  record_id TEXT PRIMARY KEY,\n  entity_key TEXT NOT NULL,\n  scope TEXT NOT NULL,\n  reason_code TEXT NOT NULL,\n  effective_at TEXT NOT NULL,\n  expiry_at TEXT NOT NULL,\n  registry_ref TEXT NOT NULL,\n  created_at TEXT NOT NULL,\n  UNIQUE(entity_key, scope)\n)"
+    },
+    {
+      "type": "table",
+      "name": "provenance_redaction_request",
+      "tbl_name": "provenance_redaction_request",
+      "sql": "CREATE TABLE provenance_redaction_request (\n  deletion_request_id TEXT PRIMARY KEY,\n  record_id TEXT NOT NULL UNIQUE,\n  entity_key TEXT NOT NULL,\n  scope TEXT NOT NULL,\n  reason_code TEXT NOT NULL,\n  effective_at TEXT NOT NULL,\n  expiry_at TEXT NOT NULL,\n  registry_key TEXT NOT NULL UNIQUE,\n  registry_payload TEXT NOT NULL,\n  status TEXT NOT NULL CHECK(status IN ('pending','registered')),\n  created_at TEXT NOT NULL,\n  registered_at TEXT,\n  UNIQUE(entity_key, scope)\n)"
+    },
+    {
+      "type": "table",
+      "name": "provenance_revision",
+      "tbl_name": "provenance_revision",
+      "sql": "CREATE TABLE provenance_revision (\n  entity_type TEXT NOT NULL,\n  entity_key TEXT NOT NULL,\n  revision TEXT NOT NULL,\n  captured_at TEXT NOT NULL,\n  snapshot TEXT NOT NULL,\n  snapshot_hash TEXT NOT NULL,\n  PRIMARY KEY(entity_type, entity_key, revision)\n)"
+    },
+    {
+      "type": "table",
+      "name": "report",
+      "tbl_name": "report",
+      "sql": "CREATE TABLE report (\n  id             TEXT PRIMARY KEY,\n  type           TEXT NOT NULL CHECK (type IN ('brief','deep_dive','initial_digest')),\n  topic_id       TEXT NOT NULL REFERENCES topic(id),\n  status         TEXT NOT NULL CHECK (status IN ('draft','generating','done','failed','archived','deleted')),\n  generated_at   TEXT NOT NULL,\n  title          TEXT NOT NULL,\n  -- failed/generating 尝试没有公开 artifact；只有 published(done) 行拥有正文路径。\n  body_path      TEXT,\n  insight_ids    TEXT NOT NULL DEFAULT '[]',\n  event_ids      TEXT NOT NULL DEFAULT '[]',\n  prev_report_id TEXT,\n  citation_count INTEGER NOT NULL,\n  cost           TEXT NOT NULL,\n  failure        TEXT\n)"
+    },
+    {
+      "type": "table",
+      "name": "report_fts",
+      "tbl_name": "report_fts",
+      "sql": "CREATE VIRTUAL TABLE report_fts USING fts5(report_id UNINDEXED, title, summary, body)"
+    },
+    {
+      "type": "table",
+      "name": "report_fts_config",
+      "tbl_name": "report_fts_config",
+      "sql": "CREATE TABLE 'report_fts_config'(k PRIMARY KEY, v) WITHOUT ROWID"
+    },
+    {
+      "type": "table",
+      "name": "report_fts_content",
+      "tbl_name": "report_fts_content",
+      "sql": "CREATE TABLE 'report_fts_content'(id INTEGER PRIMARY KEY, c0, c1, c2, c3)"
+    },
+    {
+      "type": "table",
+      "name": "report_fts_data",
+      "tbl_name": "report_fts_data",
+      "sql": "CREATE TABLE 'report_fts_data'(id INTEGER PRIMARY KEY, block BLOB)"
+    },
+    {
+      "type": "table",
+      "name": "report_fts_docsize",
+      "tbl_name": "report_fts_docsize",
+      "sql": "CREATE TABLE 'report_fts_docsize'(id INTEGER PRIMARY KEY, sz BLOB)"
+    },
+    {
+      "type": "table",
+      "name": "report_fts_idx",
+      "tbl_name": "report_fts_idx",
+      "sql": "CREATE TABLE 'report_fts_idx'(segid, term, pgno, PRIMARY KEY(segid, term)) WITHOUT ROWID"
+    },
+    {
+      "type": "table",
+      "name": "report_index",
+      "tbl_name": "report_index",
+      "sql": "CREATE TABLE report_index (\n  report_id    TEXT PRIMARY KEY REFERENCES report(id),\n  type         TEXT NOT NULL,\n  topic_id     TEXT NOT NULL,\n  facets       TEXT NOT NULL DEFAULT '[]',\n  date         TEXT NOT NULL,\n  source_ids   TEXT NOT NULL DEFAULT '[]',\n  title        TEXT NOT NULL,\n  summary      TEXT NOT NULL,\n  highlights   TEXT NOT NULL DEFAULT '[]',\n  tags         TEXT NOT NULL DEFAULT '[]',\n  entity_names TEXT NOT NULL DEFAULT '[]',\n  importance   INTEGER NOT NULL,\n  event_ids    TEXT NOT NULL DEFAULT '[]',\n  milestone_count INTEGER NOT NULL DEFAULT 0,\n  freshest_candidate_at TEXT,\n  freshest_citation_at TEXT,\n  freshness_lag_hours REAL\n)"
+    },
+    {
+      "type": "table",
+      "name": "report_review_snapshot",
+      "tbl_name": "report_review_snapshot",
+      "sql": "CREATE TABLE report_review_snapshot (\n  report_id TEXT PRIMARY KEY REFERENCES report(id) ON DELETE CASCADE,\n  trace_id TEXT NOT NULL REFERENCES generation_trace(id),\n  analysis_batch_id TEXT NOT NULL REFERENCES analysis_batch(id),\n  analyze_started_event_id TEXT NOT NULL REFERENCES generation_event(id),\n  analyze_completed_event_id TEXT NOT NULL REFERENCES generation_event(id),\n  validate_started_event_id TEXT NOT NULL REFERENCES generation_event(id),\n  validate_completed_event_id TEXT NOT NULL REFERENCES generation_event(id),\n  generate_report_started_event_id TEXT NOT NULL REFERENCES generation_event(id),\n  selection_rule_version TEXT NOT NULL,\n  review_trace_status TEXT NOT NULL CHECK (review_trace_status IN ('complete','partial','legacy')),\n  publication_state TEXT NOT NULL CHECK (publication_state IN ('planned','published')),\n  created_at TEXT NOT NULL\n)"
+    },
+    {
+      "type": "table",
+      "name": "report_selection_decision",
+      "tbl_name": "report_selection_decision",
+      "sql": "CREATE TABLE report_selection_decision (\n  report_id TEXT NOT NULL REFERENCES report(id) ON DELETE CASCADE,\n  insight_id TEXT NOT NULL REFERENCES insight(id),\n  decision TEXT NOT NULL CHECK (decision IN ('published','excluded')),\n  reason_code TEXT NOT NULL,\n  related_insight_id TEXT REFERENCES insight(id),\n  published_rank INTEGER,\n  supporting_citation_indices TEXT NOT NULL DEFAULT '[]',\n  selection_rule_version TEXT NOT NULL,\n  created_at TEXT NOT NULL,\n  PRIMARY KEY (report_id, insight_id),\n  CHECK ((decision='published' AND published_rank IS NOT NULL) OR (decision='excluded' AND published_rank IS NULL))\n)"
+    },
+    {
+      "type": "table",
+      "name": "run",
+      "tbl_name": "run",
+      "sql": "CREATE TABLE run (\n  id          TEXT PRIMARY KEY,\n  kind        TEXT NOT NULL CHECK (kind IN ('ingest','analyze','validate','report-gen')),\n  target      TEXT NOT NULL,\n  status      TEXT NOT NULL CHECK (status IN ('running','done','failed')),\n  started_at  TEXT NOT NULL,\n  ended_at    TEXT,\n  duration_ms INTEGER,\n  cost        TEXT,\n  error       TEXT,\n  retry_of    TEXT REFERENCES run(id),\n  inserted    INTEGER\n, trace_id TEXT)"
+    },
+    {
+      "type": "table",
+      "name": "schema_migration",
+      "tbl_name": "schema_migration",
+      "sql": "CREATE TABLE schema_migration (version TEXT PRIMARY KEY, checksum TEXT NOT NULL, applied_at TEXT NOT NULL)"
+    },
+    {
+      "type": "table",
+      "name": "source",
+      "tbl_name": "source",
+      "sql": "CREATE TABLE source (\n  id             TEXT PRIMARY KEY,\n  name           TEXT NOT NULL,\n  type           TEXT NOT NULL CHECK (type IN ('rss','arxiv','api')),\n  endpoint       TEXT NOT NULL,\n  topic_ids      TEXT NOT NULL DEFAULT '[]',\n  fetch_interval TEXT NOT NULL,\n  backfill       TEXT,\n  enabled        INTEGER NOT NULL DEFAULT 1,\n  fetch_mode     TEXT NOT NULL DEFAULT 'feed' CHECK (fetch_mode IN ('feed','full_text')),\n  content_container TEXT,\n  transcript_mode TEXT NOT NULL DEFAULT 'off' CHECK (transcript_mode IN ('off','observe','enabled')),\n  transcript_strategy TEXT NOT NULL DEFAULT 'relevant_only' CHECK (transcript_strategy IN ('all','relevant_only')),\n  transcript_max_items_per_run INTEGER NOT NULL DEFAULT 5 CHECK (transcript_max_items_per_run > 0),\n  transcript_max_bytes_per_run INTEGER NOT NULL DEFAULT 5242880 CHECK (transcript_max_bytes_per_run > 0),\n  transcript_timeout_budget_ms INTEGER NOT NULL DEFAULT 30000 CHECK (transcript_timeout_budget_ms > 0),\n  transcript_host_qps REAL NOT NULL DEFAULT 0.5 CHECK (transcript_host_qps > 0),\n  transcript_policy_version TEXT,\n  disabled_reason TEXT,\n  disabled_at     TEXT,\n  circuit_reset_at TEXT,\n  last_probe_at   TEXT,\n  created_at     TEXT NOT NULL DEFAULT (datetime('now')),\n  updated_at     TEXT NOT NULL DEFAULT (datetime('now')),\n  CHECK (transcript_mode = 'off' OR (transcript_policy_version IS NOT NULL AND length(trim(transcript_policy_version)) > 0))\n)"
+    },
+    {
+      "type": "table",
+      "name": "source_credit_conflict",
+      "tbl_name": "source_credit_conflict",
+      "sql": "CREATE TABLE \"source_credit_conflict\" (\n  id TEXT NOT NULL,\n  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),\n  event_id TEXT NOT NULL,\n  existing_semantic_payload_hash TEXT NOT NULL,\n  received_semantic_payload_hash TEXT NOT NULL,\n  observed_at TEXT NOT NULL,\n  PRIMARY KEY(tenant_id, id)\n)"
+    },
+    {
+      "type": "table",
+      "name": "source_credit_event",
+      "tbl_name": "source_credit_event",
+      "sql": "CREATE TABLE source_credit_event (\n  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),\n  event_id TEXT NOT NULL,\n  trace_id TEXT,\n  occurred_at TEXT NOT NULL,\n  ingested_at TEXT NOT NULL,\n  schema_version TEXT NOT NULL CHECK(schema_version = 'source-credit-v1'),\n  allocation_version TEXT NOT NULL CHECK(allocation_version = 'equal-split-micros-v1'),\n  producer_version TEXT NOT NULL CHECK(producer_version = 'source-credit-producer-v1'),\n  trace_coverage TEXT NOT NULL CHECK(trace_coverage IN ('complete','partial','legacy')),\n  lateness TEXT NOT NULL CHECK(lateness IN ('timely','reconcilable','quarantined')),\n  semantic_payload_hash TEXT NOT NULL,\n  created_at TEXT NOT NULL,\n  PRIMARY KEY(tenant_id, event_id)\n)"
+    },
+    {
+      "type": "table",
+      "name": "source_credit_fact",
+      "tbl_name": "source_credit_fact",
+      "sql": "CREATE TABLE source_credit_fact (\n  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),\n  event_id TEXT NOT NULL,\n  source_id TEXT NOT NULL,\n  source_revision TEXT NOT NULL,\n  credit_micros INTEGER NOT NULL CHECK(credit_micros > 0 AND credit_micros <= 1000000),\n  PRIMARY KEY(tenant_id, event_id, source_id),\n  FOREIGN KEY(tenant_id, event_id) REFERENCES source_credit_event(tenant_id, event_id)\n)"
+    },
+    {
+      "type": "table",
+      "name": "source_credit_late_event",
+      "tbl_name": "source_credit_late_event",
+      "sql": "CREATE TABLE source_credit_late_event (\n  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),\n  event_id TEXT NOT NULL,\n  lateness TEXT NOT NULL CHECK(lateness IN ('reconcilable','quarantined')),\n  recorded_at TEXT NOT NULL,\n  PRIMARY KEY(tenant_id, event_id),\n  FOREIGN KEY(tenant_id, event_id) REFERENCES source_credit_event(tenant_id, event_id)\n)"
+    },
+    {
+      "type": "table",
+      "name": "source_credit_late_reconciliation",
+      "tbl_name": "source_credit_late_reconciliation",
+      "sql": "CREATE TABLE \"source_credit_late_reconciliation\" (\n  id TEXT NOT NULL,\n  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'),\n  event_id TEXT NOT NULL,\n  action TEXT NOT NULL CHECK(action IN ('reconciled','declined')),\n  actor_id TEXT NOT NULL,\n  recorded_at TEXT NOT NULL,\n  PRIMARY KEY(tenant_id, id),\n  FOREIGN KEY(tenant_id, event_id) REFERENCES source_credit_late_event(tenant_id, event_id)\n)"
+    },
+    {
+      "type": "table",
+      "name": "source_transcript_policy_version",
+      "tbl_name": "source_transcript_policy_version",
+      "sql": "CREATE TABLE source_transcript_policy_version (\n  -- A version is a durable semantic identity. Do not let a later source deletion erase it\n  -- and permit the same source id/version pair to be reused with different semantics.\n  source_id TEXT NOT NULL REFERENCES source(id) ON DELETE RESTRICT,\n  transcript_policy_version TEXT NOT NULL CHECK (length(trim(transcript_policy_version)) > 0),\n  recorded_at TEXT NOT NULL,\n  PRIMARY KEY (source_id, transcript_policy_version)\n)"
+    },
+    {
+      "type": "table",
+      "name": "tech_lead",
+      "tbl_name": "tech_lead",
+      "sql": "CREATE TABLE tech_lead (\n  id                 TEXT PRIMARY KEY,\n  topic_id           TEXT NOT NULL REFERENCES topic(id),\n  canonical_key      TEXT NOT NULL,\n  kind               TEXT NOT NULL CHECK (kind IN ('model','framework','paper','benchmark','tool','method','security','other')),\n  title              TEXT NOT NULL,\n  summary            TEXT NOT NULL,\n  status             TEXT NOT NULL CHECK (status IN ('recommended','watching','dismissed')) DEFAULT 'recommended',\n  score              REAL NOT NULL,\n  score_detail       TEXT NOT NULL,\n  first_seen_at      TEXT NOT NULL,\n  last_seen_at       TEXT NOT NULL,\n  latest_evidence_at TEXT NOT NULL,\n  UNIQUE(topic_id, canonical_key)\n)"
+    },
+    {
+      "type": "table",
+      "name": "tech_lead_direction_map",
+      "tbl_name": "tech_lead_direction_map",
+      "sql": "CREATE TABLE tech_lead_direction_map (\n  lead_id         TEXT NOT NULL REFERENCES tech_lead(id) ON DELETE CASCADE,\n  direction_id    TEXT NOT NULL REFERENCES topic_direction(id) ON DELETE CASCADE,\n  lane            TEXT NOT NULL CHECK (lane IN ('core','adjacent','horizon','challenge')),\n  planning_effect TEXT NOT NULL CHECK (planning_effect IN ('reinforce','expand','challenge','new_direction')),\n  fit_score       REAL NOT NULL,\n  rationale       TEXT NOT NULL,\n  created_at      TEXT NOT NULL,\n  updated_at      TEXT NOT NULL,\n  PRIMARY KEY (lead_id, direction_id)\n)"
+    },
+    {
+      "type": "table",
+      "name": "tech_lead_evidence",
+      "tbl_name": "tech_lead_evidence",
+      "sql": "CREATE TABLE tech_lead_evidence (\n  lead_id        TEXT NOT NULL REFERENCES tech_lead(id) ON DELETE CASCADE,\n  insight_id     TEXT NOT NULL,\n  citation_index INTEGER NOT NULL,\n  added_at       TEXT NOT NULL,\n  PRIMARY KEY (lead_id, insight_id, citation_index),\n  FOREIGN KEY (insight_id, citation_index) REFERENCES citation(insight_id, citation_index)\n)"
+    },
+    {
+      "type": "table",
+      "name": "technology_opportunity",
+      "tbl_name": "technology_opportunity",
+      "sql": "CREATE TABLE technology_opportunity (\n  id                  TEXT PRIMARY KEY,\n  topic_id            TEXT NOT NULL REFERENCES topic(id),\n  direction_id        TEXT REFERENCES topic_direction(id) ON DELETE SET NULL,\n  canonical_key       TEXT NOT NULL,\n  lane                TEXT NOT NULL CHECK (lane IN ('core','adjacent','horizon','challenge')),\n  planning_effect     TEXT NOT NULL CHECK (planning_effect IN ('reinforce','expand','challenge','new_direction')),\n  title               TEXT NOT NULL,\n  hypothesis          TEXT NOT NULL,\n  proposed_validation TEXT NOT NULL,\n  uncertainties       TEXT NOT NULL DEFAULT '[]',\n  status              TEXT NOT NULL CHECK (status IN ('observed','watching','research_candidate','poc_ready','project_candidate','adopted','rejected','archived')) DEFAULT 'observed',\n  mapping_state       TEXT NOT NULL DEFAULT 'current' CHECK (mapping_state IN ('current','stale')),\n  mapping_direction_version INTEGER,\n  priority_score      REAL NOT NULL,\n  score_detail        TEXT NOT NULL,\n  first_seen_at       TEXT NOT NULL,\n  last_seen_at        TEXT NOT NULL,\n  latest_evidence_at  TEXT NOT NULL,\n  UNIQUE(topic_id, canonical_key)\n)"
+    },
+    {
+      "type": "table",
+      "name": "topic",
+      "tbl_name": "topic",
+      "sql": "CREATE TABLE topic (\n  id             TEXT PRIMARY KEY,\n  name           TEXT NOT NULL,\n  keywords       TEXT NOT NULL DEFAULT '[]',\n  language       TEXT NOT NULL CHECK (language IN ('zh','en','mixed')),\n  brief_schedule TEXT NOT NULL CHECK (brief_schedule IN ('daily','weekly')),\n  enabled        INTEGER NOT NULL DEFAULT 1,\n  -- ADR-0010 行为原型：无 DB CHECK（app 层 ARCHETYPE_VALUES 校验，加原型零迁移，reference-data 模式）\n  archetype      TEXT NOT NULL DEFAULT 'deep_vertical',\n  -- ADR-0010 分面标签（JSON 数组，如 [\"domain:software-engineering\",\"lens:business\"]）：分类维度 domain(必填)+lens(选填)。\n  facets         TEXT NOT NULL DEFAULT '[]',\n  created_at     TEXT NOT NULL DEFAULT (datetime('now')),\n  updated_at     TEXT NOT NULL DEFAULT (datetime('now'))\n)"
+    },
+    {
+      "type": "table",
+      "name": "topic_direction",
+      "tbl_name": "topic_direction",
+      "sql": "CREATE TABLE topic_direction (\n  id                TEXT PRIMARY KEY,\n  topic_id          TEXT NOT NULL REFERENCES topic(id) ON DELETE CASCADE,\n  name              TEXT NOT NULL,\n  objective         TEXT NOT NULL,\n  problem_statement TEXT NOT NULL,\n  in_scope          TEXT NOT NULL DEFAULT '[]',\n  out_of_scope      TEXT NOT NULL DEFAULT '[]',\n  key_questions     TEXT NOT NULL DEFAULT '[]',\n  constraints_json  TEXT NOT NULL DEFAULT '[]',\n  success_signals   TEXT NOT NULL DEFAULT '[]',\n  match_terms       TEXT NOT NULL DEFAULT '[]',\n  adjacent_terms    TEXT NOT NULL DEFAULT '[]',\n  challenge_terms   TEXT NOT NULL DEFAULT '[]',\n  horizon           TEXT NOT NULL CHECK (horizon IN ('now','next','explore')),\n  status            TEXT NOT NULL CHECK (status IN ('active','watching','retired')),\n  version           INTEGER NOT NULL DEFAULT 1,\n  created_at        TEXT NOT NULL,\n  updated_at        TEXT NOT NULL\n)"
+    },
+    {
+      "type": "table",
+      "name": "transcript_acquisition_conflict",
+      "tbl_name": "transcript_acquisition_conflict",
+      "sql": "CREATE TABLE transcript_acquisition_conflict (\n  id TEXT PRIMARY KEY,\n  event_key TEXT NOT NULL,\n  existing_semantic_payload_hash TEXT NOT NULL,\n  received_semantic_payload_hash TEXT NOT NULL,\n  observed_at TEXT NOT NULL\n)"
+    },
+    {
+      "type": "table",
+      "name": "transcript_acquisition_fact",
+      "tbl_name": "transcript_acquisition_fact",
+      "sql": "CREATE TABLE transcript_acquisition_fact (\n  event_key TEXT PRIMARY KEY,\n  source_id TEXT NOT NULL REFERENCES source(id),\n  canonical_episode_url TEXT NOT NULL,\n  candidate_hash TEXT NOT NULL,\n  transcript_policy_version TEXT NOT NULL CHECK (length(trim(transcript_policy_version)) > 0),\n  mode TEXT NOT NULL CHECK (mode IN ('off','observe','enabled')) CHECK (mode <> 'off'),\n  strategy TEXT NOT NULL CHECK (strategy IN ('all','relevant_only')),\n  execution_scope TEXT NOT NULL CHECK (execution_scope IN ('production_metadata','shadow')),\n  stage TEXT NOT NULL CHECK (stage IN ('candidate','decision','attempt','terminal')),\n  adapter_version TEXT NOT NULL,\n  attempt INTEGER NOT NULL CHECK (\n    (stage IN ('candidate','decision') AND attempt = 0)\n    OR (stage IN ('attempt','terminal') AND attempt >= 1)\n  ),\n  decision TEXT CHECK (decision IN ('fetch','unknown','hard_negative')),\n  outcome TEXT NOT NULL CHECK (outcome IN ('decision','success','no_transcript','robots_denied','http_error','size_limited','timeout','parse_empty','transient_error','budget_limited','existing_url','not_attempted')),\n  reason_code TEXT,\n  bytes INTEGER CHECK (bytes IS NULL OR bytes >= 0),\n  duration_ms INTEGER CHECK (duration_ms IS NULL OR duration_ms >= 0),\n  fallback_body_kind TEXT CHECK (fallback_body_kind IS NULL OR fallback_body_kind IN ('article','show_notes')),\n  content_item_id TEXT REFERENCES content_item(id),\n  raw_ref TEXT,\n  evidence_status TEXT NOT NULL CHECK (evidence_status IN ('not_applicable','pending','verified','failed')),\n  run_id TEXT REFERENCES run(id),\n  occurred_at TEXT NOT NULL,\n  semantic_payload_hash TEXT NOT NULL,\n  CHECK (execution_scope = 'production_metadata' OR content_item_id IS NULL),\n  CHECK (evidence_status <> 'verified' OR raw_ref IS NOT NULL),\n  CHECK (outcome <> 'success' OR (raw_ref IS NOT NULL AND evidence_status = 'verified'))\n)"
+    },
+    {
+      "type": "table",
+      "name": "validation_result",
+      "tbl_name": "validation_result",
+      "sql": "CREATE TABLE validation_result (\n  batch_id                 TEXT PRIMARY KEY REFERENCES analysis_batch(id),\n  total                    INTEGER NOT NULL,\n  pass                     INTEGER NOT NULL,\n  blocked                  INTEGER NOT NULL,\n  flagged                  INTEGER NOT NULL,\n  errored                  INTEGER NOT NULL DEFAULT 0,\n  consistency_failure_rate REAL NOT NULL,\n  flagged_rate             REAL NOT NULL,\n  insights_total           INTEGER NOT NULL DEFAULT 0,\n  insights_includable      INTEGER NOT NULL DEFAULT 0,\n  releasable               INTEGER NOT NULL\n)"
+    },
+    {
+      "type": "table",
+      "name": "validator_result_fact",
+      "tbl_name": "validator_result_fact",
+      "sql": "CREATE TABLE validator_result_fact (\n  tenant_id TEXT NOT NULL CHECK(tenant_id = 'default'), result_id TEXT NOT NULL,\n  trace_id TEXT NOT NULL, stage TEXT NOT NULL, attempt INTEGER NOT NULL CHECK(attempt > 0), pipeline_version TEXT NOT NULL,\n  validator TEXT NOT NULL, rule_version TEXT NOT NULL, reason_code TEXT NOT NULL,\n  severity TEXT NOT NULL CHECK(severity IN ('info','warning','error','critical')), terminal INTEGER NOT NULL CHECK(terminal IN (0,1)),\n  occurred_at TEXT NOT NULL, ingested_at TEXT NOT NULL, schema_version TEXT NOT NULL CHECK(schema_version = 'validator-result-v1'),\n  producer_version TEXT NOT NULL, semantic_payload_hash TEXT NOT NULL, topic_id TEXT, source_id TEXT,\n  PRIMARY KEY(tenant_id,result_id)\n)"
+    },
+    {
+      "type": "trigger",
+      "name": "artifact_manifest_no_delete",
+      "tbl_name": "artifact_manifest",
+      "sql": "CREATE TRIGGER artifact_manifest_no_delete BEFORE DELETE ON artifact_manifest WHEN (SELECT enabled FROM integrity_retention_purge_guard WHERE id=1) = 0 BEGIN SELECT RAISE(ABORT, 'artifact_manifest is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "artifact_manifest_no_update",
+      "tbl_name": "artifact_manifest",
+      "sql": "CREATE TRIGGER artifact_manifest_no_update BEFORE UPDATE ON artifact_manifest BEGIN SELECT RAISE(ABORT, 'artifact_manifest is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "content_item_speaker_map_guard_insert",
+      "tbl_name": "content_item",
+      "sql": "CREATE TRIGGER content_item_speaker_map_guard_insert\nBEFORE INSERT ON content_item\nWHEN (NEW.body_kind = 'transcript' AND NEW.speaker_map_status NOT IN ('unknown','verified'))\n  OR (NEW.body_kind <> 'transcript' AND (NEW.speaker_map_status <> 'not_applicable' OR NEW.speaker_map_ref IS NOT NULL))\n  OR (NEW.speaker_map_status = 'verified' AND NEW.speaker_map_ref IS NULL)\n  OR (NEW.speaker_map_status <> 'verified' AND NEW.speaker_map_ref IS NOT NULL)\nBEGIN SELECT RAISE(ABORT, 'invalid_speaker_map_contract'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "content_item_speaker_map_guard_update",
+      "tbl_name": "content_item",
+      "sql": "CREATE TRIGGER content_item_speaker_map_guard_update\nBEFORE UPDATE OF body_kind, speaker_map_status, speaker_map_ref ON content_item\nWHEN (NEW.body_kind = 'transcript' AND NEW.speaker_map_status NOT IN ('unknown','verified'))\n  OR (NEW.body_kind <> 'transcript' AND (NEW.speaker_map_status <> 'not_applicable' OR NEW.speaker_map_ref IS NOT NULL))\n  OR (NEW.speaker_map_status = 'verified' AND NEW.speaker_map_ref IS NULL)\n  OR (NEW.speaker_map_status <> 'verified' AND NEW.speaker_map_ref IS NOT NULL)\nBEGIN SELECT RAISE(ABORT, 'invalid_speaker_map_contract'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "cost_ledger_no_delete",
+      "tbl_name": "cost_ledger",
+      "sql": "CREATE TRIGGER cost_ledger_no_delete BEFORE DELETE ON cost_ledger WHEN (SELECT retention_delete FROM metric_maintenance_guard WHERE id=1) = 0 BEGIN SELECT RAISE(ABORT, 'cost_ledger is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "cost_ledger_no_update",
+      "tbl_name": "cost_ledger",
+      "sql": "CREATE TRIGGER cost_ledger_no_update BEFORE UPDATE ON cost_ledger BEGIN SELECT RAISE(ABORT, 'cost_ledger is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "deployment_record_no_delete",
+      "tbl_name": "deployment_record",
+      "sql": "CREATE TRIGGER deployment_record_no_delete BEFORE DELETE ON deployment_record BEGIN SELECT RAISE(ABORT, 'deployment_record is immutable'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "deployment_record_no_update",
+      "tbl_name": "deployment_record",
+      "sql": "CREATE TRIGGER deployment_record_no_update BEFORE UPDATE ON deployment_record BEGIN SELECT RAISE(ABORT, 'deployment_record is immutable'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "display_coverage_audit_batch_matches_insight",
+      "tbl_name": "display_coverage_audit",
+      "sql": "CREATE TRIGGER display_coverage_audit_batch_matches_insight\nBEFORE INSERT ON display_coverage_audit\nWHEN NOT EXISTS (SELECT 1 FROM insight WHERE id = NEW.insight_id AND batch_id = NEW.batch_id)\nBEGIN SELECT RAISE(ABORT, 'display coverage audit insight belongs to another batch'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "display_coverage_candidate_audit_batch_matches_insight",
+      "tbl_name": "display_coverage_candidate_audit",
+      "sql": "CREATE TRIGGER display_coverage_candidate_audit_batch_matches_insight\nBEFORE INSERT ON display_coverage_candidate_audit\nWHEN NEW.insight_id IS NOT NULL\n AND NOT EXISTS (SELECT 1 FROM insight WHERE id = NEW.insight_id AND batch_id = NEW.batch_id)\nBEGIN SELECT RAISE(ABORT, 'display coverage candidate audit insight belongs to another batch'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "funnel_event_conflict_no_delete",
+      "tbl_name": "funnel_event_conflict",
+      "sql": "CREATE TRIGGER funnel_event_conflict_no_delete BEFORE DELETE ON funnel_event_conflict WHEN (SELECT retention_delete FROM metric_maintenance_guard WHERE id=1) = 0 BEGIN SELECT RAISE(ABORT, 'funnel_event_conflict is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "funnel_event_conflict_no_update",
+      "tbl_name": "funnel_event_conflict",
+      "sql": "CREATE TRIGGER funnel_event_conflict_no_update BEFORE UPDATE ON funnel_event_conflict BEGIN SELECT RAISE(ABORT, 'funnel_event_conflict is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "funnel_event_no_delete",
+      "tbl_name": "funnel_event",
+      "sql": "CREATE TRIGGER funnel_event_no_delete BEFORE DELETE ON funnel_event WHEN (SELECT retention_delete FROM metric_maintenance_guard WHERE id=1) = 0 BEGIN SELECT RAISE(ABORT, 'funnel_event is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "funnel_event_no_update",
+      "tbl_name": "funnel_event",
+      "sql": "CREATE TRIGGER funnel_event_no_update BEFORE UPDATE ON funnel_event BEGIN SELECT RAISE(ABORT, 'funnel_event is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "generation_event_no_delete",
+      "tbl_name": "generation_event",
+      "sql": "CREATE TRIGGER generation_event_no_delete BEFORE DELETE ON generation_event BEGIN SELECT RAISE(ABORT, 'generation_event is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "generation_event_no_update",
+      "tbl_name": "generation_event",
+      "sql": "CREATE TRIGGER generation_event_no_update BEFORE UPDATE ON generation_event BEGIN SELECT RAISE(ABORT, 'generation_event is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "integrity_audit_event_no_delete",
+      "tbl_name": "integrity_audit_event",
+      "sql": "CREATE TRIGGER integrity_audit_event_no_delete BEFORE DELETE ON integrity_audit_event WHEN (SELECT enabled FROM integrity_retention_purge_guard WHERE id=1) = 0 BEGIN SELECT RAISE(ABORT, 'integrity_audit_event is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "integrity_audit_event_no_update",
+      "tbl_name": "integrity_audit_event",
+      "sql": "CREATE TRIGGER integrity_audit_event_no_update BEFORE UPDATE ON integrity_audit_event BEGIN SELECT RAISE(ABORT, 'integrity_audit_event is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "integrity_check_alert_dedup_no_delete",
+      "tbl_name": "integrity_check_alert_dedup",
+      "sql": "CREATE TRIGGER integrity_check_alert_dedup_no_delete BEFORE DELETE ON integrity_check_alert_dedup WHEN (SELECT enabled FROM integrity_retention_purge_guard WHERE id=1) = 0 BEGIN SELECT RAISE(ABORT, 'integrity_check_alert_dedup is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "integrity_check_alert_dedup_no_update",
+      "tbl_name": "integrity_check_alert_dedup",
+      "sql": "CREATE TRIGGER integrity_check_alert_dedup_no_update BEFORE UPDATE ON integrity_check_alert_dedup BEGIN SELECT RAISE(ABORT, 'integrity_check_alert_dedup is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "integrity_check_no_delete",
+      "tbl_name": "integrity_check",
+      "sql": "CREATE TRIGGER integrity_check_no_delete BEFORE DELETE ON integrity_check WHEN (SELECT enabled FROM integrity_retention_purge_guard WHERE id=1) = 0 BEGIN SELECT RAISE(ABORT, 'integrity_check is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "integrity_check_no_update",
+      "tbl_name": "integrity_check",
+      "sql": "CREATE TRIGGER integrity_check_no_update BEFORE UPDATE ON integrity_check BEGIN SELECT RAISE(ABORT, 'integrity_check is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "integrity_daily_root_no_delete",
+      "tbl_name": "integrity_daily_root",
+      "sql": "CREATE TRIGGER integrity_daily_root_no_delete BEFORE DELETE ON integrity_daily_root WHEN (SELECT enabled FROM integrity_retention_purge_guard WHERE id=1) = 0 BEGIN SELECT RAISE(ABORT, 'integrity_daily_root is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "integrity_daily_root_no_update",
+      "tbl_name": "integrity_daily_root",
+      "sql": "CREATE TRIGGER integrity_daily_root_no_update BEFORE UPDATE ON integrity_daily_root BEGIN SELECT RAISE(ABORT, 'integrity_daily_root is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "integrity_key_revocation_no_delete",
+      "tbl_name": "integrity_key_revocation",
+      "sql": "CREATE TRIGGER integrity_key_revocation_no_delete BEFORE DELETE ON integrity_key_revocation WHEN (SELECT enabled FROM integrity_retention_purge_guard WHERE id=1) = 0 BEGIN SELECT RAISE(ABORT, 'integrity_key_revocation is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "integrity_key_revocation_no_update",
+      "tbl_name": "integrity_key_revocation",
+      "sql": "CREATE TRIGGER integrity_key_revocation_no_update BEFORE UPDATE ON integrity_key_revocation BEGIN SELECT RAISE(ABORT, 'integrity_key_revocation is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "integrity_legal_hold_event_no_delete",
+      "tbl_name": "integrity_legal_hold_event",
+      "sql": "CREATE TRIGGER integrity_legal_hold_event_no_delete BEFORE DELETE ON integrity_legal_hold_event WHEN (SELECT enabled FROM integrity_retention_purge_guard WHERE id=1) = 0 BEGIN SELECT RAISE(ABORT, 'integrity_legal_hold_event is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "integrity_legal_hold_event_no_update",
+      "tbl_name": "integrity_legal_hold_event",
+      "sql": "CREATE TRIGGER integrity_legal_hold_event_no_update BEFORE UPDATE ON integrity_legal_hold_event BEGIN SELECT RAISE(ABORT, 'integrity_legal_hold_event is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "integrity_legal_hold_extension_failure_no_delete",
+      "tbl_name": "integrity_legal_hold_extension_failure",
+      "sql": "CREATE TRIGGER integrity_legal_hold_extension_failure_no_delete BEFORE DELETE ON integrity_legal_hold_extension_failure BEGIN SELECT RAISE(ABORT, 'integrity_legal_hold_extension_failure is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "integrity_legal_hold_extension_failure_no_update",
+      "tbl_name": "integrity_legal_hold_extension_failure",
+      "sql": "CREATE TRIGGER integrity_legal_hold_extension_failure_no_update BEFORE UPDATE ON integrity_legal_hold_extension_failure BEGIN SELECT RAISE(ABORT, 'integrity_legal_hold_extension_failure is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "integrity_legal_hold_external_proof_no_delete",
+      "tbl_name": "integrity_legal_hold_external_proof",
+      "sql": "CREATE TRIGGER integrity_legal_hold_external_proof_no_delete BEFORE DELETE ON integrity_legal_hold_external_proof BEGIN SELECT RAISE(ABORT, 'integrity_legal_hold_external_proof is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "integrity_legal_hold_external_proof_no_update",
+      "tbl_name": "integrity_legal_hold_external_proof",
+      "sql": "CREATE TRIGGER integrity_legal_hold_external_proof_no_update BEFORE UPDATE ON integrity_legal_hold_external_proof BEGIN SELECT RAISE(ABORT, 'integrity_legal_hold_external_proof is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "integrity_legal_hold_material_no_delete",
+      "tbl_name": "integrity_legal_hold_material",
+      "sql": "CREATE TRIGGER integrity_legal_hold_material_no_delete BEFORE DELETE ON integrity_legal_hold_material BEGIN SELECT RAISE(ABORT, 'integrity_legal_hold_material is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "integrity_legal_hold_material_no_update",
+      "tbl_name": "integrity_legal_hold_material",
+      "sql": "CREATE TRIGGER integrity_legal_hold_material_no_update BEFORE UPDATE ON integrity_legal_hold_material BEGIN SELECT RAISE(ABORT, 'integrity_legal_hold_material is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "integrity_lifecycle_audit_no_delete",
+      "tbl_name": "integrity_lifecycle_audit",
+      "sql": "CREATE TRIGGER integrity_lifecycle_audit_no_delete BEFORE DELETE ON integrity_lifecycle_audit WHEN (SELECT enabled FROM integrity_retention_purge_guard WHERE id=1) = 0 BEGIN SELECT RAISE(ABORT, 'integrity_lifecycle_audit is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "integrity_lifecycle_audit_no_update",
+      "tbl_name": "integrity_lifecycle_audit",
+      "sql": "CREATE TRIGGER integrity_lifecycle_audit_no_update BEFORE UPDATE ON integrity_lifecycle_audit BEGIN SELECT RAISE(ABORT, 'integrity_lifecycle_audit is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "integrity_retention_completion_no_delete",
+      "tbl_name": "integrity_retention_completion",
+      "sql": "CREATE TRIGGER integrity_retention_completion_no_delete BEFORE DELETE ON integrity_retention_completion WHEN (SELECT enabled FROM integrity_retention_purge_guard WHERE id=1) = 0 BEGIN SELECT RAISE(ABORT, 'integrity_retention_completion is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "integrity_retention_completion_no_update",
+      "tbl_name": "integrity_retention_completion",
+      "sql": "CREATE TRIGGER integrity_retention_completion_no_update BEFORE UPDATE ON integrity_retention_completion BEGIN SELECT RAISE(ABORT, 'integrity_retention_completion is immutable'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "integrity_retention_tombstone_no_delete",
+      "tbl_name": "integrity_retention_tombstone",
+      "sql": "CREATE TRIGGER integrity_retention_tombstone_no_delete BEFORE DELETE ON integrity_retention_tombstone WHEN (SELECT enabled FROM integrity_retention_purge_guard WHERE id=1) = 0 BEGIN SELECT RAISE(ABORT, 'integrity_retention_tombstone is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "integrity_retention_tombstone_no_update",
+      "tbl_name": "integrity_retention_tombstone",
+      "sql": "CREATE TRIGGER integrity_retention_tombstone_no_update BEFORE UPDATE ON integrity_retention_tombstone BEGIN SELECT RAISE(ABORT, 'integrity_retention_tombstone is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "integrity_signing_key_no_delete",
+      "tbl_name": "integrity_signing_key",
+      "sql": "CREATE TRIGGER integrity_signing_key_no_delete BEFORE DELETE ON integrity_signing_key WHEN (SELECT enabled FROM integrity_retention_purge_guard WHERE id=1) = 0 BEGIN SELECT RAISE(ABORT, 'integrity_signing_key is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "integrity_signing_key_no_update",
+      "tbl_name": "integrity_signing_key",
+      "sql": "CREATE TRIGGER integrity_signing_key_no_update BEFORE UPDATE ON integrity_signing_key BEGIN SELECT RAISE(ABORT, 'integrity_signing_key is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "metric_fact_conflict_no_delete",
+      "tbl_name": "metric_fact_conflict",
+      "sql": "CREATE TRIGGER metric_fact_conflict_no_delete BEFORE DELETE ON metric_fact_conflict WHEN (SELECT retention_delete FROM metric_maintenance_guard WHERE id=1) = 0 BEGIN SELECT RAISE(ABORT, 'metric_fact_conflict is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "metric_fact_conflict_no_update",
+      "tbl_name": "metric_fact_conflict",
+      "sql": "CREATE TRIGGER metric_fact_conflict_no_update BEFORE UPDATE ON metric_fact_conflict BEGIN SELECT RAISE(ABORT, 'metric_fact_conflict is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "metric_late_event_no_delete",
+      "tbl_name": "metric_late_event",
+      "sql": "CREATE TRIGGER metric_late_event_no_delete BEFORE DELETE ON metric_late_event WHEN (SELECT retention_delete FROM metric_maintenance_guard WHERE id=1) = 0 BEGIN SELECT RAISE(ABORT, 'metric_late_event is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "metric_late_event_no_update",
+      "tbl_name": "metric_late_event",
+      "sql": "CREATE TRIGGER metric_late_event_no_update BEFORE UPDATE ON metric_late_event BEGIN SELECT RAISE(ABORT, 'metric_late_event is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "metric_late_reconciliation_no_delete",
+      "tbl_name": "metric_late_reconciliation",
+      "sql": "CREATE TRIGGER metric_late_reconciliation_no_delete BEFORE DELETE ON metric_late_reconciliation WHEN (SELECT retention_delete FROM metric_maintenance_guard WHERE id=1) = 0 BEGIN SELECT RAISE(ABORT, 'metric_late_reconciliation is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "metric_late_reconciliation_no_update",
+      "tbl_name": "metric_late_reconciliation",
+      "sql": "CREATE TRIGGER metric_late_reconciliation_no_update BEFORE UPDATE ON metric_late_reconciliation BEGIN SELECT RAISE(ABORT, 'metric_late_reconciliation is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "model_usage_identity_immutable",
+      "tbl_name": "model_usage_attempt",
+      "sql": "CREATE TRIGGER model_usage_identity_immutable BEFORE UPDATE ON model_usage_attempt WHEN\n  NEW.attempt_id IS NOT OLD.attempt_id OR NEW.logical_call_id IS NOT OLD.logical_call_id OR NEW.attempt_number IS NOT OLD.attempt_number\n  OR NEW.run_id IS NOT OLD.run_id OR NEW.trace_id IS NOT OLD.trace_id OR NEW.role IS NOT OLD.role\n  OR NEW.provider IS NOT OLD.provider OR NEW.model IS NOT OLD.model OR NEW.started_at IS NOT OLD.started_at\n  BEGIN SELECT RAISE(ABORT,'usage_identity_immutable'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "model_usage_no_delete",
+      "tbl_name": "model_usage_attempt",
+      "sql": "CREATE TRIGGER model_usage_no_delete BEFORE DELETE ON model_usage_attempt\n  BEGIN SELECT RAISE(ABORT,'usage_delete_forbidden'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "model_usage_no_replace",
+      "tbl_name": "model_usage_attempt",
+      "sql": "CREATE TRIGGER model_usage_no_replace BEFORE INSERT ON model_usage_attempt WHEN\n  EXISTS(SELECT 1 FROM model_usage_attempt WHERE attempt_id=NEW.attempt_id OR (logical_call_id=NEW.logical_call_id AND attempt_number=NEW.attempt_number))\n  BEGIN SELECT RAISE(ABORT,'usage_identity_conflict'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "model_usage_observation_monotonic",
+      "tbl_name": "model_usage_attempt",
+      "sql": "CREATE TRIGGER model_usage_observation_monotonic BEFORE UPDATE ON model_usage_attempt WHEN\n  NEW.observation_number<=OLD.observation_number OR OLD.usage_status='reported'\n  BEGIN SELECT RAISE(ABORT,'usage_observation_immutable'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "provenance_meta_no_delete",
+      "tbl_name": "provenance_meta",
+      "sql": "CREATE TRIGGER provenance_meta_no_delete BEFORE DELETE ON provenance_meta BEGIN SELECT RAISE(ABORT, 'provenance_meta is immutable'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "provenance_meta_no_update",
+      "tbl_name": "provenance_meta",
+      "sql": "CREATE TRIGGER provenance_meta_no_update BEFORE UPDATE ON provenance_meta BEGIN SELECT RAISE(ABORT, 'provenance_meta is immutable'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "provenance_redaction_no_delete",
+      "tbl_name": "provenance_redaction",
+      "sql": "CREATE TRIGGER provenance_redaction_no_delete BEFORE DELETE ON provenance_redaction BEGIN SELECT RAISE(ABORT, 'provenance_redaction is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "provenance_redaction_no_update",
+      "tbl_name": "provenance_redaction",
+      "sql": "CREATE TRIGGER provenance_redaction_no_update BEFORE UPDATE ON provenance_redaction BEGIN SELECT RAISE(ABORT, 'provenance_redaction is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "provenance_revision_no_delete",
+      "tbl_name": "provenance_revision",
+      "sql": "CREATE TRIGGER provenance_revision_no_delete BEFORE DELETE ON provenance_revision BEGIN SELECT RAISE(ABORT, 'provenance_revision is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "provenance_revision_no_update",
+      "tbl_name": "provenance_revision",
+      "sql": "CREATE TRIGGER provenance_revision_no_update BEFORE UPDATE ON provenance_revision BEGIN SELECT RAISE(ABORT, 'provenance_revision is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "redacted_index_insert",
+      "tbl_name": "report_index",
+      "sql": "CREATE TRIGGER redacted_index_insert BEFORE INSERT ON report_index WHEN EXISTS (SELECT 1 FROM report_redaction_boundary WHERE report_id=NEW.report_id)\n  BEGIN SELECT RAISE(ABORT,'report_redacted'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "redacted_index_update",
+      "tbl_name": "report_index",
+      "sql": "CREATE TRIGGER redacted_index_update BEFORE UPDATE ON report_index WHEN EXISTS (SELECT 1 FROM report_redaction_boundary WHERE report_id IN (OLD.report_id,NEW.report_id))\n  BEGIN SELECT RAISE(ABORT,'report_redacted'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "redacted_ppt_insert",
+      "tbl_name": "ppt_polish_cache",
+      "sql": "CREATE TRIGGER redacted_ppt_insert BEFORE INSERT ON ppt_polish_cache WHEN EXISTS (SELECT 1 FROM report_redaction_boundary WHERE report_id=NEW.report_id)\n  BEGIN SELECT RAISE(ABORT,'report_redacted'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "redacted_ppt_update",
+      "tbl_name": "ppt_polish_cache",
+      "sql": "CREATE TRIGGER redacted_ppt_update BEFORE UPDATE ON ppt_polish_cache WHEN EXISTS (SELECT 1 FROM report_redaction_boundary WHERE report_id IN (OLD.report_id,NEW.report_id))\n  BEGIN SELECT RAISE(ABORT,'report_redacted'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "redacted_report_insert",
+      "tbl_name": "report",
+      "sql": "CREATE TRIGGER redacted_report_insert BEFORE INSERT ON report\n  WHEN EXISTS (SELECT 1 FROM report_redaction_boundary WHERE report_id=NEW.id) AND (NEW.status<>'deleted' OR NEW.body_path IS NOT NULL)\n  BEGIN SELECT RAISE(ABORT,'report_redacted'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "redacted_report_update",
+      "tbl_name": "report",
+      "sql": "CREATE TRIGGER redacted_report_update BEFORE UPDATE ON report\n  WHEN EXISTS (SELECT 1 FROM report_redaction_boundary WHERE report_id IN (OLD.id,NEW.id)) AND (NEW.id<>OLD.id OR NEW.status<>'deleted' OR NEW.body_path IS NOT NULL)\n  BEGIN SELECT RAISE(ABORT,'report_redacted'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "redacted_review_insert",
+      "tbl_name": "report_review_snapshot",
+      "sql": "CREATE TRIGGER redacted_review_insert BEFORE INSERT ON report_review_snapshot WHEN EXISTS (SELECT 1 FROM report_redaction_boundary WHERE report_id=NEW.report_id)\n  BEGIN SELECT RAISE(ABORT,'report_redacted'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "redacted_review_update",
+      "tbl_name": "report_review_snapshot",
+      "sql": "CREATE TRIGGER redacted_review_update BEFORE UPDATE ON report_review_snapshot WHEN EXISTS (SELECT 1 FROM report_redaction_boundary WHERE report_id IN (OLD.report_id,NEW.report_id))\n  BEGIN SELECT RAISE(ABORT,'report_redacted'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "redacted_selection_insert",
+      "tbl_name": "report_selection_decision",
+      "sql": "CREATE TRIGGER redacted_selection_insert BEFORE INSERT ON report_selection_decision WHEN EXISTS (SELECT 1 FROM report_redaction_boundary WHERE report_id=NEW.report_id)\n  BEGIN SELECT RAISE(ABORT,'report_redacted'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "redacted_selection_update",
+      "tbl_name": "report_selection_decision",
+      "sql": "CREATE TRIGGER redacted_selection_update BEFORE UPDATE ON report_selection_decision WHEN EXISTS (SELECT 1 FROM report_redaction_boundary WHERE report_id IN (OLD.report_id,NEW.report_id))\n  BEGIN SELECT RAISE(ABORT,'report_redacted'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "redaction_no_replace",
+      "tbl_name": "provenance_redaction",
+      "sql": "CREATE TRIGGER redaction_no_replace BEFORE INSERT ON provenance_redaction\n  WHEN EXISTS (SELECT 1 FROM provenance_redaction WHERE record_id=NEW.record_id OR (entity_key=NEW.entity_key AND scope=NEW.scope))\n  BEGIN SELECT RAISE(ABORT,'redaction_record_conflict'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "redaction_report_valid",
+      "tbl_name": "provenance_redaction",
+      "sql": "CREATE TRIGGER redaction_report_valid BEFORE INSERT ON provenance_redaction WHEN NEW.scope='report' AND (\n  NEW.entity_key NOT GLOB 'report:?*' OR substr(NEW.entity_key,8) GLOB '*[^A-Za-z0-9_-]*'\n  OR strftime('%Y-%m-%dT%H:%M:%fZ',NEW.effective_at) IS NOT CASE WHEN length(NEW.effective_at)=20 THEN substr(NEW.effective_at,1,19)||'.000Z' ELSE NEW.effective_at END\n  OR strftime('%Y-%m-%dT%H:%M:%fZ',NEW.expiry_at) IS NOT CASE WHEN length(NEW.expiry_at)=20 THEN substr(NEW.expiry_at,1,19)||'.000Z' ELSE NEW.expiry_at END\n  OR julianday(NEW.expiry_at)<=julianday(NEW.effective_at))\n  BEGIN SELECT RAISE(ABORT,'redaction_time_or_key_invalid'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "source_credit_conflict_no_delete",
+      "tbl_name": "source_credit_conflict",
+      "sql": "CREATE TRIGGER source_credit_conflict_no_delete BEFORE DELETE ON source_credit_conflict BEGIN SELECT RAISE(ABORT, 'source_credit_conflict is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "source_credit_conflict_no_update",
+      "tbl_name": "source_credit_conflict",
+      "sql": "CREATE TRIGGER source_credit_conflict_no_update BEFORE UPDATE ON source_credit_conflict BEGIN SELECT RAISE(ABORT, 'source_credit_conflict is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "source_credit_event_no_delete",
+      "tbl_name": "source_credit_event",
+      "sql": "CREATE TRIGGER source_credit_event_no_delete BEFORE DELETE ON source_credit_event BEGIN SELECT RAISE(ABORT, 'source_credit_event is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "source_credit_event_no_update",
+      "tbl_name": "source_credit_event",
+      "sql": "CREATE TRIGGER source_credit_event_no_update BEFORE UPDATE ON source_credit_event BEGIN SELECT RAISE(ABORT, 'source_credit_event is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "source_credit_fact_no_delete",
+      "tbl_name": "source_credit_fact",
+      "sql": "CREATE TRIGGER source_credit_fact_no_delete BEFORE DELETE ON source_credit_fact BEGIN SELECT RAISE(ABORT, 'source_credit_fact is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "source_credit_fact_no_update",
+      "tbl_name": "source_credit_fact",
+      "sql": "CREATE TRIGGER source_credit_fact_no_update BEFORE UPDATE ON source_credit_fact BEGIN SELECT RAISE(ABORT, 'source_credit_fact is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "source_credit_late_event_no_delete",
+      "tbl_name": "source_credit_late_event",
+      "sql": "CREATE TRIGGER source_credit_late_event_no_delete BEFORE DELETE ON source_credit_late_event BEGIN SELECT RAISE(ABORT, 'source_credit_late_event is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "source_credit_late_event_no_update",
+      "tbl_name": "source_credit_late_event",
+      "sql": "CREATE TRIGGER source_credit_late_event_no_update BEFORE UPDATE ON source_credit_late_event BEGIN SELECT RAISE(ABORT, 'source_credit_late_event is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "source_credit_late_reconciliation_no_delete",
+      "tbl_name": "source_credit_late_reconciliation",
+      "sql": "CREATE TRIGGER source_credit_late_reconciliation_no_delete BEFORE DELETE ON source_credit_late_reconciliation BEGIN SELECT RAISE(ABORT, 'source_credit_late_reconciliation is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "source_credit_late_reconciliation_no_update",
+      "tbl_name": "source_credit_late_reconciliation",
+      "sql": "CREATE TRIGGER source_credit_late_reconciliation_no_update BEFORE UPDATE ON source_credit_late_reconciliation BEGIN SELECT RAISE(ABORT, 'source_credit_late_reconciliation is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "source_transcript_policy_semantics_requires_new_version",
+      "tbl_name": "source",
+      "sql": "CREATE TRIGGER source_transcript_policy_semantics_requires_new_version\nBEFORE UPDATE OF transcript_mode, transcript_strategy, transcript_max_items_per_run, transcript_max_bytes_per_run, transcript_timeout_budget_ms, transcript_host_qps, transcript_policy_version, topic_ids ON source\nWHEN OLD.transcript_mode <> 'off' AND NEW.transcript_mode <> 'off'\n AND NEW.transcript_policy_version = OLD.transcript_policy_version\n AND (OLD.transcript_mode IS NOT NEW.transcript_mode OR OLD.transcript_strategy IS NOT NEW.transcript_strategy\n      OR OLD.transcript_max_items_per_run IS NOT NEW.transcript_max_items_per_run\n      OR OLD.transcript_max_bytes_per_run IS NOT NEW.transcript_max_bytes_per_run\n      OR OLD.transcript_timeout_budget_ms IS NOT NEW.transcript_timeout_budget_ms\n      OR OLD.transcript_host_qps IS NOT NEW.transcript_host_qps OR OLD.topic_ids IS NOT NEW.topic_ids)\nBEGIN SELECT RAISE(ABORT, 'transcript_policy_version_must_change'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "source_transcript_policy_version_no_delete",
+      "tbl_name": "source_transcript_policy_version",
+      "sql": "CREATE TRIGGER source_transcript_policy_version_no_delete\nBEFORE DELETE ON source_transcript_policy_version\nBEGIN SELECT RAISE(ABORT, 'source_transcript_policy_version is immutable'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "source_transcript_policy_version_no_update",
+      "tbl_name": "source_transcript_policy_version",
+      "sql": "CREATE TRIGGER source_transcript_policy_version_no_update\nBEFORE UPDATE ON source_transcript_policy_version\nBEGIN SELECT RAISE(ABORT, 'source_transcript_policy_version is immutable'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "source_transcript_policy_version_record_insert",
+      "tbl_name": "source",
+      "sql": "CREATE TRIGGER source_transcript_policy_version_record_insert\nAFTER INSERT ON source WHEN NEW.transcript_mode <> 'off'\nBEGIN INSERT INTO source_transcript_policy_version(source_id,transcript_policy_version,recorded_at) VALUES (NEW.id,trim(NEW.transcript_policy_version),datetime('now')); END"
+    },
+    {
+      "type": "trigger",
+      "name": "source_transcript_policy_version_record_update",
+      "tbl_name": "source",
+      "sql": "CREATE TRIGGER source_transcript_policy_version_record_update\nAFTER UPDATE OF transcript_mode, transcript_policy_version ON source\nWHEN NEW.transcript_mode <> 'off' AND (OLD.transcript_mode = 'off' OR NEW.transcript_policy_version IS NOT OLD.transcript_policy_version)\nBEGIN INSERT INTO source_transcript_policy_version(source_id,transcript_policy_version,recorded_at) VALUES (NEW.id,trim(NEW.transcript_policy_version),datetime('now')); END"
+    },
+    {
+      "type": "trigger",
+      "name": "source_transcript_policy_version_required_insert",
+      "tbl_name": "source",
+      "sql": "CREATE TRIGGER source_transcript_policy_version_required_insert\nBEFORE INSERT ON source\nWHEN NEW.transcript_mode <> 'off' AND (NEW.transcript_policy_version IS NULL OR length(trim(NEW.transcript_policy_version)) = 0)\nBEGIN SELECT RAISE(ABORT, 'transcript_policy_version_required'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "source_transcript_policy_version_required_update",
+      "tbl_name": "source",
+      "sql": "CREATE TRIGGER source_transcript_policy_version_required_update\nBEFORE UPDATE OF transcript_mode, transcript_policy_version ON source\nWHEN NEW.transcript_mode <> 'off' AND (NEW.transcript_policy_version IS NULL OR length(trim(NEW.transcript_policy_version)) = 0)\nBEGIN SELECT RAISE(ABORT, 'transcript_policy_version_required'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "transcript_acquisition_conflict_no_delete",
+      "tbl_name": "transcript_acquisition_conflict",
+      "sql": "CREATE TRIGGER transcript_acquisition_conflict_no_delete BEFORE DELETE ON transcript_acquisition_conflict BEGIN SELECT RAISE(ABORT, 'transcript_acquisition_conflict is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "transcript_acquisition_conflict_no_update",
+      "tbl_name": "transcript_acquisition_conflict",
+      "sql": "CREATE TRIGGER transcript_acquisition_conflict_no_update BEFORE UPDATE ON transcript_acquisition_conflict BEGIN SELECT RAISE(ABORT, 'transcript_acquisition_conflict is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "transcript_acquisition_fact_mode_guard_insert",
+      "tbl_name": "transcript_acquisition_fact",
+      "sql": "CREATE TRIGGER transcript_acquisition_fact_mode_guard_insert\nBEFORE INSERT ON transcript_acquisition_fact WHEN NEW.mode = 'off'\nBEGIN SELECT RAISE(ABORT, 'off_transcript_mode_cannot_emit_acquisition_fact'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "transcript_acquisition_fact_no_delete",
+      "tbl_name": "transcript_acquisition_fact",
+      "sql": "CREATE TRIGGER transcript_acquisition_fact_no_delete BEFORE DELETE ON transcript_acquisition_fact BEGIN SELECT RAISE(ABORT, 'transcript_acquisition_fact is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "transcript_acquisition_fact_no_update",
+      "tbl_name": "transcript_acquisition_fact",
+      "sql": "CREATE TRIGGER transcript_acquisition_fact_no_update BEFORE UPDATE ON transcript_acquisition_fact BEGIN SELECT RAISE(ABORT, 'transcript_acquisition_fact is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "validator_result_fact_no_delete",
+      "tbl_name": "validator_result_fact",
+      "sql": "CREATE TRIGGER validator_result_fact_no_delete BEFORE DELETE ON validator_result_fact WHEN (SELECT retention_delete FROM metric_maintenance_guard WHERE id=1) = 0 BEGIN SELECT RAISE(ABORT, 'validator_result_fact is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "validator_result_fact_no_update",
+      "tbl_name": "validator_result_fact",
+      "sql": "CREATE TRIGGER validator_result_fact_no_update BEFORE UPDATE ON validator_result_fact BEGIN SELECT RAISE(ABORT, 'validator_result_fact is append-only'); END"
+    },
+    {
+      "type": "view",
+      "name": "report_redaction_boundary",
+      "tbl_name": "report_redaction_boundary",
+      "sql": "CREATE VIEW report_redaction_boundary AS SELECT substr(entity_key,8) AS report_id\n  FROM provenance_redaction WHERE scope='report' AND julianday(effective_at)<=julianday('now')"
+    }
+  ]
+}
