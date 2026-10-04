@@ -189,7 +189,7 @@ for (const mode of ["docs", "full"]) {
   });
 }
 
-test("workflow topology preserves required entries, evidence and serial Docker before PR 3", () => {
+test("workflow topology runs application and Docker independently on the same checkout SHA", () => {
   const ci = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
   const publish = readFileSync(new URL("../.github/workflows/publish-image.yml", import.meta.url), "utf8");
   for (const name of ["typecheck · test · build", "docker build", "eval-gate (trailer)"]) assert.ok(ci.includes(`name: ${name}`));
@@ -197,9 +197,31 @@ test("workflow topology preserves required entries, evidence and serial Docker b
     const block = ci.match(new RegExp(`\\n  ${key}:\\n([\\s\\S]*?)(?=\\n  [a-z-]+:|$)`))[1];
     assert.ok(block.includes("if: always()")); assert.ok(block.includes("ci-required-gate.mjs"));
   }
-  assert.ok(ci.includes("needs: [scope, application]"));
+  for (const key of ["application", "container"]) {
+    const block = ci.match(new RegExp(`\\n  ${key}:\\n([\\s\\S]*?)(?=\\n  [a-z-]+:|$)`))[1];
+    assert.ok(block.includes("needs: scope\n"));
+    assert.ok(block.includes("if: needs.scope.outputs.mode == 'full'"));
+    assert.ok(block.includes("uses: actions/checkout@v7"));
+    assert.ok(!block.includes("download-artifact"));
+    assert.ok(!block.includes("ref:")); // Both use the event's exact github.sha, never a branch tip.
+  }
   assert.ok(ci.includes("npm run build:e2e")); assert.ok(ci.includes("npm run test:e2e:built"));
   assert.ok(!ci.includes("paths-ignore"));
   assert.ok(publish.includes("needs: admission")); assert.ok(publish.includes("if: needs.admission.outputs.publish == 'true'"));
   assert.ok(!publish.slice(0, publish.indexOf("\n  publish:")).includes("packages: write"));
 });
+
+for (const failedSide of ["application", "Docker"]) {
+  test(`parallel ${failedSide} failure blocks its required CLI and publication despite other-side success`, () => {
+    const p = publication("full"), output = join(p.cwd, "gate-output");
+    const baseEnv = { ...process.env, MODE: "full", SCOPE_RESULT: "success", DOCS_RESULT: "skipped", GITHUB_OUTPUT: output };
+    const gate = result => spawnSync(process.execPath, [fileURL("ci-required-gate.mjs")], { cwd: p.cwd, env: { ...baseEnv, FULL_RESULT: result } });
+    assert.equal(gate("success").status, 0);
+    for (const result of ["failure", "cancelled", "skipped"]) {
+      assert.equal(gate(result).status, 1);
+      const bad = structuredClone(p);
+      bad.jobs.find(j => j.name === `full ${failedSide === "application" ? "application" : "Docker"} verification`).conclusion = result;
+      assert.throws(() => assertPublishAdmission(bad));
+    }
+  });
+}

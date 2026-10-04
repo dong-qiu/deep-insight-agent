@@ -215,7 +215,7 @@ jobs:
       - name: npm audit (all deps, high+ blocking)
         run: npm audit --audit-level=high
       # This aggregate is intentionally written only after lint/test/typecheck/build in this job
-      # have passed. Docker is a separate downstream required CI check and is not claimed here.
+      # have passed. Docker is a separate independent required CI check and is not claimed here.
       # A later prototype release receipt binds this candidate source SHA and records the tested
       # merge SHA; it does not turn the artifact into a legal or quality approval.
       - name: write prototype CI evidence
@@ -234,7 +234,9 @@ jobs:
   container:
     name: full Docker verification
     runs-on: ubuntu-latest
-    needs: [scope, application]
+    # Docker rebuilds from the same event SHA and consumes no application-job artifacts.
+    # Its required gate and publication admission still require both validations to succeed.
+    needs: scope
     if: needs.scope.outputs.mode == 'full'
     steps:
       - uses: actions/checkout@v7
