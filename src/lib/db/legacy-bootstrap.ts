@@ -1,0 +1,175 @@
+/** Local compatibility bootstrap only. Never advances the provenance ledger. */
+import type { DB } from "./connection.js";
+import { migratePodcastTranscriptContracts } from "./podcast-transcript-migrations.js";
+import { PODCAST_TRANSCRIPT_POLICY_VERSION_IMMUTABILITY_SQL, SCHEMA_SQL } from "./schema.js";
+
+export function tableExists(db: DB, table: string): boolean {
+  return Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table));
+}
+
+export function bootstrapLegacySchema(db: DB, freshDatabase: boolean): void {
+  // SCHEMA_SQL contains indexes over recently added columns. For an existing database,
+  // bring those columns forward before replaying the schema, otherwise SQLite rejects
+  // CREATE INDEX before migrate() gets a chance to add the column.
+  if (tableExists(db, "content_item")) migrate(db);
+  db.exec(SCHEMA_SQL);
+  migrate(db);
+  // A new local database has no migration ledger yet. Existing databases receive this v44
+  // contract only through the immutable provenance runner, never through schema replay.
+  if (freshDatabase) db.exec(PODCAST_TRANSCRIPT_POLICY_VERSION_IMMUTABILITY_SQL);
+}
+
+/** 轻量幂等迁移：CREATE IF NOT EXISTS 不会给已存在的表补列，故对增列做显式 ALTER。
+ *  表/列名为内部常量（非用户输入），无注入面。 */
+function ensureColumn(db: DB, table: string, column: string, ddl: string): void {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+  if (!cols.some((c) => c.name === column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+}
+
+function columnExists(db: DB, table: string, column: string): boolean {
+  return (db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).some((c) => c.name === column);
+}
+
+function migrate(db: DB): void {
+  // 洞察级护栏字段（round2）：旧库补列，已存在行取 DEFAULT 0（重跑管线即写入正确值）
+  ensureColumn(db, "validation_result", "insights_total", "insights_total INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(db, "validation_result", "insights_includable", "insights_includable INTEGER NOT NULL DEFAULT 0");
+  // 校验失败计数（validator 抗抖 round）：旧库补列，已存在行取 DEFAULT 0（重跑管线即写入正确值）
+  ensureColumn(db, "validation_result", "errored", "errored INTEGER NOT NULL DEFAULT 0");
+  // P1 不复报（2026-06-06 dogfood）：analyzer 喂历史 event_id 后标"同事件 follow-up"，
+  // 旧数据全 0（视为新事件）；新管线写正确值。0/1 表 bool，与 schema 其他 bool 一致。
+  ensureColumn(db, "insight", "is_followup", "is_followup INTEGER NOT NULL DEFAULT 0");
+  // 实体追踪：analyzer 抽取的关键实体 JSON 数组；旧库补列默认 '[]'（重跑管线写正确值）。
+  ensureColumn(db, "insight", "entities", "entities TEXT NOT NULL DEFAULT '[]'");
+  // 主题标签：analyzer 抽取的标签 JSON 数组，供报告库「标签」维度筛选；旧库补列默认 '[]'（重跑管线写正确值）。
+  ensureColumn(db, "insight", "tags", "tags TEXT NOT NULL DEFAULT '[]'");
+  // 一句话要点（headline 方案）：analyzer 为每条洞察产出的 ≤40 字浓缩，供列表卡片扫读；
+  // 旧库补列默认 ''（重跑管线写正确值，渲染端回退到 statement）。
+  ensureColumn(db, "insight", "headline", "headline TEXT NOT NULL DEFAULT ''");
+  // 展示 statement 的唯一 citation 绑定。旧数据保留 NULL，reader-visible 图谱会 fail-closed 排除。
+  ensureColumn(db, "insight", "statement_citation_index", "statement_citation_index INTEGER");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_insight_batch_statement_citation ON insight(batch_id, statement_citation_index)");
+  // New analysis batches are explicitly audited even when all candidates are rejected. Old rows
+  // remain legacy, so a read round-trip cannot turn an audited-empty batch into compatibility data.
+  ensureColumn(db, "analysis_batch", "display_coverage_state", "display_coverage_state TEXT NOT NULL DEFAULT 'legacy' CHECK (display_coverage_state IN ('legacy','audited'))");
+  // Source-quote v6 is a new reader contract, not a backfill: historical audited rows remain
+  // legacy until they are re-analysed and pass the self-contained quote gate.
+  ensureColumn(db, "analysis_batch", "display_projection_version", "display_projection_version TEXT NOT NULL DEFAULT 'legacy' CHECK (display_projection_version IN ('legacy','source_quote_v1'))");
+  // 展示级引用审计：旧 citation 没有 claim/ref，保持空值并由读路径视为 legacy；新分析写入
+  // 稳定 ref 与原子 claim，不能把旧数据误报成已审计。
+  ensureColumn(db, "citation", "citation_ref", "citation_ref TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, "citation", "claim", "claim TEXT NOT NULL DEFAULT ''");
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_citation_ref ON citation(citation_ref);
+    CREATE TABLE IF NOT EXISTS display_coverage_audit (
+      batch_id TEXT NOT NULL REFERENCES analysis_batch(id), insight_id TEXT NOT NULL REFERENCES insight(id),
+      candidate_id TEXT NOT NULL, gate_version TEXT NOT NULL, terminal_reason TEXT NOT NULL,
+      prompt_version TEXT NOT NULL, input_hash TEXT NOT NULL, validator_model TEXT NOT NULL,
+      decision TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (batch_id, insight_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_display_coverage_audit_insight ON display_coverage_audit(insight_id, created_at);
+    CREATE TRIGGER IF NOT EXISTS display_coverage_audit_batch_matches_insight
+    BEFORE INSERT ON display_coverage_audit
+    WHEN NOT EXISTS (SELECT 1 FROM insight WHERE id = NEW.insight_id AND batch_id = NEW.batch_id)
+    BEGIN SELECT RAISE(ABORT, 'display coverage audit insight belongs to another batch'); END;
+    CREATE TABLE IF NOT EXISTS display_coverage_candidate_audit (
+      batch_id TEXT NOT NULL REFERENCES analysis_batch(id), candidate_id TEXT NOT NULL,
+      insight_id TEXT REFERENCES insight(id), gate_version TEXT NOT NULL, terminal_reason TEXT NOT NULL,
+      prompt_version TEXT NOT NULL, input_hash TEXT NOT NULL, validator_model TEXT NOT NULL,
+      decision TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (batch_id, candidate_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_display_coverage_candidate_audit_insight ON display_coverage_candidate_audit(insight_id, created_at);
+    CREATE TRIGGER IF NOT EXISTS display_coverage_candidate_audit_batch_matches_insight
+    BEFORE INSERT ON display_coverage_candidate_audit
+    WHEN NEW.insight_id IS NOT NULL
+     AND NOT EXISTS (SELECT 1 FROM insight WHERE id = NEW.insight_id AND batch_id = NEW.batch_id)
+    BEGIN SELECT RAISE(ABORT, 'display coverage candidate audit insight belongs to another batch'); END;`);
+  // 卡片要点列表（headline 方案）：report_index 派生的 headline 数组，取代 summary 拼接长串供卡片分点扫读；
+  // 旧报告补列默认 '[]'（重生报告写正确值，渲染端回退到 summary）。
+  ensureColumn(db, "report_index", "highlights", "highlights TEXT NOT NULL DEFAULT '[]'");
+  // 里程碑自动标注（ADR-0006）：report_index 派生的里程碑洞察计数（importance≥5 + 非追加 + aggregation），
+  // 供主题页徽标/里程碑时间线；旧报告补列默认 0（重生报告写正确值）。
+  ensureColumn(db, "report_index", "milestone_count", "milestone_count INTEGER NOT NULL DEFAULT 0");
+  // Daily Brief 新鲜度审计：历史报告不臆造，迁移后保持 NULL；新报告由 report-gen 计算写入。
+  ensureColumn(db, "report_index", "freshest_candidate_at", "freshest_candidate_at TEXT");
+  ensureColumn(db, "report_index", "freshest_citation_at", "freshest_citation_at TEXT");
+  ensureColumn(db, "report_index", "freshness_lag_hours", "freshness_lag_hours REAL");
+  // 料源形态（ADR-0007 播客接入）：旧库补列默认 'article'（存量全是网页/论文/show_notes 文摘，
+  // 重采才写真值）；CHECK 已实测可随 ADD COLUMN 加（默认值满足约束）。
+  ensureColumn(
+    db,
+    "content_item",
+    "body_kind",
+    "body_kind TEXT NOT NULL DEFAULT 'article' CHECK (body_kind IN ('article','show_notes','transcript'))",
+  );
+  ensureColumn(
+    db,
+    "content_item",
+    "reader_eligible",
+    "reader_eligible INTEGER NOT NULL DEFAULT 1 CHECK (reader_eligible IN (0,1))",
+  );
+  db.exec("CREATE INDEX IF NOT EXISTS idx_content_reader_eligible ON content_item(reader_eligible, fetched_at DESC)");
+  // 按源全文策略（ADR-0008 决定③）：旧库补列——存量源默认 'feed'（行为不变）、content_container NULL。
+  // CHECK 随 ADD COLUMN 加（默认值 'feed' 满足约束，同 body_kind 实测）。
+  ensureColumn(
+    db,
+    "source",
+    "fetch_mode",
+    "fetch_mode TEXT NOT NULL DEFAULT 'feed' CHECK (fetch_mode IN ('feed','full_text'))",
+  );
+  ensureColumn(db, "source", "content_container", "content_container TEXT");
+  migratePodcastTranscriptContracts(db);
+  // 技术规划工作台：旧方向从 version=1 起；映射词表变更只标 stale，不会改写人工决策。
+  ensureColumn(db, "topic_direction", "version", "version INTEGER NOT NULL DEFAULT 1");
+  ensureColumn(db, "technology_opportunity", "mapping_state", "mapping_state TEXT NOT NULL DEFAULT 'current' CHECK (mapping_state IN ('current','stale'))");
+  ensureColumn(db, "technology_opportunity", "mapping_direction_version", "mapping_direction_version INTEGER");
+  // 源健康自愈（ADR-0008 决定② / 切片3b）：系统熔断态。旧库补列默认 NULL（未熔断）。
+  // disabled_reason='circuit_open' 标系统熔断（区分人工停用=NULL）；circuit_reset_at 锚定 consecutiveFails 计数起点。
+  ensureColumn(db, "source", "disabled_reason", "disabled_reason TEXT");
+  ensureColumn(db, "source", "disabled_at", "disabled_at TEXT");
+  ensureColumn(db, "source", "circuit_reset_at", "circuit_reset_at TEXT");
+  // 半开探测时间（切片3b-2）：节流，每源每天最多探一次。
+  ensureColumn(db, "source", "last_probe_at", "last_probe_at TEXT");
+  // ingest 本轮入库条数（切片3b-3 零产出看门狗）：旧 run NULL=未知不计入；新 ingest run 由 collectSource 回填。
+  ensureColumn(db, "run", "inserted", "inserted INTEGER");
+  // 主题行为原型（ADR-0010）：存量主题派生默认 deep_vertical=现状行为，零回填。无 CHECK（app 校验）。
+  ensureColumn(db, "topic", "archetype", "archetype TEXT NOT NULL DEFAULT 'deep_vertical'");
+  // 主题/报告分面标签（ADR-0010）：分类维度。存量行补列默认 '[]'（industry→facets 回填见下方 Step2c 块）。
+  ensureColumn(db, "topic", "facets", "facets TEXT NOT NULL DEFAULT '[]'");
+  ensureColumn(db, "report_index", "facets", "facets TEXT NOT NULL DEFAULT '[]'");
+  // ADR-0010 Step2c：砍 industry——分类唯一维度归 facets/domain。**自包含迁移**（无需手动改库）：
+  // 对每张带 industry 列的表，先把空 facets 从该行 industry 串映成 domain facet 回填
+  // （json_array('domain:'||industry)，不覆盖已设值——如 Step2b 部署时已设的 t_ai_industry=domain:ai-industry），
+  // 再 DROP COLUMN。守卫「列存在才执行」→ fresh DB（schema 已不含 industry）跳过、旧库迁移一次。
+  // 注：t_ai_industry 历史报告 industry=ai-swe → 回填 domain:ai-swe（历史口径，新报告取 topic.facets 即对）。
+  // 列级 CHECK 随列一起 DROP（SQLite 3.35+）；三列均无索引/FK，可安全 DROP。source 无 facets（域由 topic 派生）→ 只删。
+  for (const table of ["topic", "report_index"]) {
+    if (columnExists(db, table, "industry")) {
+      db.exec(
+        `UPDATE ${table} SET facets = json_array('domain:' || industry)
+         WHERE facets IN ('[]', '') AND industry <> ''`,
+      );
+      db.exec(`ALTER TABLE ${table} DROP COLUMN industry`);
+    }
+  }
+  if (columnExists(db, "source", "industry")) db.exec("ALTER TABLE source DROP COLUMN industry");
+
+  // ADR-0010 后续（lens 视角轴 + domain 去 ai- 前缀）：**自包含幂等迁移**（无需手动改库）。
+  // ① 先给旧「产业」主题补 lens:business——keyed on 旧值 domain:ai-industry（仅 t_ai_industry 持有），
+  //    json_each 判定（whitespace 健壮）+ 无 lens 守卫（幂等，不重复追加）。须在 ② 重命名之前跑（之后该 token 消失）。
+  //    只动 topic 表：report_index 历史行不臆造 lens（且 ai-industry 历史曾回填为 ai-swe，无从辨认——同 Step2c 历史口径）。
+  db.exec(
+    `UPDATE topic SET facets = json_insert(facets, '$[#]', 'lens:business')
+     WHERE EXISTS (SELECT 1 FROM json_each(topic.facets) WHERE value = 'domain:ai-industry')
+       AND NOT EXISTS (SELECT 1 FROM json_each(topic.facets) WHERE value LIKE 'lens:%')`,
+  );
+  // ② domain 值去 ai- 前缀 / 产业域改名（topic + report_index 两表 facets 列）。三 token 互不为子串、
+  //    新值不含旧 token → 链式 REPLACE 顺序无关、且天然幂等（旧 token 已无 → no-op，可每次启动跑）。
+  for (const table of ["topic", "report_index"]) {
+    db.exec(
+      `UPDATE ${table} SET facets = REPLACE(REPLACE(REPLACE(facets,
+         'domain:ai-swe', 'domain:software-engineering'),
+         'domain:ai-security', 'domain:security'),
+         'domain:ai-industry', 'domain:foundation-models')`,
+    );
+  }
+}
