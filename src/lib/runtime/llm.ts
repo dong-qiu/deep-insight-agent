@@ -1,3 +1,5 @@
+import { safeError } from "./diagnostics.js";
+import { abortableDelay, awaitWithSignal, throwIfAborted } from "./cancellation.js";
 /**
  * 最小 LLM Client —— A1 切片版。
  * 后续建骨架时扩为完整 runtime（重试 / 限流 / token 计量 / Job Runner），见 architecture「Agent 运行时」。
@@ -493,30 +495,6 @@ export interface TransientRetryOptions {
   retryWhen?: (error: unknown) => boolean;
 }
 
-function abortableDelay(delayMs: number, signal?: AbortSignal): Promise<void> {
-  if (!delayMs) return Promise.resolve();
-  return new Promise((resolve, reject) => {
-    if (signal?.aborted) {
-      reject(signal.reason ?? new Error("LLM request aborted before retry"));
-      return;
-    }
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const cleanup = (): void => {
-      if (timer) clearTimeout(timer);
-      signal?.removeEventListener("abort", onAbort);
-    };
-    const onAbort = (): void => {
-      cleanup();
-      reject(signal?.reason ?? new Error("LLM request aborted before retry"));
-    };
-    signal?.addEventListener("abort", onAbort, { once: true });
-    timer = setTimeout(() => {
-      cleanup();
-      resolve();
-    }, delayMs);
-  });
-}
-
 /**
  * The SDK retries transport failures it owns, but an explicit SSE wall-clock abort is surfaced
  * by our Promise.race and bypasses those retries. Retry only classified infrastructure failures;
@@ -532,7 +510,9 @@ export async function retryTransientOperation<T>(
   for (let attempt = 0; ; attempt++) {
     if (options.signal?.aborted) throw options.signal.reason ?? new Error("LLM request aborted before start");
     try {
-      return await operation();
+      const result = await operation();
+      throwIfAborted(options.signal);
+      return result;
     } catch (error) {
       if (options.signal?.aborted) throw options.signal.reason ?? error;
       if (!retryWhen(error) || attempt >= retries) throw error;
@@ -593,7 +573,7 @@ async function callVolcengineStructured<T extends z.ZodType>(
       try {
         if (request.signal.aborted) throw request.signal.reason ?? new Error("LLM request aborted before start");
         try {
-          return await callVolcengineResponses({
+          const result = await awaitWithSignal(callVolcengineResponses({
             apiKey: requireLlmApiKey("volcengine-responses"),
             baseUrl: requireLlmBaseUrl("volcengine-responses"),
             model,
@@ -603,7 +583,9 @@ async function callVolcengineStructured<T extends z.ZodType>(
             maxTokens,
             thinking: Boolean(opts.thinking),
             signal: request.signal,
-          });
+          }), request.signal);
+          throwIfAborted(request.signal);
+          return result;
         } catch (error) {
           if (error instanceof VolcengineResponsesError) {
             const terminal = error.streamDiagnostic?.terminal;
@@ -658,7 +640,7 @@ async function callVolcengineStructured<T extends z.ZodType>(
         && error.retryable === true
         && error.streamDiagnostic?.terminal === "eof_before_terminal",
       onRetry: (error, retryNumber) => {
-        const kind = error instanceof Error && error.name ? error.name : "UnknownError";
+        const kind = safeError(error).type;
         console.warn(`  ⚠️ LLM 瞬态失败，应用层重试 ${retryNumber}/${llmTransientRetries()}（role=${opts.role}，${kind}）`);
       },
     });
@@ -720,6 +702,7 @@ async function callVolcengineStructured<T extends z.ZodType>(
 export async function callStructured<T extends z.ZodType>(
   opts: StructuredCall<T>,
 ): Promise<StructuredResult<z.infer<T>>> {
+  throwIfAborted(opts.signal);
   if (llmProvider() === "volcengine-responses") return callVolcengineStructured(opts);
   const startedAt = performance.now();
   let underlyingRequests = 0;
@@ -785,12 +768,15 @@ export async function callStructured<T extends z.ZodType>(
       // SDK 后台迟迟不结算该 Promise，reject handler 也已附着，不会形成未处理拒绝。
       const aborted = new Promise<never>((_, reject) => {
         onAbort = () => {
-          stream.abort();
+          try { stream.abort(); } catch { /* Cancellation still wins if an adapter abort hook throws. */ }
           reject(request.signal.reason ?? new Error("LLM request aborted"));
         };
-        request.signal.addEventListener("abort", onAbort, { once: true });
+        if (request.signal.aborted) onAbort();
+        else request.signal.addEventListener("abort", onAbort, { once: true });
       });
-      return await Promise.race([stream.finalMessage(), aborted]);
+      const result = await Promise.race([stream.finalMessage(), aborted]);
+      throwIfAborted(request.signal);
+      return result;
     } finally {
       if (onAbort) request.signal.removeEventListener("abort", onAbort);
       request.dispose();
@@ -804,7 +790,7 @@ export async function callStructured<T extends z.ZodType>(
       backoffMs: llmTransientRetryBackoffMs(),
       signal: opts.signal,
       onRetry: (error, retryNumber) => {
-        const kind = error instanceof Error && error.name ? error.name : "UnknownError";
+        const kind = safeError(error).type;
         console.warn(`  ⚠️ LLM 瞬态失败，应用层重试 ${retryNumber}/${llmTransientRetries()}（role=${opts.role}，${kind}）`);
       },
     },

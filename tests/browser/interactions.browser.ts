@@ -81,7 +81,18 @@ test("登录、viewer 访问控制和退出恢复保护", async ({ page, app }) 
   await expect(page.getByRole("navigation").getByRole("link", { name: "管理看板", exact: true })).toHaveCount(0);
   await page.goto(`${app.url}/opportunities`);
   await expect(page.getByRole("heading", { name: "技术规划机会", exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "退出", exact: true }).click();
+  const sessionCookieCount = async () => (await page.context().cookies(app.url))
+    .filter(cookie => /^(?:__Secure-)?authjs\.session-token(?:\.\d+)?$/.test(cookie.name)).length;
+  await expect.poll(sessionCookieCount, { message: "synthetic browser has an authenticated session" }).toBeGreaterThan(0);
+  // DOM alone does not prove logout has finished. Observe the real server-action
+  // response and session-cookie removal before requesting a protected page again.
+  const [signoutResponse] = await Promise.all([
+    page.waitForResponse(response => response.request().method() === "POST"
+      && response.url() === `${app.url}/opportunities`),
+    page.getByRole("button", { name: "退出", exact: true }).click(),
+  ]);
+  expect(signoutResponse.status()).toBeLessThan(400);
+  await expect.poll(sessionCookieCount, { message: "logout removes synthetic session cookies" }).toBe(0);
   await expect(page).toHaveURL(`${app.url}/login`);
   await expect(page.getByRole("heading", { name: "登录", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "退出", exact: true })).toHaveCount(0);

@@ -2,7 +2,7 @@
 
 ## 范围与前置核对
 
-初始基线为 `065dd0cf7a8f06d4becd093da2f133fc552ce201`；更新后的集成基线为 `origin/main` @ `b2a12e762bff6913dc4c0e1e8583e4a7491d1307`（#405/#407/#408 的 CI 优化已合入）。主干 C5、D5 已完成，尚无 D4；旧计划状态不作为实施事实。只新增真实浏览器测试、固定测试依赖与必要 CI 接线，不改 UI、读取性能、schema、运行任务、agent 或证据/AI 判断。
+初始基线为 `065dd0cf7a8f06d4becd093da2f133fc552ce201`；首先整合 `b2a12e762bff6913dc4c0e1e8583e4a7491d1307`（#405/#407/#408 的 CI 优化），冻结前再整合最新 `origin/main` @ `8a96b862894cbb65fdfd64f301469ad1ba37cdb4`（#406 C2a 已合入）。主干 C5、D5 已完成，尚无 D4；旧计划状态不作为实施事实。只新增真实浏览器测试、固定测试依赖与必要 CI 接线，不改 UI、读取性能、schema、运行任务、agent 或证据/AI 判断。
 
 Dependabot #373/#400/#401/#402 在排队，均与 package/lockfile 重叠；本切片不合并或重算它们的分支。用户指定 C2a 只占 runtime/job、pipeline、scheduler、取消传递；现场 C2a 无 package/CI 改动。本切片负责 package.json、package-lock.json 的 Playwright 新增项和 ci.yml 的浏览器安装/执行步骤，不引入其他升级。后续依赖 PR 必须以集成后的主干串行更新。共享 roadmap/ADR 不修改。
 
@@ -30,3 +30,9 @@ Dependabot #373/#400/#401/#402 在排队，均与 package/lockfile 重叠；本�
 四类 browser smoke、现有 HTTP E2E、TS6/TS7 app/tools、lint、应用构建与 CI coverage/audit/Docker。新增测试和配置另做定向 ESLint。最终 diff 使用 pre-pr-ai-review 新上下文独立审查并修正复查。仅测试/工具接线不触发 AI eval；未运行不相关完整 A1。
 
 冻结候选后按 [交付证据流程](pr-delivery-evidence-workflow.md) 将候选 SHA、实际测试 SHA、run/attempt、各项结果与 artifact 身份记录在 PR 摘要；不只为补 CI 链接更新 head。交付可重复命令、脱敏收据及 Draft PR；不合并、不部署、不访问生产库或清理其他分支/worktree。覆盖不包括 Firefox/WebKit、完整移动设备矩阵、全业务流程或浏览器性能；浏览器 P95 未测，不宣称通过。
+
+## 当前发现：退出后保护恢复缺陷
+
+优化 CI 首候选在退出后再次访问受保护机会页失败。加强测试为先观察真实退出 POST 响应、合成 session cookie 从存在变为零，再保留登录 DOM/退出按钮消失与再次访问保护断言；不清理 cookie、不重试导航、不增加测试 retry。加强版本本地单次 5/5，但登录重复 20 次仅 16/20，四次均在 cookie 为零和登录页呈现后再次访问成功，DOM 包含合成账户及受保护机会内容。因此不能以单次 CI 成功宣称该交互可靠或 D4 已关闭。
+
+独立修复范围：认证 middleware 的会话 cookie 刷新、退出 server action 与在途 RSC/预取响应的竞争；验证退出响应与迟到响应的身份/时序及保护页面实际响应，增加确定性回归。确切根因仍待确认。该修复应另立 spec/PR，不在本 D4 修改页面、认证或 runtime，不改 reader/AI/schema/C2a。修复并整合后，重新运行同一零重试 smoke 与最终候选 full CI 才可解除交付阻塞。

@@ -1,4 +1,5 @@
 /** 独立 dispatch worker 调用的单次执行器。worker 本身无业务写入权限，所有 claim/fencing 由 DB 原语守护。 */
+import { createTaskCancellation, TaskCancellationError, type TaskCancellationOptions } from "../runtime/cancellation.js";
 import type { DB } from "../db/index.js";
 import {
   claimNextGenerationDispatch,
@@ -23,6 +24,7 @@ const STABLE_DISPATCH_FAILURE_CODES = new Set([
 ]);
 
 function dispatchFailure(error: unknown): { reason_code: string; message: string; retryable: boolean } {
+  if (error instanceof TaskCancellationError) return { reason_code: error.reasonCode, message: error.reasonCode, retryable: false };
   const message = error instanceof Error ? error.message : String(error);
   if (STABLE_DISPATCH_FAILURE_CODES.has(message)) {
     return { reason_code: message, message, retryable: false };
@@ -34,7 +36,7 @@ function dispatchFailure(error: unknown): { reason_code: string; message: string
 
 /** Injection seam for deterministic failure tests.  Production always uses
  * the DB CAS heartbeat and the standard 30s cadence. */
-export interface GenerationDispatchRuntime {
+export interface GenerationDispatchRuntime extends TaskCancellationOptions {
   heartbeat?: typeof heartbeatGenerationDispatch;
   heartbeatMs?: number;
   /** Supplied by the worker composition root; core dispatch is dormant by default. */
@@ -46,33 +48,50 @@ export async function runGenerationDispatchOnce(
   execute: (db: DB, topicId: string, opts: GenerationExecutionOptions & { reportType: "brief" | "deep_dive" | "initial_digest"; windowHours?: number; windowEnd?: string; items?: number }) => Promise<unknown> = executeDispatch,
   runtime: GenerationDispatchRuntime = {},
 ): Promise<{ claimed: boolean; traceId?: string; status?: "done" | "failed" }> {
-  const claim = claimNextGenerationDispatch(db);
-  if (!claim) return { claimed: false };
+  const cancellation = createTaskCancellation(runtime);
+  if (cancellation.signal.aborted) { cancellation.dispose(); return { claimed: false }; }
+  let claim;
+  try { claim = claimNextGenerationDispatch(db); } catch (error) { cancellation.dispose(); throw error; }
+  if (!claim) { cancellation.dispose(); return { claimed: false }; }
+  const leaseCancellation = new AbortController();
+  const task = createTaskCancellation({ signal: leaseCancellation.signal });
+  const onCancel = (): void => leaseCancellation.abort(cancellation.signal.reason);
+  cancellation.signal.addEventListener("abort", onCancel, { once: true });
   let lostLease = false;
+  const loseLease = (): void => { lostLease = true; leaseCancellation.abort(new TaskCancellationError("generation_fence_lost")); };
+  const assertWrite = (): void => {
+    if (lostLease) throw new Error("generation_fence_lost");
+    try { assertGenerationDispatchClaim(db, claim); } catch (error) { loseLease(); throw error; }
+  };
   const heartbeat = runtime.heartbeat ?? heartbeatGenerationDispatch;
   const timer = setInterval(() => {
     try {
-      if (!heartbeat(db, claim)) lostLease = true;
+      if (!heartbeat(db, claim)) loseLease();
     } catch {
       // A heartbeat error is equivalent to losing ownership.  Never let an
       // interval callback throw outside the dispatch transaction boundary.
-      lostLease = true;
+      loseLease();
     }
   }, runtime.heartbeatMs ?? HEARTBEAT_MS);
   try {
+    assertWrite();
+    cancellation.check();
+    task.check();
     await execute(db, claim.payload.topic_id, {
+      signal: task.signal,
+      deadlineAt: runtime.deadlineAt,
       traceId: claim.traceId,
       rootRunId: claim.rootRunId,
       reportType: claim.payload.report_type,
       windowHours: claim.payload.window_hours,
       windowEnd: claim.payload.window_end,
       items: claim.payload.items,
-      assertWrite: () => {
-        if (lostLease) throw new Error("generation_fence_lost");
-        assertGenerationDispatchClaim(db, claim);
-      },
+      assertWrite,
       telemetry: runtime.telemetry ?? NOOP_P1_TELEMETRY_SINK,
     });
+    assertWrite();
+    cancellation.check();
+    task.check();
     if (lostLease || !finishGenerationDispatch(db, claim, { status: "done" })) {
       throw new Error("generation dispatch lease was lost before completion");
     }
@@ -83,13 +102,17 @@ export async function runGenerationDispatchOnce(
     return { claimed: true, traceId: claim.traceId, status: "done" };
   } catch (error) {
     if (!lostLease) {
+      try { assertWrite(); } catch { return { claimed: true, traceId: claim.traceId, status: "failed" }; }
       finishGenerationDispatch(db, claim, {
-        status: "failed", error: dispatchFailure(error),
+        status: "failed", error: dispatchFailure(task.signal.aborted ? task.signal.reason : error),
       });
     }
     return { claimed: true, traceId: claim.traceId, status: "failed" };
   } finally {
     clearInterval(timer);
+    task.dispose();
+    cancellation.signal.removeEventListener("abort", onCancel);
+    cancellation.dispose();
   }
 }
 
@@ -108,6 +131,6 @@ async function executeDispatch(
   if (opts.windowHours == null || opts.items == null) throw new Error("invalid_scheduled_dispatch_payload");
   return runScheduledTopicPipeline(db, topicId, {
     reportType: opts.reportType, windowHours: opts.windowHours, items: opts.items,
-    traceId: opts.traceId, rootRunId: opts.rootRunId, windowEnd: opts.windowEnd, assertWrite: opts.assertWrite, anchor, telemetry: opts.telemetry,
+    traceId: opts.traceId, rootRunId: opts.rootRunId, windowEnd: opts.windowEnd, signal: opts.signal, deadlineAt: opts.deadlineAt, assertWrite: opts.assertWrite, anchor, telemetry: opts.telemetry,
   });
 }

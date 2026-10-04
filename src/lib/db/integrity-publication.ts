@@ -102,7 +102,8 @@ export function revokeAnchorSigningKey(db: DB, keyId: string, reason = "revoked"
 }
 
 /** Persist exact candidate bytes before calling an external store. */
-export async function planAnchorPublication(db: DB, input: AnchorPublication, signer: AnchorSigner): Promise<StoredAnchorEffect> {
+export async function planAnchorPublication(db: DB, input: AnchorPublication, signer: AnchorSigner, assertWrite?: () => void): Promise<StoredAnchorEffect> {
+  assertWrite?.();
   assertReportNotRedacted(db, input.manifest.report_id);
   validateManifest(input.manifest); const manifestHash = sha256(utf8(input.manifest)); const prior = stored(db, input.generation_effect_id, input.manifest);
   const parent = db.prepare("SELECT report_id FROM generation_effect WHERE id=?").get(input.generation_effect_id) as { report_id: string } | undefined;
@@ -115,7 +116,9 @@ export async function planAnchorPublication(db: DB, input: AnchorPublication, si
   registerAnchorSigningKey(db, signer);
   const candidate = await signAnchor(input.manifest, input.issued_at, signer);
   const created = now(); const canonical = jcs(input.manifest);
+  assertWrite?.();
   const manifestSignature = await signAnchorBytes(signer, Buffer.concat([Buffer.from("manifest-v1\0"), Buffer.from(canonical)]));
+  assertWrite?.();
   assertReportNotRedacted(db, input.manifest.report_id);
   const result = { id: id("anchor_effect"), generation_effect_id: input.generation_effect_id, report_id: input.manifest.report_id, artifact_id: input.manifest.artifact_id, artifact_version: input.manifest.artifact_version, manifest_hash: manifestHash, manifest_canonical: canonical, content_hash: input.manifest.content_hash, content_length: input.manifest.length, media_type: input.manifest.media_type, object_key: input.manifest.external_anchor.object_key, anchor_payload: jcs(candidate), anchor_provider_version_id: null, manifest_signature: Buffer.from(manifestSignature).toString("base64url"), manifest_key_id: signer.key_id, manifest_algorithm: "ed25519", manifest_issued_at: input.issued_at, retain_until: input.retain_until, status: "planned", retry_count: 0, created_at: created };
   db.prepare(`INSERT INTO generation_anchor_effect(id,generation_effect_id,tenant_id,report_id,artifact_id,artifact_version,manifest_hash,manifest_canonical,content_hash,content_length,media_type,anchor_idempotency_key,object_key,anchor_payload,anchor_provider_version_id,manifest_signature,manifest_key_id,manifest_algorithm,manifest_issued_at,retain_until,status,retry_count,error,created_at,updated_at)
@@ -146,8 +149,9 @@ function verifyManifestMaterial(db: DB, row: StoredAnchorEffect): void {
  * External write only.  It deliberately does not change report visibility;
  * callers must invoke commitAnchoredPublication in their final SQLite tx.
  */
-export async function writePlannedAnchor(db: DB, store: AnchorStore, input: AnchorPublication, signer: AnchorSigner): Promise<{ reused: boolean; provider_version_id: string | null }> {
-  const row = await planAnchorPublication(db, input, signer); const candidate = parseCandidate(db, row);
+export async function writePlannedAnchor(db: DB, store: AnchorStore, input: AnchorPublication, signer: AnchorSigner, assertWrite?: () => void): Promise<{ reused: boolean; provider_version_id: string | null }> {
+  const row = await planAnchorPublication(db, input, signer, assertWrite); const candidate = parseCandidate(db, row);
+  assertWrite?.();
   assertAnchorPublicationKeyActive(db, candidate.key_id);
   // Signing/planning awaits can race a committed deletion. Check at the actual external-write boundary.
   assertReportNotRedacted(db, input.manifest.report_id);
@@ -156,6 +160,7 @@ export async function writePlannedAnchor(db: DB, store: AnchorStore, input: Anch
     const result = await store.putIfAbsent(row.object_key, anchorEnvelopeBytes(candidate), input.retain_until);
     providerVersion = result.provider_version_id;
   } catch (error) {
+    assertWrite?.();
     const existing = await store.get(row.object_key);
     if (!existing) throw error;
     const recorded = parseCandidate(db, { ...row, anchor_payload: new TextDecoder().decode(existing.body) });
@@ -164,6 +169,7 @@ export async function writePlannedAnchor(db: DB, store: AnchorStore, input: Anch
     providerVersion = existing.provider_version_id; reused = true;
   }
   db.transaction(() => {
+    assertWrite?.();
     db.prepare("UPDATE generation_anchor_effect SET status='anchor_written',anchor_provider_version_id=?,retry_count=retry_count+1,error=NULL,updated_at=? WHERE id=? AND status IN ('planned','anchor_written','unknown')").run(providerVersion, now(), row.id);
     audit(db, { effectId: row.generation_effect_id, artifactId: row.artifact_id, artifactVersion: row.artifact_version, type: "anchor_written_sqlite_uncommitted", severity: "critical", details: { anchor_effect_id: row.id, object_key: row.object_key, retry_count: row.retry_count + 1 } });
   })();
