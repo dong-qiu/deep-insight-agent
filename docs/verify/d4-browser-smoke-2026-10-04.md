@@ -67,4 +67,19 @@ reviewer 已独立复跑原候选 Chromium 5/5、lint、TS7/TS6 app/tools、diff
 
 Draft PR [#404](https://github.com/dong-qiu/deep-insight-agent/pull/404) 承载本切片。最终候选的 CI/Docker run 链接、tested head SHA 和状态记录在 PR 的验证摘要与 [Checks](https://github.com/dong-qiu/deep-insight-agent/pull/404/checks)，与本地验证表分开；必须以最终候选完整通过为准，不以 superseded/取消的运行放行。此处归档只补专属收据，不改测试源码。
 
-CI 的 verify 作业仍只有一次 build:e2e，之后 HTTP E2E 和 browser smoke 各自校验同一 C5 收据；浏览器步骤位于 audit 与 prototype CI evidence 前，失败不能写成功收据。Docker 保持独立 needs:verify 作业与原门，不因本机 daemon 缺失而跳过。PR 保持 Draft；没有合并、部署、SSM、生产 DB 操作或分支/worktree 清理。
+初始候选使用优化前的 CI：verify 一次 build:e2e，之后 HTTP E2E 和 browser smoke 校验同一 C5 收据；Docker 当时为独立 needs:verify 作业。该段描述初始候选历史，当前接线见下节。PR 保持 Draft；没有合并、部署、SSM、生产 DB 操作或分支/worktree 清理。
+
+
+## 更新至优化后的 CI
+
+2026-10-04 按用户要求将当前 D4 分支无冲突合入最新 `origin/main` @ `b2a12e762bff6913dc4c0e1e8583e4a7491d1307`。对应 [main CI 37145080605](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37145080605) success；#405/#407/#408 的分类、证据归档和并行 Docker 已完成，不重复实现。只更新本分支与 D4 专属文档，其他会话工作区与 Dependabot 保留。
+
+浏览器测试、fixture、package/lockfile 与上一候选字节一致；应用/AI/证据规则不变。自动合并后的浏览器安装与 smoke 步骤位于 application：先 build:e2e，再 HTTP 与 browser built，各自调用原 C5 verify，随后 audit 和 prototype CI evidence。container 独立 needs:scope，与 application 在同一事件 SHA 并行；原 verify/docker 必需门仍分别严格汇总应用和容器实际结果。完整 D4 PR 含测试/依赖/CI，必须 full，不能因最后提交文档就走 docs 路径。
+
+本轮集成顺序复跑 lint、TS7/TS6 app/tools、actionlint、文档链接/结构与 diff check 均通过；CI 分类/必需门/发布 admission 与 C5 相关 node tests 72/72（无跳过）。build:e2e 实际构建一次 12,521ms，随后 HTTP E2E 6/6、Chromium 5/5 复用同一 C5 收据，additional_builds=0。该构建时间是单次观察，不是浏览器 P95。
+
+本轮再次使用 pre-pr-ai-review 新上下文独立审查最新基线到当前工作树的完整十文件：风险中（测试依赖/CI），Blocking 0 / Warning 0，结论通过。reviewer 独立核对完整 diff、lock entry、前候选字节一致性、四类交互/隔离/reader 门及新 CI 失败路径，未复跑需配置或构建产物的运行命令；上述运行结果来自主 agent。冻结后再独立复核远端 diff/body，候选完整 CI/Docker 仍以实际运行结果为准。
+
+最终候选 Actions 的 run/attempt、head/base/tested SHA、scope、checks、两份完整证明与 artifact SHA256/到期时间按 [新流程](../plan/specs/pr-delivery-evidence-workflow.md) 保存到 [#404 验证摘要](https://github.com/dong-qiu/deep-insight-agent/pull/404)。不为 Actions 链接再提交收据，也不将原候选 `5aefe8f` 的 CI 当作更新后候选证明。
+
+回退本切片通过正常 revert PR 移除 D4 测试及浏览器接线，保留最新主干 CI 优化；无 schema/数据迁移。不部署、不访问生产，不清理其他分支/worktree。先前“不合并”的用户边界未因本地验证自动解除，是否 Ready/合并仍按用户明确授权。

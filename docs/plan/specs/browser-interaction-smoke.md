@@ -2,7 +2,7 @@
 
 ## 范围与前置核对
 
-基线为 `origin/main` @ `065dd0cf7a8f06d4becd093da2f133fc552ce201`。主干 C5、D5 已完成，尚无 D4；旧计划状态不作为实施事实。只新增真实浏览器测试、固定测试依赖与必要 CI 接线，不改 UI、读取性能、schema、运行任务、agent 或证据/AI 判断。
+初始基线为 `065dd0cf7a8f06d4becd093da2f133fc552ce201`；更新后的集成基线为 `origin/main` @ `b2a12e762bff6913dc4c0e1e8583e4a7491d1307`（#405/#407/#408 的 CI 优化已合入）。主干 C5、D5 已完成，尚无 D4；旧计划状态不作为实施事实。只新增真实浏览器测试、固定测试依赖与必要 CI 接线，不改 UI、读取性能、schema、运行任务、agent 或证据/AI 判断。
 
 Dependabot #373/#400/#401/#402 在排队，均与 package/lockfile 重叠；本切片不合并或重算它们的分支。用户指定 C2a 只占 runtime/job、pipeline、scheduler、取消传递；现场 C2a 无 package/CI 改动。本切片负责 package.json、package-lock.json 的 Playwright 新增项和 ci.yml 的浏览器安装/执行步骤，不引入其他升级。后续依赖 PR 必须以集成后的主干串行更新。共享 roadmap/ADR 不修改。
 
@@ -10,7 +10,7 @@ Dependabot #373/#400/#401/#402 在排队，均与 package/lockfile 重叠；本�
 
 采用固定版本 `@playwright/test`、单 Chromium、单 worker、零自动重试。使用其页面隔离、稳定 locator、自动等待和清理能力，不建第二套平台。维护成本为新增测试包及其匹配的 Chromium 下载；Linux CI 用 `npx playwright install --with-deps chromium` 安装系统库与浏览器，不依赖个人浏览器或生产会话。
 
-`test:browser` 默认先 `build:e2e`；`test:browser:built` 先执行原 C5 verify，再跑浏览器。CI 在原一次 `build:e2e` 与 HTTP E2E 后使用 built 入口，不额外 build。保留 coverage、audit、P1 和独立 Docker 门。浏览器运行实际 `.next` 构建，使用无 env 文件的临时服务目录和合成运行配置；不复制开发配置到运行目录。
+`test:browser` 默认先 `build:e2e`；`test:browser:built` 先执行原 C5 verify，再跑浏览器。CI 在原一次 `build:e2e` 与 HTTP E2E 后使用 built 入口，不额外 build。当前完整 PR 仍分类 full：application 内保留 coverage、audit、P1、一次构建/两条 E2E；container 从同一事件 SHA 独立构建，与 application 并行。原 verify/docker 必需检查仅汇总各自成功结果，全部完成才可收口，文档轻量结果不能替代 D4 的 full 证明。浏览器运行实际 `.next` 构建，使用无 env 文件的临时服务目录和合成运行配置；不复制开发配置到运行目录。
 
 ## 验收标准
 
@@ -29,4 +29,4 @@ Dependabot #373/#400/#401/#402 在排队，均与 package/lockfile 重叠；本�
 
 四类 browser smoke、现有 HTTP E2E、TS6/TS7 app/tools、lint、应用构建与 CI coverage/audit/Docker。新增测试和配置另做定向 ESLint。最终 diff 使用 pre-pr-ai-review 新上下文独立审查并修正复查。仅测试/工具接线不触发 AI eval；未运行不相关完整 A1。
 
-交付可重复命令、脱敏收据及 Draft PR；不合并、不部署、不访问生产库或清理其他分支/worktree。覆盖不包括 Firefox/WebKit、完整移动设备矩阵、全业务流程或浏览器性能；浏览器 P95 未测，不宣称通过。
+冻结候选后按 [交付证据流程](pr-delivery-evidence-workflow.md) 将候选 SHA、实际测试 SHA、run/attempt、各项结果与 artifact 身份记录在 PR 摘要；不只为补 CI 链接更新 head。交付可重复命令、脱敏收据及 Draft PR；不合并、不部署、不访问生产库或清理其他分支/worktree。覆盖不包括 Firefox/WebKit、完整移动设备矩阵、全业务流程或浏览器性能；浏览器 P95 未测，不宣称通过。
