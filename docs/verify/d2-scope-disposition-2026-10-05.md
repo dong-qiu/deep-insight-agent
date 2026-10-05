@@ -2,7 +2,8 @@
 
 调查日期：2026-10-05 UTC（本地 10-06 Asia/Shanghai）。基线 `origin/main` @
 `92d684bb5dd1428058e07b6c8341b67e3ec074a8`；专属分支 `docs/d2-scope-disposition`。
-验收对象为 [五模块候选处置文档](../plan/specs/d2-scope-disposition.md)，不包含实现或整体状态变更。
+验收对象为 [五模块处置文档](../plan/specs/d2-scope-disposition.md)，不包含实现或整体状态变更。
+以下调查与首次交付记录保留当时状态；2026-10-06 用户采纳记录见末节。
 
 ## 范围与隔离
 
@@ -27,7 +28,7 @@ attempt 1 success，full application、full Docker 和必需汇总成功；
 不是“本轮运行通过”；尤其 report-gen 集成用例中 mockReturnValue 与 importActual 路径分开记录。
 历史恢复工具不混称 Controller replay；Controller 的模型/本地 CAS/只读 ports 不代表外部集成。
 
-推荐：D2-A/R/G 延期，D2-L/P 保留，本阶段新增必做为空。全部等待用户确认；
+首次交付推荐：D2-A/R/G 延期，D2-L/P 保留，本阶段新增必做为空。当时全部等待用户确认；
 本阶段范围建议不改变 TD-12 部分完成，也不取消延期责任。
 其他工作区快照/未跟踪 spec 可能继续变化，后续实施必须重新确认归属和输入/接口。
 定性成本没有工时或性能测量；候选收益和外部正确性未获得证据处明确待确认。
@@ -59,10 +60,10 @@ C4b 快照前进已修正复查；Brief 未推送 commit 的外链已改为本�
 
 审查确认五模块调用/安全边界与源码吻合；真实 renderer 与 mock 的测试边界说明准确；
 Brief/C1 候选契约没有冒称生产实施。五项均有可执行验收、窗口/交接、退出和重启条件，
-不以文件长度要求拆分，全部推荐仍候选。reviewer 未改文件、未运行应用测试/模型/生产。
+不以文件长度要求拆分，首次审查时全部推荐仍候选。reviewer 未改文件、未运行应用测试/模型/生产。
 首次预审 spec SHA256：`6d80bb3d81c449fc82778f6eba1ac1c937219c87bab0c7cef14590928db9d838`。
 后续仅将 Brief 不可达远端链接改为本地 commit:path，reviewer 定向复查通过内容。
-定向复查发现本收据旧 hash 未同步的 Warning，已按实际字节修正；最终已审 spec SHA256：
+定向复查发现本收据旧 hash 未同步的 Warning，已按实际字节修正；首次交付已审 spec SHA256：
 `f25fa3b0472fca714e6f3395ca72deec960785b855fc691fe4d526905ca03a29`。
 本收据随后仅填实际结论和上述身份修正；最终远端完整 diff 与 PR 摘要仍须独立复核。
 
@@ -75,4 +76,26 @@ Brief/C1 候选契约没有冒称生产实施。五项均有可执行验收、�
 文档 CI 只证明链接/结构等；应用/Docker skipped 不能称 full 验证，不生成原型发布证明。
 Actions 原产物有期限，hash/摘要不等于长期保存全文。
 
-回退通过普通文档 revert；无实现或数据需恢复。候选 PR/CI 完成后等待用户范围决定和单独合并授权。
+回退通过普通文档 revert；无实现或数据需恢复。首次候选 PR/CI 完成后等待用户范围决定和单独合并授权。
+
+## 2026-10-06 用户采纳与文档更新
+
+用户回复“确认采纳”：本阶段无新增必做切片，D2-A/R/G 延期、D2-L/P 保留，
+本阶段范围收口，原 TD-12 仍为部分完成。五项风险、验收、交接、退出与重启条件继续有效；
+未来提取设计与实施需另行确认和交接。这次确认不包含 PR 合并、实施或整体关闭授权。
+
+更新仅限原专属 spec 与本收据，记录确认日期及决定，不改共享状态或实现。
+首次调查基线为 `92d684bb5dd1428058e07b6c8341b67e3ec074a8`；更新期间主干合入 C4b #415，
+重新 fetch 并正常 merge 同步 `5e90ff49a93c269ac801acbc4560b28ccb186e6c`。
+已读合入 spec/收据并核对其变更限 eval 与专属文档，五模块实现未改；交接与源码身份拒绝条件仍有效。
+首次轻量复查指出新主干身份记录过期的 Warning，已修正；原 Session 快照明确保留为历史调查。
+首次候选 head 为 `4a2cbe3a63676710a2754fb787853e2ff406f9c9`，
+其文档 CI [37336540879](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37336540879)
+attempt 1 success 仅证明首次 head，不能代证本次更新。新候选 CI 身份与结果将在
+[Draft PR #416](https://github.com/dong-qiu/deep-insight-agent/pull/416) 摘要更新，不为追加 CI 再改 head。
+
+独立 reviewer 定向复查通过：低风险，Blocking 0 / Warning 0 / Suggestion 0；主干身份 Warning
+已修正复查。完整最新 base 到工作区仅两文档，#415 时间/SHA/文件范围与 GitHub API 一致。
+双方执行 `checkDocuments`（2 files）与 `git diff --check origin/main` 通过；未运行应用测试或模型。
+本次已审 spec SHA256：`4f8fea98244d08c3427cfa0cc69c96d482810269f2bc733a8e1d11d7feec41c6`。
+本收据随后仅追加上述实际结论；提交后最终远端完整 diff 与 PR 摘要仍须独立复核。
