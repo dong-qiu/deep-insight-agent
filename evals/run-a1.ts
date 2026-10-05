@@ -75,6 +75,7 @@ import {
   terminalA1QualityCaseFailure,
 } from "./a1-run-control.js";
 import { A1PhaseClock, effectiveA1Config, presentA1Status, a1FailureCategory, type A1EffectiveConfig } from "./a1-observability.js";
+import { a1RecoveryIdentity, a1SourceIdentityComplete, a1HasNewTruncatedOutput, type A1RecoverySource } from "./a1-recovery-identity.js";
 import { type EvalConfig } from "./a1-config.js";
 import { comparableRegistryBaselineMetrics, formalA1GateExitCode } from "./a1-baseline-promotion.js";
 import { validateDatasetLock, type DatasetLockValidation } from "./a1-dataset-lock.js";
@@ -93,8 +94,7 @@ import {
   appendA1QualityCheckpointChunk,
   completeA1QualityCheckpointCase,
   createA1QualityCheckpoint,
-  loadA1QualityCheckpoint,
-  verifiedFailedA1CheckpointSha256,
+  loadVerifiedA1QualityCheckpoint,
   writeA1QualityCheckpoint,
   type A1QualityCheckpoint,
   type A1QualityCheckpointContext,
@@ -122,7 +122,7 @@ let activeResumeCheckpointSha256: string | null = null;
 let activeRunContext: {
   config: object;
   dataset: object;
-  source: { commit: string | null; dirty_fingerprint: string | null; dirty_fingerprint_algorithm?: string };
+  source: A1RecoverySource;
 } = {
   config: {}, dataset: {}, source: { commit: null, dirty_fingerprint: null },
 };
@@ -292,8 +292,7 @@ function loadA1ResumeSource(
   }
   const manifestPath = join(dirname(checkpointPath), "manifest.json");
   if (!existsSync(manifestPath)) throw new Error("A1_RESUME_FROM 缺少所属失败 run 的 manifest.json");
-  const checkpointSha256 = verifiedFailedA1CheckpointSha256(manifestPath, checkpointPath);
-  return { checkpoint: loadA1QualityCheckpoint(checkpointPath, context, plan), checkpoint_sha256: checkpointSha256 };
+  return loadVerifiedA1QualityCheckpoint(manifestPath, checkpointPath, context, plan);
 }
 
 interface ConsistencyCase {
@@ -633,15 +632,18 @@ function sourceState() {
   const untracked = untrackedPaths == null ? [] : untrackedPaths.toString("utf8").split("\0").filter(Boolean).map((path) => {
     try { return { path, content: readFileSync(path) }; } catch { return { path, content: null }; }
   });
+  const commit = gitValue(["rev-parse", "HEAD"]);
+  const snapshot = {
+    status: dirty,
+    staged_diff: gitBuffer(["diff", "--no-ext-diff", "--binary", "--cached"]),
+    unstaged_diff: gitBuffer(["diff", "--no-ext-diff", "--binary"]),
+    untracked,
+  };
   return {
-    commit: gitValue(["rev-parse", "HEAD"]),
-    dirty_fingerprint: dirtyFingerprintFromSnapshot({
-      status: dirty,
-      staged_diff: gitBuffer(["diff", "--no-ext-diff", "--binary", "--cached"]),
-      unstaged_diff: gitBuffer(["diff", "--no-ext-diff", "--binary"]),
-      untracked,
-    }),
+    commit,
+    dirty_fingerprint: dirtyFingerprintFromSnapshot(snapshot),
     dirty_fingerprint_algorithm: DIRTY_SOURCE_FINGERPRINT_ALGORITHM,
+    identity_complete: a1SourceIdentityComplete(commit, snapshot, untrackedPaths),
   };
 }
 
@@ -825,6 +827,7 @@ async function main(): Promise<void> {
   const checkpointContext: A1QualityCheckpointContext = {
     eval_config_sha256: a1QualityCheckpointConfigSha256(evalConfig),
     quality_dataset_sha256: evalConfig.quality_dataset_sha256,
+    recovery_identity_sha256: a1RecoveryIdentity(activeRunContext.source, activeEffectiveConfig),
   };
   const resumeSource = loadA1ResumeSource(process.env.A1_RESUME_FROM, checkpointContext, checkpointPlan);
   const qualityCheckpoint = resumeSource?.checkpoint ?? createA1QualityCheckpoint(checkpointContext);
@@ -875,6 +878,7 @@ async function main(): Promise<void> {
     });
     process.stdout.write(`[分析] 主题「${c.topic.name}」(${stratum})… `);
     const coverageDecisions: CoverageDecision[] = [];
+    const priorTopicTelemetry = getRoleCallTelemetry();
     try {
       const savedCase = qualityCheckpoint.cases[caseIndex];
       let batch: AnalysisBatch;
@@ -889,19 +893,36 @@ async function main(): Promise<void> {
       } else {
         const completedChunks = savedCase?.chunks ?? [];
         ({ batch, vr } = await runA1TopicWithDeadline(c.topic.id, topicTimeoutMs, async (signal) => {
+          let priorChunkTelemetry = getRoleCallTelemetry();
+          let failedLeafOutput = false;
           const batch = await analyze(c.topic, c.items, c.time_window, undefined, {
             completed_chunks: completedChunks,
             onCoverageDecision: (decision) => coverageDecisions.push(decision),
+            // analyzeWithSplit deliberately drops a refused/unparseable single item. That is
+            // not a successful empty generation and must not become resumable A1 evidence.
+            onStage: (stage) => {
+              if (stage.stage === "model_output" && stage.status === "failed" && stage.item_count === 1) failedLeafOutput = true;
+            },
             onChunkComplete: (completion) => {
               // Promise.race may have already handed the deadline error to the outer runner even
               // when a defective upstream transport settles late. Never recreate a published
               // temporary workspace or append evidence after that terminal boundary.
               if (signal.aborted) throw signal.reason ?? new Error("A1 topic cancelled");
+              if (failedLeafOutput) throw new Error("A1 analyzer chunk contains an incomplete leaf output");
+              const chunkTelemetry = getRoleCallTelemetry();
+              if (a1HasNewTruncatedOutput(priorChunkTelemetry, chunkTelemetry)) {
+                throw new Error("A1 analyzer chunk contains truncated provider output");
+              }
+              if (a1RecoveryIdentity(activeRunContext.source, activeEffectiveConfig!) !== checkpointContext.recovery_identity_sha256) {
+                throw new Error("A1 recovery runtime identity changed");
+              }
               appendA1QualityCheckpointChunk(qualityCheckpoint, checkpointPlan, caseIndex, {
                 input_sha256: completion.input_sha256,
                 insights: completion.insights,
                 coverage_decisions: completion.coverage_decisions,
+                execution_complete: true,
               });
+              priorChunkTelemetry = chunkTelemetry;
               writeA1QualityCheckpoint(activeQualityCheckpointPath!, qualityCheckpoint);
               updateA1Progress({
                 state: "running", phase: "quality", topic_timeout_ms: topicTimeoutMs,
@@ -917,7 +938,13 @@ async function main(): Promise<void> {
           if (signal.aborted) throw signal.reason ?? new Error("A1 topic cancelled");
           return { batch, vr };
         }));
-        completeA1QualityCheckpointCase(qualityCheckpoint, checkpointPlan, caseIndex, { batch, validation: vr });
+        if (a1HasNewTruncatedOutput(priorTopicTelemetry, getRoleCallTelemetry())) {
+          throw new Error("A1 topic contains truncated provider output");
+        }
+        if (a1RecoveryIdentity(activeRunContext.source, activeEffectiveConfig!) !== checkpointContext.recovery_identity_sha256) {
+          throw new Error("A1 recovery runtime identity changed");
+        }
+        completeA1QualityCheckpointCase(qualityCheckpoint, checkpointPlan, caseIndex, { batch, validation: vr, execution_complete: true });
         writeA1QualityCheckpoint(activeQualityCheckpointPath!, qualityCheckpoint);
       }
       // DCP counts the same reader-visible derivative as production, rather than raw analyzer
