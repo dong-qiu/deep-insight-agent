@@ -7,6 +7,7 @@
  * 不让模型编造。
  */
 import { abortableDelay as sleep } from "../runtime/cancellation.js";
+import { checkRuntimeControl } from "../runtime/model-usage.js";
 import { createHash, randomUUID } from "node:crypto";
 import { safeError } from "../runtime/diagnostics.js";
 import { isTransientApiError, isVolcengineResponsesFailure } from "../runtime/errors.js";
@@ -762,6 +763,7 @@ export async function verifyQuoteSelfContained(
       break;
     } catch (error) {
       throwIfAborted(signal);
+      checkRuntimeControl();
       lastError = error;
       // callStructured owns the only Volcengine recovery: one explicit pre-terminal EOF retry.
       // Never resubmit a Volcengine validator request here, including native fetch/timeout errors
@@ -1864,6 +1866,7 @@ async function analyzeWithSplit(
     return await analyzeChunk(topic, items, timeWindow, history, onCost, onDecision, onStage, signal);
   } catch (e) {
     throwIfAborted(signal);
+    checkRuntimeControl();
     // Coverage rejection/unavailability is a publication-integrity failure, not a model refusal
     // that can be hidden by recursively dropping source items and returning no_significant_event.
     if (e instanceof QuoteCoverageAuditError || e instanceof QuoteCoverageRejectedError) throw e;

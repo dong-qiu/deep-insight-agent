@@ -3,6 +3,7 @@
  *  每个 Source / Topic 独立 try/catch，单点失败不连累其余（与 collector / validateBatch 的韧性一致）。
  *  由 /api/cron 触发（系统 cron / supercronic 定时 curl）；含真模型调用，需 ANTHROPIC_API_KEY。
  *  待分析项选择见 analysis-selection.ts；源健康自愈（熔断/半开/零产出）见 source-health.ts。 */
+import { checkTaskBudget, withTaskBudget, type TaskBudgetOptions } from "../runtime/task-budget.js";
 import { createTaskCancellation, throwIfAborted, type TaskCancellationOptions } from "../runtime/cancellation.js";
 import { getEffectiveSources, loadStaticConfig } from "../config/index.js";
 import type { DB } from "../db/index.js";
@@ -49,7 +50,7 @@ export interface CollectionSummary {
   zeroYield?: string[];
 }
 
-export interface GenerationExecutionOptions extends TaskCancellationOptions {
+export interface GenerationExecutionOptions extends TaskCancellationOptions, TaskBudgetOptions {
   traceId?: string;
   rootRunId?: string;
   /** durable scheduled dispatch 固化的选择窗口右边界；完整重跑不得改用当前时间。 */
@@ -224,10 +225,14 @@ export async function runScheduledTopicPipeline(
   topicId: string,
   input: { reportType: "brief" | "deep_dive" | "initial_digest"; windowHours: number; items: number } & GenerationExecutionOptions,
 ): Promise<Report | null> {
+  return withTaskBudget(db, input, () => runBudgetedScheduledTopic(db, topicId, input));
+}
+
+async function runBudgetedScheduledTopic(db: DB, topicId: string, input: { reportType: "brief" | "deep_dive" | "initial_digest"; windowHours: number; items: number } & GenerationExecutionOptions): Promise<Report | null> {
   const cancellation = createTaskCancellation(input);
   const signal = cancellation.signal;
   try {
-    cancellation.check();
+    cancellation.check(); checkTaskBudget();
     const telemetry = input.telemetry ?? NOOP_P1_TELEMETRY_SINK;
     const topic = getTopic(db, topicId);
     if (!topic) throw new Error(`topic ${topicId} 不存在`);
@@ -242,7 +247,7 @@ export async function runScheduledTopicPipeline(
       freshness: input.reportType === "brief" ? { since: freshnessSince, quota: briefFreshQuota() } : undefined,
     });
     const items = selection.items;
-    cancellation.check();
+    cancellation.check(); checkTaskBudget();
     if (!items.length) {
       if (!input.rootRunId) throw new Error("scheduled dispatch missing root Run");
       db.transaction(() => {
@@ -273,19 +278,19 @@ export async function runScheduledTopicPipeline(
     const batch = await runAnalysis(db, topic, items, { start: since, end: endIso }, {
       history, traceId: input.traceId, rootRunId: input.rootRunId, assertWrite: input.assertWrite, deadlineAt: input.deadlineAt, signal, telemetry,
     });
-    cancellation.check();
+    cancellation.check(); checkTaskBudget();
     const validation = await runValidation(db, batch, items, { traceId: input.traceId, assertWrite: input.assertWrite, deadlineAt: input.deadlineAt, signal, telemetry });
-    cancellation.check();
+    cancellation.check(); checkTaskBudget();
     try {
       runTechLeadExtraction(db, batch, validation, endIso, { traceId: input.traceId, assertWrite: input.assertWrite, deadlineAt: input.deadlineAt, signal });
     } catch (e) {
-      throwIfAborted(signal);
+      throwIfAborted(signal); checkTaskBudget();
       runLogger({ stage: "tech-leads" }).warn({ topicId: topic.id, batchId: batch.id, err: e }, "技术线索派生失败，继续生成报告");
     }
     const prevReportId = previousReportForTopic(db, topic.id, input.reportType);
     const freshItems = input.reportType === "brief" ? items.filter((item) => contentObservedAt(item) >= freshnessSince) : [];
     const freshestCandidateAt = freshItems.map(contentObservedAt).sort().at(-1) ?? null;
-    cancellation.check();
+    cancellation.check(); checkTaskBudget();
     return await runReportGen(db, {
       topic, batch, validation, type: input.reportType, prevReportId, traceId: input.traceId, assertWrite: input.assertWrite,
       briefFreshness: freshItems.length ? { since: freshnessSince, content_item_ids: freshItems.map((item) => item.id), freshest_candidate_at: freshestCandidateAt } : undefined,
@@ -318,10 +323,14 @@ export async function runPipelineForTopic(
   topicId: string,
   opts: { windowHours?: number; items?: number } & GenerationExecutionOptions = {},
 ): Promise<Report> {
+  return withTaskBudget(db, opts, () => runBudgetedPipelineForTopic(db, topicId, opts));
+}
+
+async function runBudgetedPipelineForTopic(db: DB, topicId: string, opts: { windowHours?: number; items?: number } & GenerationExecutionOptions): Promise<Report> {
   const cancellation = createTaskCancellation(opts);
   const signal = cancellation.signal;
   try {
-  cancellation.check();
+  cancellation.check(); checkTaskBudget();
   const telemetry = opts.telemetry ?? NOOP_P1_TELEMETRY_SINK;
   const topic = getTopic(db, topicId);
   if (!topic) throw new Error(`topic ${topicId} 不存在`);
@@ -358,16 +367,16 @@ export async function runPipelineForTopic(
   }
 
   const batch = await runAnalysis(db, topic, items, { start: since, end: endIso }, { traceId: opts.traceId, rootRunId: opts.rootRunId, assertWrite: opts.assertWrite, deadlineAt: opts.deadlineAt, signal, telemetry });
-  cancellation.check();
+  cancellation.check(); checkTaskBudget();
   const validation = await runValidation(db, batch, items, { traceId: opts.traceId, assertWrite: opts.assertWrite, deadlineAt: opts.deadlineAt, signal, telemetry });
-  cancellation.check();
+  cancellation.check(); checkTaskBudget();
   // 规划派生是 non-blocking：保留报告主链路，即使线索阶段失败也由 trace 记录为可解释的 partial。
   try { runTechLeadExtraction(db, batch, validation, endIso, { traceId: opts.traceId, assertWrite: opts.assertWrite, deadlineAt: opts.deadlineAt, signal }); } catch (error) {
-    throwIfAborted(signal);
+    throwIfAborted(signal); checkTaskBudget();
     runLogger({ stage: "tech-leads" }).warn({ topicId: topic.id, batchId: batch.id, err: error }, "深挖技术线索派生失败，继续生成报告");
   }
   const prevReportId = previousReportForTopic(db, topic.id, "deep_dive");
-  cancellation.check();
+  cancellation.check(); checkTaskBudget();
   return await runReportGen(db, { topic, batch, validation, type: "deep_dive", prevReportId, traceId: opts.traceId, assertWrite: opts.assertWrite, deadlineAt: opts.deadlineAt, signal, anchor: opts.anchor });
   } finally { cancellation.dispose(); }
 }

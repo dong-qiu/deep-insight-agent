@@ -1,4 +1,4 @@
-import { withUsageCall, usageTrackedAnthropicFetch } from "./model-usage.js";
+import { checkRuntimeControl, deliverUsageCost, withUsageCall, usageTrackedAnthropicFetch } from "./model-usage.js";
 import { safeError } from "./diagnostics.js";
 import { abortableDelay, awaitWithSignal, throwIfAborted } from "./cancellation.js";
 /**
@@ -511,12 +511,14 @@ export async function retryTransientOperation<T>(
   const retryWhen = options.retryWhen ?? isTransientApiError;
   for (let attempt = 0; ; attempt++) {
     if (options.signal?.aborted) throw options.signal.reason ?? new Error("LLM request aborted before start");
+    checkRuntimeControl();
     try {
       const result = await operation();
       throwIfAborted(options.signal);
       return result;
     } catch (error) {
       if (options.signal?.aborted) throw options.signal.reason ?? error;
+      checkRuntimeControl();
       if (!retryWhen(error) || attempt >= retries) throw error;
       const retryNumber = attempt + 1;
       options.onRetry?.(error, retryNumber);
@@ -567,7 +569,7 @@ async function callVolcengineStructured<T extends z.ZodType>(
       record(model, usage);
       const next = usageToCost(model, usage);
       cost = addCost(cost, next);
-      opts.onCost?.(next);
+      deliverUsageCost(next, opts.onCost, Number.isFinite(next.amount));
     };
     const oneRequest = async () => {
       underlyingRequests++;
@@ -754,7 +756,7 @@ async function callStructuredImpl<T extends z.ZodType>(
     record(model, u);
     const c = usageToCost(model, u);
     cost = addCost(cost, c);
-    opts.onCost?.(c);
+    deliverUsageCost(c, opts.onCost, Number.isFinite(c.amount));
   };
 
   // 流式生成（messages.stream + finalMessage）：长输出（dense 批 / 高 max_tokens）下避免中转站

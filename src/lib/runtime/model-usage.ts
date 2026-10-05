@@ -2,48 +2,89 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import type { DB } from "../db/index.js";
+import type { Cost } from "../types.js";
 import { beginModelUsageAttempt, observeModelUsage, type UsageNumbers } from "../db/model-usage.js";
-import { throwIfAborted } from "./cancellation.js";
+import { awaitWithSignal, throwIfAborted } from "./cancellation.js";
+import { checkTaskBudget, taskBudgetEnabled } from "./task-budget.js";
 
 type Role = "analyzer" | "validator" | "coverage" | "followup";
 type Provider = "anthropic" | "volcengine-responses";
 interface UsageJob {
   db: DB; runId: string; traceId: string | null; signal: AbortSignal; assertWrite?: () => void;
-  failure?: Error; finished: boolean;
+  recordCost?: (cost: Cost) => void;
+  failure?: Error; finished: boolean; pending: Set<Promise<unknown>>; persistenceFailure: AbortController;
 }
 interface UsageCall { job: UsageJob; id: string; attempt: number; role: Role; model: string; provider: Provider }
 const jobs = new AsyncLocalStorage<UsageJob>();
 const calls = new AsyncLocalStorage<UsageCall>();
-export function createUsageJobScope(input: Omit<UsageJob, "finished" | "failure">) {
-  const job: UsageJob = { ...input, finished: false };
+const costDeliveries = new AsyncLocalStorage<{ runId: string; recorded: boolean }>();
+/** A configured Job receives each legacy cost once even if a caller omitted onCost. */
+export function deliverUsageCost(cost: Cost, onCost?: (cost: Cost) => void, hasFiniteEstimate = true): void {
+  const job = jobs.getStore();
+  if (!job || !taskBudgetEnabled()) { onCost?.(cost); return; }
+  // Missing provider counters can produce legacy NaN. C3 retains uncertainty; do not invent $0.
+  if (!hasFiniteEstimate) return;
+  const delivery = { runId: job.runId, recorded: false };
+  costDeliveries.run(delivery, () => {
+    try { onCost?.(cost); }
+    finally { if (!delivery.recorded) job.recordCost?.(cost); }
+  });
+}
+export function acceptUsageCost(runId: string): boolean {
+  const delivery = costDeliveries.getStore();
+  if (!delivery || delivery.runId !== runId) return true;
+  if (delivery.recorded) return false;
+  delivery.recorded = true; return true;
+}
+export function createUsageJobScope(input: Omit<UsageJob, "finished" | "failure" | "pending" | "persistenceFailure">) {
+  const job: UsageJob = { ...input, finished: false, pending: new Set(), persistenceFailure: new AbortController() };
   return {
     run: <T>(work: () => Promise<T>): Promise<T> => jobs.run(job, work),
     check: (): void => { if (job.failure) throw job.failure; },
+    failure: (): Error | undefined => job.failure,
+    settle: async (): Promise<void> => {
+      job.assertWrite?.();
+      await awaitWithSignal(Promise.allSettled([...job.pending]), AbortSignal.any([job.signal, job.persistenceFailure.signal]));
+      job.assertWrite?.();
+    },
     finish: (): void => { job.finished = true; },
   };
 }
+/** Control failures outrank SDK wrapping. Never check before accounting an in-flight response. */
+export function checkRuntimeControl(): void {
+  const job = jobs.getStore();
+  if (taskBudgetEnabled()) job?.assertWrite?.();
+  throwIfAborted(job?.signal);
+  if (job?.failure) throw job.failure;
+  checkTaskBudget();
+}
 export async function withUsageCall<T>(role: Role, model: string, provider: Provider, work: () => Promise<T>): Promise<T> {
   const job = jobs.getStore();
+  checkRuntimeControl();
   if (!job) return work();
-  if (job.failure) throw job.failure;
-  throwIfAborted(job.signal);
-  return calls.run({ job, id: randomUUID(), attempt: 0, role, model, provider }, async () => {
+  const pending = calls.run({ job, id: randomUUID(), attempt: 0, role, model, provider }, async () => {
     try {
       const value = await work();
-      if (job.failure) throw job.failure;
+      checkRuntimeControl();
       return value;
     } catch (error) {
       // SDK can wrap local DB faults as APIConnectionError. Keep the fixed local diagnosis.
-      if (job.failure && !job.signal.aborted) throw job.failure;
+      checkRuntimeControl();
       throw error;
     }
   });
+  if (taskBudgetEnabled()) {
+    job.pending.add(pending);
+    void pending.then(() => job.pending.delete(pending), () => job.pending.delete(pending));
+  }
+  return pending;
 }
 function protectedWrite(job: UsageJob, attemptId: string, work: () => void): void {
   try { work(); } catch (error) {
     const fenceLost = error instanceof Error && error.message === "generation_fence_lost";
     const failure = fenceLost ? error : new Error("usage_persistence_failed");
     job.failure ??= failure;
+    job.persistenceFailure.abort(job.failure);
     const diagnostic = fenceLost ? "usage_fence_lost" : !job.db.open ? "usage_store_closed" : "usage_persistence_failed";
     // Even after cancelled Job cleanup this callback has a controlled, body-free diagnosis.
     console.warn(diagnostic, { attempt_id: attemptId, job_finished: job.finished });
@@ -55,8 +96,7 @@ export function beginUsageAttempt(): { observe: (usage: UsageNumbers, final: boo
   if (!call) return undefined;
   const { job } = call;
   // Mandatory gate for every actual fetch, including SDK-owned retries.
-  if (job.failure) throw job.failure;
-  throwIfAborted(job.signal);
+  checkRuntimeControl();
   const attemptId = randomUUID();
   protectedWrite(job, attemptId, () => beginModelUsageAttempt(job.db, {
     attempt_id: attemptId, logical_call_id: call.id, attempt_number: ++call.attempt,

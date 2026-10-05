@@ -1,7 +1,8 @@
 /** Job Runner —— Run 实体编排：建 Run(running) → 跑 fn → 落 done/failed + 成本 + 错误。
  *  支撑管理看板「流水线追踪 / 失败下钻 / 重试」（architecture 运行实体 Run）。 */
 import { createTaskCancellation, type TaskCancellationOptions } from "./cancellation.js";
-import { createUsageJobScope } from "./model-usage.js";
+import { acceptUsageCost, createUsageJobScope } from "./model-usage.js";
+import { budgetRunCost, checkTaskBudget, enrollBudgetRun, readBudgetRunCost, recordBudgetCost, taskBudgetEnabled, taskBudgetFailure, withTaskBudget, type TaskBudgetOptions } from "./task-budget.js";
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import type { DB } from "../db/index.js";
@@ -10,7 +11,7 @@ import { notifyFailure } from "./alert.js";
 import { safeError } from "./diagnostics.js";
 import type { Cost, Run } from "../types.js";
 
-export interface JobSpec extends TaskCancellationOptions {
+export interface JobSpec extends TaskCancellationOptions, TaskBudgetOptions {
   kind: Run["kind"];
   target: Run["target"];
   /** P0a：调用方必须显式传入已创建的 trace；历史调用可暂时省略。 */
@@ -40,6 +41,10 @@ export async function runJob<T>(
   spec: JobSpec,
   fn: (ctx: JobCtx) => Promise<T>,
 ): Promise<JobOutcome<T>> {
+  return withTaskBudget(db, spec, () => runBudgetedJob(db, spec, fn));
+}
+
+async function runBudgetedJob<T>(db: DB, spec: JobSpec, fn: (ctx: JobCtx) => Promise<T>): Promise<JobOutcome<T>> {
   const cancellation = createTaskCancellation(spec);
   try {
     const runId = spec.existingRunId ?? `run_${randomUUID().slice(0, 8)}`;
@@ -54,11 +59,21 @@ export async function runJob<T>(
       });
     }
 
-    const usageScope = createUsageJobScope({ db, runId, traceId: spec.traceId ?? null, signal: cancellation.signal, assertWrite: spec.assertWrite });
-    let cost: Cost | null = null;
+    const usageScope = createUsageJobScope({ db, runId, traceId: spec.traceId ?? null, signal: cancellation.signal, assertWrite: spec.assertWrite, recordCost: (c) => ctx.recordCost(c) });
+    const budgeted = taskBudgetEnabled();
+    if (budgeted) enrollBudgetRun(runId, spec.existingRunId ? readBudgetRunCost(db, runId) : null);
+    let cost: Cost | null = budgeted ? budgetRunCost(runId) : null;
+    let finished = false;
     const ctx: JobCtx = {
-      runId, signal: cancellation.signal, checkCancellation: () => { cancellation.check(); usageScope.check(); },
+      runId, signal: cancellation.signal, checkCancellation: () => {
+        if (budgeted) spec.assertWrite?.();
+        cancellation.check(); usageScope.check(); checkTaskBudget();
+      },
       recordCost(c) {
+        if (budgeted) {
+          if (finished || !acceptUsageCost(runId)) return;
+          recordBudgetCost(runId, c); cost = budgetRunCost(runId); return;
+        }
         cost = cost
           ? { tokens: cost.tokens + c.tokens, amount: cost.amount + c.amount, ...(cost.estimated || c.estimated ? { estimated: true } : {}) }
           : { ...c };
@@ -67,18 +82,23 @@ export async function runJob<T>(
     const elapsed = (): number => Math.round(performance.now() - startedMono);
 
     try {
-      cancellation.check();
+      ctx.checkCancellation();
       const result = await usageScope.run(() => fn(ctx));
-      usageScope.check();
-      cancellation.check();
+      ctx.checkCancellation();
       spec.assertWrite?.();
       finishRun(db, runId, { status: "done", cost, duration_ms: elapsed() });
       return { run: getRun(db, runId)!, result };
     } catch (e) {
+      try { cancellation.check(); } catch { /* Do not enter budget settlement past the deadline. */ }
+      // Only budget failure joins already-started, timeout-controlled calls. C2a remains prompt.
+      if (taskBudgetFailure() && !cancellation.signal.aborted && !usageScope.failure()) {
+        try { await usageScope.settle(); } catch { /* Select the authoritative failure below. */ }
+      }
       // A provider may reject with an opaque payload after cancellation. Fix the task reason.
-      const failure = cancellation.signal.aborted ? cancellation.signal.reason : e;
-      const err = safeError(failure);
       spec.assertWrite?.();
+      try { cancellation.check(); } catch { /* Check the absolute deadline before finalizing. */ }
+      const failure = cancellation.signal.aborted ? cancellation.signal.reason : usageScope.failure() ?? taskBudgetFailure() ?? e;
+      const err = safeError(failure);
       finishRun(db, runId, {
         status: "failed", cost, duration_ms: elapsed(),
         error: err,
@@ -89,7 +109,7 @@ export async function runJob<T>(
         notifyFailure({ runId, kind: spec.kind, target: spec.target, errorType: err.type, message: err.message });
       }
       throw failure;
-    } finally { usageScope.finish(); }
+    } finally { finished = true; usageScope.finish(); }
   } finally { cancellation.dispose(); }
 }
 
