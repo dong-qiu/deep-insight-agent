@@ -1,6 +1,6 @@
 # 新版 Daily Brief 实施前的旧工作收口计划
 
-> 2026-10-05 · 执行方案，尚未启动下列收口步骤。用户要求先收尾旧工作，再启动[新版 Daily Brief 方案](specs/daily-brief-rich-insight-freshness.md)。本轮只制定文档，不修改代码、部署或清理 worktree。
+> 2026-10-05 · 执行方案；制定时尚未启动，10 月 5 日实际执行记录见 [材料对账](../verify/pre-rich-brief-material-reconciliation-2026-10-05.md)、[T03 分区审计](../verify/pre-rich-brief-t03-partition-audit-2026-10-05.md)及 [T04 冻结条件](../verify/daily-brief-density-experiment-protocol.md)。用户要求先收尾旧工作，再启动[新版 Daily Brief 方案](specs/daily-brief-rich-insight-freshness.md)。本轮只制定文档，不修改代码、部署或清理 worktree。
 
 ## 范围、事实起点与总完成门
 

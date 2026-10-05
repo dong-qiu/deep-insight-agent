@@ -530,3 +530,11 @@ Git worktree 内的输出须通过 ignore 规则（含环境变量绕过反例�
 | off→on→off | 保留命题发布历史 | 保留全部成员 | 关闭新生成仍能识别已发布成员，避免重报 |
 
 本表没有决定生产 schema 或语义阈值。先根据实际标注和探索读测填写协议，再封存留出集并进入 S1。
+
+## 2026-10-05 收口执行（阶段门未通过）
+
+材料对账 [记录](pre-rich-brief-material-reconciliation-2026-10-05.md) 已保存原件并形成独立提交。T03 [分区审计](pre-rich-brief-t03-partition-audit-2026-10-05.md) 覆盖184个已接触 id/revision 版本，全部探索、正式留出0；同研究/节目/转载/续报的未知关系保留，不能声称家族穷尽。10月4日实际 frozen endIso 17:00:47.103Z，分析失败、无batch，3个有损候选下界/总数unknown，15输入归档版本核验通过，整体备份仍incomplete。10月5日第三轮及首份运行后备份执行时尚未发生，不按环境日期补造结果。
+
+T04 [协议冻结条件核对](daily-brief-density-experiment-protocol.md) 已固化等事实/含引用的X(B0)、Y(A)全文与曝光；用户改为对话阅读，两版均120秒、自评无区别。配置条件答对但泛化范围不确定，不能写成理解题全部通过；一名重复曝光读者的观测不证明B0收益。数值门、完整事件金标、版本/资源绑定及未来未见留出仍未冻结，**PR #360继续draft，S1未准入**。
+
+本轮固定Node24.19.0，exporter + report-gen/pipeline-reportgen/report-review/reports五文件204/204；TS7/TS6 app/tools、exporter ESLint、diff空白检查通过。独立材料与T03/T04文档审阅发现并修复标签防泄漏承接/曝光全集遗漏，定向复核Blocking0/Warning0；不能替代人评/阶段总门。
