@@ -1,8 +1,16 @@
 # D1 / TD-11：数据库连接、迁移与启动协调分离
 
-基线：`origin/main` @ `c7648986d96e040dcad8c7e6dd01e75759c2bbee`。状态：用户已按建议确认 D1 四入口的协调交接及实时 WAL 引擎协调例外，B/C 分阶段实现已完成，等待最终验证与独立评审；后续合入已授权。
+基线：`origin/main` @ `c7648986d96e040dcad8c7e6dd01e75759c2bbee`。状态：D1 / TD-11 技术验收与主干交付已完成。用户确认的四入口协调交接、实时 WAL 引擎协调例外及历史迁移兼容边界保持有效。
 
-下一步交接核对及修复边界见 [补充方案](d1-file-handoff-and-boundary-fixes.md)。2026-10-05 用户“按照你的建议继续”作为协调确认：D1 临时独占 index.ts、provenance-migrations.ts、auth-reader.ts、local-bootstrap.ts 及拟新增模块；C1 保留 schema、恢复/删除和 ops，未来入口变更需串行交接。没有直接联系 C1 Session，不冒充其会话回复。只读验收为应用层零写入；实时 WAL 允许引擎 sidecar 协调，停写 DELETE 快照仍要求文件不变。
+## 收口证明与后续范围
+
+[实现 PR #411](https://github.com/dong-qiu/deep-insight-agent/pull/411) 已正常 squash 合入 `4e09ec93923a0d7bece2b282045a18c98eb3a1c8`；[精确 main push CI 37219844193 / attempt 1](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37219844193) 为 `completed/success`，full scope，应用、独立 Docker 及三个必需门通过。最终完整差异、远端候选与候选原始证明已独立核对，Blocking 0 / Warning 0。实际 head/base/tested SHA、artifact hash、到期时间及原始最小 JSON 保存在 #411 交付摘要；[实施收据](../../verify/d1-database-lifecycle-2026-10-05.md#主干交付与收尾补记)区分提交前本地记录与后续交付事实。
+
+[自动镜像发布 37220231546](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37220231546) 也已 `completed/success`，对应同一合并 SHA；没有生产部署或实际运行版本核验，不把镜像发布当上线。
+
+D2 的数据库前置已满足。D1 保留的 ops CLI、controller 自有数据库及 repository 兼容入口不属于遗漏；后续涉及 C1 恢复/删除/ops 或 C2b repository/runtime 的改动仍按文件串行交接。原方案与反例记录保留下文，原待验证状态不作为当前未完成事实。
+
+当时的交接核对及修复边界见 [补充方案](d1-file-handoff-and-boundary-fixes.md)。2026-10-05 用户“按照你的建议继续”作为协调确认：D1 临时独占 index.ts、provenance-migrations.ts、auth-reader.ts、local-bootstrap.ts 及新增模块；C1 保留 schema、恢复/删除和 ops，未来入口变更需串行交接。没有直接联系 C1 Session，不冒充其会话回复。只读验收为应用层零写入；实时 WAL 允许引擎 sidecar 协调，停写 DELETE 快照仍要求文件不变。
 
 承接 [技术债清单](technical-debt-remediation.md)、[架构](../architecture.md)、[provenance](generation-provenance.md)、[C3](c3-model-usage-persistence.md) 和 [D4 收据](../../verify/d4-browser-smoke-2026-10-04.md)。不合入独立并行计划分支。
 
@@ -97,6 +105,6 @@ A 阶段的失败反例保留在两份时点收据，最终验收不能拿设计
 
 这是行为保持型职责拆分附带两项已授权的失败生命周期修复，不能把资源修复声称为逐字搬移。connection 工厂增加真实连接 pragma 失败/二次清理错误测试；冻结 63 项保护测试和 4 项设计反例继续执行，按已确认 WAL 例外核对主文件/数据库状态，未使用 skip/xfail。
 
-回退仅 revert 代码拆分，保留 schema/ledger/数据；不授权降级数据库、恢复、历史修复。用户后续已授权合入；须先完成交接/实现/独立评审和最终候选 full CI，再正常合入并核验精确 main CI；不部署、不迁移生产、不清理分支/worktree。
+回退仅 revert 代码拆分，保留 schema/ledger/数据；不授权降级数据库、恢复、历史修复。原实施阶段按合入授权完成交接、实现、独立评审、最终候选 full CI、正常合入及精确 main CI。后续用户“请完成三项收尾事务”单独授权文档状态同步、PR 镜像记录更新及限定 D1 本地分支/worktree 清理；不包含生产部署或生产数据操作。清理前核实目标、忽略数据与占用，不以 Git 干净状态代替数据核对。
 
-D2 启动实现条件：D1 对应 DB 模块已合入且精确 main CI 成功，完成文件交接；当前 PR/CI 就绪只支持 D2 调查/spec，不替代合入或生产核验。
+D2 启动实现条件：D1 对应 DB 模块已合入且精确 main CI 成功，此数据库前置已满足；具体共享文件仍需按 C1/C2b 当前归属交接，不由 D1 收口授权生产操作。
