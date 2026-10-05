@@ -2,6 +2,8 @@
 
 日期：2026-10-05（Asia/Shanghai）。验收见 [D1 spec](../plan/specs/d1-database-lifecycle.md)。基线 `origin/main` @ `c7648986d96e040dcad8c7e6dd01e75759c2bbee`；分支 `refactor/d1-db-lifecycle`，隔离 worktree `insight-agent-d1`。本收据记录提交前本地结果；候选 PR/main CI 待实际运行后绑定到 PR 摘要，不提前声称通过或生产上线。
 
+> 前面各节保留提交前时点记录；后续已完成的 PR、主干和镜像结果见 [主干交付与收尾补记](#主干交付与收尾补记)。历史红灯、当时待验证项及范围决定不覆盖或删除。
+
 ## 范围与归属
 
 先只读盘点，再专属 spec/反例，最后分阶段实现。#404 D4、#409 认证、#410 C3 已合入，基线 main CI 37213415190 success；不重复实现，不把镜像发布当生产上线。主 worktree 的 ADR/roadmap 两处改动及四份未跟踪文档保留；其他会话工作区只读。只复制 `.env.local`，权限 0600，DATA_DIR/DB_PATH 改为 D1 隔离路径；没有复制 SQLite/WAL、原文或报告。
@@ -72,3 +74,27 @@ Startup 严格模式只校验最新 ledger，再 deployment、raw/report reconci
 本收据未声称 PR/main CI 已通过、已合并或生产已部署。未授权也不执行生产部署/迁移/恢复/历史修复及分支/worktree 清理。远程分支若由仓库自动删除，是仓库设置，不执行本地清理。
 
 回退仅正常 revert 代码，保留 schema/ledger/业务数据，不降级迁移或恢复数据库。D2 实施条件：D1 已合入且精确 main CI 成功，connection/startup 接口及后续 C1 文件交接稳定；调查/spec 可提前，D1 PR 成功不替代主干验收或生产证据。
+
+## 主干交付与收尾补记
+
+D1 / TD-11 技术验收与主干交付已完成。[#411 交付摘要](https://github.com/dong-qiu/deep-insight-agent/pull/411)保存最终完整证明，以下补记不改变原冻结候选或提交前本地结果。
+
+| 阶段 | 实际身份与结果 |
+| --- | --- |
+| 最终候选 | head `c9f395c8079bc064e476993a96d9048e6ad1784c`，base `c7648986d96e040dcad8c7e6dd01e75759c2bbee`；[PR CI 37217402707 / attempt 1](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37217402707) full/success，实际 tested merge SHA `38861432873c02f1b5b82ce20bb701c06841ff95` |
+| 独立远端复核 | GitHub 19/19 blob、完整 diff、原始三份候选证明与冻结候选一致；Blocking 0 / Warning 0，正文链接建议已处理 |
+| 正常合入 | #411 于 2026-10-04T17:15:48Z squash 合入 `4e09ec93923a0d7bece2b282045a18c98eb3a1c8`，无 admin 或保护绕过 |
+| 精确主干 | [main push CI 37219844193 / attempt 1](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37219844193) completed/success、full；commit 与 tested_commit 均为实际合并 SHA；应用、独立 Docker、三个必需门成功 |
+| 主干实际执行 | 245 文件/2,523 测试、ops 150/150、TS7/TS6 app/tools、lint、P1 门、HTTP 7/7、Chromium 5/5、audit 0；真实构建一次 53,425ms，两个 built 入口 additional_builds=0 |
+| 自动镜像发布 | [37220231546](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37220231546) completed/success，head 为同一合并 SHA；未手动触发发布或部署 |
+| 生产 | 未部署，未核验生产实际版本，未做生产迁移/恢复/历史修复；镜像成功不能证明上线 |
+
+原 artifact ID、原 JSON SHA256、run/attempt、创建/到期时间及两阶段的完整最小 CI/Docker JSON 均保存在 #411 摘要。PR 产物实际到期 `2027-01-02T16:36:42Z`，main 产物实际到期 `2027-01-02T17:15:50Z`；原产物会过期，scope 仅摘要/hash，不能冒充完整长期原文件归档。
+
+用户“请完成三项收尾事务”随后授权专属文档状态同步、PR 镜像结果更新及限定 D1 本地分支/worktree 清理。该授权覆盖 D1 工作区的可丢弃配置、依赖、构建/测试产物，经核实再删除；不扩展至 C1/C2b 或主工作区已有文件。清理本地资源不构成 production restore 或历史修复。
+
+删除前只读核对发现 `.data` 是测试遗留：本地库 35 张表无业务行，仅 report FTS 内部行；三份归档逐一等于 `source-collect-entries.integration.test.ts` 的 ondemand/retry/probe 合成 envelope，hash 与文件名一致。时间与 D1 全量测试吻合。使用只读连接审计后 main DB/WAL hash 不变，无 schema replay、迁移、修复或 checkpoint；此前及审计后均须再确认无进程占用，清理不依赖 Git 忽略状态推断数据价值。没有读取或输出环境密钥。
+
+本次文档修订只改 D1 专属 spec/收据，主工作区 ADR/roadmap 和其他会话文件保持原样。文档 PR 按轻量链接/结构/证据核对与 docs CI 交付，保留三个必需门；不为状态文字重跑模型或应用全套验证。清理实际结果由文档 PR 与 #411 摘要在执行后记录，不在执行前声称已删除。
+
+D2 数据库前置已满足，后续具体 C1/C2b 共享文件仍串行交接。ops CLI/controller 保留入口是明确兼容边界，不是尚未完成的 D1 实现。
