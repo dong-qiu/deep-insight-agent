@@ -3,6 +3,9 @@
 日期：2026-10-05。分支 `perf/c4b-a1-low-risk`，独立 worktree `insight-agent-c4b`。
 [实施 spec](../plan/specs/c4b-a1-recovery-performance.md)。本切片部分完成 TD-14，未关闭全部性能问题。
 
+最终状态（2026-10-06）：**C4b 本轮零付费切片完成；TD-14 部分完成**。
+以下保留实施及合并前验证记录，最终合入与主干 CI 见末尾“合入核验与本轮收口”。
+
 ## 隔离与现场证据
 
 启动基线 `64f365682c2a6a4ffa6198f3bb4c57d1e1ab589c` 已包含 C4a、C2a、C3、C2b、D1、D4，
@@ -14,7 +17,7 @@
 只复制 `.env.local`，权限 0600，DATA_DIR/DB_PATH 指向本 worktree 独立路径；未复制数据、SQLite/WAL、
 原文、报告或 `.env.development.local`。未覆盖主 worktree 的 roadmap/ADR 未提交内容。
 D2 的 alert/channel 文件与专属测试、runtime/agents、package/lock、CI、baseline/dataset 均无本切片 diff。
-没有生产访问、部署、迁移、历史修复、合并或分支/worktree 清理。
+实施阶段没有生产访问、部署、迁移、历史修复、合并或分支/worktree 清理；后续获授权合并的记录在末尾单独追加。
 
 已检查 AGENTS、技术债、C4a spec/收据、评测口径、C2a/C3/C2b spec/专属收据及并行计划。
 已有 9 份本地 manifest 仅只读白名单聚合字段，均无 C4a timing/effective_config；历史 Opus 阶段诊断
@@ -49,6 +52,7 @@ reachable judge 基础设施失败不能作为 completed。coverage/翻译源审
 测量源码为干净提交 `bd7519ab940e4cc621b37052bb5698d25e9d82ff`，基于上述 D2 后主干。
 14 个实现/测试/spec 文件按路径排序，以 path+NUL+bytes+NUL 拼接的 SHA-256：
 `d5f782384c15418303e35cc6f38a638737020eb0c754ec0f58a1d7ec1cb0a70c`，不含本收据。
+该指纹绑定上述原实现候选；后续纯文档收口不替换或重算历史测量指纹。
 环境 Node 24.19.0/npm 11.17.0/macOS；测量独立执行，无并行本地测试/构建，未 flush OS 页缓存。
 
 同一源码的 test-only import hook 选择安全 v2 两读参照/实际单读接线，不是旧 main 的完整 before/after。
@@ -125,4 +129,33 @@ npm run lint
 未提高并发、减样本、关闭 thinking、降低 timeout/retry 或切换模型/provider；未重写 baseline 或改争议样本判断。
 若以后需要真实模型诊断，需另行确认固定样本/次数/provider/model 和最多请求/重试/耗时范围，并先实现可靠硬限制。
 Coding Plan 金额/额度未知，请求上限不等价于实际金额上限；本 PR 不运行也不实现付费实验。
-完成 PR/最终候选 CI 后停止，等待合并授权；合入不等于上线。
+实施阶段在完成 PR/最终候选 CI 后停止等待合并授权；后续授权与合入核验如下。合入不等于上线。
+
+## 2026-10-06：合入核验与本轮收口
+
+用户先明确授权合并，随后要求完成 C4b 收口所需的文档同步。本节补充交付状态，不扩大实现或付费验证范围。
+
+- [代码 PR #415](https://github.com/dong-qiu/deep-insight-agent/pull/415) 已 squash 合入 main，
+  提交 `5e90ff49a93c269ac801acbc4560b28ccb186e6c`。GitHub 合入时间为 `2026-10-05T16:01:30Z`，
+  对应北京时间 2026-10-06 00:01:30。
+- 获评审及候选 CI 验证的 head 为 `dc944d97c837414eed83ebff164e5f962d6eaa82`；
+  squash 后的源码树与该候选一致，tree SHA 为 `b5b78fc1d32b792bdad3907eaf69217c723f15d0`，没有新增代码变化。
+- [合并后主干 CI 37337558444 / attempt 1](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37337558444)
+  为 success，事件 push；scope 为 full，head/tested_commit 均为上述 main 提交，变更范围为原 C4b 的 15 个文件。
+  scope、应用及 Docker 产物的 commit/tested_commit/run/attempt 已核对一致。
+- 主干完整应用、类型检查、lint、覆盖率、构建、管理员 E2E、浏览器 smoke、供应链检查与 Docker 验证通过；
+  主干按既有策略执行的 P1 完整性/容量门及 report-reader 门保留，Eval-Gate trailer 检查通过。
+  独立评审的 Blocking=0、Warning=0 结论仍对应同一实现；性能观测 warning 单独保留如下。
+- 主干 `report-reader-p0c-evidence`：gate_eligible=true、passed=true、warning=true。
+  baseline P95 0.175014 ms，current P95 0.228866 ms，相对增加约 30.77%、绝对增加 0.053853 ms，
+  未超过原策略允许的 current 0.275014 ms。该观察不归因于 C4b；未重写基线、放宽门或以重跑消除 warning。
+  它与合并前 PR CI 的 0.021541 ms 增量是不同运行的观察，不混用数值。
+
+本次收口仅更新 C4b 专属 spec/收据和 PR 交付记录，按独立文档 PR 流程验证；不修改 runtime、评测实现、
+baseline/dataset、CI、package/lock 或主 worktree 的 roadmap/ADR 未提交内容。
+文档 CI 不生成应用/Docker 发布证据，上述实现与主干 full CI 继续是代码交付证据。
+
+收口结论：已完成本轮现场盘点、最小测量、安全保护、单次源读取优化、独立评审、PR 合入和主干 CI 核验。
+只证明恢复源读取 2→1 及合成局部收益；当前实际模型配置的完整计时、整体提速、费用/吞吐和上线效果均未证明。
+TD-14 保持部分完成，后续真实模型测量另需固定范围、次数、请求/重试上限、预算与停止条件授权。
+真实模型调用为 0；未进行生产访问、部署、运维迁移、历史修复或本地分支/worktree 清理。本轮到此结束。
