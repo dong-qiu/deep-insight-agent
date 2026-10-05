@@ -18,13 +18,14 @@ import { sha256File } from "./a1-artifacts.js";
 const roots: string[] = [];
 afterEach(() => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })));
 
-const context: A1QualityCheckpointContext = { eval_config_sha256: "a".repeat(64), quality_dataset_sha256: "b".repeat(64) };
+const context: A1QualityCheckpointContext = { eval_config_sha256: "a".repeat(64), quality_dataset_sha256: "b".repeat(64), recovery_identity_sha256: "c".repeat(64) };
 const plan: A1QualityCheckpointPlanCase[] = [
   { case_index: 0, topic_id: "topic-a", stratum: "arxiv", chunk_input_sha256: ["one", "two"] },
   { case_index: 1, topic_id: "topic-b", stratum: "arxiv", chunk_input_sha256: ["three"] },
 ];
-const chunk = (input_sha256: string) => ({ input_sha256, insights: [], coverage_decisions: [] });
+const chunk = (input_sha256: string) => ({ input_sha256, insights: [], coverage_decisions: [], execution_complete: true as const });
 const completed = {
+  execution_complete: true as const,
   batch: {
     id: "batch", topic_id: "topic-a", time_window: { start: "", end: "" }, status: "done",
     no_significant_event: true, insights: [],
