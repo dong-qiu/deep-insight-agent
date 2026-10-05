@@ -2,6 +2,7 @@
  *  纯落库与状态机逻辑见 db/analysis.ts、runtime/jobs.ts（可无 key 测）；本文件含真模型调用，
  *  端到端需 ANTHROPIC_API_KEY，由团队/定时任务跑。 */
 import { cancellationCheckpoint, TaskCancellationError, type TaskCancellationOptions } from "../runtime/cancellation.js";
+import { TaskBudgetError, checkTaskBudget, type TaskBudgetOptions } from "../runtime/task-budget.js";
 import type { DB } from "../db/index.js";
 import { safeError } from "../runtime/diagnostics.js";
 import { saveAnalysisBatch, saveValidationResult } from "../db/analysis.js";
@@ -53,9 +54,9 @@ function captureContentRevisions(db: DB, items: ContentItem[], refs: EntityRef[]
 }
 
 function traceFailureReason(error: unknown, fallback: string): string {
-  return error instanceof TaskCancellationError ? error.reasonCode : error instanceof Error && error.message === "provenance_revision_conflict"
-    ? "provenance_revision_conflict"
-    : fallback;
+  if (error instanceof TaskCancellationError || error instanceof TaskBudgetError) return error.reasonCode;
+  if (error instanceof Error && ["usage_persistence_failed", "provenance_revision_conflict"].includes(error.message)) return error.message;
+  return fallback;
 }
 
 function emitTrace(db: DB, traceId: string | undefined, input: Omit<Parameters<typeof appendGenerationEvent>[1], "trace_id">, assertWrite?: () => void): ReturnType<typeof appendGenerationEvent> | undefined {
@@ -73,10 +74,10 @@ export async function runAnalysis(
   topic: Topic,
   items: ContentItem[],
   window: { start: string; end: string },
-  opts: { history?: HistoricalEvent[]; traceId?: string; rootRunId?: string; assertWrite?: () => void; telemetry?: P1TelemetrySink } & TaskCancellationOptions = {},
+  opts: { history?: HistoricalEvent[]; traceId?: string; rootRunId?: string; assertWrite?: () => void; telemetry?: P1TelemetrySink } & TaskCancellationOptions & TaskBudgetOptions = {},
 ): Promise<AnalysisBatch> {
   let checkCancellation = (): void => cancellationCheckpoint(opts);
-  const assertActive = (): void => { opts.assertWrite?.(); checkCancellation(); };
+  const assertActive = (): void => { opts.assertWrite?.(); checkCancellation(); checkTaskBudget(); };
   const telemetry = opts.telemetry ?? NOOP_P1_TELEMETRY_SINK;
   const inputs = opts.traceId ? contentRefs(items) : [];
   // Freeze this run's actual cache path before its started event. A cache
@@ -106,7 +107,7 @@ export async function runAnalysis(
   emitTrace(db, opts.traceId, { stage: "analyze", event_type: "started", input_refs: inputs, version_context: analyzerReviewVersionContext(cacheMode), context_completeness: "complete" }, assertActive);
   try {
   if (opts.traceId) captureContentRevisions(db, items, inputs, assertActive);
-  const { result } = await runJob(db, { kind: "analyze", target: { topic_id: topic.id }, traceId: opts.traceId, existingRunId: opts.rootRunId, assertWrite: opts.assertWrite, signal: opts.signal, deadlineAt: opts.deadlineAt }, async (ctx) => {
+  const { result } = await runJob(db, { kind: "analyze", target: { topic_id: topic.id }, traceId: opts.traceId, existingRunId: opts.rootRunId, assertWrite: opts.assertWrite, signal: opts.signal, deadlineAt: opts.deadlineAt, taskBudgetUsd: opts.taskBudgetUsd }, async (ctx) => {
     checkCancellation = ctx.checkCancellation;
     const metricCosts: Cost[] = [];
     const recordCost = (cost: Cost) => { ctx.recordCost(cost); metricCosts.push(cost); };
@@ -182,10 +183,10 @@ export async function runValidation(
   db: DB,
   batch: AnalysisBatch,
   items: ContentItem[],
-  opts: { traceId?: string; assertWrite?: () => void; telemetry?: P1TelemetrySink } & TaskCancellationOptions = {},
+  opts: { traceId?: string; assertWrite?: () => void; telemetry?: P1TelemetrySink } & TaskCancellationOptions & TaskBudgetOptions = {},
 ): Promise<ValidationResult> {
   let checkCancellation = (): void => cancellationCheckpoint(opts);
-  const assertActive = (): void => { opts.assertWrite?.(); checkCancellation(); };
+  const assertActive = (): void => { opts.assertWrite?.(); checkCancellation(); checkTaskBudget(); };
   const telemetry = opts.telemetry ?? NOOP_P1_TELEMETRY_SINK;
   const batchRef: EntityRef = { type: "analysis_batch", locator: { kind: "id", id: batch.id }, revision: batch.id, role: "input" };
   const inputs = [batchRef, ...(opts.traceId ? contentRefs(items) : [])];
@@ -195,7 +196,7 @@ export async function runValidation(
   emitTrace(db, opts.traceId, { stage: "validate", event_type: "started", input_refs: inputs, version_context: validatorContext, context_completeness: "complete" }, assertActive);
   try {
   if (opts.traceId) captureContentRevisions(db, items, inputs.slice(1), assertActive);
-  const { result } = await runJob(db, { kind: "validate", target: { batch_id: batch.id }, traceId: opts.traceId, assertWrite: opts.assertWrite, signal: opts.signal, deadlineAt: opts.deadlineAt }, async (ctx) => {
+  const { result } = await runJob(db, { kind: "validate", target: { batch_id: batch.id }, traceId: opts.traceId, assertWrite: opts.assertWrite, signal: opts.signal, deadlineAt: opts.deadlineAt, taskBudgetUsd: opts.taskBudgetUsd }, async (ctx) => {
     checkCancellation = ctx.checkCancellation;
     const metricCosts: Cost[] = [];
     const recordCost = (cost: Cost) => { ctx.recordCost(cost); metricCosts.push(cost); };
@@ -262,10 +263,10 @@ export function runTechLeadExtraction(
   batch: AnalysisBatch,
   validation: ValidationResult,
   now = new Date().toISOString(),
-  opts: { traceId?: string; assertWrite?: () => void } & TaskCancellationOptions = {},
+  opts: { traceId?: string; assertWrite?: () => void } & TaskCancellationOptions & TaskBudgetOptions = {},
 ): TechLead[] {
-  const assertActive = (): void => { opts.assertWrite?.(); cancellationCheckpoint(opts); };
-  cancellationCheckpoint(opts);
+  const assertActive = (): void => { opts.assertWrite?.(); cancellationCheckpoint(opts); checkTaskBudget(); };
+  assertActive();
   const items = new Map<string, ContentItem>();
   for (const insight of batch.insights) for (const citation of insight.citations) {
     if (!items.has(citation.content_item_id)) {
@@ -310,6 +311,7 @@ export function runTechLeadExtraction(
     })();
   } catch (error) {
     cancellationCheckpoint(opts);
+    checkTaskBudget();
     emitTrace(db, opts.traceId, { stage: "map_direction", event_type: "failed", error: { reason_code: "map_direction_failed" } }, opts.assertWrite);
     console.warn("⚠️ 技术机会投影失败（不影响技术线索与报告）", safeError(error));
     return leads;
@@ -329,6 +331,7 @@ export function runTechLeadExtraction(
     })();
   } catch (error) {
     cancellationCheckpoint(opts);
+    checkTaskBudget();
     emitTrace(db, opts.traceId, { stage: "derive_opportunity", event_type: "failed", error: { reason_code: "derive_opportunity_failed" } }, opts.assertWrite);
     console.warn("⚠️ 技术机会投影失败（不影响技术线索与报告）", safeError(error));
   }
@@ -353,10 +356,10 @@ export async function runReportGen(
     traceId?: string;
     assertWrite?: () => void;
     anchor?: ReportAnchorPublication;
-  } & TaskCancellationOptions,
+  } & TaskCancellationOptions & TaskBudgetOptions,
 ): Promise<Report> {
   let checkCancellation = (): void => cancellationCheckpoint(opts);
-  const assertActive = (): void => { opts.assertWrite?.(); checkCancellation(); };
+  const assertActive = (): void => { opts.assertWrite?.(); checkCancellation(); checkTaskBudget(); };
   // A retried report rechecks its actual rendered citations below. Other saved citations
   // (including pending secondary evidence) must not veto an otherwise valid reader output.
   const batchRef: EntityRef = { type: "analysis_batch", locator: { kind: "id", id: opts.batch.id }, revision: opts.batch.id, role: "input" };
@@ -384,7 +387,7 @@ export async function runReportGen(
   try {
   const { result } = await runJob(
     db,
-    { kind: "report-gen", target: { topic_id: opts.topic.id, batch_id: opts.batch.id }, traceId: opts.traceId, assertWrite: opts.assertWrite, signal: opts.signal, deadlineAt: opts.deadlineAt },
+    { kind: "report-gen", target: { topic_id: opts.topic.id, batch_id: opts.batch.id }, traceId: opts.traceId, assertWrite: opts.assertWrite, signal: opts.signal, deadlineAt: opts.deadlineAt, taskBudgetUsd: opts.taskBudgetUsd },
     async (ctx) => {
       checkCancellation = ctx.checkCancellation;
       // 质量红线：非空批次没有任何 support/pass 引用时，不得把"无重要事件"伪装成成功。

@@ -7,6 +7,7 @@
  * so concurrent validators wait for one half-open probe instead of stampeding the relay.
  */
 import { abortableDelay, awaitWithSignal, throwIfAborted } from "./cancellation.js";
+import { TaskBudgetError } from "./task-budget.js";
 export const RELAY_RECOVERY_POLICY_VERSION = "relay-half-open-v1";
 export const RELAY_RECOVERY_PROBE_DELAYS_MS = [10_000, 20_000, 40_000] as const;
 export const RELAY_RECOVERY_MAX_PROBES = RELAY_RECOVERY_PROBE_DELAYS_MS.length;
@@ -157,8 +158,9 @@ export class RelayRecoveryGate {
     try { await waitFor(recovery, signal); }
     catch (error) {
       throwIfAborted(signal);
-      if (!ownerSignal?.aborted) throw error;
-      // A cancelled leader is not a relay outage or a failure of the follower's inputs.
+      if (!ownerSignal?.aborted && !(error instanceof TaskBudgetError)) throw error;
+      // A leader's cancellation or budget failure belongs to that task. Followers resume
+      // with their own operation, whose runtime gate checks their own allowance.
     }
   }
 

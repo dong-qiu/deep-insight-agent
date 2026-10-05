@@ -1,5 +1,6 @@
 /** 独立 dispatch worker 调用的单次执行器。worker 本身无业务写入权限，所有 claim/fencing 由 DB 原语守护。 */
 import { createTaskCancellation, TaskCancellationError, type TaskCancellationOptions } from "../runtime/cancellation.js";
+import { checkTaskBudget, loadTaskBudgetUsd, TaskBudgetError, validateTaskBudget, withTaskBudget, type TaskBudgetOptions } from "../runtime/task-budget.js";
 import type { DB } from "../db/index.js";
 import {
   claimNextGenerationDispatch,
@@ -14,6 +15,7 @@ import { NOOP_P1_TELEMETRY_SINK, type P1TelemetrySink } from "../capabilities/p1
 
 const HEARTBEAT_MS = 30_000;
 const STABLE_DISPATCH_FAILURE_CODES = new Set([
+  "usage_persistence_failed",
   "generation_event_idempotency_conflict",
   "provenance_revision_conflict",
   "integrity_anchor_not_configured",
@@ -25,6 +27,7 @@ const STABLE_DISPATCH_FAILURE_CODES = new Set([
 
 function dispatchFailure(error: unknown): { reason_code: string; message: string; retryable: boolean } {
   if (error instanceof TaskCancellationError) return { reason_code: error.reasonCode, message: error.reasonCode, retryable: false };
+  if (error instanceof TaskBudgetError) return { reason_code: error.reasonCode, message: error.reasonCode, retryable: false };
   const message = error instanceof Error ? error.message : String(error);
   if (STABLE_DISPATCH_FAILURE_CODES.has(message)) {
     return { reason_code: message, message, retryable: false };
@@ -36,7 +39,7 @@ function dispatchFailure(error: unknown): { reason_code: string; message: string
 
 /** Injection seam for deterministic failure tests.  Production always uses
  * the DB CAS heartbeat and the standard 30s cadence. */
-export interface GenerationDispatchRuntime extends TaskCancellationOptions {
+export interface GenerationDispatchRuntime extends TaskCancellationOptions, TaskBudgetOptions {
   heartbeat?: typeof heartbeatGenerationDispatch;
   heartbeatMs?: number;
   /** Supplied by the worker composition root; core dispatch is dormant by default. */
@@ -48,6 +51,8 @@ export async function runGenerationDispatchOnce(
   execute: (db: DB, topicId: string, opts: GenerationExecutionOptions & { reportType: "brief" | "deep_dive" | "initial_digest"; windowHours?: number; windowEnd?: string; items?: number }) => Promise<unknown> = executeDispatch,
   runtime: GenerationDispatchRuntime = {},
 ): Promise<{ claimed: boolean; traceId?: string; status?: "done" | "failed" }> {
+  const taskBudgetUsd = runtime.taskBudgetUsd ?? loadTaskBudgetUsd();
+  validateTaskBudget(taskBudgetUsd);
   const cancellation = createTaskCancellation(runtime);
   if (cancellation.signal.aborted) { cancellation.dispose(); return { claimed: false }; }
   let claim;
@@ -77,17 +82,21 @@ export async function runGenerationDispatchOnce(
     assertWrite();
     cancellation.check();
     task.check();
-    await execute(db, claim.payload.topic_id, {
-      signal: task.signal,
-      deadlineAt: runtime.deadlineAt,
-      traceId: claim.traceId,
-      rootRunId: claim.rootRunId,
-      reportType: claim.payload.report_type,
-      windowHours: claim.payload.window_hours,
-      windowEnd: claim.payload.window_end,
-      items: claim.payload.items,
-      assertWrite,
-      telemetry: runtime.telemetry ?? NOOP_P1_TELEMETRY_SINK,
+    await withTaskBudget(db, { taskBudgetUsd, traceId: claim.traceId }, async () => {
+      await execute(db, claim.payload.topic_id, {
+        signal: task.signal,
+        deadlineAt: runtime.deadlineAt,
+        traceId: claim.traceId,
+        rootRunId: claim.rootRunId,
+        reportType: claim.payload.report_type,
+        windowHours: claim.payload.window_hours,
+        windowEnd: claim.payload.window_end,
+        items: claim.payload.items,
+        assertWrite,
+        taskBudgetUsd,
+        telemetry: runtime.telemetry ?? NOOP_P1_TELEMETRY_SINK,
+      });
+      assertWrite(); cancellation.check(); task.check(); checkTaskBudget();
     });
     assertWrite();
     cancellation.check();
@@ -131,6 +140,6 @@ async function executeDispatch(
   if (opts.windowHours == null || opts.items == null) throw new Error("invalid_scheduled_dispatch_payload");
   return runScheduledTopicPipeline(db, topicId, {
     reportType: opts.reportType, windowHours: opts.windowHours, items: opts.items,
-    traceId: opts.traceId, rootRunId: opts.rootRunId, windowEnd: opts.windowEnd, signal: opts.signal, deadlineAt: opts.deadlineAt, assertWrite: opts.assertWrite, anchor, telemetry: opts.telemetry,
+    traceId: opts.traceId, rootRunId: opts.rootRunId, windowEnd: opts.windowEnd, signal: opts.signal, deadlineAt: opts.deadlineAt, taskBudgetUsd: opts.taskBudgetUsd, assertWrite: opts.assertWrite, anchor, telemetry: opts.telemetry,
   });
 }

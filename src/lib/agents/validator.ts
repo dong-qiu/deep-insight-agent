@@ -5,6 +5,7 @@
  *  - 处置矩阵 / verdict：见 architecture「数据模型 · 校验结果 · 校验判定流程」。
  */
 import { abortableDelay as sleep } from "../runtime/cancellation.js";
+import { checkRuntimeControl } from "../runtime/model-usage.js";
 import { createHash } from "node:crypto";
 import { safeError } from "../runtime/diagnostics.js";
 import {
@@ -269,6 +270,7 @@ async function retryJudge<T>(operation: () => Promise<T>, signal?: AbortSignal):
       return result;
     } catch (error) {
       throwIfAborted(signal);
+      checkRuntimeControl();
       // The shared gate has already consumed its finite recovery budget. Fast per-call retries
       // would reopen a thundering herd and turn one relay outage into many failed evaluations.
       if (error instanceof RelayUnavailableError) throw error;
