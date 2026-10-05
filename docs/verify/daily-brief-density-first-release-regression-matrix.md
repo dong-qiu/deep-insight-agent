@@ -2,7 +2,11 @@
 
 > 2026-10-03 · S0 测试设计，状态为**待实现**。依赖[成员发布契约](../plan/specs/daily-brief-density-member-publication-contract.md)与[加速交付切片](../plan/specs/daily-brief-density-fast-release.md)。旧模式 4 个相关测试文件 189/189 通过、只读导出器 15/15 通过，只作为 before 基线。
 
+## 隔离与验证范围
+
 所有新格式用例使用隔离 SQLite、临时 artifact 目录和禁用通知的环境，优先调用实际 `runReportGen`、`saveReport`、两种 reconcile 与生产读取函数。纯选择器单测只能补充定位，不能代替提交与恢复证明。一个测试不能只检查“抛错”，还要确认 `done`、index/FTS、artifact 可见性、通知及后续重试状态。
+
+## 场景矩阵
 
 | 阶段 | 场景与注入点 | 必须观察到的结果 | 主要测试落点 |
 |---|---|---|---|
@@ -20,5 +24,7 @@
 | S3 | 同一固化 Story 在 Markdown、HTML、页面、预览、卡片、报告索引、通知、PPT/导出中呈现 | 成员文本、顺序、事实数、单源标识和引用编号一致；不支持新格式的入口显式禁用且可验证 | `report-gen.test.ts`、页面/卡片测试、PPT 与 route 测试、必要 e2e |
 | S3 | 发布后修改 batch/validator/选择策略，再读取所有展示面 | 展示仍引用发布时固化成员；PPT 不通过当前 batch 重新选取另一套事实 | `ppt-export.test.ts`、路由与 reader 集成 |
 | S3 | 试点 on→off→on、旧镜像读取新格式、紧急关闭开关 | 已刊 artifact 不变；生成路径可关闭；启用前记录最低兼容镜像并验证读路径 | pipeline 集成、部署核验记录 |
+
+## 验收口径
 
 验收时分别报告：合格成员分母、Story 数、错并/漏并、未绑定断言、必要限定、旧模式回归、恢复结果、各展示面差异；不能用测试文件总数代替这些观察。若归组使用模型，或改 prompt、validator、数据源/评测集，再按 `eval-gate` 跑对应语义门；确定性 report-gen 变更必须跑上述生产路径回归、受影响测试、`npm run typecheck`，涉及路由/构建时再跑 `npm run build`。
