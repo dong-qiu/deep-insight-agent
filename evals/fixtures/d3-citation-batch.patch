@@ -1,0 +1,78 @@
+diff --git a/src/lib/db/analysis.ts b/src/lib/db/analysis.ts
+index 4d28945..bf39e35 100644
+--- a/src/lib/db/analysis.ts
++++ b/src/lib/db/analysis.ts
+@@ -26,7 +26,7 @@ export interface InsightRow {
+   entities: string | null; // JSON
+   tags: string | null; // JSON
+ }
+-interface CitationRow {
++export interface CitationRow {
+   content_item_id: string;
+   citation_ref: string;
+   claim: string;
+@@ -59,8 +59,8 @@ function speakerAttributionFromRow(value: string | null): Insight["citations"][n
+
+ /** insight 行 + 其 citation → Insight 对象（单一来源；原 analysis/graph/ppt-export 四处拷贝收敛于此）。
+  *  17 字段装配 + JSON.parse + 0/1→bool 都在这一处，加字段只改这里、不会漏改某处静默丢字段。 */
+-export function rowToInsight(db: DB, r: InsightRow): Insight {
+-  const cits = db
++export function rowToInsight(db: DB, r: InsightRow, citations?: readonly CitationRow[]): Insight {
++  const cits = citations ?? db
+     .prepare("SELECT * FROM citation WHERE insight_id = ? ORDER BY citation_index")
+     .all(r.id) as CitationRow[];
+   return {
+diff --git a/src/lib/db/graph.ts b/src/lib/db/graph.ts
+index 1151429..b3926be 100644
+--- a/src/lib/db/graph.ts
++++ b/src/lib/db/graph.ts
+@@ -12,7 +12,7 @@ import { insightFingerprint } from "../runtime/statement-fingerprint.js";
+ import type { Entity, Insight } from "../types.js";
+ import { auditSupportsStatementBinding, hasSafeReaderMetadata } from "../utils/display-coverage-audit.js";
+ import { entitiesMentionedInStatement } from "../utils/reader-visible-entities.js";
+-import { type InsightRow, rowToInsight } from "./analysis.js";
++import { type CitationRow, type InsightRow, rowToInsight } from "./analysis.js";
+ import { createReaderEvidenceContext, type CurrentCitationEvidence } from "./reader-evidence.js";
+ import type { DB } from "./index.js";
+ import { reportReaderVisibilitySql } from "./integrity-lifecycle.js";
+@@ -106,11 +106,9 @@ function loadTopicInsightsFiltered(db: DB, topicId: string, since?: string, requ
+       return requiredEntityKeys.every((key) => keys.has(key));
+     } catch { return false; }
+   }) : allRows;
+-  const insights: Insight[] = [];
+   const evidence = createReaderEvidenceContext(db);
+   evidence.preload(rows);
+-  for (const r of rows) {
+-    if (!auditMatchesPersistedBinding({
++  const visible = rows.filter((r) => auditMatchesPersistedBinding({
+       statement_citation_index: r.statement_citation_index,
+       statement_citation_ref: r.statement_citation_ref,
+       statement: r.statement,
+@@ -119,11 +117,23 @@ function loadTopicInsightsFiltered(db: DB, topicId: string, since?: string, requ
+       importance_basis: r.importance_basis,
+       display_coverage_decision: r.display_coverage_decision,
+       display_coverage_gate_version: r.display_coverage_gate_version,
+-    }) || !evidence.accepts(r)) continue;
+-    const insight = rowToInsight(db, r);
+-    insights.push({ ...insight, entities: entitiesMentionedInStatement(insight.statement, insight.entities) });
++    }) && evidence.accepts(r));
++  const citationsByInsight = new Map<string, CitationRow[]>();
++  const ids = [...new Set(visible.map((row) => row.id))];
++  for (let offset = 0; offset < ids.length; offset += 400) {
++    const chunk = ids.slice(offset, offset + 400);
++    const citations = db.prepare(`SELECT * FROM citation WHERE insight_id IN (${chunk.map(() => "?").join(",")})
++      ORDER BY insight_id,citation_index`).all(...chunk) as Array<CitationRow & { insight_id: string }>;
++    for (const citation of citations) {
++      const list = citationsByInsight.get(citation.insight_id) ?? [];
++      list.push(citation);
++      citationsByInsight.set(citation.insight_id, list);
++    }
+   }
+-  return insights;
++  return visible.map((r) => {
++    const insight = rowToInsight(db, r, citationsByInsight.get(r.id) ?? []);
++    return { ...insight, entities: entitiesMentionedInStatement(insight.statement, insight.entities) };
++  });
+ }
+
+ /** 加载某主题的洞察（含 citation，溯源用）；since（batch.created_at 下界，ISO）可选限定时间窗。 */
