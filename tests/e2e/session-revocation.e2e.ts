@@ -17,7 +17,10 @@ const cookie = (jar: Jar) => [...jar].map(([key, value]) => `${key}=${value}`).j
 function collect(jar: Jar, response: Response) {
   for (const value of response.headers.getSetCookie()) {
     const match = /^([^=;]+)=([^;]*)/.exec(value);
-    if (match) jar.set(match[1], match[2]);
+    if (match) {
+      if (/;\s*max-age=0(?:;|$)/i.test(value)) jar.delete(match[1]);
+      else jar.set(match[1], match[2]);
+    }
   }
 }
 async function csrf(jar: Jar) {
@@ -86,6 +89,27 @@ beforeAll(async () => {
 afterAll(async () => { await stop(); rmSync(root, { recursive: true, force: true }); });
 
 describe("session revocation through real cookies and HTTP", () => {
+  it("late protected page response cannot restore a logged-out session", async () => {
+    const db = openDb(dbPath);
+    try { upsertUser(db, "logout-reader@example.test", "synthetic-logout-password", "viewer"); }
+    finally { db.close(); }
+    const jar = await login("logout-reader@example.test", "synthetic-logout-password");
+    const held = await request("/reports", jar);
+    expect(held.status).toBe(200);
+    expect(held.headers.getSetCookie().some(h => /authjs\.session-token/.test(h))).toBe(false);
+    const csrfToken = await csrf(jar);
+    const logout = await fetch(`${base}/api/auth/signout`, { method: "POST", redirect: "manual",
+      headers: { "content-type": "application/x-www-form-urlencoded", cookie: cookie(jar) },
+      body: new URLSearchParams({ csrfToken, callbackUrl: `${base}/login` }) });
+    expect(logout.status).toBe(302);
+    collect(jar, logout); // Apply only actual server Set-Cookie deletion, never clear manually.
+    expect([...jar.keys()].filter(key => /authjs\.session-token/.test(key))).toHaveLength(0);
+    collect(jar, held); // The earlier authorized response arrives after logout.
+    expect([...jar.keys()].filter(key => /authjs\.session-token/.test(key))).toHaveLength(0);
+    await assertRevoked(jar);
+    await held.text();
+  });
+
   it("rejects changed/deleted/recreated users, role changes, legacy and client-forged session updates", async () => {
     const admin = await login("admin@example.test", "admin-password");
     const save = async (password: string) => {

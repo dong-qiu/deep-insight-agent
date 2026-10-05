@@ -515,7 +515,7 @@ describe("runValidation", () => {
       expect(result.checks).toMatchObject([{ reachability: "fail", reachability_reason: "source_unreachable",
         consistency: "not_evaluated", verdict: "blocked" }]);
       expect(validateBatchMock).toHaveBeenCalledWith(mkBatch().insights, [], expect.any(Function), expect.anything(),
-        undefined, new Set([item.id]));
+        expect.any(AbortSignal), new Set([item.id]));
     },
   );
 

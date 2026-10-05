@@ -6,6 +6,8 @@
  * id / locator / source_count / multi_source / time_window / language / event_id 在代码侧派生，
  * 不让模型编造。
  */
+import { abortableDelay as sleep } from "../runtime/cancellation.js";
+import { checkRuntimeControl } from "../runtime/model-usage.js";
 import { createHash, randomUUID } from "node:crypto";
 import { safeError } from "../runtime/diagnostics.js";
 import { isTransientApiError, isVolcengineResponsesFailure } from "../runtime/errors.js";
@@ -42,7 +44,6 @@ export const CITATION_CLAUSE_AUDIT = `
 4.7. P0 原子洞察契约（优先于“跨源综合”偏好）：一条 insight 的 statement 只能陈述**一个独立、最小、可验证的事实**，且必须能由至少一条 displayed quote 直接、完整地复述。若要写两个实验结果、一个结果及其原因、比较的多个维度、机制及部署含义，必须拆成多条 insight/citation，不能用逗号、分号或“这表明/因此/同时”把它们拼成一个 statement。宁可输出一条克制的单源事实，也不得为“综合”加入 quote 未直接说出的解释、泛化或来源间关系；content_item_id、arXiv 编号等内部标识不得出现在 statement/headline。
 `;
 
-const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** An explicit upper-layer cancellation is never a content-level refusal to split or downgrade. */
 function throwIfAborted(signal?: AbortSignal): void {
@@ -296,7 +297,9 @@ async function verifyCandidates(
   statement: string,
   candidates: Array<{ token: string; quote: string }>,
   onCost?: (cost: Cost) => void,
+  signal?: AbortSignal,
 ): Promise<boolean[]> {
+  throwIfAborted(signal);
   const user = `待覆盖结论：${statement}
 
 候选引用（逐条判断是否支撑结论里关于「目标」的具体声明）：
@@ -309,6 +312,7 @@ ${candidates.map((c, i) => `${i + 1}. 目标=「${c.token}」　引用「${c.quo
     system: COVERAGE_VERIFY_SYSTEM,
     user,
     schema: CoverageRepairSchema,
+    signal,
     thinking: validatorThinking(),
     maxTokens: 2048,
     onCost,
@@ -754,17 +758,19 @@ export async function verifyQuoteSelfContained(
         // allowance. The default stays 2048; provider escalations are only admitted by A1.
         thinking: coverageThinking(), maxTokens, onCost, signal,
       });
+      throwIfAborted(signal);
       data = result.data as QuoteCoverage;
       break;
     } catch (error) {
       throwIfAborted(signal);
+      checkRuntimeControl();
       lastError = error;
       // callStructured owns the only Volcengine recovery: one explicit pre-terminal EOF retry.
       // Never resubmit a Volcengine validator request here, including native fetch/timeout errors
       // that do not carry the adapter's typed error. Formal terminals, schema failures and model
       // refusals remain conservative unavailable verdicts below.
       if (!isTransientApiError(error) || isVolcengineResponsesFailure(error) || llmProvider() === "volcengine-responses") break;
-      if (attempt < validatorRetries()) await sleep(validatorBackoffMs() * 2 ** attempt);
+      if (attempt < validatorRetries()) await sleep(validatorBackoffMs() * 2 ** attempt, signal);
     }
   }
   if (!data) return unavailable("self_contained_unavailable", lastError);
@@ -859,6 +865,7 @@ export async function verifyDisplayedQuoteCoverage(
           role: "validator", telemetryOperation: "display_quote_primary", system, user, schema: QuoteCoverageSchema,
           thinking: validatorThinking(), maxTokens: DISPLAY_COVERAGE_PRIMARY_MAX_TOKENS, onCost, signal,
         });
+        throwIfAborted(signal);
         data = result.data as QuoteCoverage;
         break;
       } catch (error) {
@@ -867,7 +874,7 @@ export async function verifyDisplayedQuoteCoverage(
         // pre-terminal EOF itself. Other provider terminals, native fetch/timeout errors and
         // structured-output failures become conservative unavailable verdicts below.
         if (!isTransientApiError(error) || isVolcengineResponsesFailure(error) || llmProvider() === "volcengine-responses") break;
-        if (attempt < validatorRetries()) await sleep(validatorBackoffMs() * 2 ** attempt);
+        if (attempt < validatorRetries()) await sleep(validatorBackoffMs() * 2 ** attempt, signal);
       }
     }
     if (!data) {
@@ -1004,9 +1011,11 @@ export async function repairCoverage(
   insights: Insight[],
   byId: Map<string, ContentItem>,
   onCost?: (cost: Cost) => void,
+  signal?: AbortSignal,
 ): Promise<void> {
   if (coverageBackfillOff()) return;
   for (const ins of insights) {
+    throwIfAborted(signal);
     const ents = (ins.entities ?? []).map((e) => e.name);
     const gaps = coverageGaps(ins.statement, ents, ins.citations.map((c) => c.quote));
     if (!gaps.length) continue;
@@ -1026,8 +1035,10 @@ export async function repairCoverage(
     // 失败 → 跳过本条补引，留给 report-gen 外露 〔待补引〕 兜底。
     let supports: boolean[];
     try {
-      supports = await verifyCandidates(ins.statement, cands.map((c) => ({ token: c.token, quote: c.quote })), onCost);
+      supports = await verifyCandidates(ins.statement, cands.map((c) => ({ token: c.token, quote: c.quote })), onCost, signal);
+      throwIfAborted(signal);
     } catch (e) {
+      throwIfAborted(signal);
       console.warn(`  ⚠️ 补引校验失败，跳过本条补引（留外露 〔待补引〕）：${safeError(e).message}`);
       continue;
     }
@@ -1855,6 +1866,7 @@ async function analyzeWithSplit(
     return await analyzeChunk(topic, items, timeWindow, history, onCost, onDecision, onStage, signal);
   } catch (e) {
     throwIfAborted(signal);
+    checkRuntimeControl();
     // Coverage rejection/unavailability is a publication-integrity failure, not a model refusal
     // that can be hidden by recursively dropping source items and returning no_significant_event.
     if (e instanceof QuoteCoverageAuditError || e instanceof QuoteCoverageRejectedError) throw e;
@@ -1918,6 +1930,7 @@ export async function analyze(
       recordCoverageDecision(decision);
     };
     const chunkInsights = await analyzeWithSplit(topic, chunk, timeWindow, history, onCost, recordChunkCoverageDecision, opts.onStage, opts.signal);
+    throwIfAborted(opts.signal);
     insights.push(...chunkInsights);
     // A checkpoint never receives half an analyzer chunk.  This callback is synchronous so its
     // caller can atomically persist the completed model + coverage result before the next call.

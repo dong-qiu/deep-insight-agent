@@ -6,6 +6,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import type { A1EffectiveConfig, A1Timing } from "./a1-observability.js";
 import type { RelayRecoveryStats } from "../src/lib/runtime/relay-recovery.js";
 
 export interface A1RunWorkspace {
@@ -28,6 +29,9 @@ export interface A1RunManifest {
   dcp_eligibility: "pending_manual_review" | "ineligible" | "not_evaluated";
   started_at: string;
   ended_at: string;
+  /** Optional additive observations; never part of EvalConfig/checkpoint identity. */
+  effective_config?: A1EffectiveConfig;
+  timing?: A1Timing;
   config: object;
   dataset: object;
   source: { commit: string | null; dirty_fingerprint: string | null; dirty_fingerprint_algorithm?: string };
@@ -94,6 +98,8 @@ export interface A1RunProgress {
   updated_at: string;
   state: "running" | "failed" | "completed";
   phase: "setup" | "quality" | "consistency" | "coverage_benchmark" | "finalizing";
+  effective_config?: A1EffectiveConfig;
+  timing?: A1Timing;
   topic_timeout_ms?: number;
   /** Total deadline for one labelled consistency judge, including nested retry budgets. */
   judge_timeout_ms?: number;

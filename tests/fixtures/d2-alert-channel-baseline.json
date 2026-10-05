@@ -1,0 +1,634 @@
+{
+  "baselineSha": "2bb91519a20cea09fdc387bcab0917728e28cdc4",
+  "detection": [
+    {
+      "url": "",
+      "override": "",
+      "expected": "generic"
+    },
+    {
+      "url": "not a url",
+      "expected": "generic"
+    },
+    {
+      "url": "https://open.feishu.cn/open-apis/bot/v2/hook/synthetic",
+      "expected": "feishu"
+    },
+    {
+      "url": "https://open.larksuite.com/bot/v2/hook/synthetic",
+      "expected": "feishu"
+    },
+    {
+      "url": "https://feishu.cn/no-hook",
+      "expected": "generic"
+    },
+    {
+      "url": "https://FEISHU.CN/bot/v2/hook/x",
+      "expected": "feishu"
+    },
+    {
+      "url": "https://notfeishu.cn/bot/v2/hook/x",
+      "expected": "generic"
+    },
+    {
+      "url": "https://feishu.cn.attacker.invalid/bot/v2/hook/x",
+      "expected": "generic"
+    },
+    {
+      "url": "https://ntfy.sh/a",
+      "expected": "ntfy"
+    },
+    {
+      "url": "https://sub.ntfy.sh/a",
+      "expected": "ntfy"
+    },
+    {
+      "url": "https://evil-ntfy.sh/a",
+      "expected": "generic"
+    },
+    {
+      "url": "https://hooks.slack.com/a",
+      "expected": "slack"
+    },
+    {
+      "url": "https://myslack.com/a",
+      "expected": "generic"
+    },
+    {
+      "url": "https://discordapp.com/a",
+      "expected": "discord"
+    },
+    {
+      "url": "https://discord.com/a",
+      "expected": "discord"
+    },
+    {
+      "url": "https://example.invalid/a",
+      "override": " NTFY ",
+      "expected": "ntfy"
+    },
+    {
+      "url": "invalid",
+      "override": "FEISHU",
+      "expected": "feishu"
+    },
+    {
+      "url": "https://ntfy.sh/a",
+      "override": "GENERIC",
+      "expected": "generic"
+    },
+    {
+      "url": "https://ntfy.sh/a",
+      "override": "unknown",
+      "expected": "ntfy"
+    }
+  ],
+  "requests": [
+    {
+      "url": "https://notify.invalid/alpha/beta",
+      "notification": {
+        "title": "标题 \"T\"",
+        "text": "正文\n第二行",
+        "priority": "high",
+        "tags": [
+          "warning",
+          "warning",
+          "newspaper"
+        ],
+        "link": "https://app.invalid/reports/synthetic",
+        "highlights": [
+          {
+            "text": "保留业务",
+            "key": true
+          }
+        ],
+        "meta": "邮件元数据"
+      },
+      "channel": "feishu",
+      "expected": {
+        "url": "https://notify.invalid/alpha/beta",
+        "method": "POST",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "{\"msg_type\":\"text\",\"content\":{\"text\":\"标题 \\\"T\\\"\\n正文\\n第二行\\nhttps://app.invalid/reports/synthetic\"}}",
+        "channel": "feishu"
+      }
+    },
+    {
+      "url": "https://notify.invalid/alpha/beta",
+      "notification": {
+        "title": "标题 \"T\"",
+        "text": "正文\n第二行",
+        "priority": "high",
+        "tags": [
+          "warning",
+          "warning",
+          "newspaper"
+        ],
+        "link": "https://app.invalid/reports/synthetic",
+        "highlights": [
+          {
+            "text": "保留业务",
+            "key": true
+          }
+        ],
+        "meta": "邮件元数据"
+      },
+      "channel": "ntfy",
+      "expected": {
+        "url": "https://notify.invalid",
+        "method": "POST",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "{\"topic\":\"alpha\",\"title\":\"标题 \\\"T\\\"\",\"message\":\"正文\\n第二行\",\"priority\":5,\"tags\":[\"warning\",\"warning\",\"newspaper\"],\"click\":\"https://app.invalid/reports/synthetic\"}",
+        "channel": "ntfy"
+      }
+    },
+    {
+      "url": "https://notify.invalid/alpha/beta",
+      "notification": {
+        "title": "标题 \"T\"",
+        "text": "正文\n第二行",
+        "priority": "high",
+        "tags": [
+          "warning",
+          "warning",
+          "newspaper"
+        ],
+        "link": "https://app.invalid/reports/synthetic",
+        "highlights": [
+          {
+            "text": "保留业务",
+            "key": true
+          }
+        ],
+        "meta": "邮件元数据"
+      },
+      "channel": "slack",
+      "expected": {
+        "url": "https://notify.invalid/alpha/beta",
+        "method": "POST",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "{\"text\":\"标题 \\\"T\\\"\\n正文\\n第二行\\nhttps://app.invalid/reports/synthetic\"}",
+        "channel": "slack"
+      }
+    },
+    {
+      "url": "https://notify.invalid/alpha/beta",
+      "notification": {
+        "title": "标题 \"T\"",
+        "text": "正文\n第二行",
+        "priority": "high",
+        "tags": [
+          "warning",
+          "warning",
+          "newspaper"
+        ],
+        "link": "https://app.invalid/reports/synthetic",
+        "highlights": [
+          {
+            "text": "保留业务",
+            "key": true
+          }
+        ],
+        "meta": "邮件元数据"
+      },
+      "channel": "discord",
+      "expected": {
+        "url": "https://notify.invalid/alpha/beta",
+        "method": "POST",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "{\"content\":\"标题 \\\"T\\\"\\n正文\\n第二行\\nhttps://app.invalid/reports/synthetic\"}",
+        "channel": "discord"
+      }
+    },
+    {
+      "url": "https://notify.invalid/alpha/beta",
+      "notification": {
+        "title": "标题 \"T\"",
+        "text": "正文\n第二行",
+        "priority": "high",
+        "tags": [
+          "warning",
+          "warning",
+          "newspaper"
+        ],
+        "link": "https://app.invalid/reports/synthetic",
+        "highlights": [
+          {
+            "text": "保留业务",
+            "key": true
+          }
+        ],
+        "meta": "邮件元数据"
+      },
+      "channel": "generic",
+      "expected": {
+        "url": "https://notify.invalid/alpha/beta",
+        "method": "POST",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "{\"text\":\"标题 \\\"T\\\"\\n正文\\n第二行\\nhttps://app.invalid/reports/synthetic\",\"title\":\"标题 \\\"T\\\"\",\"priority\":\"high\",\"tags\":[\"warning\",\"warning\",\"newspaper\"],\"link\":\"https://app.invalid/reports/synthetic\"}",
+        "channel": "generic"
+      }
+    },
+    {
+      "url": "https://notify.invalid/topic",
+      "notification": {
+        "title": "",
+        "text": "",
+        "priority": "default"
+      },
+      "channel": "feishu",
+      "expected": {
+        "url": "https://notify.invalid/topic",
+        "method": "POST",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "{\"msg_type\":\"text\",\"content\":{\"text\":\"\\n\"}}",
+        "channel": "feishu"
+      }
+    },
+    {
+      "url": "https://notify.invalid/topic",
+      "notification": {
+        "title": "",
+        "text": "",
+        "priority": "default"
+      },
+      "channel": "ntfy",
+      "expected": {
+        "url": "https://notify.invalid",
+        "method": "POST",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "{\"topic\":\"topic\",\"title\":\"\",\"message\":\"\",\"priority\":3}",
+        "channel": "ntfy"
+      }
+    },
+    {
+      "url": "https://notify.invalid/topic",
+      "notification": {
+        "title": "",
+        "text": "",
+        "priority": "default"
+      },
+      "channel": "slack",
+      "expected": {
+        "url": "https://notify.invalid/topic",
+        "method": "POST",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "{\"text\":\"\\n\"}",
+        "channel": "slack"
+      }
+    },
+    {
+      "url": "https://notify.invalid/topic",
+      "notification": {
+        "title": "",
+        "text": "",
+        "priority": "default"
+      },
+      "channel": "discord",
+      "expected": {
+        "url": "https://notify.invalid/topic",
+        "method": "POST",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "{\"content\":\"\\n\"}",
+        "channel": "discord"
+      }
+    },
+    {
+      "url": "https://notify.invalid/topic",
+      "notification": {
+        "title": "",
+        "text": "",
+        "priority": "default"
+      },
+      "channel": "generic",
+      "expected": {
+        "url": "https://notify.invalid/topic",
+        "method": "POST",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "{\"text\":\"\\n\",\"title\":\"\",\"priority\":\"default\"}",
+        "channel": "generic"
+      }
+    },
+    {
+      "url": "https://notify.invalid/x",
+      "notification": {
+        "title": "标题 \"T\"",
+        "text": "正文\n第二行",
+        "priority": "high",
+        "tags": [
+          "warning",
+          "warning",
+          "newspaper"
+        ],
+        "link": "https://app.invalid/reports/synthetic",
+        "highlights": [
+          {
+            "text": "保留业务",
+            "key": true
+          }
+        ],
+        "meta": "邮件元数据"
+      },
+      "channel": "feishu",
+      "opts": {
+        "feishuSecret": "synthetic-signing-key",
+        "now": 0
+      },
+      "expected": {
+        "url": "https://notify.invalid/x",
+        "method": "POST",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "{\"msg_type\":\"text\",\"content\":{\"text\":\"标题 \\\"T\\\"\\n正文\\n第二行\\nhttps://app.invalid/reports/synthetic\"},\"timestamp\":\"0\",\"sign\":\"78d5xBw6tuSLw2ObFTUW+CoODXf0jYKnkPUaaa2xTuA=\"}",
+        "channel": "feishu"
+      }
+    },
+    {
+      "url": "https://notify.invalid/x",
+      "notification": {
+        "title": "标题 \"T\"",
+        "text": "正文\n第二行",
+        "priority": "high",
+        "tags": [
+          "warning",
+          "warning",
+          "newspaper"
+        ],
+        "link": "https://app.invalid/reports/synthetic",
+        "highlights": [
+          {
+            "text": "保留业务",
+            "key": true
+          }
+        ],
+        "meta": "邮件元数据"
+      },
+      "channel": "feishu",
+      "opts": {
+        "feishuSecret": "synthetic-signing-key",
+        "now": -1
+      },
+      "expected": {
+        "url": "https://notify.invalid/x",
+        "method": "POST",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "{\"msg_type\":\"text\",\"content\":{\"text\":\"标题 \\\"T\\\"\\n正文\\n第二行\\nhttps://app.invalid/reports/synthetic\"},\"timestamp\":\"-1\",\"sign\":\"9ZM1PIxogycKuddH/D4evLIXkENCVIIcuRtRfJ2++R0=\"}",
+        "channel": "feishu"
+      }
+    },
+    {
+      "url": "https://notify.invalid/x",
+      "notification": {
+        "title": "标题 \"T\"",
+        "text": "正文\n第二行",
+        "priority": "high",
+        "tags": [
+          "warning",
+          "warning",
+          "newspaper"
+        ],
+        "link": "https://app.invalid/reports/synthetic",
+        "highlights": [
+          {
+            "text": "保留业务",
+            "key": true
+          }
+        ],
+        "meta": "邮件元数据"
+      },
+      "channel": "feishu",
+      "opts": {
+        "feishuSecret": "synthetic-signing-key",
+        "now": 1700000000999
+      },
+      "expected": {
+        "url": "https://notify.invalid/x",
+        "method": "POST",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "{\"msg_type\":\"text\",\"content\":{\"text\":\"标题 \\\"T\\\"\\n正文\\n第二行\\nhttps://app.invalid/reports/synthetic\"},\"timestamp\":\"1700000000\",\"sign\":\"CfsjKkk/N10N4lTgUGC0Bc2ApREWup+8ePyAM6/V9I4=\"}",
+        "channel": "feishu"
+      }
+    },
+    {
+      "url": "https://notify.invalid/x",
+      "notification": {
+        "title": "标题 \"T\"",
+        "text": "正文\n第二行",
+        "priority": "high",
+        "tags": [
+          "warning",
+          "warning",
+          "newspaper"
+        ],
+        "link": "https://app.invalid/reports/synthetic",
+        "highlights": [
+          {
+            "text": "保留业务",
+            "key": true
+          }
+        ],
+        "meta": "邮件元数据"
+      },
+      "channel": "feishu",
+      "opts": {
+        "feishuSecret": "",
+        "now": 0
+      },
+      "expected": {
+        "url": "https://notify.invalid/x",
+        "method": "POST",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "{\"msg_type\":\"text\",\"content\":{\"text\":\"标题 \\\"T\\\"\\n正文\\n第二行\\nhttps://app.invalid/reports/synthetic\"}}",
+        "channel": "feishu"
+      }
+    },
+    {
+      "url": "https://notify.invalid:8443///a%20b/sub?q=x#fragment",
+      "notification": {
+        "title": "",
+        "text": "",
+        "priority": "default"
+      },
+      "channel": "ntfy",
+      "expected": {
+        "url": "https://notify.invalid:8443",
+        "method": "POST",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "{\"topic\":\"a%20b\",\"title\":\"\",\"message\":\"\",\"priority\":3}",
+        "channel": "ntfy"
+      }
+    },
+    {
+      "url": "invalid",
+      "notification": {
+        "title": "标题 \"T\"",
+        "text": "正文\n第二行",
+        "priority": "high",
+        "tags": [
+          "warning",
+          "warning",
+          "newspaper"
+        ],
+        "link": "https://app.invalid/reports/synthetic",
+        "highlights": [
+          {
+            "text": "保留业务",
+            "key": true
+          }
+        ],
+        "meta": "邮件元数据"
+      },
+      "channel": "unknown",
+      "expected": {
+        "url": "invalid",
+        "method": "POST",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "{\"text\":\"标题 \\\"T\\\"\\n正文\\n第二行\\nhttps://app.invalid/reports/synthetic\",\"title\":\"标题 \\\"T\\\"\",\"priority\":\"high\",\"tags\":[\"warning\",\"warning\",\"newspaper\"],\"link\":\"https://app.invalid/reports/synthetic\"}",
+        "channel": "unknown"
+      }
+    },
+    {
+      "url": "https://notify.invalid/topic",
+      "notification": {
+        "title": "",
+        "text": "",
+        "priority": "default",
+        "tags": [],
+        "link": ""
+      },
+      "channel": "generic",
+      "expected": {
+        "url": "https://notify.invalid/topic",
+        "method": "POST",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "{\"text\":\"\\n\",\"title\":\"\",\"priority\":\"default\",\"tags\":[],\"link\":\"\"}",
+        "channel": "generic"
+      }
+    }
+  ],
+  "responses": [
+    {
+      "channel": "feishu",
+      "body": "",
+      "expected": null
+    },
+    {
+      "channel": "feishu",
+      "body": "{}",
+      "expected": null
+    },
+    {
+      "channel": "feishu",
+      "body": "{\"code\":0,\"StatusCode\":42}",
+      "expected": null
+    },
+    {
+      "channel": "feishu",
+      "body": "{\"code\":null,\"StatusCode\":42,\"msg\":\"旧值\"}",
+      "expected": "feishu code=42 msg=旧值"
+    },
+    {
+      "channel": "feishu",
+      "body": "{\"code\":\"0\"}",
+      "expected": "feishu code=0 msg="
+    },
+    {
+      "channel": "feishu",
+      "body": "{\"code\":false}",
+      "expected": "feishu code=false msg="
+    },
+    {
+      "channel": "feishu",
+      "body": "{\"code\":1,\"msg\":\"拒绝\"}",
+      "expected": "feishu code=1 msg=拒绝"
+    },
+    {
+      "channel": "feishu",
+      "body": "{\"StatusCode\":9499}",
+      "expected": "feishu code=9499 msg="
+    },
+    {
+      "channel": "feishu",
+      "body": "null",
+      "expected": "feishu 响应非 JSON：null"
+    },
+    {
+      "channel": "feishu",
+      "body": "[]",
+      "expected": null
+    },
+    {
+      "channel": "feishu",
+      "body": "0",
+      "expected": null
+    },
+    {
+      "channel": "feishu",
+      "body": "\"text\"",
+      "expected": null
+    },
+    {
+      "channel": "feishu",
+      "body": "<html>bad</html>",
+      "expected": "feishu 响应非 JSON：<html>bad</html>"
+    },
+    {
+      "channel": "feishu",
+      "body": "坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏",
+      "expected": "feishu 响应非 JSON：坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏坏"
+    },
+    {
+      "channel": "slack",
+      "body": "not-json",
+      "expected": null
+    },
+    {
+      "channel": "ntfy",
+      "body": "{\"code\":1}",
+      "expected": null
+    },
+    {
+      "channel": "discord",
+      "body": "null",
+      "expected": null
+    },
+    {
+      "channel": "generic",
+      "body": "not-json",
+      "expected": null
+    }
+  ]
+}

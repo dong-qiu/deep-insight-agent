@@ -74,6 +74,8 @@ import {
   runA1TopicWithDeadline,
   terminalA1QualityCaseFailure,
 } from "./a1-run-control.js";
+import { A1PhaseClock, effectiveA1Config, presentA1Status, a1FailureCategory, type A1EffectiveConfig } from "./a1-observability.js";
+import { a1RecoveryIdentity, a1SourceIdentityComplete, a1HasNewTruncatedOutput, type A1RecoverySource } from "./a1-recovery-identity.js";
 import { type EvalConfig } from "./a1-config.js";
 import { comparableRegistryBaselineMetrics, formalA1GateExitCode } from "./a1-baseline-promotion.js";
 import { validateDatasetLock, type DatasetLockValidation } from "./a1-dataset-lock.js";
@@ -92,8 +94,7 @@ import {
   appendA1QualityCheckpointChunk,
   completeA1QualityCheckpointCase,
   createA1QualityCheckpoint,
-  loadA1QualityCheckpoint,
-  verifiedFailedA1CheckpointSha256,
+  loadVerifiedA1QualityCheckpoint,
   writeA1QualityCheckpoint,
   type A1QualityCheckpoint,
   type A1QualityCheckpointContext,
@@ -111,6 +112,8 @@ import {
 
 type Stratum = "arxiv" | "transcript";
 const STRATA: Stratum[] = ["arxiv", "transcript"];
+let activeClock: A1PhaseClock | null = null;
+let activeEffectiveConfig: A1EffectiveConfig | undefined;
 let activeWorkspace: A1RunWorkspace | null = null;
 let activeProgress: Omit<A1RunProgress, "run_id" | "updated_at"> | null = null;
 let activeQualityCheckpointPath: string | null = null;
@@ -119,17 +122,20 @@ let activeResumeCheckpointSha256: string | null = null;
 let activeRunContext: {
   config: object;
   dataset: object;
-  source: { commit: string | null; dirty_fingerprint: string | null; dirty_fingerprint_algorithm?: string };
+  source: A1RecoverySource;
 } = {
   config: {}, dataset: {}, source: { commit: null, dirty_fingerprint: null },
 };
 
 function a1ErrorMessage(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
-  return message.slice(0, 1000);
+  return a1FailureCategory(error);
 }
 
 function updateA1Progress(progress: Omit<A1RunProgress, "run_id" | "updated_at">): void {
+  activeClock?.enter(progress.phase);
+  if (progress.state === "failed") activeClock?.markFailed();
+  if (progress.state === "completed") activeClock?.finish("completed");
+  progress = { ...progress, effective_config: activeEffectiveConfig, timing: activeClock?.snapshot() };
   activeProgress = progress;
   if (activeWorkspace) writeA1RunProgress(activeWorkspace, progress);
 }
@@ -139,11 +145,14 @@ function finalizeActiveA1Failure(error: unknown): void {
   const workspace = activeWorkspace;
   if (!workspace) return;
   activeWorkspace = null;
+  activeClock?.finish("failed");
   const message = a1ErrorMessage(error);
   const prior = activeProgress ?? { state: "running" as const, phase: "setup" as const };
   try {
     const failureProgress: Omit<A1RunProgress, "run_id" | "updated_at"> = {
       ...prior,
+      effective_config: activeEffectiveConfig,
+      timing: activeClock?.snapshot(),
       state: "failed",
       last_failure: {
         phase: prior.phase,
@@ -154,6 +163,7 @@ function finalizeActiveA1Failure(error: unknown): void {
     activeProgress = failureProgress;
     writeA1RunProgress(workspace, failureProgress);
     const progressPath = join(workspace.tempDir, "progress.json");
+    console.log("A1 执行失败（自动门未评估）：", JSON.stringify(presentA1Status({ status: "failed", auto_gate: "not_evaluated", timing: activeClock?.snapshot() })));
     finalizeFailedA1Run(workspace, {
       run_id: workspace.runId,
       status: "failed",
@@ -162,6 +172,8 @@ function finalizeActiveA1Failure(error: unknown): void {
       dcp_eligibility: "not_evaluated",
       started_at: workspace.startedAt,
       ended_at: new Date().toISOString(),
+      effective_config: activeEffectiveConfig,
+      timing: activeClock?.snapshot(),
       config: activeRunContext.config,
       dataset: activeRunContext.dataset,
       source: activeRunContext.source,
@@ -179,7 +191,7 @@ function finalizeActiveA1Failure(error: unknown): void {
       error: message,
     });
   } catch (artifactError) {
-    console.error("A1 失败产物记录也失败：", artifactError);
+    console.error("A1 失败产物记录也失败：", a1FailureCategory(artifactError));
   } finally {
     activeProgress = null;
     activeQualityCheckpointPath = null;
@@ -280,8 +292,7 @@ function loadA1ResumeSource(
   }
   const manifestPath = join(dirname(checkpointPath), "manifest.json");
   if (!existsSync(manifestPath)) throw new Error("A1_RESUME_FROM 缺少所属失败 run 的 manifest.json");
-  const checkpointSha256 = verifiedFailedA1CheckpointSha256(manifestPath, checkpointPath);
-  return { checkpoint: loadA1QualityCheckpoint(checkpointPath, context, plan), checkpoint_sha256: checkpointSha256 };
+  return loadVerifiedA1QualityCheckpoint(manifestPath, checkpointPath, context, plan);
 }
 
 interface ConsistencyCase {
@@ -621,15 +632,18 @@ function sourceState() {
   const untracked = untrackedPaths == null ? [] : untrackedPaths.toString("utf8").split("\0").filter(Boolean).map((path) => {
     try { return { path, content: readFileSync(path) }; } catch { return { path, content: null }; }
   });
+  const commit = gitValue(["rev-parse", "HEAD"]);
+  const snapshot = {
+    status: dirty,
+    staged_diff: gitBuffer(["diff", "--no-ext-diff", "--binary", "--cached"]),
+    unstaged_diff: gitBuffer(["diff", "--no-ext-diff", "--binary"]),
+    untracked,
+  };
   return {
-    commit: gitValue(["rev-parse", "HEAD"]),
-    dirty_fingerprint: dirtyFingerprintFromSnapshot({
-      status: dirty,
-      staged_diff: gitBuffer(["diff", "--no-ext-diff", "--binary", "--cached"]),
-      unstaged_diff: gitBuffer(["diff", "--no-ext-diff", "--binary"]),
-      untracked,
-    }),
+    commit,
+    dirty_fingerprint: dirtyFingerprintFromSnapshot(snapshot),
     dirty_fingerprint_algorithm: DIRTY_SOURCE_FINGERPRINT_ALGORITHM,
+    identity_complete: a1SourceIdentityComplete(commit, snapshot, untrackedPaths),
   };
 }
 
@@ -704,6 +718,8 @@ function printMetrics(stratum: Stratum, rows: MetricRow[]): void {
 }
 
 async function main(): Promise<void> {
+  activeClock = new A1PhaseClock();
+  activeClock.enter("setup");
   // .env.local 已由顶部 `import "./load-env.js"` 在 MODELS 求值前载入（见该模块注释）。
   const provider = llmProvider();
   const apiKey = llmApiKey(provider);
@@ -771,7 +787,7 @@ async function main(): Promise<void> {
       lock_sha256: "unavailable",
       status: "invalid",
       promotion_eligible: false,
-      issues: [`dataset lock 不可读取：${error instanceof Error ? error.message : String(error)}`],
+      issues: [`dataset lock 不可读取：${a1FailureCategory(error)}`],
     };
   }
   // 任何非零 A1_*_LIMIT 都是冒烟；上限大于当前数据集也不能悄悄绕过全量质量门。
@@ -783,6 +799,7 @@ async function main(): Promise<void> {
     quoteSelfContainedSelection,
   );
   const evalConfig = currentEvalConfig(qualityFile, consistencyFile, datasetLock);
+  activeEffectiveConfig = effectiveA1Config(evalConfig, { topic: topicTimeoutMs, judge: judgeTimeoutMs, coverage: coverageTimeoutMs });
   activeRunContext = {
     config: evalConfig,
     dataset: {
@@ -805,10 +822,12 @@ async function main(): Promise<void> {
     },
     source: sourceState(),
   };
+  console.log("A1 有效配置（启动采样）：", JSON.stringify(activeEffectiveConfig));
   const checkpointPlan = qualityCheckpointPlan(qualityCases);
   const checkpointContext: A1QualityCheckpointContext = {
     eval_config_sha256: a1QualityCheckpointConfigSha256(evalConfig),
     quality_dataset_sha256: evalConfig.quality_dataset_sha256,
+    recovery_identity_sha256: a1RecoveryIdentity(activeRunContext.source, activeEffectiveConfig),
   };
   const resumeSource = loadA1ResumeSource(process.env.A1_RESUME_FROM, checkpointContext, checkpointPlan);
   const qualityCheckpoint = resumeSource?.checkpoint ?? createA1QualityCheckpoint(checkpointContext);
@@ -859,6 +878,7 @@ async function main(): Promise<void> {
     });
     process.stdout.write(`[分析] 主题「${c.topic.name}」(${stratum})… `);
     const coverageDecisions: CoverageDecision[] = [];
+    const priorTopicTelemetry = getRoleCallTelemetry();
     try {
       const savedCase = qualityCheckpoint.cases[caseIndex];
       let batch: AnalysisBatch;
@@ -873,19 +893,36 @@ async function main(): Promise<void> {
       } else {
         const completedChunks = savedCase?.chunks ?? [];
         ({ batch, vr } = await runA1TopicWithDeadline(c.topic.id, topicTimeoutMs, async (signal) => {
+          let priorChunkTelemetry = getRoleCallTelemetry();
+          let failedLeafOutput = false;
           const batch = await analyze(c.topic, c.items, c.time_window, undefined, {
             completed_chunks: completedChunks,
             onCoverageDecision: (decision) => coverageDecisions.push(decision),
+            // analyzeWithSplit deliberately drops a refused/unparseable single item. That is
+            // not a successful empty generation and must not become resumable A1 evidence.
+            onStage: (stage) => {
+              if (stage.stage === "model_output" && stage.status === "failed" && stage.item_count === 1) failedLeafOutput = true;
+            },
             onChunkComplete: (completion) => {
               // Promise.race may have already handed the deadline error to the outer runner even
               // when a defective upstream transport settles late. Never recreate a published
               // temporary workspace or append evidence after that terminal boundary.
               if (signal.aborted) throw signal.reason ?? new Error("A1 topic cancelled");
+              if (failedLeafOutput) throw new Error("A1 analyzer chunk contains an incomplete leaf output");
+              const chunkTelemetry = getRoleCallTelemetry();
+              if (a1HasNewTruncatedOutput(priorChunkTelemetry, chunkTelemetry)) {
+                throw new Error("A1 analyzer chunk contains truncated provider output");
+              }
+              if (a1RecoveryIdentity(activeRunContext.source, activeEffectiveConfig!) !== checkpointContext.recovery_identity_sha256) {
+                throw new Error("A1 recovery runtime identity changed");
+              }
               appendA1QualityCheckpointChunk(qualityCheckpoint, checkpointPlan, caseIndex, {
                 input_sha256: completion.input_sha256,
                 insights: completion.insights,
                 coverage_decisions: completion.coverage_decisions,
+                execution_complete: true,
               });
+              priorChunkTelemetry = chunkTelemetry;
               writeA1QualityCheckpoint(activeQualityCheckpointPath!, qualityCheckpoint);
               updateA1Progress({
                 state: "running", phase: "quality", topic_timeout_ms: topicTimeoutMs,
@@ -901,7 +938,13 @@ async function main(): Promise<void> {
           if (signal.aborted) throw signal.reason ?? new Error("A1 topic cancelled");
           return { batch, vr };
         }));
-        completeA1QualityCheckpointCase(qualityCheckpoint, checkpointPlan, caseIndex, { batch, validation: vr });
+        if (a1HasNewTruncatedOutput(priorTopicTelemetry, getRoleCallTelemetry())) {
+          throw new Error("A1 topic contains truncated provider output");
+        }
+        if (a1RecoveryIdentity(activeRunContext.source, activeEffectiveConfig!) !== checkpointContext.recovery_identity_sha256) {
+          throw new Error("A1 recovery runtime identity changed");
+        }
+        completeA1QualityCheckpointCase(qualityCheckpoint, checkpointPlan, caseIndex, { batch, validation: vr, execution_complete: true });
         writeA1QualityCheckpoint(activeQualityCheckpointPath!, qualityCheckpoint);
       }
       // DCP counts the same reader-visible derivative as production, rather than raw analyzer
@@ -1035,6 +1078,7 @@ async function main(): Promise<void> {
   const judgedTotal = STRATA.reduce((n, s) => n + judgeByStratum[s].judged, 0);
   const errorsTotal = STRATA.reduce((n, s) => n + judgeByStratum[s].errors, 0);
   console.log(`done（完成 ${judgedTotal}/${consistencyCases.length}${errorsTotal ? `，重试耗尽 ${errorsTotal}（计未命中）` : ""}）`);
+  if (judgeFailures.length) activeClock?.markFailed();
   const qualityAndJudgeComplete = qualityFailures.length === 0 && judgeFailures.length === 0;
   if (!qualityAndJudgeComplete) {
     console.log(
@@ -1200,6 +1244,14 @@ async function main(): Promise<void> {
     );
   }
 
+  if (coverageBenchmarkFailures.length) activeClock?.markFailed();
+  updateA1Progress({
+    state: "running", phase: "finalizing", topic_timeout_ms: topicTimeoutMs,
+    judge_timeout_ms: judgeTimeoutMs, coverage_timeout_ms: coverageTimeoutMs,
+    completed: { quality_cases: qualitySucceeded, consistency_cases: judgeSucceeded },
+    settled: { consistency_cases: judgeSettled, display_coverage_cases: displayCoverageSettled, quote_self_contained_cases: quoteSelfContainedSettled },
+  });
+
   // ── 成本（估算，A5 成本可控） ──
   const cost = getCostReport();
   const roleTelemetry = getRoleCallTelemetry();
@@ -1207,9 +1259,9 @@ async function main(): Promise<void> {
   console.log("\n角色调用观测：");
   for (const [role, telemetry] of Object.entries(roleTelemetry)) {
     if (!telemetry.calls) continue;
-    console.log(`  ${role}：${telemetry.calls} calls / ${telemetry.requests} requests / ${telemetry.failures} failures · p95 ${telemetry.latency_ms.p95.toFixed(0)}ms`);
+    console.log(`  ${role}：${telemetry.calls} calls / ${telemetry.requests} requests / ${telemetry.failures} failures · call p95（含重试） ${telemetry.latency_ms.p95.toFixed(0)}ms`);
     for (const [operation, operationTelemetry] of Object.entries(telemetry.by_operation)) {
-      console.log(`    └ ${operation}：${operationTelemetry.calls} calls / ${operationTelemetry.requests} requests / ${operationTelemetry.failures} failures · p95 ${operationTelemetry.latency_ms.p95.toFixed(0)}ms`);
+      console.log(`    └ ${operation}：${operationTelemetry.calls} calls / ${operationTelemetry.requests} requests / ${operationTelemetry.failures} failures · call p95（含重试） ${operationTelemetry.latency_ms.p95.toFixed(0)}ms`);
     }
   }
   console.log("\n本次运行成本（估算）：");
@@ -1305,7 +1357,7 @@ async function main(): Promise<void> {
   } catch (error) {
     // Human-review convenience files are auxiliary. The durable queue remains available and a
     // malformed spreadsheet export must never convert a valid core A1 run into a false failure.
-    reviewArtifactError = error instanceof Error ? error.message : String(error);
+    reviewArtifactError = a1FailureCategory(error);
     console.warn(`⚠️ review CSV 未生成（核心评测不受影响）：${reviewArtifactError}`);
   }
   console.log(
@@ -1432,7 +1484,10 @@ async function main(): Promise<void> {
     completed: { quality_cases: qualitySucceeded, consistency_cases: judgeSucceeded },
   });
   const progressPath = join(workspace.tempDir, "progress.json");
+  const terminalObservations = { effective_config: activeEffectiveConfig, timing: activeClock?.snapshot() };
+  console.log("A1 执行/自动门/baseline（独立状态）：", JSON.stringify(presentA1Status({ status: "completed", auto_gate: autoGate, baseline_comparison: baselineComparison, ...terminalObservations })));
   finalizeA1Run(workspace, {
+    ...terminalObservations,
     run_id: workspace.runId,
     status: "completed",
     auto_gate: autoGate,
@@ -1464,7 +1519,7 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  console.error("A1 验证运行出错：", err);
+  console.error("A1 验证运行出错：", a1FailureCategory(err));
   finalizeActiveA1Failure(err);
   process.exit(1);
 });

@@ -16,6 +16,43 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  scope:
+    name: classify change scope
+    runs-on: ubuntu-latest
+    outputs:
+      mode: ${{ steps.scope.outputs.mode }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: classify complete event range
+        id: scope
+        run: node ops/ci-change-scope.mjs "$RUNNER_TEMP/ci-change-scope.json"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ci-change-scope-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ci-change-scope.json
+          if-no-files-found: error
+          retention-days: 90
+
+  documents:
+    name: documentation checks
+    runs-on: ubuntu-latest
+    needs: scope
+    if: needs.scope.outputs.mode == 'docs'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v8
+        with:
+          name: ci-change-scope-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/scope
+      - name: links anchors format and receipt structure
+        run: node ops/ci-docs-check.mjs "$RUNNER_TEMP/scope/ci-change-scope.json"
+      - name: record documentation-only result
+        run: echo 'Documentation checks passed. No application build, Docker or prototype release evidence generated.' >> "$GITHUB_STEP_SUMMARY"
+
   # eval 门禁兜底：改了 AI 质量面(agents/sources/llm.ts/dataset)的提交必须带 Eval-Gate 盖章
   # （= 已在本地跑过 /eval-gate 对比基线）。与 .githooks/pre-push 同款判定脚本；这里绕不过
   # （--no-verify / EVAL_GATE_ACK 只绕本地 hook，不影响 CI）。PR 与直推 main 都查。对 squash
@@ -79,8 +116,10 @@ jobs:
           printf '%s' "$PR_BODY" > "$body_file"
           node ops/pr-policy.mjs --base "$PR_BASE" --head "$PR_HEAD" --pr-body-file "$body_file"
 
-  verify:
-    name: typecheck · test · build
+  application:
+    name: full application verification
+    needs: scope
+    if: needs.scope.outputs.mode == 'full'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -161,14 +200,21 @@ jobs:
           path: ${{ runner.temp }}/report-reader-p0c-evidence.json
           if-no-files-found: error
       - name: next build
-        run: npm run build
+        run: npm run build:e2e
         env:
           NEXT_TELEMETRY_DISABLED: "1"
       # Route/unit tests cannot prove the real NextAuth cookie flow, middleware,
       # or cursor pagination. Run the isolated live-app dashboard E2E after the
-      # production build on every PR that changes this surface.
+      # production build. The receipt rejects stale/missing output before any server starts.
       - name: admin metrics e2e
-        run: npm run test:e2e
+        run: npm run test:e2e:built
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+      # D4 reuses the same C5-verified production build; no second Next build.
+      - name: install smoke browser
+        run: npx playwright install --with-deps chromium
+      - name: browser interaction smoke
+        run: npm run test:browser:built
         env:
           NEXT_TELEMETRY_DISABLED: "1"
       # 供应链：整个 lockfile 的 high/critical 漏洞均阻断。开发/构建依赖同样会在 CI 与
@@ -176,7 +222,7 @@ jobs:
       - name: npm audit (all deps, high+ blocking)
         run: npm audit --audit-level=high
       # This aggregate is intentionally written only after lint/test/typecheck/build in this job
-      # have passed. Docker is a separate downstream required CI check and is not claimed here.
+      # have passed. Docker is a separate independent required CI check and is not claimed here.
       # A later prototype release receipt binds this candidate source SHA and records the tested
       # merge SHA; it does not turn the artifact into a legal or quality approval.
       - name: write prototype CI evidence
@@ -192,10 +238,13 @@ jobs:
           path: ${{ runner.temp }}/prototype-ci-evidence.json
           if-no-files-found: error
 
-  docker:
-    name: docker build
+  container:
+    name: full Docker verification
     runs-on: ubuntu-latest
-    needs: verify
+    # Docker rebuilds from the same event SHA and consumes no application-job artifacts.
+    # Its required gate and publication admission still require both validations to succeed.
+    needs: scope
+    if: needs.scope.outputs.mode == 'full'
     steps:
       - uses: actions/checkout@v7
       - uses: docker/setup-buildx-action@v4
@@ -384,3 +433,33 @@ jobs:
           name: prototype-docker-evidence-${{ github.event.pull_request.head.sha || github.sha }}
           path: ${{ runner.temp }}/prototype-docker-evidence.json
           if-no-files-found: error
+
+  verify:
+    name: typecheck · test · build
+    runs-on: ubuntu-latest
+    needs: [scope, documents, application]
+    if: always()
+    steps:
+      - uses: actions/checkout@v7
+      - name: require selected validation path
+        run: node ops/ci-required-gate.mjs
+        env:
+          MODE: ${{ needs.scope.outputs.mode }}
+          SCOPE_RESULT: ${{ needs.scope.result }}
+          DOCS_RESULT: ${{ needs.documents.result }}
+          FULL_RESULT: ${{ needs.application.result }}
+
+  docker:
+    name: docker build
+    runs-on: ubuntu-latest
+    needs: [scope, documents, container]
+    if: always()
+    steps:
+      - uses: actions/checkout@v7
+      - name: require selected validation path
+        run: node ops/ci-required-gate.mjs
+        env:
+          MODE: ${{ needs.scope.outputs.mode }}
+          SCOPE_RESULT: ${{ needs.scope.result }}
+          DOCS_RESULT: ${{ needs.documents.result }}
+          FULL_RESULT: ${{ needs.container.result }}

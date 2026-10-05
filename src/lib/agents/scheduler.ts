@@ -3,6 +3,8 @@
  *  每个 Source / Topic 独立 try/catch，单点失败不连累其余（与 collector / validateBatch 的韧性一致）。
  *  由 /api/cron 触发（系统 cron / supercronic 定时 curl）；含真模型调用，需 ANTHROPIC_API_KEY。
  *  待分析项选择见 analysis-selection.ts；源健康自愈（熔断/半开/零产出）见 source-health.ts。 */
+import { checkTaskBudget, withTaskBudget, type TaskBudgetOptions } from "../runtime/task-budget.js";
+import { createTaskCancellation, throwIfAborted, type TaskCancellationOptions } from "../runtime/cancellation.js";
 import { getEffectiveSources, loadStaticConfig } from "../config/index.js";
 import type { DB } from "../db/index.js";
 import { safeError } from "../runtime/diagnostics.js";
@@ -48,7 +50,7 @@ export interface CollectionSummary {
   zeroYield?: string[];
 }
 
-export interface GenerationExecutionOptions {
+export interface GenerationExecutionOptions extends TaskCancellationOptions, TaskBudgetOptions {
   traceId?: string;
   rootRunId?: string;
   /** durable scheduled dispatch 固化的选择窗口右边界；完整重跑不得改用当前时间。 */
@@ -223,66 +225,81 @@ export async function runScheduledTopicPipeline(
   topicId: string,
   input: { reportType: "brief" | "deep_dive" | "initial_digest"; windowHours: number; items: number } & GenerationExecutionOptions,
 ): Promise<Report | null> {
-  const telemetry = input.telemetry ?? NOOP_P1_TELEMETRY_SINK;
-  const topic = getTopic(db, topicId);
-  if (!topic) throw new Error(`topic ${topicId} 不存在`);
-  if (!topic.enabled) throw new Error(`topic ${topicId} 已停用`);
-  const end = input.windowEnd == null ? Date.now() : Date.parse(input.windowEnd);
-  if (!Number.isFinite(end)) throw new Error("invalid_scheduled_dispatch_window_end");
-  const endIso = new Date(end).toISOString();
-  const since = new Date(end - input.windowHours * 3_600_000).toISOString();
-  const freshnessSince = new Date(end - briefFreshHours() * 3_600_000).toISOString();
-  const selection = selectAnalysisItemsWithDiagnostics(db, topic, {
-    since, until: endIso, limit: input.items, coldStart: input.reportType === "initial_digest",
-    freshness: input.reportType === "brief" ? { since: freshnessSince, quota: briefFreshQuota() } : undefined,
-  });
-  const items = selection.items;
-  if (!items.length) {
-    if (!input.rootRunId) throw new Error("scheduled dispatch missing root Run");
-    db.transaction(() => {
-      input.assertWrite?.();
-      finishRun(db, input.rootRunId!, { status: "done", cost: null, duration_ms: 0 });
-      if (input.traceId) {
-        appendGenerationEvent(db, {
-          trace_id: input.traceId, stage: "select", event_type: "skipped", reason_code: "no_content",
-          metrics: { ...selection.diagnostics },
-        });
-      }
-    })();
-    return null;
-  }
-  if (input.traceId) {
-    input.assertWrite?.();
-    appendGenerationEvent(db, {
-      trace_id: input.traceId, stage: "select", event_type: "completed",
-      metrics: { ...selection.diagnostics },
-    });
-  }
-  const history = input.reportType === "brief"
-    ? listRecentPublishedInsightOccurrences(db, topic.id, { asOf: endIso }).map((x) => ({
-      event_id: x.event_id, statement: x.statement, statement_fingerprint: x.statement_fingerprint,
-      content_item_ids: x.content_item_ids, type: x.insight_type, date: x.date,
-    }))
-    : [];
-  const batch = await runAnalysis(db, topic, items, { start: since, end: endIso }, {
-    history, traceId: input.traceId, rootRunId: input.rootRunId, assertWrite: input.assertWrite, telemetry,
-  });
-  const validation = await runValidation(db, batch, items, { traceId: input.traceId, assertWrite: input.assertWrite, telemetry });
+  return withTaskBudget(db, input, () => runBudgetedScheduledTopic(db, topicId, input));
+}
+
+async function runBudgetedScheduledTopic(db: DB, topicId: string, input: { reportType: "brief" | "deep_dive" | "initial_digest"; windowHours: number; items: number } & GenerationExecutionOptions): Promise<Report | null> {
+  const cancellation = createTaskCancellation(input);
+  const signal = cancellation.signal;
   try {
-    runTechLeadExtraction(db, batch, validation, endIso, { traceId: input.traceId, assertWrite: input.assertWrite });
-  } catch (e) {
-    runLogger({ stage: "tech-leads" }).warn({ topicId: topic.id, batchId: batch.id, err: e }, "技术线索派生失败，继续生成报告");
-  }
-  const prevReportId = previousReportForTopic(db, topic.id, input.reportType);
-  const freshItems = input.reportType === "brief" ? items.filter((item) => contentObservedAt(item) >= freshnessSince) : [];
-  const freshestCandidateAt = freshItems.map(contentObservedAt).sort().at(-1) ?? null;
-  return runReportGen(db, {
-    topic, batch, validation, type: input.reportType, prevReportId, traceId: input.traceId, assertWrite: input.assertWrite,
-    briefFreshness: freshItems.length ? { since: freshnessSince, content_item_ids: freshItems.map((item) => item.id), freshest_candidate_at: freshestCandidateAt } : undefined,
-    selectionDiagnostics: selection.diagnostics,
-    asOf: endIso,
-    anchor: input.anchor,
-  });
+    cancellation.check(); checkTaskBudget();
+    const telemetry = input.telemetry ?? NOOP_P1_TELEMETRY_SINK;
+    const topic = getTopic(db, topicId);
+    if (!topic) throw new Error(`topic ${topicId} 不存在`);
+    if (!topic.enabled) throw new Error(`topic ${topicId} 已停用`);
+    const end = input.windowEnd == null ? Date.now() : Date.parse(input.windowEnd);
+    if (!Number.isFinite(end)) throw new Error("invalid_scheduled_dispatch_window_end");
+    const endIso = new Date(end).toISOString();
+    const since = new Date(end - input.windowHours * 3_600_000).toISOString();
+    const freshnessSince = new Date(end - briefFreshHours() * 3_600_000).toISOString();
+    const selection = selectAnalysisItemsWithDiagnostics(db, topic, {
+      since, until: endIso, limit: input.items, coldStart: input.reportType === "initial_digest",
+      freshness: input.reportType === "brief" ? { since: freshnessSince, quota: briefFreshQuota() } : undefined,
+    });
+    const items = selection.items;
+    cancellation.check(); checkTaskBudget();
+    if (!items.length) {
+      if (!input.rootRunId) throw new Error("scheduled dispatch missing root Run");
+      db.transaction(() => {
+        input.assertWrite?.();
+        finishRun(db, input.rootRunId!, { status: "done", cost: null, duration_ms: 0 });
+        if (input.traceId) {
+          appendGenerationEvent(db, {
+            trace_id: input.traceId, stage: "select", event_type: "skipped", reason_code: "no_content",
+            metrics: { ...selection.diagnostics },
+          });
+        }
+      })();
+      return null;
+    }
+    if (input.traceId) {
+      input.assertWrite?.();
+      appendGenerationEvent(db, {
+        trace_id: input.traceId, stage: "select", event_type: "completed",
+        metrics: { ...selection.diagnostics },
+      });
+    }
+    const history = input.reportType === "brief"
+      ? listRecentPublishedInsightOccurrences(db, topic.id, { asOf: endIso }).map((x) => ({
+        event_id: x.event_id, statement: x.statement, statement_fingerprint: x.statement_fingerprint,
+        content_item_ids: x.content_item_ids, type: x.insight_type, date: x.date,
+      }))
+      : [];
+    const batch = await runAnalysis(db, topic, items, { start: since, end: endIso }, {
+      history, traceId: input.traceId, rootRunId: input.rootRunId, assertWrite: input.assertWrite, deadlineAt: input.deadlineAt, signal, telemetry,
+    });
+    cancellation.check(); checkTaskBudget();
+    const validation = await runValidation(db, batch, items, { traceId: input.traceId, assertWrite: input.assertWrite, deadlineAt: input.deadlineAt, signal, telemetry });
+    cancellation.check(); checkTaskBudget();
+    try {
+      runTechLeadExtraction(db, batch, validation, endIso, { traceId: input.traceId, assertWrite: input.assertWrite, deadlineAt: input.deadlineAt, signal });
+    } catch (e) {
+      throwIfAborted(signal); checkTaskBudget();
+      runLogger({ stage: "tech-leads" }).warn({ topicId: topic.id, batchId: batch.id, err: e }, "技术线索派生失败，继续生成报告");
+    }
+    const prevReportId = previousReportForTopic(db, topic.id, input.reportType);
+    const freshItems = input.reportType === "brief" ? items.filter((item) => contentObservedAt(item) >= freshnessSince) : [];
+    const freshestCandidateAt = freshItems.map(contentObservedAt).sort().at(-1) ?? null;
+    cancellation.check(); checkTaskBudget();
+    return await runReportGen(db, {
+      topic, batch, validation, type: input.reportType, prevReportId, traceId: input.traceId, assertWrite: input.assertWrite,
+      briefFreshness: freshItems.length ? { since: freshnessSince, content_item_ids: freshItems.map((item) => item.id), freshest_candidate_at: freshestCandidateAt } : undefined,
+      selectionDiagnostics: selection.diagnostics,
+      asOf: endIso,
+      signal, deadlineAt: input.deadlineAt,
+      anchor: input.anchor,
+    });
+  } finally { cancellation.dispose(); }
 }
 
 /** 单主题端到端跑（C-1 用户触发深挖）：
@@ -306,6 +323,14 @@ export async function runPipelineForTopic(
   topicId: string,
   opts: { windowHours?: number; items?: number } & GenerationExecutionOptions = {},
 ): Promise<Report> {
+  return withTaskBudget(db, opts, () => runBudgetedPipelineForTopic(db, topicId, opts));
+}
+
+async function runBudgetedPipelineForTopic(db: DB, topicId: string, opts: { windowHours?: number; items?: number } & GenerationExecutionOptions): Promise<Report> {
+  const cancellation = createTaskCancellation(opts);
+  const signal = cancellation.signal;
+  try {
+  cancellation.check(); checkTaskBudget();
   const telemetry = opts.telemetry ?? NOOP_P1_TELEMETRY_SINK;
   const topic = getTopic(db, topicId);
   if (!topic) throw new Error(`topic ${topicId} 不存在`);
@@ -341,12 +366,17 @@ export async function runPipelineForTopic(
     throw new Error(`窗口 ${windowHours}h 内无可分析内容（请先触发 /api/cron 采集或扩大窗口）`);
   }
 
-  const batch = await runAnalysis(db, topic, items, { start: since, end: endIso }, { traceId: opts.traceId, rootRunId: opts.rootRunId, assertWrite: opts.assertWrite, telemetry });
-  const validation = await runValidation(db, batch, items, { traceId: opts.traceId, assertWrite: opts.assertWrite, telemetry });
+  const batch = await runAnalysis(db, topic, items, { start: since, end: endIso }, { traceId: opts.traceId, rootRunId: opts.rootRunId, assertWrite: opts.assertWrite, deadlineAt: opts.deadlineAt, signal, telemetry });
+  cancellation.check(); checkTaskBudget();
+  const validation = await runValidation(db, batch, items, { traceId: opts.traceId, assertWrite: opts.assertWrite, deadlineAt: opts.deadlineAt, signal, telemetry });
+  cancellation.check(); checkTaskBudget();
   // 规划派生是 non-blocking：保留报告主链路，即使线索阶段失败也由 trace 记录为可解释的 partial。
-  try { runTechLeadExtraction(db, batch, validation, endIso, { traceId: opts.traceId, assertWrite: opts.assertWrite }); } catch (error) {
+  try { runTechLeadExtraction(db, batch, validation, endIso, { traceId: opts.traceId, assertWrite: opts.assertWrite, deadlineAt: opts.deadlineAt, signal }); } catch (error) {
+    throwIfAborted(signal); checkTaskBudget();
     runLogger({ stage: "tech-leads" }).warn({ topicId: topic.id, batchId: batch.id, err: error }, "深挖技术线索派生失败，继续生成报告");
   }
   const prevReportId = previousReportForTopic(db, topic.id, "deep_dive");
-  return runReportGen(db, { topic, batch, validation, type: "deep_dive", prevReportId, traceId: opts.traceId, assertWrite: opts.assertWrite, anchor: opts.anchor });
+  cancellation.check(); checkTaskBudget();
+  return await runReportGen(db, { topic, batch, validation, type: "deep_dive", prevReportId, traceId: opts.traceId, assertWrite: opts.assertWrite, deadlineAt: opts.deadlineAt, signal, anchor: opts.anchor });
+  } finally { cancellation.dispose(); }
 }

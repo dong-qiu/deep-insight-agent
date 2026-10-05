@@ -71,14 +71,18 @@
     "review:ai": "tsx evals/run-a1-ai-insight-reviewer.ts",
     "review:ai-compare": "tsx evals/compare-a1-ai-insight-reviews.ts",
     "review:ai-human-record": "tsx evals/record-a1-ai-insight-human-adjudication.ts",
-    "lint": "eslint src ops evals eslint.config.mjs next.config.mjs vitest.config.ts --max-warnings=0",
+    "lint": "eslint src ops evals tests/browser eslint.config.mjs next.config.mjs vitest.config.ts --max-warnings=0",
     "typecheck": "npm run typecheck:ts7 && npm run typecheck:ts6",
     "typecheck:ts7": "node ./node_modules/@typescript/native/bin/tsc --noEmit && node ./node_modules/@typescript/native/bin/tsc --noEmit -p tsconfig.tools.json",
     "typecheck:ts6": "node ./node_modules/typescript/bin/tsc --noEmit && node ./node_modules/typescript/bin/tsc --noEmit -p tsconfig.tools.json",
     "test": "vitest run && npm run test:ops",
     "test:ops": "node ops/run-node-tests.mjs",
-    "test:e2e": "npm run build && vitest run --config vitest.e2e.config.ts",
-    "test:coverage": "vitest run --coverage && npm run test:ops"
+    "build:e2e": "node ops/e2e-build.mjs build",
+    "test:e2e": "npm run build:e2e && npm run test:e2e:built",
+    "test:e2e:built": "node ops/e2e-build.mjs verify && vitest run --config vitest.e2e.config.ts",
+    "test:coverage": "vitest run --coverage && npm run test:ops",
+    "test:browser": "npm run build:e2e && npm run test:browser:built",
+    "test:browser:built": "node ops/e2e-build.mjs verify && playwright test --config tests/browser/playwright.config.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "0.127.0",
@@ -106,17 +110,19 @@
     "@types/better-sqlite3": "^7.6.13",
     "@typescript/native": "npm:typescript@^7.0.2",
     "@types/d3-force": "3.0.10",
-    "@types/node": "^26.6.2",
+    "@types/node": "^24.19.1",
     "@types/nodemailer": "^8.0.1",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitest/coverage-v8": "^5.0.1",
+    "esbuild": "0.28.1",
     "eslint": "9.39.5",
     "eslint-config-next": "16.3.8",
     "tsx": "^4.23.15",
     "typescript": "^6.0.3",
     "vite": "^8.3.0",
-    "vitest": "^5.0.1"
+    "vitest": "^5.0.1",
+    "@playwright/test": "1.63.0"
   },
   "overrides": {
     "@next/eslint-plugin-next@16.3.8": {

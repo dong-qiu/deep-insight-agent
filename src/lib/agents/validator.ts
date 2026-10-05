@@ -4,6 +4,8 @@
  *  - 一致性（LLM 评判，独立于分析模型）：原文是否真正支持结论。
  *  - 处置矩阵 / verdict：见 architecture「数据模型 · 校验结果 · 校验判定流程」。
  */
+import { abortableDelay as sleep } from "../runtime/cancellation.js";
+import { checkRuntimeControl } from "../runtime/model-usage.js";
 import { createHash } from "node:crypto";
 import { safeError } from "../runtime/diagnostics.js";
 import {
@@ -160,6 +162,7 @@ ${renderSourceMetadata(metadata)}${renderCitation(claim, quote)}
     onCost,
     signal,
   });
+  throwIfAborted(signal);
   return data;
 }
 
@@ -233,7 +236,6 @@ ${list}
   return claims.map((_, i) => byIndex.get(i + 1)!);
 }
 
-const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 /** A caller deadline is an execution failure, never evidence that a claim was merely uncertain. */
 function throwIfAborted(signal?: AbortSignal): void {
@@ -258,15 +260,23 @@ async function retryJudge<T>(operation: () => Promise<T>, signal?: AbortSignal):
   for (let attempt = 0; attempt <= extra; attempt++) {
     throwIfAborted(signal);
     try {
-      return await withRelayRecovery({ baseUrl: validatorRelayBaseUrl(), model: MODELS.validator }, operation, signal);
+      const result = await withRelayRecovery({ baseUrl: validatorRelayBaseUrl(), model: MODELS.validator }, async () => {
+        throwIfAborted(signal);
+        const value = await operation();
+        throwIfAborted(signal);
+        return value;
+      }, signal);
+      throwIfAborted(signal);
+      return result;
     } catch (error) {
       throwIfAborted(signal);
+      checkRuntimeControl();
       // The shared gate has already consumed its finite recovery budget. Fast per-call retries
       // would reopen a thundering herd and turn one relay outage into many failed evaluations.
       if (error instanceof RelayUnavailableError) throw error;
       lastErr = error;
       if (attempt < extra) {
-        await sleep(base * 2 ** attempt);
+        await sleep(base * 2 ** attempt, signal);
         throwIfAborted(signal);
       }
     }

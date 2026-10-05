@@ -503,6 +503,11 @@ export function getRun(db: DB, id: string): Run | null {
   const r = db.prepare("SELECT * FROM run WHERE id = ?").get(id) as Record<string, unknown> | undefined;
   return r ? rowToRun(r) : null;
 }
+/** C2b read-only compatibility costs, never attempt estimates or P1 projections. */
+export function listRunCostsForTrace(db: DB, traceId: string): Array<{ id: string; cost: Cost | null }> {
+  return (db.prepare("SELECT id,cost FROM run WHERE trace_id=? ORDER BY id").all(traceId) as Array<{ id: string; cost: string | null }>)
+    .map((row) => ({ id: row.id, cost: row.cost === null ? null : JSON.parse(row.cost) as Cost }));
+}
 export function listRuns(
   db: DB,
   opts: { kind?: Run["kind"]; status?: Run["status"]; limit?: number; offset?: number } = {},

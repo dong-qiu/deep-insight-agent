@@ -71,6 +71,9 @@ npm run dev
 | `npm test` | 运行单元与集成测试 |
 | `npm run test:coverage` | 生成测试覆盖率 |
 | `npm run build` | 生成生产构建 |
+| `npm run test:e2e` | 默认重新构建并运行隔离应用 E2E |
+| `npm run test:browser` / `npm run test:browser:built` | D4 Chromium 交互 smoke；默认构建 / 复用 C5 已验证产物，先 `npx playwright install chromium`（Linux CI 加 `--with-deps`）；[范围与隔离](docs/plan/specs/browser-interaction-smoke.md) |
+| `npm run build:e2e` / `npm run test:e2e:built` | CI 同一作业内构建并复用；收据绑定源码/配置/产物/运行身份，一小时内有效，校验失败直接拒绝 |
 | `npm run eval:a1` | 运行 A1 AI 质量评测（需要模型配置） |
 | `npm run eval:opportunity-map` | 评估技术机会映射 |
 | `npm run eval:opportunity-export` → `eval:opportunity-sample` → `eval:opportunity-seal` → `eval:opportunity-mapping-export` → `eval:opportunity-materialize` → `eval:opportunity-map` | 离线、同快照的技术机会 dogfood 流程（详见 `evals/technology-opportunities/README.md`） |
