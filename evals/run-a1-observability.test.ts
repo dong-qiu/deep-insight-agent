@@ -31,7 +31,7 @@ vi.mock("../src/lib/agents/validator.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/lib/agents/validator.js")>();
   return {
     ...actual,
-    validateBatch: vi.fn(async () => ({ checks: [], report: {} })),
+    validateBatch: vi.fn(async () => ({ checks: [], report: actual.summarize([]) })),
     judgeWithRetry: vi.fn(async (...args: unknown[]) => {
       fixture.judgeCalls++;
       expect(args[5]).toBeInstanceOf(AbortSignal);
