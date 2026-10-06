@@ -69,10 +69,10 @@ Node `randomBytes(16)` → 完整32位小写hex，含前缀总长36或37；128�
 | 专属单元/集成 | compatibility6 + generation15 + unmocked helper5，共26例通过；C1 inventory1例/4文件通过 |
 | 全仓coverage/ops | 首轮261文件2751例、ops150，通过；覆盖率statements79.58%、branches72.02%、functions79.61%、lines83.46%。最终新增用例后完整复核通过：262文件2759例、ops151例（含C1 inventory） |
 | 类型/lint | TS7/TS6 app/tools四项通过；lint通过；最终新增测试后四项typecheck与lint再次通过 |
-| 实际构建/HTTP/D4 | 首轮build18631ms，1次；同一C5收据分别复用HTTP7文件8例、browser7例（含D4及D3保护），全部通过。最终commit后再建立独立候选build收据，绝不复用已过期identity |
+| 实际构建/HTTP/D4 | 首轮build18631ms，1次；同一C5收据分别复用HTTP7文件8例、browser7例（含D4及D3保护），全部通过。最终源码固定后的候选commit再建立独立build收据；精确head/build_ms与built回归在PR留痕，绝不复用已过期identity |
 | 方案review | 独立上下文初审4组Warning修复，定向复查Blocking0/Warning0 |
-| 最终diff review | 独立新上下文读完整diff/untracked及spec：Blocking0/Warning0；独立Node24重跑专属25例（增签名anchor前）与C1 inventory通过；增补用例和最终收据提交后复核 |
-| PR/最终候选CI | 按授权创建后在此补PR链接；精确head SHA、完整CI结论和独立PR复核在PR留痕，作为本收据的交付组成部分 |
+| 最终diff review | 独立新上下文读完整diff/untracked及spec：Blocking0/Warning0；独立Node24重跑专属25例（增签名anchor前）与C1 inventory通过；增补签名用例独立重跑1/1及文档定向复核通过：Blocking0/Warning0。最终PR候选复核另行留痕 |
+| PR/最终候选CI | 已创建 [PR #419](https://github.com/dong-qiu/deep-insight-agent/pull/419)。精确head SHA、最终候选本地build/built、完整CI run链接/结论与独立PR复核在该PR留痕，作为本收据的交付组成部分；本文件提交时CI仍待核验，未预签通过 |
 
 使用 [eval-gate](../../.agents/skills/eval-gate/SKILL.md) 与 [pre-pr-ai-review](../../.agents/skills/pre-pr-ai-review/SKILL.md)。
 最终改动不改变Analyzer/Validator/coverage/prompt/模型/数据源/判断规则，也不改语义event/insight身份。
