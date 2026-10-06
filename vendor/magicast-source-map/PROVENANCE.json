@@ -1,0 +1,43 @@
+{
+  "upstream": "https://registry.npmjs.org/magicast/-/magicast-0.5.5.tgz",
+  "integrity": "sha512-UicdXN8zQ3JHlxVq+28afMXPr1z7WNY6+7EJnzTdQWkTAlMLF5fNCCKxJHBQwGaNGR11581EiQmQzx73+MvszA==",
+  "modified": "dist/builders-CDdrUKLb.js",
+  "files": {
+    "LICENSE": {
+      "upstream_sha256": "7917b04272f3f7c11f9fb89716742747a77f5906ebe5a81e70cbd090b8c7f961",
+      "patched_sha256": "7917b04272f3f7c11f9fb89716742747a77f5906ebe5a81e70cbd090b8c7f961"
+    },
+    "dist/builders-CDdrUKLb.js": {
+      "upstream_sha256": "6d589e4c1b4c89141d67698af6750c470184c575553029c80b110e8e091d553c",
+      "patched_sha256": "3c7ef342ff014a24078b7be3b6529ed33dd215bb3dd1e361921b5f215f5574e4"
+    },
+    "dist/core.d.ts": {
+      "upstream_sha256": "7259335e94ff5f5f3da362241778f0b4a3f526bfbd949575afc2ba43166350e5",
+      "patched_sha256": "7259335e94ff5f5f3da362241778f0b4a3f526bfbd949575afc2ba43166350e5"
+    },
+    "dist/core.js": {
+      "upstream_sha256": "4162ba6be3aef11c728da7f6892cdb998fc3ab6d22ed5e54f2aef55698b97948",
+      "patched_sha256": "4162ba6be3aef11c728da7f6892cdb998fc3ab6d22ed5e54f2aef55698b97948"
+    },
+    "dist/helpers.d.ts": {
+      "upstream_sha256": "297acb89215d600ab9688c9597a519acdf231b1cd8985add86365526d235b6cc",
+      "patched_sha256": "297acb89215d600ab9688c9597a519acdf231b1cd8985add86365526d235b6cc"
+    },
+    "dist/helpers.js": {
+      "upstream_sha256": "a50fd11a8241fdf35b72390a2269229563ffc456a33bad22dbdee0b215871899",
+      "patched_sha256": "a50fd11a8241fdf35b72390a2269229563ffc456a33bad22dbdee0b215871899"
+    },
+    "dist/index.d.ts": {
+      "upstream_sha256": "9871b15bc43072c6e8b938244e84e5b32c9127a5b09e21fd3dcc16fe561137d1",
+      "patched_sha256": "9871b15bc43072c6e8b938244e84e5b32c9127a5b09e21fd3dcc16fe561137d1"
+    },
+    "dist/index.js": {
+      "upstream_sha256": "bf18f049d5772f36f0df6532bd80be5c6a7b1b0964c4ac46a7bf71d98fd2d917",
+      "patched_sha256": "bf18f049d5772f36f0df6532bd80be5c6a7b1b0964c4ac46a7bf71d98fd2d917"
+    },
+    "dist/types-DI0qfFWu.d.ts": {
+      "upstream_sha256": "32efb23afe2a75917fc192e1149ca0eb1439784d9834add2dcb3b58310c070fc",
+      "patched_sha256": "32efb23afe2a75917fc192e1149ca0eb1439784d9834add2dcb3b58310c070fc"
+    }
+  }
+}
