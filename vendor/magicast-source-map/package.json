@@ -1,0 +1,36 @@
+{
+  "name": "magicast",
+  "version": "0.5.5-insight.1",
+  "private": true,
+  "description": "magicast 0.5.5 with its inline source-map-js replaced by official 1.2.2",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "unjs/magicast"
+  },
+  "sideEffects": false,
+  "exports": {
+    ".": "./dist/index.js",
+    "./core": "./dist/core.js",
+    "./helpers": "./dist/helpers.js",
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "LICENSE",
+    "PROVENANCE.json",
+    "SECURITY_PATCH.md"
+  ],
+  "dependencies": {
+    "@babel/parser": "^7.29.7",
+    "@babel/types": "^7.29.7",
+    "source-map-js": "1.2.2"
+  },
+  "inlinedDependencies": {
+    "recast": "0.24.0"
+  }
+}

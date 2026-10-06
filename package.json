@@ -122,9 +122,13 @@
     "typescript": "^6.0.3",
     "vite": "^8.3.0",
     "vitest": "^5.0.1",
-    "@playwright/test": "1.63.0"
+    "@playwright/test": "1.63.0",
+    "magicast": "file:vendor/magicast-source-map"
   },
   "overrides": {
+    "@vitest/coverage-v8": {
+      "magicast": "$magicast"
+    },
     "@next/eslint-plugin-next@16.3.8": {
       "fast-glob": "$@insight-agent/next-root-glob"
     },
