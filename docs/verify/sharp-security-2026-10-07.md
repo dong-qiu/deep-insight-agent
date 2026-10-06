@@ -3,7 +3,8 @@
 ## 身份与范围
 
 - 启动基线：`b407b9e61915c33f835966f8f760f3424f0e17f5`（#423 的 source-map-js 修复已合并）。
-  最终基线：`origin/main` @ `5539ec136ca8a087f190670332bae87db5bfdbbe`（并行会话合并 #426）。
+  中间基线：`5539ec136ca8a087f190670332bae87db5bfdbbe`（并行会话合并 #426）；最终基线：
+  `origin/main` @ `1bf16e4bb75e9fb04dcc70f9d15ccbdc14b5bb24`（接纳随后合入的 #360，满足 strict up-to-date）。
 - 独立分支：`fix/sharp-security-complete-20261007`；独立 linked worktree；仅复制 `.env.local`，
   权限 0600，DATA_DIR / DB_PATH 已隔离。未复制生产数据、SQLite/WAL、报告、备份或 `.env.development.local`。
 - 现场主工作区的已有未提交文件、共享 roadmap / ADR 和其他 worktree 保留。#426 由另一会话合并，
@@ -83,12 +84,12 @@ C5 构建输入 SHA256 `a71191c55556ee20731fb39db2c475a10001c9d2f7022a179d7275e8
 构建产物 SHA256 `092f05c4cefd8043ae9da90db8c26ef86c3d27a31b1169a21e8f129ae7f6c4c7`。
 本地构建 receipt 的 git head 是未提交候选基线，输入 hash 绑定候选构建输入；它不冒充已提交精确 head 的 CI。
 
-## 新主干上的最终候选验证
+## 5539 基线首轮候选验证（历史）
 
 由于基线前移及版本保护测试的加载路径核验改变了 C5 输入，先前构建 receipt 正确拒绝复用。
-最终四文件候选在新主干重新干净安装，以下全部通过；不把旧基线的结果冒充最终候选。
+当时的四文件候选在 5539 基线重新干净安装，以下全部通过；不把这份历史结果冒充最新候选。
 
-| 最终候选命令 | 实际结果 |
+| 当时的候选命令 | 实际结果 |
 | --- | --- |
 | `npm ci` / `npm ls sharp source-map-js --all` | 干净安装；sharp 0.35.5 / source-map-js 1.2.2 |
 | `npm audit --audit-level=high --json` | 退出 0，全依赖各严重度均 0 |
@@ -99,11 +100,53 @@ C5 构建输入 SHA256 `a71191c55556ee20731fb39db2c475a10001c9d2f7022a179d7275e8
 | 同环境 `npm run test:e2e:built` | 7 文件 / 8 HTTP 测试，additional_builds=0 |
 | 同环境 `npm run test:browser:built` | D3/D4 共 7/7，additional_builds=0 |
 
-最终 C5 输入 SHA256 `03387eaae225cbc4ee00f8c483c1114ef49a566faf61070cc279023131360f30`，
+当时的 C5 输入 SHA256 `03387eaae225cbc4ee00f8c483c1114ef49a566faf61070cc279023131360f30`，
 产物 SHA256 `6db5abc80c41d9992ecafd83be72d69304d3a6165eb343e56c798f62387ff322`。
 新基线精确主干 [CI 37503548677](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37503548677)
 attempt 1 已成功（push / head=tested=`5539ec136ca8a087f190670332bae87db5bfdbbe`，
 应用、全依赖 audit、HTTP、browser、Docker 与必需入口通过）；它不替代本 PR 最终候选的 CI。
+
+## 首轮 CI 失败与跨平台修正
+
+[PR #427](https://github.com/dong-qiu/deep-insight-agent/pull/427) 首轮 head
+`5c506a79cc892a9600bf09dc125eb279c6c382dd`，
+[CI 37504892238](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37504892238) attempt 1，
+tested `ce1ae08164b5414dc96016592d564398ef8cdc42`，scope full，实际结果 failure。
+Linux 应用 coverage 与 standalone Docker 的 bundled libvips 原始字符串路径断言失败；sharp binding
+检查及三个真实 SVG 解码边界通过。后续 audit 未执行，没有完整 prototype CI / Docker 成功证明。
+
+[官方 binding.gyp](https://github.com/lovell/sharp/blob/v0.35.5/src/binding.gyp) 显示 Linux RPATH
+采用 `$ORIGIN/../../sharp-libvips-…/lib`，据此推断未规范化路径导致原匹配失败；日志没有直接输出原始库路径，
+不冒充直接观测。修正仅对 diagnostic report 中候选 `@img/sharp-` 路径执行 `realpathSync` 后继续
+原有 binding / bundled libvips / librsvg 条件，解析失败仍 fail closed，不跳过或放宽安全条件。
+不输出完整 report、环境或私有路径。新候选完整 Linux CI 必须再次通过应用与 Docker 两处检查。
+
+修正后独立 reviewer 再次通过定向代码审查，Blocking 0 / Warning 0，并独立复现 4/4。
+本地再次运行：4/4 原生测试、lint、coverage（2759 Vitest + 162 ops）、C5 生产构建、HTTP 8/8、browser 7/7
+全部通过。构建 13067 ms / builds=1，HTTP/browser 同构建复用 / additional_builds=0。
+C5 输入 SHA256 `e0ba31946921a8f7730631f113738a7680bb4dade21c7d5554510e7e50194213`，
+产物 SHA256 `c0bace45b53e38a4de8e670b77e42f9ebc73f7fe81deef05e8b882559b824190`。
+当时 package、应用和类型输入未变；后续主干 #360 推进后，最终基线验证另行完整执行，不将此结果替代最终 CI。
+
+## 接纳最新主干后的候选
+
+为满足 strict up-to-date，使用正常 feature branch merge 接纳 #360 的已提交主干变化，保留该 PR 的
+文件原样，不主动修改共享 roadmap / ADR；相对最新主干仍只有本任务四文件。没有 force push 或清理 stash。
+最新基线的最终本地完整验证全部通过：
+
+| 命令 | 实际结果 |
+| --- | --- |
+| `npm ci` / 全依赖 `npm audit --audit-level=high --json` | 干净安装，全部严重度 0 |
+| `npm run typecheck` / `npm run lint` | TS7/TS6 app/tools 通过；零 warning |
+| `npm run test:coverage` | 263 Vitest 文件 / 2774 测试，ops 162/162（含四项原生保护），覆盖率门通过 |
+| `NEXT_TELEMETRY_DISABLED=1 npm run build:e2e` | 14619 ms，builds=1，生产 webpack 构建通过 |
+| 同环境 `npm run test:e2e:built` / `npm run test:browser:built` | HTTP 8/8、D3/D4 browser 7/7，同构建复用 / additional_builds=0 |
+
+最新 C5 输入 SHA256 `5c39fcb58d80946685373705a7159489a4009a13b586345b0fd80374363c09c3`，
+产物 SHA256 `9abd5a4032a201270e5450207f08d7dfd4aa57dbe1beb27f3a883085cf644b6c`。
+继承 #360 的离线 export 测试使 Vitest 计数增加，不属于本 PR 自身变化。
+最新基线主干 [CI 37505217117](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37505217117)
+full success；最终候选与 Linux CI 仍待绑定，不用主干成功替代 PR CI。
 
 ## 评测、独立评审与最终 CI
 

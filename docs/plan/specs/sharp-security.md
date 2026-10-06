@@ -4,7 +4,8 @@
 
 从 `origin/main` @ `b407b9e61915c33f835966f8f760f3424f0e17f5` 建立独立 worktree，调查
 GHSA-wq5f-xc86-pv6w / CVE-2026-96889 并定向修复。工作期间并行会话合并了 #426，包含相同依赖补丁；
-当前验收基线顺序更新至 `5539ec136ca8a087f190670332bae87db5bfdbbe`。最终独立 PR 仅补充原生
+验收基线先更新至 `5539ec136ca8a087f190670332bae87db5bfdbbe`，再为满足 strict up-to-date 接纳
+#360 后的最新 `1bf16e4bb75e9fb04dcc70f9d15ccbdc14b5bb24`。最终独立 PR 仅补充原生
 保护测试、Docker 检查与专属证据，不重复依赖升级或改写 #426 的 graph smoke。
 保留 #423 的 source-map-js / magicast 补丁及全部现有依赖策略。
 

@@ -24,7 +24,12 @@ test("loaded prebuilt SVG decoder is backed by patched librsvg", () => {
     // The rsvg version is the selected prebuilt library's build manifest.
     // Also verify that this process loaded the bundled native library rather
     // than assuming package metadata proves a global library is safe.
-    const sharedObjects = process.report.getReport().sharedObjects;
+    const { realpathSync } = require("node:fs");
+    // Linux's $ORIGIN RPATH may retain /lib/../../ segments in the report.
+    // Resolve only candidate native paths (the report also has virtual names).
+    const sharedObjects = process.report.getReport().sharedObjects
+      .filter(path => path.includes("/@img/sharp-"))
+      .map(path => realpathSync(path));
     assert.ok(sharedObjects.some(path => /[/]node_modules[/]@img[/]sharp-[^/]+[/]lib[/]sharp-[^/]+\\.node$/.test(path)),
       "expected a loaded prebuilt sharp binding");
     assert.ok(sharedObjects.some(path => /[/]node_modules[/]@img[/]sharp-libvips-[^/]+[/]lib[/]libvips-cpp/.test(path)),
