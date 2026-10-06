@@ -6,7 +6,7 @@
  *
  *  鉴权由 middleware 统一拦截（matcher 覆盖 /api/*，仅排除 api/auth）；本路由内再加每用户限流。
  *  单用户 MVP：actor 记 "admin"（auth.ts 的用户 id），限流按来源 IP。 */
-import { randomUUID } from "node:crypto";
+import { newObjectId } from "../../../../../lib/utils/object-id.js";
 import { NextResponse } from "next/server";
 import { forbidNonAdmin } from "../../../../../lib/auth-guard.js";
 import { answerFollowup } from "../../../../../lib/agents/followup.js";
@@ -64,7 +64,7 @@ export async function POST(
   try {
     const result = await answerFollowup(db, report, question);
     const now = new Date().toISOString();
-    const qaId = `fup_${randomUUID().slice(0, 8)}`;
+    const qaId = newObjectId("fup");
     const qa: FollowupQA = {
       id: qaId,
       report_id: id,

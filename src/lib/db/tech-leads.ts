@@ -1,5 +1,5 @@
 /** 技术线索持久化与查询。证据始终关联 citation 的复合主键，读取时只联明确 support 的 pass。 */
-import { randomUUID } from "node:crypto";
+import { newObjectId } from "../utils/object-id.js";
 import type { TechLead, TechLeadEvidence, TechLeadStatus } from "../types.js";
 import type { LeadCandidate } from "../agents/tech-leads.js";
 import { auditSupportsStatementBinding, hasSafeReaderMetadata } from "../utils/display-coverage-audit.js";
@@ -48,7 +48,7 @@ export function upsertTechLeads(db: DB, candidates: LeadCandidate[], now = new D
     for (const candidate of candidates) {
       let row = find.get(candidate.topic_id, candidate.canonical_key) as any;
       if (!row) {
-        const id = `lead_${randomUUID().slice(0, 12)}`;
+        const id = newObjectId("lead");
         insert.run({ ...candidate, id, score_detail: JSON.stringify(candidate.score_detail), now, latest_evidence_at: candidate.observed_at });
         row = find.get(candidate.topic_id, candidate.canonical_key);
       } else {
