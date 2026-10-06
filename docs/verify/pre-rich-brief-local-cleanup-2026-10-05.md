@@ -54,3 +54,11 @@
 并发状态说明：审核期间其他会话将 main 推至 #417；C4b 路径/分支由其推进，D2 scope 分支/worktree在后续元数据中不再出现。本轮所有变更命令只有上表六个 branch -d 及 S0 文档/同步，没有删除、重建或修改这些排除资源。初始盘点与最终实时列表均保留，不能把外部会话动作计为本轮清理。第6项的逐项审核/符合条件尝试已完成，保留项不等于强制清理授权。
 
 Git 的五次成功均依据本地保留的 `origin/<branch>` tracking head 已合并而允许 -d，同时提示尚非 HEAD 图祖先；本轮另以 merged PR head/merge-in-main 的独立证据核验，不把该提示抹去。`feat/c1-backup-integrity` 无可用 tracking 判定且非图祖先，退出1后原样保留。没有强制删除，也没有手动删除 remote/tracking refs。
+
+## 2026-10-06 最终保留项复核
+
+必要安全修复#426已正常合入5539ec1，新main CI37503548677此时在跑；只读清理预演再次执行。现场生产17:30 UTC仍为b199，未部署新主干，见[C1最新身份](pre-rich-brief-c1-bounded-closeout-2026-10-05.md)。本轮新增删除0，实际五个本地删除/一个-d拒绝保留、worktree移除0/远端手动删除0不变。
+
+最新worktree列表15个，其中14个含配置或私有目录，另一个为其他会话活动树，全部保留。S0、提取试验、主树及#426隔离树保留；其他会话的source-map完整安全树不操作。#420旧本地head精确匹配merged PR且现无worktree，经独立只读复核后选择保留：生产尚未更新，不把声明锁依赖误写为dev-only，也不把删除本地引用当生产安全验收。已有c1-backup-integrity的-d拒绝不重试强删，c1-report-redaction-boundary仍因生产未部署保留。
+
+排除的docs/refactor-parallel-execution仍存在；perf/c4b-a1-low-risk及refactor/d2-hotspot-pure-slice本地引用已不在实时列表，这是外部状态，不计本轮操作，不重建/改动。主树六份原件hash6/6不变。所有具体status/HEAD/锁定/私有目录存在性和dry-run清单留owner-only gitignored记录，不读取配置内容或删除资料。合入后再以最新main CI核验清理时点，仅重复只读盘点；不批量apply。

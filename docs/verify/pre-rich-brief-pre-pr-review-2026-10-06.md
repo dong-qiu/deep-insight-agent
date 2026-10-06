@@ -25,3 +25,11 @@
 后续候选afceab3的browser CI失败已按[图谱挂载同步收据](pre-rich-brief-ci-graph-readiness-2026-10-06.md)因果复现并仅修复测试等待，未改原严格断言。新增两份browser测试同步文件与本收据纳入独立终审，必须用再次推送的真实head CI核验；上文34文件范围属于失败候选的历史复核。#420仅修复锁依赖audit阻断，内联副本另见#423，不冒称所有安全路径清除。
 
 后续真实候选ec72454的browser已通过，CI37500338318仍因新sharp高危audit失败；base b407的main CI37501620737亦失败。最小[#426](https://github.com/dong-qiu/deep-insight-agent/pull/426)已独立审阅、定向测试、创建并完成远端四文件复核，CI未提前判绿。#423此时已由另一会话合入；早先draft说法为历史状态，不代表本轮审阅或部署。待#426合入同步后，两份browser变更由main承接，#360剩余diff仍须独立终审。
+
+## 最新主干承接与最终诊断范围
+
+必要[#426](https://github.com/dong-qiu/deep-insight-agent/pull/426)通过[完整CI37502578190](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37502578190)，17:26:21 UTC正常合入`5539ec136ca8a087f190670332bae87db5bfdbbe`。S0非破坏性同步merge `17e45470080c590ca179a5bc790b4cc5d1d60c05` 的第二parent精确等于该main；两份browser文件已由main承接，当前剩余35文件为33Markdown及只读exporter/test，不改生产src或依赖。新的main CI37503548677此时在跑，最终通过/合入证据留在#360固定SHA正文收据。
+
+同步后clean npm ci、实际exporter/report-gen/pipeline-reportgen integration/db report-review/db reports五文件204/204、TS7/TS6 app/tools、exporter lint、33文件文档格式/链接与diff检查通过。单独exporter15/15亦通过；首次文档检查调用因传入数组而非scope对象退出1，按工具契约构造对象后通过，未改变检查器。所列单项本地绿色不替代最新head完整CI。
+
+最终现场身份只读复核SSM39fb99b7于17:30:23.134 UTC成功，生产仍b199、三服务running/restart0，app/worker healthy；C1将Docker image ID与registry可拉取digest明确区分，回退目标digest仍需另核。完整记录见[C1页](pre-rich-brief-c1-bounded-closeout-2026-10-05.md)，不把身份检查当H08/历史恢复。清理总数仍五个删除/一个-d拒绝、worktree0；#420新增候选因生产未切换保留。

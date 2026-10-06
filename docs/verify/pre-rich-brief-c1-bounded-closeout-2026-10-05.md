@@ -8,7 +8,7 @@
 
 随后主干到 `1d8925f7559bc648a2be288f2e9977336a4e0d17`（其他会话 #417 文档收尾），其 [CI 37340831376](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37340831376) success。S0 同步 merge `883b78d` 的实际第二 parent 为该 SHA；未修改排除分支，不能把含其已合入内容的主干同步写作本轮实现。
 
-最近 GitHub 生产部署收据 `6827351877` 对应 **`b199bc0381a1ebd2b50fde0e68819e0b884a4383`**。SSM `14e96718-4869-4629-9b0e-4b488389d94f` 于 `2026-10-05T16:05:54Z` 现场核对：app、cron、generation-dispatch-worker 都 running、restart 0，运行镜像 digest **`sha256:b947ee53b22ba26494ac30da7730bd76612a67bc3410a1aafafb57cd8fdd4406`**，OCI revision 为 b199，image created `2026-10-03T10:43:04.769033419Z`。只读身份检查不输出容器环境。该命令首个撤回计数查询误用了不存在的表名，stderr 已保留，不把 SSM 总体 Success 当所有子命令通过；纠正后的单独查询 `e78fa42f-863b-4087-9821-f82a61522795` 成功，`16:07:22.996Z` redactions=0、requests=0。
+最近 GitHub 生产部署收据 `6827351877` 对应 **`b199bc0381a1ebd2b50fde0e68819e0b884a4383`**。SSM `14e96718-4869-4629-9b0e-4b488389d94f` 于 `2026-10-05T16:05:54Z` 现场核对：app、cron、generation-dispatch-worker 都 running、restart 0，运行镜像 image ID **`sha256:b947ee53b22ba26494ac30da7730bd76612a67bc3410a1aafafb57cd8fdd4406`**，OCI revision 为 b199，image created `2026-10-03T10:43:04.769033419Z`。只读身份检查不输出容器环境。该命令首个撤回计数查询误用了不存在的表名，stderr 已保留，不把 SSM 总体 Success 当所有子命令通过；纠正后的单独查询 `e78fa42f-863b-4087-9821-f82a61522795` 成功，`16:07:22.996Z` redactions=0、requests=0。
 
 SSM `8113c4cb-baab-418d-813a-d48dc602fc6f` 于 `16:18:10.410Z` 验实际镜像内容：恢复 runner SHA `f4f92988ac16eeb340d164e2439e5cb5bc059e393f78cbf2a16bfebdda60bd35`、包含 `--restore-time`；历史归档不可用提示的已打包 page.js SHA `38e6f243f1d7043ffd79489d2a01032ab22254e3d949ad471cf72e53b03913d6`，app healthy。代码字面量存在不是 H08 页面验收，也不是恢复协议安全证明。
 
@@ -42,10 +42,16 @@ C1 #387 merge `735927d`、#394 merge `0a965a8`、#395 merge `bbd8276` 均核为 
 
 ## 可审查的下一步目标与回退
 
-生产部署仅形成决定材料，**本授权不含执行**：候选代码需包含 #394 的永久报告删除读取/发布边界，目标应从完整验证并实际发布的镜像取得 OCI revision + immutable digest；文档-only 057 不凭 workflow success 编造目标 digest。执行前检查运维 §8 的 migration 演练、备份、dispatch/凭据配置存在性、停写和 worker 稳定性，避开 16:50–17:30 UTC。现有可核验旧镜像 b199 的 digest 已记录，但回退前必须检查新 schema/删除边界兼容；若不兼容，不直接恢复对外服务，按手册验证认证轮换及删除约束。部署后再核实际三个服务镜像、健康、最低兼容 reader/guard，不以镜像发布代替部署。
+生产部署仅形成决定材料，**本授权不含执行**：候选代码需包含 #394 的永久报告删除读取/发布边界，目标应从完整验证并实际发布的镜像取得 OCI revision + immutable digest；文档-only 057 不凭 workflow success 编造目标 digest。执行前检查运维 §8 的 migration 演练、备份、dispatch/凭据配置存在性、停写和 worker 稳定性，避开 16:50–17:30 UTC。现有可核验旧镜像 b199 的 image ID 已记录；实际部署目标/回退仍须另核可拉取的 registry immutable digest。回退前必须检查新 schema/删除边界兼容；若不兼容，不直接恢复对外服务，按手册验证认证轮换及删除约束。部署后再核实际三个服务镜像、健康、最低兼容 reader/guard，不以镜像发布代替部署。
 
 下一切片合成服务演练单独按 [synthetic-restore-rehearsal](../plan/specs/synthetic-restore-rehearsal.md)：专用 Colima context、固定 Node24 镜像、全新合成数据/随机密钥、loopback/内网、合成 transport，不加载本地或生产配置/DB/AWS。执行身份独立；成功验签/解密/回放后才启动 app，验健康/登录/报告读取/删除不可见，轮换后旧 cookie 拒绝；坏签名/缺版本/传输失败保持服务停止，验幂等。只清理本次创建资源并恢复 context。真实 IAM/Object Lock/生产历史恢复仍另过门。
 
 本项有界证据可作为阶段收尾；不能关闭 H08、服务演练或 TD-09。独立审阅/最终提交与 PR 收据另记；本页不宣布这些后续门通过。
 
 独立新上下文 pre-pr-ai-review：Blocking 0 / Warning 0，独立复跑 exporter15、C1 Node38、Vitest105与TS7/TS6 app/tools均通过，亲自复现 KNOWN GAP 仍预期绿色。只读核对 main CI/PR merged SHA/文档 workflow 跳过发布，无私有 DB/原文访问；因此只签有界证据整理，不签 H08/服务恢复/生产完整恢复。
+
+## 2026-10-06 17:30 UTC：实际生产身份复核
+
+避开每日窗口后，SSM `39fb99b7-1eaa-4bbd-9fa0-a8a225ab03e0` 于 `2026-10-06T17:30:23.134Z` 成功完成（ResponseCode0，stderr空）：app/cron/generation-dispatch-worker均running/restart0，app/worker healthy；OCI revision仍`b199bc0381a1ebd2b50fde0e68819e0b884a4383`，三个容器的实际Docker image ID均为`sha256:b947ee53b22ba26494ac30da7730bd76612a67bc3410a1aafafb57cd8fdd4406`。该值是Docker image ID，不能冒充可拉取的registry manifest digest。只执行时间和选定inspect字段，不输出环境、不访问live DB、不写生产或部署。
+
+因此新main包括#420/#423/#426的合入与CI不能证明生产已修复；生产切换、H08、同镜像服务恢复和TD-09完整历史恢复仍另过原门。历史内容hash沿用已记录的同b199镜像核验，不假装本次身份inspect重跑了全部内容/业务验收。完整只读收据保留在owner-only gitignored隔离目录。

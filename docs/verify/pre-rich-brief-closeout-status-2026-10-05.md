@@ -52,3 +52,17 @@
 必要修复独立为[#426](https://github.com/dong-qiu/deep-insight-agent/pull/426)：既有sharp override0.35.4→官方修补0.35.5，只改27个sharp锁树条目，同时承接已经验证的两份graph测试同步文件；CI/hook/引用和原断言未弱化。本地clean npm ci/audit0、双TS、lint、原生SVG与SQLite探针、生产build、HTTP E2E8/8及browser7/7通过，独立PR前和远端四文件终核Blocking0/Warning0。#426 head `7278d0bc64e23986534254e486304eccd0c28b68` 的必要CI此时在跑；合入及main CI后再同步#360，最终真实SHA/CI/合入状态以PR正文固定收据为准，未提前签绿。
 
 最新原件hash6/6不变。再次清理预演未执行任何删除；三个排除分支不操作，其中perf/c4b-a1-low-risk与refactor/d2-hotspot-pure-slice的本地引用已不在实时列表中，不能归因于本轮。S0及其他含配置/私有资料的worktree全部保留。
+
+## 最新主干承接与最终诊断范围
+
+必要[#426](https://github.com/dong-qiu/deep-insight-agent/pull/426)通过[完整CI37502578190](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37502578190)，17:26:21 UTC正常合入`5539ec136ca8a087f190670332bae87db5bfdbbe`。S0非破坏性同步merge `17e45470080c590ca179a5bc790b4cc5d1d60c05` 的第二parent精确等于该main；两份browser文件已由main承接，当前剩余35文件为33Markdown及只读exporter/test，不改生产src或依赖。新的main CI37503548677此时在跑，最终通过/合入证据留在#360固定SHA正文收据。
+
+同步后clean npm ci、实际exporter/report-gen/pipeline-reportgen integration/db report-review/db reports五文件204/204、TS7/TS6 app/tools、exporter lint、33文件文档格式/链接与diff检查通过。单独exporter15/15亦通过；首次文档检查调用因传入数组而非scope对象退出1，按工具契约构造对象后通过，未改变检查器。所列单项本地绿色不替代最新head完整CI。
+
+## 2026-10-06 17:30 UTC：实际生产身份复核
+
+避开每日窗口后，SSM `39fb99b7-1eaa-4bbd-9fa0-a8a225ab03e0` 于 `2026-10-06T17:30:23.134Z` 成功完成（ResponseCode0，stderr空）：app/cron/generation-dispatch-worker均running/restart0，app/worker healthy；OCI revision仍`b199bc0381a1ebd2b50fde0e68819e0b884a4383`，三个容器的实际Docker image ID均为`sha256:b947ee53b22ba26494ac30da7730bd76612a67bc3410a1aafafb57cd8fdd4406`。该值是Docker image ID，不能冒充可拉取的registry manifest digest。只执行时间和选定inspect字段，不输出环境、不访问live DB、不写生产或部署。
+
+因此新main包括#420/#423/#426的合入与CI不能证明生产已修复；生产切换、H08、同镜像服务恢复和TD-09完整历史恢复仍另过原门。历史内容hash沿用已记录的同b199镜像核验，不假装本次身份inspect重跑了全部内容/业务验收。完整只读收据保留在owner-only gitignored隔离目录。
+
+最新worktree只读盘点15个，14个存在配置/私有目录，其余为其他会话活动资源，均保留；再次dry-run不删除。新增#420本地旧head无worktree但生产仍未切换，选择保留，不以“dev-only”豁免部署核验（source-map-js也有非dev依赖者）。此前五个本地删除/一个-d拒绝、worktree移除0/远端手动删除0的实际总数不变。最终最新main CI与#360的review/head/merge收据持续记录在PR正文，后续新增元数据不自动获得清理授权。
