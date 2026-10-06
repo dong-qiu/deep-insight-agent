@@ -16,6 +16,8 @@ vendor/**
 !vendor/image-size/**
 !vendor/next-root-glob/
 !vendor/next-root-glob/**
+!vendor/magicast-source-map/
+!vendor/magicast-source-map/**
 !ops/
 ops/**
 !ops/run-provenance-migrations.ts

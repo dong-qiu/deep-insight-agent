@@ -12,6 +12,7 @@ const context = join(root, "context"), output = join(root, "output");
 const required = ["package.json", "package-lock.json", "tsconfig.json", "next.config.mjs", "postcss.config.mjs",
   "src/app/page.tsx", "src/lib/config/defaults.yaml", "public/logo.svg", "vendor/image-size/package.json",
   "vendor/next-root-glob/package.json", "vendor/next-root-glob/index.cjs",
+  "vendor/magicast-source-map/package.json", "vendor/magicast-source-map/dist/index.js",
   "ops/run-provenance-migrations.ts", "ops/record-deployment.ts", "ops/replay-redaction-registry.ts",
   "ops/crontab", "ops/trigger.mjs", "ops/backup-db.mjs", "ops/cost-backfill.mjs", "ops/probe-alert.mjs",
   "ops/generation-dispatch-worker.mjs", "ops/generation-dispatch-healthcheck.mjs",
@@ -24,6 +25,7 @@ const excluded = [".env", ".env.local", ".env.local.bak", ".npmrc", ".aws/creden
   "src/backup.db-shm", "src/private-credentials.json", "src/local.log", "src/example.test.ts",
   "public/accessKeys.csv", "public/private.pem", "vendor/image-size/.npmrc", "vendor/image-size/node_modules/x.js",
   "vendor/next-root-glob/.npmrc", "vendor/next-root-glob/node_modules/x.js", "vendor/next-root-glob/.env.local",
+  "vendor/magicast-source-map/.npmrc", "vendor/magicast-source-map/node_modules/x.js", "vendor/magicast-source-map/.env.local",
   "node_modules/example/index.js", "docs/private.md", "evals/private.jsonl", "tests/private.json"];
 try {
   mkdirSync(context);

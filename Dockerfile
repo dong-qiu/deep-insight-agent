@@ -15,6 +15,7 @@ COPY package.json package-lock.json ./
 # 否则容器内无法解析 file:vendor/image-size。
 COPY vendor/image-size ./vendor/image-size
 COPY vendor/next-root-glob ./vendor/next-root-glob
+COPY vendor/magicast-source-map ./vendor/magicast-source-map
 # 生产依赖 audit 由 CI 的独立阻断步骤执行；镜像构建不重复访问审计服务，保持可复现。
 RUN npm ci --no-audit
 
