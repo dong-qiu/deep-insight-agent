@@ -71,3 +71,35 @@ test("SVG exceeding the input pixel budget is rejected before rasterization", ()
     await assert.rejects(sharp(svg, { limitInputPixels: 4 }).raw().toBuffer(), /pixel limit/i);
   `);
 });
+
+test("prebuilt WebP encoder and decoder preserve RGBA pixels", () => {
+  probe(`
+    const pixels = Buffer.from([0,0,0,255, 64,64,64,255, 128,128,128,255, 255,255,255,255]);
+    const encoded = await sharp(pixels, { raw: { width: 2, height: 2, channels: 4 } }).webp({ lossless: true }).toBuffer();
+    const { data, info } = await sharp(encoded, { limitInputPixels: 4 }).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    assert.equal(info.width, 2);
+    assert.equal(info.height, 2);
+    assert.equal(info.channels, 4);
+    assert.deepEqual(data, pixels);
+  `);
+});
+
+test("prebuilt AVIF declarations and codec survive the complete native closure", () => {
+  probe(`
+    assert.deepEqual(sharp.format.heif.input.fileSuffix, [".avif"]);
+    assert.deepEqual(sharp.format.heif.output.alias, ["avif"]);
+    const pixels = Buffer.from([0,0,0,255, 64,64,64,255, 128,128,128,255, 255,255,255,255]);
+    const encoded = await sharp(pixels, { raw: { width: 2, height: 2, channels: 4 } })
+      .avif({ lossless: true, effort: 0, chromaSubsampling: "4:4:4" }).toBuffer();
+    const { data, info } = await sharp(encoded, { limitInputPixels: 4 }).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    assert.equal(info.width, 2);
+    assert.equal(info.height, 2);
+    assert.equal(info.channels, 4);
+    assert.equal(data.length, pixels.length);
+    // Permit one level of RGB/YUV rounding; alpha must remain exactly opaque.
+    for (let index = 0; index < data.length; index++) {
+      if (index % 4 === 3) assert.equal(data[index], pixels[index]);
+      else assert.ok(Math.abs(data[index] - pixels[index]) <= 1);
+    }
+  `);
+});
