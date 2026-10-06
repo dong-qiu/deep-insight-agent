@@ -3,7 +3,7 @@
 import { createTaskCancellation, type TaskCancellationOptions } from "./cancellation.js";
 import { acceptUsageCost, createUsageJobScope } from "./model-usage.js";
 import { budgetRunCost, checkTaskBudget, enrollBudgetRun, readBudgetRunCost, recordBudgetCost, taskBudgetEnabled, taskBudgetFailure, withTaskBudget, type TaskBudgetOptions } from "./task-budget.js";
-import { randomUUID } from "node:crypto";
+import { newObjectId } from "../utils/object-id.js";
 import { performance } from "node:perf_hooks";
 import type { DB } from "../db/index.js";
 import { finishRun, getRun, insertRun } from "../db/repos.js";
@@ -47,7 +47,7 @@ export async function runJob<T>(
 async function runBudgetedJob<T>(db: DB, spec: JobSpec, fn: (ctx: JobCtx) => Promise<T>): Promise<JobOutcome<T>> {
   const cancellation = createTaskCancellation(spec);
   try {
-    const runId = spec.existingRunId ?? `run_${randomUUID().slice(0, 8)}`;
+    const runId = spec.existingRunId ?? newObjectId("run");
     // 单调时钟测耗时，避免墙钟 NTP 跳变让 duration 出现负值/突跳
     const startedMono = performance.now();
     if (!spec.existingRunId) {
