@@ -95,6 +95,22 @@ export const test = base.extend<{ app: App; missingArchive: boolean }>({
       if (new URL(route.request().url()).origin === app.url) await route.continue();
       else { unexpected.push("external_request_blocked"); await route.abort("blockedbyclient"); }
     });
+    // Passive synchronization only: forward every native listener unchanged.
+    // ForceGraph registers its non-passive SVG wheel listener in useEffect;
+    // this marks that specific SVG as committed, without React private APIs,
+    // synthetic events, retries, or changing application behavior.
+    await context.addInitScript(() => {
+      const committed = new WeakSet<EventTarget>();
+      const add = EventTarget.prototype.addEventListener;
+      EventTarget.prototype.addEventListener = function (this: EventTarget, ...args: Parameters<typeof add>) {
+        add.apply(this, args);
+        if (args[0] === "wheel" && this instanceof SVGSVGElement
+          && this.getAttribute("aria-label") === "实体共现图") committed.add(this);
+      };
+      Object.defineProperty(window, "__insightSmokeGraphCommitted", {
+        value: (target: Element) => committed.has(target),
+      });
+    });
     await provide(context);
     expect(unexpected, "browser must only contact its own synthetic service").toEqual([]);
   },
