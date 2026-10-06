@@ -1,6 +1,6 @@
 # D6 / TD-19：文档、技术债证据与休眠边界核对
 
-日期：2026-10-06（Asia/Shanghai）。启动基线 `6eabc5f671073c377200f7551daf8a143d333989`；交付基线 `86d824fd5fbe12006679a02cebcc877f71493f73`（#420仅依赖修复）。
+日期：2026-10-06（Asia/Shanghai）。启动基线 `6eabc5f671073c377200f7551daf8a143d333989`；首次交付基线 `86d824fd5fbe12006679a02cebcc877f71493f73`（#420仅依赖修复）。后续交接与实际交付见 [续核收据](../../verify/d6-followup-2026-10-07.md)。
 本轮只交付文档与 PR/CI；不授权合并、部署、生产访问、迁移、恢复、历史修复、付费模型或分支/worktree 清理。
 
 ## 范围与事实源
@@ -13,7 +13,8 @@
 ## 文件归属
 
 用户明确将 README、operations、technical-debt-remediation、L2-workflow、architecture 的本轮文档修订交给 D6。
-主 worktree 的 roadmap/ADR 和 Brief 未提交文档未交接；仅在 D6 台账记录具体修订建议，不复制或提交其未提交内容。
+首次交付时主 worktree 的 roadmap/ADR 和 Brief 未提交文档未交接，仅在 D6 台账记录建议。
+2026-10-07 用户追加交接 roadmap/ADR 的本轮状态注记，只基于最新 main 在 D6 worktree 修订；主 worktree 未提交内容与 Brief 仍归原 Session，不复制或代交。
 专属工作区 `insight-agent-d6` / `docs/d6-td19-evidence` 从最新 origin/main 创建；无需运行配置，没有复制任何环境文件或数据。
 其他 worktree 仅核对 Git 状态；Git 干净、进程存在或退出均不能证明会话释放。不虚构跨 Session 的负责人回复。
 
@@ -26,11 +27,11 @@
 5. 不删除或改写历史测试/失败/提交前 CI 语境；最终证据通过 PR 与本台账索引补齐。P1 保持 dormant/取消任务排除，重启另立任务及治理准入。
 6. 应用仓库 pre-pr-ai-review，以独立新上下文 reviewer 核对最终 diff。重要问题修正后定向复查，再核对远端最终 diff/摘要。
 7. 执行文档链接/锚点/结构与 diff 检查；CI 按完整 PR 路径分类，不能强行将 README/skills 等白名单外文档记为 docs。无 AI 实现差异，不跑 A1、不以应用测试代证事实。
-8. 收据随首次提交入库，候选 SHA/CI 身份及实际结果追加 PR 摘要，保持候选 head；完成 PR/CI 后停止等待合并授权。
+8. 收据随首次提交入库，候选 SHA/CI 身份及实际结果追加 PR 摘要；仅补 CI 链接时不移动 head。实际交接文档修订需重新冻结、评审与验证；完成 PR/CI 后停止等待合并授权。
 
 ## 收口与后续
 
-本轮独立文档交付可在 PR/候选 CI 完成后收口；TD-19 整体仍需 roadmap/ADR 文件交接后的修订与最终一致性复核。
+本轮独立文档交付须候选 CI 验收通过；首次候选 CI 失败不能收口。roadmap/ADR 追加交接后的修订与一致性复核在续核收据留痕，原始审计来源缺口继续保留。
 D7 S1 原精确 main CI 失败，后续 #420 主干完整验证已成功；保留失败语境，专属最终收口及未来 S2 交付后再核台账，不阻塞本轮文档修订，不据此宣称 D6 整体无剩余。
 未知生产状态保持未知；历史生产收据只证明其记录日期/版本。
 回退使用正常文档 revert PR，不涉及实现或数据恢复。实际交付见 [D6 收据](../../verify/d6-documentation-evidence-2026-10-06.md)。

@@ -1,7 +1,7 @@
 # D6 / TD-19 统一证据台账与差异清单
 
 快照：2026-10-06，Asia/Shanghai；GitHub 查询时间见 D6 收据。启动基线为 `6eabc5f671073c377200f7551daf8a143d333989`；后续核对/交付基线 `origin/main` @ `86d824fd5fbe12006679a02cebcc877f71493f73`。
-本文件是证据索引与状态解释，不是新状态平台、生产运行证明或实施授权。
+本文件是证据索引与状态解释，不是新状态平台、生产运行证明或实施授权。首次快照/精确历史绑定保留；2026-10-07 的交接与供应链变化见文末追加记录及 [续核收据](d6-followup-2026-10-07.md)。
 
 ## 来源与归属核对
 
@@ -9,7 +9,7 @@
 - 旧并行计划仅位于 `insight-agent-refactor-plan`，HEAD `7342576d2560e6fc7d5af1b116459af521da35a6`，并非本轮主干事实源。其“C2–C5/D1–D7 未启动、下一项 C5”已过期；未整分支合入，也未改它。
 - 主 worktree 为 `docs/brief-information-density-plan` @ `21414ab702282a5fc3645cea15afe26f1e042c07`，roadmap/decisions 修改及四份 Brief 专属未跟踪文档仍由原 Session 保留。Brief density worktree 有专属收据修改；没有复制这些内容。
 - 本机有多个 Codex Session 进程，cwd 均不能唯一映射文件负责人；没有跨 Session 交接消息证据。D7 worktree @ `f5ea93b951848e26518c92335aa53ec856125ad8` 干净不证明会话结束。
-- 用户仅交接 README、operations、technical-debt-remediation、L2-workflow、architecture 的本轮修订。roadmap/ADR/Brief 不改；其他 worktree 不操作、不清理。另见 source-map audit worktree 的 lockfile 修改不归入 D6；初查未提交变化不作主干证据，后续已由 GitHub #420/精确 main CI 核实合入与验证。
+- 首次交付时用户仅交接 README、operations、technical-debt-remediation、L2-workflow、architecture 的本轮修订，roadmap/ADR/Brief 未交接。2026-10-07 追加交接 roadmap/ADR 的状态注记，基于 main 在 D6 worktree 修订；主 worktree 未提交内容与 Brief 不改；其他 worktree 不操作、不清理。另见 source-map audit worktree 的 lockfile 修改不归入 D6；初查未提交变化不作主干证据，后续已由 GitHub #420/精确 main CI 核实合入与验证。
 
 ## 差异清单与本轮处理
 
@@ -24,8 +24,8 @@
 | 可直接修正 | architecture CI/CD 顺序含真实 eval 抽样，与实际 CI 分离策略不符 | 按 workflows 区分确定性 CI、docs/full、单独真模型 eval 和生产部署 |
 | 可直接修正 | architecture 成本表仍列 quota/cost_daily/停止cron，备份设计目标写成已实施 | 对齐 C2b/C3 实际 Run/attempt 口径，备份旧目标显式标历史计划并指 C1，未虚构全局费用上界或生产恢复 |
 | 可直接修正 | 独立review发现operations残留replay成功可启动、裸compose配置生效、日/月账单/重置表述冲突 | 移除当前恢复放行序列，配置生效指§8固定镜像；明确已落盘兼容估价、日/月各自UTC窗和C2b opt-in边界 |
-| 需文件交接 | roadmap M4 仍记 deploy.yml SSH/待 secrets、deploy.sh 首发、早期备份 DR 已闭合；M5 未注明 P1 休眠边界 | 建议只给历史 M4 段加时间语境并指当前 §8/C1；当前 M5 指向 dormant re-entry。未交接，不能改或代交 Brief 内容 |
-| 需文件交接 | ADR 是历史决定与当前补充的集合，不能批量改写旧决定或带入 Brief 未提交新增 ADR | 后续在交接后核对 ADR-0017/0026/0037/0038 与当前入口，必要时追加状态说明；本轮不改 |
+| 需文件交接 | roadmap M4 仍记 deploy.yml SSH/待 secrets、deploy.sh 首发、早期备份 DR 已闭合；M5 未注明 P1 休眠边界 | 建议只给历史 M4 段加时间语境并指当前 §8/C1；当前 M5 指向 dormant re-entry。2026-10-07 交接后已补独立当前入口注记，历史段保留；不代交 Brief 内容 |
+| 需文件交接 | ADR 是历史决定与当前补充的集合，不能批量改写旧决定或带入 Brief 未提交新增 ADR | 2026-10-07 交接后已补 ADR-0017/0026/0037/0038 当前证据注记，历史决定正文不改，Brief 未提交决定不代交 |
 | 需范围/状态决定 | TD-04 全局配置注册、TD-10 未接线任务、D7 S2 尚未验收 | 不关闭整体；未来分别确定范围/接口/负责人，涉及模型的部分另需模型预算授权 |
 | 需范围/状态决定 | D2 五模块曾是建议；已有 2026-10-06 用户“确认采纳” | 仅采纳已有决定：A/R/G 延期、L/P 保留、本阶段新增必做为空；不新增整体关闭决定 |
 | 缺证据保留未知 | 当前生产 revision、C1 完整生产恢复、A1 当前模型耗时/费用/吞吐、D3 生产/冷缓存/并发/HTTP/browser P95 | 本轮禁止生产访问/付费请求；历史证据保留日期，不以健康或 CI 替代 |
@@ -61,7 +61,7 @@
 | TD-16 / D4 | 已核；最小 Chromium smoke 完成 | E409/E404；[D4](d4-browser-smoke-2026-10-04.md)：真实登录/退出、引用展开/空态、图切换/复位、窄屏 | Firefox/WebKit/全业务/生产矩阵和browser P95未测；早期退出缺陷/偶发记录保留 | 关键交互改动重跑受影响 smoke；无需生产部署，不与B4人工验收混称 |
 | TD-17 / C5 | 已核；原单作业内重复构建验收关闭 | E396/E397；[C5](c5-ci-build-reuse-2026-10-03.md)：build一次、built额外0、身份/过期拒绝、Docker保留 | 不同runner/cache时长不是受控加速比例/P95；Docker独立build不是重复应用E2E | 构建输入/复用入口变更重核；验证设施无需生产部署 |
 | TD-18 / D5 | 已核；已确认 D5 主干验收关闭 | E398/E403；[D5](d5-build-dependency-convergence-2026-10-03.md)：esbuild直依赖、Node24 types、可重复安装及退出登记 | 双编译器/vendor/Node major ignore 保留；最迟2026-11-02复查；当时audit0非永久安全，初查main audit失败与后续#420修复成功分列 | 按原退出条件及新依赖PR复查，不自动移除补丁；D5无需生产部署，新安全修复非D6授权 |
-| TD-19 / D6 | 本轮文档修订/评审/PR验收另见收据；整体未关闭 | [D6 spec](../plan/specs/d6-documentation-evidence.md)及[收据](d6-documentation-evidence-2026-10-06.md)，当前五入口修订、20项台账 | roadmap/ADR未交接、原始审计缺口、D7主干后续复核仍留待办；本台账非未来自动同步 | 交接后处理共享文档，D7交付/主干状态变化后重新核；不访问生产 |
+| TD-19 / D6 | 本轮文档修订/评审/PR验收另见收据；整体未关闭 | [D6 spec](../plan/specs/d6-documentation-evidence.md)及[收据](d6-documentation-evidence-2026-10-06.md)，当前五入口修订、20项台账 | roadmap/ADR注记已追加交接并修订，独立复核/新候选CI待核；原始审计缺口、D7后续复核保留；本台账非未来自动同步 | 核对新候选与后续主干证据；D7后续交付重核；原始审计获得后补核；不访问生产 |
 | TD-20 / D7 | S1 已合入，候选通过，后续#420主干覆盖成功；整体部分 | E419；[S1收据](d7-id-capacity-2026-10-06.md)/[审计](d7-id-capacity-audit-2026-10-06.md)：Run/Report/QA/Lead/Opportunity六生成表达式128位，旧ID/URL/FK保留 | S2 Topic/Source/Analyzer/batch/派生Insight/event未处理；外部解析器/已下载产物/真实存量/生产回退未证明；原#419 main供应链失败保留，#420修复后main成功另列 | 核对专属最终收口，S2另确认范围/模型预算/交接；未证明生产上线，不能整体完成 |
 
 ## C1、warning 与休眠停止点
@@ -159,3 +159,28 @@ PR链接的最终交付摘要/评论补充提交前收据的时间语境；不�
 其精确 [main CI 37458872550](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37458872550) / attempt1 / push / full success，完整应用、Docker和必需门均成功；该后续版本包含D7，补充后续主干覆盖证据，但不把原#419失败改成成功。
 D6自有工作区正常 fast-forward 同步该main，无其他Session文件提交或实现改动。后续元数据更新写入完成时间 `2026-10-06T12:00:41Z`（仅GitHub元数据，没有生产访问）。
 D7专属最终收口记录与 S2 新交付后继续核台账/共享入口；现在不据后续CI关闭 TD-20/D6 整体或推断生产上线。
+
+
+## 2026-10-07 追加交接与供应链现场快照
+
+现场读取时间 `2026-10-06T17:17:20Z`（Asia/Shanghai 为 2026-10-07），最新 main 为 `b407b9e61915c33f835966f8f760f3424f0e17f5`。
+用户确认 sharp/graph-smoke 修复仍由原 Session 交付，D6 只核验证据；其未提交文件不是已交付证据，不复制或代交。
+用户另交接 roadmap/ADR 的本轮状态注记；D6 基于已合入 main 添加当前入口及时间语境，不改历史 M4/DCP/ADR 正文，不提交主 worktree 的未提交内容或 Brief。
+
+- [#423](https://github.com/dong-qiu/deep-insight-agent/pull/423) 于 `2026-10-06T17:11:28Z` 合入精确 SHA `b407b9e61915c33f835966f8f760f3424f0e17f5`，
+  [spec](../plan/specs/source-map-js-security.md)/[专属收据](source-map-js-security-2026-10-06.md)交付 magicast 内联 source-map-js 的独立 vendor 修复。
+  原 #420 声明依赖修复与 #423 内联副本修复是两层范围；#420 当时 main audit 成功不证明内联副本已安全。
+- 该 SHA 精确 [main CI 37501620737](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37501620737) / attempt 1 / push / full 为 **failure**：
+  Docker及其汇总成功，应用在 high+ audit 报 sharp/librsvg GHSA-wq5f-xc86-pv6w 与 next 连带条目失败，应用必需汇总失败；docs正常 skipped。
+  不以 #423 候选 CI 37461293268 的历史 success 替代该 main 失败，也不据此声称 source-map 修复失败或已上线。
+- D6 首次候选 `fdbef987d113847100f0e1f01b90136edc294557` 的 [CI 37460791666](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37460791666)
+  attempt 1 图谱 smoke 预期4节点、收到2，6/7通过；attempt 2 browser 7/7通过，但随后同一 sharp 审计失败。
+  首次图谱失败根因仍未知；reader P0c attempt 2 增量 `0.04510096ms`/约32.35% warning、双门passed，非生产/browser性能证明。
+  完整身份/产物及独立复核保留在 [#422 最终交付摘要](https://github.com/dong-qiu/deep-insight-agent/pull/422)，不改写首次提交前收据或冒称应用全绿。
+- TD-18 的原 D5 验收保持历史关闭；本次供应链修复单独核 main/候选与 vendor 维护边界，不等于新的整体安全认证。
+  TD-16 的历史最小 smoke 验收保持，新增图谱可靠性问题需独立证据；重跑一次通过不是已修复。
+- D7 的 [S1 最终候选/独立评审回执](https://github.com/dong-qiu/deep-insight-agent/pull/419#issuecomment-6007209673)已核实，只收口五实体六生成表达式；
+  S2 及当前生产状态仍未知。后续包含 S1 的主干验证按其实际时间和 SHA追加，不改原 #419 失败。
+
+D6 原候选 CI 验收未通过；本轮新交接修订须再次独立审查与新候选 CI。原Session已创建 [#426](https://github.com/dong-qiu/deep-insight-agent/pull/426)，冻结候选 `7278d0bc64e23986534254e486304eccd0c28b68`、base `b407b9e61915c33f835966f8f760f3424f0e17f5`，候选CI37502578190正在运行；原Session记录的本地/独立审查结果不替代尚未取得的最终候选/main成功。依赖修复最终证据取得前不预签成功。
+TD-19 原始审计来源缺口及未来 D7 交付后再核仍保留；P1继续 dormant。本记录不授权合并、部署或生产访问。
