@@ -2,6 +2,10 @@
 
 > 2026-10-05 · 执行方案；制定时尚未启动，10 月 5 日实际执行记录见 [材料对账](../verify/pre-rich-brief-material-reconciliation-2026-10-05.md)、[T03 分区审计](../verify/pre-rich-brief-t03-partition-audit-2026-10-05.md)及 [T04 冻结条件](../verify/daily-brief-density-experiment-protocol.md)。用户要求先收尾旧工作，再启动[新版 Daily Brief 方案](specs/daily-brief-rich-insight-freshness.md)。本轮只制定文档，不修改代码、部署或清理 worktree。
 
+## 2026-10-06：经用户确认的诊断收口范围修订
+
+三次固定普查已结束，B1当前路线有界no-go。用户明确同意“缩小为诊断收口，保留未完成门”；实际决定与逐项合入门见[范围修订记录](../verify/daily-brief-density-diagnostic-closeout-decision-2026-10-06.md)。**本轮 #360 合入改按诊断交付门核验，T03完整输入标注、T04冻结及S1准入仍未通过。** 下文原实验完成条件保留为后续要求，不能因诊断归档合入而打勾。新版功能与部署仍不在本授权内。
+
 ## 范围、事实起点与总完成门
 
 本计划按 **材料对账 → S0/T03 → S0/T04 → PR #360 → C1 有界验收 → 本地分支清理** 的顺序执行。`docs/refactor-parallel-execution`、`perf/c4b-a1-low-risk`、`refactor/d2-hotspot-pure-slice` 三个正在开展的重构分支及其 worktree 明确排除。四个 Dependabot PR 属例行依赖队列，单独按其 CI/风险处理，不作为本计划完成门。

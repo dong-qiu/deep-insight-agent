@@ -48,3 +48,7 @@
 2026-10-03 的 before 核验：`report-gen.test.ts`、`pipeline-reportgen.integration.test.ts`、`report-review.test.ts`、`reports.test.ts` 共 189 项通过；只读供给导出器 15 项通过。这只确认当前路径与诊断工具可运行，不证明新格式已安全或有收益。
 
 此切片仍按 feature branch → review → PR → CI → 合并，再验证实际部署版本。S0 草稿 PR 与后续实现 PR 保持分开；首发上线不等于完整实施规格已完成。
+
+## 2026-10-06：当前路线停止与诊断归档
+
+三次固定窗口未满足至少两个不同新事件各有双重要维度，当前 B1 首发路线 no-go。用户明确批准 [#360 仅诊断收口](../../verify/daily-brief-density-diagnostic-closeout-decision-2026-10-06.md)，不批准进入 S1；上文的完整输入标注、数值冻结、未见留出与发布门继续未通过。首次提取仅保留为后续离线备选，本轮不实施。

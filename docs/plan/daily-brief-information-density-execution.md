@@ -4,7 +4,7 @@
 > 依据：[共识方案](specs/daily-brief-information-density.md)与[独立评审记录](../verify/daily-brief-information-density-plan-review-2026-09-27.md)。
 > 本文细化工作顺序和交付物，不改变共识方案的安全边界、阶段门或实验定义。
 
-执行证据：[S0 进展与阶段门](../verify/daily-brief-density-s0-progress.md)。未达到 S0 完成标志前不合并 PR-1。
+执行证据：[S0 进展与阶段门](../verify/daily-brief-density-s0-progress.md)。原实验 S0 完成标志仍未达到；2026-10-06 用户明确批准 [#360 仅诊断收口](../verify/daily-brief-density-diagnostic-closeout-decision-2026-10-06.md)，其合入改按修订后的诊断交付门，T03/T04 原完成条件与 S1 准入不因此通过。
 
 ## 1. 交付顺序及职责
 

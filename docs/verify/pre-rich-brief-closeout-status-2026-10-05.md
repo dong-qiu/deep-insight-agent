@@ -1,13 +1,13 @@
 # 新版 Brief 实施前收口：执行状态与后续起点
 
-> 2026-10-05 · **未完成全部收口，未允许启动新版功能**。原完成门不变；用户已授权达标后自主合入，无需重复授权，但未知证据不升级为通过。
+> 2026-10-05 · **未完成全部收口，未允许启动新版功能**。2026-10-06用户明确批准诊断收口范围；原T03/T04实验门未完成，未知证据不升级为通过。
 
 | 项目 | 实际交付/证据 | 状态与合入 |
 |---|---|---|
 | 1 材料保存对账 | [文件级对账](pre-rich-brief-material-reconciliation-2026-10-05.md)；`946d036`，原未提交进展独立提交 `e7e9153` | 完成门与独立文档review通过；S0前置步骤，仅保存在分支 |
 | 2 T03 家族/标注分区 | [聚合/缺口/分区审计](pre-rich-brief-t03-partition-audit-2026-10-05.md)，私有184已见版本/原确认标签；`abbd0e7` | 10月3/4完成观测；10月6日已补第三轮及首份备份；188版本全探索，供给路线有界no-go；T03完整输入事件/维度/限定/题目金标门仍未通过，S0总门未通过 |
 | 3 T04 数值协议 | [冻结条件及停止点](daily-brief-density-experiment-protocol.md)，等事实X/Y含引用包、真实回填120/120秒、主观无差别 | 无B0收益证据；B1/完整事件金标/资源版本/数值门与新前瞻留出未冻，总门未通过 |
-| 4 PR #360 | 只读exporter、T01/T02有界证据、T03/T04真实缺口及经确认产品方向；同步main `1d8925f` 的merge `883b78d` | 保持draft；独立prePR检查通过仅允许更新draft，不能转ready/merge。旧远端head的CI不得用于新head；10月6日同步实际main `6eabc5f` 的merge `b6b235d` 待本轮新head验证 |
+| 4 PR #360 | 只读exporter、T01/T02有界证据、T03/T04真实缺口及经确认产品方向；同步main `1d8925f` 的merge `883b78d` | 工程门待核验，暂保持draft；用户已明确批准仅诊断收口，独立复核和实际head CI通过后可自主ready/merge。旧远端head的CI不得用于新head；10月6日同步实际main `6eabc5f` 的merge `b6b235d` 待本轮新head验证 |
 | 5 C1及已合入交付 | [分层有界验收](pre-rich-brief-c1-bounded-closeout-2026-10-05.md)；生产b199镜像/内容/健康收据，main CI/交付merge SHA，Node38/Vitest105 | 有界整理完成，原工作已合入；本轮未部署。H08、同镜像服务演练、TD-09完整生产历史恢复均未通过 |
 | 6 本地清理 | [逐项审核及实际非强制收据](pre-rich-brief-local-cleanup-2026-10-05.md) | 已删除5个无worktree已合入且未推进的本地分支；1个-d拒绝保留；移除worktree0、远端删除0 |
 
@@ -38,3 +38,5 @@
 主干同步期间其他会话合入D7，实际merge `b6b235d` 的第二parent为 `6eabc5f671073c377200f7551daf8a143d333989`，不把先查到的4855版本当最终基线。本轮不修改D3/D7或排除分支；C4b原路径后续已由其他会话移除，不计本轮清理。本轮worktree remove仍0。
 
 最新实际 main `6eabc5f` 的 CI [37437928802](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37437928802) 未通过：`npm audit --audit-level=high` 报 `source-map-js 1.2.1` 的 GHSA-68fv-2mgg-jv7q 高危漏洞，Docker 检查通过不能抵销 audit 失败。以独立最小依赖补丁 PR 修复后，仍须核验新 main 与 S0 head 的真实 CI；不降低安全门。
+
+用户随后明确同意“缩小为诊断收口，保留未完成门”；[决定与新交付门](daily-brief-density-diagnostic-closeout-decision-2026-10-06.md)已记录。此前待确认文字保留为决定前的状态；现在只核验诊断归档合入，不认证原T03/T04完整门或S1。
