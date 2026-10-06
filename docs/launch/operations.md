@@ -3,7 +3,14 @@
 > 自托管**单实例** Docker 部署：`app`（Web + Job Runner）+ `cron`（容器内 supercronic 调度）+ 持久卷。
 > 设计见 `docs/plan/architecture.md`「部署」；本文是上线/运维操作手册。
 
+当前入口核对（2026-10-06）：[D6 技术债证据/工具风险索引](../verify/d6-technical-debt-ledger-2026-10-06.md)。
+本文命令不是执行授权：本地/隔离首次运行见 §2，已有生产实例发布唯一入口见 §8。
+生产读取、备份、迁移、恢复、历史修复、云资源写入分别核实目标与授权；不能把 preview、镜像或 health 成功当作完整恢复/上线证明。
+历史验收记录仅证明对应日期和版本，当前生产状态需另获授权核验。
+
 ## 完整性锚定维护
+
+P1 当前为 [dormant](../plan/p1-dormant-reentry.md)，取消任务不因本手册重开。下述启用后的设计及治理 runbook 只供未来另立任务核对；当前生产准入未授予，现有 no-op/外部 seam fail-closed 保持。
 
 完整性维护不依赖报告生成调度，但 P1c 由 `INTEGRITY_ANCHOR_ENABLED=true` 显式启用。
 默认关闭时，容器内 `ops/crontab` 每 5 分钟调用一次
@@ -198,8 +205,7 @@ docker compose exec -T cron ls -1 /data/backups
 docker compose exec -T cron node /app/ops/backup-integrity.mjs --backup-dir /data/backups/<时间戳>
 ```
 
-**生产恢复不能直接覆盖后启动。**先在隔离目录校验所选备份；再按 §6.1.2
-停止所有写者、回放独立脱敏登记册并验证 tombstone，成功后才能重新启动。
+**生产恢复不能直接覆盖后启动。**隔离校验所选备份只证明其本地完整性；当前 §6.1.2 的生产安全回放/启动矩阵尚未完成，恢复 writer 必须保持停止，等待新协议、完整覆盖与同镜像证据。旧 replay 成功不能放行。
 旧备份没有清单，或 DB 有原文引用但备份缺少 `raw/` 时，不得报告为“完整恢复”。
 超过 90 天的备份即使文件完好也不得恢复：届时脱敏登记册记录可能已到期。
 
@@ -281,35 +287,34 @@ cookie 只在内存处理，不写日志。不能在未轮换密钥时把“DB r
 
 > **2026-10-02 已知恢复阻塞项**：现有 runner 将目标快照时间作为删除截止时间，会漏掉快照之后的删除；有限登记 expiry 也不能覆盖所有长期保留备份。下面的旧命令即使退出 0，亦不构成安全恢复或启动许可。保持恢复服务停止；新协议设计见 [恢复时间与覆盖契约](../plan/specs/recovery-time-coverage.md)（Proposed，未实现），不得直接套用于生产或把参数改成当前时间当作修复。
 
-从本机或 S3 DR 取回备份时，先完成上述会话密钥前置检查、停止 `app`、`cron` 和 `generation-dispatch-worker`，复制数据库/报告，再运行同镜像的
+**旧流程的历史诊断说明（禁止作为当前恢复/启动步骤）**：旧流程曾要求轮换会话密钥、停止三个服务、复制数据库/报告，再运行同镜像的
 `node /app/ops/replay-redaction-registry.cjs --restore-time <UTC RFC3339>`。runner 要求
 `REDACTION_REGISTRY_BUCKET`、`REDACTION_RECOVERY_ROLE_ARN` 与 HMAC secret ARN/version；它必须在**独立 recovery
 identity**（临时凭据、专用 profile 或受控 runner）中运行，应用实例角色没有也不得拥有 `sts:AssumeRole` 到 recovery role 的权限，
-再读取恢复时刻仍有效的所有记录，解密、校验 HMAC，并以幂等**单一事务**写入
-`provenance_redaction`；仅在成功输出计数和 key versions 后才可 `docker compose up -d`。多个 HMAC 版本时使用
+旧实现读取目标快照时刻仍有效的记录，解密、校验 HMAC，并以幂等**单一事务**写入
+`provenance_redaction`。这一筛选会遗漏快照之后的删除及过期但仍须约束的删除；即使输出成功计数/key versions，也不能启动恢复 writer。多个 HMAC 版本的历史配置使用
 `REDACTION_HMAC_SECRET_ARNS_JSON`（`{"v1":"arn:...","v2":"arn:..."}`），旧 key 须保留到最后一条记录到期。
 任何 STS、S3、KMS、HMAC、缺失记录或重放错误都应非零退出并保持服务停止。恢复日志只能含 record 计数、key version 与 reason code，禁止输出 entity key。
 
-P0a 发布包必须把上述 runner 与 `generation-dispatch-worker` 纳入 compose，并在部署 smoke test 中演练“恢复点早于删除”的
-场景：停止三个服务 → 复制旧 SQLite snapshot → replay → 确认 resolver 仍返回 tombstone → 才允许启动服务。runner 不存在、
-角色不可假设或任一校验失败即阻断 P0a 发布，不能回退为 6.1 的旧流程。
+当前待完成的是 [恢复时间与覆盖契约](../plan/specs/recovery-time-coverage.md) 的生产 issuer/独立单调存储、历史覆盖基线、全部 writer 闸门、可信采样绑定、CLI 全调用方/启动收据及同镜像 HTTP/auth/恢复矩阵。
+#394 的真实报告删除约束和 #395 的合成新鲜度锚已合入，但不提供完整生产恢复证据；具体状态见 D6 台账。
+不得只改 `--restore-time` 为当前时间，或仅因 backup complete、CLI exit 0、health 200 就开放 writer。
 
 ### 6.2 全卷冷备（含 raw，需停机）
 
-> ⚠️ **P0a 后的恢复禁止直接解包后 `docker compose up -d`。** 旧快照可能早于删除登记；必须先回放
-> §6.1.2 的 registry，且只可通过受控生产发布流程重新成为 writer。任何 replay、版本身份或 health gate 失败都保持
+> ⚠️ **P0a 后的恢复禁止直接解包后 `docker compose up -d`。** 旧快照可能早于删除登记；当前生产安全回放与启动矩阵未完成，保持恢复 writer 停止，等待 §6.1.2 的前置协议与证据。任何 replay、版本身份或 health gate 失败都保持
 > `app`、`cron`、`generation-dispatch-worker` 停止。B1b 后还必须完成上方 AUTH_SECRET 轮换与旧 cookie 拒绝核验，
 > 全卷恢复不能把备份中的旧凭据配置直接恢复为当前认证密钥。
 
 ```bash
+# 以下只展示获单独授权后的冷备操作，实际停止服务并写入备份文件；不是恢复预览。
 docker compose stop app cron generation-dispatch-worker   # 静默 SQLite WAL 写入
 docker run --rm -v deep-insight_insight-data:/data -v "$PWD":/backup alpine \
   tar czf /backup/insight-data-$(date +%F).tgz -C /data .
-# 恢复：解包到同名卷后，三个服务仍保持停止；先执行同镜像的 replay（替换 TS 为目标恢复点 UTC）。
-docker compose run --rm --no-deps migrate \
-  node /app/ops/replay-redaction-registry.cjs --restore-time 2026-08-03T00:00:00Z
-# replay 成功后，不要手动 compose up；执行 §8 的受控 GHCR 发布，完成 migration / deployment-record / identity / health gate。
 ```
+
+历史恢复命令 `replay-redaction-registry.cjs --restore-time <目标快照时间>` 仅保留在 §6.1.2 的诊断说明中；该参数与成功退出均不构成恢复或启动许可。
+未来有效入口必须随新协议、全部调用方和同镜像验收一起交付，当前不提供可直接执行的生产恢复序列。
 
 > 卷名默认 `<compose项目名>_insight-data`（项目名 `deep-insight`）。`docker volume ls` 确认。
 > 第三方原文全文存在 `/data/raw`，按「不复制全文存储」原则**不入仓**，仅随卷备份。
@@ -330,7 +335,7 @@ docker compose run --rm --no-deps migrate \
 | 启动即报「校验模型必须独立于分析模型」 | `ANALYZER_MODEL == VALIDATOR_MODEL`，改成不同 Opus 版本 |
 | arm64 主机 cron crash | 构建未传 `TARGETARCH=arm64` → supercronic 架构不符；重建镜像 |
 | 报告生成慢 / 偶发超时 | 中转站不稳；已有 120s 超时 + 重试 + 拆批兜底；持续不稳考虑更稳接入 |
-| admin 看板某些 Run `tokens > 0` 但成本显示 \$0 | 模型不在 `src/lib/runtime/cost.ts` PRICING 表内（如新发布的 Opus 版本未更新表）→ 历史 amount 静默 \$0。**清账**：`docker compose exec app node /app/ops/cost-backfill.mjs` 看 dry-run，确认后加 `--apply` 写入（用经验估算率 \$5.46/M token；可 `--rate=N` 自定义）；**根治**：补 PRICING 表 + 重 build。新代码自带 fallback 估算 + warn（commit 19880e7），不会再静默 \$0 |
+| admin 看板某些 Run `tokens > 0` 但成本显示 \$0 | 历史未知价格可能产生旧 amount=0；当前 unknown/partial 或 Coding Plan 也不能推成免费。`ops/cost-backfill.mjs` 默认只预览业务行但以可写 DB 打开，可能创建空库，不是严格只读诊断；先在隔离副本核实目标。`--apply` 实际写 Run/audit，历史修复另需授权；经验率只是估价，不能清成账单事实。新模型价格/用量口径走独立代码 PR 与可信镜像发布，不在生产直接重 build |
 | analyzer/validator/ppt-polish 全部 400 `output_config.format: Extra inputs are not permitted` | 中转站收紧请求体校验、不再接受 SDK 0.98 的新结构化输出字段 `output_config.format`。**已治本**：`callStructured` 改走通用 `tools` + `tool_choice` 把目标 schema 包装成强制工具调用（Anthropic 长稳定接口，所有中转站支持，2026-06-03 真实 relay 验证 OK）。若再次出现：升级 SDK 或检查 commit `feat(runtime)` 后 callStructured 是否仍走 tools 路径 |
 
 ## 8. 升级
@@ -543,26 +548,29 @@ GitHub 托管 runner 在境外，**必须能访问你的 relay**。若 relay 限
 
 ## 14. 成本预算控制（A5 · DCP-3 ①）
 
-度量地基（每段 `Run.cost` 落库 + admin 成本时序图）之上加配额校验 + 触顶熔断 + 看板用量。判定核心
+度量地基（已落盘 `Run.cost` 兼容估价 + admin 成本时序图）之上加日/月预算检查、自动入队拦截及看板用量。判定核心
 `src/lib/runtime/cost-guard.ts`，配置走三个 env（见 §3）：`COST_LIMIT_DAILY` / `COST_LIMIT_MONTHLY`（USD）
 / `COST_ALERT_PCT`（默认 80）。**未配任何上限 = 不限 = 行为与改动前完全一致（零回归）。**
 
 ### 行为
 
-- **判定窗口**：日 = 当日 00:00 UTC 起；月 = 当月 1 号 00:00 UTC 起（自然月，对齐账单）。已花额取自
-  `run.cost.amount`（含分析/校验等所有调 LLM 的段；确定性段如采集/报告生成不计）。
-- **自动管线（cron / `runScheduledPipeline`）**：每个 topic 前查预算——
+- **判定窗口**：日 = 当日 00:00 UTC 起；月 = 当月 1 号 00:00 UTC 起（自然月）。累计值取自按 Run.started_at 分桶的已落盘
+  `run.cost.amount` 本地兼容估价；尚未落盘/未知费用、无 Job 或其他独立模型入口不保证纳入，不称完整账单，不与 C3 attempt/P1 金额相加。
+- **自动管线（cron / `runScheduledPipeline`）**：每个 topic 入队前查日/月预算——
   - `exceeded`（任一维度 ≥ 上限）→ **硬熔断**：跳过本 topic 及之后全部，`summary` 标
-    `skipped-budget-exceeded` + `budgetStopped=true`，发一次「触顶」告警；下一轮 cron（次日预算重置）自动恢复。
+    `skipped-budget-exceeded` + `budgetStopped=true`，发一次「触顶」告警；后续调度重新判定。日窗跨 UTC 次日重算，月窗跨 UTC 次月重算；任一维度仍触顶就继续拦截，并非月限额也在次日恢复。
   - `alert`（任一维度 ≥ `COST_ALERT_PCT`%）→ 发一次「接近上限」告警，**继续跑**。
-  - 告警每 cron 进程去重（≤1 条/轮 → ≤4 条/天）。
+  - 告警在单次调度内去重，不按历史调度频率保证固定每日条数。
 - **手动操作（深挖 / 追问）**：预算触顶**不拦**（用户主动意图，保留应急能力）——仅记日志 + 发一次
   `manual` 告警（措辞「已放行，未自动暂停」）。
 - **看板**：`/admin` 顶部「成本预算」卡片显示今日 / 本月 spent vs 上限 + 进度条 + 状态徽标（正常 / ⚠️接近 / ⛔触顶）；
   未配上限时显提示文案。
 
+上述是既有日/月策略。C2b 另有显式 `taskBudgetUsd` / worker opt-in `COST_LIMIT_TASK`，同任务已观测兼容估价触顶后停止新 dispatch/retry，适用于已接线的自动/手动 generation；缺失不限额，0 禁止新 dispatch。
+未知费用继续、不做 reservation，自动入队与实际执行之间有竞态，在途仍可计费；不保证真实账单、套餐余额或跨 worker 全局绝不超额。边界见 [C2b spec](../plan/specs/c2b-task-budget.md)。
+
 ### 接线
 
 配 `COST_LIMIT_DAILY` 和/或 `COST_LIMIT_MONTHLY`（USD）即生效；告警复用 `ALERT_WEBHOOK`（无独立 opt-in——
-预算是运维信号，配了 webhook 就该收到）。Opus-on-relay 含校验单轮 ≈ ¥14-26，按月用量与汇率折算 USD 填限额。
-改 env 后须 `docker compose up -d --force-recreate`（见 §7 重读 env 说明）。
+预算是运维信号，配了 webhook 就该收到）。历史 Opus relay 估价不能替代当前 provider 的实际费用；阈值调整另核范围与授权。
+生产配置变更由 operator 独立授权维护，生效须按 §8 固定镜像/digest/版本与完整核验流程重新创建服务；不能运行未绑定发布变量的裸 `docker compose up`，`restart` 也不重读 env_file。

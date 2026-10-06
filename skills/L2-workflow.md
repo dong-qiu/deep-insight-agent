@@ -37,10 +37,10 @@
 ## 部署 / 运维核验（生产在 AWS EC2，工具在 `ops/aws/`）
 
 - **合入 ≠ 上线：验证任何"修好了"之前，先核生产真在跑哪版**——查运行镜像 `created` 时间 / bundle 内容 / **字面量特征**（grep 一个该改动引入的独特字符串，如某新功能的中文/emoji 串），别信"合了 main 就上线了"。并行开发下还要防"上线的那版不是我部署的"（可能已被别的会话部署，别重复部署）。
-- **生产 code-only 发布只走 GitHub Actions `Deploy Production Image`**——等 main CI / GHCR 不可变镜像就绪，在受控窗口触发健康切换；旧 `deploy.sh` 已停用，不能以 SSM+rsync 源码构建替代。历史上源码投递会覆盖生产 `.env.local` 并令成本熔断/推送静默失效。
+- **已有生产实例 code-only 发布只走 GitHub Actions `Deploy Production Image`**——等可信 main 完整 CI / GHCR 不可变镜像就绪，获部署授权后在受控窗口触发健康切换；前置与回退见 [运维手册 §8](../docs/launch/operations.md#8-升级)。旧 `deploy.sh` 已停用，不能以 SSM+rsync 源码构建替代；全新主机 bootstrap 另立任务。历史上源码投递会覆盖生产 `.env.local` 并令成本熔断/推送静默失效。
 - **生产配置与发布分离**——`/opt/app/.env.local` 由 operator 单独维护；不要对该目录运行 `rsync --delete` 或从本地开发环境全量覆盖。历史同步风险仍见 `docs/practice-log.md`。
-- **部署避开每日管线窗**（brief 钉 17:00 UTC，避 **16:50–17:30 UTC**）——撞窗会孤儿化在途 run、当天 brief 整个不出；撞了用 `ops/trigger.mjs` 补跑。
-- **查生产真值走 `aws ssm send-command`**（read-only：`docker exec deep-insight-app-1` + `node` 读 `/data/insight.db`）——GFW 直连受阻、SSH 走 SSM 隧道；cloud 定时 agent 无 aws 凭证不能查，须本会话 / 手动。
+- **部署避开每日管线窗**（brief 钉 17:00 UTC，避 **16:50–17:30 UTC**）——撞窗可能孤儿化在途 Run；`ops/trigger.mjs` 是实际写入/生成入口，补跑可能调用付费模型，须独立授权，不是只读诊断。
+- **获授权后查生产真值走 `aws ssm send-command`**（只读核验示例：`docker exec deep-insight-app-1` + `node` 读 `/data/insight.db`）——读取生产也属于生产访问，文档盘点不自动授权。SSM 本身能执行写命令，只有核实具体命令后才能称只读；cloud 定时 agent 无 aws 凭证不能查。
 - 经验来源：memory `verify-check-deployed-version-first` / `deploy-collides-with-cron-window` / `aws-deploy` / `prod-db-is-docker-volume`；`docs/practice-log.md`（#47/#57/#142 及 07-04 #154 部署）。
 
 ## 跨阶段通用
