@@ -1,6 +1,6 @@
 # 新版 Brief 实施前收口：执行状态与后续起点
 
-> 2026-10-05 · **未完成全部收口，未允许启动新版功能**。2026-10-06用户明确批准诊断收口范围；原T03/T04实验门未完成，未知证据不升级为通过。
+> 2026-10-05 起执行；**原实验完成门未通过，未允许启动新版功能**。2026-10-06用户明确批准诊断收口范围；原T03/T04实验门未完成，未知证据不升级为通过。
 
 | 项目 | 实际交付/证据 | 状态与合入 |
 |---|---|---|
@@ -44,3 +44,11 @@
 安全补丁[#420](https://github.com/dong-qiu/deep-insight-agent/pull/420)已通过独立审阅/完整PR CI并于11:48:30 UTC合入`86d824f`。S0已非破坏性同步`a105ec9`；[新main CI37458872550](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37458872550)此时仍在跑，不提前签绿。当前工程复核见[10月6日审阅](pre-rich-brief-pre-pr-review-2026-10-06.md)，最终head/CI/合入结果见#360正文收据。本轮继续只做dry-run清理，无新增删除。
 
 #360候选afceab3的CI37459884296失败于图谱加载同步，修复与复现见[测试收据](pre-rich-brief-ci-graph-readiness-2026-10-06.md)；重新推送并独立复核后只用新head绿色，不抹去失败。#420的audit修复不涵盖magicast内联副本，另有#423独立draft，本轮不动其分支或声称部署/安全全路径通过。
+
+## 2026-10-06 最新 CI 安全阻断（历史不覆盖）
+
+候选 `ec72454d04588d1a88c01d79f4e61fa300f8c8ff` 的 [CI37500338318](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37500338318) 图谱smoke已7/7通过，但后续高危audit失败：sharp0.35.4命中GHSA-wq5f-xc86-pv6w，不能把browser成功当整套绿色。另一会话的#423已于17:11:28 UTC合入`b407b9e61915c33f835966f8f760f3424f0e17f5`，这是外部交付事实；此前draft文字仅为当时快照，本轮没有修改该分支或部署。其[main CI37501620737](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37501620737)同样失败于sharp高危audit。
+
+必要修复独立为[#426](https://github.com/dong-qiu/deep-insight-agent/pull/426)：既有sharp override0.35.4→官方修补0.35.5，只改27个sharp锁树条目，同时承接已经验证的两份graph测试同步文件；CI/hook/引用和原断言未弱化。本地clean npm ci/audit0、双TS、lint、原生SVG与SQLite探针、生产build、HTTP E2E8/8及browser7/7通过，独立PR前和远端四文件终核Blocking0/Warning0。#426 head `7278d0bc64e23986534254e486304eccd0c28b68` 的必要CI此时在跑；合入及main CI后再同步#360，最终真实SHA/CI/合入状态以PR正文固定收据为准，未提前签绿。
+
+最新原件hash6/6不变。再次清理预演未执行任何删除；三个排除分支不操作，其中perf/c4b-a1-low-risk与refactor/d2-hotspot-pure-slice的本地引用已不在实时列表中，不能归因于本轮。S0及其他含配置/私有资料的worktree全部保留。
