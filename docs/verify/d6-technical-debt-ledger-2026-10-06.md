@@ -58,9 +58,9 @@
 | TD-13 / C3 | 已核；已确认 Job 最小持久用量契约完成 | per observable fetch attempt、unknown/partial/reported、幂等/不可变、v48/重启、只读分页；E410；[C3](c3-model-usage-persistence-2026-10-04.md) | 非Job followup/eval/direct SDK 未记录；provider未返回用量不可知，retention/业务UI待后续；这些不等于承诺完整账单 | 接入新入口/增长需独立范围及容量方案；当前生产迁移/使用状态未核，不因Run/attempt/P1相加闭合费用 |
 | TD-14 / C4a+C4b | 观测与零付费恢复切片收口；整体部分 | E399/E415/E417；[C4a](c4a-eval-observability-2026-10-03.md)/[C4b](c4b-a1-recovery-performance-2026-10-05.md)；只证明恢复源读取 2→1/局部合成收益 | 整体A1提速、真实模型耗时/费用/吞吐/attempt P95 未证明；C4a不含模块加载/最后发布I/O；reader warning 不消失 | 固定输入/配置/次数/硬请求及重试上限/预算授权后测真实模型；当前生产效果未核 |
 | TD-15 / D3 | 首轮测量/取舍收口；整体部分 | E418；[D3](d3-reader-performance-2026-10-06.md)：查询减少但reader P50约8–9%未达10%标准，候选撤回 | 无保留生产优化/分页/索引；其余热点、生产分布/并发/物理冷缓存/HTTP/browser性能未证明；P0c warning 保留 | 先细分测量匹配/归档/SQL，范围/接口确认后优化；本切片生产代码不变，无新上线效果 |
-| TD-16 / D4 | 已核；最小 Chromium smoke 完成 | E409/E404；[D4](d4-browser-smoke-2026-10-04.md)：真实登录/退出、引用展开/空态、图切换/复位、窄屏 | Firefox/WebKit/全业务/生产矩阵和browser P95未测；早期退出缺陷/偶发记录保留 | 关键交互改动重跑受影响 smoke；无需生产部署，不与B4人工验收混称 |
+| TD-16 / D4 | 已核；最小 Chromium smoke 完成 | E409/E404；续核E426补图谱effect同步，原断言保留；[D4](d4-browser-smoke-2026-10-04.md)：真实登录/退出、引用展开/空态、图切换/复位、窄屏 | Firefox/WebKit/全业务/生产矩阵和browser P95未测；早期退出缺陷/偶发记录保留 | 关键交互改动重跑受影响 smoke；无需生产部署，不与B4人工验收混称 |
 | TD-17 / C5 | 已核；原单作业内重复构建验收关闭 | E396/E397；[C5](c5-ci-build-reuse-2026-10-03.md)：build一次、built额外0、身份/过期拒绝、Docker保留 | 不同runner/cache时长不是受控加速比例/P95；Docker独立build不是重复应用E2E | 构建输入/复用入口变更重核；验证设施无需生产部署 |
-| TD-18 / D5 | 已核；已确认 D5 主干验收关闭 | E398/E403；[D5](d5-build-dependency-convergence-2026-10-03.md)：esbuild直依赖、Node24 types、可重复安装及退出登记 | 双编译器/vendor/Node major ignore 保留；最迟2026-11-02复查；当时audit0非永久安全，初查main audit失败与后续#420修复成功分列 | 按原退出条件及新依赖PR复查，不自动移除补丁；D5无需生产部署，新安全修复非D6授权 |
+| TD-18 / D5 | 已核；已确认 D5 主干验收关闭 | E398/E403；[D5](d5-build-dependency-convergence-2026-10-03.md)：esbuild直依赖、Node24 types、可重复安装及退出登记 | 双编译器/vendor/Node major ignore 保留；最迟2026-11-02复查；当时audit0非永久安全，#420声明依赖、E423内联副本、E426 sharp修复分列；后续安全公告仍须复查 | 按原退出条件及新依赖PR复查，不自动移除补丁；D5无需生产部署，新安全修复非D6授权 |
 | TD-19 / D6 | 本轮文档修订/评审/PR验收另见收据；整体未关闭 | [D6 spec](../plan/specs/d6-documentation-evidence.md)及[收据](d6-documentation-evidence-2026-10-06.md)，当前五入口修订、20项台账 | roadmap/ADR注记已追加交接并修订，独立复核/新候选CI待核；原始审计缺口、D7后续复核保留；本台账非未来自动同步 | 核对新候选与后续主干证据；D7后续交付重核；原始审计获得后补核；不访问生产 |
 | TD-20 / D7 | S1 已合入，候选通过，后续#420主干覆盖成功；整体部分 | E419；[S1收据](d7-id-capacity-2026-10-06.md)/[审计](d7-id-capacity-audit-2026-10-06.md)：Run/Report/QA/Lead/Opportunity六生成表达式128位，旧ID/URL/FK保留 | S2 Topic/Source/Analyzer/batch/派生Insight/event未处理；外部解析器/已下载产物/真实存量/生产回退未证明；原#419 main供应链失败保留，#420修复后main成功另列 | 核对专属最终收口，S2另确认范围/模型预算/交接；未证明生产上线，不能整体完成 |
 
@@ -101,7 +101,7 @@ P0/no-op 与生产外部 seam fail-closed 不因文档同步、CI P1 保护门�
 
 ## 精确合入与主干 CI 索引
 
-下表由 GitHub PR mergeCommit 与可信 CI workflow 的 main push 元数据逐项匹配，并用 Git 确认均为基线祖先。
+下表由 GitHub PR mergeCommit 与可信 CI workflow 的 main push 元数据逐项匹配；前38组按首次基线 `86d824f` 核祖先，续核E423/E426按最新基线 `5539ec1` 核祖先，历史绑定不改写。
 每行有精确40位SHA与run/attempt；“full”表示所选完整应用/Docker路径，“docs”表示文档路径，正常 skipped 不是应用失败。
 本轮未重新跑这些作业、未重归档所有历史原JSON，旧收据与最终PR摘要的产物/hash/期限继续为专属证据。
 PR链接的最终交付摘要/评论补充提交前收据的时间语境；不拿其他main run代替当前行。
@@ -146,6 +146,8 @@ PR链接的最终交付摘要/评论补充提交前收据的时间语境；不�
 | E418 / [#418](https://github.com/dong-qiu/deep-insight-agent/pull/418) | `4855d0c3eec26a7bc5ac6a74dee684b5f2c051f7` | 2026-10-06T00:13:49Z | [37392890817](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37392890817) / 1 / success | full |
 | E419 / [#419](https://github.com/dong-qiu/deep-insight-agent/pull/419) | `6eabc5f671073c377200f7551daf8a143d333989` | 2026-10-06T08:42:35Z | [37437928802](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37437928802) / 1 / failure | full |
 | E420 / [#420](https://github.com/dong-qiu/deep-insight-agent/pull/420) | `86d824fd5fbe12006679a02cebcc877f71493f73` | 2026-10-06T11:48:30Z | [37458872550](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37458872550) / 1 / success | full |
+| E423 / [#423](https://github.com/dong-qiu/deep-insight-agent/pull/423) | `b407b9e61915c33f835966f8f760f3424f0e17f5` | 2026-10-06T17:11:28Z | [37501620737](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37501620737) / 1 / failure | full |
+| E426 / [#426](https://github.com/dong-qiu/deep-insight-agent/pull/426) | `5539ec136ca8a087f190670332bae87db5bfdbbe` | 2026-10-06T17:26:21Z | [37503548677](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37503548677) / 1 / success | full |
 
 ## D7 交付快照及重核条件
 
@@ -158,7 +160,7 @@ PR链接的最终交付摘要/评论补充提交前收据的时间语境；不�
 后续独立 [#420](https://github.com/dong-qiu/deep-insight-agent/pull/420) 于 `2026-10-06T11:48:30Z` 合入 `86d824fd5fbe12006679a02cebcc877f71493f73`，仅更新 source-map-js lock entry。
 其精确 [main CI 37458872550](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37458872550) / attempt1 / push / full success，完整应用、Docker和必需门均成功；该后续版本包含D7，补充后续主干覆盖证据，但不把原#419失败改成成功。
 D6自有工作区正常 fast-forward 同步该main，无其他Session文件提交或实现改动。后续元数据更新写入完成时间 `2026-10-06T12:00:41Z`（仅GitHub元数据，没有生产访问）。
-D7专属最终收口记录与 S2 新交付后继续核台账/共享入口；现在不据后续CI关闭 TD-20/D6 整体或推断生产上线。
+本节保留首轮快照；续核已确认S1最终PR回执，未来S2新交付与主干状态变化后继续核台账/共享入口。后续证据见文末，不据CI关闭TD-20/D6整体或推断生产上线。
 
 
 ## 2026-10-07 追加交接与供应链现场快照
@@ -182,5 +184,24 @@ D7专属最终收口记录与 S2 新交付后继续核台账/共享入口；现�
 - D7 的 [S1 最终候选/独立评审回执](https://github.com/dong-qiu/deep-insight-agent/pull/419#issuecomment-6007209673)已核实，只收口五实体六生成表达式；
   S2 及当前生产状态仍未知。后续包含 S1 的主干验证按其实际时间和 SHA追加，不改原 #419 失败。
 
-D6 原候选 CI 验收未通过；本轮新交接修订须再次独立审查与新候选 CI。原Session已创建 [#426](https://github.com/dong-qiu/deep-insight-agent/pull/426)，冻结候选 `7278d0bc64e23986534254e486304eccd0c28b68`、base `b407b9e61915c33f835966f8f760f3424f0e17f5`，候选CI37502578190正在运行；原Session记录的本地/独立审查结果不替代尚未取得的最终候选/main成功。依赖修复最终证据取得前不预签成功。
+D6 原候选 CI 验收未通过；本轮新交接修订须再次独立审查与新候选 CI。准备续核时原Session已创建 [#426](https://github.com/dong-qiu/deep-insight-agent/pull/426)，冻结候选 `7278d0bc64e23986534254e486304eccd0c28b68`、base `b407b9e61915c33f835966f8f760f3424f0e17f5`，当时CI仍运行；后续实际交付如下。
 TD-19 原始审计来源缺口及未来 D7 交付后再核仍保留；P1继续 dormant。本记录不授权合并、部署或生产访问。
+
+
+### #426 实际交付与后续主干覆盖
+
+[#426候选 CI37502578190](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37502578190) / attempt1 / full success，
+tested merge `3e4a662254f70e070941a582defb018666ce3831` 的tree与候选完全相同，parent为上述base/head。
+应用、Docker、必需汇总与audit0/browser7/7实际通过；scope/app/Docker原JSON身份与API相同，原ZIP digest/hash/期限分别核验，候选证据一致性独立复核B0/W0/S0。
+reader候选warning为增量 `0.04995632ms`/约26.318%，双门passed，不能写成生产性能改善或所有warning消失。
+
+原Session的交付实际于 `2026-10-06T17:26:21Z` 合入 `5539ec136ca8a087f190670332bae87db5bfdbbe`。
+精确 [main CI37503548677](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37503548677) / attempt1 / push / full success；
+完整应用与Docker、三个必需入口均成功，audit0、browser7/7，docs正常skipped。
+main scope/app/Docker证明的head/tested/run/attempt与API一致，checks全pass；main readerwarning增量 `0.05573856ms`/约26.840%，双门passed。
+原产物的JSON hash/API digest/期限保留在PR交付摘要；不混用候选与main产物，不冒充永久归档或生产修复证明。
+#423 vendor与#426依赖/test同步均由原Session交付，D6没有代写实现、测试或执行合并，仅正常集成已合入main；D6相对该base仍只有文档。
+
+该成功main包含D7 S1，补充后续主干覆盖，仍不改原#419/#423失败；S1最终回执已核，S2和生产状态仍未证明。
+#426交付客户端effect就绪检查及渲染值断言；原D6首轮失败没有完整trace，不能宣称其现场根因已逐步认证或全浏览器可靠性通过。
+新D6候选须基于此main重新冻结、独立复核和CI验收；原审计来源缺口及未来D7交付重核保持。
