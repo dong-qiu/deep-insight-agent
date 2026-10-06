@@ -205,3 +205,12 @@ main scope/app/Docker证明的head/tested/run/attempt与API一致，checks全pas
 该成功main包含D7 S1，补充后续主干覆盖，仍不改原#419/#423失败；S1最终回执已核，S2和生产状态仍未证明。
 #426交付客户端effect就绪检查及渲染值断言；原D6首轮失败没有完整trace，不能宣称其现场根因已逐步认证或全浏览器可靠性通过。
 新D6候选须基于此main重新冻结、独立复核和CI验收；原审计来源缺口及未来D7交付重核保持。
+
+
+### 主干推进后的集成边界
+
+另一Session的 [#360](https://github.com/dong-qiu/deep-insight-agent/pull/360) 于 `2026-10-06T17:39:15Z` 合入 `1bf16e4bb75e9fb04dcc70f9d15ccbdc14b5bb24`，含已提交roadmap/ADR更新。
+D6正常集成此main，保留其已提交内容，相对新base仍仅11文档；主worktree未提交内容没有复制或代交。
+Brief当前导航沿用其 [收口入口](../plan/pre-rich-brief-closeout.md)，不从旧任务首批步骤重启已收口诊断或模型实验，不冒称S1收益/未来产品已验收。
+本轮仅核与文件归属及导航直接相关的摘要/共享差异，不代替该35文件交付的完整业务或模型审查；#360自身PR/main证据仍沿其交付记录。
+新候选须核实际base/head/tested/run身份；先前基线5539的CI不替代该新基线候选，所有先前结果保留时间语境。
