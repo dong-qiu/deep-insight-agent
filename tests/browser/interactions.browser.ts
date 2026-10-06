@@ -35,14 +35,21 @@ async function applyGraph(page: Page, topic: string, days: string): Promise<void
   await page.getByRole("combobox", { name: /^主题/ }).selectOption(topic);
   await page.getByRole("combobox", { name: /^时间窗/ }).selectOption(days);
   await page.getByRole("button", { name: "应用", exact: true }).click();
-  await expect(page).toHaveURL(new RegExp(`topic=${topic}&days=${days}$`));
+  await page.waitForURL(new RegExp(`topic=${topic}&days=${days}$`), { waitUntil: "load" });
 }
 
 async function threshold(page: Page, value: 1 | 2): Promise<void> {
+  const graph = page.getByRole("img", { name: "实体共现图", exact: true });
+  // A native range value can change before React hydration without updating
+  // state. Observe the current graph's real wheel-effect registration first.
+  await expect.poll(() => graph.evaluate(svg =>
+    (window as unknown as { __insightSmokeGraphCommitted: (target: Element) => boolean })
+      .__insightSmokeGraphCommitted(svg)), { message: "current graph has committed its client effect" }).toBe(true);
   const slider = page.getByRole("slider");
   await slider.focus();
   await slider.press(value === 1 ? "Home" : "End");
   await expect(slider).toHaveValue(String(value));
+  await expect(slider.locator("..").locator("strong")).toHaveText(String(value));
 }
 
 async function assertGraph(page: Page, names: string[], pairs: string[]): Promise<void> {
