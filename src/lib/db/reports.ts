@@ -2,6 +2,7 @@ import { throwIfAborted } from "../runtime/cancellation.js";
 /** 报告持久化：正文（.md/.html）落 FS，元数据 + 索引 + FTS5 落 SQLite。增量5。 */
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createHash, createPublicKey, randomUUID } from "node:crypto";
+import { newObjectId } from "../utils/object-id.js";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { domainFacet, isDomainValue, isLensValue, lensFacet, parseFacets } from "../topics/facets.js";
 import type { Report, ReportIndexEntry } from "../types.js";
@@ -151,7 +152,7 @@ export function saveFailedReport(
   db: DB,
   input: Omit<Report, "id" | "status" | "body_md" | "body_html"> & { id?: string; reasonCode: string; message?: string; afterSave?: (id: string) => void },
 ): string {
-  const id = input.id ?? `rep_${randomUUID().slice(0, 8)}`;
+  const id = input.id ?? newObjectId("rep");
   db.transaction(() => {
     insertReportMetadata(db, { ...input, id, status: "failed", body_md: "", body_html: "" }, null,
       { reason_code: input.reasonCode, ...(input.message ? { message: input.message.slice(0, 256) } : {}) });

@@ -1,7 +1,7 @@
 /** report-gen —— 报告生成 agent（architecture 数据流第 4 步）。
  *  洞察级纳入判定 → 组织 Report（Markdown + 自包含 HTML）→ 派生 ReportIndexEntry。
  *  MVP 为确定性模板（无 LLM，可无 key 全测）；LLM 叙述润色留后续迭代。 */
-import { randomUUID } from "node:crypto";
+import { newObjectId } from "../utils/object-id.js";
 import type {
   AnalysisBatch, ContentItem, Insight, Report, ReportIndexEntry, Topic, ValidationResult,
 } from "../types.js";
@@ -553,7 +553,7 @@ export interface BuildReportInput {
 
 export function buildReport(input: BuildReportInput): { report: Report; index: ReportIndexEntry } {
   const included = input.included ?? selectBriefInsights(input.batch, input.validation, input.type, input.publishedEventEvidence, input.briefFreshness);
-  const id = `rep_${randomUUID().slice(0, 8)}`;
+  const id = newObjectId("rep");
   const now = input.now ?? new Date().toISOString();
   const date = now.slice(0, 10);
   const title = `${input.topic.name} · ${TYPE_LABEL[input.type]} · ${date}`;

@@ -1,5 +1,5 @@
 /** 技术方向与机会持久化。机会只链接 TechLead，事实读取继续走其 pass 引用链。 */
-import { randomUUID } from "node:crypto";
+import { newObjectId } from "../utils/object-id.js";
 import { DEFAULT_TOPIC_DIRECTIONS } from "../planning/default-directions.js";
 import type { OpportunityLane, PlanningEffect, TechnologyOpportunity, TechnologyOpportunityStatus, TopicDirection, TopicDirectionInput, TopicDirectionStatus } from "../types.js";
 import type { OpportunityCandidate } from "../agents/opportunity-planning.js";
@@ -145,7 +145,7 @@ export function upsertTechnologyOpportunities(db: DB, candidates: OpportunityCan
       const lead = leads.get(candidate.lead_id); if (!lead) continue;
       if (candidate.direction_id) map.run({ ...candidate, now });
       let row = find.get(candidate.topic_id, candidate.canonical_key) as any;
-      const values = { ...candidate, id: `opp_${randomUUID().slice(0, 12)}`, uncertainties: json(candidate.uncertainties), score_detail: json(candidate.score_detail), now, latest_evidence_at: lead.latest_evidence_at };
+      const values = { ...candidate, id: newObjectId("opp"), uncertainties: json(candidate.uncertainties), score_detail: json(candidate.score_detail), now, latest_evidence_at: lead.latest_evidence_at };
       if (!row) { insert.run(values); row = find.get(candidate.topic_id, candidate.canonical_key); }
       else { update.run({ ...values, id: row.id }); row = find.get(candidate.topic_id, candidate.canonical_key); }
       link.run(row.id, candidate.lead_id, now);
