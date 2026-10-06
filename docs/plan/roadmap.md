@@ -67,6 +67,8 @@ Brief 未提交规划及其他 Session 内容没有交接或纳入本次状态�
 
 ## M5 — Post-MVP：技术规划验证与研究入口
 
+- [ ] Daily Brief 信息完整性优化（独立评审修订稿）：离线消融/事实供给诊断 → 事件编排与事实绑定/去重 → 全展示面交付 → 按增量收益启用有界提取 → 灰度观察。离线提取支线可提前验证。见 [实施计划](specs/daily-brief-information-density.md) 与 ADR-0036；尚未实施，不启用 dormant P1。
+  - 执行入口：[具体任务与步骤](daily-brief-information-density-execution.md)，按 T01–T16 交付；首批范围为 T01–T04，先完成只读取样、损失诊断、标注及实验协议冻结。
 - [x] P0 生成溯源与全链路可观测性 V1：以 `Run` / `audit_log` 为基础记录采集、分析、校验、报告、技术线索、方向映射和人工决策的实体—活动—执行者链路；P0a、P0b、P0c 与四项核心一致性契约均已完成验收。跨 trace 的优化驾驶舱与完整性锚定属于已隔离、功能关闭的 P1 候选，不是 P0 完成条件。见 `docs/plan/specs/generation-provenance.md` 与 INSI-174 / PR #328 的合入后验收记录。
   - [x] P0a 报告纵切已在生产 Deep Dive 与非空正常 Brief 验收通过（trace、实体引用、部署事实、admin/viewer 边界）；Brief 证据见 `docs/verify/p0a-brief-production-acceptance-2026-08-08.md`。
   - [x] P0b 采集与规划链路已在生产验收通过（自动 Opportunity → Lead / Direction revision / mapping lane / priority，以及人工 Direction 决定、审计与历史 revision）；证据见 `docs/verify/p0b-production-planning-acceptance-2026-08-12.md`。
