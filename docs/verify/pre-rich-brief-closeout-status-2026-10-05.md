@@ -42,3 +42,5 @@
 用户随后明确同意“缩小为诊断收口，保留未完成门”；[决定与新交付门](daily-brief-density-diagnostic-closeout-decision-2026-10-06.md)已记录。此前待确认文字保留为决定前的状态；现在只核验诊断归档合入，不认证原T03/T04完整门或S1。
 
 安全补丁[#420](https://github.com/dong-qiu/deep-insight-agent/pull/420)已通过独立审阅/完整PR CI并于11:48:30 UTC合入`86d824f`。S0已非破坏性同步`a105ec9`；[新main CI37458872550](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37458872550)此时仍在跑，不提前签绿。当前工程复核见[10月6日审阅](pre-rich-brief-pre-pr-review-2026-10-06.md)，最终head/CI/合入结果见#360正文收据。本轮继续只做dry-run清理，无新增删除。
+
+#360候选afceab3的CI37459884296失败于图谱加载同步，修复与复现见[测试收据](pre-rich-brief-ci-graph-readiness-2026-10-06.md)；重新推送并独立复核后只用新head绿色，不抹去失败。#420的audit修复不涵盖magicast内联副本，另有#423独立draft，本轮不动其分支或声称部署/安全全路径通过。
