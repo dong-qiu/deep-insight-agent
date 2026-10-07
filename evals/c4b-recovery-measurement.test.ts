@@ -14,7 +14,7 @@ afterEach(() => roots.splice(0).forEach((root) => rmSync(root, { recursive: true
 
 function normalized(value: unknown, ids: Map<string, string>): unknown {
   if (typeof value === "string") return value.replace(/a1-\d{14}-[a-f0-9]{8}/g, "RUN_ID")
-    .replace(/batch_[a-f0-9]{8}|ins_[a-f0-9]{8}-[a-f0-9]{3}/g, (id) => {
+    .replace(/batch_(?:[a-f0-9]{32}|[a-f0-9]{8})(?![a-f0-9])|ins_(?:[a-f0-9]{32}|[a-f0-9]{8}-[a-f0-9]{3})(?![a-f0-9-])/g, (id) => {
       if (!ids.has(id)) ids.set(id, `${id.startsWith("batch_") ? "batch" : "candidate"}_${ids.size}`);
       return ids.get(id)!;
     });
@@ -131,3 +131,43 @@ it("compares safe two-read and production single-read through the same frozen re
     }, null, 2) + "\n");
   }
 }, 60000);
+
+// D7 S2: map the whole random root in either format; derived references share it.
+it("D7 S2 normalizes both formats without masking source/config/checkpoint identity", () => {
+  const legacy = { batch: "batch_01234567", candidate: "ins_01234567-89a", insight: "ins_batch_01234567_0", event: "evt_batch_01234567_0" };
+  const modern = { batch: `batch_${"a".repeat(32)}`, candidate: `ins_${"b".repeat(32)}`, insight: `ins_batch_${"a".repeat(32)}_0`, event: `evt_batch_${"a".repeat(32)}_0` };
+  expect(normalized(modern, new Map())).toEqual(normalized(legacy, new Map()));
+
+  const identity = {
+    source: { commit: "a".repeat(40), dirty_fingerprint: "b".repeat(64) },
+    recovery_identity_sha256: "c".repeat(64), config: { analyzer_model: "synthetic-a", max_tokens: 4096 },
+  };
+  expect(normalized(identity, new Map())).toEqual(identity);
+  for (const changed of [
+    { ...identity, source: { ...identity.source, commit: "d".repeat(40) } },
+    { ...identity, source: { ...identity.source, dirty_fingerprint: "e".repeat(64) } },
+    { ...identity, recovery_identity_sha256: "f".repeat(64) },
+    { ...identity, config: { ...identity.config, analyzer_model: "synthetic-other" } },
+    { ...identity, config: { ...identity.config, max_tokens: 2048 } },
+  ]) expect(normalized(changed, new Map())).not.toEqual(normalized(identity, new Map()));
+
+  for (const invalid of [
+    ...[9, 31, 33, 40].flatMap((length) => [`batch_${"a".repeat(length)}`, `ins_${"a".repeat(length)}`]),
+    "ins_01234567-89ab", "ins_01234567-89a-", `ins_${"b".repeat(32)}-`,
+  ]) {
+    const mapping = new Map<string, string>();
+    expect(normalized(invalid, mapping)).toBe(invalid);
+    expect(mapping.size).toBe(0);
+  }
+
+  const mapping = new Map<string, string>();
+  expect(normalized([
+    modern.batch, modern.batch, modern.candidate, legacy.batch, legacy.candidate,
+    modern.insight, modern.event, legacy.insight, legacy.event,
+    `batch_${"a".repeat(31)}b`, `ins_${"b".repeat(31)}c`,
+  ], mapping)).toEqual([
+    "batch_0", "batch_0", "candidate_1", "batch_2", "candidate_3",
+    "ins_batch_0_0", "evt_batch_0_0", "ins_batch_2_0", "evt_batch_2_0", "batch_4", "candidate_5",
+  ]);
+  expect(mapping.size).toBe(6);
+});
