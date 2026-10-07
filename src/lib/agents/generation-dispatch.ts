@@ -13,6 +13,8 @@ import { runPipelineForTopic, runScheduledTopicPipeline, type GenerationExecutio
 import { deploymentAnchorPublicationIfEnabled } from "../runtime/integrity-anchor-runtime.js";
 import { NOOP_P1_TELEMETRY_SINK, type P1TelemetrySink } from "../capabilities/p1-telemetry.js";
 
+import type { WriterAdmission, WriterOutcome } from "../../../ops/maintenance/writers.mjs";
+
 const HEARTBEAT_MS = 30_000;
 const STABLE_DISPATCH_FAILURE_CODES = new Set([
   "usage_persistence_failed",
@@ -44,9 +46,30 @@ export interface GenerationDispatchRuntime extends TaskCancellationOptions, Task
   heartbeatMs?: number;
   /** Supplied by the worker composition root; core dispatch is dormant by default. */
   telemetry?: P1TelemetrySink;
+  /** Isolated core registration only; not HTTP/startup coverage or a drain-ready proof. */
+  writerAdmission?: WriterAdmission;
 }
 
 export async function runGenerationDispatchOnce(
+  db: DB,
+  execute: (db: DB, topicId: string, opts: GenerationExecutionOptions & { reportType: "brief" | "deep_dive" | "initial_digest"; windowHours?: number; windowEnd?: string; items?: number }) => Promise<unknown> = executeDispatch,
+  runtime: GenerationDispatchRuntime = {},
+): Promise<{ claimed: boolean; traceId?: string; status?: "done" | "failed" }> {
+  const admission = runtime.writerAdmission;
+  if (!admission) return runGenerationDispatchAdmittedOnce(db, execute, runtime);
+  const token = admission.admit(); // Durable registration precedes claim/root Run writes.
+  let outcome: WriterOutcome = "threw";
+  try {
+    const result = await runGenerationDispatchAdmittedOnce(db, execute, runtime);
+    outcome = result.claimed ? result.status === "done" ? "done" : "failed" : "no_claim";
+    return result;
+  } finally {
+    // Only this local executor's exit is known. Provider/descendant work remains unknown.
+    admission.finish(token, outcome);
+  }
+}
+
+async function runGenerationDispatchAdmittedOnce(
   db: DB,
   execute: (db: DB, topicId: string, opts: GenerationExecutionOptions & { reportType: "brief" | "deep_dive" | "initial_digest"; windowHours?: number; windowEnd?: string; items?: number }) => Promise<unknown> = executeDispatch,
   runtime: GenerationDispatchRuntime = {},
