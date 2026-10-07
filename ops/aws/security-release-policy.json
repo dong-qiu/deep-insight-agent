@@ -1,0 +1,29 @@
+{
+  "schema_version": "security-release-identity-v1",
+  "repository": "ghcr.io/dong-qiu/deep-insight-agent",
+  "revision": "4477412a3e2b1cb2764fb4357f2284e73952af67",
+  "platform": "linux/amd64",
+  "index_digest": "sha256:63b1735b7b8a89a6fd7d602bd6fceb1cc6eef3251543d20e4096fa8a0e1e4fbe",
+  "manifest_digest": "sha256:e3eb029114229218cd6ed305d91a488c5b998577f37bd85402e1af09e302012c",
+  "config_digest": "sha256:d86150f47c0da31e3515e4848b2ed6aa346bfdc825ad718bef6a934370534749",
+  "compose_sha256": "984e62a4af23b980ec16f3ece7532eb3aa2c0dd0a073444640219344ef6953fd",
+  "evidence": {
+    "readiness": "docs/verify/c-security-release-readiness-2026-10-07.md",
+    "archive_index": "docs/verify/c-evidence-archive-index-2026-10-07.md",
+    "archive_seal_sha256": "a791219e088523aa05e027edcca24af63836a7fa035b07c92b816f63b3019eeb",
+    "main_ci": "37559263616",
+    "image_publish": "37559608396"
+  },
+  "deployment": {
+    "status": "blocked",
+    "safe_rollback": null,
+    "blockers": [
+      "reviewed_safe_rollback_identity_and_post_migration_compatibility",
+      "current_production_identity_configuration_and_backup_evidence",
+      "all_writer_admission_and_bounded_drain_protocol",
+      "cross_deploy_restore_backup_maintenance_exclusion",
+      "persistent_stop_on_unknown_ssm_terminal_state",
+      "named_operator_oncall_reviewer_approver_and_scoped_authorization"
+    ]
+  }
+}

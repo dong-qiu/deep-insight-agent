@@ -1,317 +1,56 @@
 name: Deploy Production Image
 
-# 生产发布只消费 CI 已构建并推送到 GHCR 的不可变镜像；绝不在生产机拉源码或构建。
+# Identity preflight only. Production switching remains blocked until a separately
+# reviewed safe rollback, data and all-writer maintenance protocol is implemented.
 on:
   workflow_dispatch:
     inputs:
       image_tag:
-        description: "要部署的 GHCR 不可变标签（sha-<40 位提交 SHA>；留空部署当前 main）"
-        required: false
+        description: "Explicit identity-reviewed sha-<40 hex>; no main/latest default"
+        required: true
+        type: string
+      approved_index_digest:
+        description: "Approved OCI index sha256 digest"
+        required: true
+        type: string
+      approved_manifest_digest:
+        description: "Approved linux/amd64 manifest sha256 digest"
+        required: true
+        type: string
+      approved_config_digest:
+        description: "Approved linux/amd64 config sha256 digest (not Docker ID)"
+        required: true
         type: string
 
 permissions:
   contents: read
-  id-token: write
 
-# 单实例切换必须串行，且不取消已进入健康检查的发布。
 concurrency:
   group: deploy-prod
   cancel-in-progress: false
 
 jobs:
   deploy:
-    name: pull and health-switch production
+    name: identity preflight (production switching blocked)
     if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
     environment: production
-    env:
-      AWS_REGION: ${{ vars.AWS_REGION }}
-      AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
-      PROD_INSTANCE_ID: ${{ vars.PROD_INSTANCE_ID }}
-      IMAGE_REPOSITORY: ghcr.io/${{ github.repository }}
     steps:
-      - name: Validate deployment target
-        id: target
-        env:
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          REQUESTED_IMAGE_TAG: ${{ inputs.image_tag }}
-        run: |
-          set -euo pipefail
-          [[ "$GITHUB_REF" == "refs/heads/${DEFAULT_BRANCH}" ]] || {
-            echo "生产部署只能从 ${DEFAULT_BRANCH} 分支触发" >&2
-            exit 1
-          }
-          : "${AWS_REGION:?缺少 Actions variable AWS_REGION}"
-          : "${AWS_DEPLOY_ROLE_ARN:?缺少 Actions variable AWS_DEPLOY_ROLE_ARN}"
-          : "${PROD_INSTANCE_ID:?缺少 Actions variable PROD_INSTANCE_ID}"
-          tag="${REQUESTED_IMAGE_TAG:-sha-${GITHUB_SHA}}"
-          if [[ ! "$tag" =~ ^sha-[0-9a-f]{40}$ ]]; then
-            echo "image_tag 必须是 sha-<40 位小写提交 SHA>" >&2
-            exit 1
-          fi
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "sha=${tag#sha-}" >> "$GITHUB_OUTPUT"
-
-      - name: Assume production deploy role via GitHub OIDC
-        uses: aws-actions/configure-aws-credentials@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
-          role-to-assume: ${{ env.AWS_DEPLOY_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-          role-session-name: github-production-deploy
-
-      - name: Pull immutable image and health-switch through SSM
+          node-version: '24.19.0'
+      - name: Verify approved objects and actual pulled image on isolated runner
+        id: identity
         env:
-          IMAGE_TAG: ${{ steps.target.outputs.tag }}
-          IMAGE_SHA: ${{ steps.target.outputs.sha }}
+          REQUESTED_IMAGE_TAG: ${{ inputs.image_tag }}
+          APPROVED_INDEX_DIGEST: ${{ inputs.approved_index_digest }}
+          APPROVED_MANIFEST_DIGEST: ${{ inputs.approved_manifest_digest }}
+          APPROVED_CONFIG_DIGEST: ${{ inputs.approved_config_digest }}
+        run: node ops/aws/security-release-gate.mjs "$RUNNER_TEMP/release-identity.json"
+      - name: Block production switching until all remaining prerequisites are reviewed
+        id: hold
+        if: always()
         run: |
-          set -euo pipefail
-          image="${IMAGE_REPOSITORY}:${IMAGE_TAG}"
-          compose_url="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${IMAGE_SHA}/docker-compose.yml"
-          remote_script=$(cat <<EOF
-          set -euo pipefail
-          app_dir=/opt/app
-          image='${image}'
-          expected_sha='${IMAGE_SHA}'
-          compose_url='${compose_url}'
-          cd "\$app_dir"
-          compose_file="\$app_dir/docker-compose.yml"
-
-          next_compose="\${compose_file}.next"
-          curl --fail --silent --show-error --location "\$compose_url" --output "\$next_compose"
-          docker compose -f "\$next_compose" config --quiet
-
-          required_services=(migrate deployment-record app cron generation-dispatch-worker)
-          available_services=\$(docker compose -f "\$next_compose" config --services)
-          for required_service in "\${required_services[@]}"; do
-            grep -qx "\$required_service" <<<"\$available_services" || {
-              echo "发布 compose 缺少必需服务：\$required_service" >&2
-              exit 1
-            }
-          done
-
-          # Do not stop the live writers when a required runtime secret is
-          # absent.  Check only presence, never echo a value into SSM or CI.
-          required_runtime_env=(DISPATCH_WORKER_SECRET)
-          for required_key in "\${required_runtime_env[@]}"; do
-            grep -Eq "^\${required_key}=[^[:space:]].*" "\$app_dir/.env.local" || {
-              echo "生产 .env.local 缺少非空配置：\$required_key" >&2
-              exit 1
-            }
-          done
-
-          # P1 anchors are an explicit production admission. Keep the default
-          # off until the Object Lock/KMS/IAM/retention checklist is complete;
-          # when on, validate all material before stopping any live writer.
-          anchor_enabled_count=\$(grep -c '^INTEGRITY_ANCHOR_ENABLED=' "\$app_dir/.env.local" || true)
-          [[ "\$anchor_enabled_count" -le 1 ]] || { echo "INTEGRITY_ANCHOR_ENABLED 不可重复配置" >&2; exit 1; }
-          anchor_enabled_raw=\$(sed -n -E 's/^INTEGRITY_ANCHOR_ENABLED=(.*)$/\\1/p' "\$app_dir/.env.local" | tail -n 1)
-          [[ "\$anchor_enabled_raw" == "\${anchor_enabled_raw//[[:space:]]/}" ]] || { echo "INTEGRITY_ANCHOR_ENABLED 不可包含空白" >&2; exit 1; }
-          anchor_enabled=\$(printf '%s' "\$anchor_enabled_raw" | tr '[:upper:]' '[:lower:]')
-          case "\$anchor_enabled" in
-            ""|0|false) echo "完整性锚定：disabled" ;;
-            1|true)
-              echo "完整性锚定尚未通过 INSI-25 生产准入；拒绝启用" >&2
-              exit 1
-              ;;
-            *) echo "INTEGRITY_ANCHOR_ENABLED 必须为 true/false/1/0" >&2; exit 1 ;;
-          esac
-
-          # P1 dashboard reads are also not production-admitted until INSI-25.
-          # An image may carry isolated implementation code only when every
-          # external dashboard seam is disabled; CI proves the HTTP contract.
-          dashboard_enabled_count=\$(grep -c '^P1_DASHBOARD_ENABLED=' "\$app_dir/.env.local" || true)
-          [[ "\$dashboard_enabled_count" -le 1 ]] || { echo "P1_DASHBOARD_ENABLED 不可重复配置" >&2; exit 1; }
-          dashboard_enabled_raw=\$(sed -n -E 's/^P1_DASHBOARD_ENABLED=(.*)$/\1/p' "\$app_dir/.env.local" | tail -n 1)
-          [[ "\$dashboard_enabled_raw" == "\${dashboard_enabled_raw//[[:space:]]/}" ]] || { echo "P1_DASHBOARD_ENABLED 不可包含空白" >&2; exit 1; }
-          dashboard_enabled=\$(printf '%s' "\$dashboard_enabled_raw" | tr '[:upper:]' '[:lower:]')
-          case "\$dashboard_enabled" in
-            ""|0|false) echo "P1 dashboard：disabled" ;;
-            1|true)
-              echo "P1 dashboard 尚未通过 INSI-25 生产准入；拒绝启用" >&2
-              exit 1
-              ;;
-            *) echo "P1_DASHBOARD_ENABLED 必须为 true/false/1/0" >&2; exit 1 ;;
-          esac
-
-          # Lifecycle is composition policy only. Production is permanently
-          # dormant until a separately reviewed admission path exists; it may
-          # not bypass the independent anchor/dashboard guards above.
-          p1_lifecycle_count=\$(grep -c '^P1_LIFECYCLE=' "\$app_dir/.env.local" || true)
-          [[ "\$p1_lifecycle_count" -le 1 ]] || { echo "P1_LIFECYCLE 不可重复配置" >&2; exit 1; }
-          p1_lifecycle_raw=\$(sed -n -E 's/^P1_LIFECYCLE=(.*)$/\1/p' "\$app_dir/.env.local" | tail -n 1)
-          [[ "\$p1_lifecycle_raw" == "\${p1_lifecycle_raw//[[:space:]]/}" ]] || { echo "P1_LIFECYCLE 不可包含空白" >&2; exit 1; }
-          case "\$p1_lifecycle_raw" in
-            ""|dormant) echo "P1 lifecycle：dormant" ;;
-            *) echo "生产环境 P1_LIFECYCLE 只能为 dormant；生产准入另行评审" >&2; exit 1 ;;
-          esac
-
-          docker pull "\$image"
-          p1_dashboard_admission=\$(docker image inspect --format '{{ index .Config.Labels "org.insight-agent.p1-dashboard-admission" }}' "\$image")
-          case "\$p1_dashboard_admission" in
-            "") echo "P1 dashboard admission：legacy image (not present)" ;;
-            isolated) echo "P1 dashboard admission：isolated and disabled" ;;
-            required|enabled)
-              echo "镜像包含未隔离或已启用的 P1 dashboard；拒绝部署" >&2
-              exit 1
-              ;;
-            *) echo "未知 P1 dashboard admission 标签：\$p1_dashboard_admission" >&2; exit 1 ;;
-          esac
-          actual_sha=\$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "\$image")
-          [[ "\$actual_sha" == "\$expected_sha" ]] || { echo "镜像 revision 标签与请求提交不一致" >&2; exit 1; }
-          repo_digest=\$(docker image inspect --format '{{index .RepoDigests 0}}' "\$image")
-          [[ "\$repo_digest" == *"@sha256:"* ]] || { echo "未能从已拉取镜像解析 RepoDigest" >&2; exit 1; }
-          image_digest="\${repo_digest##*@}"
-          [[ "\$image_digest" =~ ^sha256:[a-f0-9]{64}$ ]] || { echo "RepoDigest 格式非法" >&2; exit 1; }
-          immutable_image="\$repo_digest"
-
-          # Rehearse migrations against a copy of the newest production backup
-          # before stopping writers.  Legacy volumes can be root-owned while
-          # the release image runs as uid 1001.
-          data_volume=\$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Name}}{{end}}{{end}}' deep-insight-app-1)
-          [[ -n "\$data_volume" ]] || { echo "无法解析生产数据卷" >&2; exit 1; }
-          probe_volume="deep-insight-migration-probe-\$(date -u +%s)"
-          docker volume create "\$probe_volume" >/dev/null
-          cleanup_probe() { docker volume rm -f "\$probe_volume" >/dev/null 2>&1 || true; }
-          latest_backup=\$(docker run --rm -v "\$data_volume":/source:ro alpine:3.20 sh -c 'ls -1dt /source/backups/* | head -n 1')
-          docker run --rm --user 0 -v "\$data_volume":/source:ro -v "\$probe_volume":/data alpine:3.20 sh -c "cp \"\$latest_backup/insight.db\" /data/insight.db && chown -R 1001:1001 /data"
-          if ! docker run --rm -e DB_PATH=/data/insight.db -v "\$probe_volume":/data "\$immutable_image" node /app/ops/run-provenance-migrations.mjs; then
-            cleanup_probe
-            echo "隔离 migration 演练失败；生产服务未停止" >&2
-            exit 1
-          fi
-          cleanup_probe
-
-          # The preceding image and migration rehearsal has not changed live
-          # writers. Only now snapshot live configuration and install rollback.
-          rollback_compose=\$(mktemp "\$app_dir/docker-compose.yml.rollback.XXXXXX")
-          cp "\$compose_file" "\$rollback_compose"
-          old_image=\$(docker inspect --format '{{.Image}}' deep-insight-app-1 2>/dev/null || true)
-          old_digest=""
-          old_sha=""
-          if [[ -n "\$old_image" ]]; then
-            old_repo_digest=\$(docker image inspect --format '{{index .RepoDigests 0}}' "\$old_image" 2>/dev/null || true)
-            old_digest="\${old_repo_digest##*@}"
-            old_sha=\$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "\$old_image" 2>/dev/null || true)
-          fi
-          rollback_image="deep-insight:rollback-\$(date -u +%Y%m%dT%H%M%SZ)"
-          if [[ -n "\$old_image" ]]; then docker tag "\$old_image" "\$rollback_image"; fi
-          deployment_complete=0
-          writer_stop_started=0
-          rollback() {
-            status=\$?
-            trap - EXIT
-            if [[ "\$deployment_complete" != 1 ]]; then
-              echo "部署未完整通过，恢复上一版本" >&2
-              if [[ -f "\$rollback_compose" ]]; then mv "\$rollback_compose" "\$compose_file"; fi
-              if [[ "\$writer_stop_started" == 1 && -n "\$old_image" && "\$old_digest" =~ ^sha256:[a-f0-9]{64}$ && "\$old_sha" =~ ^[0-9a-f]{40}$ ]]; then
-                rollback_services=\$(docker compose -f "\$compose_file" config --services)
-                if grep -qx deployment-record <<<"\$rollback_services"; then
-                  PROVENANCE_DEPLOYMENT_REQUIRED=1 INSIGHT_IMAGE="\$rollback_image" INSIGHT_IMAGE_DIGEST="\$old_digest" GIT_SHA="\$old_sha" DEPLOY_ACTOR=github-actions-rollback \\
-                    docker compose -f "\$compose_file" run --rm --no-deps deployment-record || true
-                fi
-                restore_targets=(app cron)
-                if grep -qx generation-dispatch-worker <<<"\$rollback_services"; then
-                  restore_targets+=(generation-dispatch-worker)
-                fi
-                PROVENANCE_DEPLOYMENT_REQUIRED=1 INSIGHT_IMAGE="\$rollback_image" INSIGHT_IMAGE_DIGEST="\$old_digest" GIT_SHA="\$old_sha" \\
-                  docker compose -f "\$compose_file" up -d --no-build --no-deps --wait --wait-timeout 180 "\${restore_targets[@]}" || true
-              else
-                echo "尚未进入 writer stop 阶段或旧镜像缺少可验证 digest/revision；不记录或重启 rollback writer" >&2
-              fi
-            fi
-            exit "\$status"
-          }
-          trap rollback EXIT
-          mv "\$next_compose" "\$compose_file"
-
-          # 固定发布序列：先停止旧 writer/调度，先备份再迁移；deployment-record
-          # 成功后才允许带 digest 的新 app 成为 writer，health 通过后最后恢复调度服务。
-          writer_stop_started=1
-          docker compose -f "\$compose_file" stop cron generation-dispatch-worker app
-          INSIGHT_IMAGE="\$immutable_image" docker compose -f "\$compose_file" run --rm --no-deps --user 0 migrate sh -c 'chown -R 1001:1001 /data'
-          PROVENANCE_DEPLOYMENT_REQUIRED=1 INSIGHT_IMAGE="\$immutable_image" INSIGHT_IMAGE_DIGEST="\$image_digest" GIT_SHA="\$expected_sha" \\
-            docker compose -f "\$compose_file" run --rm --no-deps migrate node /app/ops/backup-db.mjs
-          PROVENANCE_DEPLOYMENT_REQUIRED=1 INSIGHT_IMAGE="\$immutable_image" INSIGHT_IMAGE_DIGEST="\$image_digest" GIT_SHA="\$expected_sha" \\
-            docker compose -f "\$compose_file" run --rm --no-deps migrate
-          PROVENANCE_DEPLOYMENT_REQUIRED=1 INSIGHT_IMAGE="\$immutable_image" INSIGHT_IMAGE_DIGEST="\$image_digest" GIT_SHA="\$expected_sha" DEPLOY_ACTOR=github-actions \\
-            docker compose -f "\$compose_file" run --rm --no-deps deployment-record
-          PROVENANCE_DEPLOYMENT_REQUIRED=1 INSIGHT_IMAGE="\$immutable_image" INSIGHT_IMAGE_DIGEST="\$image_digest" GIT_SHA="\$expected_sha" \\
-            docker compose -f "\$compose_file" up -d --no-build --no-deps --wait --wait-timeout 180 app
-          curl --fail --silent --show-error http://127.0.0.1:\${APP_PORT:-3000}/api/health
-          PROVENANCE_DEPLOYMENT_REQUIRED=1 INSIGHT_IMAGE="\$immutable_image" INSIGHT_IMAGE_DIGEST="\$image_digest" GIT_SHA="\$expected_sha" \\
-            docker compose -f "\$compose_file" up -d --no-build --no-deps cron generation-dispatch-worker
-          worker_id=\$(docker compose -f "\$compose_file" ps -q generation-dispatch-worker)
-          [[ -n "\$worker_id" ]] || { echo "generation-dispatch-worker 未创建" >&2; exit 1; }
-          # Worker readiness covers both the private probe and the durable
-          # dispatch queue age. The one explicit legacy revision predates that
-          # healthcheck; allow it only for a verified rollback target, never
-          # for an arbitrary new image that merely lacks a healthcheck.
-          legacy_worker_revision=ff8c4785a7dfa67a9d4f1b66f3ee25cf2e16a2dd
-          for _ in \$(seq 1 18); do
-            worker_running=\$(docker inspect --format '{{.State.Running}}' "\$worker_id")
-            worker_restarts=\$(docker inspect --format '{{.RestartCount}}' "\$worker_id")
-            worker_health=\$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "\$worker_id")
-            if [[ "\$worker_running" == true && "\$worker_restarts" == 0 && "\$worker_health" == healthy ]]; then break; fi
-            if [[ "\$expected_sha" == "\$legacy_worker_revision" && "\$worker_running" == true && "\$worker_restarts" == 0 && "\$worker_health" == missing ]]; then break; fi
-            sleep 10
-          done
-          worker_ready=0
-          if [[ "\$worker_running" == true && "\$worker_restarts" == 0 && "\$worker_health" == healthy ]]; then worker_ready=1; fi
-          if [[ "\$expected_sha" == "\$legacy_worker_revision" && "\$worker_running" == true && "\$worker_restarts" == 0 && "\$worker_health" == missing ]]; then
-            echo "已验证 legacy rollback worker（无 healthcheck）：仅检查 running 且零重启"
-            worker_ready=1
-          fi
-          [[ "\$worker_ready" == 1 ]] || {
-            echo "generation-dispatch-worker 未就绪（running=\$worker_running, restarts=\$worker_restarts, health=\$worker_health）" >&2
-            exit 1
-          }
-          rm -f "\$rollback_compose"
-          deployment_complete=1
-          trap - EXIT
-          docker image prune -f || echo "镜像清理失败（不影响已完成的部署）" >&2
-          docker compose -f "\$compose_file" ps || echo "无法读取 compose 状态（不影响已完成的部署）" >&2
-          EOF
-          )
-          encoded_script="$(printf '%s' "$remote_script" | base64 | tr -d '\n')"
-          command_id="$(aws ssm send-command \
-            --instance-ids "$PROD_INSTANCE_ID" \
-            --document-name AWS-RunShellScript \
-            --comment "Deploy ${image}" \
-            --timeout-seconds 600 \
-            --parameters "$(jq -nc --arg command "script=\$(mktemp); printf '%s' '${encoded_script}' | base64 -d > \$script; set +e; bash \$script; status=\$?; rm -f \$script; exit \$status" '{commands: [$command], executionTimeout: ["540"]}')" \
-            --query 'Command.CommandId' --output text)"
-          echo "SSM command: $command_id"
-
-          deadline=$((SECONDS + 600))
-          while (( SECONDS < deadline )); do
-            status="$(aws ssm get-command-invocation --command-id "$command_id" --instance-id "$PROD_INSTANCE_ID" --query Status --output text 2>/dev/null || true)"
-            case "$status" in
-              Success)
-                aws ssm get-command-invocation --command-id "$command_id" --instance-id "$PROD_INSTANCE_ID" \
-                  --query '{Status:Status,Stdout:StandardOutputContent,Stderr:StandardErrorContent}' --output json
-                exit 0
-                ;;
-              Failed|Cancelled|TimedOut)
-                aws ssm get-command-invocation --command-id "$command_id" --instance-id "$PROD_INSTANCE_ID" \
-                  --query '{Status:Status,Stdout:StandardOutputContent,Stderr:StandardErrorContent}' --output json
-                exit 1
-                ;;
-            esac
-            sleep 5
-          done
-          echo "等待生产切换超时，正在取消 SSM command $command_id" >&2
-          aws ssm cancel-command --command-id "$command_id"
-          cancel_deadline=$((SECONDS + 70))
-          while (( SECONDS < cancel_deadline )); do
-            status="$(aws ssm get-command-invocation --command-id "$command_id" --instance-id "$PROD_INSTANCE_ID" --query Status --output text 2>/dev/null || true)"
-            case "$status" in
-              Success|Failed|Cancelled|TimedOut)
-                aws ssm get-command-invocation --command-id "$command_id" --instance-id "$PROD_INSTANCE_ID" \
-                  --query '{Status:Status,Stdout:StandardOutputContent,Stderr:StandardErrorContent}' --output json
-                exit 1
-                ;;
-            esac
-            sleep 5
-          done
-          echo "SSM command 未在取消窗口内终止；540 秒 executionTimeout 会限制其执行，禁止立即发起下一次发布" >&2
+          echo "Production deployment blocked: safe rollback, data compatibility, all-writer drain, maintenance exclusion, unknown SSM state and named authorization remain unresolved." >&2
           exit 1
