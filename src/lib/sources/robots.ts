@@ -80,6 +80,7 @@ export async function fetchRobots(
   const robotsUrl = new URL("/robots.txt", origin).toString();
   try {
     const res = await safeFetch(robotsUrl, { headers: { "user-agent": ua }, timeoutMs: opts.timeoutMs, beforeRequest: opts.beforeRequest, signal: opts.signal });
+    if (opts.signal?.aborted) await discardResponseBody(res, opts.signal);
     let body = "";
     if (res.ok) {
       try {

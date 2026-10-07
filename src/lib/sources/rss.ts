@@ -202,6 +202,7 @@ export async function fetchRss(source: Source, opts: SourceFetchOptions = {}): P
   opts.signal?.throwIfAborted();
   if (!isAllowed(rules, pathname)) throw new Error(`robots.txt 禁止抓取：${source.endpoint}`);
   const res = await fetchWithRetry(source.endpoint, { headers: { "user-agent": UA }, signal: opts.signal }); // 切片3a：feed 瞬时失败退避重试
+  if (opts.signal?.aborted) await discardResponseBody(res, opts.signal);
   if (!res.ok) { await discardResponseBody(res, opts.signal); throw new Error(`rss fetch ${res.status}：${source.endpoint}`); }
   // fetchRss 只解析（含 transcript_url）、**不抓转写**。后续 policy-aware acquisition/shadow
   // worker 会在源策略、预筛和配额门之后处理候选，避免每轮全抓 feed，并保持既有 body_kind 不变。

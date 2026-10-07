@@ -106,6 +106,7 @@ export async function fetchArticle(url: string, container?: string | null, opts:
     opts.signal?.throwIfAborted();
     if (!isAllowed(rules, pathname)) return null;
     const res = await fetchWithRetry(url, { headers: { "user-agent": UA }, signal: opts.signal }); // 切片3a：文章页瞬时失败退避重试
+    if (opts.signal?.aborted) await discardResponseBody(res, opts.signal);
     if (!res.ok) { await discardResponseBody(res, opts.signal); return null; }
     if (!/html/i.test(res.headers.get("content-type") ?? "")) { await discardResponseBody(res, opts.signal); return null; } // 只处理 HTML 页
     const raw_html = await readTextCapped(res, undefined, opts);
