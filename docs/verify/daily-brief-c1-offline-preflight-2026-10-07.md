@@ -39,7 +39,7 @@
 - `visible_profile_requires_frozen_runtime_resolution`：诊断 profile 尚未绑定正式的完整 runtime 资源。
 - `c1_shadow_prompt_interface_not_implemented_or_reviewed`：本波没有改共享 analyzer。
 
-最终私有准备包共 8 个文件；工具修订后重新创建 v2 目录，原包未覆写。machine SHA-256 为 `f32bb21e81271cc3199543da105145758845748a9c47f77c5c2986309264dfe4`，ledger contract 为 `4e76840b29a84f87d618ed80a90fa1af4545a04324a43546aaf18173c6c09bb1`，baseline prompt 为 `1481ae6c5c7eb7dad82f5a887383236bba281d2777bb473b6de52f72de104d20`，C1 候选 prompt 为 `9bc42f7a308d660167d00489daa58bec305d023af4ee2798ac32cb04015cd7d2`。实际 machine/scorer 白名单及权限复核通过；`check` 返回 2/blocked，无模型 call ledger。
+最终私有准备包共 8 个文件；journal 拒绝与小数协议比较修订后重新创建 v3 目录，原包和 v2 均未覆写。machine SHA-256 为 `999d03f9bc8c6d0abe2a6ac1be1adcb7c45ad8845cdb929be156caf3af5c455c`，ledger contract 为 `4e76840b29a84f87d618ed80a90fa1af4545a04324a43546aaf18173c6c09bb1`，baseline prompt 为 `1481ae6c5c7eb7dad82f5a887383236bba281d2777bb473b6de52f72de104d20`，C1 候选 prompt 为 `9bc42f7a308d660167d00489daa58bec305d023af4ee2798ac32cb04015cd7d2`。实际 machine/scorer 白名单及权限复核通过；`check` 返回 2/blocked，无模型 call ledger。
 
 ## 首次提取候选与最小接线提案
 
@@ -69,7 +69,7 @@ npm run typecheck
 npx eslint evals/rich-brief-c1 --max-warnings=0
 ```
 
-**32/32**（本波 13 + 共用 stage0 19）通过，TS7/TS6 app/tools 通过，定向 lint 通过。覆盖完整分母/失败 unknown、gold 隔离、原文/可见段/窗口/revision 篡改、真正 freeze 拒绝、资源变更、跨 arm/version 漂移、失败/重试/未知成本、WAL/sidecar/DB/manifest 拒绝；包含原件和副本各自存在 DELETE `-journal` 时的实际 negative test。所有有意构造的模型、账单和运行测试只在合成 fixture，不进入真实收益分母。
+**34/34**（本波 15 + 共用 stage0 19）通过，TS7/TS6 app/tools 通过，定向 lint 通过。覆盖完整分母/失败 unknown、gold 隔离、原文/可见段/窗口/revision 篡改、真正 freeze 拒绝、资源变更、跨 arm/version 漂移、失败/重试/未知成本、WAL/sidecar/DB/manifest 拒绝；包含原件和副本各自存在 DELETE `-journal` 时的实际 negative test。协议 payload 比较使用 finite decimals 的确定性键排序 JSON；通过实际 `freezeData`/`checkReadiness` 路径的合成控制证明 0.1 ratio、0.25 cost 可冻结并再验，改为 0.26 会被拒绝，键顺序变化不改变身份；NaN/Infinity 等非 JSON 值拒绝。控制不授权 C1 执行，实际准备包仍 blocked。所有有意构造的模型、账单和运行测试只在合成 fixture，不进入真实收益分母。
 
 真实 `ops/ci-docs-check.mjs` 的 `checkDocuments` 对本文通过（1 份），本地链接/章节/围栏/格式及 `git diff --check` 通过。首次调用误传 scope 参数的失败已纠正，失败调用不作为通过收据；正式检查使用 Node 24.19。
 

@@ -7,8 +7,9 @@ import { describe, expect, it } from "vitest";
 import { canonicalHash } from "../../src/lib/db/provenance-facts.js";
 import { ANALYZE_BODY_CHARS, ANALYZER_SYSTEM, truncateForAnalyze } from "../../src/lib/agents/analyzer.js";
 import type { PreparedData, FreezeProtocol } from "../rich-brief-stage0/data.js";
-import { requiredRuntimeRoles } from "../rich-brief-stage0/data.js";
-import { fileResource, jsonBytes } from "./common.js";
+import { freezeData, requiredRuntimeRoles } from "../rich-brief-stage0/data.js";
+import { canonicalJson, fileResource, jsonBytes } from "./common.js";
+import { freezeFixture } from "./freeze-fixture.js";
 import { assertMachineMatchesStage0, buildMachineInput, validateMachineInput, type ReplayAttempt } from "./input.js";
 import { callLedgerContract, summarizeLedger, validateLedger, type CallLedgerEntry } from "./ledger.js";
 import { checkExecutionPreflight, verifyFrozenProtocol, type ExecutionPlan } from "./preflight.js";
@@ -94,6 +95,28 @@ describe("C1 closed machine preparation", () => {
 });
 
 describe("C1 protocol and execution preflight", () => {
+  it("verifies a genuine stage0 freeze with decimal ratio and cost while keeping C1 calls blocked", () => {
+    const f = freezeFixture(), output = join(f.root, ".data", "rich-brief-stage0", "frozen");
+    expect(f.check()).toMatchObject({ status: "ready_for_freeze", blockers: [] });
+    freezeData(f.root, f.input.path, f.labelsResource.path, f.protocolResource.path, output);
+    const resource = fileResource(join(output, "frozen-protocol.json"));
+    const verified = verifyFrozenProtocol(resource, f.input.sha256);
+    expect(verified.protocol.numbers.min_gain_ratio.value).toBe(0.1);
+    expect(verified.protocol.arms[0].cost_budget_usd).toBe(0.25);
+    const reordered = JSON.parse(readFileSync(resource.path, "utf8"));
+    reordered.protocol = Object.fromEntries(Object.entries(reordered.protocol).reverse());
+    const reorderedResource = f.write("reordered-freeze.json", reordered);
+    expect(verifyFrozenProtocol(reorderedResource, f.input.sha256).protocol).toEqual(verified.protocol);
+    reordered.protocol.arms[0].cost_budget_usd = 0.26;
+    expect(() => verifyFrozenProtocol(f.write("changed-decimal-freeze.json", reordered), f.input.sha256)).toThrow("frozen_protocol_payload_mismatch");
+    const machine = fixture(), result = checkExecutionPreflight(machine.machineResource, machine.planResource, resource);
+    expect(result.status).toBe("blocked"); expect(result.model_calls_authorized).toBe(false);
+  });
+  it("canonicalizes JSON finite decimals and rejects non-JSON numeric values", () => {
+    expect(canonicalJson({ b: [0.25], a: 0.1 })).toBe(canonicalJson({ a: 0.1, b: [0.25] }));
+    for (const value of [NaN, Infinity, -Infinity]) expect(() => canonicalJson(value)).toThrow("canonical_json_non_finite_number");
+    expect(() => canonicalJson(undefined)).toThrow("canonical_json_invalid_value");
+  });
   it("refuses calls without genuine freeze and exposes exact-history/interface gaps", () => {
     const f = fixture(); const result = checkExecutionPreflight(f.machineResource, f.planResource, null);
     expect(result).toMatchObject({ status: "blocked", model_calls_authorized: false, protocol_resources_verified: false });

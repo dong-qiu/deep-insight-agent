@@ -1,10 +1,9 @@
 import { readFileSync } from "node:fs";
 import { z } from "zod";
 import { checkReadiness, prepareData, type PreparedData, type FreezeProtocol } from "../rich-brief-stage0/data.js";
-import { canonicalHash } from "../../src/lib/db/provenance-facts.js";
 import { callLedgerContract } from "./ledger.js";
 import { assertMachineMatchesStage0, validateMachineInput } from "./input.js";
-import { jsonBytes, object, resourceSchema, sha, utc, verifyResource, type Resource } from "./common.js";
+import { canonicalJson, jsonBytes, object, resourceSchema, sha, utc, verifyResource, type Resource } from "./common.js";
 
 export const executionPlanSchema = z.object({ schema_version: z.literal("rich-brief-c1-execution-plan-v1"), status: z.literal("prepared_not_executable"),
   production_enabled: z.literal(false), c1_prompt_injection: z.literal("missing_reviewed_shadow_interface"),
@@ -29,13 +28,13 @@ export function verifyFrozenProtocol(frozenResource: Resource, machineUpstreamSh
   const data = JSON.parse(readFileSync(inputResource.path, "utf8")) as PreparedData;
   const labels = JSON.parse(readFileSync(labelsResource.path, "utf8"));
   const protocol = JSON.parse(readFileSync(protocolResource.path, "utf8")) as FreezeProtocol;
-  if (canonicalHash(protocol) !== canonicalHash(frozen.protocol)) throw new Error("frozen_protocol_payload_mismatch");
+  if (canonicalJson(protocol) !== canonicalJson(frozen.protocol)) throw new Error("frozen_protocol_payload_mismatch");
   const configResource = data.resources.at(-1); if (!configResource) throw new Error("frozen_preparation_config_missing");
   verifyResource(configResource);
   const regenerated = prepareData(JSON.parse(readFileSync(configResource.path, "utf8"))); regenerated.resources.push(configResource);
   if (sha(jsonBytes(regenerated)) !== inputResource.sha256) throw new Error("frozen_input_not_original_export_reconstruction");
   const readiness = checkReadiness(data, inputResource.sha256, labels, protocol, frozen.frozen_at, labelsResource.sha256);
-  if (readiness.status !== "ready_for_freeze" || canonicalHash(readiness) !== canonicalHash(frozen.readiness)) throw new Error("frozen_protocol_did_not_pass_stage0_gate");
+  if (readiness.status !== "ready_for_freeze" || canonicalJson(readiness) !== canonicalJson(frozen.readiness)) throw new Error("frozen_protocol_did_not_pass_stage0_gate");
   for (const resource of [...data.resources, ...protocol.resources]) if (!frozen.resources.some((entry) => entry.path === resource.path && entry.sha256 === resource.sha256)) throw new Error("freeze_omitted_bound_resource");
   return { protocol, resources: frozen.resources, upstream_data: data };
 }

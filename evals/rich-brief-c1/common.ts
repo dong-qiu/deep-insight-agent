@@ -17,3 +17,17 @@ export const object = (value: unknown): Record<string, unknown> => {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("object_required"); return value as Record<string, unknown>;
 };
 export const jsonBytes = (value: unknown) => JSON.stringify(value, null, 2) + "\n";
+/** JSON payload equality for protocols: finite decimal numbers are valid, key order is not identity. */
+export function canonicalJson(value: unknown): string {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return JSON.stringify(value);
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new Error("canonical_json_non_finite_number");
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (typeof value === "object" && value && Object.getPrototypeOf(value) === Object.prototype) {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(",")}}`;
+  }
+  throw new Error("canonical_json_invalid_value");
+}
