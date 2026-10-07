@@ -1,6 +1,7 @@
 /** 极简 robots.txt 解析与判定（合规落点，architecture 安全设计「合规与版权」）。
  *  仅处理 User-agent / Disallow 分组；Allow 与通配符细则留后续。 */
-import { MAX_RESPONSE_BYTES, ResponseSizeLimitError, readTextCapped, safeFetch } from "./safe-fetch.js";
+import { MAX_RESPONSE_BYTES, ResponseSizeLimitError, discardResponseBody, readTextCapped, safeFetch } from "./safe-fetch.js";
+import type { SourceFetchOptions } from "./types.js";
 
 export const UA = "InsightAgentBot";
 
@@ -73,23 +74,27 @@ export async function fetchRobots(
     beforeRequest?: (url: string) => Promise<void>;
     /** Accounts for robots bytes in an enclosing source-level acquisition budget. */
     onBytes?: (bytes: number) => void;
-  } = {},
+  } & SourceFetchOptions = {},
 ): Promise<RobotsRules> {
+  opts.signal?.throwIfAborted();
   const robotsUrl = new URL("/robots.txt", origin).toString();
   try {
-    const res = await safeFetch(robotsUrl, { headers: { "user-agent": ua }, timeoutMs: opts.timeoutMs, beforeRequest: opts.beforeRequest });
+    const res = await safeFetch(robotsUrl, { headers: { "user-agent": ua }, timeoutMs: opts.timeoutMs, beforeRequest: opts.beforeRequest, signal: opts.signal });
     let body = "";
     if (res.ok) {
       try {
-        body = await readTextCapped(res, opts.maxBytes ?? MAX_RESPONSE_BYTES);
+        body = await readTextCapped(res, opts.maxBytes ?? MAX_RESPONSE_BYTES, { signal: opts.signal });
+        opts.signal?.throwIfAborted();
         opts.onBytes?.(Buffer.byteLength(body, "utf8"));
       } catch (error) {
         if (error instanceof ResponseSizeLimitError) opts.onBytes?.(error.bytesRead);
         throw error;
       }
-    }
+    } else await discardResponseBody(res, opts.signal);
+    opts.signal?.throwIfAborted();
     return rulesForStatus(res.status, body, ua);
   } catch (error) {
+    opts.signal?.throwIfAborted();
     // A policy gate denial is intentional control flow, not an unavailable robots endpoint. It
     // must reach the structured podcast outcome instead of falling through as fail-open rules.
     if (error instanceof Error && error.name === "PodcastRequestBudgetError") throw error;

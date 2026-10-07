@@ -1,14 +1,16 @@
-# C2e：RSS 与文章源请求的显式取消（待冻结方案）
+# C2e：RSS 与文章源请求的显式取消
 
 调查日期：2026-10-08。fetch 后 `origin/main` 精确基线
-`cb2f924ee18c14f24b81d1b85679f4d91f5d509d`（#448）；本文件仅方案，未实现、
-未运行取消验收、未盖 Eval 章。承接 [C2a](c2a-task-cancellation.md)、
+`cb2f924ee18c14f24b81d1b85679f4d91f5d509d`（#448）。原方案时点未实现/验收/盖章；
+方案 `6d2f1205c0e6681f56beeb8d64408c63bbb0065f` 经协调者及独立 Reviewer 冻结后，
+本片实施进入最终独审阶段，实际证据见 [专属收据](../../verify/c2e-source-cancellation-2026-10-08.md)。
+未合入/上线，不以方案确认代替运行验收。承接 [C2a](c2a-task-cancellation.md)、
 [C2b](c2b-task-budget.md)。C2d collector 候选 `74053b6292f06c1499c071e6db5936e87ff6d399`
 只读参考，尚不能以本基线或本方案补签其已接入深层来源取消。
 
 ## 实际路径与最小范围
 
-| 实际入口/子工作 | 基线事实 | 首片提议 |
+| 实际入口/子工作 | 基线事实 | 已冻结首片 |
 | --- | --- | --- |
 | fetchFromSource → fetchRss → applyGoldenSource | registry 无控制；RSS 单独查 robots，再 retry、读取、解析、截断条数与金牌源处理 | 可选 signal 只接 RSS 分支；正常后处理不改 |
 | fetchArticle / fetchArticleBody | container 为第二参数；robots、retry、reader 后抽全文，catch 全返 null | 第三可选 options.signal；显式任务取消向外抛，普通失败仍 null |
@@ -22,7 +24,7 @@ robots 规则、SSRF/逐跳 DNS、安全边界、QPS hook、限额、重试与�
 不新增全局 deadline、env、任务平台、模型调用或来源策略。源函数不写业务 DB，
 不替代 collector 的 ownership/提交 checkpoint，也不证明全 writer 静默。
 
-## 建议接口 v1 与责任
+## 已冻结接口 v1 与责任
 
 - sources/types.ts 新增轻量 `SourceFetchOptions { signal?: AbortSignal }`，不扩展未被
   消费的 SourceAdapter 框架。fetchRss(source, opts?)、fetchFromSource(source, opts?)
@@ -34,7 +36,7 @@ robots 规则、SSRF/逐跳 DNS、安全边界、QPS hook、限额、重试与�
   不转 rejected Promise、不静默假称支持。signal 为 undefined（含空 options）的 arXiv
   仍返回原 queue Promise；无 signal 的 API/未知类型仍保留原同步 throw，RSS 仍返回
   原异步 Promise。RSS Promise 内取消按异步 reject 向外传播。这是新增 opt-in 参数的
-  能力边界，须协调者/Reviewer 冻结后才实现；direct fetchArxiv 不新增参数/取消能力。
+  能力边界已由协调者/Reviewer 冻结；direct fetchArxiv 不新增参数/取消能力。
 - SafeFetchOptions、robots options、readTextCapped options 各加同一可选 signal；
   不改 podcast transcript/program-page 的 options、结构化结果或启用策略。
   source 检查统一使用 `signal?.throwIfAborted()`，保留 null、opaque object/primitive
@@ -71,8 +73,9 @@ robots 规则、SSRF/逐跳 DNS、安全边界、QPS hook、限额、重试与�
 
 ## 文件归属、依赖与退出
 
-本 Session 当前只写本 spec，WT `insight-agent-c2e-source-plan-20261008`，端口 3120，
-独立 DB/DATA。实施建议独占 sources/{types,index,rss,article,robots,safe-fetch}.ts
+方案 WT `insight-agent-c2e-source-plan-20261008`/端口 3120 保留；本实施 Session 使用
+`insight-agent-c2e-source-controls-20261008`/端口 3121，独立 DB/DATA，独占
+sources/{types,index,rss,article,robots,safe-fetch}.ts
 的上述小段与新 `*.source-cancellation.test.ts`/integration 文件、专属收据；既有
 测试只读保护。其他 Session 的 analyzer/shadow-first-extraction 不接手；共享 ledger、
 collector/runtime/dispatch/DB/raw helper、config/schema、package/CI/Docker 不写。
@@ -100,7 +103,8 @@ registry/RSS/article/robots/safeFetch/retry/reader，无真实来源/模型/生�
 
 定向新增测试及原 safe-fetch/robots/article/fetch/parse/golden/transcript 集成回归，
 双 typecheck/lint、相称 build；测试从真实 production source 路径取证，wrapper mock
-不能证明取消已传给子请求。无修改实现的本方案不运行这些测试、不作通过签署。
+不能证明取消已传给子请求。原方案时点未运行/签署；本轮实现的实际结果以专属收据
+及最终受审源码 hash 为准，不将本机验证移植到未验证 head/main/镜像。
 触 sources 后须按最终 diff 使用 eval-gate；只有真实正常路径证据证明来源/AI 口径
 不变才可判断门，不预签 skip、不以不执行该路径的 A1 代替。若正常策略/输出改变、
 资源终态未知或接口不明确，停止实现并交协调者裁定；safe_rollback、deployment hold、

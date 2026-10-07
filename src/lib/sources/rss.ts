@@ -3,8 +3,8 @@ import type { Source } from "../types.js";
 import { extractCiteTranscript, extractHtmlTranscript, stripTranscript } from "./normalize.js";
 import { stableEvidenceUrl } from "./podcast-evidence.js";
 import { UA, fetchRobots, isAllowed } from "./robots.js";
-import { MAX_RESPONSE_BYTES, ResponseSizeLimitError, fetchWithRetry, readTextCapped, safeFetch } from "./safe-fetch.js";
-import type { PodcastProgramPageFetchResult, RawItem, TranscriptFetchResult } from "./types.js";
+import { MAX_RESPONSE_BYTES, ResponseSizeLimitError, discardResponseBody, fetchWithRetry, readTextCapped, safeFetch } from "./safe-fetch.js";
+import type { PodcastProgramPageFetchResult, RawItem, SourceFetchOptions, TranscriptFetchResult } from "./types.js";
 import { asArray, text, xml } from "./xml.js";
 
 /** Thrown by a source-level request gate once its shared acquisition deadline is exhausted. */
@@ -195,19 +195,22 @@ export function transcriptShadowFetchEnabled(): boolean {
   return process.env.TRANSCRIPT_SHADOW_FETCH === "1" || process.env.TRANSCRIPT_SHADOW_FETCH === "true";
 }
 
-export async function fetchRss(source: Source): Promise<RawItem[]> {
+export async function fetchRss(source: Source, opts: SourceFetchOptions = {}): Promise<RawItem[]> {
+  opts.signal?.throwIfAborted();
   const { origin, pathname } = new URL(source.endpoint);
-  const rules = await fetchRobots(origin);
+  const rules = await fetchRobots(origin, UA, opts);
+  opts.signal?.throwIfAborted();
   if (!isAllowed(rules, pathname)) throw new Error(`robots.txt 禁止抓取：${source.endpoint}`);
-  const res = await fetchWithRetry(source.endpoint, { headers: { "user-agent": UA } }); // 切片3a：feed 瞬时失败退避重试
-  if (!res.ok) throw new Error(`rss fetch ${res.status}：${source.endpoint}`);
+  const res = await fetchWithRetry(source.endpoint, { headers: { "user-agent": UA }, signal: opts.signal }); // 切片3a：feed 瞬时失败退避重试
+  if (!res.ok) { await discardResponseBody(res, opts.signal); throw new Error(`rss fetch ${res.status}：${source.endpoint}`); }
   // fetchRss 只解析（含 transcript_url）、**不抓转写**。后续 policy-aware acquisition/shadow
   // worker 会在源策略、预筛和配额门之后处理候选，避免每轮全抓 feed，并保持既有 body_kind 不变。
   // 决定⑤：传 feed URL 作 base，把相对条目链接归一为绝对（防相对 link → 下游 new URL 抛错丢条目）。
   // truncate=true：超大 feed（Project Zero 13MB / Latent Space podcast 12.6MB 等）取前 8MB 而非整轮失败。
   // 注意：fast-xml-parser 对截断串会抛（如 CDATA 未闭合）——由 parseRss 的 repairTruncatedFeed 兜底裁到
   // 最后完整条目 + 补根闭合再解析（新条在前 → 留最新数条）。仅字节截断不足以良构，二者配套缺一不可。
-  const feedXml = await readTextCapped(res, MAX_RESPONSE_BYTES, { truncate: true, label: source.endpoint });
+  const feedXml = await readTextCapped(res, MAX_RESPONSE_BYTES, { truncate: true, label: source.endpoint, signal: opts.signal });
+  opts.signal?.throwIfAborted();
   return parseRss(feedXml, source.endpoint).slice(0, RSS_MAX_ITEMS);
 }
 
