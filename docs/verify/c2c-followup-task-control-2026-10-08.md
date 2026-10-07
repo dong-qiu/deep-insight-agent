@@ -18,8 +18,8 @@ judge保持既有费用回调；非有限provider估价保持未知，遵循C2b�
 Node24.19.0/npm11.17.0；所有模型/网络为合成或fake fetch，无真实模型或生产访问。
 11文件179测试通过：followup原6、专属控制15、真实SDK接线6，以及C2a/C2b/validator/cache实际回归。
 TS7/TS6 app/tools与全仓lint通过。生产build在临时移开.env.local、清空ambient凭据并设置独立
-DB/DATA后通过；验证期间配置0600，build结束恢复原位置。新增SDK测试与未知估价细节完成后
-最终受审head/build及CI需重新绑定，先前build只为先前源码证据，不冒称最新head结果。
+DB/DATA后通过；验证期间配置0600，build结束恢复原位置。最终179项、dual typecheck/lint及
+build-v2均绑定实现head `91b66f7996f321e161df14570dc83d25ad445d73`；早期build不冒充最新结果。
 
 专属控制测试整mock callStructured，证明真实followup/validator控制调用；另外6项integration
 执行真实followup→callStructured→Anthropic SDK→fake fetch，零外网，覆盖足额/缺省结果与费用、
@@ -30,7 +30,9 @@ DB/DATA后通过；验证期间配置0600，build结束恢复原位置。新增S
 首次18项测试发现同时fence/cancel时取消遮蔽fence，已修入口catch重新核ownership并补反例。
 原失败日志与修后179项日志分别保留，不skip/xfail、不改timeout、阈值或prompt。
 私有根 `/Users/dongqiu/.local/share/insight-agent/evidence/refactor-coordination-20261008-185052/coord/`，
-目录0700、文件0600；最终index含源码、日志size/hash与commit，原证据不覆盖。
+目录0700、文件0600；`td10-index-v1.json` 2668bytes，SHA256
+`40e38ea813b9d2495076622952d3865b2c47621be0cddf6b57c5ab9602c1a79f`，
+绑定5份受审源码与5份原日志size/hash、精确实现head，原证据不覆盖。
 
 ## 质量门与交付
 
@@ -38,11 +40,16 @@ DB/DATA后通过；验证期间配置0600，build结束恢复原位置。新增S
 [pre-pr-ai-review](../../.agents/skills/pre-pr-ai-review/SKILL.md)。最终diff只添加可选控制与失败路径，
 未改变模型/provider/thinking、prompt/schema、引用池、语义判断、缓存版本或正常并发/retry参数。
 A1不执行本独立followup路径，不以它替代实际控制回归；本阶段真实预算0，未运行真实模型评测。
-最终独立review与精确受审head验证后才能签Eval-Gate纯控制skip，不预签质量通过。
+独立Reviewer2完整原diff/调用链/索引验收，并复跑11文件179项与dual typecheck，
+受审实现head `91b66f7996f321e161df14570dc83d25ad445d73`：Blocking0、未解决Warning0。
+实际路径回归及正常参数/结果口径不变的证据满足纯控制Eval-Gate skip；不记为真实模型质量通过。
+独立原review `a3-reviewer-two-20261008/td10-review-v1.md` 的SHA256为
+`ca1d4a2f720687d69ea6e972e5ea7b2b91852cf0548c6594d19580c8f0dec065`。
 
 方案独立review三项Warning（cache构造隐式写、catch不能吞控制、生成成本不重复）均落实；
-实施review新增两项要求（真实SDK接线、父预算继承）已补代码反例与边界。最终head复核尚待完成，
-PR/tested merge/main CI绑定记录在PR摘要，由协调者核最新主干后按授权条件合入。
+实施review新增两项要求（真实SDK接线、父预算继承）已补代码反例与边界。该收据更新只改文档；
+最终PR diff须再独立核对。PR/tested merge/main CI绑定记录在PR摘要及协调索引，
+由协调者核最新主干后按授权条件合入；提交前不预签尚未运行的CI或合入。
 
 TD-10本阶段只完成本函数显式控制切片，整体仍部分；collection、HTTP组合根、全writer/fencing及
 全局真实成本上界未证明。无历史数据变化，回退只撤回控制能力，不能删除既有事实或自动恢复工作。
