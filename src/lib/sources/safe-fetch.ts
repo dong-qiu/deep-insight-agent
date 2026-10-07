@@ -3,6 +3,8 @@
  *  拦私有/保留地址 + redirect:manual 自跟跳逐跳复检 + 超时。 */
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
+import { abortableDelay } from "../runtime/cancellation.js";
+import type { SourceFetchOptions } from "./types.js";
 
 function v4PrivateOrReserved(ip: string): boolean {
   const p = ip.split(".").map(Number);
@@ -49,7 +51,7 @@ async function assertPublicHost(hostname: string): Promise<void> {
   }
 }
 
-export interface SafeFetchOptions {
+export interface SafeFetchOptions extends SourceFetchOptions {
   headers?: Record<string, string>;
   timeoutMs?: number;
   maxRedirects?: number;
@@ -82,62 +84,119 @@ export class ResponseSizeLimitError extends Error {
 export async function readTextCapped(
   res: Response,
   maxBytes: number = MAX_RESPONSE_BYTES,
-  opts: { truncate?: boolean; label?: string } = {},
+  opts: { truncate?: boolean; label?: string } & SourceFetchOptions = {},
 ): Promise<string> {
+  const { signal } = opts;
+  signal?.throwIfAborted();
   const reader = res.body?.getReader();
-  if (!reader) return res.text();
+  if (!reader) {
+    try { const text = await res.text(); signal?.throwIfAborted(); return text; }
+    catch (error) { signal?.throwIfAborted(); throw error; }
+  }
+  // Consume cancellation rejection immediately, but join both cancel and any pending read
+  // before releasing the reader. A noncooperative stream does not grant an early return.
+  let cancellation: Promise<void> | undefined;
+  const cancel = (): Promise<void> => {
+    cancellation ??= Promise.resolve().then(() => reader.cancel(signal?.reason)).catch((error: unknown) => {
+      if (!signal?.aborted) throw error;
+    });
+    return cancellation;
+  };
+  const onAbort = (): void => { void cancel(); };
+  signal?.addEventListener("abort", onAbort, { once: true });
+  if (signal?.aborted) onAbort();
   const chunks: Uint8Array[] = [];
   let total = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (!value) continue;
-    total += value.byteLength;
-    if (total > maxBytes) {
-      await reader.cancel();
-      if (opts.truncate) {
-        // chunks 不含触顶的这一块 → 已 ≤ maxBytes，干净边界返回（不切碎多字节字符）。
-        console.warn(`[readTextCapped] 响应超 ${maxBytes} 字节，已截断保留前 ${Buffer.concat(chunks).length} 字节`);
-        return Buffer.concat(chunks).toString("utf8");
+  try {
+    for (;;) {
+      signal?.throwIfAborted();
+      const { done, value } = await reader.read();
+      signal?.throwIfAborted();
+      if (done) break;
+      if (!value) continue;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        if (signal) await cancel(); else await reader.cancel();
+        signal?.throwIfAborted();
+        if (opts.truncate) {
+          // chunks 不含触顶的这一块 → 已 ≤ maxBytes，干净边界返回（不切碎多字节字符）。
+          console.warn(`[readTextCapped] 响应超 ${maxBytes} 字节，已截断保留前 ${Buffer.concat(chunks).length} 字节`);
+          return Buffer.concat(chunks).toString("utf8");
+        }
+        throw new ResponseSizeLimitError(maxBytes, total);
       }
-      throw new ResponseSizeLimitError(maxBytes, total);
+      chunks.push(value);
     }
-    chunks.push(value);
+    return Buffer.concat(chunks).toString("utf8");
+  } catch (error) {
+    signal?.throwIfAborted();
+    throw error;
+  } finally {
+    if (signal) {
+      try { if (cancellation) await cancellation; }
+      finally {
+        signal.removeEventListener("abort", onAbort);
+        try { reader.releaseLock(); }
+        finally { signal.throwIfAborted(); }
+      }
+    }
   }
-  return Buffer.concat(chunks).toString("utf8");
+}
+
+/** Only opt-in consumers discard bodies here. Await actual cleanup without replacing task
+ * cancellation; an ordinary cleanup failure must not change the original HTTP classification. */
+export async function discardResponseBody(res: Response, signal?: AbortSignal): Promise<void> {
+  if (!signal) return;
+  try { await res.body?.cancel(signal.aborted ? signal.reason : undefined); }
+  catch { signal.throwIfAborted(); }
+  signal.throwIfAborted();
 }
 
 /** 安全出网：协议白名单 + 逐跳私有地址拦截 + 手动跟跳复检 + 超时。 */
 /** 瞬时失败退避重试（ADR-0008 决定② / 切片3a）：**opt-in 包装** safeFetch——对【fetch 抛错（超时/网络/DNS）
  *  + 5xx 响应】退避重试，对【4xx / SSRF 拦截 / 非法 URL / 不允许协议 / 重定向过多】**不重试**（非瞬时）。
  *  吸收抖动源（FeedBurner 偶发）→ 单次抖动不再记一条 failed run、不放大 consecutiveFails。
- *  **不改 safeFetch 本身**（避免与其 redirect/SSRF 语义纠缠，评审裁决）；仅 fetchRss/fetchArticleBody 调用此包装。
+ *  safeFetch 的正常 redirect/SSRF 语义不变；仅 fetchRss/fetchArticleBody 调用此包装。
  *  delaysMs 退避序列（默认 1s/3s、最多重试 2 次）；单测传 `[0,0]` 免真 sleep。 */
 const NON_TRANSIENT = /^(非法 URL|不允许的协议|SSRF 拦截|重定向次数过多)/;
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+async function retryDelay(ms: number, signal?: AbortSignal): Promise<void> {
+  if (!signal) return sleep(ms);
+  signal.throwIfAborted();
+  try { await abortableDelay(ms, signal); signal.throwIfAborted(); }
+  catch (error) { signal.throwIfAborted(); throw error; }
+}
 
 export async function fetchWithRetry(
   input: string,
   opts: SafeFetchOptions = {},
   delaysMs: number[] = [1000, 3000],
 ): Promise<Response> {
+  opts.signal?.throwIfAborted();
   for (let attempt = 0; ; attempt++) {
     try {
       const res = await safeFetch(input, opts);
+      if (opts.signal?.aborted) await discardResponseBody(res, opts.signal);
+      opts.signal?.throwIfAborted();
       if (res.status >= 500 && attempt < delaysMs.length) {
-        await sleep(delaysMs[attempt]); // 5xx 瞬时 → 退避重试
+        await discardResponseBody(res, opts.signal);
+        await retryDelay(delaysMs[attempt], opts.signal); // 5xx 瞬时 → 退避重试
         continue;
       }
       return res; // 2xx / 4xx（非瞬时，不重试）
     } catch (e) {
+      opts.signal?.throwIfAborted();
       const msg = e instanceof Error ? e.message : String(e);
       if (NON_TRANSIENT.test(msg) || attempt >= delaysMs.length) throw e; // 非瞬时 / 重试用尽
-      await sleep(delaysMs[attempt]);
+      await retryDelay(delaysMs[attempt], opts.signal);
     }
   }
 }
 
 export async function safeFetch(input: string, opts: SafeFetchOptions = {}): Promise<Response> {
+  const { signal } = opts;
+  signal?.throwIfAborted();
   const timeoutMs = opts.timeoutMs ?? 15_000;
   const deadline = Date.now() + timeoutMs;
   const maxRedirects = opts.maxRedirects ?? 5;
@@ -152,20 +211,28 @@ export async function safeFetch(input: string, opts: SafeFetchOptions = {}): Pro
     if (u.protocol !== "http:" && u.protocol !== "https:") {
       throw new Error(`不允许的协议：${u.protocol}（仅 http/https）`);
     }
-    await assertPublicHost(u.hostname);
+    signal?.throwIfAborted();
+    try { await assertPublicHost(u.hostname); signal?.throwIfAborted(); }
+    catch (error) { signal?.throwIfAborted(); throw error; }
     // Redirects are independent network requests. Apply source QPS/deadline policy after the
     // target is resolved and before every hop, rather than treating a redirect chain as one fetch.
-    await opts.beforeRequest?.(u.toString());
+    try { await opts.beforeRequest?.(u.toString()); signal?.throwIfAborted(); }
+    catch (error) { signal?.throwIfAborted(); throw error; }
     const remainingMs = deadline - Date.now();
     if (remainingMs <= 0) throw new DOMException("safeFetch deadline exhausted", "TimeoutError");
-    const res = await fetch(u, {
-      headers: opts.headers,
-      redirect: "manual",
-      signal: AbortSignal.timeout(remainingMs),
-    });
+    let res: Response;
+    try {
+      res = await fetch(u, {
+        headers: opts.headers,
+        redirect: "manual",
+        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(remainingMs)]) : AbortSignal.timeout(remainingMs),
+      });
+    } catch (error) { signal?.throwIfAborted(); throw error; }
+    if (signal?.aborted) await discardResponseBody(res, signal);
     if (res.status >= 300 && res.status < 400) {
       const loc = res.headers.get("location");
       if (!loc) return res;
+      await discardResponseBody(res, signal);
       if (hop >= maxRedirects) throw new Error("重定向次数过多");
       target = new URL(loc, u).toString(); // 下一跳，循环顶部重新校验
       continue;
