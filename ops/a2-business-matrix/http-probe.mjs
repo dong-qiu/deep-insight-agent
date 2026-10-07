@@ -99,7 +99,10 @@ if (phase === "ready") {
     await noMutation(() => request("/api/admin/users", { cookies: viewer }), 403);
     await noMutation(() => json("/api/admin/topics", viewer, topicInput), 403);
     await noMutation(() => json(`/api/leads/${leadId("valid_old")}`, viewer, { status: "watching" }, "POST", { "Idempotency-Key": "a2-viewer-denied" }), 403);
-    const settings = await request("/settings", { cookies: viewer }); assertStatus(settings.status, 307); assert.equal(new URL(settings.location).pathname, "/");
+    const settings = await request("/settings", { cookies: viewer }); assertStatus(settings.status, 307);
+    assert.ok(settings.location, "viewer settings rejection must redirect");
+    const settingsTarget = new URL(settings.location, "http://127.0.0.1:3000");
+    assert.equal(settingsTarget.origin, "http://127.0.0.1:3000"); assert.equal(settingsTarget.pathname, "/");
     await noMutation(() => json("/api/admin/topics", admin, {}), 422);
     for (const id of [topicInput.id, "t_http_0123456789abcdef0123456789abcdef"]) {
       const input = { ...topicInput, id };

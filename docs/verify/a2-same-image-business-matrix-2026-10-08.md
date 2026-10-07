@@ -5,7 +5,7 @@
 **真镜像最终验收与独立 PR 交付待精确 CI。** 修正已应用到独立 worktree；以下本地/源码证据不代表镜像运行通过。
 工程 base 为 fetch 后 `2910a867a94d7d3a5ab657c2ad8d05cd8b4edc4a`；
 branch `feat/a2-same-image-business-matrix-20261008`；linked worktree `insight-agent-a2-business-matrix`。
-当前准备独立候选提交；PR、候选 head 与精确 CI 在 PR 交接中绑定。
+独立 [Draft PR #443](https://github.com/dong-qiu/deep-insight-agent/pull/443) 已创建；PR、候选 head 与精确 CI 在 PR 交接中绑定。
 [矩阵 spec](../plan/specs/a2-same-image-business-matrix.md) 已先经独立新上下文 reviewer 审查，
 health 通知条件、历史 gap 提示边界两项 Warning 修正后方案准入通过。
 
@@ -66,6 +66,12 @@ Node24.19.0 / npm11.17.0，独立 worktree clean npm ci；未复制 .env/.data/D
 | 恢复后全ops复跑 | 367项：362pass、2fail、3skip；既有source Vitest向依赖symlink的.vite-temp写入EPERM，既有worker localhost listen EPERM；原失败日志保留，不宣称通过 |
 | unrestricted恢复后全ops | 367项：364pass、0fail、3明确本地Docker skip；两项EPERM不再出现 |
 | 冻结镜像Docker矩阵 | 无daemon，未执行；未用main镜像/永久skip替代，最终验收仍缺适用环境真实证据 |
+
+首轮 Linux [CI 37659874818 / attempt 1](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37659874818)
+对应 head `b752c56cbfa610d97dfb59fc73df72dc54df21db`，真实镜像矩阵未通过：fresh matrix 访问 viewer `/settings` 后，
+客户端用无base的 `new URL(location)` 解析重定向目标，在 `/matrix/http-probe.mjs:102:120` 失败。
+修正为以隔离localhost作base解析相对Location，继续要求307、同origin和首页pathname；不放宽角色边界。
+原失败日志独立保存；需新候选完整CI，未产出通过JSON，不宣称本轮镜像已通过。
 
 任务曾因恢复后的 managed sandbox 阻断：当时仅主workspace与/tmp可写，本任务linked worktree及.git只读，GitHub shell请求被拒绝。
 当时用户再次授权恢复访问后，平台权限尚未同步更新，apply_patch仍明确拒绝写入。随后平台切回 unrestricted；GitHub请求已恢复。
