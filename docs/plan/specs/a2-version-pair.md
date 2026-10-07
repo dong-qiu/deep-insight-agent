@@ -56,9 +56,11 @@ native六项测试的cwd从源码root改为/app。保护测试校验精确原har
    blocked/unchecked/unknown effect仍隐藏；真实candidate新manual-review writer产生新trace/event/ref/released lease，重放不重复。
    candidate再次重启后新旧数据和关联/hash保留。一次pair，不跑全历史/生产/模型矩阵。
 4. 候选错误身份不record，严格server拒绝业务；坏migration checksum拒绝且新数据完整，
-   不用health成功掩盖业务失败。故障只用本轮另一个独占合成卷，不破坏成功路径数据，不反向迁移/删除/重编号。
+   不用health成功掩盖业务失败。故障只用本轮独占合成卷：即使owner强停后有提交在WAL中，也必须经SQLitebackup一致复制；
+   注入故障前逐表全字段hash、完整业务snapshot和全部deployment每字段等于candidate成功终态。
+   source SQL连接只读，source合成卷允许SQLite WAL/SHM协调；不破坏成功路径数据，不反向迁移/删除/重编号。
 5. harness的反例先行覆盖wrong revision/digest/config、tag/无资格旧版本、source替换、env继承/外网/publicport、
-   SQL冒充writer、ledger/身份/状态错配、health掩盖失败、reader权限集合放宽、跨版本数据丢失及未经批准许可。
+   SQL冒充writer、ledger/身份/状态错配、health掩盖失败、reader权限集合放宽、跨版本数据丢失、WAL存在/SIGKILL强停复制及未经批准许可。
    CI Linux自动ops发现必须实际run，Docker缺失不得skip；本地无daemon明确未运行。
 
 预期副作用只有本轮合成卷/短生命周期容器和临时harness/source；精确owner/id核验后回收本轮资源，

@@ -24,7 +24,7 @@ export function prepareHarness(root, directory) {
     const out = ['fixture.mjs', 'http-probe.mjs', 'failure-probe.mjs'].includes(name) ? adaptImport(bytes, expected) : bytes;
     writeFileSync(join(directory, target), out, { mode: 0o644 }); bindings.push({ file: target, original_sha256: expected, adapted_sha256: hash(out) });
   }
-  for (const name of ['pair-in-image.mjs', 'pair-probe.mjs']) {
+  for (const name of ['pair-in-image.mjs', 'pair-probe.mjs', 'consistent-copy.mjs', 'copy-probe.mjs']) {
     const bytes = readFileSync(new URL(`./${name}`, import.meta.url)); writeFileSync(join(directory, name), bytes, { mode: 0o644 }); bindings.push({ file: name, sha256: hash(bytes) });
   }
   // Container contracts import shared assertions via a sibling path. Flatten only this test import.

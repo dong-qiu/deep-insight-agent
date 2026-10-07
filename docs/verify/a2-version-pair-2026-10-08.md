@@ -39,8 +39,9 @@ branch `feat/a2-version-pair-20261008` / 独立worktree `insight-agent-a2-versio
    candidate migration无ledger/state改变；非法record拒绝且state不变；新record只追加1条候选、旧row所有字段精确保留。
 5. candidate专属probe核自身bundle，保留release bundle/artifact/snapshot；对release写出的新数据实际登录/401/403/reader精确集合、
    17类拒读/报告/长ID；candidate真实manual-review新trace/2events/3refs/released lease、同key重放无新增；再重启保全。
-6. 原成功卷在两个Web停止核验后复制纯合成DB到两个独占故障卷，checksum错配与追加坏identity分别让真实业务初始化拒绝，
-   实际HTTP listener/health/auth拒绝单列；故障前后完整选定业务state及全字段deployment rows hash保持。
+6. 原成功卷在两个Web停止核验后通过SQLitebackup一致复制合成DB到两个独占故障卷，checksum错配与追加坏identity分别让真实业务初始化拒绝，
+   实际HTTP listener/health/auth拒绝单列；注入故障前逐表全部字段hash、完整业务state及全字段deployment rows必须等于成功candidate终态，
+   故障前后完整选定业务state及全字段deployment rows hash保持。
    此复制不声称C1完整文件备份/恢复；故障在startup的schema/identity前置拒绝，不运行报告/原文恢复。
 
 所有子进程env最小化，业务env仅合成auth/admin/viewer及严格身份/陈旧门，无模型/AWS/通知密钥。
@@ -55,7 +56,7 @@ Node24.19.0/npm11.17.0，专属worktree clean npm ci，无依赖变化。
 
 | 检查 | 当前结果与边界 |
 | --- | --- |
-| 新模块保护反例 | 19项：18pass，1实际image明确local skip；wrong digest/revision/config/tag、app替换/secret/网络/端口、unknown stop、旧record字段/仅追加1条、数据/ledger丢失、hash/import次数、SQL冒充writer、health/reader/status放宽均拒绝 |
+| 新模块保护反例 | 初始19项：18pass/1实际image明确local skip；WAL修正后20项：19pass/1同样local skip；wrong digest/revision/config/tag、app替换/secret/网络/端口、unknown stop、旧record字段/仅追加1条、数据/ledger丢失、hash/import次数、SQL冒充writer、health/reader/status放宽均拒绝 |
 | 指定release源码API | source-map/magicast 7/7；Git archive SHA256 `1e741e08cded6c31ea74af7510070e3a94d7851ab46466035ca4b05063548de8` |
 | 指定candidate源码API | source-map/magicast 7/7；Git archive SHA256 `b4feeae1da09b973992c204c50112e56fe60de9ab3e8a004b4e94c0817cf67a3` |
 | 类型/格式 | TS7/TS6 app+tools typecheck与lint通过；最终文档检查另绑定提交/PR |
@@ -63,7 +64,12 @@ Node24.19.0/npm11.17.0，专属worktree clean npm ci，无依赖变化。
 | 最终Linux CI | 待执行；精确tool head/tested merge/run/attempt与实际pair JSON另封存后才验收 |
 
 独立方案Reviewer1 Blocking0/Warning2：旧deployment原行不能忽略、candidate自身bundle不能复用release。
-两个Warning已落入实现与保护反例，且candidate执行前必须精确Stopped；最终diff与原始材料仍须独立review，
+两个Warning已落入实现与保护反例，且candidate执行前必须精确Stopped；003eeaf最终独立review另指出1项WAL复制Warning：
+停止可能为SIGKILL后exited，仅复制main DB会漏掉已提交WAL；原索引/失败事实保留。
+现改合成专属SQLitebackup，注入故障前核成功candidate全表、业务和deployment基线。
+新增真实SIGKILL反例观察main-only业务/record各0，SQLitebackup保留4条业务/2条record及逐表每字段；
+source SQL只读，合成source卷仅允许SQLite WAL/SHM协调。生产C1/备份入口未改。
+最终修正diff与原始材料仍须独立review，
 这段不预签最终评审通过。正常hooks提交/PR/精确CI和条件合入由协调者承接，不自行合并。
 
 实际diff不改生产源码、prompt/模型/AI语义validator、来源、eval口径或report-gen；A1不执行本工具路径，

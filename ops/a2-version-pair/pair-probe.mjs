@@ -4,6 +4,7 @@ import { connect } from 'node:net';
 import { createRequire } from 'node:module';
 import { spawnSync } from 'node:child_process';
 import { dbAt, snapshot, hash, bundleIdentity, topicId, reportIds, leadId, cases, expectedLeads, expectedInsights } from './pair-in-image.mjs';
+import { tableHashes } from './consistent-copy.mjs';
 import { identityFor, assertHttpPath, assertStatus, assertVisible, assertWriter, assertBusinessReady, assertRecordTransition, assertPreserved } from './pair-contracts.mjs';
 const phase = process.argv[2], identity = identityFor(process.env.A2_PAIR_ROLE), observations = [];
 const db = dbAt(), records = () => db.prepare('SELECT * FROM deployment_record ORDER BY id').all(), state = () => snapshot(db);
@@ -86,6 +87,11 @@ if (phase === 'native') {
   } else writer = jsonFile('pair-candidate').writer;
   result = { phase, bundle, release_bundle: release.bundle, network, observations, writer, state_sha256: hash(JSON.stringify(state())),
     ledger_sha256: hash(JSON.stringify(state().ledger)), report_hashes: artifactHashes(), production_compatibility: 'unverified', permissions: false };
+} else if (phase === 'save-final') {
+  assert.equal(process.env.A2_PAIR_ROLE, 'candidate');
+  const value = { state: state(), deployment_rows: records(), table_hashes: tableHashes(db), bundle: bundleIdentity() };
+  writeFileSync('/data/pair-final.json', JSON.stringify(value));
+  result = { phase, state_sha256: hash(JSON.stringify(value.state)), deployment_rows_sha256: hash(JSON.stringify(value.deployment_rows)), table_hashes: value.table_hashes, bundle: value.bundle };
 } else if (phase === 'snapshot') { result = { phase, state_sha256: hash(JSON.stringify(state())), deployment_rows_sha256: hash(JSON.stringify(records())) }; }
 else throw new Error('unknown phase');
 db.close(); console.log(JSON.stringify(result));

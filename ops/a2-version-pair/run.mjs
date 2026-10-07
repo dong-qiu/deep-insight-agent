@@ -89,18 +89,23 @@ export async function runPair() {
     evidence.native.push(JSON.parse(oneShot('candidate', volume, ['node', '/matrix/pair-probe.mjs', 'native']).text));
     const candidate = app('candidate', volume, 'candidate'), cross = candidate.probe('pair-probe.mjs', 'candidate');
     docker(['restart', '--time', '10', candidate.id]); const candidateRestart = candidate.probe('pair-probe.mjs', 'restart');
-    const candidateStopped = candidate.stop(); evidence.stages.push({ role: 'candidate', container: candidate.start, end: candidate.inspect(), cross, restart: candidateRestart, stopped: candidateStopped });
+    const finalSnapshot = candidate.probe('pair-probe.mjs', 'save-final');
+    const candidateStopped = candidate.stop(); evidence.stages.push({ role: 'candidate', container: candidate.start, end: candidate.inspect(), cross, restart: candidateRestart, final_snapshot: finalSnapshot, stopped: candidateStopped });
     for (const kind of ['checksum', 'record']) {
       const fault = volumeFor(`fault-${kind}`);
-      // Immutable successful synthetic DB copied only after both exact Web containers are stopped.
+      // SQLite backup includes committed WAL after either graceful or forced exit; both exact Web owners must already be stopped.
       assertStopped(JSON.parse(docker(['inspect', release.id]).text)[0], owner); assertStopped(JSON.parse(docker(['inspect', candidate.id]).text)[0], owner);
-      oneShot('candidate', fault, ['node', '-e', "const fs=require('node:fs');fs.chownSync('/data',1001,1001);fs.copyFileSync('/source/insight.db','/data/insight.db');fs.chownSync('/data/insight.db',1001,1001)"], ['--user', '0', '--cap-add=CHOWN', '--mount', `type=volume,src=${volume},dst=/source,readonly`]);
+      oneShot('candidate', fault, ['node', '-e', "require('node:fs').chownSync('/data',1001,1001)"], ['--user', '0', '--cap-add=CHOWN']);
+      // Source SQL connection is readonly. This exclusive synthetic mount allows SQLite WAL/SHM coordination only.
+      const copy = JSON.parse(oneShot('candidate', fault, ['node', '/matrix/copy-probe.mjs'], ['--mount', `type=volume,src=${volume},dst=/source`]).text);
+      assert.equal(copy.state_sha256, finalSnapshot.state_sha256); assert.equal(copy.deployment_rows_sha256, finalSnapshot.deployment_rows_sha256);
+      assert.deepEqual(copy.all_tables, finalSnapshot.table_hashes);
       const prepare = JSON.parse(oneShot('candidate', fault, ['node', '/matrix/failure-probe.mjs', 'prepare', kind]).text);
       const before = JSON.parse(oneShot('candidate', fault, ['node', '/matrix/pair-probe.mjs', 'snapshot']).text);
       if (kind === 'checksum') assert.notEqual(oneShot('candidate', fault, ['node', '/app/ops/run-provenance-migrations.mjs'], [], false).status, 0);
       const failing = app('candidate', fault, `fault-${kind}`), result = failing.probe('failure-probe.mjs', 'probe', kind);
       const after = failing.probe('pair-probe.mjs', 'snapshot'); assert.deepEqual(after, before);
-      evidence.failures.push({ kind, prepare, before, after, result, identity: failing.inspect(), stopped: failing.stop() });
+      evidence.failures.push({ kind, copy, prepare, before, after, result, identity: failing.inspect(), stopped: failing.stop() });
     }
     evidence.finished_at = new Date().toISOString(); evidence.result = 'pass'; return evidence;
   } finally {

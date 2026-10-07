@@ -53,7 +53,7 @@ test('harness exact hash and single import adaptation; fixture/model semantics u
   const missing = Buffer.from('no import'); assert.throws(() => adaptImport(missing, hash(missing)));
   const duplicate = Buffer.from('from "./in-image.mjs" from "./in-image.mjs"'); assert.throws(() => adaptImport(duplicate, hash(duplicate)));
   const directory = mkdtempSync(join(tmpdir(), 'a2-harness-guard-'));
-  try { const evidence = prepareHarness(root, directory); assert.equal(evidence.length, 9); assert.ok(readFileSync(join(directory, 'pair-contracts.mjs'), 'utf8').includes("from './contracts.mjs'")); }
+  try { const evidence = prepareHarness(root, directory); assert.equal(evidence.length, 11); assert.ok(readFileSync(join(directory, 'pair-contracts.mjs'), 'utf8').includes("from './contracts.mjs'")); }
   finally { rmSync(directory, { recursive: true, force: true }); }
 });
 test('inherited true HTTP writer/white-list/health guards retained', () => {
