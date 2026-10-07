@@ -45,3 +45,14 @@
 | 1 C1/P/C/I | 尚未启动 | 依赖公共 v0 口径与各自预登记；同事件阅读卡另依赖 C1 足量新增可刊维度和独立证据门 | C1 单独记输入/模型/预算/失败/成本；P/C/I 准备 shadow，保持各专用门 |
 
 每波结束追加实际命令、产物 hash、独立审查结论、失败与 unknown，以及下一波任务；不以计划代替收据。
+
+## 0A 工程核对收据
+
+集成树使用 Node `24.19.0`；新 worktree 默认 npm 初次安装曾报告 Node `25.9.0`，已按仓库 engine 切换到 24.19 并重新 `npm ci --no-audit --no-fund`。没有把不满足 engine 的首次安装当作测试依据。
+
+- 两份集成 Markdown 用 `ops/ci-docs-check.mjs` 的真实 `checkDocuments` 检查格式、链接和收据结构：2/2 通过；`git diff --check` 通过。
+- `npm run typecheck`：TS7/TS6，各 app/tools 均通过。
+- `npx vitest run evals/brief-density/export.test.ts src/lib/agents/report-gen.test.ts src/lib/agents/pipeline-reportgen.integration.test.ts src/lib/db/reports.test.ts`：4 文件、200/200 通过。
+- `npx vitest run src/lib/db/report-review.test.ts`：1 文件、4/4 通过。
+
+上述 204 项只核对既有只读导出、真实管线报告接线和发布守卫回归；它们不执行 C1 新提取，不证明新版阅读卡收益、F 时效改善或 P/C/I 生产准入。工具切片新增测试及整合后的 typecheck 另记，不能用此基线核对替代。
