@@ -340,36 +340,43 @@ docker run --rm -v deep-insight_insight-data:/data -v "$PWD":/backup alpine \
 
 ## 8. 升级
 
-本地开发可用 `docker compose up -d --build` 从当前 checkout 构建；**生产不再从源码构建**。CI（`.github/workflows/ci.yml`）通过后，`.github/workflows/publish-image.yml` 构建 `linux/amd64` 镜像并推送至 GHCR，标签固定为 `sha-<40 位提交 SHA>`。生产仅拉取这个不可变制品，因此一次发布能精确追溯到通过 CI 的提交。
+本地开发可用 `docker compose up -d --build` 从当前 checkout 构建；**生产不再从源码构建**。CI（`.github/workflows/ci.yml`）通过后，`.github/workflows/publish-image.yml` 构建 `linux/amd64` 镜像并推送至 GHCR，标签为 `sha-<40 位提交 SHA>`。标签仍可因同 SHA 重建而覆盖，批准身份必须使用 OCI digest 链，不能以标签名中的 SHA 代替。
+
+**本补丁的入口契约：生产切换被工程入口强制阻断。** [专属 spec](../plan/specs/security-deploy-preconditions.md)
+与 [身份 policy](../../ops/aws/security-release-policy.json) 固定安全候选；`Deploy Production Image` 只在隔离 GitHub runner
+做身份预检，成功也必须非零退出。它不取得 AWS 凭据、不发送 SSM、不访问生产或启动容器，不运行 probe/备份/迁移/record/切换/rollback。
+没有解锁参数；安全回退、数据兼容、全 writer drain/跨维护互斥/SSM 未知终态协议与实名专项批准补齐后，必须另行独立评审 PR 恢复生产执行路径。
+本切片不改变当前生产服务，也不证明旧服务安全。不得以手工 code-only 部署绕过阻断。
 
 > 验证别只看 `HTTP 200`（跨服务调用里 200 ≠ 成功，如飞书回 200+错误码）；用 `docker exec deep-insight-app-1 node /app/ops/probe-alert.mjs` 看渠道 + `code=0` + 真到达。
 
 > ⚠️ **运行时配置持久化（成本熔断 / 报告推送 / 转写采集 / 日报偏薄提醒）**：`COST_LIMIT_DAILY`/`COST_LIMIT_MONTHLY`/`COST_ALERT_PCT`/`REPORT_PUSH`/`PUBLIC_BASE_URL`/`TRANSCRIPT_FETCH`/`TRANSCRIPT_SHADOW_FETCH`/`BRIEF_THIN_REPORT_ALERT`/`BRIEF_THIN_MIN_SELECTED`/`BRIEF_THIN_MAX_PUBLISHED` 这几个常在生产手动配。播客逐源策略是 SQLite 中的 Source 配置事实，不能用环境变量代替或由全局开关推断。
-> - **唯一生产发布路径**：`Deploy Production Image`（`deploy.yml`）只下载版本化 `docker-compose.yml` 并拉取 GHCR 镜像，绝不覆盖 `.env.local`。旧 `ops/aws/deploy.sh` 已改为拒绝入口；历史上它曾全量覆盖生产配置，事故背景见 `docs/verify/mvp-gap-2026-06-07.md` §2.1。
-> - **当前 CD 只适用于已初始化生产实例**：workflow 在切换前需要已有 `deep-insight-app-1`、现存 compose 和最新备份来做迁移演练。仅在这些前置条件满足时触发 Actions；全新主机仅放置 `.env.local`/`.env` 仍无法首发，须另立安全 bootstrap 流程并验证，不得恢复旧 `deploy.sh`。已有生产环境只核对配置存在和权限，不重做主机准备。
+> - **唯一生产发布入口**：`Deploy Production Image`（`deploy.yml`），当前仅执行 runner 身份预检并强制阻断切换。版本化 compose 只解析隔离空配置，不读取或覆盖生产 `.env.local`。旧 `ops/aws/deploy.sh` 保持拒绝；历史配置覆盖事故见 `docs/verify/mvp-gap-2026-06-07.md` §2.1。
+> - **未来解锁后的 CD 仍只适用于已初始化生产实例**：原切换流程要求已有 `deep-insight-app-1`、现存 compose 和合格备份。它们只是前置条件的一部分，不能据此触发当前被阻断的入口；全新主机仅放置 `.env.local`/`.env` 无法首发，须另立安全 bootstrap 流程并验证，不得恢复旧 `deploy.sh`。
 > - **仅调整运行时配置**：由 operator 编辑服务器 `.env.local`，在值班窗口按受控 Compose 重建与本节核验，不通过旧源码部署入口覆盖它。敏感值不写入版本库、日志或发布回执。
 
-### CI 预构建镜像 → GHCR → 生产健康切换
+### CI 预构建镜像 → GHCR → 身份预检与切换阻断
 
-1. `main` 的 CI 成功后，`Publish Production Image` 在 GitHub 托管 runner 构建并发布 `linux/amd64` GHCR 镜像，附 OCI `source` / `revision` 标签、SBOM 和 provenance。镜像只使用 `sha-<commit>` 不可变标签，**不**发布 `latest`。
-2. operator 在 Actions 手动运行 `Deploy Production Image`，可留空（当前 main）或指定已发布的 `sha-<commit>` 进行精确发布/回退；没有 `v*` tag 自动上线。
-3. workflow 经 GitHub OIDC 取得最小 AWS SSM 角色，在生产机 `/opt/app` 下载与镜像同一 SHA 的 compose 文件、`docker pull`、核对 OCI revision。停止 writer 前会检查 `.env.local` 中生产必需的 `DISPATCH_WORKER_SECRET` 为非空（只检查存在性，绝不输出值）；随后使用不可变 digest 执行 migration / deployment-record / app 健康切换。最后连续 30 秒核验 `generation-dispatch-worker` 持续运行且重启数为 0。任一检查失败都会恢复先前 compose 和已验证镜像，并使 workflow 失败。
+1. `main` 的 CI 成功后，`Publish Production Image` 在 GitHub 托管 runner 构建并发布 `linux/amd64` GHCR 镜像，附 OCI `source` / `revision` 标签、SBOM 和 provenance。标签为 `sha-<commit>`，不发布 `latest`；同标签重建不构成原批准对象。
+2. 入口显式要求 `image_tag`、`approved_index_digest`、`approved_manifest_digest`、`approved_config_digest`，全部必须匹配已评审 policy；没有当前 main/latest 默认或“恢复上一镜像”选择。policy 是身份核准，不是生产部署授权；本治理任务没有 dispatch 授权。
+3. runner 验证 tag 原 index 字节、唯一 linux/amd64 descriptor、平台 manifest/config 原字节 digest/大小/type 与 revision；按批准 manifest 实际 pull，然后 inspect/save 核本地 config 原字节和平台/revision。Docker ID/Descriptor 不与 config digest直接混比。候选精确 SHA 的 compose 字节 hash 及五服务同一 manifest 绑定必须通过。
+4. 身份证据始终为 `deployment_permitted=false` / `location=isolated-runner`。随后独立 `always()` 步骤无条件失败；任何异常或“已 ready”环境变量都不能变成生产许可。普通 PR CI 自动发现的 ops 集成测试验证真实拉取路径及硬阻断，不 dispatch 此 workflow。
 
 **B1b 跨认证安全边界发布/回退**：首次上线会使没有版本标记的旧 cookie 失效，应通知用户重新登录。
 回退到 B1a 或更旧代码会失去服务端撤销检查；必须在恢复对外服务前轮换 AUTH_SECRET、按指定已验证镜像
 重新创建 app 容器（只 restart 无效），验证回退前旧 cookie 被拒绝、新登录与权限正常，才能解除维护限制。
 同样适用于主动回填旧密码哈希/角色或重新使用旧 bootstrap 密码，不能仅靠状态指纹防止旧会话复活。
 
-该要求**也适用于 deploy.yml 自动回退**：workflow 自动恢复旧镜像并保留 `.env.local`，不会替 operator
-轮换认证密钥或隔离外部流量。跨 B1b 边界发布前须安排有人值守的维护窗口、先限制外部访问；若发生自动回退，
+该要求**也约束未来恢复的自动回退协议**：本切片已经移除自动重启上一运行镜像的执行路径。未来协议不会替 operator
+轮换认证密钥或隔离外部流量。跨 B1b 边界发布前须安排有人值守的维护窗口、先限制外部访问；若发生经批准的安全回退，
 保持外部限制，完成上述密钥轮换、容器重建和 cookie 验收后才恢复访问。自动回退恢复健康不等于安全验收通过。
 不在正常 code-only 发布中盲目轮换其他密钥；旧 `deploy.sh` 已停用，不得恢复源码/配置全量覆盖路径。
 
-> ⚠️ 生产故障恢复时，不要直接执行未带变量的 `docker compose up`：Compose 会回退到 `deep-insight:0.1.0`。优先重跑 `Deploy Production Image`；确有紧急人工操作时，必须显式传入已验证的 `INSIGHT_IMAGE=ghcr.io/<owner>/<repo>@sha256:…`、`INSIGHT_IMAGE_DIGEST=sha256:…` 与 `PROVENANCE_DEPLOYMENT_REQUIRED=1`，并在启动后按本节核验运行镜像、deployment record、app health 和 worker 稳定性。
+> ⚠️ 生产故障恢复时，不要直接执行未带变量的 `docker compose up`：Compose 会回退到 `deep-insight:0.1.0`。当前重跑 `Deploy Production Image` 也不能切换或恢复服务；不能用手工命令绕过治理门。紧急人工接管必须另行授权目标、命令、窗口、副作用和经验证的安全不可变对象，并遵守 §6.1.2 的恢复启动阻塞。health 恢复不构成安全验收。
 
-OIDC 首次配置在有 AWS 管理权限的终端执行 `ops/aws/setup-github-oidc.sh`。它创建/更新仅限 `production` Environment 的 OIDC 信任和仅能对该实例执行 SSM / 查询结果的 IAM 权限；输出并可通过 `SET_GITHUB_VARIABLES=1` 写入三个 GitHub Actions repository variables：`AWS_REGION`、`AWS_DEPLOY_ROLE_ARN`、`PROD_INSTANCE_ID`。公共仓库还需由 owner 一次性使用带 `write:packages` scope 的 GitHub CLI 执行 `SET_GITHUB_PACKAGE_PUBLIC=1 ops/aws/setup-github-oidc.sh`，让生产机可匿名拉取；CI 的 `GITHUB_TOKEN` 只负责推送，不能变更 owner-level 包可见性。当前后续发布要求部署机已有 Docker、Compose、SSM Agent、`/opt/app/.env.local` / `docker-compose.yml`、运行中的 `deep-insight-app-1` 与可供演练的最新备份；不需要 checkout、Git remote、SSH 私钥或 GHCR 读取令牌。全新主机不满足这些条件，不能直接触发此 workflow。
+历史 OIDC 初始化工具 `ops/aws/setup-github-oidc.sh` 会创建/更新仅限 `production` Environment 的 OIDC 信任和实例 SSM/IAM 权限；`SET_GITHUB_VARIABLES=1` 还会写三个 Actions variables（`AWS_REGION`、`AWS_DEPLOY_ROLE_ARN`、`PROD_INSTANCE_ID`），`SET_GITHUB_PACKAGE_PUBLIC=1` 会改变 package 可见性。这些都是单独授权的云资源写入，本切片不执行。未来生产执行路径仍须核部署机 Docker、Compose、SSM Agent、配置/compose、运行 app 与合格备份；当前 runner 身份预检不证明这些生产前置，也不需要它们或 AWS 凭据。
 
-生产 Environment 应保留 required reviewers / protection rules。部署完成后检查 workflow 的 SSM 输出（compose 状态和 `/api/health`）；如需业务级告警验证，再运行 `probe-alert.mjs`。旧的 `DEPLOY_*` SSH secrets 可在至少一次成功 GHCR 发布和部署后移除。
+生产 Environment 应保留 required reviewers / protection rules。现有 OIDC 角色是历史基础设施，不由本切片调用；上段初始化说明不构成当前部署或云资源写入授权。未来恢复生产执行后须单独核 SSM 真实终态、实际对象、三服务绑定与安全验收；业务级告警验证再独立授权 `probe-alert.mjs`。不在治理任务中删除 secrets 或改生产配置。
 
 ## 9. 冒烟验证记录
 
