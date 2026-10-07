@@ -122,3 +122,13 @@ C1初轮独立审查发现2项Warning：closed DELETE快照漏拒绝rollback `-j
 准备第二波PR时，重新fetch核实其他会话的证据归档合入将remote main推进到 `41270a7aa02d3880d96fcd6ba7f9a2cbb54a3b99`，其 [main CI 37578566493](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37578566493) 成功。上游仅增加4份归档文档；在自己的shadow集成分支正常merge保留，不移动主worktree或覆盖作者资料。作者初始base、#432收据和旧包hash仍作为历史保留；PR使用新远端base，独立review按实际merge-base到最终head，不误包含上游文档删除。
 
 集成负责人在最终修补代码上实际复现9文件117/117：C1 15、stage0数据19、F10、C准备6、既有podcast shadow/input路径44、analyzer窗口/选段23。`npm run typecheck`双TS各app/tools、两个新工具目录的定向eslint、五份收据的真实docs checker与diff检查通过。没有改构建/路由/部署，未重复本地build；PR CI仍须执行选中的完整应用/容器门。117项工程测试不代签真实来源、模型候选收益、人工gold或阅读效果；最终独立审查和精确PR/main CI在后续收据记录。
+
+## 0C 第二波PR与再次同步
+
+[#433](https://github.com/dong-qiu/deep-insight-agent/pull/433) 初始base `41270a7`、head `9554977` 的完整15文件diff先后通过pre-pr和GitHub最终非作者核对，Blocking 0 / 未解决Warning 0；独立复现工具50/50、analyzer纯函数10/10及双TS/docs5/5。[PR CI 37579025951](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37579025951) 成功后尝试正常合并，GitHub因main已推进而拒绝；未使用admin或绕过up-to-date要求。
+
+实时fetch确认其他会话[#431](https://github.com/dong-qiu/deep-insight-agent/pull/431) 已将main推进到 `75c189d883a701943ad0308a07ba4f4542d878be`，含A1诊断与runtime观察接线。在自己的shadow分支正常merge，未改主worktree；复跑原117项和上游相关runner/runtime/usage/provider路径共19文件253/253，双TS各app/tools通过。更新精确head后须重新等待PR CI，旧head成功不用于新head合入。
+
+C1作者私有v3绑定的是其原隔离树资源，仍是not-executable探索材料；同步的runtime observer/usage变化不悄然写入旧包。正式T04/runner必须在确切执行版本重新解析并封存全部operation/model/provider/policy/cache/thinking及观察/usage资源；不能把旧v3、源码hash或其他会话A1诊断收据当C1候选/新版Brief准入。
+
+首批5份精确body和完整source-wide信息/建议已放入私有 `human-batch-01-expanded/`，包括R02截断/未验证speaker及R04仅摘要边界。非作者逐份读完原文并发现摘要忠实性问题，作者修正后定稿SHA前缀 `158dd92f`，第二轮资料复核进行中；其115个审阅候选组不是已确认事件/重要维度或得分。原文5份hash未变，全部human pending，不给C1执行器读取人工评判。材料、raw和专业草稿不提交Git。
