@@ -117,6 +117,8 @@ C1初轮独立审查发现2项Warning：closed DELETE快照漏拒绝rollback `-j
 
 修补后新建C1私有v3，旧v2原样保留；资源hash变化不能复用旧包。实际machine SHA前缀 `999d03f9`，预检仍exit2/blocked，四个阻断及完整分母不变。生成模板已版本化，生成的候选system精确字节仅private且未执行；不得宣称源码没有模板或候选已通过语义评测。非作者第二轮与最终精确head复核另记，未过前不合入。
 
-重新核初始保全收据中的14份配置hash及权限（含首次4个新树），全部未变；详细收据仅私有。当前实际20个worktree，11个原有加9个本轮独立树，全部保留；其他会话推进的branch/PR未覆盖。主worktree仍保留原local main `473e2ee`，remote main为上文已核的`afbe4a5`，不以local过期head替代远端合入状态。本文不是生产版本核验；本轮没有生产访问、部署、开关修改或清理删除。
+重新核初始保全收据中的14份配置hash及权限（含首次4个新树），全部未变；详细收据仅私有。该次检查实际20个worktree，11个原有加9个本轮独立树，全部保留；其他会话推进的branch/PR未覆盖。主worktree仍保留原local main `473e2ee`；remote main单独重新查询，不以local过期head替代远端合入状态。本文不是生产版本核验；本轮没有生产访问、部署、开关修改或清理删除。
+
+准备第二波PR时，重新fetch核实其他会话的证据归档合入将remote main推进到 `41270a7aa02d3880d96fcd6ba7f9a2cbb54a3b99`，其 [main CI 37578566493](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37578566493) 成功。上游仅增加4份归档文档；在自己的shadow集成分支正常merge保留，不移动主worktree或覆盖作者资料。作者初始base、#432收据和旧包hash仍作为历史保留；PR使用新远端base，独立review按实际merge-base到最终head，不误包含上游文档删除。
 
 集成负责人在最终修补代码上实际复现9文件117/117：C1 15、stage0数据19、F10、C准备6、既有podcast shadow/input路径44、analyzer窗口/选段23。`npm run typecheck`双TS各app/tools、两个新工具目录的定向eslint、五份收据的真实docs checker与diff检查通过。没有改构建/路由/部署，未重复本地build；PR CI仍须执行选中的完整应用/容器门。117项工程测试不代签真实来源、模型候选收益、人工gold或阅读效果；最终独立审查和精确PR/main CI在后续收据记录。
