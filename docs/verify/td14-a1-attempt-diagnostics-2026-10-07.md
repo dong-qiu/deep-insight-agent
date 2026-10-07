@@ -1,5 +1,7 @@
 # TD-14 / A1 后续切片：零付费诊断准备收据
 
+本文记录授权前的零付费阶段；后续用户明确授权的一次真实诊断见[授权后收据](td14-a1-authorized-diagnostic-2026-10-07.md)。以下“请求0/未授权”描述保留原阶段事实。
+
 启动与集成基线 `origin/main`：`473e2eeae119b600b63abd78ce886301bd882235`（D6 #422）。
 独立分支 `perf/td14-a1-attempt-diagnostics` / worktree `insight-agent-td14`。
 [实施 spec](../plan/specs/td14-a1-attempt-diagnostics.md)。真实模型请求 **0**；本轮未选择性能优化，TD-14 保持部分完成。

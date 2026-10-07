@@ -1,5 +1,7 @@
 # TD-14：A1 attempt 诊断与零付费测量准备
 
+本 spec 记录零付费设施及初始申请；后续已获授权的一次真实诊断结果见[授权后收据](../../verify/td14-a1-authorized-diagnostic-2026-10-07.md)，不改写本次请求0准备阶段的预算事实。
+
 日期：2026-10-07；启动 origin/main `473e2eeae119b600b63abd78ce886301bd882235`。
 本轮真实模型预算 0；独立 worktree，TD-14 继续部分完成。模型/provider/prompt/评分/数据集/baseline/并发默认值不变。
 
