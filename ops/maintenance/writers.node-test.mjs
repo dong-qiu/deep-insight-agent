@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
-import { generateKeyPairSync } from 'node:crypto';
-import { chmodSync, mkdtempSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { createHash, generateKeyPairSync } from 'node:crypto';
+import { chmodSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import Database from 'better-sqlite3';
 import { test } from 'node:test';
 import { initialize } from './ledger.mjs';
@@ -128,4 +128,35 @@ test('non-SQLite corruption is rejected without rebuilding the registry', t => {
   const root = fixture(t); writeFileSync(join(root, 'writers.sqlite'), 'not a sqlite database');
   assert.throws(() => openWriters(root), /not a database/);
   assert.throws(() => initializeWriters(root), /EEXIST/);
+});
+
+
+function hotJournal(root) {
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
+    import Database from 'better-sqlite3'; import {randomUUID} from 'node:crypto';
+    const db=new Database(process.argv[1]); db.pragma('cache_size=1'); db.exec('BEGIN IMMEDIATE');
+    const ins=db.prepare('INSERT INTO workers VALUES (?,?,?)');
+    for(let i=0;i<10000;i++) ins.run('crash-'+i,randomUUID(),'generation-dispatch');
+    process.kill(process.pid,'SIGKILL');`, join(root, 'writers.sqlite')], { cwd: process.cwd(), env: { PATH: process.env.PATH }, stdio: 'pipe' });
+  assert.equal(child.signal, 'SIGKILL', child.stderr.toString());
+  assert.ok(readFileSync(join(root, 'writers.sqlite-journal')).length > 512);
+}
+const sha256 = path => createHash('sha256').update(readFileSync(path)).digest('hex');
+
+test('unsafe real hot journal is rejected before recovery with DB/journal bytes preserved', t => {
+  const root = fixture(t); hotJournal(root);
+  const path = join(root, 'writers.sqlite'), journal = `${path}-journal`;
+  chmodSync(journal, 0o644); const before = { db: sha256(path), journal: sha256(journal) };
+  assert.throws(() => openWriters(root), /unsafe_writer_path/);
+  assert.deepEqual({ db: sha256(path), journal: sha256(journal) }, before);
+});
+
+test('legal 0600 hot journal recovers closed admission and unknown unfinished tasks', t => {
+  const root = fixture(t); const first = openWriters(root);
+  const task = first.admit(first.register('generation-one', 'generation-dispatch')); first.closeAdmission(); first.close();
+  hotJournal(root); assert.equal((readFileSync(join(root, 'writers.sqlite-journal'))).length > 512, true);
+  const recovered = opened(t, root); const view = recovered.inspect();
+  assert.equal(view.admission, 'closed'); assert.equal(view.workers.length, 1);
+  assert.deepEqual(view.tasks, [{ taskId: task.taskId, workerId: task.workerId, outcome: null, remote_subwork: 'unknown' }]);
+  assert.equal(view.writer_quiescence, false);
 });

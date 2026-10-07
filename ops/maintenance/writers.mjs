@@ -33,6 +33,12 @@ function safe(path, directory = false) {
     && (info.mode & 0o777) === (directory ? 0o700 : 0o600) && (directory || info.nlink === 1), 'unsafe_writer_path');
   return info;
 }
+function journalCheck(path) {
+  for (const suffix of ['-journal', '-wal', '-shm']) {
+    try { safe(`${path}${suffix}`); check(suffix === '-journal', 'unexpected_writer_sidecar'); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+  }
+}
 function rootCheck(root) { check(isAbsolute(root) && root === realpathSync(root), 'noncanonical_writer_root'); safe(root, true); }
 function ledgerMarker(root) {
   const ledger = openLedger(root);
@@ -51,6 +57,7 @@ export function initializeWriters(root) {
   const fd = openSync(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600);
   try { check(fstatSync(fd).nlink === 1, 'unsafe_writer_path'); fsyncSync(fd); } finally { closeSync(fd); }
   syncDirectory(root);
+  journalCheck(path);
   const db = new Database(path, { fileMustExist: true, timeout: 0 });
   try {
     db.pragma('journal_mode = DELETE'); db.pragma('synchronous = FULL'); db.pragma('foreign_keys = ON');
@@ -77,15 +84,12 @@ export function openWriters(root) {
   }
   markerCheck();
   const path = join(root, 'writers.sqlite'); const identity = safe(path);
+  journalCheck(path); // Validate before SQLite is allowed to recover/remove a hot journal.
   const db = new Database(path, { fileMustExist: true, timeout: 0 });
-  db.pragma('synchronous = FULL'); db.pragma('foreign_keys = ON');
   function validate() {
     rootCheck(root); markerCheck(); const current = safe(path);
     check(current.dev === identity.dev && current.ino === identity.ino, 'writer_file_replaced');
-    for (const suffix of ['-journal', '-wal', '-shm']) {
-      try { safe(`${path}${suffix}`); check(suffix === '-journal', 'unexpected_writer_sidecar'); }
-      catch (error) { if (error.code !== 'ENOENT') throw error; }
-    }
+    journalCheck(path);
     check(same(marker, ledgerMarker(root)), 'writer_marker_changed');
     check(db.pragma('application_id', { simple: true }) === APP_ID && db.pragma('user_version', { simple: true }) === 1, 'invalid_writer_version');
     check(db.pragma('journal_mode', { simple: true }) === 'delete' && db.pragma('foreign_keys', { simple: true }) === 1, 'invalid_writer_database');
@@ -103,7 +107,10 @@ export function openWriters(root) {
     for (const row of db.prepare('SELECT * FROM completions').all()) parse(outcomeSchema, row.outcome);
   }
   function transact(fn) { return db.transaction(() => { validate(); return fn(); }).immediate(); }
-  try { transact(() => undefined); } catch (error) { db.close(); throw error; }
+  try {
+    db.pragma('synchronous = FULL'); db.pragma('foreign_keys = ON');
+    transact(() => undefined);
+  } catch (error) { db.close(); throw error; }
   function openAdmission() { check(db.prepare('SELECT mode FROM admission WHERE id=1').get().mode === 'open', 'writer_admission_closed'); }
   function owned(raw) {
     const token = parse(workerSchema, raw);
