@@ -41,7 +41,7 @@
 | 波次 | 已有证据 | 待完成/阻断 | 下一步 |
 | --- | --- | --- | --- |
 | 0A 实时核实与隔离 | main SHA/CI、11 既存干净 worktree、7 开放 PR、4 新隔离树、owner-only 配置/资源收据 | 不将历史生产镜像身份当实时生产状态；本轮无生产访问 | 三位 Agent 执行数据、契约、F 工具；完成后轮换独立审查 |
-| 0B 数据与契约 | 执行中 | 完整人工金标、数值探索依据及正式冻结尚缺 | 提交逐项审阅材料；技术工具可先通过工程门，不宣称 T03/T04 已完成 |
+| 0B 数据与契约 | v0 文档与集成规格非作者审查 0 Blocking/0 Warning；实际 3 run/3 attempt/45 occurrence/23 exact revision 工作表已生成 | 23 个输入版本与原确认索引 exact refs 交集 0，完整人工金标、数值探索依据及正式冻结尚缺 | 紧凑分批待判材料；技术工具可先通过工程门，不宣称 T03/T04 已完成 |
 | 1 C1/P/C/I | 尚未启动 | 依赖公共 v0 口径与各自预登记；同事件阅读卡另依赖 C1 足量新增可刊维度和独立证据门 | C1 单独记输入/模型/预算/失败/成本；P/C/I 准备 shadow，保持各专用门 |
 
 每波结束追加实际命令、产物 hash、独立审查结论、失败与 unknown，以及下一波任务；不以计划代替收据。
@@ -56,3 +56,13 @@
 - `npx vitest run src/lib/db/report-review.test.ts`：1 文件、4/4 通过。
 
 上述 204 项只核对既有只读导出、真实管线报告接线和发布守卫回归；它们不执行 C1 新提取，不证明新版阅读卡收益、F 时效改善或 P/C/I 生产准入。工具切片新增测试及整合后的 typecheck 另记，不能用此基线核对替代。
+
+## 0B 公共接口冻结与人评停止点
+
+独立契约作者提交 `f89047d` 已按独占所有权纳入集成树 `6f73199`。非作者新上下文 reviewer 核对四份文档与真实代码，复现 `checkDocuments` 4/4、diff 检查通过，Blocking 0 / Warning 0。据此固定[共同接口 v0](../plan/specs/daily-brief-versioned-evidence-publication-v0.md)的**设计基线** `rich-brief-evidence-publication-v0`：source config/content ref 与完整 evidence revision 分开，ClaimIdentity/EvidenceOccurrence/ValidationBinding/PublishedArtifact/ClaimLedger 各自绑定；首刊、深读更新与分析回访分类型。实现时仍须 ADR/架构/迁移及切片质量门，不把此冻结说成已有运行接口、完整资源冻结或 T04 通过。
+
+数据作者实际重新核对三份 raw-verified 导出，得到 3 run、3 attempt、45 input occurrence、23 distinct exact revision；候选总数为 47 / `unknown` / 99，第二期失败不填零。23 版本全部为探索，raw/body 绑定检查无缺口；它们与已确认 30 事件索引的 exact refs 交集为 0，原 10 个软件工程事件确认原样保全，不能机械移植成这批输入的 gold。
+
+私有完整审阅底稿 SHA-256 `18566a61` 前缀，由数据作者收据记录完整 hash；正文与用户资料不提交。用户已收到本地可点击材料和审阅方式问题，待判仅限本批输入的事件、重要维度、限定及固定理解题。人工状态保持 pending，正式留出仍为 0。数值协议不得借 AI 候选、旧重复阅读或本轮工具测试代签；C1 正式对照仍停在预检之前。
+
+公共 v0 设计核对完成后可继续准备 P/C/I 专用 shadow 样本与评测资源，分别记录缺失来源、许可、归属、前提和人评门；未完成 T04 的 C1 不开跑，阅读卡正式评测/实现也不启动。
