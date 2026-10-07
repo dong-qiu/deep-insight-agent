@@ -99,6 +99,11 @@ fence/revision恰+1只为本轮观测校验；S0幂等acquire不返回created标
 本地任务全部退出后仍根据未知子工作、未登记writer/lease等缺口进入既有S0持久hold。
 超时记 `writer_drain_timeout`；取消按本drain首次观察的reason固定，清理timer/listener后持久hold，
 不abort业务任务、不改C2a首取消reason或fence>C2a>C3>budget优先级。
+观察失败立即停止等待并阻断；已记录的首取消reason仍用于主返回reason和持久hold，
+没有先取消则为 `writer_drain_observation_failed`。未发布v1候选接口冻结为
+`DrainObservation.sample: DrainLeaseSample | null`：仅poll观察失败返回null，不回传最后成功
+采样冒称当前证据；正常、replay及预取消保持实际采样。null不证明来源或子工作终止。
+最终owned/hold仍在观察catch之外，旧owner/fence/revision优先拒绝，不被取消或采样错误掩盖。
 S0写hold失败或revision冲突不能转换ready；只留下closed、既有op事实及明确blocked错误。
 只读源遇合法600热journal但SQLite要求写入恢复时也阻断SQLITE_READONLY并保全原字节；
 本模块不升级连接或用write-open代替只读，不把只读WAL正常协调外推成所有hotjournal能恢复。
@@ -120,7 +125,9 @@ S0写hold失败或revision冲突不能转换ready；只留下closed、既有op�
   另一组同时保留合法dispatch与无dispatch active lease，验证“看见部分正常”不能掩盖未覆盖行。
 - 所有sample反例和正常计数例都断言process_termination=unknown及全部ready/许可字段false，
   采样前后核业务lease/dispatch/Run事实不变。
-- 取消首reason、poll观察失败、owner变化、deadline与完成竞争、timer/listener清理及重启反例。
+- 取消首reason后真实源关闭导致采样失败：reason/hold保持首因，sample=null；无先取消的
+  采样失败用generic reason与null。取消+源失败+并发revision或释放后foreign owner/fence
+  仍reject且不写他人hold。deadline与完成竞争、timer/listener清理及重启反例。
 - 读取真实业务fixture SQL采样；不以mock-only/fixture状态机或本地promise结束证明全writer停止。
 - 实际S0/S1/drain/lease定向ops测试、typecheck/lint；未改src/runtime/build路径时复用S1有效构建。
 - 两位独立Reviewer原材料审查；最终PR/tested对象与最新main关系由协调者核验，必需CI不skip。

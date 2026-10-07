@@ -66,5 +66,41 @@ unknown，仅CAS当前owner/revision可持久hold，失败不续租/重试副作
 
 主台账由协调者更新。私有证据根
 `/Users/dongqiu/.local/share/insight-agent/evidence/a3-drain-20261008/` 0700，raw与非覆盖索引0600；
-最终源码hash/head与原始logs由index-v1登记。两独立Reviewer最终结果、PR、tested merge、
+原候选源码hash/head与原始logs由index-v1登记；本轮修复由非覆盖index-v2增量登记。两独立Reviewer最终结果、PR、tested merge、
 精确CI/main归档由协调者后续增量绑定，当前不预签。所有worktree/分支/原证据保留。
+
+
+## 首因竞态修正候选（原review时点保留）
+
+原 `2bcf636d3e391351728d33665e523fd45d2b7235` 的18测试通过并未覆盖取消之后观察失败。
+Reviewer1原结论B1/W1、Reviewer2原结论B0/W1：真实未完成登记任务进入等待，先
+abort(cancelled)，随后关闭实际只读源；下一轮sample失败覆盖首因，主reason与持久hold
+变成writer_drain_observation_failed。两位各自原测试由作者在旧head真实再执行，分别
+`reviewer-one-cancel-red-v2.log`、`reviewer-two-cancel-red-v2.log` 各0pass/1fail；原输入与
+Reviewer原review/log/index均保全，不改签旧head通过。
+
+协调者冻结最小未发布v1候选接口delta：观察catch保留firstCancellation，未记录取消时
+使用generic observation_failed；发生观察失败立刻停止等待并返回sample=null，不把
+上轮成功采样当当前证据。声明仅将sample改为DrainLeaseSample|null，未加诊断字段；
+正常、replay及预取消仍返回真实采样。null不证明来源或子工作终止，所有ready/许可仍false。
+最终owned/hold保持catch之外，旧owner/fence/revision优先拒绝且不写foreign hold。
+
+永久测试增加取消后真实源失败、无先取消失败、并发revision与complete后foreign owner/
+fence；同时断言首reason/持久failures、sample=null、未完成task保留、业务原行及他人ledger
+状态不变。Reviewer1 W1的30ms fixture窗口扩大到200ms，并为其他短窗口增加同等测试余量；
+默认测试opts500ms，生产输入deadline校验与60秒上限没有改。monotonic rollback反例仍
+真实有限超时并断言小于1000ms，未引入全局deadline。
+
+| 本轮原材料 | 实际结果 |
+| --- | --- |
+| `reviewer-one-cancel-green-v2.log`、`reviewer-two-cancel-green-v2.log` | 两份独立原红各1/1通过 |
+| `s2-s0-s1-delta-v3.log` | S2 20 + S0 protocol52/recovery6 + S1 writers15 = 93/93通过，0skip |
+| `typecheck-v2.log` | TS7/TS6 app/tools四编译通过 |
+| `declaration-typecheck-v3.log` | nullable声明独立TS6检查通过 |
+| `lint-v2.log` | 受改动两个ops模块定向lint通过 |
+
+`s2-s0-s1-delta-v2.log` 原92pass/1fail保留：新增foreign owner测试的自有operationId
+误写foreign-op，被既有严格schema正确拒绝；改为合法op-foreign后完整93通过，未改生产
+校验。上一轮完整ops403pass/3本地Docker skip仍仅绑定原候选；本轮不伪复用为最终全量
+ops或镜像通过。构建输入未改，最终正常CI、最新main同步及两位独立delta review仍待完成。
+本片不推PR、不改主台账、不预签Eval、不实现S3；独占文件窗口及原证据保持冻结。

@@ -166,7 +166,10 @@ export async function observeDrain({ root, request: rawRequest, deadlineAt, poll
           if (signal?.aborted) done();
         });
       }
-    } catch { reason = 'writer_drain_observation_failed'; }
+    } catch {
+      // A failed observation is unknown; do not return the last successful snapshot as current evidence.
+      last = null; reason = firstCancellation ?? 'writer_drain_observation_failed';
+    }
     // A failure never authorizes takeover/retry or mutation of someone else's operation.
     owned(); token = ledger.hold(token, reason);
     return result(reason, last, polls);

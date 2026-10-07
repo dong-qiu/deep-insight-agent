@@ -17,7 +17,7 @@ export interface DrainLeaseSample extends DrainBlocked {
 export interface DrainLeaseSource { sample(atUnixMs: number): DrainLeaseSample; close(): void }
 export interface DrainObservation extends DrainBlocked {
   schema: 'a3-drain-observation-v1'; scope: 'isolated'; reason: string; token: DrainToken | null;
-  sample: DrainLeaseSample; polls: number; controller_uniqueness: 'unknown';
+  sample: DrainLeaseSample | null; polls: number; controller_uniqueness: 'unknown';
 }
 export function openDrainLeaseSource(root: string, databasePath: string): DrainLeaseSource;
 export function observeDrain(input: {

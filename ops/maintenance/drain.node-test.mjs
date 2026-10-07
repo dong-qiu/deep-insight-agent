@@ -41,7 +41,7 @@ function blocked(sample) {
   assert.equal(sample.drain_ready, false); assert.equal(sample.writer_quiescence, false);
   assert.equal(sample.production_permitted, false); assert.equal(sample.process_termination, 'unknown');
 }
-function opts(f, extra = {}) { return { root: f.root, request: f.request, leaseSource: f.source, deadlineAt: Date.now() + 100, pollEveryMs: 5, ...extra }; }
+function opts(f, extra = {}) { return { root: f.root, request: f.request, leaseSource: f.source, deadlineAt: Date.now() + 500, pollEveryMs: 5, ...extra }; }
 
 test('real queued and claimed independent epochs are observations; business facts remain unchanged', t => {
   const f = fixture(t); f.accept(); let before = f.facts(); let sample = f.source.sample(Date.now());
@@ -88,7 +88,7 @@ test('owner/expiry/epoch/state and missing/ambiguous lease counterexamples remai
 test('finite unfinished writer timeout permanently holds; late local completion and restart cannot release', async t => {
   const f = fixture(t); f.accept(); f.mutate(d => claimNextGenerationDispatch(d));
   const task = f.writers.admit(f.writers.register('worker-one', 'generation-dispatch')); const before = f.facts();
-  const result = await observeDrain(opts(f, { deadlineAt: Date.now() + 30 })); blocked(result);
+  const result = await observeDrain(opts(f, { deadlineAt: Date.now() + 200 })); blocked(result);
   assert.equal(result.reason, 'writer_drain_timeout'); assert.equal(f.writers.inspect().admission, 'closed');
   assert.equal(f.ledger.inspect().operations['op-drain'].disposition, 'held'); assert.deepEqual(f.facts(), before);
   f.writers.finish(task, 'done'); const replay = await observeDrain(opts(f)); blocked(replay); assert.equal(replay.reason, 'writer_drain_replay');
@@ -112,6 +112,43 @@ test('cancellation preserves first fixed reason and only stops waiting, not busi
   const result = await pending; blocked(result); assert.equal(result.reason, 'cancelled');
   assert.equal(f.writers.inspect().tasks[0].outcome, null); f.writers.finish(task, 'failed');
   assert.equal(f.ledger.inspect().operations['op-drain'].disposition, 'held');
+});
+
+test('first cancellation survives a later real source failure; failed observation returns no stale sample', async t => {
+  const f = fixture(t); f.accept();
+  f.writers.admit(f.writers.register('cancel-race-worker', 'generation-dispatch'));
+  const before = f.facts(), controller = new AbortController();
+  const pending = observeDrain(opts(f, { signal: controller.signal }));
+  controller.abort({ reasonCode: 'cancelled' });
+  f.source.close(); controller.abort({ reasonCode: 'task_deadline_exceeded' });
+  const result = await pending; blocked(result);
+  assert.equal(result.reason, 'cancelled'); assert.equal(result.sample, null);
+  const op = f.ledger.inspect().operations[f.request.operationId];
+  assert.equal(op.disposition, 'held'); assert.deepEqual(op.failures, ['cancelled']);
+  assert.equal(f.writers.inspect().admission, 'closed'); assert.equal(f.writers.inspect().tasks[0].outcome, null);
+  assert.deepEqual(f.facts(), before);
+});
+
+test('cancel and failed observation cannot hide old revision or foreign owner/fence at final hold', async t => {
+  for (const change of ['revision', 'owner-fence']) {
+    const f = fixture(t); f.accept();
+    f.writers.admit(f.writers.register('cancel-owner-race-worker', 'generation-dispatch'));
+    const before = f.facts(), controller = new AbortController();
+    const pending = observeDrain(opts(f, { signal: controller.signal }));
+    controller.abort({ reasonCode: 'cancelled' }); f.source.close();
+    const op = f.ledger.inspect().operations[f.request.operationId];
+    const token = { operationId: op.operationId, ownerId: op.ownerId, fence: op.fence, revision: op.revision,
+      target: op.target, executionIdentity: op.executionIdentity };
+    if (change === 'revision') f.ledger.hold(token, 'external_hold');
+    else {
+      f.ledger.complete(token);
+      f.ledger.acquire({ ...f.request, operationId: 'op-foreign', ownerId: 'foreign-owner', executionIdentity: 'fixture-foreign-controller' });
+    }
+    const changed = f.ledger.inspect();
+    await assert.rejects(pending, /drain_owner_revision_lost/);
+    assert.deepEqual(f.ledger.inspect(), changed); assert.deepEqual(f.facts(), before);
+    assert.equal(f.writers.inspect().admission, 'closed'); assert.equal(f.writers.inspect().tasks[0].outcome, null);
+  }
 });
 
 test('foreign/fake/closed source and malformed request cannot mutate either maintenance sidecar', async t => {
@@ -158,7 +195,9 @@ test('close persists when acquire is busy; existing operation is never held by a
 test('observation failure after acquire holds; concurrent revision cannot be overwritten', async t => {
   const f = fixture(t); f.writers.admit(f.writers.register('worker-one', 'generation-dispatch'));
   const pending = observeDrain(opts(f)); setImmediate(() => f.source.close());
-  const result = await pending; blocked(result); assert.equal(result.reason, 'writer_drain_observation_failed'); assert.equal(f.ledger.inspect().operations['op-drain'].disposition, 'held');
+  const result = await pending; blocked(result); assert.equal(result.reason, 'writer_drain_observation_failed'); assert.equal(result.sample, null);
+  assert.deepEqual(f.ledger.inspect().operations['op-drain'].failures, ['writer_drain_observation_failed']);
+  assert.equal(f.ledger.inspect().operations['op-drain'].disposition, 'held');
   const other = fixture(t); other.writers.admit(other.writers.register('worker-one', 'generation-dispatch'));
   const second = observeDrain(opts(other));
   setImmediate(() => { const op = other.ledger.inspect().operations['op-drain']; other.ledger.hold({ operationId: op.operationId, ownerId: op.ownerId, fence: op.fence, revision: op.revision, target: op.target, executionIdentity: op.executionIdentity }, 'external_hold'); });
@@ -172,9 +211,9 @@ test('wall-clock rollback cannot extend the bounded monotonic deadline and timer
   const add = signal.addEventListener.bind(signal), remove = signal.removeEventListener.bind(signal);
   signal.addEventListener = (kind, listener, options) => { if (kind === 'abort') listeners.add(listener); return add(kind, listener, options); };
   signal.removeEventListener = (kind, listener, options) => { listeners.delete(listener); return remove(kind, listener, options); };
-  const now = Date.now, start = performance.now(); const pending = observeDrain(opts(f, { deadlineAt: Date.now() + 35, signal }));
+  const now = Date.now, start = performance.now(); const pending = observeDrain(opts(f, { deadlineAt: Date.now() + 200, signal }));
   Date.now = () => now() - 3_600_000;
-  try { const result = await pending; blocked(result); assert.equal(result.reason, 'writer_drain_timeout'); assert.ok(performance.now() - start < 500); assert.equal(listeners.size, 0); }
+  try { const result = await pending; blocked(result); assert.equal(result.reason, 'writer_drain_timeout'); assert.ok(performance.now() - start < 1000); assert.equal(listeners.size, 0); }
   finally { Date.now = now; }
 });
 
@@ -225,7 +264,7 @@ test('actual registered core dispatch stays in flight during drain and late fail
   let release; const work = runGenerationDispatchOnce(db, async () => {
     await new Promise(resolve => { release = resolve; }); throw new Error('synthetic executor failure');
   }, { writerAdmission });
-  const before = f.facts(); const result = await observeDrain(opts(f, { deadlineAt: Date.now() + 35 }));
+  const before = f.facts(); const result = await observeDrain(opts(f, { deadlineAt: Date.now() + 200 }));
   blocked(result); assert.equal(result.sample.claimedCurrent, 1); assert.equal(result.reason, 'writer_drain_timeout'); assert.deepEqual(f.facts(), before);
   const held = f.ledger.inspect(); release(); await assert.doesNotReject(work);
   assert.deepEqual(f.ledger.inspect(), held); assert.equal(f.writers.inspect().tasks[0].remote_subwork, 'unknown');
