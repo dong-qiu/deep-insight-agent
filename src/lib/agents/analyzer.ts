@@ -8,7 +8,7 @@
  */
 import { abortableDelay as sleep } from "../runtime/cancellation.js";
 import { checkRuntimeControl } from "../runtime/model-usage.js";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { safeError } from "../runtime/diagnostics.js";
 import { isTransientApiError, isVolcengineResponsesFailure } from "../runtime/errors.js";
 import { analyzeBodyChars, coverageBackfillOff, coverageMaxTokens, coverageThinking, coverageThinkingSource, selectWindowChars, validatorBackoffMs, validatorRetries, validatorThinking } from "../runtime/env.js";
@@ -1778,7 +1778,7 @@ ${renderItems(items, topic.keywords)}`;
     const isFollowup = li.is_followup && reusedEventId !== null;
     return {
       // Allocate before the audit so durable evidence can point to the same insight id.
-      id: `ins_${randomUUID().slice(0, 12)}`,
+      id: `ins_${randomBytes(16).toString("hex")}`,
       topic_id: topic.id,
       type: li.type,
       event_id: reusedEventId, // null → analyze 末尾分配新 event_id（按 batch 内重复 statement 共享）
@@ -1899,7 +1899,7 @@ export async function analyze(
   // away otherwise valid source items.
   assertCoverageModelSeparation();
   coverageMaxTokens();
-  const batchId = `batch_${randomUUID().slice(0, 8)}`;
+  const batchId = `batch_${randomBytes(16).toString("hex")}`;
   const history = opts.history ?? [];
   const insights: Insight[] = [];
   const coverageDecisions: CoverageDecision[] = [];
