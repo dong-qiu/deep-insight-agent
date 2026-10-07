@@ -3,7 +3,7 @@
 快照：2026-10-06，Asia/Shanghai；GitHub 查询时间见 D6 收据。启动基线为 `6eabc5f671073c377200f7551daf8a143d333989`；后续核对/交付基线 `origin/main` @ `86d824fd5fbe12006679a02cebcc877f71493f73`。
 本文件是证据索引与状态解释，不是新状态平台、生产运行证明或实施授权。首次快照/精确历史绑定保留；2026-10-07 的交接与供应链变化见文末追加记录及 [续核收据](d6-followup-2026-10-07.md)。
 
-当前阅读先看下方[最新状态](#最新状态2026-10-07-增量同步)。其后的来源、差异表、20项表及文末追加记录均保留各自历史时点；例如“S2 未处理/尚未验收”“候选待核”不能再直接作为当前待办。新增区同样只是有日期的人工核对，不是未来自动同步平台。
+当前阅读先看下方[最新状态](#最新状态2026-10-07-增量同步)。其后的来源、差异表、20项表及文末追加记录均保留各自历史时点；例如“S2 未处理/尚未验收”“候选待核”不能再直接作为当前待办。新增区同样只是有日期的人工核对，不是未来自动同步平台。授权合入期间的主干与A2/A3变化另见下方[2026-10-08续核](#授权合入续核2026-10-08)。
 
 ## 最新状态：2026-10-07 增量同步
 
@@ -58,6 +58,16 @@ Git/GitHub 身份核对完成于 `2026-10-07T11:22:01Z`；重新 fetch 的 `orig
 TD-09全量历史恢复仍未证明，已知备份搜索停止，仅新可靠线索才重启；P1继续休眠，不重开取消任务。TD-19原审计缺口保留。
 性能noisy/observer/P0c warning与独立代码review Warning分列；B0/W0不表示没有性能warning。历史失败、404原包及旧收据原样保留；本地归档不等于异地备份，hash/摘要不等于完整永久原产物。
 本轮只允许文档/证据增量、独立评审、正常hooks与PR/精确候选CI；不合并、不访问生产、不dispatch、不读写业务库、不迁移/恢复、不付费模型/重跑实验、不删除branch/worktree或原产物。
+
+## 授权合入续核：2026-10-08
+
+用户已另行授权合入本次文档PR [#441](https://github.com/dong-qiu/deep-insight-agent/pull/441)。`2026-10-07T16:10:40Z`（Asia/Shanghai 10-08）续核主干为 `9b0d5b3312997c7127b104a63616870d215d16f3`；之前 #442 是独立Daily Brief准备线，不计重构关闭。上方10-07状态和A2/A3表保留为原快照；以下仅更新交付身份与当前待办，20项分组不变。
+
+- **A2已合入工程切片**：[\#439](https://github.com/dong-qiu/deep-insight-agent/pull/439)、[spec](../plan/specs/a2-safe-rollback.md)、[收据](a2-safe-rollback-2026-10-07.md)。诊断契约、精确发布镜像的隔离兼容性probe已交付；不证明当前生产兼容、实际业务writer或完整同镜像HTTP/auth/reader通过。安全回退仍 `null/未批准`，`verified=false`，生产/回退权限均false，#435硬阻断保持。A2负责人下一步交接合格回退对象、尚缺的运行验证及A2/A3接口签收，原表“何时提交spec/模块”已由本PR交付替代。
+- **A3已提交独立PR、尚未合入**：[\#440](https://github.com/dong-qiu/deep-insight-agent/pull/440)，观察head `542933382cde0cef0aa913ade4df9eabccd3f65d`。其开放PR不能作为main交付或生产协议完成证据；A3负责人仍须交接互斥/writer/drain/lease、SSM未知终态与A2失败接管的实现和范围。本次A3仍不是早期数值配置切片。
+- #439 target base `65c5a6b4fe3e0089f6be5b66937fedf0d3f8c640`、head `66cb114c5ebff9b1b6fe61ecd8147b6f33c7c91a`、merge `9b0d5b3312997c7127b104a63616870d215d16f3`，合入 `2026-10-07T16:06:18Z`。原PR最终候选run [37648148872/attempt1](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37648148872/attempts/1) 为pull_request/full/success，tested `b66e3fb094a249ccfeee64189e6e4b6ce3249f75`；原独立review B0/W0来源为其交接，非本轮重新审查A2代码。精确main run [37649415774/attempt1](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37649415774/attempts/1) 是push/tested=merge，**本续核时仍in_progress，不预签成功**。本轮未下载其历史应用/镜像原包，hash/期限沿原收据/PR索引，不声明新完整归档。
+
+本次merge授权只覆盖#441；生产访问、部署dispatch、业务数据库、迁移/恢复、模型/实验重跑及branch/worktree/原产物清理仍未授权。#441最终候选和精确main CI在同一PR摘要记录，保留各旧候选结果；docs CI不能代证应用或生产验证。
 
 ## 来源与归属核对
 

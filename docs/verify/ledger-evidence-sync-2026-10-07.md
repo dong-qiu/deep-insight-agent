@@ -158,3 +158,9 @@ PR合入、生产访问/部署dispatch/业务库/迁移恢复/付费模型/实�
 | #437 / main / [11473870106](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37602507907/artifacts/11473870106) | `sha256:6d368fe264473f5487943fd326ce32b8de2c2e927a28f3b3e3d57ee286cb5220` | 2027-01-05T09:42:56Z / false |
 | #438 / candidate / [11473303683](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37602808982/artifacts/11473303683) | `sha256:3873b3453b4fdd1ec7f63a808af799faee1b272a6d65f3abb9298c2fecf9e6af` | 2027-01-05T09:45:35Z / false |
 | #438 / main / [11473233933](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37603495951/artifacts/11473233933) | `sha256:c90e2db3c472a41bb79891e60e97051927c58757a82d0f90ddb0221844d30da6` | 2027-01-05T09:51:43Z / false |
+
+## 授权合入续核：2026-10-08
+
+用户另行授权合入#441后，重新fetch并正常merge最新main；#442仅Daily Brief准备线，#439为A2独立工程交付。续核时间、A2的base/head/merge与候选/待完成main CI、A3开放PR及停止边界见[台账续核](d6-technical-debt-ledger-2026-10-06.md#授权合入续核2026-10-08)；上方原快照、原授权范围及历史正文不回写。
+本次追加只核A2 spec/收据/最终PR摘要与Git/GitHub元数据，不重审其代码或运行probe；A2回退null/未批准、生产硬阻断、剩余工程与A3接口交接均保留。20项统计仍12项按既有范围关闭、7项部分、TD-19本阶段完成整体未关闭。
+#441原head bdd4d355与同步#442后的head efc65e23的docs候选CI分别为37614881660/attempt1、37649114059/attempt1 success；后者不是合入#439后最终候选。最终base/head/tested/tree、CI分类、原包hash/期限、独立复核和授权合入后精确main回执追加同一PR摘要，不沿用旧候选作为新head证明。除合入#441外，其余原禁止操作未授权。
