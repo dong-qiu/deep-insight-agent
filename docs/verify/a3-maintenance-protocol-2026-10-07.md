@@ -105,3 +105,14 @@ AI eval 不适用，未预签或添加 Eval-Gate skip trailer。A1 不执行本�
 
 生产核验/操作必须另申请精确实例/区域/卷/目录/服务、命令、窗口、副作用、证据/失败处置和人员授权；
 避 16:50–17:30 UTC，与其他维护串行。工程切片/PR 不等于全部部署条件满足、修复上线或 TD-19 关闭。
+
+## 首次 PR CI 失败记录
+
+[PR #440](https://github.com/dong-qiu/deep-insight-agent/pull/440) 首次 head `2a7fc298f3c445826c95f59a20a0eca3c69299e0`，
+[CI 37614378766 / attempt 1](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37614378766) 测试 merge
+`d11b53ff6cddad8d8abdcf2141bd92161b568aec`，mode=full。Docker 验证/收据通过；应用 Vitest
+2935 pass、1 fail：未改动的 `d3-reader-batch-boundary.test.ts:14` 的 801 IDs 用例超过默认5000ms。
+该次 Vitest 失败后 ops/build/HTTP/browser 未执行，没有应用 CI 收据，不能宣称 CI 全绿。
+精确基线 [CI 37603495951](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37603495951) 同文件7项通过、
+全 Vitest 2936项通过；本地原测试另诊断7/7通过。这些观察不能单独证明超时为 flaky，也不替代最终 CI。
+本补记保留失败事实；业务测试/阈值/CI/代码字节均不改，后续精确候选 full CI 与独立复核记录在 PR 摘要。
