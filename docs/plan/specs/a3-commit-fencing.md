@@ -8,6 +8,11 @@ S0 候选 `5a38691d104aadde272c820698f74e2dfa96d92d` 的 CI
 不是本方案或新镜像通过证据。main 41 的精确 CI 尚未满足协调者的依赖合入条件，
 本片不先实施 S2/S3、不自行合依赖，不以本方案补签质量、部署或全 writer 静默。
 
+本轮修订时协调者更新：S0 已独立合入 `cb2f924`，精确 main CI
+`37686929840 / attempt 1` 尚 pending；S1 正常同步 main 后候选 `9b80a7`
+（原源文件同字节），正在73 guards/core/typecheck及正常 push 流程。此处保留原调查时点，
+不把候选/合入/pending 写成主干验证通过。S2/S3实施仍须协调者核对前置精确 main success。
+
 承接 [S0](a3-maintenance-protocol.md)、[S1](a3-writer-admission.md)、
 [S2 提案](a3-bounded-drain.md)、[C2a](c2a-task-cancellation.md)、
 [C2b](c2b-task-budget.md)、[恢复边界](recovery-time-coverage.md)与
@@ -116,11 +121,134 @@ async callback 在返回 Promise 前可能已产生副作用。不得将 async s
   必须继续 blocked，不能使用 strict profile 冒充。未来另冻结独立持久 revocation phase/
   generation/new sidecar 契约才可接这种流程，不在本片改 S0/S1 历史格式或业务 schema。
 
-port 的类型/adapter API 精确签名仍需两独立方案 review 后由协调者冻结：建议 core
-显式参数提供仅接受本次 task 的同步 terminal runner，caller 负责同一 isolate/registry、
-固定同步 callsite 与 registry→business 锁序，不把任意回调声称已审。拒绝 foreign profile、
-foreign marker/task/owner、已完成 task、business inTransaction 与 async callback；
-这些边界不依赖 runtime 字符串断言就能证明所有代码已消费，最终仍核原始调用链。
+### 最终接口提案、同连接实现与文件窗口
+
+下面为两独立方案 delta review 的精确提案，不是已经实现或最终通过的 API。
+执行 Agent A 拟独占 `ops/maintenance/writers.mjs`、其 declarations、专属 terminal node-test、
+新 `src/lib/runtime/terminal-dispatch-driver.ts` 与专属测试、
+`src/lib/runtime/writer-admission.ts` types、core `generation-dispatch.ts` 与专属测试、
+本 spec/后续新 receipt。实际窗口由协调者确认后才实施，不动 provenance/repos 等业务
+repository 源或历史 schema，也不把本 spec 当全部 source 文件写入授权。
+runtime driver 只向下依赖 db/provenance，不依赖 app/agent；core 只 typeimport runtime port。
+ops 接收固定 driver 对象，避免 Node `.mjs` 直接 import 尚未编译的 TS，Docker 不新增 ops runtime依赖。
+
+```ts
+// 精确职责签名；品牌类型与错误值的声明只放 shared runtime types。
+type TerminalCommitResult =
+  | { kind: "committed"; businessCommit: "committed" }
+  | { kind: "not_committed"; businessCommit: "not_committed"; code: TerminalDenyCode }
+  | { kind: "unknown"; businessCommit: "committed" | "unknown"; code: TerminalUnknownCode };
+
+// 固定 factory 无 callback/agent/function 输入。负责亲自 preflight/open 唯一业务连接。
+declare function openTerminalDispatchDriver(root: string): FixedTerminalDispatchDriver;
+// Driver 自有 readonly db 属性；核心必须使用这个同一 DB 对象，不接受另一个连接。
+// 唯一同步方法内部固定调用 assertGenerationDispatchClaim + finishGenerationDispatch。
+interface FixedTerminalDispatchDriver {
+  readonly db: DB;
+  commit(claim: DispatchClaim, outcome: DispatchOutcome): TerminalCommitResult;
+  close(): void;
+}
+
+// writers 的一个新 opt-in API；不建立第二 registry connection，不公开 lock/check/work callback。
+interface WritersTerminalExtension {
+  terminalAdmissionFor(worker: WriterGenerationToken,
+    businessDb: DB, driver: FixedTerminalDispatchDriver): TerminalWriterAdmission;
+}
+interface TerminalWriterAdmission {
+  readonly scope: "isolated";
+  readonly entryPoint: "generation-dispatch";
+  readonly version: "a3-terminal-commit-v1";
+  readonly profile: "close-fences-terminal";
+  admit(): FreshTerminalTaskCapability;
+  commitOutcome(capability: FreshTerminalTaskCapability,
+    claim: DispatchClaim, outcome: DispatchOutcome): TerminalCommitResult;
+  finish(capability: FreshTerminalTaskCapability, outcome: WriterOutcome): void;
+}
+```
+
+DispatchOutcome 精确复用 `Parameters<typeof finishGenerationDispatch>[2]`，不新增业务终态。
+driver.commit 是 writer内固定合作方法，core/API/CLI不直接调用它；最终全diff核callsite只有
+writer的同连接transact路径。module导出或可被同uid调用不等于授予生产安全权限。
+
+`FreshTerminalTaskCapability` 是当前 admission closure 的非持久 opaque 对象，包含 S1
+task 身份但不是可序列化的 S1 token 升级。`admit()` 在同一 registry transaction 建新 task，
+当场用本 admission 私有 WeakMap/对象身份 mint capability；不提供 `resume/bindExistingTask/
+capabilityFor(taskId)`。读 DB 的旧 task、JSON clone、另一次 factory、另一个 openWriters
+handle/connection、重启后的同 worker/token 都不能重建/借用 capability。
+一次 terminal attempt 开始即消费 capability 的 terminal 权限（包括拒绝/busy/unknown），
+没有第二次自动 done/failed 尝试；本地 `finish` 权限独立，只写原 S1 本地退出事实。
+不新增 persisted profile/task 字段，不声明 OS 身份认证或防恶意同 uid 注入。
+
+`terminalAdmissionFor` 必须直接复用 `openWriters` 的**同一个私有 db/transact/validate/owned**
+closure。每次 commitOutcome 调单次 transact；callback 内只用私有校验/查询，不能调用
+inspect/admit/admissionFor/finish 等会再次自起 BEGIN 的 public method。新 adapter connection
+先持 registry 锁再调 public inspect 会 busy，这不是正确实现。不得 check后释放锁再调driver，
+也不把 nested registry transaction 错误自动降级。public closeAdmission 与 terminal transact
+使用同一现有 BEGIN IMMEDIATE 锁域，marker/S0完整检查仍在同事务内保留。
+
+### 物理业务身份，不靠调用者 scope 字符串
+
+root 必须是此 openWriters 已验证的完整 S0 root/marker；driver factory 仅打开
+`join(root, "fixture-business.sqlite")`，拒绝可选 filename、memory/URI/temporary DB、其他目录，
+不初始化/migrate/seed/reconcile 业务库。测试先在自有同 root 通过真实 openDb/provenance
+migrations/createRequest 建 fixture，关 seed handle 后由此 factory 重新打开。
+
+factory 在 `new Database`/任何 pragma/BEGIN 前以零SQL确认 canonical root与完整marker，
+root700/DB600/current UID/regular/no-symlink/nlink1、真实路径精确等于上述路径，记录 dev/ino；
+open 必须 fileMustExist/timeout0，不新建文件；open 前后 inode相同才继续。factory 自己
+持有这个 native connection，从而不会只用 `.name` 推定一个既有任意 handle 已绑定 inode。
+admission 要求传入 `businessDb === driver.db`，core 使用同一引用；driver/DB对象关闭、readonly、
+foreign connection、root/marker 不同均拒绝。固定factory的审核来源、不可变对象与同步实码
+是消费前置；不能仅靠 caller声明 profile 或运行时 thenable检测证明某任意 driver安全。
+
+每个 registry BEGIN 与业务 BEGIN 前均做零SQL physical preflight：native db.open/name/
+inTransaction、canonical root、marker/dev/ino/owner/mode/nlink，合法隔离 journal/WAL/SHM
+也必须600/currentUID/regular/no-symlink/nlink1。出现 unsafe 热 journal 时任何可能触发
+恢复的 SQL/pragma之前拒绝并保留原DB/sidecar size/hash，禁止 chmod修复、复制live WAL
+或切换journalmode消除证据；合法隔离WAL允许native协调，不声称文件静态不变。
+初次及事务内在完整 preflight后再用实际 `PRAGMA database_list`核main的精确filename、
+禁止额外attached业务库，并复核真实provenance tables与claim，外部DB不由普通业务schema
+“有同名表”授权。路径swap/marker变更后不换连接重试。
+
+### 固定同步 driver、提交事实与 done/failed 实际控制流
+
+driver 是唯一 factory产出的冻结固定同步实现，commit只接 claim/outcome值，**没有 work/
+callback/assertWrite函数或 async输入**。本地 lostLease 在core选择终态前先按既有路径拒写；
+driver内部显式短 `BEGIN IMMEDIATE`，同一外层业务事务内先执行真实完整
+`assertGenerationDispatchClaim(db, claim)`，随后 `finishGenerationDispatch(db, claim, outcome)`
+（其原事务为嵌套savepoint、旧业务契约不变），`false` 作拒绝而非成功，最后同步 COMMIT。
+固定实码+两独审确认无await、无传入可执行函数、无业务逆向锁，才是同步性证据；
+thenable检查只能额外拒误用，不能把任意 async callback 变安全。
+
+拒绝代码固定脱敏：closed=`writer_terminal_closed`，foreign/invalid capability=
+`writer_terminal_capability_invalid`，business身份不符=`writer_terminal_business_mismatch`，
+reverse transaction=`writer_terminal_reverse_transaction`，known busy=`writer_terminal_busy`；
+完整lease/dispatch guard失效或finish false=`generation_fence_lost`，确认pre-COMMIT
+rollback的其他固定终态错误=`writer_terminal_commit_failed`。未知代码只用
+`writer_terminal_business_commit_unknown` 或 `writer_terminal_registry_commit_unknown`，
+不保存错误正文、配置或SQL原文。
+
+- `not_committed` 只在业务未进入写事务，或**尚未尝试 COMMIT且显式 ROLLBACK返回成功**时
+  可以给出；完整 guard/finish false/业务callback抛错不一概表示 rollback。
+- 只有真实业务 COMMIT 返回后才标 businessCommit=committed；registry最终COMMIT也成功
+  才整体结果kind=committed。业务 COMMIT已尝试但抛错、rollback失败或无法确定切点时
+  kind=unknown/businessCommit=unknown，禁止自动再finish。
+- business COMMIT已返回、registry结束失败则kind=unknown/businessCommit=committed，
+  保全业务事实，不能宣称business rolled_back或重发。SIGKILL无法返回result时，旧task/
+  未完成登记及现有业务事实保持，诊断按unknown处置，不从cap丢失推断没有提交。
+
+core done分支在原lease/首cancel/deadline/C3/budget checks之后调用commitOutcome；
+得到not_committed或unknown直接返回本执行器failed并记录固定拒绝/未知诊断，**不throw到
+普通execute catch然后再调用failed**。若adapter抛出未分类错误（含registry身份检查），
+单独terminal尝试边界catch保全unknown并return，不落普通catch、不调用无guard finish。
+execute本身失败的既有catch先保持lease guard与既定首因/预算分类，再仅一次guarded
+failed commit；deny/false/throw同样return failed，绝无legacy fallback。
+未配置S3的路径仍调用原finish，两条路径由显式profile选择，不通过“guard可选?失败用原路径”
+实现。Lease loss优先拒写；固定cancel/deadline reason不被新诊断覆盖，C3/预算顺序保持。
+S1最外层finally只记录本地 outcome，不能重建cap、发新的terminal write或签quiescence。
+terminalAttempted标记必须涵盖整个之后的traceStatus读取/状态校验路径：业务已COMMIT
+返回后若后置读取/校验失败，保留businessCommit事实并返回failed/unknown诊断，不重入普通
+catch尝试新的failed终态。不能以“最终函数返回failed”推断已经提交的dispatch事务回滚。
 
 选择与字段冻结、实际消费窗口确认、两独立 Reviewer 方案复核前不写实现。
 新维护侧车协议/可选消费者属于协调者可讨论的工程范围；若必要方案触及历史业务
@@ -156,7 +284,8 @@ marker/owner 不明、跨库结果不明或终止未知时 blocked/hold，不自
    runGenerationDispatchOnce 的 done 与 catch/failed 两支，受保护 terminal 写为零，
    claimed/lease/Run/event 原事实保持，登记本地 outcome 与 remote unknown 不混为一谈。
 3. 旧 owner/epoch、期限到达、另一 worker 接管、wrong task/generation、completed task、重启
-   old token 与 marker/pathswap 各自拒绝；未登记/未配置 writer 不签覆盖。
+   old token 与 marker/pathswap 各自拒绝；JSON clone、跨admission/connection借cap、从旧task
+   恢复cap、已消费cap都拒绝；未登记/未配置 writer 不签覆盖。
 4. 同时 cancel/deadline/lease loss/C3 fault/budget，原首因与优先级回归；持有 lease 的原取消/
    预算 failure 不改现有状态语义，strict gate 拒绝时不借失败收尾越门。
 5. reverse lock order/已在 business transaction、SQLite busy、no-SQL preflight hot journal
@@ -167,6 +296,14 @@ marker/owner 不明、跨库结果不明或终止未知时 blocked/hold，不自
 7. 必须包含部分覆盖反例：terminal 被拒而 usage/report/startup 未登记路径仍写，
    必须保持 ready=false。旧 pass/support/raw/review 白名单定向生产路径回归保留；
    mock只证明控制协议，不是模型质量。anchored partial write 最终 unknown，不签远端终止。
+8. memory/foreign DB、另一同filename root、同文件另handle、DB与driver对象不一致、closed/
+   readonly/native handle、symlink/pathswap/permissions/sidecars/额外ATTACH，各自先于任何
+   business写拒绝；有同schema但物理身份不同不能通过。existing open handle遇真实SIGKILL
+   热journal0644必须零SQL拒绝并原hash保全，合法600允许native恢复后重核binding。
+9. 同连接private transaction正控，不用另registry handle套锁再call public method；busy失败
+   不能改走legacy。done deny返回、done adapter throw、failed finish false、failed adapter
+   throw、precommit rollback success/failure、businessCOMMIT返回前后、registryCOMMIT失败
+   全部分别验证：正确三态、terminal一次调用、无catch→failed二次提交、无旁路、未知不清零。
 
 验证在全新真实 provenance fixture seed/createRequest/claim 上执行实际 core/repo路径，
 不构造仅状态机 observations 替身。源改动后按风险跑专属并发/故障测试、C2a/C2b/C3/发布
