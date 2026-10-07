@@ -310,7 +310,7 @@ export async function callVolcengineResponses(
 ): Promise<VolcengineResponsesResult> {
   const target = endpoint(request.baseUrl);
   const attempt = beginUsageAttempt();
-  const response = await fetch(target, {
+  const response = await (attempt?.fetch ?? globalThis.fetch)(target, {
     method: "POST",
     // The admission check above applies to this request only. Node fetch strips Authorization on
     // a cross-origin redirect but still forwards the POST body, which contains prompts/source

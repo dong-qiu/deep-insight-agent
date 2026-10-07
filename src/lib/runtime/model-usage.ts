@@ -1,4 +1,5 @@
 /** C3 scoped metadata only. No implicit DB, no prompt/response/endpoint persistence. */
+import { beginObservedModelAttempt, checkModelCallObserver, observedLogicalCallId } from "./model-call-observer.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import type { DB } from "../db/index.js";
@@ -57,12 +58,13 @@ export function checkRuntimeControl(): void {
   throwIfAborted(job?.signal);
   if (job?.failure) throw job.failure;
   checkTaskBudget();
+  checkModelCallObserver();
 }
 export async function withUsageCall<T>(role: Role, model: string, provider: Provider, work: () => Promise<T>): Promise<T> {
   const job = jobs.getStore();
   checkRuntimeControl();
   if (!job) return work();
-  const pending = calls.run({ job, id: randomUUID(), attempt: 0, role, model, provider }, async () => {
+  const pending = calls.run({ job, id: observedLogicalCallId() ?? randomUUID(), attempt: 0, role, model, provider }, async () => {
     try {
       const value = await work();
       checkRuntimeControl();
@@ -91,13 +93,14 @@ function protectedWrite(job: UsageJob, attemptId: string, work: () => void): voi
     throw failure;
   }
 }
-export function beginUsageAttempt(): { observe: (usage: UsageNumbers, final: boolean) => void } | undefined {
+export function beginUsageAttempt(): { observe: (usage: UsageNumbers, final: boolean) => void; fetch?: typeof fetch } | undefined {
   const call = calls.getStore();
-  if (!call) return undefined;
+  if (!call) return beginObservedModelAttempt();
   const { job } = call;
   // Mandatory gate for every actual fetch, including SDK-owned retries.
   checkRuntimeControl();
-  const attemptId = randomUUID();
+  const observed = beginObservedModelAttempt();
+  const attemptId = observed?.attemptId ?? randomUUID();
   protectedWrite(job, attemptId, () => beginModelUsageAttempt(job.db, {
     attempt_id: attemptId, logical_call_id: call.id, attempt_number: ++call.attempt,
     run_id: job.runId, trace_id: job.traceId, role: call.role, model: call.model, provider: call.provider,
@@ -105,7 +108,9 @@ export function beginUsageAttempt(): { observe: (usage: UsageNumbers, final: boo
   }, job.assertWrite));
   let revision = 0;
   return {
+    fetch: observed?.fetch,
     observe(usage, final) {
+      observed?.observe(usage, final);
       // Cancellation rejects business results but does not erase actually observed usage.
       // The original guard is executed *inside* each repository write transaction.
       protectedWrite(job, attemptId, () => observeModelUsage(job.db, attemptId, { usage, final, observation_number: ++revision }, job.assertWrite));
@@ -188,7 +193,7 @@ export function createAnthropicUsageObserver(observe: (usage: UsageNumbers, fina
 /** Installed as Anthropic's real fetch: SDK internal retries all cross this boundary. */
 export const usageTrackedAnthropicFetch: typeof fetch = async (input, init) => {
   const attempt = beginUsageAttempt();
-  const response = await globalThis.fetch(input, init);
+  const response = await (attempt?.fetch ?? globalThis.fetch)(input, init);
   if (!attempt || !response.ok || !response.body) return response;
   const reader = response.body.getReader();
   const ingest = createAnthropicUsageObserver(attempt.observe);

@@ -1,3 +1,4 @@
+import { observeModelCall } from "./model-call-observer.js";
 import { checkRuntimeControl, deliverUsageCost, withUsageCall, usageTrackedAnthropicFetch } from "./model-usage.js";
 import { safeError } from "./diagnostics.js";
 import { abortableDelay, awaitWithSignal, throwIfAborted } from "./cancellation.js";
@@ -705,7 +706,8 @@ async function callVolcengineStructured<T extends z.ZodType>(
 
 export async function callStructured<T extends z.ZodType>(opts: StructuredCall<T>): Promise<StructuredResult<z.infer<T>>> {
   throwIfAborted(opts.signal);
-  return withUsageCall(opts.role, MODELS[opts.role], llmProvider(), () => callStructuredImpl(opts));
+  return observeModelCall({ role: opts.role, model: MODELS[opts.role], provider: llmProvider(), operation: opts.telemetryOperation ?? "unclassified" },
+    (signal) => withUsageCall(opts.role, MODELS[opts.role], llmProvider(), () => callStructuredImpl(signal === opts.signal ? opts : { ...opts, signal })), opts.signal);
 }
 
 async function callStructuredImpl<T extends z.ZodType>(
