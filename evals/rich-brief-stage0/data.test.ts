@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeF
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { checkReadiness, exposurePartition, freezeData, pendingLabels, prepareData, privateWrite, requiredNumbers, type FreezeProtocol, type HumanLabels } from "./data.js";
+import { checkReadiness, exposurePartition, freezeData, pendingLabels, prepareData, privateWrite, requiredNumbers, requiredRuntimePolicies, requiredRuntimeRoles, type FreezeProtocol, type HumanLabels } from "./data.js";
 import { renderReviewWorksheet } from "./data-review.js";
 
 const hash = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
@@ -41,12 +41,26 @@ function fixture() {
       questions: [{ question_id: "question-a", question: "What changed?", answer: "A supported change", dimension_ids: ["dimension-a"] }], inherited_label_refs: [] }] };
   const labelsResource = write("labels.json", labels);
   const prompt = write("prompt.json", { version: "synthetic-test-prompt" }), ledger = write("ledger.json", { version: "synthetic-test-ledger" });
+  const modelResources = Object.fromEntries(["test-model", "test-validator", "test-countercheck"].map((model) => [model,
+    write(`${model}.json`, { schema_version: "rich-brief-runtime-model-v1", model, model_revision: "test-revision" })]));
+  const providerResource = write("provider.json", { schema_version: "rich-brief-runtime-provider-v1", provider: "test-provider", transport_revision: "test-transport-v1" });
+  const policyResource = write("runtime-policy.json", { schema_version: "synthetic-runtime-policy-v1", meaning: "test fixture only" });
+  const runtimeRoles: FreezeProtocol["arms"][number]["runtime_roles"] = requiredRuntimeRoles.map((role) => {
+    const model = ["extractor", "reader_language_repair"].includes(role) ? "test-model" : role === "quote_only_countercheck" ? "test-countercheck" : "test-validator";
+    return { role, model, model_revision: "test-revision", provider: "test-provider", transport_revision: "test-transport-v1", model_resource: modelResources[model], provider_resource: providerResource,
+      prompt_resource: prompt, policy_resource: policyResource, max_output_tokens: 1,
+      cache: { status: "known", mode: "off", namespace: null, snapshot: null, policy_resource: policyResource },
+      thinking: { status: "known", enabled: false, budget_tokens: 0, source: "test-explicit-off", transport_revision: "test-disabled-v1", policy_resource: policyResource } };
+  });
+  const runtimePolicies = Object.fromEntries(requiredRuntimePolicies.map((name) => [name, policyResource]));
   const numbers = Object.fromEntries(requiredNumbers.map((name) => [name, { value: name.endsWith("_delta") || name === "max_unknown_ratio" || name === "max_failure_ratio" ? 0 : name === "min_gain_ratio" ? 0.1 : 1,
     rationale: "Synthetic test value, not production threshold", evidence_resource_sha256: receipt.sha256, approval: review }]));
   const baseArm = { input_sha256: input.sha256, model: "test-model", provider: "test-provider", model_revision: "test-revision", prompt_sha256: prompt.sha256,
-    token_budget: 1, cost_budget_usd: 1, timeout_ms: 1, max_attempts: 1, failure_policy: "include every failed attempt", cost_accounting: "bill failures separately", stop_rule: "stop at registered limits", ledger_schema_sha256: ledger.sha256 };
+    token_budget: 1, cost_budget_usd: 1, timeout_ms: 1, max_attempts: 1, failure_policy: "include every failed attempt", cost_accounting: "bill failures separately", stop_rule: "stop at registered limits", ledger_schema_sha256: ledger.sha256,
+    runtime_roles: runtimeRoles, runtime_policies: runtimePolicies };
   const protocol: FreezeProtocol = { schema_version: "rich-brief-stage0-protocol-v1", topic: "t_code_agents", input_sha256: input.sha256, labels_sha256: labelsResource.sha256,
-    review, resources: [receipt, prompt, ledger], numbers, arms: [{ ...baseArm, arm_id: "A", task: "baseline" }, { ...baseArm, arm_id: "C1", task: "first_extraction" }],
+    review, resources: [receipt, prompt, ledger, ...Object.values(modelResources), providerResource, policyResource], numbers,
+    arms: [{ ...structuredClone(baseArm), arm_id: "A", task: "baseline" }, { ...structuredClone(baseArm), arm_id: "C1", task: "first_extraction" }],
     source_family_policy: "connected_exposure_excluded_unknown_quarantined", gold_visibility: "scorer_only_not_extractor",
     holdout: { status: "unseen_prospective_uncollected", starts_at: "2099-10-08T17:00:00.000Z", ends_at: "2099-10-09T17:00:00.000Z", registered_run_ids: ["future-run-a"],
       all_scheduled_runs_and_attempts: true, source_family_audit_before_score: true, opened_at: null, formal_results_seen: false, attestation: review },
@@ -141,6 +155,39 @@ describe("stage 0 fail-closed freeze", () => {
   it("refuses publication admission and B1 revival through protocol fields", () => {
     const f = fixture(); expect(f.check(f.labels, { ...f.protocol, production_enabled: true }).status).toBe("blocked");
     expect(f.check(f.labels, { ...f.protocol, b1_status: "approved" }).status).toBe("blocked");
+  });
+  it("rejects missing runtime roles and missing cache/thinking state", () => {
+    const f = fixture(); const p = structuredClone(f.protocol);
+    p.arms[1].runtime_roles = p.arms[1].runtime_roles.filter((r) => r.role !== "quote_only_countercheck");
+    expect(f.check(f.labels, p).blockers).toContain("required_runtime_role_manifest_incomplete_or_duplicate");
+    const missingCache = structuredClone(f.protocol) as unknown as { arms: { runtime_roles: Record<string, unknown>[] }[] };
+    delete missingCache.arms[1].runtime_roles[0].cache;
+    expect(f.check(f.labels, missingCache).blockers).toContain("t04_protocol_schema_or_numeric_decisions_pending");
+    const missingThinking = structuredClone(f.protocol) as unknown as { arms: { runtime_roles: Record<string, unknown>[] }[] };
+    delete missingThinking.arms[1].runtime_roles[0].thinking;
+    expect(f.check(f.labels, missingThinking).status).toBe("blocked");
+  });
+  it("rejects non-extraction runtime drift and model separation violations", () => {
+    const f = fixture(); const p = structuredClone(f.protocol);
+    p.arms[1].runtime_roles.find((r) => r.role === "display_primary")!.max_output_tokens = 2;
+    expect(f.check(f.labels, p).blockers).toContain("baseline_c1_non_extraction_runtime_unpaired");
+    const countercheck = p.arms[1].runtime_roles.find((r) => r.role === "quote_only_countercheck")!;
+    countercheck.model = "test-validator";
+    expect(f.check(f.labels, p).blockers).toContain("runtime_model_separation_failed");
+    expect(f.check(f.labels, p).blockers).toContain("runtime_model_resource_identity_mismatch");
+  });
+  it("requires role resource paths and global policies, not merely matching hashes", () => {
+    const f = fixture(); const p = structuredClone(f.protocol);
+    p.arms[1].runtime_roles[0].prompt_resource.path = join(f.root, "not-the-prompt.txt");
+    delete p.arms[1].runtime_policies.history_selection;
+    expect(f.check(f.labels, p).blockers).toContain("runtime_role_path_hash_not_bound");
+    expect(f.check(f.labels, p).blockers).toContain("required_runtime_policy_manifest_incomplete");
+  });
+  it("requires frozen cache read state and coherent thinking budget", () => {
+    const f = fixture(); const p = structuredClone(f.protocol); const policyResource = p.arms[1].runtime_roles[0].policy_resource;
+    p.arms[1].runtime_roles[0].cache = { status: "known", mode: "read_write", namespace: "isolated-test-cache", snapshot: null, policy_resource: policyResource };
+    p.arms[1].runtime_roles[0].thinking = { status: "known", enabled: true, budget_tokens: 0, source: "test", transport_revision: "test", policy_resource: policyResource };
+    expect(f.check(f.labels, p).blockers).toEqual(expect.arrayContaining(["cache_read_state_not_frozen", "thinking_budget_inconsistent_with_enabled_state"]));
   });
 });
 

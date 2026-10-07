@@ -203,10 +203,28 @@ export const requiredNumbers = ["min_complete_runs", "min_important_events", "mi
   "max_reader_seconds", "max_facts_per_issue", "min_reading_correctness_delta", "min_blind_readers", "min_prospective_runs", "max_cost_usd", "max_tokens",
   "max_elapsed_ms", "max_failure_ratio", "stop_after_runs"] as const;
 const numericDecision = z.object({ value: z.number().finite(), rationale: text, evidence_resource_sha256: sha, approval: review }).strict();
+export const requiredRuntimeRoles = ["extractor", "reader_language_repair", "citation_repair", "display_primary", "quote_only_countercheck", "validator_single", "validator_batch"] as const;
+export const requiredRuntimePolicies = ["output_schema", "source_normalization", "atomic_display_audit", "citation_locator", "history_selection", "cost_failure_stop"] as const;
+const knownIdentity = text.refine((value) => !["unknown", "pending", "unresolved", "not_available"].includes(value.toLowerCase()), "known runtime identity required");
+const cacheConfig = z.discriminatedUnion("status", [
+  z.object({ status: z.literal("known"), mode: z.enum(["off", "write_only", "read_write"]), namespace: text.nullable(), snapshot: boundResource.nullable(), policy_resource: boundResource }).strict(),
+  z.object({ status: z.literal("not_applicable"), reason: text, policy_resource: boundResource }).strict(),
+]);
+const thinkingConfig = z.discriminatedUnion("status", [
+  z.object({ status: z.literal("known"), enabled: z.boolean(), budget_tokens: z.number().int().nonnegative(), source: knownIdentity, transport_revision: knownIdentity, policy_resource: boundResource }).strict(),
+  z.object({ status: z.literal("not_applicable"), reason: text, policy_resource: boundResource }).strict(),
+]);
+const runtimeRole = z.object({
+  role: z.enum(requiredRuntimeRoles), model: knownIdentity, model_revision: knownIdentity, provider: knownIdentity, transport_revision: knownIdentity,
+  model_resource: boundResource, provider_resource: boundResource, prompt_resource: boundResource, policy_resource: boundResource,
+  max_output_tokens: z.number().int().positive(), cache: cacheConfig, thinking: thinkingConfig,
+}).strict();
 const arm = z.object({ arm_id: text, task: z.enum(["baseline", "first_extraction", "freshness", "paper", "podcast", "bounded_implication"]),
   input_sha256: sha, model: text, provider: text, model_revision: text, prompt_sha256: sha,
   token_budget: z.number().int().positive(), cost_budget_usd: z.number().positive(), timeout_ms: z.number().int().positive(),
-  max_attempts: z.number().int().positive(), failure_policy: text, cost_accounting: text, stop_rule: text, ledger_schema_sha256: sha }).strict();
+  max_attempts: z.number().int().positive(), failure_policy: text, cost_accounting: text, stop_rule: text, ledger_schema_sha256: sha,
+  runtime_roles: z.array(runtimeRole), runtime_policies: z.record(z.string(), boundResource),
+}).strict();
 const protocolSchema = z.object({
   schema_version: z.literal("rich-brief-stage0-protocol-v1"), topic: z.literal("t_code_agents"), input_sha256: sha, labels_sha256: sha,
   review: review, numbers: z.record(z.string(), numericDecision), resources: z.array(boundResource).min(1), arms: z.array(arm).min(2),
@@ -277,6 +295,7 @@ export function checkReadiness(data: PreparedData, inputSha256: string, rawLabel
     const p = protocolParsed.data;
     if (p.input_sha256 !== inputSha256 || p.labels_sha256 !== labelsSha256) add("t04_input_or_labels_hash_mismatch");
     const resourceHashes = new Set(p.resources.map((r) => r.sha256));
+    const bound = (r: Resource): boolean => p.resources.some((entry) => entry.path === r.path && entry.sha256 === r.sha256);
     if (new Set(p.resources.map((r) => r.path)).size !== p.resources.length) add("duplicate_protocol_resource_path");
     for (const r of p.resources) { try { verifyResource(r); } catch { add("protocol_resource_changed_or_missing"); } }
     const verifyReview = (r: Review) => {
@@ -307,10 +326,51 @@ export function checkReadiness(data: PreparedData, inputSha256: string, rawLabel
       if (a.input_sha256 !== inputSha256 || !resourceHashes.has(a.prompt_sha256) || !resourceHashes.has(a.ledger_schema_sha256)) add("arm_input_prompt_or_ledger_not_bound");
       if (p.numbers.max_tokens && a.token_budget > p.numbers.max_tokens.value || p.numbers.max_cost_usd && a.cost_budget_usd > p.numbers.max_cost_usd.value
         || p.numbers.max_elapsed_ms && a.timeout_ms > p.numbers.max_elapsed_ms.value) add("arm_budget_exceeds_registered_cap");
+      const roles = new Map(a.runtime_roles.map((r) => [r.role, r]));
+      if (roles.size !== a.runtime_roles.length || roles.size !== requiredRuntimeRoles.length || requiredRuntimeRoles.some((role) => !roles.has(role))) add("required_runtime_role_manifest_incomplete_or_duplicate");
+      if (Object.keys(a.runtime_policies).length !== requiredRuntimePolicies.length || requiredRuntimePolicies.some((role) => !a.runtime_policies[role])) add("required_runtime_policy_manifest_incomplete");
+      for (const r of Object.values(a.runtime_policies)) if (!bound(r)) add("runtime_policy_path_hash_not_bound");
+      for (const r of a.runtime_roles) {
+        for (const entry of [r.model_resource, r.provider_resource, r.prompt_resource, r.policy_resource, r.cache.policy_resource, r.thinking.policy_resource]) {
+          if (!bound(entry)) add("runtime_role_path_hash_not_bound");
+        }
+        try {
+          const modelIdentity = obj(json(r.model_resource.path)), providerIdentity = obj(json(r.provider_resource.path));
+          if (modelIdentity.schema_version !== "rich-brief-runtime-model-v1" || modelIdentity.model !== r.model || modelIdentity.model_revision !== r.model_revision) add("runtime_model_resource_identity_mismatch");
+          if (providerIdentity.schema_version !== "rich-brief-runtime-provider-v1" || providerIdentity.provider !== r.provider || providerIdentity.transport_revision !== r.transport_revision) add("runtime_provider_resource_identity_mismatch");
+        } catch { add("runtime_model_or_provider_identity_resource_invalid"); }
+        if (r.cache.status === "known") {
+          if (r.cache.mode === "read_write" && (!r.cache.namespace || !r.cache.snapshot)) add("cache_read_state_not_frozen");
+          if (r.cache.mode === "write_only" && !r.cache.namespace) add("cache_namespace_not_frozen");
+          if (r.cache.mode === "off" && (r.cache.snapshot !== null || r.cache.namespace !== null)) add("disabled_cache_has_read_state");
+          if (r.cache.snapshot && !bound(r.cache.snapshot)) add("cache_snapshot_path_hash_not_bound");
+        }
+        if (r.thinking.status === "known" && (r.thinking.enabled ? r.thinking.budget_tokens <= 0 : r.thinking.budget_tokens !== 0)) add("thinking_budget_inconsistent_with_enabled_state");
+        if (r.max_output_tokens > a.token_budget) add("runtime_role_budget_exceeds_arm_cap");
+      }
+      const extractor = roles.get("extractor"), primary = roles.get("display_primary"), countercheck = roles.get("quote_only_countercheck"), validator = roles.get("validator_single");
+      if (extractor && (extractor.model !== a.model || extractor.provider !== a.provider || extractor.model_revision !== a.model_revision || extractor.prompt_resource.sha256 !== a.prompt_sha256)) add("extractor_identity_or_prompt_alias_mismatch");
+      if (extractor && validator && countercheck && new Set([extractor.model, validator.model, countercheck.model]).size !== 3) add("runtime_model_separation_failed");
+      // Match assertCoverageModelSeparation plus the production role routing. Prompt identity stays separate per operation.
+      const routedIdentity = (r: z.infer<typeof runtimeRole>) => JSON.stringify([r.model, r.model_revision, r.provider, r.transport_revision, r.model_resource, r.provider_resource]);
+      if (validator) for (const role of ["display_primary", "citation_repair", "validator_batch"] as const) {
+        const candidate = roles.get(role); if (candidate && routedIdentity(candidate) !== routedIdentity(validator)) add("validator_role_routing_identity_mismatch");
+      }
+      const readerRepair = roles.get("reader_language_repair");
+      if (extractor && readerRepair && routedIdentity(extractor) !== routedIdentity(readerRepair)) add("reader_repair_role_routing_identity_mismatch");
+      if (primary && countercheck && primary.model === countercheck.model) add("runtime_model_separation_failed");
     }
     const pair = p.arms.filter((a) => a.task === "baseline" || a.task === "first_extraction");
     const signatures = new Set(pair.map((a) => JSON.stringify([a.input_sha256, a.model, a.provider, a.model_revision, a.token_budget, a.cost_budget_usd, a.timeout_ms, a.max_attempts])));
     if (signatures.size !== 1) add("baseline_c1_model_input_or_budget_unpaired");
+    const fullRuntimeSignatures = new Set(pair.map((a) => JSON.stringify({
+      runtime_policies: Object.entries(a.runtime_policies).sort(([left], [right]) => left.localeCompare(right)),
+      runtime_roles: [...a.runtime_roles].sort((left, right) => left.role.localeCompare(right.role)).map((r) => {
+        if (r.role !== "extractor") return r;
+        return { ...r, prompt_resource: null };
+      }),
+    })));
+    if (fullRuntimeSignatures.size !== 1) add("baseline_c1_non_extraction_runtime_unpaired");
   }
   return { status: blockers.length ? "blocked" : "ready_for_freeze", blockers, counts };
 }
