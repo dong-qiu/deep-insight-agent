@@ -6,6 +6,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import type { A1DiagnosticsSnapshot } from "./a1-attempt-diagnostics.js";
 import type { A1EffectiveConfig, A1Timing } from "./a1-observability.js";
 import type { RelayRecoveryStats } from "../src/lib/runtime/relay-recovery.js";
 
@@ -32,6 +33,7 @@ export interface A1RunManifest {
   /** Optional additive observations; never part of EvalConfig/checkpoint identity. */
   effective_config?: A1EffectiveConfig;
   timing?: A1Timing;
+  attempt_diagnostics?: A1DiagnosticsSnapshot;
   config: object;
   dataset: object;
   source: { commit: string | null; dirty_fingerprint: string | null; dirty_fingerprint_algorithm?: string };
@@ -100,6 +102,7 @@ export interface A1RunProgress {
   phase: "setup" | "quality" | "consistency" | "coverage_benchmark" | "finalizing";
   effective_config?: A1EffectiveConfig;
   timing?: A1Timing;
+  attempt_diagnostics?: A1DiagnosticsSnapshot;
   topic_timeout_ms?: number;
   /** Total deadline for one labelled consistency judge, including nested retry budgets. */
   judge_timeout_ms?: number;
@@ -163,8 +166,10 @@ export function sha256File(path: string): string {
 }
 
 /** Atomic on a single filesystem: consumers see either no run directory or the complete one. */
-export function finalizeA1Run(workspace: A1RunWorkspace, manifest: A1RunManifest): void {
+export function finalizeA1Run(workspace: A1RunWorkspace, manifest: A1RunManifest, check?: () => void): void {
+  check?.();
   writeJson(join(workspace.tempDir, "manifest.json"), manifest);
+  check?.();
   renameSync(workspace.tempDir, workspace.finalDir);
   if (manifest.status === "completed") {
     const pointer = join(workspace.root, "latest-complete.json");
@@ -178,12 +183,17 @@ export function finalizeA1Run(workspace: A1RunWorkspace, manifest: A1RunManifest
       manual_review: manifest.manual_review,
       dcp_eligibility: manifest.dcp_eligibility,
     });
+    check?.();
     renameSync(pointerTmp, pointer);
   }
 }
 
 /** Best-effort only: a secondary failure while recording a failed run must not hide its root cause. */
 export function finalizeFailedA1Run(workspace: A1RunWorkspace, manifest: A1RunManifest): void {
-  if (!existsSync(workspace.tempDir)) return;
+  if (!existsSync(workspace.tempDir)) {
+    // An opt-in publication guard may reject after directory rename, before pointer commit.
+    if (existsSync(workspace.finalDir)) writeJson(join(workspace.finalDir, "manifest.json"), manifest);
+    return;
+  }
   finalizeA1Run(workspace, manifest);
 }

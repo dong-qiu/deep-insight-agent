@@ -53,6 +53,7 @@ function response(data: object, anthropic: boolean, tool: string, truncated: boo
 let analyzerCalls = 0;
 let primaryCalls = 0;
 let eofSeen = false;
+let sdkRetrySeen = false;
 globalThis.fetch = async (_input, init) => {
   if (init?.method !== "POST" || typeof init.body !== "string") throw new Error("Unexpected fixture transport");
   const body = JSON.parse(init.body);
@@ -64,6 +65,10 @@ globalThis.fetch = async (_input, init) => {
   const operation = properties.no_significant_event ? "analysis" : properties.consistency ? "judge" : properties.statement ? "translation" : "coverage";
   stats.requests.push({ role, operation, sha256: createHash("sha256").update(init.body).digest("hex") });
   save();
+  if (mode === "sdk_retry" && !sdkRetrySeen) {
+    sdkRetrySeen = true; stats.retries++; save();
+    return new Response("synthetic failure", { status: 500, headers: { "retry-after-ms": "0" } });
+  }
   if (mode === "eof_retry" && operation === "analysis" && !eofSeen) {
     eofSeen = true; stats.retries++;
     return new Response("data: {\"type\":\"response.in_progress\"}\n\n", { status: 200, headers: { "Content-Type": "text/event-stream" } });

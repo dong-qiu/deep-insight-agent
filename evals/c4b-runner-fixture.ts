@@ -58,8 +58,10 @@ export async function runC4bFixture(
   };
   const started = performance.now();
   const child = spawn(process.execPath, ["--import", "tsx", "--import", "./evals/fixtures/c4b-mock-provider.ts", "evals/run-a1.ts"], {
-    cwd: resolve("."), env, stdio: "ignore",
+    cwd: resolve("."), env, stdio: ["ignore", "ignore", "ignore", "ipc"],
   });
+  let publication: object | undefined;
+  child.on("message", (message) => { if (message && typeof message === "object" && "type" in message && message.type === "a1_diagnostic_publication") publication = message; });
   const watchdog = setTimeout(() => child.kill("SIGTERM"), options.watchdogMs ?? 15000);
   let poll: ReturnType<typeof setInterval> | undefined;
   if (options.cancel) poll = setInterval(() => {
@@ -72,6 +74,7 @@ export async function runC4bFixture(
   const wall_ms = performance.now() - started;
   const name = readdirSync(runs).find((value) => /^a1-/.test(value));
   const directory = name ? join(runs, name) : null;
+  if (directory && publication) writeFileSync(join(directory, "diagnostic-lifecycle.json"), JSON.stringify(publication), { mode: 0o600 });
   return { wall_ms, ...outcome, directory,
     manifest: directory ? JSON.parse(readFileSync(join(directory, "manifest.json"), "utf8")) : {},
     stats: existsSync(statsPath) ? JSON.parse(readFileSync(statsPath, "utf8")) : { requests: [], retries: 0, source_reads: 0, source_bytes: 0 },
