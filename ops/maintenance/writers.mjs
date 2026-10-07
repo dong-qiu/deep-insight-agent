@@ -86,10 +86,13 @@ export function openWriters(root) {
   const path = join(root, 'writers.sqlite'); const identity = safe(path);
   journalCheck(path); // Validate before SQLite is allowed to recover/remove a hot journal.
   const db = new Database(path, { fileMustExist: true, timeout: 0 });
-  function validate() {
+  function pathCheck() {
     rootCheck(root); markerCheck(); const current = safe(path);
     check(current.dev === identity.dev && current.ino === identity.ino, 'writer_file_replaced');
     journalCheck(path);
+  }
+  function validate() {
+    pathCheck();
     check(same(marker, ledgerMarker(root)), 'writer_marker_changed');
     check(db.pragma('application_id', { simple: true }) === APP_ID && db.pragma('user_version', { simple: true }) === 1, 'invalid_writer_version');
     check(db.pragma('journal_mode', { simple: true }) === 'delete' && db.pragma('foreign_keys', { simple: true }) === 1, 'invalid_writer_database');
@@ -106,7 +109,12 @@ export function openWriters(root) {
     for (const row of db.prepare('SELECT * FROM tasks').all()) parse(z.uuid(), row.task_id);
     for (const row of db.prepare('SELECT * FROM completions').all()) parse(outcomeSchema, row.outcome);
   }
-  function transact(fn) { return db.transaction(() => { validate(); return fn(); }).immediate(); }
+  function transact(fn) {
+    // BEGIN itself may recover a hot journal on a previously opened handle.
+    // No SQLite operation is allowed before the filesystem preflight.
+    pathCheck();
+    return db.transaction(() => { validate(); return fn(); }).immediate();
+  }
   try {
     db.pragma('synchronous = FULL'); db.pragma('foreign_keys = ON');
     transact(() => undefined);

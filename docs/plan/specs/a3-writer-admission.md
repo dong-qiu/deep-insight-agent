@@ -48,7 +48,8 @@ S0 `acquire` 尚不自动调用此方法；S0 CLI 与本登记域之间无跨DB�
 
 侧车只在合法0700/current-uid/no-symlink根中创建一次0600普通单链接文件，O_EXCL + fsync文件/目录。
 SQLite DELETE/FULL/timeout=0；竞争不等待。打开SQLite前先核journal/WAL/SHM权限与类型，防hot-journal恢复先删除不安全原证据；
-每次事务重核 marker、文件inode、权限、schema/version。
+每次事务BEGIN前做无SQL的root/marker/inode/journal检查（BEGIN本身也会触发恢复），
+callback内继续完整重核身份、权限、schema/version。
 初始化中断或未知schema不自动重建，缺失/损坏/marker替换 fail closed。
 append-only worker/task事实保存；completion不删除task。closed不是安全批准或恢复放行。
 
@@ -64,7 +65,7 @@ append-only worker/task事实保存；completion不删除task。closed不是安�
 - taskToken错绑定、伪造代际、重复不同结果拒绝；重开持久closed与未终结任务，不把claimed/expired当停止。
 - 本地promise结束仍明确 remote/unknown subwork未证；所有snapshot继续 writer_quiescence=false。
 - 文件不存在/不安全权限/symlink/未知schema或损坏/部分初始化拒绝，禁止自动修复旧证据。
-  实际SIGKILL形成的0644 hot journal必须拒绝且DB/journal hash不变；合法0600恢复仍保留closed与unfinished/unknown。
+  新open及全部existing-handle事务：实际SIGKILL形成的0644 hot journal必须拒绝且DB/journal hash不变；合法0600恢复仍保留closed与unfinished/unknown。
 
 验证执行受影响真实dispatch路径，定向C2a/C2b/usage/发布白名单回归、ops、typecheck、lint；
 运行时bundle改动补build。不调用真实模型，不以A1替代接线路径。独立方案及完整diff评审；

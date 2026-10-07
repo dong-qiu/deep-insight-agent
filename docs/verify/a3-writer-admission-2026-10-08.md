@@ -26,16 +26,19 @@ S0获取维护操作与registry关闭之间没有跨DB原子事务，不能称�
 
 | 验证 | 实际路径与结果 |
 | --- | --- |
-| writer专属node测试 | 13项：真实SIGKILL hot journal不安全权限拒绝且原hash保全、合法恢复保留closed/unfinished，以及两个独立进程close/admit、SQLite锁、旧代际/错误token、持久unfinished/closed、缺DB永久marker、symlink/坏权限/未知schema/损坏/半初始化、append-only事实与禁止reopen |
+| writer专属node测试 | 15项：新open及全部existing-handle事务的真实SIGKILL hot journal不安全权限拒绝且原hash保全、合法恢复保留closed/unfinished，以及两个独立进程close/admit、SQLite锁、旧代际/错误token、持久unfinished/closed、缺DB永久marker、symlink/坏权限/未知schema/损坏/半初始化、append-only事实与禁止reopen |
 | 10个受影响vitest文件 | 134项全通过：真实dispatch接线8项，既有dispatch/C2a/C2b/usage/报告取消/锚提交/生产report-gen接线回归 |
-| ops自动发现 | 380项，377通过、0失败、3项既有Linux Docker/GHCR本地skip；CI仍须实际执行，不把本地mock或skip当镜像通过 |
+| ops自动发现 | 最近完整run380项，377通过、0失败、3项既有Linux Docker/GHCR本地skip；第二轮修正后定向S0/S1合计67项通过，未改其他ops路径；CI仍须实际执行，不把本地mock或skip当镜像通过 |
 | typecheck | TS7与TS6主程序/tools均通过 |
 | lint | 全仓lint通过，warnings=0 |
 | build | 无.env加载、清空ambient凭据、显式隔离DB/DATA；Next生产构建通过，实际internal dispatch route bundle含writerAdmission；ops只为type import并被擦除，不增加runtime文件依赖；不访问模型/生产 |
 
 独立最终review真实复现hot journal权限检查时机缺陷：SQLite pragma在检查前触发恢复/删除。
-已将journal/WAL/SHM检查移到new Database之前，并每事务复核；所有pragma/初验失败关handle。
-`writers-v2.log`保存修正后13项通过，原v1及index-v1仍保留；新索引绑定修正head。`ops-v2.log`为最终380项结果；`core-v3.log`8项接线复核与`lint-v3.log`通过。
+已将journal/WAL/SHM检查移到new Database之前；第二位Reviewer进一步复现existing handle的
+BEGIN也会先恢复，现对所有事务在BEGIN之前做无SQL path/marker/inode/journal检查，callback内仍完整validate。
+所有pragma/初验失败关handle。原始Reviewer2合成复现日志非覆盖保全为reviewer-two-existing-handle-repro.log。
+`writers-v2.log`保存修正后13项通过，原v1及index-v1仍保留；后续索引绑定新修正head。`ops-v2.log`保留380项结果；第二轮`writers-v3.log`为真实S0/S1共67项通过（其中writer15项）。
+`core-v4.log`8项接线复核与`lint-v4.log`通过。
 TS7/TS6及build复用未修改typed API与dispatch源码的有效v2/v1结果，type-only ops导入已擦除。
 
 专属dispatch反例执行真实业务queue/claim/lease/Run/trace失败收尾；execute为受控回调。

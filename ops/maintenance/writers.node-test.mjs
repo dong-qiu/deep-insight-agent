@@ -160,3 +160,27 @@ test('legal 0600 hot journal recovers closed admission and unknown unfinished ta
   assert.deepEqual(view.tasks, [{ taskId: task.taskId, workerId: task.workerId, outcome: null, remote_subwork: 'unknown' }]);
   assert.equal(view.writer_quiescence, false);
 });
+
+
+test('existing handle rejects unsafe hot journal before any read/write BEGIN and preserves bytes', t => {
+  const root = fixture(t); const w = opened(t, root);
+  const worker = w.register('generation-one', 'generation-dispatch'); const task = w.admit(worker);
+  hotJournal(root); const path = join(root, 'writers.sqlite'), journal = `${path}-journal`;
+  chmodSync(journal, 0o644); const before = { db: sha256(path), journal: sha256(journal) };
+  for (const action of [
+    () => w.register('generation-two', 'generation-dispatch'), () => w.admit(worker),
+    () => w.finish(task, 'failed'), () => w.closeAdmission(), () => w.inspect(), () => w.admissionFor(worker),
+  ]) {
+    assert.throws(action, /unsafe_writer_path/);
+    assert.deepEqual({ db: sha256(path), journal: sha256(journal) }, before);
+  }
+});
+
+test('existing handle legally recovers 0600 hot journal without reopening or losing unfinished task', t => {
+  const root = fixture(t); const w = opened(t, root);
+  const worker = w.register('generation-one', 'generation-dispatch'); const task = w.admit(worker); w.closeAdmission();
+  hotJournal(root); const view = w.inspect();
+  assert.equal(view.admission, 'closed'); assert.equal(view.workers.length, 1);
+  assert.deepEqual(view.tasks, [{ taskId: task.taskId, workerId: task.workerId, outcome: null, remote_subwork: 'unknown' }]);
+  assert.throws(() => w.admit(worker), /writer_admission_closed/); assert.equal(w.inspect().writer_quiescence, false);
+});
