@@ -133,7 +133,7 @@ describe("attested offline snapshot admission", () => {
     const backup = f.write("backup-manifest.json", { schema_version: 1, status: "incomplete", created_at: "2026-10-03T18:01:00.000Z", files: [{ path: "insight.db", sha256: dbHash, size: readFileSync(path).length }], db_snapshot_interval: interval });
     const exported = f.write("snapshot-manifest.json", { format_version: "brief-density-s0-v2", snapshot_sha256: dbHash, as_of: interval.completed_at,
       snapshot_time_evidence: { status: "db_interval_no_external_commit_observed", backup_manifest_sha256: backup.sha256, completed_at: interval.completed_at } });
-    return { ...f, config: { run_id: "run-a", db_path: offline, backup_manifest: backup, exporter_manifest: exported }, offline };
+    return { ...f, config: { run_id: "run-a", db_path: offline, backup_manifest: backup, exporter_manifest: exported }, original: path, offline };
   }
   it("accepts exact attested DELETE bytes while keeping incomplete backup distinct", () => {
     const f = snapshotFixture(); expect(attestSnapshot(f.config).as_of).toBe("2026-10-03T18:00:03.000Z");
@@ -143,5 +143,9 @@ describe("attested offline snapshot admission", () => {
     const next = snapshotFixture(); const bytes = readFileSync(next.offline); bytes[18] = 2; writeFileSync(next.offline, bytes);
     expect(() => attestSnapshot(next.config)).toThrow("delete_journal_snapshot_required");
     const changed = snapshotFixture(); writeFileSync(changed.config.backup_manifest.path, "changed"); expect(() => attestSnapshot(changed.config)).toThrow("resource_hash_mismatch");
+  });
+  it.each(["original", "offline"] as const)("rejects DELETE journal sidecars beside the %s DB", (location) => {
+    const f = snapshotFixture(); writeFileSync(`${f[location]}-journal`, "rollback-journal");
+    expect(() => attestSnapshot(f.config)).toThrow("standalone_snapshot_required");
   });
 });

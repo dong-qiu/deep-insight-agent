@@ -6,7 +6,7 @@
 
 ## 实际材料与边界
 
-只读旧封存备份及 DELETE-journal 字节副本，经原 manifest 的 DB SHA/size、稳定备份区间、原件/副本字节一致、对应 `brief-density-s0-v2` export hash 及其 backup-manifest 绑定核验后，以 `readonly/fileMustExist` 打开。无 WAL/SHM、不导入应用 bootstrap/getDb/migration，不复制 DB。打开前拒绝 sidecar/WAL、篡改、未认证 manifest；快照撤回或 pending request 非空也拒绝。DB 及 manifest 在读取后重验 hash。三份备份整体 incomplete，本波仅认证指定 DB/区间的输入来源，不升级为完整恢复点或当前撤回状态证明。
+只读旧封存备份及 DELETE-journal 字节副本，经原 manifest 的 DB SHA/size、稳定备份区间、原件/副本字节一致、对应 `brief-density-s0-v2` export hash 及其 backup-manifest 绑定核验后，以 `readonly/fileMustExist` 打开。原件与副本均拒绝 WAL/SHM/journal 侧文件，不导入应用 bootstrap/getDb/migration，不复制 DB。打开前拒绝 sidecar/WAL、篡改、未认证 manifest；快照撤回或 pending request 非空也拒绝。DB 及 manifest 在读取后重验 hash。三份备份整体 incomplete，本波仅认证指定 DB/区间的输入来源，不升级为完整恢复点或当前撤回状态证明。
 
 实际恢复 **3 个预登记运行、3 次分析尝试、45 个输入 occurrence、23 个 exact revision**。全部 body/hash/body-kind/content-v4 元数据与既有 stage0 输入逐项匹配，通过实际 `getContentItem/getTopic` 读回 author/language/tags/raw_ref/topic 等完整 `ContentItem` 和 `Topic`，不以假空值充未知。三次原候选总数 47 / unknown / 99，10 月 4 日失败原尝试留在分母。
 
@@ -69,11 +69,11 @@ npm run typecheck
 npx eslint evals/rich-brief-c1 --max-warnings=0
 ```
 
-**30/30**（本波 11 + 共用 stage0 19）通过，TS7/TS6 app/tools 通过，定向 lint 通过。覆盖完整分母/失败 unknown、gold 隔离、原文/可见段/窗口/revision 篡改、真正 freeze 拒绝、资源变更、跨 arm/version 漂移、失败/重试/未知成本、WAL/sidecar/DB/manifest 拒绝。所有有意构造的模型、账单和运行测试只在合成 fixture，不进入真实收益分母。
+**32/32**（本波 13 + 共用 stage0 19）通过，TS7/TS6 app/tools 通过，定向 lint 通过。覆盖完整分母/失败 unknown、gold 隔离、原文/可见段/窗口/revision 篡改、真正 freeze 拒绝、资源变更、跨 arm/version 漂移、失败/重试/未知成本、WAL/sidecar/DB/manifest 拒绝；包含原件和副本各自存在 DELETE `-journal` 时的实际 negative test。所有有意构造的模型、账单和运行测试只在合成 fixture，不进入真实收益分母。
 
 真实 `ops/ci-docs-check.mjs` 的 `checkDocuments` 对本文通过（1 份），本地链接/章节/围栏/格式及 `git diff --check` 通过。首次调用误传 scope 参数的失败已纠正，失败调用不作为通过收据；正式检查使用 Node 24.19。
 
-已按 `eval-gate` 核对路径：本波是离线准备和拒绝门，候选 prompt 仅存私有资源且未执行；未运行 A1、未签 baseline/候选收益/人评/来源或生产准入。A1 当前默认路径不执行本次候选，不能给它盖假 pass。未跑 build（无构建/路由/部署修改），未 push/PR/merge；精确 head 的非作者 review 与 CI 由集成负责人另记。
+已按 `eval-gate` 核对路径：本波是离线准备和拒绝门，候选 prompt 模板在 `prepare.ts` 版本化，生成的精确字节写私有资源且未执行，不称候选质量 pass；未运行 A1、未签 baseline/候选收益/人评/来源或生产准入。A1 当前默认路径不执行本次候选，不能给它盖假 pass。未跑 build（无构建/路由/部署修改），未 push/PR/merge；精确 head 的非作者 review 与 CI 由集成负责人另记。
 
 ## 下一波入口及未解除门
 

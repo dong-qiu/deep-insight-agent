@@ -16,7 +16,7 @@ export function attestSnapshot(config: SnapshotConfig): { db: Resource; manifest
   const originalPath = join(dirname(config.backup_manifest.path), "insight.db");
   for (const path of [config.db_path, originalPath]) {
     fileResource(path);
-    if (existsSync(`${path}-wal`) || existsSync(`${path}-shm`)) throw new Error("standalone_snapshot_required");
+    if (["-wal", "-shm", "-journal"].some((suffix) => existsSync(`${path}${suffix}`))) throw new Error("standalone_snapshot_required");
     const header = readFileSync(path).subarray(0, 20);
     if (header[18] !== 1 || header[19] !== 1) throw new Error("delete_journal_snapshot_required");
   }
