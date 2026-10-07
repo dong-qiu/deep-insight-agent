@@ -104,3 +104,23 @@ worktree `insight-agent-td10-collector-plan-20261008`、port3118、独立 DB/DAT
 独占 collector.ts、两项新测试及专属 spec/receipt。其他 shared 文件零修改；不清理
 旧 branch/worktree/原证据。未生产访问、部署、真实模型/通知/实际 source 抓取，
 未改变 safe_rollback/null、hold 或 #435 生产硬阻断。
+
+## 最终修正评审与质量门判断
+
+源码最终受审 `74053b6292f06c1499c071e6db5936e87ff6d399`；修正普通错误 nested reason
+后，Reviewer1与Reviewer2分别独立38项控制回归通过，两位最终 Blocking0/未解决Warning0。
+Reviewer2原记录 `a3-reviewer-two-20261008/collector-delta-review-v1.md` SHA256
+`fcd4789cfc9fdc3b6878f1f2264119b6f1c1df933297aa96f37123f5c3c488ef`。
+两位逐一核原15份修正材料、5文件Git源码绑定、旧head真实单红和新178项/双TS日志。
+修正专属index `td10-collector-plan-20261008/nested-reason-fix/index.json` SHA256
+`eb861b09277d3bb73e17056400971d66914476122fa28e3a10c18d751ab5b2ab`；初始实现27份index
+SHA256 `10fd7552f48bccb97c998ded0f7630148938a86f0a9e8a31963d4205e19487ef` 继续保留。
+
+协调者完整读取适用 eval-gate 与最终 collector diff/spec/receipt后，核正常/default/足额
+来源参数/筛选/QPS/正文/reader/模型/prompt/validator/评测口径未变，选择控制协议回归例外：
+Eval-Gate skip，理由为纯显式取消/预算/ownership接线，178项真实collector/job/SQLite/raw/shadow及
+fakeHTTP source回归、双TS、两独立最终review提供对应证据。不是模型质量通过，不运行不执行
+此路径的A1。本次记录在证据与两评审完成后追加；原0f3时点未盖章及Warning1保留。
+
+后续最终feature head/tested merge/必需CI/精确main/私有原包由协调者绑定；正文追加不改变
+74053源码字节，不预签合入或上线，不关闭底层source取消/raw内部fencing等工程缺口。
