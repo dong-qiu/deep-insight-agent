@@ -13,6 +13,10 @@ S0 候选 `5a38691d104aadde272c820698f74e2dfa96d92d` 的 CI
 （原源文件同字节），正在73 guards/core/typecheck及正常 push 流程。此处保留原调查时点，
 不把候选/合入/pending 写成主干验证通过。S2/S3实施仍须协调者核对前置精确 main success。
 
+方案审查历史保留：`b4d68790dc0b03ec9b1b08df7813fc8527ce9514` 两位独立 Reviewer
+均 B0/W1；原3W已解决，剩同一项 freshcap↔实际claim关联缺口。本次只补该关联和保护反例，
+新head待协调者/独立delta复核，不把此前Warning改签为当时W0。
+
 承接 [S0](a3-maintenance-protocol.md)、[S1](a3-writer-admission.md)、
 [S2 提案](a3-bounded-drain.md)、[C2a](c2a-task-cancellation.md)、
 [C2b](c2b-task-budget.md)、[恢复边界](recovery-time-coverage.md)与
@@ -160,6 +164,7 @@ interface TerminalWriterAdmission {
   readonly version: "a3-terminal-commit-v1";
   readonly profile: "close-fences-terminal";
   admit(): FreshTerminalTaskCapability;
+  bindClaim(capability: FreshTerminalTaskCapability, actualClaim: DispatchClaim): void;
   commitOutcome(capability: FreshTerminalTaskCapability,
     claim: DispatchClaim, outcome: DispatchOutcome): TerminalCommitResult;
   finish(capability: FreshTerminalTaskCapability, outcome: WriterOutcome): void;
@@ -178,6 +183,30 @@ handle/connection、重启后的同 worker/token 都不能重建/借用 capabili
 一次 terminal attempt 开始即消费 capability 的 terminal 权限（包括拒绝/busy/unknown），
 没有第二次自动 done/failed 尝试；本地 `finish` 权限独立，只写原 S1 本地退出事实。
 不新增 persisted profile/task 字段，不声明 OS 身份认证或防恶意同 uid 注入。
+
+### Freshcap 一次绑定真实领取结果
+
+core真实 `claimNextGenerationDispatch(db)` 返回非null后、任何 `execute`/外部工作之前，
+必须立即以同一调用刚mint的cap调用 `bindClaim(cap, actualClaim)`。这就是唯一受审bind
+callsite，不能从execute传参、fixture推导、旧task查询或别的任务选择一个claim绑定。
+bind在writer同privateclosure内一次成功后不可重绑，保存六个 primitive 字段的不可变快照：
+`dispatchId / traceId / ownerToken / claimEpoch / fencingEpoch / rootRunId`，不保存可变claim引用。
+epoch必须保持实际claim数值，不做字符串转换/归一化；业务payload和claim事务原契约不改。
+`no_claim` 只进行S1 localfinish，cap没有terminal权限；未bind或localfinish后不可bind/commit。
+bind失败按严格profile的控制拒绝直接退出，不进入execute，也不借普通catch执行failed终态。
+
+同openWriters私有closure维护“已绑定claim六字段tuple → 唯一cap”的进程内索引，覆盖
+该handle产生的所有terminalAdmission实例；首次bind即登记且不在finish/deny/unknown时删除。
+因此同claim不能换一个freshcap重新bind/重复terminal attempt，不能借另一个worker/admission
+绕过原cap已消费状态。此索引不持久化、不支持从旧claim重建cap；重启或跨connection
+没有旧cap权限。受审core只绑定自己这次实际claim返回，真实claim事务原有owner/epoch
+递增保持；不声称该进程内索引防恶意同uid跨handle手工伪造claim。
+
+commitOutcome进入driver前必须核cap对象身份、尚有本次terminal权限及该不可变六字段
+逐字段完全一致；capA合法但传同closure真实claimB、改rootRunId、bind后改claim对象或已消费
+claim换cap，都固定拒绝 `writer_terminal_claim_mismatch`，先于任何业务写。
+不满足fresh/bind条件仍用 `writer_terminal_capability_invalid`；不能把失败后的同cap/
+同claim重新bind作为自动重试。
 
 `terminalAdmissionFor` 必须直接复用 `openWriters` 的**同一个私有 db/transact/validate/owned**
 closure。每次 commitOutcome 调单次 transact；callback 内只用私有校验/查询，不能调用
@@ -215,14 +244,21 @@ inTransaction、canonical root、marker/dev/ino/owner/mode/nlink，合法隔离 
 driver 是唯一 factory产出的冻结固定同步实现，commit只接 claim/outcome值，**没有 work/
 callback/assertWrite函数或 async输入**。本地 lostLease 在core选择终态前先按既有路径拒写；
 driver内部显式短 `BEGIN IMMEDIATE`，同一外层业务事务内先执行真实完整
-`assertGenerationDispatchClaim(db, claim)`，随后 `finishGenerationDispatch(db, claim, outcome)`
+`assertGenerationDispatchClaim(db, claim)`，并用同事务真实行核
+`generation_dispatch.id=claim.dispatchId`、`generation_dispatch.trace_id=claim.traceId`、
+该 `generation_trace.id=claim.traceId` 的 `root_run_id=claim.rootRunId`，且root Run真实存在并
+`run.trace_id=claim.traceId`，随后 `finishGenerationDispatch(db, claim, outcome)`
 （其原事务为嵌套savepoint、旧业务契约不变），`false` 作拒绝而非成功，最后同步 COMMIT。
+原 assertGenerationDispatchClaim 不验证rootRunId；不能省略新增的只读关联校验，否则
+failed路径会按错误输入修改另一Run。关联不一致以generation_fence_lost拒写并按pre-COMMIT
+rollback事实返回，不能改历史repository/schema或用caller给的rootRunId当事实。
 固定实码+两独审确认无await、无传入可执行函数、无业务逆向锁，才是同步性证据；
 thenable检查只能额外拒误用，不能把任意 async callback 变安全。
 
 拒绝代码固定脱敏：closed=`writer_terminal_closed`，foreign/invalid capability=
 `writer_terminal_capability_invalid`，business身份不符=`writer_terminal_business_mismatch`，
 reverse transaction=`writer_terminal_reverse_transaction`，known busy=`writer_terminal_busy`；
+cap与实际claim六字段绑定不符/同claim换cap=`writer_terminal_claim_mismatch`；
 完整lease/dispatch guard失效或finish false=`generation_fence_lost`，确认pre-COMMIT
 rollback的其他固定终态错误=`writer_terminal_commit_failed`。未知代码只用
 `writer_terminal_business_commit_unknown` 或 `writer_terminal_registry_commit_unknown`，
@@ -304,6 +340,14 @@ marker/owner 不明、跨库结果不明或终止未知时 blocked/hold，不自
    不能改走legacy。done deny返回、done adapter throw、failed finish false、failed adapter
    throw、precommit rollback success/failure、businessCOMMIT返回前后、registryCOMMIT失败
    全部分别验证：正确三态、terminal一次调用、无catch→failed二次提交、无旁路、未知不清零。
+10. 同closure真实两个createRequest/claim、两个freshcaps，先各自bind真实返回后交叉commit
+    capA+claimB/capB+claimA；wrong rootRunId（指向另一合法running Run）、bind后修改任一六字段、
+    不可重绑、同claim尝试替换freshcap（含同handle另一admission）、已deny/unknown/finish后
+    再mintcap、旧task/重启重建cap、no_claim cap调用terminal，全部拒绝零业务写。
+    数据库真实trace.root_run_id被改/与dispatch或Run.trace_id不一致的变体必须在同外层事务
+    guard拒绝；保护另一Run状态/hash，不能靠cap六字段匹配就接受错误业务关联。
+    正控核bind在真实claim之后execute之前，claim事务不在permit、不改provenance/schema/
+    S1默认准入；no_claim仅localfinish、没有可恢复terminal授权。
 
 验证在全新真实 provenance fixture seed/createRequest/claim 上执行实际 core/repo路径，
 不构造仅状态机 observations 替身。源改动后按风险跑专属并发/故障测试、C2a/C2b/C3/发布
