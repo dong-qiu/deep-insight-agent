@@ -364,3 +364,56 @@ marker/owner 不明、跨库结果不明或终止未知时 blocked/hold，不自
 
 下一步仅由协调者与独立 Reviewer 选择并冻结 S3a gate 语义/实际 source 文件窗口，
 等待前置合入及精确 main CI 后再授权分片实现；不重复 S1、同镜像矩阵或追加性能实验。
+
+
+## S3a 实施候选增量（原调查与review时点保留）
+
+协调者核验S0 #448、S1 #445已合入且精确main CI通过；本独立实现从最新
+`56c7ddbcf0bc9d6a7d84f231e6804896d76d0841`开始，直接核GitHub
+`37696229494 / attempt1 / completed / success / headSha=56c7ddb`。
+已冻结4998提案两独立方案B0/W0，不将此前b4d B0/W1改签当时W0。
+S2源8d9bff双实际review通过，但PR/main流程由协调者进行；本S3不依赖S2源，
+不将S2合入或精确main待办写通过，也不修改S2文件。
+实施WT `/Users/dongqiu/Dev/code/insight-agent-a3-terminal-20261008`，分支
+`feat/a3-terminal-fencing-20261008`，PORT/APP_PORT3123，自有DB/DATA与0700/0600配置/产物。
+冻结提案三专属spec commits正常顺序cherry-pick，原完整31794bytes及
+SHA256 `5f8d6798c7c424700f661c4c8cbbaf98aa2b19bcba81cfc729ffaa03a3dfe7e9`保留。
+
+最小实现窗口仍为writer私有registry扩展、shared types、固定runtime driver、core terminal
+可选消费端和各自专属tests/本spec/新receipt；没有修改provenance/repos/schema/validator/
+models/prompts/SSM/policy/Docker allowlist。fixed factory只接root，没有custom-driver factory
+或可执行callback输入；真实受审composition只由openTerminalDispatchDriver产出driver。
+
+协调者追加冻结两项内部只读数据桥与一项可选诊断，公开admit/bind/commit/finish签名不变：
+
+- `Symbol.for('insight-agent.a3-terminal-driver-v1')`：factory冻结descriptor
+  `{root,marker,fileDev,fileIno}`，marker嵌套deep freeze，与冻结driver绑定。
+  registry在自己的BEGIN之前核完整S0 marker/原inode/native exactDB及sidecars；driver
+  在business BEGIN前及事务内重核自己的open-time物理事实。此数据桥不认证OS/调用者，
+  不防同uid恶意伪造，Symbol/shape/freeze/thenable不证明任意callback安全。
+- admission的独立 `Symbol.for('insight-agent.a3-terminal-admission-v1')`：
+  `Object.freeze({businessDb})`；native DB不deep freeze。core在admit/claim之前精确
+  比较此引用与本次db；缺桥、错db、错literal profile/version、同时配置旧S1 port都直接
+  拒绝，无claim/execute/failed fallback。此桥不提供method或新授权。
+- strict opt-in真实terminal尝试后可返回 `terminalCommit?: TerminalCommitResult`。
+  default/S1/preclaim/no_claim形状不变。diagnostic只保全同步COMMIT事实与固定脱敏code，
+  不修改Run/usage/trace历史数据契约，不覆盖首cancelreason/lease>C2a>C3>budget，
+  不从core status=failed推断business回滚，也不授予retry/fallback或fullwriterready。
+
+在固定同步driver同外层业务事务内核完整真实dispatch/lease及trace.root_run_id、Run.trace_id，
+finish false显式rollback；COMMIT尝试后抛错保unknown。business COMMIT已返回但registry
+失败保unknown/committed；SIGKILL无法返回时从真实保留facts定向诊断，task未完成/remote
+仍unknown，不恢复cap。终态attempt开始即消费cap，包括未绑定的拒绝，claimtuple索引
+不因finish/deny/unknown删除；S1合作close/localfinish/default不改。
+
+原始反例执行情况与最终head/source/raw/hash、完整验证、尚待两独立最终review/PR/CI见
+[本片收据](../../verify/a3-terminal-fencing-2026-10-08.md)。本候选不是新镜像或生产验收。
+全writer覆盖、Job/usage/report/startup提交与未知子工作仍阻断；不持锁跨await，
+不增加global deadline、阶段revoke字段、历史schema或生产解除入口。
+
+
+协调者进一步冻结strict-only收尾保真：若已实际terminalAttempt且已形成terminalCommit，
+最外localfinish失败返回status=failed并保留原诊断三态，登记task仍unfinished/remoteunknown，
+不补写、重试或删除；没有terminaldiagnostic的preclaim/no_claim失败仍异常拒绝。Default/S1
+不变。真实factory businessCOMMIT返回→registry handle丢失→实际core localfinish抛错，
+独立fresh连接核业务已提交与task未完成；原遮蔽诊断红反例保留，不能当成本地退出已确认。
