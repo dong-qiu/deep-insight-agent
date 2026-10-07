@@ -214,3 +214,21 @@ D6正常集成此main，保留其已提交内容，相对新base仍仅11文档�
 Brief当前导航沿用其 [收口入口](../plan/pre-rich-brief-closeout.md)，不从旧任务首批步骤重启已收口诊断或模型实验，不冒称S1收益/未来产品已验收。
 本轮仅核与文件归属及导航直接相关的摘要/共享差异，不代替该35文件交付的完整业务或模型审查；#360自身PR/main证据仍沿其交付记录。
 新候选须核实际base/head/tested/run身份；先前基线5539的CI不替代该新基线候选，所有先前结果保留时间语境。
+
+### #427 交接与授权合并前续核
+
+2026-10-07 用户交接供应链修复最终证据，并授权 D6 在最新main复核差异和新候选CI后合并 #422；部署、生产访问、恢复、付费模型和清理仍未授权。
+本轮main基线为 `4477412a3e2b1cb2764fb4357f2284e73952af67`；正常集成已合入的 #428 两份Brief文档及 #427 五文件修复，D6相对该main仍仅11份Markdown，不代写其实现/测试，不复制主worktree的未提交内容。
+
+| 追加证据 / PR | 精确合入 SHA | 合入时间 UTC | main CI / attempt / conclusion | 专属证据 |
+| --- | --- | --- | --- | --- |
+| E427 / [#427](https://github.com/dong-qiu/deep-insight-agent/pull/427) | `4477412a3e2b1cb2764fb4357f2284e73952af67` | 2026-10-07T01:52:46Z | [37559263616](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37559263616) / 1 / push / full / success | [sharp spec](../plan/specs/sharp-security.md)、[收据](sharp-security-2026-10-07.md)及PR最终摘要 |
+
+- #420将声明source-map-js升至1.2.2，#423补齐magicast内联旧副本，单改锁文件不足以修复两层范围；#426将sharp升至0.35.5，#427补齐standalone镜像的原生闭包及六项保护检查。TD-18的原D5范围关闭与本轮安全修复分开；不扩写成全系统安全完成。
+- E427的main push身份/attempt/结果与GitHub API及scope/app/Docker三份原JSON一致；原ZIP digest与API、文件hash与#427最终摘要逐项一致。coverage、构建、HTTP/browser、Docker、全依赖audit实际通过，audit0仅属于该次运行。原Session独立评审B0/W0由其交付摘要承载，不由D6冒充重做修复代码全审。
+- [自动发布37559608396](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37559608396)绑定该SHA、attempt1/success。不可变标签为 `ghcr.io/dong-qiu/deep-insight-agent:sha-4477412a3e2b1cb2764fb4357f2284e73952af67`，完整manifest digest及hash见#427摘要。本轮只核发布元数据，不把摘要当独立registry内容核验，更不作部署证明。
+- 当前生产运行SHA、原生库和攻击者输入可达链未核。原Session交接称最新部署workflow记录仍为10月3日，D6未访问生产或重跑部署来补证；不能宣布修复已上线。
+- magicast vendor至少每30天复查上游，退出须独立PR；回退原magicast、source-map-js1.2.1或sharp0.35.4会重新引入已知漏洞，不能作为安全回退方案。#423旧main因新sharp公告失败的记录保留，后续绿灯只解决阻塞，不改旧结果。
+- 原Session交接的worktree/分支清理只记为其行为，D6不再次执行或操作保留的source-map-audit工作区。Actions原始产物会到期，长期归档须提前下载核验；摘要/hash不等于永久保存原JSON。
+
+既有D6候选 `be4bd696` / run37506167287 attempt2已通过；attempt1 D3 801-ID测试超时保留，根因未知，reader约+31.295%/+0.02240036ms warning保留。该旧候选不能替代4477412基线的新候选；最终新head/tested/run与合并后main证据写#422摘要。TD-19独立原始审计来源缺口及未来D7交付重核、TD-20 S2和P1 dormant边界均不关闭。
