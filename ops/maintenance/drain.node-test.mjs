@@ -222,6 +222,7 @@ test('path replacement, hardlink, symlink, marker mutation and unsafe sidecar re
   assert.throws(() => openDrainLeaseSource(f.root, ':memory:'), /drain_business_scope_mismatch/);
   const link = join(f.root, 'hardlink.sqlite'); linkSync(f.path, link); assert.throws(() => f.source.sample(Date.now()), /unsafe_drain_path/); rmSync(link);
   const journal = `${f.path}-journal`; writeFileSync(journal, 'synthetic unsafe sidecar', { mode: 0o644 });
+  chmodSync(journal, 0o644);
   assert.throws(() => f.source.sample(Date.now()), /unsafe_drain_path/); assert.throws(() => openDrainLeaseSource(f.root, f.path), /unsafe_drain_path/); rmSync(journal);
   const saved = `${f.path}.saved`; renameSync(f.path, saved); copyFileSync(saved, f.path); chmodSync(f.path, 0o600);
   assert.throws(() => f.source.sample(Date.now()), /drain_business_file_replaced/); rmSync(f.path); symlinkSync(saved, f.path);

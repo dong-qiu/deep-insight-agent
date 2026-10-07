@@ -104,3 +104,20 @@ fence；同时断言首reason/持久failures、sample=null、未完成task保留
 校验。上一轮完整ops403pass/3本地Docker skip仍仅绑定原候选；本轮不伪复用为最终全量
 ops或镜像通过。构建输入未改，最终正常CI、最新main同步及两位独立delta review仍待完成。
 本片不推PR、不改主台账、不预签Eval、不实现S3；独占文件窗口及原证据保持冻结。
+
+## 2026-10-08 同步后的权限 fixture 修正
+
+双最终源码受审 `8d9bff887b0d65585194a8a240fef2492db2cafc` 正常同步最新 main
+`cfca8bc70587a78941cde28487af2d1c1b2d90b1` 后候选为
+`e9abbc657d283c0d156ea5426d41c866aa52757b`，原五文件字节相同，双独立同步 B0/W0。
+协调者为私有日志使用 `umask 077`，实际新20测试为19pass/1fail：synthetic journal
+writeFileSync 的 mode0644 被 umask 变为0600，原用例未造出 unsafe sidecar，导致
+line225 Missing expected exception。真实 SIGKILL 显式 chmod 的危险 journal 用例仍通过；
+原运行日志保留，不将 fixture 原因误记运行时门禁回退。
+
+作者明确交接仅此测试一行及本段窗口：writeFileSync 后显式 chmodSync(journal,0644)，
+使危险权限反例不依赖调用方 umask；runtime、声明、deadline、验收及安全边界完全不变。
+同 umask077 真实20/20、0skip通过，原e9双TS7/TS6 app/tools与nullable声明结果按同字节
+编译输入绑定复用，不假称新head再次全量执行。原19/1日志、权限原因probe、修后20日志
+以协调者私有 index 非覆盖保全；两个 Reviewer 再审本最小fixture delta后才判断PR。
+最终受审head、tested merge与精确CI/main由协调索引另行绑定，不提前签合入或上线。
