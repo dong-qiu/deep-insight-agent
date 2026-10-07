@@ -41,8 +41,7 @@
 可执行命令在当前 paper 树运行；输出目录必须新建，私有 config 已绑定 v3 的绝对路径/hash：
 
 ```sh
-PATH=/Users/dongqiu/.nvm/versions/node/v24.19.0/bin:$PATH \
-  node --import tsx .data/rich-brief-stage0/paper-prep/prepare.mjs \
+node --import tsx .data/rich-brief-stage0/paper-prep/prepare.mjs \
   .data/rich-brief-stage0/paper-prep/prepare-config.json \
   .data/rich-brief-stage0/paper-prep/run-v1
 ```

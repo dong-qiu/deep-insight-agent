@@ -1,6 +1,6 @@
 # C 播客 shadow：实际输入清点与专用评测准备
 
-2026-10-07；基点 `49a00b0`。**离线准备已落盘，真实 transcript 配对和 C 专用评测尚未开始；生产保持关闭。**
+2026-10-07；基点 `49a00b0`。**离线准备已落盘，真实 transcript 配对和 C 专用评测尚未开始；本波未启用新模式、未核生产现场开关。**
 依据 [播客采集规格](../plan/specs/podcast-transcript-acquisition.md)、[共同证据/发布 v0](../plan/specs/daily-brief-versioned-evidence-publication-v0.md)、[shadow 输入规格](../plan/specs/podcast-shadow-eval-input.md)。
 本切片独占 `evals/rich-brief-podcast/` 与本文，不改生产 schema、collector、analyzer、validator、report-gen、模型、来源策略或 dataset；未打开正式留出、未请求原站/API/模型。
 
@@ -24,12 +24,12 @@ SHA-256 `b2b927a40dfd5ef70e18c1297e72978cb33b29a1b8280feb71329c00c5c7b56d`。
 
 四个 show_notes 精确版本的元数据账本（下列长度仅表示冻结 body，不证明完整转写）：
 
-| ContentItem ID | content-v4 hash 前缀 | UTF-16 长度 | occurrence |
+| 本地样本代号 | content-v4 hash 前缀 | UTF-16 长度 | occurrence |
 | --- | --- | --- | --- |
-| `ci_da0034913ac66df2` | `e288688144f2072f` | 50000 | 3 |
-| `ci_b4c0eaf0034db9d3` | `694c7a265341cd8f` | 50000 | 3 |
-| `ci_c1dc3106d6dab00a` | `557e48eaa02751cf` | 12763 | 3 |
-| `ci_5aff012dd49430ff` | `5699d87e34774072` | 4787 | 1 |
+| S1 | `e288688144f2072f` | 50000 | 3 |
+| S2 | `694c7a265341cd8f` | 50000 | 3 |
+| S3 | `557e48eaa02751cf` | 12763 | 3 |
+| S4 | `5699d87e34774072` | 4787 | 1 |
 
 每项已经有候选 URL 的脱敏 hash、精确 revision、正文 hash、已有来源家族 connected component 与全部 occurrence refs。
 **没有** RSS 单集/节目页/官方转写配对凭据，故 canonical episode、episode version、原文 evidence revision、转写 partner、segment、观点—论据/限定绑定均记录结构化 unknown；segment/binding 数组为空并带缺口原因，不称已选段或零观点。

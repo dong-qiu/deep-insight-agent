@@ -1,10 +1,10 @@
 # Daily Brief 阶段 0：实时集成交接
 
-> 2026-10-07 · 持续更新。阶段 0 正在执行；T04 尚未冻结，正式留出未打开，C1 首次提取尚未启动。本文不代表软件工程试点、人评或生产准入已完成。
+> 2026-10-07 · 持续更新。阶段 0 工程准备已由 #432 合入；T03 人工金标与 T04 尚未完成，正式留出未打开，C1 首次提取尚未运行。C1/P/C/I shadow 准备正在串行集成。本文不代表软件工程试点、人评或生产准入已完成。
 
 ## 当前基线与环境
 
-本轮重新执行 `git fetch origin main`、本地及远端 SHA 查询、全部 worktree 的 `git status --porcelain`、开放 PR 查询及精确 SHA 的 CI 查询。基线为 `473e2eeae119b600b63abd78ce886301bd882235`，本地 main 与 origin/main 一致。
+开始时重新执行 `git fetch origin main`、本地及远端 SHA 查询、全部 worktree 的 `git status --porcelain`、开放 PR 查询及精确 SHA 的 CI 查询。初始基线为 `473e2eeae119b600b63abd78ce886301bd882235`，当时本地 main 与 origin/main 一致；以下初始记录不是实时 main 声明。
 [main CI 37562025600](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37562025600) 已成功；[镜像发布 37562408396](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37562408396) 是另一个工作流，不作为生产部署收据。
 
 开始时实际存在 11 个 worktree，Git 工作区均干净；没有将旧交接记录中的 15 个当作当前值。开放 PR 为 #430、#429、#425、#424、#402、#400、#373；其中 #429/#430 属其他会话，保持不动。[#360](https://github.com/dong-qiu/deep-insight-agent/pull/360) 的实际 merge 为 `1bf16e4bb75e9fb04dcc70f9d15ccbdc14b5bb24`，只关闭诊断归档门。B1 保持 no-go，不能以此认定 S1 通过。
@@ -42,7 +42,7 @@
 | --- | --- | --- | --- |
 | 0A 实时核实与隔离 | main SHA/CI、11 既存干净 worktree、7 开放 PR、4 新隔离树、owner-only 配置/资源收据 | 不将历史生产镜像身份当实时生产状态；本轮无生产访问 | 三位 Agent 执行数据、契约、F 工具；完成后轮换独立审查 |
 | 0B 数据与契约 | 三切片非作者审查通过；实际 3 run/3 attempt/45 occurrence/23 exact revision 工作表及首批 5 项待判材料已生成 | 23 个输入版本与原确认索引 exact refs 交集 0，完整人工金标、数值探索依据及正式冻结尚缺 | 用户已选对话每批 5 项；首批已发送，未答保持 pending。技术工具先过工程门，不宣称 T03/T04 完成 |
-| 1 C1/P/C/I | 尚未启动 | 依赖公共 v0 口径与各自预登记；同事件阅读卡另依赖 C1 足量新增可刊维度和独立证据门 | C1 单独记输入/模型/预算/失败/成本；P/C/I 准备 shadow，保持各专用门 |
+| 0C C1/P/C/I 准备 | 已建立独立环境，P/C/I 私有 inventory 与 C 元数据工具已落盘；C1 准备器收尾 | C1 尚未运行；P 无全文、C 无封存转写、I 人评 pending；各专用预登记仍未完成 | 工程完成门与质量/阅读门分开；先独立审查准备切片，再按依赖补缺，不启动正式阅读卡 |
 
 每波结束追加实际命令、产物 hash、独立审查结论、失败与 unknown，以及下一波任务；不以计划代替收据。
 
@@ -80,3 +80,43 @@ F 重新读取四份 sealed 导出、核对 manifest/pool hash，不打开 SQLit
 数据实际预检仍为 exit 2 / blocked，完整人工 gold、家族审阅及数值协议未齐；原金标和旧工作表版本保留。工具源码修订会改变准备包资源 hash，必须重新 `prepare` 到新私有目录；旧输入不能绕过资源变化直接 freeze。已有 v2/v3 工程包都是探索。首批用户材料在对话按 R01—R05 展示；发布说明的两个功能命题进一步分为 R03-D2a/D2b，研究方法与结果进一步分为 R04-D2/D3；它们都是待判候选，不算新 gold 或正式阅读卡。
 
 本波工程 PR 仅交付准备工具、观察基线和契约。使用 eval-gate 的实际路径判断：A1 不执行上述离线工具，不运行无关 A1、不写可比 baseline 或质量 pass；scoped 工具回归不代替后续专用模型评测。准备 PR 使用 pre-pr-ai-review，精确 head CI 未通过前不合入。合入后另外核 main CI；部署/生产开关仍须独立版本、验证与回退材料和用户确认。
+
+## 0B 合入收据与 0C 并行分工
+
+期间其他会话合并 #430，origin/main 推进到 `eb2bd4d6a096331d888f938391749a42aa16625b`。只在自己的集成分支合并该基线，未改主 worktree；复跑新增工具、204 项既有生产路径和该上游的17项受影响测试，共9文件250/250，通过双TS。
+
+[#432](https://github.com/dong-qiu/deep-insight-agent/pull/432) 精确 head `b3c9277` 的独立最终审查与 [PR CI 37576899707](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37576899707) 通过后，正常 squash 合并，无admin/force/hook跳过。merge 为 `afbe4a55f89957839a7ee619733f21c2736eb1af`，时间 `2026-10-07T05:41:55Z`；该精确 [main CI 37577603519](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37577603519) 已成功。此收据只证明工程切片合入，不是T03/T04、模型对照或生产部署收据。
+
+以共同v0为基线再建 `-c1`、`-paper`、`-podcast` 三个隔离worktree，分别交原数据、契约、F作者。P交付后由契约作者在新 `-implications` 树做I；每波研究/实现并行数最多3。集成负责人另建 `-shadow-integration`，基于实际main `afbe4a5`，按P→C→I→C1串行cherry-pick，不修改共享schema/analyzer/validator/report-gen。每树独立DB/Data路径及owner-only配置；已确认配置不输出正文，不共享live DB。
+
+| 作者与独占所有权 | 实际交付 | 完成门与依赖 |
+| --- | --- | --- |
+| 数据作者：`evals/rich-brief-c1/`、C1 preflight收据 | machine/scorer隔离、资源/操作账本与拒绝式预检 | T04未冻结禁止模型调用；真实运行输入/history/预算须精确；工具测试、类型、独立审查和CI通过才合入准备代码 |
+| 契约作者：P收据；完成后I收据；各自私有准备目录 | P库存/全文覆盖与专用evaluator草案；I有界候选/人评工作表 | 原文版本/许可、I前提与来源观点分开；未知/人评pending保留；非作者文档审查通过，私有数据不冒充独立复现 |
+| F作者：`evals/rich-brief-podcast/`、C收据 | 完整输入形态清点、配对/说话人缺口、专用分臂账本 | show_notes不得充发言；没有同集转写或可靠map不造样本；真实准备器及已有shadow路径回归、类型、非作者审查、CI |
+| 集成负责人：本交接与集成分支 | 实时版本/CI、切片顺序及公共口径 | `stage0_independent_review`作为各切片非作者；任何准备通过不代签来源、语义、人评、阅读或发布门 |
+
+## 0C 来源与启示准备结果
+
+P作者 `999c3e2`、C作者 `a1ac1e4`、I作者 `09b37ee` 分别交付，已在本波隔离分支串行集成；每个切片非作者审查 Blocking 0 / Warning 0。P/C之后的小修去个人Node路径、现场开关未核实的绝对说法和生产row ID，另通过非作者文档审查。reviewer只读版本化工具/文档，不读私有来源正文或DB：本文实际库存数字是作者sealed收据的观察，非独立原文质量审查。
+
+| 切片 | 实际观察与固定分母 | 阻断与下一波 |
+| --- | --- | --- |
+| [P论文](daily-brief-paper-shadow-preparation-2026-10-07.md) | v3完整45 occurrence/23 revision中5篇次、3论文v1；5/5仅摘要归档绑定；全文0，24核心section unknown，3许可unknown | 原摘要不计全文；补精确版本全文获取/解析/许可和章节quote，再准备人工覆盖/论点/限定与专用门 |
+| [C播客](daily-brief-podcast-shadow-preparation-2026-10-07.md) | v2完整45/23中10 show_notes occurrence/4revision；封存transcript、同集pair、可靠map和真实C病例均0；采集失败/成本分母unknown | 先补同集/版本封存转写与来源许可，speaker verified/unknown分层；跨层归属fail-closed实现仍缺，字段/enum存在不算已执行 |
+| [I有界启示](daily-brief-implications-shadow-preparation-2026-10-07.md) | 149可观察候选，38旧快照证据绑定合格/7revision，111排除；取首3不同source前提，3 typed假设私有封存 | 当前校验未rerun/v0图未实现；source-stated impact全部unknown；人评/score pending，publish/action false；独立证据、逻辑/适用性和读测分别补门 |
+| [C1首次提取准备](daily-brief-c1-offline-preflight-2026-10-07.md) | 完整3run/3attempt/45occurrence/23revision、真实dispatcher cutoff与168h窗口；历史66/70/70为安全下界，排除后来4/0/4；machine/scorer分离，实际预检exit2 | T04未冻结、原可见history不精确、正式runtime预算未冻结、shadow prompt接口未实现四项阻断；model_calls_authorized=false，ledger not_executed；不能启动对照或阅读卡 |
+
+P/I使用v3 worklist `bc44d0f3`，C使用v2 `b2b927a4`；来源exact refs/body相同，准备代码资源不同，因此各自分别记版本，不能当同一正式冻结T04。全部来自已曝光探索；正式留出仍未打开。本波新增原站/业务模型调用均未执行，没有真实模型成本或阅读收益评测；未知采集历史不记为零。
+
+首批R01—R05尚未收到人工标注确认。用户要求先提供专业判断，再要求同时提供全文信息与建议；集成负责人已给初步建议，并安排契约作者完整阅读五份已存body、生成逐源信息梳理/建议及私有原文入口，补先前短候选漏掉的source-wide信息。show_notes、摘要或截断body的真实边界须标明。所有建议仍待人工确认，不把这些请求当作人工接受或阅读效果。只沿用已确认审阅方式及旧事件确认，不把等待状态填成人工gold。完整23项事件/重要维度/限定、来源家族、理解题与有探索依据的数值协议仍是阶段0停止点。正式同事件阅读卡评测/实现维持关闭；B1仍no-go。
+
+## 0C 工程审查修复与环境保全
+
+C1初轮独立审查发现2项Warning：closed DELETE快照漏拒绝rollback `-journal`；freeze payload比较误用只允许整数的provenance canonical hash，合法ratio/cost小数会被拒绝。作者追加 `8e44a01`、`de988c0`，分别补original/copy三类sidecar拒绝，有限小数且确定键序的payload比较；后者用真实stage0 `freezeData/checkReadiness` 的合成control证明0.1/0.25合法、篡改与非有限数拒绝，不给synthetic人评签真实gold。
+
+修补后新建C1私有v3，旧v2原样保留；资源hash变化不能复用旧包。实际machine SHA前缀 `999d03f9`，预检仍exit2/blocked，四个阻断及完整分母不变。生成模板已版本化，生成的候选system精确字节仅private且未执行；不得宣称源码没有模板或候选已通过语义评测。非作者第二轮与最终精确head复核另记，未过前不合入。
+
+重新核初始保全收据中的14份配置hash及权限（含首次4个新树），全部未变；详细收据仅私有。当前实际20个worktree，11个原有加9个本轮独立树，全部保留；其他会话推进的branch/PR未覆盖。主worktree仍保留原local main `473e2ee`，remote main为上文已核的`afbe4a5`，不以local过期head替代远端合入状态。本文不是生产版本核验；本轮没有生产访问、部署、开关修改或清理删除。
+
+集成负责人在最终修补代码上实际复现9文件117/117：C1 15、stage0数据19、F10、C准备6、既有podcast shadow/input路径44、analyzer窗口/选段23。`npm run typecheck`双TS各app/tools、两个新工具目录的定向eslint、五份收据的真实docs checker与diff检查通过。没有改构建/路由/部署，未重复本地build；PR CI仍须执行选中的完整应用/容器门。117项工程测试不代签真实来源、模型候选收益、人工gold或阅读效果；最终独立审查和精确PR/main CI在后续收据记录。
