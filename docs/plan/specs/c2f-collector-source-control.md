@@ -91,3 +91,16 @@ collector/runJob/SQLite/provenance/raw helper，不能 mock wrapper 冒充 trans
 arXiv/source 子树未知、shadow 深层取消、raw 内部 fence 为独立工程待办；不称全 writer
 静默、严格 deadline-return 或 TD-10 整体关闭。safe_rollback=null、部署 hold/#435 硬阻断
 保持，无模型/通知/真实来源/生产访问、PR/盖章/清理动作。
+
+## 2026-10-08 首 consumer 实施授权与绑定
+
+以上 93 行保留方案原时点。协调者已确认 C2d #449 `5ae17c3` 的精确 main CI
+`37698406412 / attempt 1 / success`，C2e #450
+`cfca8bc70587a78941cde28487af2d1c1b2d90b1` 的精确 main CI
+`37699429841 / attempt 1 / success` 及专属证据保全，授权本片实施。
+本次复 fetch 基线为后者；正常继承原 `6b646a` spec-only 提交。独立 WT
+`insight-agent-c2f-collector-source-controls-20261008`、PORT3124、隔离 DB/DATA。
+collector 与旧三条显式控制限制断言已明确交接给执行 Agent B，其余旧保护只读回归。
+实现限定为局部显式启用条件、RSS registry 参数及原 article 分支第三参数；新增真实
+consumer 集成测试与专属收据。不修改 source、runtime、shadow、raw helper、schema、
+probe/scheduler/API 调用方、模型或正常来源选择；不预签 Eval 或授予生产许可。

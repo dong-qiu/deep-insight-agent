@@ -40,22 +40,22 @@ it.each([undefined, 1])("normal RSS/robots/parser/raw path stays identical at ca
   expect(count("generation_effect")).toBe(1);
 });
 
-it.each(["resolve", "reject"])("late real RSS HTTP %s returns no collector commit; request-local signal does not claim task abort", async (mode) => {
+it.each(["resolve", "reject"])("late real RSS HTTP %s receives explicit task abort and returns no collector commit", async (mode) => {
   const waiting = deferred<Response>(); fetchMock.mockImplementation(async (input) => new URL(input).pathname === "/feed" ? waiting.promise : response("User-agent: *\nDisallow:"));
   const controller = new AbortController(); const work = collectSource(db, source, { signal: controller.signal }); const rejected = expect(work).rejects.toThrow("cancelled");
   await vi.waitFor(() => expect(calls()).toContain(source.endpoint)); controller.abort();
   const requestSignal = fetchMock.mock.calls.find(([url]) => new URL(url).pathname === "/feed")![1]!.signal!;
-  expect(requestSignal.aborted).toBe(false); // Narrow scope: original source owns this timeout signal.
+  expect(requestSignal.aborted).toBe(true); // C2f opts the real RSS transport into explicit task control.
   if (mode === "resolve") waiting.resolve(response(feed(), "application/rss+xml")); else waiting.reject(new Error("SSRF 拦截: synthetic terminal failure"));
   await rejected; expect(count("content_item")).toBe(0); expect(count("generation_effect")).toBe(0);
 });
 
-it("real article robots fail-open may continue an in-flight source operation; collector still suppresses result", async () => {
+it("real article robots explicit cancellation prevents fail-open payload and collector commit", async () => {
   const waiting = deferred<Response>();
   fetchMock.mockImplementation(async (input) => { const url = new URL(input); if (url.hostname === "page.example.invalid" && url.pathname === "/robots.txt") return waiting.promise; if (url.pathname === "/robots.txt") return response(""); if (url.pathname === "/feed") return response(feed(), "application/rss+xml"); return response(`<html><body><article><p>${"Synthetic full article. ".repeat(80)}</p></article></body></html>`, "text/html"); });
   const controller = new AbortController(); const work = collectSource(db, { ...source, fetch_mode: "full_text" }, { signal: controller.signal }); const rejected = expect(work).rejects.toThrow("cancelled");
   await vi.waitFor(() => expect(calls()).toContain("https://page.example.invalid/robots.txt")); controller.abort(); waiting.reject(new Error("synthetic robots availability error")); await rejected;
-  expect(calls()).toContain("https://page.example.invalid/episode"); // Preserved limitation, never call this full source cancellation.
+  expect(calls()).not.toContain("https://page.example.invalid/episode"); // C2f explicit control cannot become robots allow-all.
   expect(count("content_item")).toBe(0); expect(count("generation_effect")).toBe(0);
 });
 
