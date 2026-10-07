@@ -263,6 +263,11 @@ jobs:
             RELEASED_AT=2026-09-08T14:02:19Z
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - name: verify patched sharp decoder in standalone runtime
+        run: |
+          timeout 60s docker run --rm --network none --read-only \
+            -v "$PWD/ops/sharp-security.node-test.mjs:/app/ops/sharp-security.node-test.mjs:ro" \
+            --entrypoint node deep-insight:ci --test /app/ops/sharp-security.node-test.mjs
       - name: verify dispatch worker runtime assets
         run: |
           docker run --rm --entrypoint node deep-insight:ci --check /app/ops/generation-dispatch-worker.mjs

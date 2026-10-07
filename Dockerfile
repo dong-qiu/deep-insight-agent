@@ -80,6 +80,9 @@ COPY --from=builder --chown=app:app /app/public ./public
 COPY --from=builder --chown=app:app /app/build-info.json ./build-info.json
 # 显式带上原生模块，规避 standalone trace 偶发漏拷 better-sqlite3 的 .node
 COPY --from=builder --chown=app:app /app/node_modules/better-sqlite3 ./node_modules/better-sqlite3
+# sharp 动态读取平台版本清单，standalone trace 会漏带；保留已安装的原生闭包，
+# 使镜像中的 librsvg provenance 可核验，并保持各架构绑定与库来自同一次 npm ci。
+COPY --from=builder --chown=app:app /app/node_modules/@img ./node_modules/@img
 # 同理显式带 nodemailer（邮件推送渠道）：含动态 require、被外部化后 standalone trace 漏拷 → 运行时
 # require('nodemailer') MODULE_NOT_FOUND（邮件静默发不出）。nodemailer 零依赖，单行 COPY 即够。
 COPY --from=builder --chown=app:app /app/node_modules/nodemailer ./node_modules/nodemailer
