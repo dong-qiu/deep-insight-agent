@@ -3,6 +3,62 @@
 快照：2026-10-06，Asia/Shanghai；GitHub 查询时间见 D6 收据。启动基线为 `6eabc5f671073c377200f7551daf8a143d333989`；后续核对/交付基线 `origin/main` @ `86d824fd5fbe12006679a02cebcc877f71493f73`。
 本文件是证据索引与状态解释，不是新状态平台、生产运行证明或实施授权。首次快照/精确历史绑定保留；2026-10-07 的交接与供应链变化见文末追加记录及 [续核收据](d6-followup-2026-10-07.md)。
 
+当前阅读先看下方[最新状态](#最新状态2026-10-07-增量同步)。其后的来源、差异表、20项表及文末追加记录均保留各自历史时点；例如“S2 未处理/尚未验收”“候选待核”不能再直接作为当前待办。新增区同样只是有日期的人工核对，不是未来自动同步平台。
+
+## 最新状态：2026-10-07 增量同步
+
+Git/GitHub 身份核对完成于 `2026-10-07T11:22:01Z`；重新 fetch 的 `origin/main` 为 `a5253da8a4e9c40f8098235d6976e5a7b7f6eb71`，tree `970913d1578c9047b6c7cfc5870097276542f112`。本次只同步 #429/#430/#431/#434/#435/#436/#437/#438 及 D6 最终交付，不重新验收20项、不访问生产、不关闭总任务。精确 base/head/合入 SHA/tree、候选 tested SHA、CI run/attempt/事件/分类/时间及归档缺口见[增量核对收据](ledger-evidence-sync-2026-10-07.md)。
+
+### 当前统计及层级
+
+| 当前整体口径 | 编号 | 数量 / 依据 |
+| --- | --- | --- |
+| 已完成或按既有确认范围关闭 | TD-01、02、03、05、06、07、08、11、13、16、17、18 | 12；承接原表确认范围，本轮没有扩大验收或重新关闭 |
+| 部分完成 | TD-04、09、10、12、14、15、20 | 7；剩余工程、质量、兼容及未证明范围保持 |
+| 本阶段完成，整体未关闭 | TD-19 | 1；#422 已交付且精确 main CI 成功；本次补 D7 等增量，不消除原始审计来源缺口 |
+
+合计20项。本次增量未发现需要改变上述分组的已核证据；这不是重新验收全部技术债的结论。切片完成、本阶段收口、整体完成、生产验证分别记录；全部项目的**当前生产状态未核**。历史生产收据只证明记录时间和版本，PR/main CI/镜像发布不能代替上线。
+
+### 近期切片与剩余边界
+
+| 切片 / 专属证据 | 当前交付 / 阶段状态 | 整体与未证明 / 下一步 |
+| --- | --- | --- |
+| [#430 S2a](https://github.com/dong-qiu/deep-insight-agent/pull/430)；[spec](../plan/specs/d7-s2-id-capacity.md)、[原收据](d7-s2-id-capacity-2026-10-07.md) | 自动 Topic/Source 后缀16→128位已合入，精确 main CI37573978663 success；确定性兼容与构建交付 | **旧 head `235045d6…` 的真实质量验收独立待办**。原 review Blocking1 是真实质量缺证，不由合并授权、后续 S2b 或 CI 转为通过；TD-20部分 |
+| [#431 TD-14](https://github.com/dong-qiu/deep-insight-agent/pull/431#issuecomment-6032148084)；[spec](../plan/specs/td14-a1-attempt-diagnostics.md)、[真实诊断](td14-a1-authorized-diagnostic-2026-10-07.md) | opt-in诊断设施、一次有界实测及“不优化”决策本阶段收口；main CI37579519625 success | 唯一实测仍绑定 D7前 `d18009f221a51662ca3802d0fc06a2839e0ee929`，169.377s/34 attempts；smoke/incomparable/manual pending，1项人工待裁决。不证明整体提速、吞吐、attempt P95、费用或完整质量；TD-14部分，新采样另授权 |
+| [#434 C4b/D7](https://github.com/dong-qiu/deep-insight-agent/pull/434#issuecomment-6033503904)；[收据](c4b-d7-dual-format-tests-2026-10-07.md) | 新旧完整根测试适配已合入并收口，main CI37589024973 success；**本切片无必做尾项** | 不重启 C4b，不关闭 TD-14/20；后续身份/恢复实现变更时各自重新绑定验证 |
+| [#429 C归档/A只读](https://github.com/dong-qiu/deep-insight-agent/pull/429)；[索引](c-evidence-archive-index-2026-10-07.md)、[生产历史快照](c-production-readonly-2026-10-07.md) | 归档、上线准备与已授权 A读取已交付，main CI37578566493 **docs** success | 04:44:04–04:47:07 UTC曾观察 b199bc03及旧组件；不证明当前生产或修复上线。backup匹配漏检、SSM列表覆盖度和进程内drain未证限制保留；B/C未由此授权 |
+| [#435 身份门](https://github.com/dong-qiu/deep-insight-agent/pull/435)；[spec](../plan/specs/security-deploy-preconditions.md)、[收据](security-deploy-preconditions-2026-10-07.md) | 批准镜像身份核验及不可变绑定已合入，main CI37594547149 full success | **身份成功后仍硬阻断生产**，`deployment_permitted=false`；安全回退 `null/未批准`。冻结安全镜像仍4477412，与本轮main分开；A2/A3尚有工程，不能统称“只差授权” |
+| [#436 D3报告库](https://github.com/dong-qiu/deep-insight-agent/pull/436)；[spec](../plan/specs/d3-report-list-measurement.md)、[收据](d3-report-list-measurement-2026-10-07.md) | 隔离报告库页面函数及 React 静态渲染测量/取舍已合入，main CI37598938050 success；**暂不优化、不启动下一阶段试验** | 13/24 noisy、20/24 observer warning及P0c warning保留；无生产改动。不证明生产分布、并发、物理冷缓存或HTTP/browser性能；TD-15部分 |
+| [#437 S2b守卫](https://github.com/dong-qiu/deep-insight-agent/pull/437)；[spec](../plan/specs/d7-s2b-evaluation-guard.md) | 独立专项100 attempts/20保守retry/45分钟共同窗口守卫已合入，精确 main CI37602507907 success | 工具完成不等于模型/费用/生产验收；实际模型收据仍绑定原guard `dc494f65590b7b88cd5e1ec4606719100ff23a1f` |
+| [#438 S2b容量](https://github.com/dong-qiu/deep-insight-agent/pull/438)；[S2 spec](../plan/specs/d7-s2-id-capacity.md)及PR最终交接 | candidate44→128位、AnalysisBatch32→128位已合入，精确 main CI37603495951 success；内部原型专项安全交付完成 | 原实测candidate `dadc255cfd8311511948a0cd916562e88f0274da` / guard `dc494f6…`不改绑合入SHA。47 attempts/0retry；四真实身份case均无洞察输出，非空关联分支不能冒称真模型覆盖；内部原型安全证据不证明统计质量等价。S2a旧head独立待办，TD-20部分 |
+
+#432/#433 是独立 Daily Brief 准备线，仅解释 #429/#434 等基线推进与归属；本轮不计其准备设施为重构关闭或产品效果验收。未交接 roadmap/ADR/README，本轮不改；治理计划只增加当前入口，历史执行状态保留。
+
+### 简洁差异与未知
+
+| 旧表述 / 快照 | 最新证据 | 本次修订 | 仍未知 / 负责人确认 |
+| --- | --- | --- | --- |
+| TD-14尚无当前真实诊断，下一步直接测 | #431单次D7前诊断、暂不优化 | 登记已测和manual pending，不重跑 | TD-14负责人处理1项人工裁决；原产物现保存位置待确认 |
+| TD-15仅#418，下一步细分热点 | #436报告库测量/取舍已收口 | 登记新切片，保留两轮证据与所有warning | D3负责人确认私有原样本位置；后续试验须独立唯一范围/冻结方案 |
+| TD-20“S2未处理” | #430/#434/#437/#438交付 | 区分S2a确定性交付/S2b原型安全交付/整体部分 | D7负责人承接S2a旧head真实质量；真实存量、外部消费者、生产回退仍未核 |
+| TD-19候选待核/D7后再核 | #422精确main成功及本次D7增量 | 完成对应增量核对，阶段收口与整体分列 | 原始审计材料取得后才补核，不重复无依据搜索，不自行整体关闭 |
+| C旧准备清单A待执行、身份门缺失 | #429 A历史快照、#435身份门已合入 | 当前入口指专属收据，不改旧正文 | A2/A3工程及实际前置/实名值守/专项批准仍缺；当前生产未知 |
+| 旧私有worktree路径作为归档入口 | S2b/C4b/C迁出索引已核；TD-14/D3原worktree当前不存在 | 以有效迁出索引导航，原路径仅保留执行时身份 | TD-14/D3缺现保存位置，不能断言原产物丢失或永久保全；不无差别搜索/下载 |
+
+### A2/A3 当前归属与操作停止点
+
+`2026-10-07T11:22:01Z` 本地只读状态：A2 `feat/a2-rollback-contract-20261007` 与 A3 `feat/a3-maintenance-protocol-20261007` 均仍HEAD=a5253da；A2有未跟踪spec/收据及四个 `ops/aws/a2-*` 模块，A3有未跟踪spec与 `ops/maintenance/`。GitHub open PR列表未见这两条head。**均记工作中，不作主干交付或验收证据**；未修改/代交它们的方案或代码，不能凭文件存在宣称实现通过。
+
+| 归属 / 负责人 | 当前待交接问题 | 重启/放行条件 |
+| --- | --- | --- |
+| A2安全回退与数据兼容 Session（实名待协调者指定） | 哪个精确安全回退index/manifest/config与修复证据被核准？实际发布digest的原生闭包、builder证据、认证与新旧数据兼容、各失败阶段演练如何绑定？何时提交spec/模块及独立PR收据？ | 独立PR/精确CI和审查后才更新工程状态；未提交材料不能代替批准对象 |
+| A3维护互斥、writer/drain/lease、SSM未知终态 Session（实名待指定） | 跨部署/恢复/备份所有调用方覆盖、拒绝并发、writer准入/静默、有界drain与lease、SSM未知状态持久隔离/人工解除协议何时交付？与A2失败接管接口由谁签收？ | 独立工程交付/接口确认/失败证据后才讨论解锁；**本次A3不是早期TD-04数值配置A3** |
+| 发布operator、值守、安全reviewer、批准人（均待实名指定） | 当前对象/配置保全/合格备份/容量与在途维护覆盖如何在新授权窗口核实？ | 补工程前置、独立解锁PR及精确候选证据，再申请限定生产只读/部署/部署后验收授权；不能删halt直接放行 |
+
+TD-09全量历史恢复仍未证明，已知备份搜索停止，仅新可靠线索才重启；P1继续休眠，不重开取消任务。TD-19原审计缺口保留。
+性能noisy/observer/P0c warning与独立代码review Warning分列；B0/W0不表示没有性能warning。历史失败、404原包及旧收据原样保留；本地归档不等于异地备份，hash/摘要不等于完整永久原产物。
+本轮只允许文档/证据增量、独立评审、正常hooks与PR/精确候选CI；不合并、不访问生产、不dispatch、不读写业务库、不迁移/恢复、不付费模型/重跑实验、不删除branch/worktree或原产物。
+
 ## 来源与归属核对
 
 - 原编号与验收要求沿用 [治理实施计划](../plan/specs/technical-debt-remediation.md)；原表保持不变。未找到独立“原始 20 项审计全文”，不能声称已逐字核对原始审计；获得原件后须补核。
