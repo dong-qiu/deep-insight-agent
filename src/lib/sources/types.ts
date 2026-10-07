@@ -1,6 +1,9 @@
 /** 源适配层的统一中间产物：各适配器把外部源解析成 RawItem，collector 再归一化为 ContentItem。 */
 import type { BodyKind, Source } from "../types.js";
 
+/** Explicit source transport control; caller owns deadline, first reason and commit fencing. */
+export interface SourceFetchOptions { signal?: AbortSignal }
+
 export interface RawItem {
   url: string;
   title: string;
