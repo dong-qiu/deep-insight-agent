@@ -203,10 +203,13 @@ async function answerControlledFollowup(db: DB, report: Report, question: string
   // A call-local estimate key only: no Run or usage row is created for this function.
   const costKey = budgeted ? `followup-task-${randomUUID()}` : undefined;
   if (costKey) enrollBudgetRun(costKey, null);
-  const addCost = (c: Cost): void => {
-    cost = { tokens: cost.tokens + c.tokens, amount: cost.amount + c.amount, ...(cost.estimated || c.estimated ? { estimated: true } : {}) };
+  const accountBudgetCost = (c: Cost): void => {
     // Preserve unknown provider estimates, as C2b does; never invent a finite amount.
     if (costKey && Number.isFinite(c.amount)) recordBudgetCost(costKey, c);
+  };
+  const addCost = (c: Cost, account = true): void => {
+    cost = { tokens: cost.tokens + c.tokens, amount: cost.amount + c.amount, ...(cost.estimated || c.estimated ? { estimated: true } : {}) };
+    if (account) accountBudgetCost(c);
   };
 
   const { pool, itemsById } = buildPool(db, report);
@@ -222,9 +225,10 @@ async function answerControlledFollowup(db: DB, report: Report, question: string
     schema: FollowupAnswerSchema,
     maxTokens: 2048,
     signal,
-    ...(budgeted ? { onCost: addCost } : {}),
+    ...(budgeted ? { onCost: accountBudgetCost } : {}),
   }), signal);
-  if (!budgeted) addCost(gen.cost);
+  // Preserve the original result cost, while the cap observes all reported generation costs.
+  addCost(gen.cost, false);
   checkpoint();
   const { answerable, answer_md: rawAnswer, claims } = gen.data;
 

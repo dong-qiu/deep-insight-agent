@@ -160,6 +160,24 @@ describe("explicit independent followup control", () => {
     expect(callStructured).toHaveBeenCalledTimes(1); expect(cacheCount()).toBe(0);
     expect(db.prepare("SELECT COUNT(*) AS n FROM run").get()).toEqual({ n: 0 });
   });
+  it("generation retry costs consume the cap while the returned cost keeps its existing contract", async () => {
+    vi.mocked(callStructured).mockImplementation(async (opts) => {
+      const r = opts.role === "followup" ? gen(generated) : judge("support");
+      if (opts.role === "followup") opts.onCost?.(r.cost); // Earlier paid generation attempt.
+      opts.onCost?.(r.cost);
+      return r;
+    });
+    const baseline = await answerFollowup(db, report(), "?");
+    db.prepare("DELETE FROM consistency_cache").run();
+    const controlled = await answerFollowup(db, report(), "?", { taskBudgetUsd: 1 });
+    expect(controlled).toEqual(baseline);
+    expect(controlled.cost.amount).toBeCloseTo(.0015);
+    db.prepare("DELETE FROM consistency_cache").run();
+    vi.mocked(callStructured).mockClear();
+    await expect(answerFollowup(db, report(), "?", { taskBudgetUsd: .002 })).rejects.toThrow("task_budget_exceeded");
+    expect(callStructured).toHaveBeenCalledTimes(1);
+    expect(cacheCount()).toBe(0);
+  });
   it("judge budget fault remains sticky rather than degrading to a successful answer/cache", async () => {
     successfulTransport();
     await expect(answerFollowup(db, report(), "?", { taskBudgetUsd: .0015 })).rejects.toThrow("task_budget_exceeded");
