@@ -1,12 +1,5 @@
-export interface WriterGenerationToken { workerId: string; generationToken: string }
-export interface WriterTaskToken extends WriterGenerationToken { taskId: string }
-export type WriterOutcome = 'no_claim' | 'done' | 'failed' | 'threw';
-export interface WriterAdmission {
-  readonly scope: 'isolated';
-  readonly entryPoint: 'generation-dispatch';
-  admit(): WriterTaskToken;
-  finish(token: WriterTaskToken, outcome: WriterOutcome): void;
-}
+import type { WriterGenerationToken, WriterTaskToken, WriterOutcome, WriterAdmission } from "../../src/lib/runtime/writer-admission.js";
+export type { WriterGenerationToken, WriterTaskToken, WriterOutcome, WriterAdmission } from "../../src/lib/runtime/writer-admission.js";
 export interface WriterSnapshot {
   schema: 'a3-writer-admission-v1'; scope: 'isolated'; entryPoint: 'generation-dispatch'; coreCoverage: 'runGenerationDispatchOnce';
   marker: object; admission: 'open' | 'closed';

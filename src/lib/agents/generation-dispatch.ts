@@ -13,7 +13,7 @@ import { runPipelineForTopic, runScheduledTopicPipeline, type GenerationExecutio
 import { deploymentAnchorPublicationIfEnabled } from "../runtime/integrity-anchor-runtime.js";
 import { NOOP_P1_TELEMETRY_SINK, type P1TelemetrySink } from "../capabilities/p1-telemetry.js";
 
-import type { WriterAdmission, WriterOutcome } from "../../../ops/maintenance/writers.mjs";
+import type { WriterAdmission, WriterOutcome } from "../runtime/writer-admission.js";
 
 const HEARTBEAT_MS = 30_000;
 const STABLE_DISPATCH_FAILURE_CODES = new Set([

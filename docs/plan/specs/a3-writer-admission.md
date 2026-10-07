@@ -18,12 +18,15 @@ bootstrap/orphan回收；这些startup writer不在本片门内。worker SIGTERM
 不能证明app任务/未知子工作停止。
 
 执行 Agent A 独占新 `ops/maintenance/writers.mjs`、其声明与专属 node-test、
-`src/lib/agents/generation-dispatch.ts`、专属 maintenance test、本 spec 与专属收据。
+`src/lib/agents/generation-dispatch.ts`、仅types的 `src/lib/runtime/writer-admission.ts`、
+专属 maintenance test、本 spec 与专属收据。
 不改台账、A2文件、S0账本历史格式、业务 schema、模型/prompt/validator、workflow、policy/gate。
 未知 owner/session 的旧 worktree 保留。
 
 ## 接口与保证边界
 
+公共结构port的唯一types事实源在src/runtime，ops声明仅typeimport/re-export，
+app源码不能typeimport Docker未COPY的ops模块；不扩大Docker allowlist或引入runtime ops依赖。
 公共协议 `a3-writer-admission-v1`，只接受已初始化 S0 隔离 ledger 根与完整 marker。
 `writers-isolation.json` 为O_EXCL永久初始化标记；`writers.sqlite` 是新独立侧车，不更改 `ledger.sqlite` 的 schema、审计或历史记录。
 每次registry事务先调用真实openLedger.inspect核完整S0 schema/genesis/audit，损坏或部分账本不得准入。

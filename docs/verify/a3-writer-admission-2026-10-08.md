@@ -31,7 +31,7 @@ S0获取维护操作与registry关闭之间没有跨DB原子事务，不能称�
 | ops自动发现 | 最近完整run380项，377通过、0失败、3项既有Linux Docker/GHCR本地skip；第二轮修正后定向S0/S1合计67项通过，未改其他ops路径；CI仍须实际执行，不把本地mock或skip当镜像通过 |
 | typecheck | TS7与TS6主程序/tools均通过 |
 | lint | 全仓lint通过，warnings=0 |
-| build | 无.env加载、清空ambient凭据、显式隔离DB/DATA；Next生产构建通过，实际internal dispatch route bundle含writerAdmission；ops只为type import并被擦除，不增加runtime文件依赖；不访问模型/生产 |
+| build | 无.env加载、清空ambient凭据、显式隔离DB/DATA；Next生产构建通过，实际internal dispatch route bundle含writerAdmission；公共port只types、事实源在src/runtime，ops声明typeimport/re-export；不增加runtime ops依赖；不访问模型/生产 |
 
 独立最终review真实复现hot journal权限检查时机缺陷：SQLite pragma在检查前触发恢复/删除。
 已将journal/WAL/SHM检查移到new Database之前；第二位Reviewer进一步复现existing handle的
@@ -54,7 +54,21 @@ A1未运行：它不执行本次登记接线路径。本片不改变模型、pro
 ## 评审、版本和未完成项
 
 独立方案review：Blocking 0；两项Warning已冻结并实现（声明代际身份、每事务完整S0验证）。
-最终完整diff须两位独立Reviewer；最终受审head、PR tested merge、精确main CI由协调者核验记录。
+实现受审head `9902ebb8f27492b7c7494c56d4c9670eca901152`：Reviewer1与Reviewer2均最终Blocking 0/未解决Warning 0；
+Reviewer1独立S0/S1 67项，Reviewer2独立67项、core20项及双TS通过。
+Reviewer2原记录 `a3-reviewer-two-20261008/a3-review-v2.md`（3026 bytes）SHA256
+`d42cb3aa844d56d984bbbe9d0a095d826a6907ba79a761d24bc2465fc5dc9778`；作者原index-v3
+（4347 bytes）SHA256 `a81ad434d294aa1fbe97b6e3be162ceac4c04c6e68a954745b4d8c3d3d7fcaef`。
+
+PR #445 首次CI `37677984839 / attempt 1 / head 9902ebb` 未通过。
+pr-policy失败是正文scope/risk/decision/Blocking ASCII/评测例外字段格式，协调者已按原证据修正文，未改policy。
+Docker独立失败真实原因是TS2307：src core typeimport ops/maintenance/writers.mjs，但Docker builder allowlist
+没有COPY该模块；本地完整worktree build通过不能代替Docker上下文。现把公共port仅interfaces/types移到
+src/lib/runtime/writer-admission.ts，core typeimport runtime，ops声明反向typeimport/re-export同一port。
+不扩大Docker allowlist、不带整ops，不增加runtime adapter。原失败不重标通过，不复用旧Docker假通过。
+原失败job日志保全为`ci-37677984839-attempt1-failed.log`。新包装修复的`targeted-v5.log`134项、
+`guards-v5.log`67项、`typecheck-v5.log`双TS、`lint-v5.log`及`build-v5.log`为新源验证。
+新包装修复必须两位独立Reviewer定向复核与新精确Docker CI；最终head/tested merge/main绑定待协调者核验。
 此收据的本地结果只证明所列源码路径；新的维护代码不在旧4477412冻结镜像内，不能复用旧镜像矩阵
 作为新镜像接线通过，也不宣称合入、上线或A3/TD-19整体关闭。
 
