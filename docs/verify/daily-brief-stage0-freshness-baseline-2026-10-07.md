@@ -98,19 +98,19 @@
 1. 冻结完整来源清单、全部可获取候选及采集失败 ledger；新 evidence revision append-only，旧 URL 的 fetched_at 不回填首次钟。源 acquisition 与分析 attempts 分表记账，当前工具的尝试分母只覆盖分析阶段。
 2. 补入选 receipt、解析/提取覆盖、逐命题 evidence-pass 与 publication commit receipts；缺口显式 unknown。分析缓存命中、失败与重试各有独立尝试。
 3. 用 `assertComparableFInputs(F0, F1)` 检查同来源池 hash、同窗口/as-of、同模型/总 token/USD 预算和完整失败成本 ledger；它只检查协议，不替代真实池 hash核验、事件金标、独立评测或 F 发布门。
-4.按 topic/issue/source form/first-vs-followup 单独报告双钟年龄、24/48h（含界）、各阶段延迟与损失；percentile 使用 nearest rank。unknown/负时序从 known 分位数中排除，但保留总分母及比例下界，不靠删失败改善数字。
+4. 按 topic/issue/source form/first-vs-followup 单独报告双钟年龄、24/48h（含界）、各阶段延迟与损失；percentile 使用 nearest rank。unknown/负时序从 known 分位数中排除，但保留总分母及比例下界，不靠删失败改善数字。
 5. 独立证据门 + 人工重要事件/维度召回非劣 + 重报/空刊不恶化 + F 时效/成本门通过，才能提出独立策略切片；当前 `comparison_ready=false`，B1/#360 不代证。
 
-可执行命令（新输出目录，不覆盖私有产物）：
+可执行命令（先使用 Node 24.19；新输出目录，不覆盖私有产物）：
 
 ```bash
-PATH=/Users/dongqiu/.nvm/versions/node/v24.19.0/bin:$PATH npx tsx evals/rich-brief-stage0/freshness.ts \
+npx tsx evals/rich-brief-stage0/freshness.ts \
   from-export /absolute/sealed-export /absolute/gitignored/new-output
 
-PATH=/Users/dongqiu/.nvm/versions/node/v24.19.0/bin:$PATH npx tsx evals/rich-brief-stage0/freshness.ts \
+npx tsx evals/rich-brief-stage0/freshness.ts \
   summarize /absolute/observations.json /absolute/gitignored/new-summary
 
-PATH=/Users/dongqiu/.nvm/versions/node/v24.19.0/bin:$PATH npx tsx evals/rich-brief-stage0/freshness.ts \
+npx tsx evals/rich-brief-stage0/freshness.ts \
   template 2026-10-09T00:00:00.000Z /absolute/gitignored/new-template \
   2026-10-08T00:00:00.000Z 2026-10-09T00:00:00.000Z
 ```
@@ -118,7 +118,11 @@ PATH=/Users/dongqiu/.nvm/versions/node/v24.19.0/bin:$PATH npx tsx evals/rich-bri
 ## 检查与 eval-gate
 
 使用 Node 24.19.0；`npm ci` 在独立 worktree 完成。
-`npx vitest run evals/rich-brief-stage0/freshness.test.ts`：8 项通过，包括 unknown/负时序/失败/no-input/独立成本/主引用 1→0/私有输出/hash 错配/固定预算协议。
+`npx vitest run evals/rich-brief-stage0/freshness.test.ts`：10 项通过，包括 unknown/负时序/失败/no-input/独立成本/主引用 1→0/私有输出/hash 错配/固定预算协议。
 `npm run typecheck`：TS7、TS6 及 tools 均通过；eslint max-warnings=0 通过。
 调用 eval-gate 后判定：新增确定性离线诊断，没有修改生产 prompt/model/source/validator 或评测金标。
 未运行 A1：A1 不执行本工具路径，不能证明 F 改善、人工标签或阅读效果；本切片仅申请工具和观测契约审查。
+
+独立审查修正：attempt 的 analyzer_started/completed 也逐项校验 ≤ as-of；新增无 observation/publication 的未来尝试反例，阻断未来执行时长进入 known 分布。输入 API 不变。
+
+独立审查修正：阶段损失仅按明确失败段映射（not-selected→入选、extraction-failed→提取、evidence-rejected→证据、history-filtered→出刊）；缺更早时间戳而存在更晚成功钟归 pending-or-unobserved。budget-filtered 无法区分输入/报告预算阶段，保持未知归因。新增历史过滤+漏首次采集钟与冲突后续成功钟的回归。

@@ -55,6 +55,9 @@ export const freshnessInputSchema = z.object({
   for (const list of [v.attempts.map((a) => a.attempt_id), v.observations.map((o) => o.observation_id), v.publications.map((p) => p.publication_id)])
     if (new Set(list).size !== list.length) ctx.addIssue({ code: "custom", message: "duplicate row identity" });
   const attempts = new Map(v.attempts.map((a) => [a.attempt_id, a]));
+  for (const attempt of v.attempts) for (const c of [attempt.analyzer_started, attempt.analyzer_completed])
+    if (c.value !== null && c.value > v.as_of)
+      ctx.addIssue({ code: "custom", message: "attempt clock beyond as_of" });
   for (const row of [...v.observations, ...v.publications]) {
     const attempt = row.attempt_id === null ? null : attempts.get(row.attempt_id);
     if (row.attempt_id !== null && (!attempt || attempt.topic_id !== row.topic_id || attempt.issue_id !== row.issue_id))
@@ -117,6 +120,19 @@ const SEGMENTS = [
   ["first_available", "first_collected"], ["first_collected", "selected"], ["selected", "extracted"],
   ["extracted", "evidence_pass"], ["evidence_pass", "published"], ["first_available", "published"],
 ] as const;
+const PIPELINE_CLOCKS = ["first_available", "first_collected", "selected", "extracted", "evidence_pass", "published", "reader_open"] as const;
+/** Terminal labels only attribute loss to their proved failure stage; missing earlier clocks do not. */
+function isProvedStageLoss(observation: FreshnessInput["observations"][number], from: string, to: string): boolean {
+  const failedSegment: Partial<Record<FreshnessInput["observations"][number]["terminal"], readonly [string, string]>> = {
+    not_selected: ["first_collected", "selected"], extraction_failed: ["selected", "extracted"],
+    evidence_rejected: ["extracted", "evidence_pass"], history_filtered: ["evidence_pass", "published"],
+    // budget_filtered does not identify whether input selection or report selection exhausted a budget.
+  };
+  const segment = failedSegment[observation.terminal];
+  if (!segment || segment[0] !== from || segment[1] !== to) return false;
+  const targetIndex = PIPELINE_CLOCKS.findIndex((c) => c === to);
+  return !PIPELINE_CLOCKS.slice(targetIndex + 1).some((c) => observation.clocks[c].value !== null);
+}
 function publicationMetrics(rows: Publication[], scenario: string | null) {
   const age = (key: keyof Clocks) => distribution(rows.map((p) => durationHours(p.clocks[key], p.clocks.published)));
   return { publication_messages: rows.length, original_publish_age: age("source_published"), version_update_age: age("source_version_updated"),
@@ -146,8 +162,8 @@ export function summarizeFreshness(raw: unknown) {
     const missing = entered.filter((o) => o.clocks[to].value === null);
     return [`${from}->${to}`, { entered_recorded: entered.length,
       progressed_recorded: entered.length - missing.length,
-      terminal_loss_recorded: missing.filter((o) => o.terminal !== "unknown" && o.terminal !== "published").length,
-      pending_or_unobserved: missing.filter((o) => o.terminal === "unknown" || o.terminal === "published").length,
+      terminal_loss_recorded: missing.filter((o) => isProvedStageLoss(o, from, to)).length,
+      pending_or_unobserved: missing.filter((o) => !isProvedStageLoss(o, from, to)).length,
       entry_unknown: input.observations.length - entered.length }];
   }));
   const observationGroups: Record<string, FreshnessInput["observations"]> = { all: input.observations };

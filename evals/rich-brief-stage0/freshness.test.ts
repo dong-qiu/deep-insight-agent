@@ -57,6 +57,19 @@ describe("F full denominators and separate clocks", () => {
     expect(metrics.reader_scenario_age).toMatchObject({ kind: "scenario_estimate_only", p50_hours: 36 });
     expect(metrics.reader_open_age).toMatchObject({ known: 0, unknown: 1 });
   });
+  it("does not attribute a later history filter or ambiguous budget failure to a missing collection clock", () => {
+    const i = input();
+    i.attempts.push({ attempt_id: "a", topic_id: "software", issue_id: "issue1", status: "completed", input_source_revisions: ["revision1", "revision2"], analyzer_started: clock(0), analyzer_completed: clock(1), ledger: { model: "m", input_tokens: null, output_tokens: null, usd: null, failure_code: null } });
+    const clocks = unknownClocks(); clocks.first_available = clock(0); clocks.selected = clock(1); clocks.extracted = clock(2); clocks.evidence_pass = clock(3);
+    i.observations.push({ observation_id: "history-filtered", attempt_id: "a", source_revision: "revision1", source_family: null, topic_id: "software", issue_id: "issue1", source_form: "article", publication_kind: "first", clocks, terminal: "history_filtered" });
+    i.observations.push({ ...i.observations[0], observation_id: "budget-filtered", source_revision: "revision2", clocks: structuredClone(clocks), terminal: "budget_filtered" });
+    const summary = summarizeFreshness(i);
+    expect(summary.stage_loss["first_available->first_collected"]).toMatchObject({ entered_recorded: 2, terminal_loss_recorded: 0, pending_or_unobserved: 2 });
+    expect(summary.stage_loss["evidence_pass->published"]).toMatchObject({ entered_recorded: 2, terminal_loss_recorded: 1, pending_or_unobserved: 1 });
+    // A later stage clock proves progress even when an earlier failure label conflicts with the clock ledger.
+    i.observations[0].terminal = "extraction_failed"; i.observations[0].clocks.extracted = unknownClock("missing_receipt");
+    expect(summarizeFreshness(i).stage_loss["selected->extracted"]).toMatchObject({ terminal_loss_recorded: 0, pending_or_unobserved: 1 });
+  });
   it("rejects duplicate, orphan, future or implicit clocks", () => {
     const i = input(); published(i, "p", 0, 24);
     expect(freshnessInputSchema.safeParse({ ...i, publications: [...i.publications, ...i.publications] }).success).toBe(false);
@@ -67,6 +80,22 @@ describe("F full denominators and separate clocks", () => {
     i.publications[0].clocks.published = { ...clock(24), evidence_ref: null };
     expect(freshnessInputSchema.safeParse(i).success).toBe(false);
     expect(durationHours(clock(2), clock(1))).toBe("invalid_negative");
+  });
+  it("rejects future attempt clocks even when there are no observations or publications", () => {
+    const i = input();
+    i.attempts.push({ attempt_id: "attempt-only", topic_id: "software", issue_id: "issue1", status: "completed", input_source_revisions: [],
+      analyzer_started: { ...clock(0), value: "2026-10-08T00:00:00.000Z" },
+      analyzer_completed: { ...clock(1), value: "2026-10-08T01:00:00.000Z" },
+      ledger: { model: "m", input_tokens: null, output_tokens: null, usd: null, failure_code: null } });
+    expect(i.observations).toHaveLength(0); expect(i.publications).toHaveLength(0);
+    expect(freshnessInputSchema.safeParse(i).success).toBe(false);
+    expect(() => summarizeFreshness(i)).toThrow("attempt clock beyond as_of");
+    i.attempts[0].analyzer_started = clock(0);
+    expect(freshnessInputSchema.safeParse(i).success).toBe(false);
+    i.attempts[0].analyzer_completed = clock(1);
+    expect(freshnessInputSchema.safeParse(i).success).toBe(true);
+    i.attempts[0].analyzer_started = { ...clock(0), value: "2026-10-08T00:00:00.000Z" };
+    expect(freshnessInputSchema.safeParse(i).success).toBe(false);
   });
 });
 
