@@ -82,6 +82,10 @@ describe("collector optional task admission", () => {
     });
     expect(rows("content_item")).toEqual([]);
     expect(rows("run")[0].status).toBe(mode === "lease" ? "running" : "failed");
+    if (mode === "budget") {
+      const event = db.prepare("SELECT error FROM generation_event WHERE trace_id=? AND event_type='failed'").get(lease.traceId) as { error: string };
+      expect(JSON.parse(event.error)).toEqual({ reason_code: "task_budget_exceeded", retryable: false });
+    }
   });
   it.each([undefined, 1])("keeps normal collection and actual raw bytes at cap %j", async (cap) => {
     const result = await collectSource(db, source, { taskBudgetUsd: cap });
@@ -93,6 +97,13 @@ describe("collector optional task admission", () => {
 });
 
 describe("collector late await and owned finalization", () => {
+  it("keeps ordinary conflict top-level and nested reasons", async () => {
+    const lease = claim(); fetchSource.mockRejectedValue(new Error("provenance_revision_conflict"));
+    await expect(collectSource(db, source, { traceClaim: lease })).rejects.toThrow("provenance_revision_conflict");
+    const event = db.prepare("SELECT reason_code,error FROM generation_event WHERE trace_id=? AND event_type='failed'").get(lease.traceId) as { reason_code: string; error: string };
+    expect(event.reason_code).toBe("provenance_revision_conflict");
+    expect(JSON.parse(event.error)).toEqual({ reason_code: "collect_failed", retryable: true });
+  });
   it.each(["resolve", "reject", "deadline"])("suppresses late source %s without claiming source termination", async (mode) => {
     const waiting = deferred<RawItem[]>(); fetchSource.mockReturnValue(waiting.promise);
     const controller = new AbortController(); const lease = claim();
@@ -106,6 +117,8 @@ describe("collector late await and owned finalization", () => {
     await rejected;
     expect(rows("content_item")).toEqual([]); expect(rows("generation_effect")).toEqual([]);
     expect(failedEvent(lease.traceId).reason).toBe(mode === "deadline" ? "task_deadline_exceeded" : "cancelled");
+    const failed = db.prepare("SELECT error FROM generation_event WHERE trace_id=? AND event_type='failed'").get(lease.traceId) as { error: string };
+    expect(JSON.parse(failed.error)).toEqual({ reason_code: mode === "deadline" ? "task_deadline_exceeded" : "cancelled", retryable: false });
     expect(rows("run")[0].status).toBe("failed");
   });
   it("suppresses late article fallback, retaining its pre-existing normal failure behavior", async () => {

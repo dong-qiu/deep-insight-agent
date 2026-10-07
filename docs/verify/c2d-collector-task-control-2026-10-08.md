@@ -47,21 +47,35 @@ beforeRequest 按 check → await 原 policy/QPS → check，真实 settle/异�
 状态 running（原为 accepted），属于测试错误；修正后绑定原基线源码重新跑
 35 项：**25 fail / 10 pass**。保留原测试、两轮原失败日志与修正 fixture 快照；
 红阶段还有 1 个测试 assertion Promise 的 unhandled rejection，不冒称生产缺陷。
-修复代码后增加两项预算/intent fencing 反例，最终新增 37 协议 + 9 HTTP 路径用例。
+修复代码后增加两项预算/intent fencing 反例；独立最终 review 修正见下文，
+最终新增 38 协议 + 9 HTTP 路径用例。
 
 | 最终本地门 | 结果 |
 | --- | --- |
-| collector/new protocol+HTTP/shadow/store/C2a/C2b/jobs/raw archive/pipeline budget | 11 文件、177 项通过，0 skip、0 unhandled errors |
+| collector/new protocol+HTTP/shadow/store/C2a/C2b/jobs/raw archive/pipeline budget | 最小 nested reason 修复后，11 文件、178 项通过，0 skip、0 unhandled errors |
 | `npm run typecheck` | TS7+TS6 app/tools 均通过 |
-| `npm run lint` | 全库通过；最后新增测试后受影响三个文件 lint 再通过 |
-| `npm run build` | 成功；保留既有 middleware→proxy 弃用 warning，未顺带重构 |
-| `npm run test:ops` | 367 项：364 pass、0 fail、3 既有 Linux Docker image-only skip |
+| `npm run lint` | `0f3f9a3` 全库通过；最小 reason/测试修复后两个受影响文件 lint 再通过 |
+| `npm run build` | 绑定 `0f3f9a3` 成功；本轮仅诊断字段 delta，复用既有 build；保留 middleware→proxy 弃用 warning |
+| `npm run test:ops` | 绑定 `0f3f9a3`：367 项、364 pass、0 fail、3 既有 Linux Docker image-only skip；本轮无 ops 变化，复用 |
 | `git diff --check` | 通过 |
 
 ops 的 3 个 skip 是 frozen447 HTTP 矩阵、旧 A2 native/迁移、#435 GHCR 真 pull。
 这些不执行本片 collector 控制，不当成本片证明或镜像资格；对应专属 PR/Linux CI
 仍须执行实际镜像路径，不以本地 skip 补签。build 不改变路由；本片未声称 HTTP
 caller 已接入可选控制，未新增 browser 门或以页面 health 当维护静默。
+
+独立 Reviewer1 对 `0f3f9a324f43bb3b633192eb30443aea0a64f983` 原最终 diff 为
+Blocking0/Warning0；Reviewer2 原同 head 为 Blocking0/Warning1：普通
+`provenance_revision_conflict` 的 top-level reason 仍为 conflict，但 nested
+`error.reason_code` 被意外从原 `${stage}_failed` 改为 conflict。该发现来自
+原始/最终 diff，Reviewer2 没有运行失败字段反例，不能冒称其运行产物存在。
+
+作者随后新增真实 collector/runJob/SQLite/trace 反例，在原 `0f3f9a3` 消费代码
+执行：唯一选中用例 **1 fail**，nested 实际 conflict、期望 collect_failed。
+修复仅让 TaskCancellationError/TaskBudgetError 使用标准 nested reason；其他普通
+错误仍保留原 stage_failed，top-level conflict 与普通 retryable=true 不变。
+取消/deadline/budget 用例补 nested 标准 reason/retryable=false SQL 断言。
+修后完整 178 项、双 typecheck、受影响 lint 均通过，最终双 delta review 尚待登记。
 
 已完整读取 eval-gate：最终 diff 仅 collector 控制接线，来源文件/正常选择/正文/
 模型/prompt/校验/评测口径不变；真实控制与 source HTTP 回归提供对应证据。
@@ -79,9 +93,12 @@ reader 与 raw helper 内部跨进程每次 finalize/markUnknown fencing 仍是�
 
 私有原材料根：
 `/Users/dongqiu/.local/share/insight-agent/evidence/td10-collector-plan-20261008/implementation/`。
-final `index.json` 绑定提交、源码/测试/原基线对象 size/hash、原始失败与最终日志、
+初版 `index.json` 绑定 `0f3f9a3`、源码/测试/原基线对象 size/hash、原始失败与最终日志、
 命令/结果、专属文档及 Reviewer2 原方案 review；索引 hash 在最终交接提供。
 原 proposal/index 完整保留，非覆盖追加；dirs0700/files0600，不将日志或原文入 Git。
+最小 nested reason 修复另归档 `../nested-reason-fix/index.json`，绑定新增提交、
+before 红、178 项/双 typecheck/lint 原日志、最终 delta、Reviewer2 原 review；
+不覆盖初版索引或将旧 head 的完整审查直接移植到新 head。
 
 worktree `insight-agent-td10-collector-plan-20261008`、port3118、独立 DB/DATA；Agent B
 独占 collector.ts、两项新测试及专属 spec/receipt。其他 shared 文件零修改；不清理

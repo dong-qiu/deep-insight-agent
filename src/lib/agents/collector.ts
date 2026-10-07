@@ -437,7 +437,10 @@ async function collectSourceTask(
           },
           version_context: sourceRef ? { source_config_revision: sourceRef.revision } : {},
           context_completeness: "partial",
-          error: { reason_code: reasonCode, retryable: !(error instanceof TaskCancellationError || error instanceof TaskBudgetError) },
+          error: {
+            reason_code: error instanceof TaskCancellationError || error instanceof TaskBudgetError ? reasonCode : `${stage}_failed`,
+            retryable: !(error instanceof TaskCancellationError || error instanceof TaskBudgetError),
+          },
         });
         finishSourceCollectTrace(db, trace, {
           summary: {
