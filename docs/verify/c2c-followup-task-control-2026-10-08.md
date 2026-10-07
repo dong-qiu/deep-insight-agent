@@ -51,6 +51,11 @@ A1不执行本独立followup路径，不以它替代实际控制回归；本阶�
 最终PR diff须再独立核对。PR/tested merge/main CI绑定记录在PR摘要及协调索引，
 由协调者核最新主干后按授权条件合入；提交前不预签尚未运行的CI或合入。
 
+PR #444 首次CI37677806612/attempt1的pr-policy advisory失败：正文未使用政策要求的
+“范围/风险级别/结论/Blocking: N; Warning: N/评测例外”字段格式；已有实际回归与review
+证据未缺失。已按真实原证据补齐正文并用未修改的pr-policy检查通过；此文档提交触发新CI，
+不跳门、不改政策、不盲重跑原失败；原run及失败观察保留，最终CI结果另绑定。
+
 TD-10本阶段只完成本函数显式控制切片，整体仍部分；collection、HTTP组合根、全writer/fencing及
 全局真实成本上界未证明。无历史数据变化，回退只撤回控制能力，不能删除既有事实或自动恢复工作。
 safe_rollback=null、deployment blocked与#435硬阻断不变，无生产/模型/清理授权继承。
