@@ -81,12 +81,21 @@ A2定向57项：56pass/1实际镜像skip；指定447源码12文件207用例、so
 全ops294项：292pass/2实际镜像skip（#435与A2各一项）；typecheck TS7/TS6、lint零warning通过。
 文档链接/锚点/格式检查通过。原deploy workflow actionlint通过；未改CI/publish的两个既有SC2016
 单引号JS提示不属本diff，禁用shellcheck的完整workflow结构检查通过，没有为消提示改共享文件。
-最终生产webpack构建17388ms/builds=1；同环境HTTP9/9、browser7/7复用同构建，additional_builds=0。
+首轮工程生产webpack构建17388ms/builds=1；同环境HTTP9/9、browser7/7复用同构建，additional_builds=0。
+该本地产物来自提交前A2工作区，并不作为后续probe修正head的精确构建证明，新head完整CI另跑。
 这类当前工程回归不代替447镜像证据。
 
 实际镜像测试用本地Docker socket、精确manifest、--pull=never、--network none、只读rootfs、丢弃capabilities，
 数据仅tmpfs /data及/tmp，挂载的合成fixture/测试脚本只读；不挂生产卷，不启动cron/worker或访问云服务。
 依赖guard失败、preflight失败、镜像native/CLI失败均使CI失败，未用skip兜底。
+
+首轮PR #439 head e74287c384ea29c686e4a1513312591ee732efa5 / CI37613600227 attempt1：
+实际preflight及镜像启动成功，但usage身份更新反例同时违反observation单调约束，实际返回
+usage_observation_immutable，而测试误期待usage_identity_immutable；A2镜像项失败，原生六项尚未到达。
+293/294ops通过、0skip，普通工程Docker通过，不能将此CI写成完整A2镜像兼容通过。
+修正仅让反例observation_number递增以单独触发身份不可改约束，保留精确错误断言并加整行不变断言；
+另将native子进程reporter显式固定为TAP，避免默认reporter差异使6/6汇总断言产生假失败。
+指定447源码复现身份反例通过，新精确head实际镜像及全CI须重新执行，结果在PR摘要留痕。
 
 ## 接口、失败与当前阻塞
 

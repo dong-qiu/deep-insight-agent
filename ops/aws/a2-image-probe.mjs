@@ -49,7 +49,11 @@ for (const stage of ["fresh-v48", "v46-to-v48", "v47-to-v48"]) {
   db.prepare(`INSERT INTO model_usage_attempt(attempt_id,logical_call_id,attempt_number,run_id,role,provider,model,started_at)
     VALUES ('a2_attempt','a2_call',1,?,'analyzer','anthropic','synthetic','2026-10-07T00:00:00Z')`).run(runId);
   assert.throws(() => db.prepare("DELETE FROM model_usage_attempt").run(), /usage_delete_forbidden/);
-  assert.throws(() => db.prepare("UPDATE model_usage_attempt SET run_id='missing'").run(), /usage_identity_immutable/);
+  const beforeRejectedUpdate = db.prepare("SELECT * FROM model_usage_attempt").get();
+  // Advance the observation counter so this counterexample isolates identity
+  // immutability instead of also violating the independent monotonic guard.
+  assert.throws(() => db.prepare("UPDATE model_usage_attempt SET run_id='missing', observation_number=observation_number+1").run(), /usage_identity_immutable/);
+  assert.deepEqual(db.prepare("SELECT * FROM model_usage_attempt").get(), beforeRejectedUpdate);
   assert.throws(() => db.prepare(`INSERT INTO model_usage_attempt(attempt_id,logical_call_id,attempt_number,run_id,role,provider,model,started_at)
     VALUES ('bad','bad',1,'missing','analyzer','anthropic','synthetic','2026-10-07T00:00:00Z')`).run(), /FOREIGN KEY/);
   const newRow = db.prepare("SELECT * FROM model_usage_attempt").get();
@@ -99,7 +103,7 @@ assert.deepEqual(ledger(failed), oldLedger);
 assert.equal(failed.prepare("SELECT status FROM report WHERE id='rep_a1b2c3d4'").get().status, "failed");
 failed.close();
 
-const native = spawnSync(process.execPath, ["--test", "/app/ops/a2-sharp-security.node-test.mjs"], {
+const native = spawnSync(process.execPath, ["--test", "--test-reporter=tap", "/app/ops/a2-sharp-security.node-test.mjs"], {
   cwd: "/app", env: { PATH: process.env.PATH }, timeout: 80_000, killSignal: "SIGKILL", encoding: "utf8", maxBuffer: 128 * 1024,
 });
 assert.ifError(native.error); assert.equal(native.status, 0, native.stderr + native.stdout);
