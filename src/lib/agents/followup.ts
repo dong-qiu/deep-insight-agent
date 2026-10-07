@@ -9,6 +9,7 @@
  *
  *  v1 单轮、同步；多轮 / SSE 为预留升级口（见 ADR-0002）。 */
 import { z } from "zod/v4";
+import { randomUUID } from "node:crypto";
 import { getInsightsByIds } from "../db/analysis.js";
 import { makeConsistencyCache } from "../db/consistency-cache.js";
 import { getContentItem, getSource } from "../db/repos.js";
@@ -17,6 +18,8 @@ import { notifyBudget } from "../runtime/alert.js";
 import { getBudgetStatus } from "../runtime/cost-guard.js";
 import { callStructured } from "../runtime/llm.js";
 import { runLogger } from "../runtime/logger.js";
+import { awaitWithSignal, createTaskCancellation, type TaskCancellationOptions } from "../runtime/cancellation.js";
+import { checkTaskBudget, enrollBudgetRun, recordBudgetCost, taskBudgetEnabled, withTaskBudget, type TaskBudgetOptions } from "../runtime/task-budget.js";
 import type { CitationCheck, ContentItem, Cost, FollowupCitation, Report } from "../types.js";
 import { isIncludableCheck } from "../utils/citation-verdict.js";
 import { checkReachability, consistencyCacheVersion, judgeWithRetry } from "./validator.js";
@@ -158,7 +161,30 @@ function renderCitationList(cites: FollowupCitation[]): string {
 
 /** 执行一次追问：组装上下文 → 约束生成 → 轻校验 → 组装回答。
  *  report 由调用方（API）保证存在且 status=done。 */
-export async function answerFollowup(db: DB, report: Report, question: string): Promise<FollowupResult> {
+export interface FollowupTaskOptions extends TaskCancellationOptions, TaskBudgetOptions {
+  /** Caller ownership check; this does not provide a maintenance commit permit. */
+  assertWrite?: () => void;
+}
+
+export async function answerFollowup(db: DB, report: Report, question: string, opts: FollowupTaskOptions = {}): Promise<FollowupResult> {
+  return withTaskBudget(db, opts, async () => {
+    const cancellation = createTaskCancellation(opts);
+    const checkpoint = (): void => {
+      opts.assertWrite?.();
+      cancellation.check();
+      checkTaskBudget();
+    };
+    try {
+      checkpoint();
+      return await answerControlledFollowup(db, report, question, cancellation.signal, checkpoint);
+    } catch (error) {
+      checkpoint(); // Re-check ownership even when the wait rejected first for cancellation.
+      throw error;
+    } finally { cancellation.dispose(); }
+  });
+}
+
+async function answerControlledFollowup(db: DB, report: Report, question: string, signal: AbortSignal, checkpoint: () => void): Promise<FollowupResult> {
   // A5 手动路径：预算触顶不硬拦（追问是用户主动意图，且单次成本低），仅记日志 + 告警一次（放行但提示，见 decisions）。
   const budget = getBudgetStatus(db);
   if (budget.verdict === "exceeded") {
@@ -173,23 +199,33 @@ export async function answerFollowup(db: DB, report: Report, question: string): 
   }
 
   let cost: Cost = { tokens: 0, amount: 0 };
+  const budgeted = taskBudgetEnabled();
+  // A call-local estimate key only: no Run or usage row is created for this function.
+  const costKey = budgeted ? `followup-task-${randomUUID()}` : undefined;
+  if (costKey) enrollBudgetRun(costKey, null);
   const addCost = (c: Cost): void => {
     cost = { tokens: cost.tokens + c.tokens, amount: cost.amount + c.amount, ...(cost.estimated || c.estimated ? { estimated: true } : {}) };
+    // Preserve unknown provider estimates, as C2b does; never invent a finite amount.
+    if (costKey && Number.isFinite(c.amount)) recordBudgetCost(costKey, c);
   };
 
   const { pool, itemsById } = buildPool(db, report);
   const poolByRef = new Map(pool.map((p) => [p.ref, p]));
 
   // ── 约束生成 ──
-  const gen = await callStructured({
+  checkpoint();
+  const gen = await awaitWithSignal(callStructured({
     role: "followup",
     telemetryOperation: "followup_generation",
     system: buildSystem(report, pool),
     user: question,
     schema: FollowupAnswerSchema,
     maxTokens: 2048,
-  });
-  addCost(gen.cost);
+    signal,
+    ...(budgeted ? { onCost: addCost } : {}),
+  }), signal);
+  if (!budgeted) addCost(gen.cost);
+  checkpoint();
   const { answerable, answer_md: rawAnswer, claims } = gen.data;
 
   // 不可回答：如实返回，无引用、不校验
@@ -204,6 +240,7 @@ export async function answerFollowup(db: DB, report: Report, question: string): 
   }
 
   // ── 轻校验（ref 级，封顶 MAX_CITATIONS）──
+  checkpoint(); // Cache construction removes expired rows, so it is a writer too.
   const cache = makeConsistencyCache(db, consistencyCacheVersion());
   // 按 ref 归并 claims（同 ref 多陈述各判一次，取最保守 verdict）；保持首次出现顺序
   const claimsByRef = new Map<number, string[]>();
@@ -238,15 +275,18 @@ export async function answerFollowup(db: DB, report: Report, question: string): 
     candidates.map(async ({ entry, claims: refClaims }) => {
       const outcomes = await Promise.all(
         refClaims.map(async (claim): Promise<"support" | "not_support" | "uncertain" | "error"> => {
+          checkpoint();
           const cached = cache.get(claim, entry.sourceBody);
           if (cached) return cached.consistency;
           try {
-            const j = await judgeWithRetry(claim, entry.sourceBody, addCost);
+            const j = await awaitWithSignal(judgeWithRetry(claim, entry.sourceBody, addCost, undefined, undefined, signal), signal);
+            checkpoint();
             if (j.consistency !== "uncertain") {
               try { cache.set(claim, entry.sourceBody, j); } catch { /* 写缓存 best-effort */ }
             }
             return j.consistency;
           } catch {
+            checkpoint(); // Control faults must not become ordinary judge degradation.
             return "error"; // 中转站抖动：优雅降级，不记内容假阳性
           }
         }),
@@ -254,6 +294,7 @@ export async function answerFollowup(db: DB, report: Report, question: string): 
       return { entry, outcomes };
     }),
   );
+  checkpoint();
 
   // 阶段 C（同步、确定序）：按候选顺序定 verdict、计数、组引用——最保守（任一 not_support → 整 ref 剔除）。
   for (const { entry, outcomes } of judged) {
