@@ -8,6 +8,7 @@ import { getDb } from "../db/index.js";
 import { listEnabledRecipientEmails } from "../db/recipients.js";
 import type { Notification, PushHighlight } from "./alert.js";
 import { runLogger } from "./logger.js";
+import { smtpPort } from "./notification-config.js";
 
 const esc = (s: string): string =>
   s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c] ?? c);
@@ -67,7 +68,7 @@ export function reportToEmail(n: Notification, from: string, to: string): Mail {
 
 /** SMTP 发送（nodemailer）。secure 按端口推断：465→TLS、其余→STARTTLS。可能抛——调用方 notifyEmail 兜。 */
 export async function sendEmail(mail: Mail, timeoutMs = 10_000): Promise<void> {
-  const port = Number(process.env.SMTP_PORT) || 465;
+  const port = smtpPort();
   const transport = nodemailer.createTransport({
     host: process.env.SMTP_HOST,
     port,

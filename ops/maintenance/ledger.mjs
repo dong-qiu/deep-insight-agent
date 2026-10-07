@@ -69,6 +69,7 @@ export function initialize(root, configuration) {
   // The marker is a permanent tombstone for an interrupted initialization.
   createDurable(join(root, "isolation.json"), canonical(marker), root);
   createDurable(join(root, "ledger.sqlite"), undefined, root);
+  journalCheck(root);
   const db = new Database(join(root, "ledger.sqlite"), { fileMustExist: true, timeout: 0 });
   try {
     db.pragma("journal_mode = DELETE"); db.pragma("synchronous = FULL");
@@ -138,6 +139,9 @@ export function openLedger(root) {
     }
   }
   function transaction(change) {
+    // BEGIN can recover/remove a hot journal even on an existing handle.
+    // Preserve unsafe evidence before any SQLite operation; read() rechecks in-transaction.
+    pathCheck();
     return db.transaction(() => {
       const { state, previous, index } = read();
       const before = canonical(state);

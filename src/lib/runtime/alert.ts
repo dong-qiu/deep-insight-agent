@@ -8,6 +8,7 @@
  *  - **非阻塞、永不抛/拒**：notifyFailure 全程 try/catch 兜底（构造阶段的 new URL / JSON.stringify 也可能抛），
  *    告警自身失败绝不连累管线——尤其不能顶替 runJob catch 里待重抛的原始错误。 */
 import { appLevelError, buildAlertRequest, detectChannel, type AlertRequest, type Notification, type PushHighlight } from "./alert-channels.js";
+import { alertTimeoutMs } from "./notification-config.js";
 export { appLevelError, buildAlertRequest, detectChannel } from "./alert-channels.js";
 export type { AlertRequest, ChannelId, Notification, PushHighlight } from "./alert-channels.js";
 import { notifyEmail } from "./email.js";
@@ -377,7 +378,7 @@ export function notify(n: Notification): void {
   const url = process.env.ALERT_WEBHOOK;
   if (!url) return; // 未配置 → no-op
   try {
-    const timeoutMs = Number(process.env.ALERT_TIMEOUT_MS) || 5000;
+    const timeoutMs = alertTimeoutMs();
     const channel = detectChannel(url, process.env.ALERT_CHANNEL);
     const req = buildAlertRequest(url, n, channel, { feishuSecret: process.env.ALERT_FEISHU_SECRET });
     void sendAlert(req, timeoutMs);
