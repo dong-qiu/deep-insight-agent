@@ -81,3 +81,41 @@ reader listener 清理证据不扩称所有平台内置资源可被用户层强�
 safe_rollback=null、deployment blocked/hold 与 #435 生产硬阻断保持；无生产授权。
 任一未覆盖接口、正常来源语义变化、Blocking 或未知子工作终态均继续阻断对应验收。
 本收据不授予维护/部署/回退/生产许可，不清理 WT/分支/原证据。
+
+## 2026-10-08 最终独审与事后元数据交接
+
+上述未合入、未盖章及等待 delta 审查的记录保留其原时点。本段追加当前证据状态，
+不改写旧 `3947e2dba7bb15e5bf786210e2cb00534275cab5` 的 Blocking 1 / Warning 0
+及原三条红测。修复源码受审对象为
+`398ab959eeedffb72ee90776e12efb68a86f494f`，两位独立最终审查均为
+**Blocking 0 / Warning 0**：
+
+- Reviewer 1 独立原三例通过；13 文件 190 项真实 source 回归（含新增六例）与
+  TS7/TS6 app/tools 通过。私有索引
+  `c2e-reviewer-one-fixed-jx9z2si7/index.json`，SHA256
+  `7e0c1b9347596b8228e5f5f0d6d10e9869e1cdf878ca01bebd209bda1c7f9d99`。
+- Reviewer 2 独立原三例加新增六例 9/9 通过；其余 12 文件 184 项真实 source
+  回归与 TS7/TS6 app/tools 通过。私有索引
+  `a3-reviewer-two-20261008/c2e-implementation-review-index-v2.json`，SHA256
+  `aa089a68c58f1b388f5be46d5366324df109cb3f1221caa5e6978a365be0c15c`。
+- 作者修复的 21 份原材料索引
+  `c2e-source-controls-20261008/upper-return-gap-fix/index.json`，SHA256
+  `62c80e304adeef3e077f58491e40b7c80bf560d1481aa3621f1e9a3159829b8f`。
+
+以上路径相对于 `/Users/dongqiu/.local/share/insight-agent/evidence/`。本次交接已
+自行读取 Reviewer 原审查/日志并核对三份索引及所列全部材料 size/hash，索引根目录
+0700、材料 0600；原红测、旧审查与档案非覆盖保留。
+
+协调者完整读取 eval-gate、最终 source diff、294 项实际受影响路径回归及两位独审后，
+确认本片仅为可选 signal 控制，正常来源输出与 AI 语义不变，作出事后
+`Eval-Gate: skip` 判定。其空树元数据提交
+`9618714dca2cf7dc73b9661698ae1db4fdc18c57` 与源码受审对象的 tree 均为
+`9edc7934d3247540e156be63b3ff016374551cbd`。未用不执行本路径的 A1 补证，
+未预签 skip，真实模型预算仍为 0；这不是历史真实质量缺口通过声明。
+
+本次仅追加收据，不重跑源码测试。新最终 head、tested merge、精确 PR/main CI
+仍由协调者核验，当前未 push、未创建 PR、未合入、未上线；修复后的构建尚未在本段
+签认，旧 head build 不移植。collector 实际消费仍为待办，C2f 仅冻结方案，须两项
+父交付合入且精确 main CI 成功后另行授权实施。协调者持有 Git/Eval 事后元数据、PR
+及台账集成权限；六个 source、两个测试、spec 与本收据仍由执行 Agent B 冻结持有，
+本段不扩大接口、产品、预算或生产授权。
