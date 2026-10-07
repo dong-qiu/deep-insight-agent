@@ -2,6 +2,22 @@
 
 > 阶段性目标与时间盒。按 IPD 阶段分。
 
+## 当前入口与证据边界（D6，2026-10-07）
+
+以下 M0–M5 与 DCP 段落保留各自日期的历史结果，不作为当前部署、恢复或任务重启指令。
+当前入口以 [README](../../README.md)、[运维手册](../launch/operations.md)、
+[技术债实施计划](specs/technical-debt-remediation.md)和 [D6 统一台账](../verify/d6-technical-debt-ledger-2026-10-06.md)为准。
+历史 M4 的 SSH/build-on-server、deploy.sh/Caddy 一键首发与备份 DR 收口记录不能证明今天具备相同入口或完整恢复能力；
+已有生产实例使用 ADR-0017 的固定镜像/SSM 受控发布入口，备份与恢复继续受 C1/TD-09 未完成边界约束。
+本轮没有生产访问，历史域名/TLS、运行版本、告警或来源可达性不代表当前现场状态。
+
+D2、C4b、D3 各切片本阶段收口，TD-12/14/15 仍部分完成；C4b 仅证明恢复源读取 2→1，
+D3 未保留优化实现，真实模型及生产/browser 性能未证明。D7 S1 已交付，S2 未处理，TD-20 仍部分完成。
+供应链修复及当前候选 CI 状态见台账的追加记录；历史 audit 成功不是永久安全结论。
+P1 按 [ADR-0026](../develop/decisions.md#adr-0026-p1-以可拔插观测能力休眠不拆分既有事实账本)和
+[休眠重入清单](p1-dormant-reentry.md)继续 dormant，取消任务不重开；未来须另立任务及满足准入条件。
+Brief 未提交规划及其他 Session 内容没有交接或纳入本次状态注记。
+
 ## M0 — Concept
 
 - [x] charter.md 完成

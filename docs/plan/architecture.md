@@ -536,7 +536,7 @@ agent 执行单元的状态追踪；由 Job Runner 写入 SQLite，支撑管理�
 | 调度 | **系统 cron + 容器内进程**（不用 Vercel Cron） | Vercel Cron 单次 timeout ≤ 60s 与 MVP「P50 ≤ 10 分钟」长任务不匹配；系统 cron 触发后走 Job Runner，长任务在容器进程内跑 |
 | 配置 | 三层分离：静态 YAML（构建时打包）+ 动态 SQLite（运行时可写）+ 环境变量（密钥唯一来源） | 静态 vs 动态边界清晰；密钥不进配置文件，配置以 `${VAR_NAME}` 引用 |
 | **部署** | **自托管 Docker 容器（默认）**：Fly.io / Railway / 自托管 VPS 单实例 + 持久卷；反向代理（Caddy / Nginx）做 TLS 终止 | 与 product-definition「Web 站点 + 后端 API」对齐；SQLite + FS 需要持久 FS（serverless 不适用）；MVP 单实例无并发写锁问题。Vercel preview 仅用于 UI 开发预览，不承担持久化 |
-| CI/CD | GitHub Actions：lint → typecheck → vitest → playwright → eval 抽样 → Docker build → 部署 | 与 `skills/L3-quality.md` 测试要求对齐；安全扫描同步跑 |
+| CI/CD | GitHub Actions CI 按完整范围选 docs 或 full；full 中应用 lint/typecheck/coverage/确定性门/build/HTTP/browser 与 Docker 并行验证；独立 workflow 消费可信 main 完整证据发布 GHCR，生产再经 Deploy Production Image | 普通 docs/verify 与 docs/plan/specs Markdown 可走文档检查，必需汇总门保留，应用/Docker/镜像正常跳过不构成失败或上线。真实模型 eval 由单独 eval workflow/授权任务执行，非每次 CI 抽样；详见 [交付证据流程](specs/pr-delivery-evidence-workflow.md) |
 | 安全扫描 | Dependabot + `npm audit`（CI）；Docker image tag 锁定（不用 `latest`）；lockfile 必 commit；模型 SDK 来源限定官方 | 「供应链」要求落地 |
 | 评测 | Vitest（单测）+ Playwright（e2e）+ 自建 eval 脚本（在 `evals/`） | 与 L3 测试要求对齐 |
 | 日志 | `pino`（结构化 JSON，带 `run_id` / `agent` / `stage` 标签）；本地 / staging 滚动文件；production 经 Docker log driver 出到外部聚合（如 Better Stack） | 结构化便于看板查询与告警 |
@@ -567,25 +567,30 @@ agent 执行单元的状态追踪；由 Job Runner 写入 SQLite，支撑管理�
 |---|---|
 | 身份与隔离 | Auth.js Credentials + JWT session（不落 SQLite）；env bootstrap admin 与 SQLite `app_user`；Node middleware 与 handler 共用只读凭据版本检查；变更密码/角色或删除后，后续请求拒绝旧会话，见 [认证保护 B1b](specs/auth-hardening.md) 与 ADR-0037；上线状态单独核验 |
 | 密钥管理 | 唯一来源 = 环境变量；配置文件以 `${VAR_NAME}` 引用；启动校验缺失即拒；logger 在格式化前和最终 JSON 输出时递归脱敏，Error/Run/失败通知使用受控诊断而非原始堆栈或 SDK 正文；Docker 默认拒绝非构建输入，见 [B2 信息边界](specs/information-boundary.md)；前端不直连外部 API |
-| 传输与存储 | 反向代理（Caddy / Nginx）终止 TLS（自动续证）；敏感字段经 `node:crypto` 字段级加密；持久卷加密（云提供商）；账号删除 → 级联删除 + 备份滞后窗口 30 天后清除 |
+| 传输与存储 | 反向代理（Caddy / Nginx）终止 TLS（自动续证）；敏感字段经 `node:crypto` 字段级加密；持久卷加密（云提供商）。早期“账号级联删除/备份30天后清除”是设计目标，未作为本轮已验收能力；当前报告删除、保留与恢复以 C1/operations §6 为准，不保证旧备份已清除 |
 | 输入防护（prompt injection） | 在 `runtime/llm.ts` 包装：外部内容包裹 `<untrusted-source url="…">` 标签 + 指令式文本剥离；用户输入 XSS 防护走 React 默认 + CSP |
 | 输出防护 | LLM 输出走 Zod schema 校验；引用 URL 检查（黑名单 + SSRF 防护：禁止内网段 / 私有 IP / `file://`）；模型输出过滤敏感信息 |
-| 合规与版权 | `robots.txt` 解析在 `lib/sources/` 适配层；遵守各源 ToS；引用必标来源（schema 强制 `Citation.content_item_id`）；账号注销走级联删除 |
+| 合规与版权 | `robots.txt` 解析在 `lib/sources/` 适配层；引用必标来源（schema 强制 `Citation.content_item_id`）；各源许可与原文使用仍按独立准入核对，当前技术债收口不证明全源许可或账号注销/备份清除完成 |
 | 供应链 | GitHub Actions 跑 Dependabot + `npm audit`；lockfile 必 commit；Docker image tag 锁定；模型 SDK 限定官方 |
 | 审计与日志 | SQLite `audit_log` 表（append-only），记录登录 / 配置变更 / 源接入 / 报告生成 / 推送 / 删除；保留 90 天；敏感字段脱敏 |
 | 防滥用 | API middleware 使用进程内 `RateLimiter`；Credentials 入口另设账号/全局密码校验预算与有界桶，见 [B1a](specs/auth-hardening.md)；非分布式限流，不宣称具备全量告警/封禁体系 |
 
 ### 成本控制实现路径（charter A5 落点）
 
+当前实现口径按 C2a/C2b/C3 与运维手册 §14 核对；早期规划的 per-account quota、cost_daily 视图和“停止 cron”不能当作已实现。
+
 | 项 | 实现 |
 |---|---|
-| 每次 LLM 调用计量 | `LLM Client` 强制写入 `Run.cost`（tokens + amount） |
-| 成本聚合 | SQLite 视图 `cost_daily`（per day × task_type × user × topic × model） |
-| 配额校验 | 调用前查 `quota` 表（按账号 / 主题 / 模型上限）；超额拒绝 |
-| 熔断 | Cost Meter 检测日 / 月预算 ≥ 80% → 告警；≥ 100% → 停调度器 + 停 cron job |
-| 看板可视化 | `cost_daily` 表 → 时序图（管理看板） |
+| Job 成本兼容值 | `Run.cost` 保存已观测 token/本地估价，供既有预算消费；不是实际账单或套餐余额 |
+| attempt 用量 | C3 的 `model_usage_attempt` 在 Job 内逐可观察 transport 保存 unknown/partial/reported 与可空估价；无 Job 入口未自动接入，不与 Run/P1 金额相加 |
+| 日/月聚合 | `repos.sumRunCostSince` 按 UTC Run.started_at 累计已落盘 Run.cost；不是每请求的全局原子授权 |
+| 日/月控制 | 自动调度入队前硬拦；手动深挖/追问 advisory；队列检查竞态与在途计费保留，未停止 cron 进程 |
+| opt-in 任务额度 | C2b `taskBudgetUsd` / worker `COST_LIMIT_TASK` 按已确认兼容估价停止新 dispatch/retry；缺失不限额、未知用量继续、不设 reservation，不保证真实费用上界 |
+| 看板/读侧 | 既有 Run 成本统计与 C3 只读分页；C3 不新增账单 UI/API，完整财务账本不在最小契约内 |
 
 ### 数据备份与删除
+
+以下四条是早期设计目标，**不是当前部署或恢复验收事实**。当前备份/删除/恢复以 [operations §6](../launch/operations.md#6-数据与备份恢复)、C1 分层契约和 [D6 台账](../verify/d6-technical-debt-ledger-2026-10-06.md) 为准：新格式滚动14份、额外保护最新完整恢复点、最长90天；历史缺口令已知生产快照 incomplete，完整生产恢复未通过。不保证全部备份版本第30/90天永久删除，也不声称已有月度/季度作业。
 
 - 持久卷每日快照（保留 30 天）；月度全量备份（保留 12 个月）。
 - 备份介质加密（云提供商或 GPG）。

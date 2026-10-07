@@ -78,7 +78,8 @@ npm run dev
 | `npm run eval:opportunity-map` | 评估技术机会映射 |
 | `npm run eval:opportunity-export` → `eval:opportunity-sample` → `eval:opportunity-seal` → `eval:opportunity-mapping-export` → `eval:opportunity-materialize` → `eval:opportunity-map` | 离线、同快照的技术机会 dogfood 流程（详见 `evals/technology-opportunities/README.md`） |
 | `npm run eval:opportunity-review-pack -- <snapshot> <manifest> <seed> <output>` | 在 expected-only 封存前为 Owner 创建私有、只读 review-pack；只可交付给 Owner，不能提交 Git，也不得在封存前运行映射导出 |
-| `npm run db:snapshot` / `npm run db:restore` | 导出或恢复本地 SQLite 快照 |
+| `npm run db:snapshot` | 从本地隔离库导出黄金 SQLite 快照；写入输出，已有输出会被替换；不含 raw/report 文件 |
+| `npm run db:restore` | 实际写入本地隔离库；已有目标默认拒绝，`--force` 会删除目标 DB/WAL/SHM 后覆盖，须另行核实目标并授权；不是生产恢复入口 |
 | `npm run branches:cleanup` | 只读列出可清理的已合并 PR 本地分支与 worktree |
 | `npm run branches:cleanup -- --apply` | 清理经审核的本地候选；远程分支由 GitHub 合并后自动删除 |
 | `npm run multica:watch -- INSI-91 --pr 291 --until-idle` | 前台持续显示 Multica 任务、关联 PR 与 CI 状态；关联 task run 和 CI 空闲后退出 |
@@ -86,7 +87,9 @@ npm run dev
 
 修改 prompt、模型、校验逻辑、数据源或评测集前，必须运行 [`eval-gate`](.claude/skills/eval-gate/SKILL.md)，并在 PR 中附上相对基线的指标和可复查产物。
 
-## Docker 部署
+## 本地/隔离 Docker 运行
+
+以下命令在本地或隔离环境构建并启动服务，写入该环境的持久卷；已初始化生产实例的升级入口是运维手册 §8 的 `Deploy Production Image`，全新主机 bootstrap 仍须另立任务。
 
 ```bash
 cp .env.example .env.local
@@ -100,6 +103,7 @@ Compose 会启动：
 
 - `app`：Web 应用与任务执行器；
 - `cron`：按 `ops/crontab` 调用定时管线；
+- `generation-dispatch-worker`：消费 durable dispatch 并执行生成；
 - `insight-data`：保存 SQLite 数据库、报告和备份的持久卷。
 
 健康检查为 `GET /api/health`。生产部署、备份恢复、告警和排障步骤请遵循 [运维手册](docs/launch/operations.md)；代码合入不等于已发布到生产。
@@ -114,13 +118,15 @@ Compose 会启动：
 | [功能规格](docs/plan/specs/) | 各功能验收标准与约束 |
 | [质量标准](docs/verify/eval-criteria.md) | AI 输出评测口径与基线门槛 |
 | [运维手册](docs/launch/operations.md) | 部署、备份、监控、告警与故障排查 |
+| [技术债验收](docs/plan/specs/technical-debt-remediation.md) / [D6 证据台账](docs/verify/d6-technical-debt-ledger-2026-10-06.md) | TD-01 至 TD-20 的实际范围、精确主干 CI、warning、延期与生产边界 |
+| [P1 休眠与重启](docs/plan/p1-dormant-reentry.md) | 取消任务继续排除；另立任务与生产治理准入要求 |
 
 ## 贡献与质量流程
 
 1. 阅读 [AGENTS.md](AGENTS.md) 和受影响功能的 spec；从功能分支开始修改，不直接推送 `main`。
 2. 创建或更新 PR 前，运行共享的 `pre-pr-ai-review` skill（Codex：`$pre-pr-ai-review`；Claude Code：`/pre-pr-ai-review`）；它会输出可带入 PR 的风险、测试和评测证据摘要。
-3. 运行与改动相称的测试及 `npm run typecheck`；涉及 AI 高风险改动时按 `eval-gate` 运行对应评测。
-4. 使用 PR 模板说明变更、验证、风险和发布影响。`main` 只通过 PR 合入，且必须通过 CI、Eval-Gate trailer 和 Docker 构建。
+3. 实现改动运行受影响测试及 `npm run typecheck`；涉及 AI 高风险改动时按 `eval-gate` 选择对应证据。纯文档核对链接、结构和事实，不能用应用测试或无关 A1 代证。
+4. 使用 PR 模板说明变更、验证、风险和发布影响。`main` 只通过 PR 合入。CI 对完整范围分类：仅普通 `docs/verify/**/*.md`、`docs/plan/specs/**/*.md` 可走 docs 路径，检查链接/锚点/格式；README、其他文档路径、skills、混合或异常范围走 full 应用/Docker 路径。必需汇总门与 Eval-Gate trailer 门保留；docs 下应用/Docker 正常 skipped、镜像发布拒绝，不代表应用失败或生产上线。分类细节见 [交付证据流程](docs/plan/specs/pr-delivery-evidence-workflow.md)。
 
 详细的协作约束、引用安全红线和双工具兼容规则以 [AGENTS.md](AGENTS.md) 为准。
 
