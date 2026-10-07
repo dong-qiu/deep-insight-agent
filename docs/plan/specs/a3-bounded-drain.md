@@ -6,6 +6,11 @@
 S0恢复前预检候选 `e668697c290d709ec819e2d51ecf72f01d93976d`已双审通过，但尚未合入main。
 S1/S0各自合入、最新主干关系与合后精确main CI核验通过后才能实施本片；
 本提案不将方案通过、树相同、PR或待完成CI写成前置已交付。
+以上为冻结方案时点。实施启动由协调者核验前置：S0 #448合入`cb2f924`，
+精确main CI `37686929840 / attempt 2 / success`；S1 #445合入
+`0ca3ec9bfa9d1e7ad7134f027bf1dc7b53b5f813`，精确main CI
+`37691558952 / attempt 1 / success`。本分支正常fetch/merge该origin/main，不复制其他Session件。
+本片仍为待最终独审/PR/CI候选，未合入、更未上线。
 承接 [S1](a3-writer-admission.md)、[S0](a3-maintenance-protocol.md)、
 [C2a](c2a-task-cancellation.md)、[C2b](c2b-task-budget.md)、
 [A2](a2-safe-rollback.md)、[恢复](recovery-time-coverage.md)与[生产门](security-deploy-preconditions.md)。
@@ -31,6 +36,12 @@ S1/S0各自合入、最新主干关系与合后精确main CI核验通过后才�
 不增加全系统默认deadline或任务费用上界；隔离drain单次窗口最多60秒、poll 1–1000ms，
 非法/已过期窗口在close/acquire前拒绝。额外用起始剩余窗口的单调时钟上限，
 墙钟回拨不延长有限等待，墙钟前跳仍按绝对deadline最先到达者停止。调用者身份仍是fixture声明，不是实名operator或OS认证。
+真实协调入口为 `observeDrain({root, request, deadlineAt, pollEveryMs, signal?, leaseSource})`，
+leaseSource必须是本模块`openDrainLeaseSource`创建且物理身份已验证的私有绑定对象，不接受
+外部仿造sample/ready；返回版本、reason、token或null、最后sample、polls与
+`controller_uniqueness=unknown`。deadline限制等待窗口，SQLite timeout=0不等锁；
+同步完整清单读取/文件验证的单次耗时并无可中断硬实时保证，不能把60秒写成任意规模DB的
+整个函数完成上界。没有根据时间成功签静默的路径。
 
 request用真实strict requestSchema解析；target必须逐字等于S0 marker与S1完整marker，
 包括region/instance/volume/dataPath/serviceSet。executionIdentity保持fixture限定。
@@ -54,6 +65,8 @@ dispatch核 `id/trace_id/state/owner_token/claim_epoch/lease_expires_at`；lease
 claim_epoch与fencing_epoch是provenance独立保存的代际字段，不以猜测两字段恒相等代替守卫：
 queued/reserved可为0，claimed/owned必须为正安全整数；负数、非整数、越界等非法值记unknown。
 claimed dispatch必须有唯一可关联owned lease，非空owner_token一致，双方expiry合法且一致。
+真实topic dispatch的reserved lease expiry可为null（createDeepDiveTraceRequest事实），
+source_collect的reserved lease可有合法expiry；两者合法保留，不能把null假判为过期或释放。
 owner不匹配、缺lease或关联歧义、两侧expiry不一致、非法epoch/state/time、与dispatch状态矛盾的
 active lease都记unknown；无dispatch的reserved/owned lease单独记unknown，包括真实source_collect
 入口的lease，不能把“本片未接这个入口”改写成已证明停止。合法且一致的过期双方只能归入
@@ -75,12 +88,20 @@ close成功后acquire失败保持closed；不能自动重开，也不能用别�
 acquire之后每poll与终态前使用完整当前owner/fence/revision/target/execution绑定CAS；
 旧token、控制器重启或并发修订不能推进原流程、重置窗口或释放任何hold。
 不同operation busy；精确operation重放只核已有事实，released/submitted/held阶段不恢复drain或副作用。
+事前能见的任意同operation阶段均只读replay，不重新close/acquire；不匹配request拒绝。
+预取消在身份/来源校验后直接blocked，未close/acquire。close后再inspect和acquire返回的
+fence/revision恰+1只为本轮观测校验；S0幂等acquire不返回created标记，同operation/owner
+两个同时首次controller可以拿到同token，无法认证唯一controller。真实双handle反例证明
+同token，真实双进程drain竞争保持unknown/blocked，仅当前revision CAS胜者能hold；
+失败方不重试/续租/越权写hold。这个限制不通过nonce/pre-inspect或新S0授权掩盖。
 
 仅在有未退出登记任务时有限等待；queued保留但不领取，claimed/expired不改lease、不删任务。
 本地任务全部退出后仍根据未知子工作、未登记writer/lease等缺口进入既有S0持久hold。
 超时记 `writer_drain_timeout`；取消按本drain首次观察的reason固定，清理timer/listener后持久hold，
 不abort业务任务、不改C2a首取消reason或fence>C2a>C3>budget优先级。
 S0写hold失败或revision冲突不能转换ready；只留下closed、既有op事实及明确blocked错误。
+只读源遇合法600热journal但SQLite要求写入恢复时也阻断SQLITE_READONLY并保全原字节；
+本模块不升级连接或用write-open代替只读，不把只读WAL正常协调外推成所有hotjournal能恢复。
 取消返回、控制器重启、迟到本地完成均不解除S0 hold、不重开准入。
 不把采样成功、health、expired lease、signal取消或task outcome=done作为静默证明。
 
