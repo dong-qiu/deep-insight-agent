@@ -10,7 +10,15 @@ const preserved = () => ({ ledger: db.prepare("SELECT version,checksum FROM sche
   reports: db.prepare("SELECT * FROM report ORDER BY id").all() });
 if (operation === "prepare") {
   if (kind === "checksum") db.prepare("UPDATE schema_migration SET checksum=? WHERE version='20261004_48_model_usage_attempt'").run("f".repeat(64));
-  else if (kind === "record") db.prepare("UPDATE deployment_record SET image_digest=?").run(`sha256:${"f".repeat(64)}`);
+  else if (kind === "record") {
+    // Keep the released append-only schema and original valid row intact.
+    const original = db.prepare("SELECT * FROM deployment_record ORDER BY deployed_at DESC,id DESC LIMIT 1").get();
+    assert.ok(original);
+    assert.throws(() => db.prepare("UPDATE deployment_record SET image_digest=? WHERE id=?").run(`sha256:${"f".repeat(64)}`, original.id), /immutable/);
+    db.prepare("INSERT INTO deployment_record(id,image_digest,git_sha,deployed_at,actor) VALUES (?,?,?,?,?)")
+      .run("deploy_matrix_bad_record", `sha256:${"f".repeat(64)}`, original.git_sha, new Date(Date.parse(original.deployed_at) + 1000).toISOString(), "a2-synthetic-invalid-record");
+    assert.deepEqual(db.prepare("SELECT * FROM deployment_record WHERE id=?").get(original.id), original);
+  }
   else assert.equal(kind, "unmigrated-v47");
   writeFileSync("/data/matrix-failure-before.json", JSON.stringify(preserved()));
   console.log(JSON.stringify({ operation, kind, preserved_sha256: hash(JSON.stringify(preserved())), bundle: bundleIdentity() }));

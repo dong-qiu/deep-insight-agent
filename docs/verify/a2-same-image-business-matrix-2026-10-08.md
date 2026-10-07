@@ -73,6 +73,12 @@ Node24.19.0 / npm11.17.0，独立 worktree clean npm ci；未复制 .env/.data/D
 修正为以隔离localhost作base解析相对Location，继续要求307、同origin和首页pathname；不放宽角色边界。
 原失败日志独立保存；需新候选完整CI，未产出通过JSON，不宣称本轮镜像已通过。
 
+第二轮 Linux [CI 37660672038 / attempt 1](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37660672038)
+对应 head `7b39ea7e76a6d2957d01abeb168a5233da3cbf58`。顺序执行已越过fresh/v46/v47矩阵和checksum场景，
+但record失败fixture尝试UPDATE不可变deployment_record，被原始触发器拒绝，整体仍失败、无通过JSON。
+修正为保留原记录与原immutable触发器，先断言UPDATE拒绝，再追加最新的合成错误digest记录供严格启动拒绝。
+不删除/修改原记录，不放宽schema；顺序越过不替代最终完整通过收据。
+
 任务曾因恢复后的 managed sandbox 阻断：当时仅主workspace与/tmp可写，本任务linked worktree及.git只读，GitHub shell请求被拒绝。
 当时用户再次授权恢复访问后，平台权限尚未同步更新，apply_patch仍明确拒绝写入。随后平台切回 unrestricted；GitHub请求已恢复。
 专属 `/tmp/a2-business-candidate-27ectgxb/` 候选保留了当时的修正及证据；恢复访问后，pending patch已通过check并应用到本任务worktree，重新fetch确认origin/main仍为精确base。
