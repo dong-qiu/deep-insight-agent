@@ -58,3 +58,28 @@ source/raw/归档0600，目录0700；不入Git敏感原文/数据库/日志、�
 本离线片未解决。缺证为AWS响应来源/host身份、真实终止/continuation/全writer静默、历史覆盖与
 新镜像/实际数据验收；人工与生产专项批准另需实名/窗口/失败处置。模型预算仍0，TD20旧head
 质量不可补签；TD12/14/15及Brief/P1延期取舍保持。没有部署/回退许可或生产执行。
+
+## #456 全量 lint 声明语法修复（2026-10-08）
+
+原 PR head `298caca043ca4296466bfaaa08e0bfe90b5358d9` / tested merge
+`865e64ba7f6e535a2b45fc2fb9822792f59bbd86` 的 CI `37730357578 / attempt 1`
+终态 failure：app job `113157889927` 全量 `npm run lint` 在
+`ssm-response.d.mts:23:2` 报 `Missing initializer in const declaration`。
+后续 report-reader artifact 未生成是该 app job 在 lint 先失败后的原事实；不补签该 artifact。
+原始 app 全日志由协调者私有归档，作者亲读并在 298 本地 whole lint 复现同一失败，
+`ssm-whole-lint-red-v2.log` 非覆盖保留。原作者仅五 MJS lint 通过不足以证明必需全量 lint；
+此前显式声明 lint 失败、原 native/CI 各时点和原 `index-v1.json` 的 97 材料均保持。
+
+本次唯一声明变化为 `export const FIXTURE_WIRE` → `export declare const FIXTURE_WIRE`，
+补足 ambient constant 语法；所有 readonly 字面量、导出字段、函数与运行实现完全相同。
+没有 ignore、eslint 配置、门禁、默认 profile、S0/schema/model/安全边界改变。
+实际 whole `npm run lint` 零 error/warning（`ssm-whole-lint-green-v2.log`），
+TS7/TS6 app/tools 四编译通过（`ssm-four-ts-v2.log`）；专属 TS6/TS7 consumer 再次编译通过，
+保留 readonly ingress、nullable token、完整 binding、未知 action 的负类型断言，并核验
+FIXTURE_WIRE 固定字面量正控与 readonly 修改负控（`ssm-consumer-ts6-v3.log` / `ssm-consumer-ts7-v3.log`）。
+
+运行 source/test 未变，原 31 及协调者已有集成 89 结果只能按各自原输入/日志复用；
+本轮未重跑 native/473、未签新 CI/main。九个当前 Git 源字节、此两文件精确 delta、
+实际全量 lint 红绿、四 TS、专属 consumer 与原索引绑定于非覆盖 `index-v2.json`。
+等待两位非作者最终 delta 审查及协调者 normal Git/PR 新 head 完整 CI；不盖 Eval、不推送、
+不发布或调用任何生产/模型能力。组合片两文件、S3b 十文件保持冻结，未修改。
