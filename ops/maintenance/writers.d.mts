@@ -1,5 +1,6 @@
-import type { WriterGenerationToken, WriterTaskToken, WriterOutcome, WriterAdmission } from "../../src/lib/runtime/writer-admission.js";
-export type { WriterGenerationToken, WriterTaskToken, WriterOutcome, WriterAdmission } from "../../src/lib/runtime/writer-admission.js";
+import type { DB } from "../../src/lib/db/index.js";
+import type { WriterGenerationToken, WriterTaskToken, WriterOutcome, WriterAdmission, TerminalWriterAdmission, FixedTerminalDispatchDriver } from "../../src/lib/runtime/writer-admission.js";
+export type { WriterGenerationToken, WriterTaskToken, WriterOutcome, WriterAdmission, TerminalWriterAdmission, FixedTerminalDispatchDriver } from "../../src/lib/runtime/writer-admission.js";
 export interface WriterSnapshot {
   schema: 'a3-writer-admission-v1'; scope: 'isolated'; entryPoint: 'generation-dispatch'; coreCoverage: 'runGenerationDispatchOnce';
   marker: object; admission: 'open' | 'closed';
@@ -14,6 +15,7 @@ export function openWriters(root: string): {
   finish(task: WriterTaskToken, outcome: WriterOutcome): void;
   closeAdmission(): void;
   admissionFor(worker: WriterGenerationToken): WriterAdmission;
+  terminalAdmissionFor(worker: WriterGenerationToken, businessDb: DB, driver: FixedTerminalDispatchDriver): TerminalWriterAdmission;
   inspect(): WriterSnapshot;
   close(): void;
 };

@@ -13,7 +13,7 @@ import { runPipelineForTopic, runScheduledTopicPipeline, type GenerationExecutio
 import { deploymentAnchorPublicationIfEnabled } from "../runtime/integrity-anchor-runtime.js";
 import { NOOP_P1_TELEMETRY_SINK, type P1TelemetrySink } from "../capabilities/p1-telemetry.js";
 
-import type { WriterAdmission, WriterOutcome } from "../runtime/writer-admission.js";
+import type { WriterAdmission, WriterOutcome, TerminalWriterAdmission, FreshTerminalTaskCapability, TerminalCommitResult, DispatchOutcome } from "../runtime/writer-admission.js";
 
 const HEARTBEAT_MS = 30_000;
 const STABLE_DISPATCH_FAILURE_CODES = new Set([
@@ -48,13 +48,35 @@ export interface GenerationDispatchRuntime extends TaskCancellationOptions, Task
   telemetry?: P1TelemetrySink;
   /** Isolated core registration only; not HTTP/startup coverage or a drain-ready proof. */
   writerAdmission?: WriterAdmission;
+  /** Explicit isolated strict terminal profile; never supplied by production composition. */
+  terminalWriterAdmission?: TerminalWriterAdmission;
 }
 
 export async function runGenerationDispatchOnce(
   db: DB,
   execute: (db: DB, topicId: string, opts: GenerationExecutionOptions & { reportType: "brief" | "deep_dive" | "initial_digest"; windowHours?: number; windowEnd?: string; items?: number }) => Promise<unknown> = executeDispatch,
   runtime: GenerationDispatchRuntime = {},
-): Promise<{ claimed: boolean; traceId?: string; status?: "done" | "failed" }> {
+): Promise<{ claimed: boolean; traceId?: string; status?: "done" | "failed"; terminalCommit?: TerminalCommitResult }> {
+  const terminal = runtime.terminalWriterAdmission;
+  if (terminal) {
+    const binding = (terminal as unknown as Record<symbol, { businessDb: DB }>)[Symbol.for("insight-agent.a3-terminal-admission-v1")];
+    if (runtime.writerAdmission || terminal.scope !== "isolated" || terminal.entryPoint !== "generation-dispatch"
+      || terminal.version !== "a3-terminal-commit-v1" || terminal.profile !== "close-fences-terminal" || binding?.businessDb !== db) {
+      throw new Error("writer_terminal_business_mismatch");
+    }
+    const cap = terminal.admit();
+    let result: Awaited<ReturnType<typeof runGenerationDispatchAdmittedOnce>>;
+    try { result = await runGenerationDispatchAdmittedOnce(db, execute, runtime, { admission: terminal, cap }); }
+    catch (error) { terminal.finish(cap, "threw"); throw error; }
+    const outcome: WriterOutcome = result.claimed ? result.status === "done" ? "done" : "failed" : "no_claim";
+    try { terminal.finish(cap, outcome); }
+    catch (error) {
+      if (!result.terminalCommit) throw error;
+      // Local completion remains unknown; never mask already observed COMMIT facts or retry a terminal write.
+      return { ...result, status: "failed" };
+    }
+    return result;
+  }
   const admission = runtime.writerAdmission;
   if (!admission) return runGenerationDispatchAdmittedOnce(db, execute, runtime);
   const token = admission.admit(); // Durable registration precedes claim/root Run writes.
@@ -73,7 +95,8 @@ async function runGenerationDispatchAdmittedOnce(
   db: DB,
   execute: (db: DB, topicId: string, opts: GenerationExecutionOptions & { reportType: "brief" | "deep_dive" | "initial_digest"; windowHours?: number; windowEnd?: string; items?: number }) => Promise<unknown> = executeDispatch,
   runtime: GenerationDispatchRuntime = {},
-): Promise<{ claimed: boolean; traceId?: string; status?: "done" | "failed" }> {
+  terminal?: { admission: TerminalWriterAdmission; cap: FreshTerminalTaskCapability },
+): Promise<{ claimed: boolean; traceId?: string; status?: "done" | "failed"; terminalCommit?: TerminalCommitResult }> {
   const taskBudgetUsd = runtime.taskBudgetUsd ?? loadTaskBudgetUsd();
   validateTaskBudget(taskBudgetUsd);
   const cancellation = createTaskCancellation(runtime);
@@ -81,11 +104,24 @@ async function runGenerationDispatchAdmittedOnce(
   let claim;
   try { claim = claimNextGenerationDispatch(db); } catch (error) { cancellation.dispose(); throw error; }
   if (!claim) { cancellation.dispose(); return { claimed: false }; }
+  if (terminal) {
+    try { terminal.admission.bindClaim(terminal.cap, claim); }
+    catch { cancellation.dispose(); return { claimed: true, traceId: claim.traceId, status: "failed" }; }
+  }
   const leaseCancellation = new AbortController();
   const task = createTaskCancellation({ signal: leaseCancellation.signal });
   const onCancel = (): void => leaseCancellation.abort(cancellation.signal.reason);
   cancellation.signal.addEventListener("abort", onCancel, { once: true });
   let lostLease = false;
+  let terminalAttempted = false;
+  let terminalResult: TerminalCommitResult | undefined;
+  const commitTerminal = (outcome: DispatchOutcome): TerminalCommitResult => {
+    terminalAttempted = true;
+    try { terminalResult = terminal!.admission.commitOutcome(terminal!.cap, claim, outcome); }
+    catch { terminalResult = { kind: "unknown", businessCommit: "unknown", code: "writer_terminal_registry_commit_unknown" }; }
+    return terminalResult;
+  };
+  const failedTerminalResult = () => ({ claimed: true, traceId: claim.traceId, status: "failed" as const, terminalCommit: terminalResult });
   const loseLease = (): void => { lostLease = true; leaseCancellation.abort(new TaskCancellationError("generation_fence_lost")); };
   const assertWrite = (): void => {
     if (lostLease) throw new Error("generation_fence_lost");
@@ -124,20 +160,25 @@ async function runGenerationDispatchAdmittedOnce(
     assertWrite();
     cancellation.check();
     task.check();
-    if (lostLease || !finishGenerationDispatch(db, claim, { status: "done" })) {
+    if (terminal) {
+      if (commitTerminal({ status: "done" }).kind !== "committed") return failedTerminalResult();
+    } else if (lostLease || !finishGenerationDispatch(db, claim, { status: "done" })) {
       throw new Error("generation dispatch lease was lost before completion");
     }
     const traceStatus = getGenerationTraceStatus(db, claim.traceId)?.status;
     if (traceStatus !== "done" && traceStatus !== "partial") {
       throw new Error(`generation dispatch completed without a publishable trace (${String(traceStatus)})`);
     }
-    return { claimed: true, traceId: claim.traceId, status: "done" };
+    return terminal ? { claimed: true, traceId: claim.traceId, status: "done", terminalCommit: terminalResult }
+      : { claimed: true, traceId: claim.traceId, status: "done" };
   } catch (error) {
+    // A denied/unknown/committed terminal attempt, including post-COMMIT read failure, is never retried as failed.
+    if (terminalAttempted) return failedTerminalResult();
     if (!lostLease) {
       try { assertWrite(); } catch { return { claimed: true, traceId: claim.traceId, status: "failed" }; }
-      finishGenerationDispatch(db, claim, {
-        status: "failed", error: dispatchFailure(task.signal.aborted ? task.signal.reason : error),
-      });
+      const failure: DispatchOutcome = { status: "failed", error: dispatchFailure(task.signal.aborted ? task.signal.reason : error) };
+      if (terminal) { commitTerminal(failure); return failedTerminalResult(); }
+      finishGenerationDispatch(db, claim, failure);
     }
     return { claimed: true, traceId: claim.traceId, status: "failed" };
   } finally {

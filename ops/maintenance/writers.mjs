@@ -166,5 +166,89 @@ export function openWriters(root) {
     transact(() => owned(worker));
     return { scope: 'isolated', entryPoint: 'generation-dispatch', admit: () => admit(worker), finish };
   }
-  return { register, admit, finish, closeAdmission, admissionFor, inspect, close: () => db.close() };
+  const terminalClaims = new Set(); // Per connection, retained through finish/deny/unknown; never restored from persisted tasks.
+  function terminalAdmissionFor(worker, businessDb, driver) {
+    worker = Object.freeze(parse(workerSchema, worker));
+    const descriptor = driver?.[Symbol.for('insight-agent.a3-terminal-driver-v1')];
+    const deny = code => ({ kind: 'not_committed', businessCommit: 'not_committed', code });
+    function physical() {
+      check(Object.isFrozen(driver) && Object.isFrozen(descriptor) && Object.isFrozen(descriptor?.marker)
+        && Object.isFrozen(descriptor?.marker?.target) && Object.isFrozen(descriptor?.marker?.target?.serviceSet), 'writer_terminal_business_mismatch');
+      check(descriptor.root === root && same(descriptor.marker, marker) && businessDb === driver.db
+        && businessDb instanceof Database && businessDb.open && !businessDb.readonly
+        && businessDb.name === join(root, 'fixture-business.sqlite'), 'writer_terminal_business_mismatch');
+      check(!businessDb.inTransaction, 'writer_terminal_reverse_transaction');
+      rootCheck(root); check(same(marker, ledgerMarker(root)), 'writer_terminal_business_mismatch');
+      const businessPath = join(root, 'fixture-business.sqlite'), current = safe(businessPath);
+      check(businessPath === realpathSync(businessPath) && current.dev === descriptor.fileDev && current.ino === descriptor.fileIno, 'writer_terminal_business_mismatch');
+      for (const suffix of ['-journal', '-wal', '-shm']) {
+        try { safe(businessPath + suffix); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      }
+      // This SQL may recover a journal: all physical gates above must complete first.
+      // Recheck the actual connection on every admit, not only its factory's initial binding.
+      const databases = businessDb.prepare('PRAGMA database_list').all();
+      check(databases.length === 1 && databases[0].name === 'main' && databases[0].file === businessPath, 'writer_terminal_business_mismatch');
+    }
+    physical(); transact(() => owned(worker));
+    const capabilities = new WeakMap();
+    const fields = ['dispatchId', 'traceId', 'ownerToken', 'claimEpoch', 'fencingEpoch', 'rootRunId'];
+    function snapshot(claim) {
+      check(claim && fields.every(key => ['claimEpoch', 'fencingEpoch'].includes(key)
+        ? Number.isSafeInteger(claim[key]) && claim[key] > 0 : typeof claim[key] === 'string' && claim[key].length > 0), 'writer_terminal_claim_mismatch');
+      return Object.freeze(Object.fromEntries(fields.map(key => [key, claim[key]])));
+    }
+    function fresh(cap) {
+      const local = capabilities.get(cap);
+      check(local && !local.finished, 'writer_terminal_capability_invalid'); return local;
+    }
+    function taskOwned(local) {
+      owned(worker);
+      check(db.prepare('SELECT 1 FROM tasks WHERE task_id=? AND worker_id=?').get(local.task.taskId, worker.workerId)
+        && !db.prepare('SELECT 1 FROM completions WHERE task_id=?').get(local.task.taskId), 'writer_terminal_capability_invalid');
+    }
+    return Object.freeze({ scope: 'isolated', entryPoint: 'generation-dispatch', version: 'a3-terminal-commit-v1', profile: 'close-fences-terminal',
+      [Symbol.for('insight-agent.a3-terminal-admission-v1')]: Object.freeze({ businessDb }),
+      admit() {
+        physical(); const task = admit(worker), cap = Object.freeze({});
+        capabilities.set(cap, { task, claim: null, attempted: false, finished: false }); return cap;
+      },
+      bindClaim(cap, claim) {
+        const local = fresh(cap); check(!local.claim && !local.attempted, 'writer_terminal_capability_invalid');
+        const binding = snapshot(claim), key = canonical(binding);
+        check(!terminalClaims.has(key), 'writer_terminal_claim_mismatch'); physical();
+        transact(() => { taskOwned(local); local.claim = binding; terminalClaims.add(key); });
+      },
+      commitOutcome(cap, claim, outcome) {
+        let local;
+        try { local = fresh(cap); check(!local.attempted, 'writer_terminal_capability_invalid'); }
+        catch { return deny('writer_terminal_capability_invalid'); }
+        local.attempted = true; // All attempts consume terminal permission, including deny/busy/unknown.
+        if (!local.claim) return deny('writer_terminal_capability_invalid');
+        try { check(same(local.claim, snapshot(claim)), 'writer_terminal_claim_mismatch'); }
+        catch { return deny('writer_terminal_claim_mismatch'); }
+        let businessResult, driverAttempted = false;
+        try {
+          physical();
+          return transact(() => {
+            taskOwned(local);
+            if (db.prepare('SELECT mode FROM admission WHERE id=1').get().mode !== 'open') return deny('writer_terminal_closed');
+            // This fixed factory driver is the sole synchronous consumer, under this same registry connection.
+            driverAttempted = true; businessResult = driver.commit(claim, outcome); return businessResult;
+          });
+        } catch (error) {
+          if (businessResult?.businessCommit === 'committed') return { kind: 'unknown', businessCommit: 'committed', code: 'writer_terminal_registry_commit_unknown' };
+          if (businessResult?.kind === 'unknown') return businessResult;
+          if (driverAttempted && !businessResult) return { kind: 'unknown', businessCommit: 'unknown', code: 'writer_terminal_business_commit_unknown' };
+          const code = error.message === 'writer_terminal_reverse_transaction' ? error.message
+            : error.code === 'SQLITE_BUSY' ? 'writer_terminal_busy'
+              : error.message === 'writer_terminal_capability_invalid' ? error.message : 'writer_terminal_business_mismatch';
+          return deny(code);
+        }
+      },
+      finish(cap, outcome) {
+        const local = fresh(cap); finish(local.task, outcome); local.finished = true;
+      },
+    });
+  }
+  return { register, admit, finish, closeAdmission, admissionFor, terminalAdmissionFor, inspect, close: () => db.close() };
 }
