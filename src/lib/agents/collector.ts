@@ -16,16 +16,18 @@ import { appendGenerationEvent, captureRevision, entityKey, type EntityRef } fro
 import { contentItemRef, contentItemRevisionSnapshot, sourceConfigRef, sourceConfigSnapshot } from "../db/provenance-revisions.js";
 import { NOOP_P1_TELEMETRY_SINK, type P1TelemetrySink } from "../capabilities/p1-telemetry.js";
 import { runJob } from "../runtime/jobs.js";
+import { createTaskCancellation, TaskCancellationError, type TaskCancellationOptions } from "../runtime/cancellation.js";
+import { checkTaskBudget, taskBudgetEnabled, TaskBudgetError, withTaskBudget, type TaskBudgetOptions } from "../runtime/task-budget.js";
 import type { Source, TranscriptAcquisitionFact } from "../types.js";
 import { articleFetchEnabled, articleFetchKilled, fetchArticle } from "../sources/article.js";
 import { fetchFromSource } from "../sources/index.js";
 import { normalizeUrl, rawToContentItem } from "../sources/normalize.js";
 import { screenPodcastCandidate } from "../sources/podcast-screening.js";
 import { stableEvidenceUrl } from "../sources/podcast-evidence.js";
-import { transcriptFetchEnabled, transcriptShadowFetchEnabled } from "../sources/rss.js";
+import { fetchPodcastProgramPage, fetchTranscript, transcriptFetchEnabled, transcriptShadowFetchEnabled } from "../sources/rss.js";
 import { assertExplicitTranscriptPolicy } from "../transcript-policy.js";
 import type { RawItem } from "../sources/types.js";
-import { runPodcastTranscriptShadow } from "./podcast-shadow.js";
+import { runPodcastTranscriptShadow, type PodcastShadowSink } from "./podcast-shadow.js";
 import { createPodcastShadowStore } from "./podcast-shadow-store.js";
 
 export interface CollectResult {
@@ -68,7 +70,8 @@ const PODCAST_TRANSCRIPT_ADAPTER_VERSION = "rss-podcast-transcript-v1";
 
 /** Acquisition facts are diagnostic metadata. A failed fact write must not change the normal RSS
  * collection, reader eligibility, or report path. */
-function recordTranscriptFact(db: DB, fact: Omit<TranscriptAcquisitionFact, "event_key">): void {
+function recordTranscriptFact(db: DB, fact: Omit<TranscriptAcquisitionFact, "event_key">, checkpoint?: () => void): void {
+  checkpoint?.();
   try {
     appendTranscriptAcquisitionFact(db, { ...fact, event_key: transcriptAcquisitionEventKey(fact) });
   } catch (error) {
@@ -83,6 +86,7 @@ function recordPodcastMetadataFacts(input: {
   runId: string;
   topics: ReturnType<typeof listTopics>;
   occurredAt: string;
+  checkpoint?: () => void;
 }): void {
   const mode = input.source.transcript_mode ?? "off";
   // This delivery is observe-only. `enabled` has no production acquisition semantics yet, so it
@@ -117,11 +121,12 @@ function recordPodcastMetadataFacts(input: {
     };
     recordTranscriptFact(input.db, {
       ...common, stage: "candidate", attempt: 0, outcome: "not_attempted", reason_code: "podcast_metadata",
-    });
+    }, input.checkpoint);
     recordTranscriptFact(input.db, {
       ...common, stage: "decision", attempt: 0, outcome: "decision", reason_code: decision.reason_code,
-    });
+    }, input.checkpoint);
   } catch (error) {
+    input.checkpoint?.(); // Control failure cannot be downgraded to a metadata warning.
     // Observation facts are diagnostically useful but must never turn a malformed feed entry
     // into a failed P0 RSS run. Do not include the raw URL in logs: it may be a signed transport
     // URL or user-controlled malformed text.
@@ -129,13 +134,31 @@ function recordPodcastMetadataFacts(input: {
   }
 }
 
-export async function collectSource(
+export interface CollectOptions extends TaskCancellationOptions, TaskBudgetOptions {
+  retryOf?: string | null;
+  probe?: boolean;
+  traceClaim?: SourceCollectClaim;
+  telemetry?: P1TelemetrySink;
+}
+
+export async function collectSource(db: DB, source: Source, opts: CollectOptions = {}): Promise<CollectResult> {
+  assertExplicitTranscriptPolicy(source);
+  const cancellation = createTaskCancellation(opts);
+  try {
+    return await withTaskBudget(db, { ...opts, traceId: opts.traceClaim?.traceId }, () => collectSourceTask(db, source, opts, cancellation));
+  } finally { cancellation.dispose(); }
+}
+
+async function collectSourceTask(
   db: DB,
   source: Source,
-  opts: { retryOf?: string | null; probe?: boolean; traceClaim?: SourceCollectClaim; telemetry?: P1TelemetrySink } = {},
+  opts: CollectOptions,
+  cancellation: ReturnType<typeof createTaskCancellation>,
 ): Promise<CollectResult> {
-  assertExplicitTranscriptPolicy(source);
   const telemetry = opts.telemetry ?? NOOP_P1_TELEMETRY_SINK;
+  // Every collector creates a task signal; only explicit controls opt supported sources in.
+  const sourceOptions = opts.signal !== undefined || opts.deadlineAt !== undefined
+    ? { signal: cancellation.signal } : undefined;
   const trace = opts.traceClaim;
   const sourceRef = trace ? sourceConfigRef(source) : null;
   const outputs: EntityRef[] = [];
@@ -145,13 +168,15 @@ export async function collectSource(
   let traceRunId: string | null = null;
   let lostLease = false;
   const heartbeat = trace ? setInterval(() => {
-    if (!heartbeatSourceCollectTrace(db, trace)) lostLease = true;
+    try { if (!heartbeatSourceCollectTrace(db, trace)) lostLease = true; }
+    catch { lostLease = true; }
   }, 30_000) : null;
   const assertWrite = () => {
     if (!trace) return;
     if (lostLease) throw new Error("source_collect_fence_lost");
     assertSourceCollectClaim(db, trace);
   };
+  const check = () => { assertWrite(); cancellation.check(); checkTaskBudget(); };
 
   try {
   const { run, result } = await runJob(
@@ -164,12 +189,21 @@ export async function collectSource(
       silent: opts.probe,
       traceId: trace?.traceId,
       assertWrite: trace ? assertWrite : undefined,
+      signal: cancellation.signal,
+      deadlineAt: opts.deadlineAt,
+      taskBudgetUsd: opts.taskBudgetUsd,
     },
     async (ctx) => {
+    const checkpoint = () => { check(); ctx.checkCancellation(); };
+    const joinSource = async <T>(work: Promise<T>): Promise<T> => {
+      try { const result = await work; checkpoint(); return result; }
+      catch (error) { checkpoint(); throw error; }
+    };
+    checkpoint();
     traceRunId = ctx.runId;
     if (trace && sourceRef) {
       db.transaction(() => {
-        assertWrite();
+        checkpoint();
         bindSourceCollectRootRun(db, trace, ctx.runId);
         captureRevision(db, {
           entity_type: sourceRef.type,
@@ -185,10 +219,11 @@ export async function collectSource(
         });
       })();
     }
-    const raws = await fetchFromSource(source);
+    const raws = await joinSource(source.type === "rss" && sourceOptions
+      ? fetchFromSource(source, sourceOptions) : fetchFromSource(source));
     fetched = raws.length;
     if (trace && sourceRef) {
-      assertWrite();
+      checkpoint();
       appendGenerationEvent(db, {
         trace_id: trace.traceId, run_id: ctx.runId, stage: "collect", event_type: "completed",
         input_refs: [sourceRef], metrics: { fetched_count: raws.length },
@@ -220,6 +255,7 @@ export async function collectSource(
       ? listTopics(db, { enabledOnly: true }).filter((topic) => source.topic_ids.includes(topic.id))
       : [];
     for (const raw of raws) {
+      checkpoint();
       // full_text only accepts a page-derived body for a new URL. In particular, an emergency fetch
       // kill must not overwrite an already-complete article with the feed summary.
       if (!raw.is_podcast_episode && source.fetch_mode === "full_text" && getContentByUrl(db, normalizeUrl(raw.url))) {
@@ -244,7 +280,9 @@ export async function collectSource(
           continue;
         }
         articleFetches++;
-        const article = await fetchArticle(raw.url, source.content_container);
+        checkpoint();
+        const article = await joinSource(sourceOptions
+          ? fetchArticle(raw.url, source.content_container, sourceOptions) : fetchArticle(raw.url, source.content_container));
         if (article) {
           raw.body = article.body_html;
           raw.body_kind = "article";
@@ -256,7 +294,8 @@ export async function collectSource(
       }
       // Facts remain visible even when a podcast entry has no show notes and therefore does not
       // become a ContentItem. They are diagnostics only and cannot influence the RSS run.
-      recordPodcastMetadataFacts({ db, source, raw, runId: ctx.runId, topics: sourceTopics, occurredAt: fetchedAt });
+      recordPodcastMetadataFacts({ db, source, raw, runId: ctx.runId, topics: sourceTopics, occurredAt: fetchedAt, checkpoint });
+      checkpoint();
       if (!raw.body.trim()) {
         skipped++; // 仍空（feed 模式空正文 / 全文抓取失败且原本就空）→ 不产出条目
         continue;
@@ -283,7 +322,7 @@ export async function collectSource(
       // Content 的业务 upsert、实际持久化行的 snapshot 与 provenance revision 在同一 SQLite
       // 事务中提交：source_id / published_at / topic_ids 等保留字段绝不从本轮候选对象臆造。
       db.transaction(() => {
-        assertWrite();
+        checkpoint();
         if (existing) updateContentItem(db, item); // 同 URL 内容更新 → 原地更新、id 不变（AC2 ②）
         else insertContentItem(db, item); // 新 URL（AC2 ③）
         // The ContentItem change and the raw archive intent are one SQLite
@@ -306,41 +345,65 @@ export async function collectSource(
       if (!rawArchive) throw new Error("raw_archive_plan_not_created");
       const rawArchiveEffectId = (rawArchive as ReturnType<typeof planRawArchive>).effectId;
       try {
+        checkpoint();
         writePlannedRawArchive(db, rawArchive, rawArchivePayload);
+        // Record this committed fact before any later checkpoint or optional observer can fail.
+        if (persistedOutputRef) outputs.push(persistedOutputRef);
       } catch (error) {
         // Its DB intent/revision committed but the archive did not verify.
         // Keep that exact unknown revision visible in the failure event only.
+        assertWrite();
         markRawArchiveUnknown(db, rawArchiveEffectId, error instanceof Error ? error.message : "raw_archive_write_failed");
         if (persistedOutputRef) unknownOutputs.push(persistedOutputRef);
         throw error;
       }
-      if (persistedOutputRef) outputs.push(persistedOutputRef);
+      checkpoint();
       // Optional P1 telemetry observes committed output only; it never feeds
       // report selection or citation validation.
       telemetry.recordCollector(db, { run_id: ctx.runId, item: persistedItem });
+      checkpoint();
       if (existing) updated++;
       else inserted++;
     }
     // Observe samples use a separate SQLite/archive. Any shadow error is diagnostic; it can
     // never fail or mutate the production RSS collection.
     if (!opts.probe && transcriptMode === "observe" && transcriptFetchEnabled() && transcriptShadowFetchEnabled()) {
+      checkpoint();
       try {
         const shadow = createPodcastShadowStore(source);
         try {
-          await runPodcastTranscriptShadow({ source, raws, topics: sourceTopics, sink: shadow.sink });
+          const controlled = !!trace || opts.signal !== undefined || opts.deadlineAt !== undefined || taskBudgetEnabled();
+          const sink: PodcastShadowSink = {
+            append(fact) { checkpoint(); return shadow.sink.append(fact); },
+            nextAttempt(input) { checkpoint(); return shadow.sink.nextAttempt(input); },
+            archive(input) { checkpoint(); return shadow.sink.archive(input); },
+          };
+          const guardFetcher = <T>(fetcher: (url: string, options?: Parameters<typeof fetchTranscript>[1]) => Promise<T>) =>
+            (url: string, options?: Parameters<typeof fetchTranscript>[1]): Promise<T> => {
+              checkpoint();
+              return joinSource(fetcher(url, { ...options, beforeRequest: async (target) => {
+                checkpoint(); await options?.beforeRequest?.(target); checkpoint();
+              } }));
+            };
+          // Join the actual sampler; a cancelled outer race must never close its DB underneath it.
+          await runPodcastTranscriptShadow({ source, raws, topics: sourceTopics, sink: controlled ? sink : shadow.sink,
+            ...(controlled ? { fetcher: guardFetcher(fetchTranscript), programPageFetcher: guardFetcher(fetchPodcastProgramPage) } : {}),
+          });
+          checkpoint();
         } finally {
           shadow.close();
         }
       } catch (error) {
+        checkpoint();
         console.warn(`[transcript-shadow] sample failed: ${safeError(error).message}`);
       }
     }
     if (!opts.probe) {
-      assertWrite();
+      checkpoint();
       setRunInserted(db, ctx.runId, inserted); // 探测 run 不参与零产出统计
     }
     if (trace && sourceRef) {
-      assertWrite();
+      checkpoint();
       appendGenerationEvent(db, {
         trace_id: trace.traceId, run_id: ctx.runId, stage: "normalize", event_type: "completed",
         input_refs: [sourceRef], output_refs: outputs,
@@ -351,22 +414,26 @@ export async function collectSource(
       return { fetched: raws.length, inserted, updated, skipped };
     },
   );
+  check(); // The collector scope still owns cancellation after runJob disposes its local scope.
   if (trace && !finishSourceCollectTrace(db, trace, {
     summary: { fetched_count: result.fetched, inserted_count: result.inserted, updated_count: result.updated, skipped_count: result.skipped },
   })) throw new Error("source_collect_finish_fence_lost");
   return { runId: run.id, ...result };
   } catch (error) {
+    assertWrite(); // Ownership wins cancellation/budget and forbids failure writes by an old owner.
+    try { cancellation.check(); checkTaskBudget(); } catch (control) { error = control; }
     if (trace && !lostLease) {
       try {
         assertWrite();
         // Finalized rows are committed.  A failed archive is durable but
         // not-reader-eligible, so its exact revision/count is unknown.
         const rolledBack = outputs.length === 0 && unknownOutputs.length === 0 ? 1 : 0;
+        const reasonCode = error instanceof TaskCancellationError || error instanceof TaskBudgetError ? error.reasonCode
+          : error instanceof Error && error.message === "provenance_revision_conflict" ? "provenance_revision_conflict" : `${stage}_failed`;
         appendGenerationEvent(db, {
           trace_id: trace.traceId, run_id: traceRunId, stage, event_type: "failed",
           input_refs: sourceRef ? [sourceRef] : [], output_refs: [...outputs, ...unknownOutputs],
-          reason_code: error instanceof Error && error.message === "provenance_revision_conflict"
-            ? "provenance_revision_conflict" : `${stage}_failed`,
+          reason_code: reasonCode,
           metrics: {
             fetched_count: fetched,
             committed_output_ref_count: outputs.length,
@@ -375,7 +442,10 @@ export async function collectSource(
           },
           version_context: sourceRef ? { source_config_revision: sourceRef.revision } : {},
           context_completeness: "partial",
-          error: { reason_code: `${stage}_failed`, retryable: true },
+          error: {
+            reason_code: error instanceof TaskCancellationError || error instanceof TaskBudgetError ? reasonCode : `${stage}_failed`,
+            retryable: !(error instanceof TaskCancellationError || error instanceof TaskBudgetError),
+          },
         });
         finishSourceCollectTrace(db, trace, {
           summary: {
