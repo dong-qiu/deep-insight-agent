@@ -1,12 +1,190 @@
 # 剩余重构：2026-10-08 协调、证据与交付索引
 
-当前已完整验收并保全本轮17个代码/验证切片，最后完整应用main为 `8bdc1cde688682fb9a5a5769b8cb311abaf8d79e`，精确CI [37765697243/1](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37765697243/attempts/1) success。整体20项仍为12项既有范围关闭、7项部分完成、TD19阶段完成而整体未关闭；未上线。四份台账#460的精确文档身份见下方增量；本次两文档增量自身未来PR/commit/CI只由私有最终交接索引记录，不预签。
+上一批17个代码/验证切片及两次文档交付已完成并封存；最新续批见下方。整体20项仍为12项既有范围关闭、7项部分完成、TD19阶段完成而整体未关闭；未上线。本次三份台账自身未来PR/commit/CI只由新的私有最终交接索引记录，不预签，也不借文档CI代签应用或镜像验收。
+
+最新续批见下方[续批启动与定向搜索](#续批启动与定向搜索2026-10-08)。以下17片及原封存属于上一批交付，不能重绑新结果或把旧pending直接当作当前状态。
 
 本轮启动重新fetch并核对 `origin/main=81dac77cd27f82d7b554694bf0a12cd82cd0920b`，
 精确main CI [37665469691/attempt1](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37665469691/attempts/1)
 为push/full/success。已合入切片不重复实现；旧“未合入/CI待核/S2未处理”只保留历史时点。
 本文由协调者独占更新，承接[统一台账](d6-technical-debt-ledger-2026-10-06.md)与
 [治理计划](../plan/specs/technical-debt-remediation.md)，不是自动调度平台或生产收据。
+
+## 续批启动与定向搜索：2026-10-08
+
+协调者重新fetch的启动main为 `a51c0579310e9a3c380fc1caf2862ef14870ed75`；精确
+[37768694932/1](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37768694932/attempts/1)
+为push/docs/success。它不替代最后完整应用 `8bdc1cde688682fb9a5a5769b8cb311abaf8d79e` /
+[37765697243/1](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37765697243/attempts/1)。
+
+原 `refactor-coordination-20261008-185052/coord/final-delivery-handoff-v1/index-v2.json`
+SHA256 `c2016383609c9da2e3954af2f2f138af6c9c7b1ef0dbd61830088c0e691f1a06`
+已核路径、权限、内部身份和58份直接引用材料的size/hash；原封存保持，不等同递归重验全部内层材料。
+新证据单独写入 `refactor-continuation-20261008-224349/`，目录0700、文件0600。
+
+用户补充授权自动搜索后，定向核对已知项目证据索引及192个匹配该项目的历史会话文件，
+只读明文交接段落，不解密或读工具输出、业务原文、凭据；另按原目录/文件名定向查私有证据根。
+未找到 `ops/backup-db.mjs`、`ops/backup-integrity.mjs`、`ops/crontab` 或followup rate route的明确释放交接，
+也未找到TD-14/D3原材料的有效迁出索引。搜索无结果不构成文件释放或原件永久丢失证明。
+搜索结果 `coord/handoff-search-result-v2.json` SHA256
+`68765d88dbfe565447063dc69c2b42e53d40cf8d85920c50f80acd4ce2c7bdf0`，原搜索材料分别保留。
+
+因此备份真实消费者线暂停，followup route及旧共享runtime/writer文件仍保持原Session归属。
+本续批冻结两片仅新增文件的工程：A负责固定AWS CLI2到loopback的隔离SSM transport；
+B负责精确旧 `235045d6424640d79c79874a403749c6bd17b823` 的外置零发送guard bridge。
+方案已由两位非作者复核；A最终受审实现[#464](https://github.com/dong-qiu/deep-insight-agent/pull/464)与必要验收修复[#465](https://github.com/dong-qiu/deep-insight-agent/pull/465)已正常合入，新精确main完整验收通过；原失败保留，B为下方Draft，未计交付。
+两片不授权真实SSM、生产维护、模型调用或旧head质量签字；真实模型预算0，原hold、#435、
+`safe_rollback=null`、deployment blocked保持。主台账root独占，全部保留环境不清理。
+
+## A3续批：隔离SSM传输入口
+
+[#464](https://github.com/dong-qiu/deep-insight-agent/pull/464) 仅六NEW文件，见
+[冻结spec](../plan/specs/a3-isolated-ssm-transport.md)与[实际函数收据](a3-isolated-ssm-transport-2026-10-08.md)。
+不改旧共享runtime、writer、备份或生产入口；实际AWS CLI2仅送字面loopback的假文档/实例。
+维护准入及阶段CAS在await前结束SQLite连接；真实send/invocation/cancel接线，取消、迟到结果、
+重启和COMMIT ACK丢失保持planned/committed/unknown事实。未自动retry、轮询、refresh token或解除hold。
+
+最终受审head `c5ee920a6a58701a2a0c75ca64c698f2f339c47c`；tree
+`6badf6d14568b209837c519906c3757674cb5c35`。实际PR tested
+`3730017aa88dac6a43a1da1b782911e0379f05b7`，ordered parents a51+c5ee，与受审tree完全一致；
+候选 [37807823898/1](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37807823898/attempts/1)
+pull_request/full/success。最新目标a51和必要原包保全后正常merge为
+`46612863dde8508cd5f10b2c13184e90fc00e379`，同ordered parents/tree；
+精确main [37809289491/1](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37809289491/attempts/1)
+push/full/failure：native659/660，noEOF例入口1200ms把真实CLI准备计入共享期限，
+first timeout/hold committed已通过，但HTTP0未到noEOF路径，records0≠1失败。原同run独立version1052.8ms是准备耗时背景，
+不是该失败case逐阶段计时；
+不能重跑原1200窗口冒绿；依赖文档交付暂停，冻结仅实际barrier准备修复，不改runtime或放宽门。
+此原失败不提前计阶段交付，不以后续main结果倒签原attempt。
+
+作者最终真实函数33/33零skip，TS7/TS6 app/tools四路与whole lint通过；未变旧维护187/187和声明consumer
+按身份复用。候选Linux真实native660/660零skip、应用3333/294files、built HTTP/browser/Docker/audit均通过，
+Node24.19.0与AWS CLI2.37.9实际执行；本地Mac为CLI2.35.3，各自结果不互相倒签。
+初轮stdin挂起、自有PID停止及原26/27材料保留；第一轮inherited-root实际getter1/HTTP1/stage committed的
+通过结论已撤回。mandatory-own data descriptors/Proxy拒绝/JSON own keys/immutable snapshot修正后，
+两位非作者分别走原反例，getter0/HTTP0/DB不变。不是以无执行路径的A1补签或预盖Eval skip。
+
+最终R1与B均Blocking0/Warning6，实际PR创建后R1再次核六Git blob/diff/body一致。
+六项Warning明确保留：FS→旧SQL非原子/ABA；虚假stopped声明及last-check→spawn不证远端fence；
+cleanup grace/同步IO不证全函数硬deadline；stage unknown可能包含pre-CAS拒绝；
+CLI/环境结论只限已测版本；local HTTP/Success/cancel ACK/kill不证远端身份/终止/全writer或历史覆盖。
+权限仍全部false、termination unknown、token/safe_rollback null。
+
+私有原索引 `executor-a/final-ready-index-v2.json` SHA
+`427bd1dfb0e574bb89a7ba5641d75c3e6822d1f873a39f16dd410338063d224a`；R1 v2索引SHA
+`c8a8c618c67e92560b1e97773d4dfb2956521eb97194023aae435fa7935f3c4a`；B v2索引SHA
+`2e7c2fa57bd45c2362b4ef6ea463fb239d6093641fe515c16bf4834f2ad18726`。
+实际PR复核 `reviewer-one/postcreation-pr-review-v1.json` SHA
+`b4ea4bb170efb7c14c08a9c34cff56b001d8e783b3393e019f38df5952e6e091`；
+候选原包 `coord/pr464-ci-37807823898-attempt1/archive-index.json` SHA
+`aac732e198455eef8304b4a78f4bc1f182cbc2dbcaeaab539cb6a9588e678e59`；
+合前判断SHA `7967409a25b5643dca3f047110035ecb1a21c9a5e5bdafbf9ba99e9e2afec79f`。
+所有新记录独立保全，原封存和旧失败不覆盖。原main失败日志索引SHA
+`48c90d2ab000ed4fa197dd8446b7415b2dfe95012bd0a43c23a4f97891d00aa5`；
+terminal失败API与三原artifact归档SHA `a5919de512273773c411a792664afe77a9face7ba3c1e504cc4bf16160a86b97`。
+修复及main验收另按精确身份追加，不覆盖失败或借候选替代main。
+
+## A3必要验收修复：真实no-EOF准备
+
+原main失败查因后冻结仅原noEOF测试与NEW[专属收据](a3-isolated-ssm-no-eof-ci-2026-10-09.md)，
+两位非作者方案和最终审查均B0/片内W1，原A六项Warning保留。沿用已有10秒fixture原deadline，
+五秒单调屏障必须观察真实SendCommand、成功partial-write callback和未EOF；即时双handler、
+准备失败仍收敛同一run，既有首timeout/hold/HTTP1/安全断言保留，并加持久unknown/held/failure断言。
+server写出不证明CLI已解析字节或远端终止；未改runtime、caller默认、期限上限、spec或门禁。
+
+[#465](https://github.com/dong-qiu/deep-insight-agent/pull/465) 受审head
+`7d04bd4d683d46e6ae1d3547ce7492512f63cf38`、tree `993ba2edbb1ad59e0e452375f73fce384fba2c64`；
+实际tested `84d759fcf0126873c4466afef2475921a28c4f04`，ordered parents466+7d、同tree。
+候选 [37815207847/1](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37815207847/attempts/1)
+pull_request/full/success，必要原包保全及最新目标466核完后正常合入
+`3ed78338903523b2f9816d0312675f64816bf9d4`，同ordered parents/tree。
+新精确main [37816672359/1](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37816672359/attempts/1)
+push/full/success，head/tested均为上述3ed；这是当前最后完整应用验收。
+native660/660零skip、应用3333/294files、typecheck/lint/build、built HTTP/browser/Docker与audit0均实际通过；
+Linux AWS CLI2.37.9实际noEOF路径HTTP1、partialWritten=true、writeFailed=false、writableEnded=false、
+preparationFailed=false，首task_deadline_exceeded/committed hold保留。
+reader warning=true/passed=true，P95 baseline0.11776976/current0.14967488ms、delta0.03190512ms；Warning保留，未追加性能实验。
+原466/37809289491/1仍是failure，不以新结果倒签，未重跑原attempt或冒称全writer/真实远端终态。
+
+作者实际新33/33零skip、whole lint、四TS及diffcheck通过；R1和B各自独立实际单例1/1、零skip，
+分别确认HTTP1/partial-write/noEOF与同原deadline首因。作者及两Reviewer原before/after SQLite
+只读核均seq2/rev1→seq4/rev3、submission_unknown/held、deadline failure、commandId null，
+原byte/hash和synthetic audit chain一致、sidecars无。准备失败分支仅源审，未声称执行该负控。
+新/旧raw、副本、代码与索引分别保全；root核42原产物/14不变源，原runtime06622…完整hash不变。
+
+作者原索引SHA `dfdbfc8a745f1f9ca504b22162142eb1bbde0b740b55419904ba62268541ffaa`；
+R1最终索引SHA `8e97dec2afcefef6471b638c9820cc93333fb222f591a4ef3f5edd7d7551f9b4`；
+B最终索引SHA `a6e6df0604575607ab7d085231c5a3c40384a5a42a5940b3bbe9f29fc9ad5f34`；
+实际PR复核索引SHA `7508efa206e2413daaa166118250ef641fd94ae2d2c90e7f87d82f0032c51d5f`。
+候选原包 `coord/pr465-ci-37815207847-attempt1/archive-index.json` SHA
+`2a7b8a8b91ac32593543bb360c47175094482298401c45dedd1769918e6cc642`；合前判断SHA
+`ad0f55c22dd9082c610acbe05f6ef9ea6087e3f7e8ae58031fd63b6c563ed092`。
+新精确main原包 `coord/main465-ci-37816672359-attempt1/archive-index.json` SHA
+`b652f87a9d9447acf1ad50e98553eca79b6d6869f55105e1892a72f9d4f88d32`；
+17份直接原件核size/hash/0600，原artifact ZIP digest与GitHub一致，CI/Docker/scope及reader均精确绑定3ed。
+原R1方案worktree措辞已在新审查纠正，原报告保留。
+
+## TD-20续批：Draft与未解决工程
+
+[#463](https://github.com/dong-qiu/deep-insight-agent/pull/463) 为Draft，冻结五NEW文件的head
+`570ec795cfbe9e9581f7e3533bb30229daafb74a`、tree `6c7809c570c18bb33cb0ee06d1b88d5f886bac50`。
+受影响旧调用方准确绑定 `235045d6424640d79c79874a403749c6bd17b823`，不使用新main替代旧S2a质量。
+实际PR CI [37807152130/1](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37807152130/attempts/1)
+full/success；实际tested `1168a4842f38289b10500b0862eb8502919db14f`，ordered parents a51+570、tree与受审一致。
+这是合入#464前的CI时点，不签以后变动的PR merge ref；未解决Blocking使此Draft不可合并。
+
+R1最终完整独审实际复现caller-owned `options.syntheticLimits` 可变：安装admissions0后改为2，
+仍实际HTTP1/finish成功、snapshot max0。root/signal也需冻结不可变控制快照。作者同意NeedsFix；
+另一非作者较早B0不能覆盖此最后反例。依pre-pr-ai-review的两轮上限停止本片，未重写通过结论。
+另外Darwin env-i默认 `/tmp` 非canonical，当前默认准备会拒绝为invalid_root/API0；
+已验证的显式canonical fixture根不证明该默认准备通过。下一独立窄片先修输入快照与准备路径，
+再实际走旧调用方与双审；这仍是工程待办，不只差模型预算。
+
+验证边界：v5实际26/26；最终helper实际25项及1项独立旧caller回归按相同字节复用容量例，
+不是一次最终27/27。原容量6025文件总536679429bytes≤512MiB、HTTP86/admissions87末次not_sent；
+仅容量子进程fsync合成加速，不作耐久性/性能证据。初轮准备失败、16/18、24/25及自有PID超时材料保留。
+默认SDK未匹配URL fail closed；永久假loopback不提供真实质量许可，完整harness/跨进程actor lease仍待工程。
+
+私有原索引 `b-td20-bridge/final-ready-index-v1.json` SHA
+`747249158f3c90b87f711bd9c763ac063197dd0c0c2fd92c154cf4802e10e44e`；
+最终NeedsFix索引 `reviewer-one/b-final-review-index-v1.json` SHA
+`86db7d86d574e0b98201d97f8c60dd04f58e5c6d899719999a0c0079b2a644c6`；
+新增裁决 `b-td20-bridge/post-final-review-disposition-v2.json` SHA
+`0c6b7ada72f6553710fb0fda4bb3246d0c645b4691fa1201056e1cef0afced36`；
+默认路径Warning索引SHA `31e300aaca9a1278c9e6d270ff750868c0df508b8032feda15ff169ece0ccc88`。
+原PR CI归档 `coord/pr463-ci-37807152130-attempt1/archive-index.json` SHA
+`fdcba8871258d0c40b1379af5af777b961a3b23d475df2e9c7f1cbf11d5b4a04`；reader warning=true/passed=true，
+P95 baseline0.07758656/current0.09994728ms。CI绿不消工程Blocking，不追加性能实验或重跑旧质量。
+
+## 续批整体状态与下一阶段
+
+整体分组不变：TD01/02/03/05/06/07/08/11/13/16/17/18按既有范围关闭；
+TD04/09/10/12/14/15/20部分完成；TD19既有阶段完成、整体未关闭。
+本续批分别记录隔离SSM工程合入及main验收、TD20 Draft工程阻塞、C1/followup交接阻塞和定向证据核对；
+上一批17片完成不等于这两片都验收，更不关闭20项或生产维护。
+
+后续仍有工程：C1真实backup/reports/raw/manifest/rename/publication/prune阶段接线，启动/HTTP共同维护门，
+其他真实运维消费者，usage/raw/report持久提交fencing，TD10其余入口与shadow/raw内部控制，
+TD04其余危险字段，以及可信远端终态/issuer/历史checkpoint覆盖。
+现held/未知writer不能推导执行资格，不以ready/release/new operation绕阻断；持锁不跨异步await。
+取消首因、lease-loss拒写、预算优先、validator发布白名单和历史checksum/ID/URL关联均保持。
+合法数值语义/default/grammar/clamp/getter/加载时机变化、历史数据/架构/安全边界变化须先申请方向。
+
+优先先获得C1三个原文件的明确专属交接，再冻结一个真实隔离备份消费者的副作用、提交、取消、超时、
+重启、迟到continuation、partial/unknown、失败留证及重试条件，做实际反例和两位非作者方案审查。
+若交接仍无结果继续暂停，独立窄片可先处理TD20不可变控制快照与默认fixture准备；不重开延期模块或性能实验。
+TD14/D3原保存位置缺证、TD14人工1项pending仍保留，AI建议不代人工裁决；无新可靠线索不再广搜/重跑冒充。
+真实模型预算0，旧S2a真实质量另需方案和预算；不将本阶段预算写成历史attempts0/费用0。
+
+全部worktree/local branch/私有原材料保留，A六NEW及必要修复两路径、B五NEW仍归原作者冻结，root独占三主台账，
+旧Session共有文件保持原归属；正常Git/meta授权、clean或Agent结束不释放源归属。
+所有新WT无配置需求，未复制.env或live DB/报告；测试env-i/假凭据/独立DB/DATA/本地HTTP，失败不退真实provider。
+最终Git/CI身份、原包hash与只读文件名归属快照写入本续批新的私有最终索引，不覆盖旧c201封存。
+
+`safe_rollback=null`、deployment blocked、原hold与#435始终保持；旧冻结镜像
+`4477412a3e2b1cb2764fb4357f2284e73952af67` 不含新维护代码，旧矩阵不可移植。
+工程及可信证据仍未齐备，不提出生产解锁申请；后续另冻结候选并验收，再一次性实名/窗口/精确命令/失败处置专项申请，
+生产串行避16:50–17:30UTC。本续批未访问或部署生产。
 
 ## 冻结范围、接口及归属
 
