@@ -112,7 +112,7 @@ stageId/stageInitId绑定本生命周期，不用复制旧gate来生成新许可
 | 表/记录 | 不可变字段和约束 |
 | --- | --- |
 | identity | 唯一canonical完整stage marker；UPDATE/DELETE拒绝 |
-| stage | singleton id=1；epoch=0无owner或1有owner，workerId/generationToken once-set；revision非负safeint；admission=open/closed、terminal=live/revoked；首revoke reason/null与完整drainRecord/null |
+| stage | singleton id=1；epoch=0无owner或1有owner，workerId/generationToken once-set；revision非负safeint；admission=open/closed、terminal=live/revoked；首revoke reason/null、完整drainRecord/null、once-set revokeRecord/null |
 | tasks | taskId UUID PRIMARY KEY、workerId/generationToken、epoch=1；对应真实S1 task；不可UPDATE/DELETE |
 | claims | taskId PRIMARY KEY REFERENCES tasks；dispatchId/traceId/ownerToken/rootRunId非空、claimEpoch/fencingEpoch正safeint；**UNIQUE(dispatchId,traceId,ownerToken,claimEpoch,fencingEpoch,rootRunId)**；不可UPDATE/DELETE |
 | attempts | taskId PRIMARY KEY REFERENCES claims、attemptId UUID UNIQUE、绑定同stage/owner/epoch；无UPDATE/DELETE；一个claim最多一条reservation |
@@ -120,7 +120,7 @@ stageId/stageInitId绑定本生命周期，不用复制旧gate来生成新许可
 | completions | taskId PRIMARY KEY REFERENCES tasks、no_claim/done/failed/threw；只localexecutor事实；不可UPDATE/DELETE |
 | events | seq INTEGER PRIMARY KEY、previous_hash/hash/snapshot；逐mutation append-only完整canonical状态snapshot/hashchain；不可UPDATE/DELETE |
 
-stage触发器阻止已closed变open、已revoked变live、任何清除/rebindowner/epoch/revokeReason/drainRecord，
+stage触发器阻止已closed变open、已revoked变live、任何清除/rebindowner/epoch/revokeReason/drainRecord/revokeRecord，
 禁止删除stage；stage.revision按事务事件严格+1（no-op完全无变化）。完整read核genesis、audit链、所有
 行字段、FK/唯一性、rows与最新snapshot一致；mutation与audit同gate事务，不只验证应用填写字段。
 第一次owner登记可0→1 once-set；后续不能以新epoch/takeover恢复旧任务。不同controller身份不是OS认证。
@@ -177,7 +177,11 @@ admit同锁链核registry和gate都open、ownerepochexact，再原S1 task与新s
 mint只在两库COMMIT都确认后；gap失败cap不返回，已有task/未知事实保留，不能回滚另库后伪称未登记。
 bindClaim只一次、在实际claim返回后execute前固定消费；六字段immutable snapshot与真实dispatch字段、
 lease owner/两个独立epoch和原trace.root_run_id/Run.trace_id关联作native一致读核对，再INSERT UNIQUE。
-不能caller capA搭actualclaimB、wrongroot、或同claim换cap。bind不允许新admit，故close后的已freshcap可
+首次绑定仅信受审core的同步 admit→真实claim返回→该cap bindClaim(actualClaim)→execute固定调用链；
+原claim没有task/cap参数，native关系与UNIQUE不能认证两个未绑定合法claim的首次意图来源。
+拒绝保证限定为绑定后capA的claimA改成claimB、重复bind、wrongroot真实关系、同tuple换task/cap、
+foreigncap/profile/connection；不声明任意外部caller交换两个未绑定合法claim一定可被识别。
+bind不允许新admit，故close后的已freshcap可
 继续bind自己已真实claimed结果；revoke后bind拒，原claim/rootRun留作unknown，不能无保护failed写。
 
 bindClaim验证真实行的只读SQL是本新固定内部消费者，按现真实provenance字段事实写出，不改原函数；
@@ -264,17 +268,51 @@ s0marker匹配；不是仅看输入ready或持有旧S2result。对released/manua
 （永久revoke），不执行任何依赖S0允许维护的业务动作，读后release/变化不会复活stage。
 
 bindDrain在registry→stage锁内核两admission已closed、真实worker/generation/task，读取固定业务readonly
-fullinventory（全部dispatch+全部activelease，禁止innerJOIN漏orphan），计算canonical snapshot SHA256。
+fullinventory（全部dispatch+全部activelease，禁止innerJOIN漏orphan），消费原DrainLeaseSample聚合返回。
+leaseSampleHash **精确为SHA256(canonical(原source.sample(at)完整返回对象))**，包含schema/scope/
+sampledAt/source{root,databasePath,marker}、queued/claimedCurrent/claimedExpired/unknown和原四blocked字段，
+不丢字段、不重新发明分类、不额外拼所谓row/epoch快照；原source API与schema逐字不改。
+该hash只绑定由完整扫描推导的聚合观测，不证明底层每行owner/epoch/expiry/字节未变；相同聚合hash
+可以对应不同fencing_epoch。真正business写权限继续由原driver在事务内assertClaim及rootRun关联核验。
+physical dev/ino来自固定binding独立实际FS复核，不来自caller或不存在的sample字段。
 记录完整heldtoken/operationkind、S0snapshotHash、registrysnapshotHash、leaseSampleHash、sampledAt、
 exactroot/businessDevIno/stageowner身份；其hash由本方法实际读取生成，不接受caller填写hash当验收。
 sample=null、来源不可用/错物理身份/非法采样时点拒绑定，不输出新permit；真实inventory将非法epochs/expiry
 mismatch/orphan计unknown，不删掉它们；正常sample含unknown/expired/
 queued仍可记录分类并保持readyfalse，不据数量0推静默。记录是immutable观测点，不是永远有效的当前证据。
 
-revoke重新核currentheldtoken相同binding、registryclosed、stageclosed/bound、owner/epoch/expectedstageRevision；
-再取本轮真实sample并同样计算摘要，记录本轮时间/观测（不能把旧lastsample当当前充分证据）。
+drainRecord完整原heldToken（含原revision）永不改；未来revoke匹配的是**revision-free StableDrainBinding**：
+{operationId,ownerId,fence,kind,target,executionIdentity,state:pre_submit,submitToken:null,requestHash:null,commandId:null}。
+该stablebinding是实际S0 op字段的明确projection，不含revision，不以完整旧token相等拒绝合法fresh同binding。
+每次caller输入heldMaintenance仍须与actual当前S0完整token逐字相同，actualstate=pre_submit/disposition=held、
+所有submission字段null；合法同op另一次hold推进revision可使用独立明确提供的新token，旧token必须拒绝。
+不从inspect/原method返回自动刷新旧caller，不从immutable drainRecord发权限。changedowner/fence/kind/target/
+executor/operation、released/manualtakeover均拒，不改stage/business。
+
+revoke重新核caller currentheldtoken与stablebinding、registryclosed、stageclosed/bound、owner/epoch/expectedstageRevision；
+再取本轮真实sample并按上述exact聚合返回计算摘要，写独立once-set revokeRecord。
+不能把旧lastsample/drainRecord当本轮充分证据；不能覆盖或扩写原drainRecord。
 sample未来/源不可用或marker/inode/旧S0revision失配均拒，不自动续租/刷新hold；stage若已revoke保持阻断。
 本轮观测有效期只属于一个同步方法调用，跨await/重启不重用；无需新增TTL/自动恢复/全系统deadline。
+
+新sidecar两记录精确字段冻结（严格canonical对象，未知/缺字段拒绝）：
+
+- DrainRecord：schema=a3-staged-drain-record-v1，heldToken(完整原token含revision)，stableBinding(上述projection)，
+  stageOwner{stageId,stageInitId,workerId,generationToken,epoch:1}，expectedStageRevision，resultStageRevision，
+  source{root,businessPath,businessDev,businessIno,registryDev,registryIno}，sampledAt，leaseSampleHash，
+  S0snapshotHash，registrysnapshotHash。绑定方法一次set，与本次revision+1/audit同gate事务COMMIT。
+- RevokeRecord：schema=a3-staged-revoke-record-v1，heldToken(本次supplied且actualcurrent完整token)，
+  stableBinding，drainRecordHash(SHA256(canonical完整原DrainRecord))，相同stageOwner与source，
+  expectedStageRevision/resultStageRevision(本次strictstageCAS)，reason(原StableStagedRevokeReason首次值)，
+  sampledAt(本轮实际sample)，leaseSampleHash(本轮exact聚合)，S0snapshotHash/registrysnapshotHash(本轮实际读取)。
+  正safe stageRevision结果=expected+1；样本时间实际调用内且不未来，所有摘要64hex；physical事实精确marker绑定。
+  reason必须与stage.revokeReason相同，stablebinding必须等原drainRecordstablebinding；新heldToken.revision可以
+  不同于原DrainRecord，但必须actualcurrent，source/stageOwner身份不能漂移。
+
+Genesis/live要求revokeRecord=null；terminal=revoked要求完整非nullrevokeRecord、closed、原drainRecord存在。
+设置revokeRecord、terminal live→revoked、首次reason与revision+1/完整canonical audit snapshot同一gate事务，
+所有rows/snapshot校验包含该字段。后续任何replay/重启不能replace/delete/修改原记录；回放原snapshot不
+证明当前sample或S0revision有效。两个records都不是全行lease摘要、云认证、子工作终止或维护许可。
 若新代码内部采样不能安全复用原readonlysource而必须复制或改drain公共协议，先报告具体接口差异再冻结。
 
 lease分类事实：queued保留不领取；claimedCurrent仍在途不签停止；expired owner仍unknown；owner/两个epochs/
@@ -309,7 +347,9 @@ progress、task完成、lease过期、SQLite合法恢复或0计数都不会给pr
    对照保持；3port混配、缺brand、wrongroot/memory/readonly/ATTACH后creation beforecore都execute0/claim0。
 2. 新 staged close停新admit0，但已freshcap/有效lease执行完合作terminal可COMMIT；S3旧strict同close拒。
    真实S2有限drain→actualheldS0→bindDrain→explicitrevoke，全部readyfalse；不得fixture0tasks签静默。
-3. 同process两cap两claim交换、wrongrootRun/真实trace关系错、两个epochs独立、同six tuple另task/connection/
+3. 静态与实际core证明唯一受控freshcap同步admit→原真实claimreturn→bind beforeexecute；两个已绑定cap
+   跨claim commit/重复bind拒（不声称未绑定合法claim首次交换来源认证），wrongrootRun/真实trace关系错、
+   两个epochs独立、同six tuple另task/connection/
    重启/JSON/旧worker/S3cap不能mint；UNIQUE与attempt PK直接native冲突断言，原行不能删除重发。
 4. 真双进程：revoke在phase1reservationCOMMIT后gap先赢→terminalbusiness0；terminalphase2先持锁→revokerbusy，
    businessCOMMIT后explicitfreshCASrevoke保原终态。无锁check-release负控证明原driver可穿门，勿冒称安全。
@@ -320,7 +360,11 @@ progress、task完成、lease过期、SQLite合法恢复或0计数都不会给pr
    actualcore保stageddiagnostic；postreadthrow不再failed；所有unknown/denied全attempt计数1、no retry/rebuild。
 7. 真hotjournal0644（newopen及existinghandle）、journal/WAL/SHM权限、pathswap/marker/DBinode/半初始化、旧APPID/
    DDL/audithash损坏：preSQL拒且unsafe证据原sizehash保留；0600合法恢复仍unknown/closed/revoked持久。
-8. 两控制器sameidentity/同S0heldtoken/旧stageRev/owner/epoch/target/fence/released/manualtakeover：事务CAS只胜者
+8. 真实S0同heldbinding二次hold推进revision正控：原drainRecord不变，独立fresh suppliedtoken可revoke，
+   旧originaltoken拒；changedstableidentity/released/takeover拒stage/businesswrites。once-setrevokeRecord含本次
+   currenttoken/time/hash与terminal/audit同tx，保持原drainRecord；旧观测不得当本轮，重放不覆盖record。
+   原S2epoch1→8而相同sampledAt聚合hash相等的真实负控保留，assert原driverownerfence拒写；不要求新rowdigest。
+   两控制器sameidentity/同S0heldtoken/旧stageRev/owner/epoch/target/fence/released/manualtakeover：事务CAS只胜者
    mutation；no自动刷新/foreignhold，不称OS唯一controller。replay返回输入token，不能借赢家newrev续动作。
 9. live/orphan/source_collect/expired/未知子Promise与Run/usage/raw/report负coverage：newterminal拒写后，既有未覆盖
    writer仍可能按原lease写，必须实际证据列unknown，不把覆盖warning清零。lease字段/queue和业务历史不强改。
@@ -350,3 +394,14 @@ shareddriver/drain必要API差异先交协调者冻结，不能擅自拷替身�
 剩余**预算/生产授权**：TD20旧head真实质量预算0；任何真实模型/付费/生产AWS/SSM/维护须专项。
 **延期**：TD12保留模块、TD14/15追加性能、P1/Brief和无新线索历史搜索保持，不扩大本片。
 下一必要动作仅双独立方案审查冻结后实施本terminal小片；不先申请生产或全部入口改造。
+
+
+## 2026-10-08 四项方案 Warning 修正（源码未实施）
+
+原6235976/31110bytes/ceceff1f 提案与R1 FULL B0/W4、R2原v1及FULLv2 B0/W4原时点保留。
+作者完整读两报告及R1 original-api-boundary-probe-v3输入/raw/probe-run-bindings、R2v2索引。
+真实原S0例：same stableheldbinding原revision2→3、完整token不同；原S2实际fixture lease fencing_epoch1→8、
+same sampledAt聚合hash相同而全lease rowhash不同。作者未重跑/冒充独立原probe，不签新staged运行验收。
+本delta限定四处：currenttoken对stablebinding/immutable历史token；独立once-setrevokeRecord与audit同tx；
+精确原DrainLeaseSample聚合canonicalhash；受控core首次claim路径和绑定后/重复tuple拒绝范围。
+新candidate只专属spec供两位delta方案review，旧S0/S1/S2/S3/default/strict/业务schema不变，SSM0d冻结。
