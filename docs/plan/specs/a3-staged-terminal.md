@@ -405,3 +405,22 @@ same sampledAt聚合hash相同而全lease rowhash不同。作者未重跑/冒充
 本delta限定四处：currenttoken对stablebinding/immutable历史token；独立once-setrevokeRecord与audit同tx；
 精确原DrainLeaseSample聚合canonicalhash；受控core首次claim路径和绑定后/重复tuple拒绝范围。
 新candidate只专属spec供两位delta方案review，旧S0/S1/S2/S3/default/strict/业务schema不变，SSM0d冻结。
+
+## 2026-10-08 S3b implementation binding (local candidate)
+
+冻结方案 ffddd2d0 的 public version/profile、十文件归属和四项最终方案修正保持原义。
+真实实现是 `openWriters` 私有 registry connection 加同闭包唯一 stage connection；新 module 只做新侧车初始化
+与固定行/物理事实校验，不导出 DB handle、通用 lock/callback/driver 工厂。真实消费为
+`runGenerationDispatchOnce(..., { stagedTerminalWriterAdmission })` 的同步 admit→actual claim→bind，
+另用固定 factory driver 完成 phase2 terminal。旧 strict/default/S1 不选该新 profile。
+
+phase1 stage COMMIT 返回且 registry COMMIT 返回以后才开始 phase2；阶段一提交不明且 driver 零调用才给
+`unknown / businessCommit=not_committed / staged_terminal_reservation_unknown`。phase2 尚未调用 driver 的
+busy/身份拒绝或 driver 已确定 not_committed，返回固定 deny/原 deny；持久 attempt 和本地 spent 都不赋予
+retry。phase2 business COMMIT 已返回而 gate/registry 收尾失败，保留 `unknown / committed`；原 driver COMMIT
+尝试不明则保留 unknown，不查询后再发或补 failed。control 的严格 CAS mutation 仅返回本次确认的
+revision+1；完全 no-op 返回 immutable ingress token，禁止通过末尾 inspect 给旧 continuation 刷新权限。
+
+实现证据和边界见 `docs/verify/a3-staged-terminal-2026-10-08.md`。本段只绑定实际代码，不预签独立最终 review、
+候选 CI、tested merge、精确 main 或镜像。`leaseSampleHash` 仍是原 `DrainLeaseSample` 聚合 canonical 摘要，
+不能证明 lease 行/epoch 或全 writer 静默；原 drainRecord 和独立 once-set revokeRecord 的区别保持。
