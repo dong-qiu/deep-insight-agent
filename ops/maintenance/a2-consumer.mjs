@@ -194,11 +194,12 @@ function fixturePreflight(root) {
 }
 function utc(value) { const n = Date.parse(value); require(Number.isFinite(n) && new Date(n).toISOString() === value, 'invalid_receipt_time'); return n; }
 function artifactsRead(artifactRoot, input, facts, now) {
-  rootCheck(artifactRoot); const directory = safe(artifactRoot, true), rootIdentity = { dev: directory.dev, ino: directory.ino }; const batch = { remaining: 4 * MiB }, summaries = {}, files = [];
+  rootCheck(artifactRoot); const directory = safe(artifactRoot, true), rootIdentity = { dev: directory.dev, ino: directory.ino }; const batch = { remaining: 4 * MiB }, summaries = {}, files = [], absent = [];
   for (const [role, [name, cap]] of Object.entries(roles)) {
     const descriptor = input.artifacts[role], evidence = input.a2.evidence[role];
     if (!descriptor) { require(optional.has(role) && !evidence, 'missing_artifact');
       try { lstatSync(join(artifactRoot, name)); throw new ConsumerError('receipt_presence_mismatch'); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      absent.push(join(artifactRoot, name));
       summaries[role] = { missing: true, bytes_bound: false, authenticated: false }; continue; }
     if (optional.has(role)) require(evidence !== undefined, 'receipt_presence_mismatch');
     const path = join(artifactRoot, name), file = fileBytes(path, cap, batch), actualHash = hash(file.bytes);
@@ -221,7 +222,7 @@ function artifactsRead(artifactRoot, input, facts, now) {
     summaries[role] = { size: file.bytes.length, sha256: actualHash, missing: false, bytes_bound: true, authenticated: false };
     files.push({ path, stamp: file.stamp, cap });
   }
-  return { summaries, files, rootIdentity };
+  return { summaries, files, absent, rootIdentity };
 }
 function owned(state, view, input, marker) {
   const token = input.a3.token, op = state.operations[token.operationId];
@@ -257,6 +258,11 @@ export function consumeA2Isolated({ root, artifactRoot, input: raw, now = Date.n
     rootCheck(artifactRoot); const artifactDirectory = safe(artifactRoot, true);
     require(same({ dev: artifactDirectory.dev, ino: artifactDirectory.ino }, artifacts.rootIdentity), 'artifact_root_changed');
     for (const file of artifacts.files) require(same(stamp(safe(file.path, false, file.cap)), file.stamp), 'artifact_changed');
+    // Absence is also a fixed-role observation: a late file/directory/link cannot retain a missing result.
+    for (const path of artifacts.absent) {
+      try { lstatSync(path); throw new ConsumerError('optional_artifact_appeared'); }
+      catch (error) { if (error.code !== 'ENOENT') throw error; }
+    }
     result = { schema_version: 'a2-a3-isolated-consumer-result-v1', isolated_consumer_integrated: true, ...hold,
       binding_sha256: hash(canonical({ a2: input.a2.context, a3: input.a3 })), a2,
       modules: ['assessA2:a2-diagnostic-v1', 'openLedger:a3-ledger-v1', 'openWriters:a3-writer-admission-v1', 'openDrainLeaseSource:a3-drain-observation-v1'],

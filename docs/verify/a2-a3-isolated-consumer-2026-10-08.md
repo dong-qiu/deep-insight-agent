@@ -28,7 +28,7 @@ fixture 由真实 `openDb` + `applyProvenanceMigrations` 创建 48 个原 TEXT m
 
 ## 原红、失败与修正
 
-- `old-documentary-gap-red.log` 47 assert 红实际调用原 `assessA2` 与 documentary CLI，证明原链缺少新 consumer 输出/实际映射字段；不是 import missing-module 红，也不声称原安全硬门失效。执行时的 test-first source 保存为 `test-first-source.mjs`，新永久测试使用新 module 明确 import。
+- `old-documentary-gap-red.log` 原共47 failed：46个接口/输出 assertion 红实际调用原 `assessA2` 或 documentary CLI，证明原链缺少新 consumer 输出/实际映射字段；另1个 too-many-rows 在 fixture 构建中抛 SQLITE_CONSTRAINT_UNIQUE，尚未调用 consume，不能计为旧消费路径反例。不是 import missing-module 红，也不声称原安全硬门失效（2026-10-08按两独审W1更正；4108原字节/原日志保留）。执行时的 test-first source 保存为 `test-first-source.mjs`，新永久测试使用新 module 明确 import。
 - `consumer-first-run.log` 初次46/47，`consumer-expanded-run.log`64/65：大行数 fixture 先碰 UNIQUE request_id、然后 FK。修正为仅明确非法容量负控关闭其 fixture connection FK并生成不同 request/trace id，实际 consumer 仍 readonly/容量先于旧 reader；没有修改原 schema 或业务 FK 门。
 - `consumer-final-targeted-v2.log` / `consumer-final-diagnostic-full-v3.log`66/70：OCI负控错误共享 identity 对象，污染后四个新正控；定向原 cause 为 `invalid_consumer_input`。每fixture完整 clone 后实际全70绿 (`consumer-final-targeted-green-v4.log`)；最终加入容量race和原DB byte hash后71绿。原失败原样保全，不记成产品风险消失或镜像通过。
 - 两次 `.d.mts` 首直接编译命令被 TS 新版 TS5112 要求显式 `--ignoreConfig`，原日志保留；修正命令后两编译通过。这是命令准备错误，不是类型失败被忽略。
@@ -37,7 +37,7 @@ fixture 由真实 `openDb` + `applyProvenanceMigrations` 创建 48 个原 TEXT m
 
 私有根 `/Users/dongqiu/.local/share/insight-agent/evidence/a2-a3-isolated-consumer-20261008-v1/`，目录0700、文件0600、非覆盖。`archive-index.json` 记录最终head、五内容路径与原始公开Git源/计划review reports、命令日志及每文件size/hash；SHA由协调者核原件。Git不含fixture DB、配置密钥、原日志或敏感原文。
 
-| 固定实现源码 | byte size | SHA256 |
+| 4108首轮实现源码（历史字节） | byte size | SHA256 |
 | --- | ---: | --- |
 | `ops/maintenance/a2-consumer.mjs` | 22024 | `3eaef064ba40ea1db193aebe73cdb6c2d3db0997e417e837f02c3880ffa9ee35` |
 | `ops/maintenance/a2-consumer.d.mts` | 4217 | `e927d3bb4641895a489528afba71d3f64aad43dd141b67f3ea666239a42f871a` |
@@ -46,3 +46,13 @@ fixture 由真实 `openDb` + `applyProvenanceMigrations` 创建 48 个原 TEXT m
 旧 S0/S1 audit 和旧 S2 sample 仍在另连接做全量快照。consumer 的有限元数据门在旧 open/sample 之前执行并复核已观察变化，不能保证两快照间无增长/ABA、整个进程内存上界、全库无损或控制器唯一性。`observation_atomic=false/controller_uniqueness=unknown/process_termination=unknown/all_writer_coverage=false` 永久保留。单 hash/私有权限匹配不认证收据；没有真实当前生产配置、批准、SSM终态、全writer quiet 或部署许可。
 
 staged/SSM/备份恢复维护适配是不同后续切片，未借此首 consumer 收口；rollback批准、生产执行与真实模型预算没有新增授权。本片正常源码/产物冻结后，协调者安排两位独立审查、最终 Eval 判断、正常 PR/精确CI/main 绑定。五内容文件由 B 保留唯一 owner，其他原Session文件与所有worktree/原证据保持。
+
+## 2026-10-08：4108 B1/W1 定向修正，待双独立 delta
+
+两位独立 FULL4108 原审查均 B1/W1：缺省 optional receipt 只在初次读时 lstat，实际旧 S2 后续读取中出现的固定文件未重核，4108会错误返回 integrated=true/missing=true；所有生产权限当时仍 false。R1 原1正2红及R2 原2红/root 原1正2红均保留，原4108及77档案不覆盖、不倒签通过。
+
+最小修正只登记初次 ENOENT 的两个固定 role/basename，并在末次检查已读文件之后再对这两个路径 lstat，必须仍 ENOENT；新普通文件、目录、悬空 symlink、hardlink、非私有文件均 integrated=false，稳定 code `optional_artifact_appeared`。不扫描其他文件，不读坏新receipt正文，不更改旧接口、policy、身份、输入/输出typed契约或权限。继承的非原子/ABA/全量reader容量限制保持。
+
+新增永久20例保护实际 S2 exact full SELECT：两role × constructor sample/后续late sample × 五对象形态；每例执行 real native Statement.all，并核 sourceReads/实际出现对象、原三DB bytes和协议事实不变。原4108执行20/20红 `author-presence-4108-red-v1.log`，修正后20/20绿 `author-presence-fixed-green-v2.log`。之后完整91 consumer +原A2 contract/S2 drain三文件：168 registered、167 pass、0 fail、1既有Linux镜像门local skip（`consumer-presence-affected-green-v3.log`）；新91项全部实际通过无skip。八文件首轮308结果保持历史，不改称本delta新执行。四 repository TS重新通过 `consumer-presence-typecheck-v1.log`，定向lint通过 `consumer-presence-lint-v1.log`。`.d.mts`以及所有TS/TSX/source/旧ops仍对4108逐字保持，旧两facade TS有效结果复用；build闭包没有变化。
+
+W1已按原raw精确改为47总failed =46接口assert +1 fixture UNIQUE，最后一个未执行旧consumer调用；原oldred/first/expanded全部保留，不以修后夹具补签原路径。修正源字节/此文档/完整原审报告及新日志位于私有v2 `archive-index.json`，包含精确newhead及五内容hash；本段不预签最终delta审查、Eval、PR、CI、main或上线。

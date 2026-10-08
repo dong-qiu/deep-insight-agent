@@ -122,3 +122,23 @@ test('provided optional receipt cannot hide behind missing descriptor or evidenc
  const f=fixture(t);receipts(f,['approval']);delete f.input.artifacts.approval;delete f.input.a2.evidence.approval;deny(run(f));
  const g=fixture(t);receipts(g,['production_compatibility']);delete g.input.a2.evidence.production_compatibility;deny(run(g));
 });
+for(const role of ['production_compatibility','approval'])for(const gap of ['constructor-sample','late-sample'])for(const kind of ['file','directory','dangling-symlink','hardlink','unsafe-file'])test(`fixed absent ${role} appearing at actual S2 ${gap}: ${kind} rejects integration`,t=>{
+ const f=fixture(t),path=join(f.artifactRoot,names[role]),targetRead=gap==='constructor-sample'?1:2;
+ assert.throws(()=>fs.lstatSync(path),{code:'ENOENT'});
+ const oldPrepare=Database.prototype.prepare;let sourceReads=0,inserted=false;
+ Database.prototype.prepare=function(sql){const stmt=oldPrepare.call(this,sql),oldAll=stmt.all;
+  // Match the ACTUAL unchanged S2 full SELECT; private bounded projections include ORDER BY/LIMIT.
+  if(this.name===f.path&&sql==='SELECT id,trace_id,state,owner_token,claim_epoch,lease_expires_at FROM generation_dispatch')stmt.all=function(...args){
+   sourceReads++;if(sourceReads===targetRead){inserted=true;
+    if(kind==='directory')fs.mkdirSync(path,{mode:0o700});
+    else if(kind==='dangling-symlink')fs.symlinkSync(join(f.artifactRoot,'unavailable-synthetic-target'),path);
+    else if(kind==='hardlink'){const origin=join(f.artifactRoot,'synthetic-link-origin');fs.writeFileSync(origin,'invalid-unprovided-synthetic-receipt',{flag:'wx',mode:0o600});fs.linkSync(origin,path);}
+    else {fs.writeFileSync(path,'invalid-unprovided-synthetic-receipt',{flag:'wx',mode:0o600});if(kind==='unsafe-file')fs.chmodSync(path,0o644);}
+   }return oldAll.apply(this,args);
+  };return stmt;
+ };
+ let result;try{result=unchanged(f,()=>run(f));}finally{Database.prototype.prepare=oldPrepare;}
+ assert.equal(inserted,true);assert.ok(sourceReads>=targetRead);assert.ok(fs.lstatSync(path));
+ assert.equal(result.isolated_consumer_integrated,false,'actual newly present optional role must invalidate previous absence');
+ assert.equal(result.reason,'optional_artifact_appeared');assert.equal(result.production_permitted,false);assert.equal(result.approved_safe_rollback,null);
+});

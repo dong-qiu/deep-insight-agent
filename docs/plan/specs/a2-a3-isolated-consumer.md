@@ -93,3 +93,7 @@ CLI 形态建议 `node ops/maintenance/a2-consumer.mjs <canonical-isolated-root>
 完整887d冻结方案经协调者与两位独立方案review明确授权后，已在独立consumer worktree实际实现上述五路径；本段不改冻结接口、容量/TEXT门或安全边界。真实新consumer71项本地通过、关联ops308项306通过/2既有Linux镜像门待CI，四repository TS与两新facade编译及定向lint通过。原红/所有中间失败与原因、最终源hash及继承限制见专属[收据](../../verify/a2-a3-isolated-consumer-2026-10-08.md)。
 
 当前仅本地工程消费验收完成，待双独立最终审查、事后Eval判断、正常PR/精确CI/合入；不预签未来tested/main/生产，不将旧顶部“仅方案”改成历史已通过。
+
+## 2026-10-08：固定缺省角色的末次观察修正
+
+4108两个FULL独审发现初次absence后真实S2读取间出现optional receipt未重核，冻结步骤4的已观察race拒绝尚未实现完整（原B1/W1不倒签）。本轮只记录两个fixed-role的初次ENOENT，并return前同basename再次lstat须ENOENT；出现文件/目录/任何link/非私有对象均以稳定code拒绝集成，不扫描其他文件、不改scope/caps/typed接口/原policy或继承非原子限制。两role的真实S2 constructor及late sample、五形态共20反例先红后绿；完整91consumer保护通过，原三文件相关168/167pass/1既有Linux镜像门待CI。原47总红收据更正为46接口assert+1fixture UNIQUE（未执行调用）。源码及证据见专属收据v2；仍待两独立delta与正常PR/精确CI，所有权限保持false/null。
