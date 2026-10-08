@@ -140,6 +140,15 @@ describe("explicit isolated strict terminal at real dispatch core", () => {
     expect(db.prepare("SELECT state FROM generation_dispatch").get()).toEqual({ state: "queued" });
   });
 
+  it("ATTACH after factory/admission creation refuses before registration, claim and execute", async () => {
+    const before = facts(), execute = vi.fn(async () => {});
+    db.exec("ATTACH ':memory:' AS foreign_db");
+    await expect(runGenerationDispatchOnce(db, execute, { terminalWriterAdmission: admission })).rejects.toThrow("writer_terminal_business_mismatch");
+    expect(execute).not.toHaveBeenCalled(); expect(writers.inspect().tasks).toEqual([]);
+    expect(facts()).toEqual(before); expect(db.prepare("SELECT state FROM generation_dispatch").get()).toEqual({ state: "queued" });
+    expect(db.prepare("SELECT count(*) AS n FROM run").get()).toEqual({ n: 0 });
+  });
+
   it("foreign core DB and missing/mismatched profile refuse before any registration/claim/execute", async () => {
     const foreign = openDb(":memory:"); const execute = vi.fn();
     try {

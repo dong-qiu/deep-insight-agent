@@ -184,6 +184,10 @@ export function openWriters(root) {
       for (const suffix of ['-journal', '-wal', '-shm']) {
         try { safe(businessPath + suffix); } catch (error) { if (error.code !== 'ENOENT') throw error; }
       }
+      // This SQL may recover a journal: all physical gates above must complete first.
+      // Recheck the actual connection on every admit, not only its factory's initial binding.
+      const databases = businessDb.prepare('PRAGMA database_list').all();
+      check(databases.length === 1 && databases[0].name === 'main' && databases[0].file === businessPath, 'writer_terminal_business_mismatch');
     }
     physical(); transact(() => owned(worker));
     const capabilities = new WeakMap();

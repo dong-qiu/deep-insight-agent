@@ -417,3 +417,17 @@ finish false显式rollback；COMMIT尝试后抛错保unknown。business COMMIT�
 不补写、重试或删除；没有terminaldiagnostic的preclaim/no_claim失败仍异常拒绝。Default/S1
 不变。真实factory businessCOMMIT返回→registry handle丢失→实际core localfinish抛错，
 独立fresh连接核业务已提交与task未完成；原遮蔽诊断红反例保留，不能当成本地退出已确认。
+
+
+### 2026-10-08 最终独审 ATTACH 前置修正
+
+原 b4e5fc75 候选第一位独立审查 B0/W0；第二位独立审查发现 W1：固定 factory
+与 admission 创建后，actual businessDb 再 ATTACH memory database，旧 core 仍先登记/claim/execute，
+直到 terminal 的 binding 才拒绝，未满足已冻结 identity-before-admit 验收。原红保留。
+本次仅把 strict physical() 在完整零 SQL root/marker/inode/权限/sidecar 预检之后，
+重核真实 PRAGMA database_list 必须唯一 main 且 canonical fixture-business.sqlite 相同。
+该 SQL 前保留 hot-journal 拒绝顺序；factory 内部 binding 与事务内 guard 继续保留。
+实际 core 的 after-creation ATTACH 反例必须 execute=0、tasks=[]、queued 与全部业务原行不变、
+Run=0；正确同连接正控及原 S1/default 行为保持。此次是既有身份门的最小修正，
+不授予新作用域，不修改公共类型、COMMIT 三态、业务历史契约或安全批准边界。
+修正候选待两位独立 delta 审查与正常 PR/实际 CI；原审查时点不补签新候选。

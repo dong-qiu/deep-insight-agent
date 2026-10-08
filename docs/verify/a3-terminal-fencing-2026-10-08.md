@@ -111,3 +111,30 @@ requiredCI、合入后精确main CI；当前未推送、未创建PR、不预签E
 raw/source/非覆盖index0600；index-v1绑定最终commit/source字节、原始日志及限界，不入Git。
 十专属文件由执行Agent A独占冻结，root管理台账/Git/PR流程；原S2和其他Session文件未接手。
 WT/branch/原材料不清理，待两独立最终完整diff审查。真实模型预算和生产权限均保持0/未授权。
+
+
+## 2026-10-08 ATTACH 前置最小修正与原证据保留
+
+原受审 b4e5fc75b15fd2a106fb5e79a672f843c8e92183、index-v1 size16699/
+SHA256 6c8d40261948d18f0da94380afec09e774fd4ce51b2afdd46c821403016ef4fb
+及十源码 size/hash 在修正前逐项复核未变。第一位原审 B0/W0；第二位 W1 的原脚本/
+红日志保留在 reviewer-two 专属目录。作者在原 b4 真实复跑，execute=1、queued→claimed、
+tasks=1，1fail 的 `attach-before-core-author-red-v2.log` 保留，不用新结果替换原结论。
+
+仅 writers.mjs physical() 新增 actual PRAGMA database_list 校验，位于所有零 SQL
+物理预检之后、登记/claim/execute 之前；永久 core test 在 factory/admission 创建后 ATTACH
+memory DB，确认 zero execute/tasks/Run、queued 与全部业务事实不变。factory 内部 binding、
+原事务 guard、default/S1、COMMIT 三态与公开类型均未改。原独立脚本绿复跑1/1，
+`attach-before-core-author-green-v2.log`；其精确输入非覆盖归档为
+`reviewer-two-attach-input-v2.mjs` 与 `retained-attach-reproduction-v2.mjs`。
+
+修正候选定向结果（Node24、隔离 env、umask077）：
+- `attach-delta-node-v2.log`：真实原生 S1/S3 29/29，0skip，含双 process/SQLite/hot-journal/切点。
+- `attach-delta-core-v2.log`：strict18、fixed driver4、S1 core8、default12，共42/42，0skip。
+- `attach-delta-typecheck-v2.log`：TS7/TS6 app/tools 四项通过。
+- `attach-delta-lint-v2.log`：受影响源码/永久反例 lint 通过。
+
+原完整 ops/build 仍绑定 b4 原时点，不冒称本修正 head 已跑完整 ops 或 Docker；本次编译 app
+源码、固定 driver 和共享类型未变，实际 PR Linux 必需门仍待正常 CI。index-v2 非覆盖绑定
+修正 commit/tree/十源码、新红绿 raw/hash 与原 index-v1。修正 head 待两位独立 delta 最终审查，
+不预签 Eval，不推送 PR；S2 五文件未修改，私有材料/worktree/branch 继续保留。
