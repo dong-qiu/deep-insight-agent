@@ -32,13 +32,13 @@ PATH-only 子进程实际运行 `controller-cli.mjs ROOT stage-submit`，输入�
 
 - `integration-v1.log`：1 pass / 1 fail。实际流程已 revoke；作者测试错把真实 `stage.terminal` 写成不存在的 `stage.terminal_permission`。原原始日志、输出、全部该轮已捕获 DB bytes 保留，属于测试字段错误；不是原运行协议缺陷。随后也按原事实把 hold 的校验写为 disposition / failures，未改任何 runtime。
 - `integration-v2.log`：2/2 pass、零 skip。最终新增覆盖缺失角色的物理 absence、全部声明未认证、all-writer/commands false、真实 queued/claimed 分类以及 active/held 状态保护后，`integration-v3.log` 再次 2/2 pass、零 skip。
-- 七个受影响既有 native 模块（consumer、S0 ledger、S1 writers、S2 drain、staged、SSM parser、controller）：188/188 pass，零 skip；日志 `ops-regressions-v1.log`。这些独立模块结果与两个组合结果分别记录，不将旧 probe 当作新组合通过。
+- 六个既有 native 测试文件：`a2-consumer.node-test.mjs` 91、`controller.node-test.mjs` 24、`drain.node-test.mjs` 20、`ssm-response.node-test.mjs` 7、`staged-terminal.node-test.mjs` 31、`writers.node-test.mjs` 15，共 188/188 pass、零 skip；原日志 `ops-regressions-v1.log`。原命令中的 `ledger.node-test.mjs` 不存在，该 filter 未执行；S0 的 `protocol.node-test.mjs` / `ledger-recovery.node-test.mjs` 原套件未运行。两条组合测试直接调用真实 S0 接口，不能记为上述 S0 原套件通过。这六文件结果与两个组合结果分别记录，不将旧 probe 当作新组合通过。
 - TS7 / TS6 的 app 与 tools 四项类型检查通过：`four-ts-v1.log`。最终新测试 lint 零 warning：`lint-v2.log`。测试/doc-only 未改变 app 构建闭包，本片不重新做 HTTP/browser/build/Docker 或模型评测；不从这项结论给父片 Docker/CI 盖章。
 - 最终测试 20974 bytes / SHA256 `ae39a696bd8304bd1a22563605b7766edbd7bcd7ccf07fb93439230758aef33f`；最终 commit 与收据/原字节完整绑定见私有索引，避免本文件自引用 hash。
 
 ## 原材料与保全
 
-私有根：`/Users/dongqiu/.local/share/insight-agent/evidence/a2-a3-isolated-integration-20261008/`，目录 0700、文件 0600。`combined-input-v1.json`、原 npm/失败/绿色日志、各实际 input/output/logical 回读、最终两文件及受控 parent Git 字节全部非覆盖保存。最终汇总 `index-v1.json` 由协调者复核。
+私有根：`/Users/dongqiu/.local/share/insight-agent/evidence/a2-a3-isolated-integration-20261008/`，目录 0700、文件 0600。`combined-input-v1.json`、原 npm/失败/绿色日志、各实际 input/output/logical 回读、最终两文件及受控 parent Git 字节全部非覆盖保存。原汇总 `index-v1.json` 保留原时点；其 `affectedSevenNativeModules` 字段会计错误，最新 `index-v2.json` 明确更正为实际六文件 188 项，不覆盖原索引或原日志。
 
 `native-v1` / `native-v2` / `native-v3` 按每个消费/观察/迟到提交/CLI 边界保存四库（ledger、writers、fixture-business、gate）main / journal / WAL / SHM 的存在与不存在记录、物理 owner/mode/nlink/inode、size/hash、实际字节副本，以及 S0/S1/stage markers 和八角色材料。Case A 没有 gate，明确 absent。新 fixture 在创建时使用 DELETE 以稳定本组合的业务字节；若出现 sidecar 仍必须保存，不能忽略 WAL/SHM。物理 capture 先于边界后逻辑 SQL 读取，未自动修权限、复制 live 数据或把新 run 回填历史缺证。
 
@@ -49,3 +49,7 @@ PATH-only 子进程实际运行 `controller-cli.mjs ROOT stage-submit`，输入�
 本片等待两个非作者独立完整评审。协调者仅在 consumer/SSM 各自按条件合入、精确 main CI 与证据归档完成后 normal sync、定向复验并创建最终仅两文件 diff 的 PR；本时点不预签 review、Eval、PR CI/main 或生产执行。
 
 仍属工程前置：owned-existing drain 正向消费、真实部署/备份/恢复适配、完整 writer 覆盖、C3/model-usage/raw/report/coverage 接线及执行控制器生产实际入口。当前跨连接观察、未知子工作与终态不得签 ready。生产访问/维护窗口、实名运行授权、模型预算、人类回退批准与真实生产证据另列为外部阻塞。始终保留 #435 硬阻断、safe_rollback=null、deployment blocked 与现有 hold；不把上述工程待办泛称外部授权问题。
+
+## 原 188 项会计更正（2026-10-08）
+
+独立 Reviewer W1 后，作者亲读原始日志确认上述六文件分组与计数。本次只修改本收据；测试/runtime 字节不变，已有两条组合、六文件 188 项、四 TS 与最终 lint 结果按原代码闭包复用，不重跑或补跑 S0 套件凑旧记录。原 be2 的 W1 与作者字段断言失败日志继续保留；本次只做 doc/diff 检查，最终独立 delta review、PR/CI/main 状态仍由协调者后续核验。
