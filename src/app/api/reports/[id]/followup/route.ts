@@ -12,11 +12,13 @@ import { forbidNonAdmin } from "../../../../../lib/auth-guard.js";
 import { answerFollowup } from "../../../../../lib/agents/followup.js";
 import { appendAudit } from "../../../../../lib/db/audit.js";
 import { listFollowups, saveFollowup } from "../../../../../lib/db/followup.js";
-import { getDb } from "../../../../../lib/db/index.js";
+import { getDb, type DB } from "../../../../../lib/db/index.js";
 import { getReport } from "../../../../../lib/db/reports.js";
 import { runLogger } from "../../../../../lib/runtime/logger.js";
 import { safeError } from "../../../../../lib/runtime/diagnostics.js";
 import { RateLimiter } from "../../../../../lib/runtime/rate-limit.js";
+import { createTaskCancellation } from "../../../../../lib/runtime/cancellation.js";
+import { checkTaskBudget } from "../../../../../lib/runtime/task-budget.js";
 import type { FollowupQA } from "../../../../../lib/types.js";
 
 export const dynamic = "force-dynamic";
@@ -33,36 +35,50 @@ export async function POST(
   req: Request,
   { params }: { params: Promise<{ id: string }> },
 ): Promise<Response> {
-  const denied = await forbidNonAdmin(); // 二道闸：追问烧 relay，非 admin 直接 403
-  if (denied) return denied;
-  const { id } = await params;
-  const db = getDb();
-  const report = getReport(db, id);
-  if (!report) return NextResponse.json({ error: "report_not_found" }, { status: 404 });
-  if (report.status !== "done") {
-    return NextResponse.json(
-      { error: "report_not_ready", message: `报告 ${id} 状态为 ${report.status}，完成后才能追问` },
-      { status: 409 },
-    );
-  }
-
-  const body = (await req.json().catch(() => null)) as { question?: unknown } | null;
-  const question = typeof body?.question === "string" ? body.question.trim() : "";
-  if (!question) return NextResponse.json({ error: "empty_question" }, { status: 400 });
-  if (question.length > 500) {
-    return NextResponse.json({ error: "question_too_long", message: "问题请控制在 500 字内" }, { status: 400 });
-  }
-
-  if (!limiter.allow(`followup:${clientKey(req)}`)) {
-    return NextResponse.json(
-      { error: "rate_limited", message: `追问过于频繁（每小时上限 ${RATE_LIMIT} 次），稍后再试` },
-      { status: 429 },
-    );
-  }
-
-  const log = runLogger({ stage: "followup" });
+  const cancellation = createTaskCancellation({ signal: req.signal });
+  let authorized = false;
+  let coreStarted = false;
+  let id: string | undefined;
+  let db: DB | undefined;
+  let log: ReturnType<typeof runLogger> | undefined;
+  const checkpoint = (): void => { cancellation.check(); checkTaskBudget(); };
   try {
-    const result = await answerFollowup(db, report, question);
+    const denied = await forbidNonAdmin(); // 二道闸：追问烧 relay，非 admin 直接 403
+    if (denied) return denied;
+    authorized = true;
+    cancellation.check();
+    ({ id } = await params);
+    cancellation.check();
+    db = getDb();
+    const report = getReport(db, id);
+    if (!report) return NextResponse.json({ error: "report_not_found" }, { status: 404 });
+    if (report.status !== "done") {
+      return NextResponse.json(
+        { error: "report_not_ready", message: `报告 ${id} 状态为 ${report.status}，完成后才能追问` },
+        { status: 409 },
+      );
+    }
+
+    const body = (await req.json().catch(() => { cancellation.check(); return null; })) as { question?: unknown } | null;
+    cancellation.check();
+    const question = typeof body?.question === "string" ? body.question.trim() : "";
+    if (!question) return NextResponse.json({ error: "empty_question" }, { status: 400 });
+    if (question.length > 500) {
+      return NextResponse.json({ error: "question_too_long", message: "问题请控制在 500 字内" }, { status: 400 });
+    }
+
+    if (!limiter.allow(`followup:${clientKey(req)}`)) {
+      return NextResponse.json(
+        { error: "rate_limited", message: `追问过于频繁（每小时上限 ${RATE_LIMIT} 次），稍后再试` },
+        { status: 429 },
+      );
+    }
+
+    log = runLogger({ stage: "followup" });
+    coreStarted = true;
+    checkpoint();
+    const result = await answerFollowup(db, report, question, { signal: cancellation.signal });
+    checkpoint();
     const now = new Date().toISOString();
     const qaId = newObjectId("fup");
     const qa: FollowupQA = {
@@ -78,20 +94,41 @@ export async function POST(
       status: "done",
       created_at: now,
     };
+    checkpoint();
     saveFollowup(db, qa);
+    checkpoint();
     appendAudit(db, {
       actor: "admin",
       action: "followup_asked",
       target: id,
       detail: { question: question.slice(0, 200), answerable: result.answerable, cost: result.cost },
     });
+    checkpoint();
     log.info({ reportId: id, citations: result.citations_used.length, cost: result.cost.amount }, "追问完成");
+    checkpoint();
     return NextResponse.json(qa, { status: 200 });
   } catch (e) {
+    // Ordinary auth/params/DB/logger errors retain their original early rejection.
+    // Only an authorized, observed cancellation enters the early stable 500 path.
+    if (authorized) {
+      try { cancellation.check(); } catch (first) { e = first; }
+    }
+    const cancelled = authorized && cancellation.signal.aborted;
+    if (!cancelled && !coreStarted) throw e;
     const message = safeError(e).message;
-    log.error({ reportId: id, err: e }, "追问失败");
-    appendAudit(db, { actor: "admin", action: "followup_failed", target: id, detail: { message } });
+    if (cancelled) {
+      // Diagnostics use existing resources only; a secondary failure cannot mask cancellation.
+      try { log?.error({ reportId: id, err: e }, "追问失败"); } catch { /* preserve first cause */ }
+      if (db && id) {
+        try { appendAudit(db, { actor: "admin", action: "followup_failed", target: id, detail: { message } }); } catch { /* preserve first cause */ }
+      }
+    } else {
+      log!.error({ reportId: id, err: e }, "追问失败");
+      appendAudit(db!, { actor: "admin", action: "followup_failed", target: id, detail: { message } });
+    }
     return NextResponse.json({ error: "followup_failed", message }, { status: 500 });
+  } finally {
+    cancellation.dispose();
   }
 }
 
