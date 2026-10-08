@@ -111,3 +111,22 @@ helper不是新调度平台/产品代码，不导出生产故障或模型解锁�
 精确main CI通过并归档才合下一依赖切片；正常hooks，不直推main，不绕门，不部署。
 退出时分别记本片工程、合入、上线，TD10整体仍部分。若需跨A的共享入口/旧数据契约/安全边界，
 暂停该差异并提交实际必要项，不以model-budget0掩盖仍可完成的隔离接线工程。
+
+## 2026-10-08 实施交付时点（独立最终审查之前）
+
+协调者正式读取两位完整方案审查并冻结后，将上述七内容路径唯一归属移交 B；原方案时点保留。
+隔离分支从重新 fetch 的 `3c6b8b0f0eb4a5335c7a5dd67469cdf7932748d0` 正常继承两个专属 spec 提交。
+实际 POST 消费 canonical request signal，outer scope 持有至 finally；GET/core/runtime/DB/UI 未修改。
+授权拒绝仍403，普通 auth/params/DB/logger 早期异常仍原 rejection，只有授权后观察取消进入稳定500。
+现父预算只在 core/后续成功副作用检查，不抢早期输入/报告/限流分支。QA、asked 已真实提交则保留。
+
+真实 SDK/native 路径及请求级反例54项，连同原相关12文件197项通过；四套TS、定向lint通过。
+clean private cwd 的真实 Next build、built HTTP4项和 Chromium1项通过；构建未加载任何 `.env*`。
+真实 socket disconnect 在本轮环境观测到 canonical cancelled 失败审计与零新增QA、fake provider
+连接在释放held回复前关闭；客户端不能再读HTTP响应，且不证明远端工作/所有writer静默。
+本轮详见[收据](../../verify/c2g-followup-http-control-2026-10-08.md)。
+
+测试准备中有一次漏装fake fetch的外部HTTP尝试，收到403；specific endpoint/intermediary及原SDK发送计数
+未捕获，potential externalattempt1，无观测到真实模型成功。原日志、不可倒签的瞬态输入缺口及非覆盖纠正保留；
+之后模块首调用前显式loopback base/default fake fetch及非loopback硬拒。不能把后续安全重跑补签为原尝试未发生。
+源码待独立最终审查；未盖Eval、未push/PR/CI/合入/上线，模型预算0及生产硬门保持。
