@@ -37,3 +37,25 @@ export interface TerminalWriterAdmission {
   commitOutcome(cap: FreshTerminalTaskCapability, claim: DispatchClaim, outcome: DispatchOutcome): TerminalCommitResult;
   finish(cap: FreshTerminalTaskCapability, outcome: WriterOutcome): void;
 }
+
+/** Independently opted-in staged profile; legacy strict result semantics remain unchanged. */
+export type StagedDenyCode = TerminalDenyCode | "staged_terminal_capability_invalid" |
+  "staged_terminal_claim_mismatch" | "staged_terminal_business_mismatch" | "staged_terminal_owner_lost" |
+  "staged_terminal_closed" | "staged_terminal_revoked" | "staged_terminal_busy";
+export type StagedUnknownCode = TerminalUnknownCode | "staged_terminal_reservation_unknown" | "staged_terminal_gate_commit_unknown";
+export type StagedTerminalCommitResult =
+  | { kind: "committed"; businessCommit: "committed" }
+  | { kind: "not_committed"; businessCommit: "not_committed"; code: StagedDenyCode }
+  | { kind: "unknown"; businessCommit: "not_committed" | "committed" | "unknown"; code: StagedUnknownCode };
+declare const stagedCapability: unique symbol;
+export interface FreshStagedTaskCapability { readonly [stagedCapability]: true }
+export interface StagedTerminalWriterAdmission {
+  readonly scope: "isolated";
+  readonly entryPoint: "generation-dispatch";
+  readonly version: "a3-staged-terminal-v1";
+  readonly profile: "cooperative-close-then-revoke-terminal";
+  admit(): FreshStagedTaskCapability;
+  bindClaim(cap: FreshStagedTaskCapability, actualClaim: DispatchClaim): void;
+  commitOutcome(cap: FreshStagedTaskCapability, actualClaim: DispatchClaim, outcome: DispatchOutcome): StagedTerminalCommitResult;
+  finish(cap: FreshStagedTaskCapability, outcome: WriterOutcome): void;
+}
