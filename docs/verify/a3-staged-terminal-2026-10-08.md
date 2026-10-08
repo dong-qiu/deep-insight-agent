@@ -75,3 +75,39 @@ phase2 deny 分类修正完全同字节（修正仅 ops mjs/native test）；不
 缺证：本片候选 Linux/Docker 与精确 main 尚未执行。预算：真实模型为0，没有质量补签授权。
 生产授权：AWS/SSM/部署或真实 stop/drain/restart 均未获授权。技术工程缺口不能列作纯外部授权阻塞。
 所有私有 evidence、WT 和 branch 保留，源/test/spec/receipt 唯一作者继续保有写入归属。
+
+## 2026-10-08 source-review correction, successor to 479ca02
+
+原479ca02 / tree560efc57 的Reviewer1 FULL为B0/W3，Reviewer2 FULL源码结论为 B0/W2（四入口相关文件preflight晚于registry SQL，
+以及真实S2消费/指定crash/unsafe设计负控证据缺项）；保留原结论，不能由此前双方案B0/W0或原22绿测试清零。
+作者还全文读Reviewer1 `a3-staged-code-reviewer-one-o98d98hg/review-v1.md`、index、native WAL manifest与真实
+probe原代码/日志，main-only queued/Run0与含原WAL/SHM coherent failed/Run1对照证明旧sidecar缺口。
+原报告与原 probes 见私有 `a3-reviewer-two-20261008/s3b-source-review-v1/`。作者已全文读报告、index、两实际
+probe及红/绿日志。独立Reviewer的首次 Database.exec observer 没观察cached BEGIN，不当零SQL证据；其原
+日志保留。作者在原479 writer源码上新增真实 cached Statement.run 永久保护，实际4/4红（BEGIN=1）。
+
+只在 `closeAdmission/bindDrain/revoke/staged.finish` 进入registry transact之前补固定stagedPreflight，保留
+事务内复核与既有锁序，旧方法/DDL/声明/API/profile/core/default均无变更。修复后四项cached BEGIN=0且实际registry PRAGMA=0，unsafe0644
+拒绝且gate DB/journal原size/hash不变；合法实际close/bind/revoke/finish正控保持。
+
+永久原路径补齐：实际S2 observeDrain自有真实leaseSource+未完成任务、deadline1000ms/poll10ms，timeout→
+持久held revision2→stage bind/revoke revision6→late terminal拒绝、业务原行不变、readyfalse；没有把fixture
+或健康信号当全writer静默。新phase2 registry BEGIN前切点使用实际cached Statement.run第二次BEGIN前SIGKILL，
+证明phase1两COMMIT已经退出；gate outcome INSERT后/COMMIT前显切恢复outcome0、reservation1且业务已提交；COMMIT后SIGKILL则actual
+outcome1 durable且业务已提交。before-business/after-business切点不替代这两个gate outcome切点。
+unsafe设计负控使用真实stage attempts表未提交outer transaction，fixed business COMMIT后SIGKILL，native恢复
+claims1/attempts0但business failed，证明outer未提交attempt会回滚；新安全路径phase1 reservation独立保留。
+所有instrumentation只在test own native/prototype/子进程，不新增生产fault/callback/CLI参数。
+
+原v1（63 archives/45 hash records）中的旧四cut遗漏business WAL/SHM，故其档案不能声称完整恢复前SQLite
+状态。原v1原文件/索引/结果不改；本轮七实际cut、hot journals和负控对4库各16项明确记录main/journal/WAL/SHM
+present/absent与原mode，实际存在者首次SQLite reopen前非覆盖保存，归档600，不能用本轮新bytes补签原v1。
+新的 `delta-v2` raw/source/native归档及 `index-v2.json` 绑定本轮精确head，原红与所有旧结果按时点保留。
+
+本轮6 maintenance真实文件137/137（该轮含30 staged，后续新增第31个精确gate切点另在最终31 suite验收）、4 core真实文件55/55、四TS、lint通过；永久最终staged suite31/31，
+其中unsafe负控的最终版本是实际stage表（最初独立native表探索raw也原样保留）。没有重复伪造不存在的test filter。
+app/type/build闭包相对479所有tracked字节相同，原Next build与223回归按该闭包有效复用；本轮新ops/native必须
+用本轮真实结果，不移植旧native/crash证据。原全ops460+4skip保留为479时点；尚未签本轮全ops/实际Docker/CI。
+
+当前仅本地修复/证据完成，两位独立最终delta评审、PR/CI/tested merge/精确main仍待协调者，不预签Eval。
+唯一十文件归属保持A，SSM方案未开始实现；模型0、生产0，safe_rollback=null、hold和全部readyfalse保持。

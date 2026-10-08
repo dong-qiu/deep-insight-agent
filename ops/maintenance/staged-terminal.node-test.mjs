@@ -10,7 +10,7 @@ import { register } from 'tsx/esm/api';
 import { initialize, openLedger } from './ledger.mjs';
 import { initializeWriters, openWriters } from './writers.mjs';
 import { initializeStagedTerminal } from './staged-terminal.mjs';
-import { openDrainLeaseSource } from './drain.mjs';
+import { observeDrain, openDrainLeaseSource } from './drain.mjs';
 import { canonical, hash } from './contract.mjs';
 register();
 const { openDb } = await import('../../src/lib/db/index.ts');
@@ -77,6 +77,7 @@ function hot(f){
  const child=spawnSync(process.execPath,['--input-type=module','-e',`import Database from 'better-sqlite3';const db=new Database(process.argv[1]);db.pragma('cache_size=1');db.exec('BEGIN IMMEDIATE');const ins=db.prepare('INSERT INTO events VALUES (?,?,?,?)');for(let i=0;i<10000;i++)ins.run(100000+i,'x','x','x'.repeat(100));process.kill(process.pid,'SIGKILL');`,f.gatePath],{cwd:process.cwd(),env:{PATH:process.env.PATH},stdio:'pipe'});
  assert.equal(child.signal,'SIGKILL');assert.ok(statSync(f.gatePath+'-journal').size>512);
  for(const path of [f.gatePath,f.gatePath+'-journal']){const preserved=path+'.hot-before';writeFileSync(preserved,readFileSync(path),{flag:'wx',mode:0o600});chmodSync(preserved,0o600);assert.deepEqual(digest(preserved),digest(path));}
+ const inventory=captureDatabases(f.root,'hot_journal');console.log(`retained hot journal complete pre-recovery ${canonical({cut:'hot_journal',inventory})}`);
 }
 for(const existing of [false,true])test(`real unsafe hot journal ${existing?'existing':'new'} handle refused before recovery with original hashes preserved`,t=>{
  const f=fixture(t);if(existing)f.control.inspect();hot(f);const journal=f.gatePath+'-journal';chmodSync(journal,0o644);const before=[digest(f.gatePath),digest(journal)];
@@ -127,14 +128,12 @@ test('real second process cannot revoke while registry/stage locks span business
  assert.equal(result.kind,'committed');assert.equal(f.control.inspect().stage.terminal,'live');assert.equal(revokeChild(f,held).status,0);assert.equal(f.control.inspect().stage.terminal,'revoked');
 });
 const childPrelude=`import assert from 'node:assert/strict';import {generateKeyPairSync} from 'node:crypto';import {chmodSync,mkdtempSync,realpathSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';import Database from 'better-sqlite3';import {initialize,openLedger} from './ops/maintenance/ledger.mjs';import {initializeWriters,openWriters} from './ops/maintenance/writers.mjs';import {initializeStagedTerminal} from './ops/maintenance/staged-terminal.mjs';import {openDb} from './src/lib/db/index.ts';import {applyProvenanceMigrations} from './src/lib/db/provenance-migrations.ts';import {insertTopic} from './src/lib/db/repos.ts';import {createDeepDiveTraceRequest,claimNextGenerationDispatch} from './src/lib/db/provenance.ts';import {openTerminalDispatchDriver} from './src/lib/runtime/terminal-dispatch-driver.ts';${fixture.toString()};const f=fixture({after(){},diagnostic(){}},{ });console.log(f.root);const {cap,claim}=f.claim();`;
-for(const cut of ['before_reservation_commit','after_reservation_commit','before_business_commit','after_business_commit'])test(`real SIGKILL ${cut} never permits restart remint/replay; durable facts classified`,t=>{
- const hook=`const mode=process.argv[1],exec=Database.prototype.exec;Database.prototype.exec=function(sql){const gate=this.name===f.gatePath,terminal=this.name===f.path;if(sql==='COMMIT'&&gate&&this.prepare('SELECT count(*) AS n FROM attempts').get().n===1&&this.prepare('SELECT count(*) AS n FROM attempt_outcomes').get().n===0){if(mode==='before_reservation_commit')process.kill(process.pid,'SIGKILL');const value=exec.call(this,sql);if(mode==='after_reservation_commit')process.kill(process.pid,'SIGKILL');return value;}if(sql==='COMMIT'&&terminal){if(mode==='before_business_commit')process.kill(process.pid,'SIGKILL');const value=exec.call(this,sql);if(mode==='after_business_commit')process.kill(process.pid,'SIGKILL');return value;}return exec.call(this,sql);};f.admission.commitOutcome(cap,claim,${canonical(failed)});throw new Error('cut not reached');`;
+for(const cut of ['before_reservation_commit','after_reservation_commit','before_phase2_begin','before_business_commit','after_business_commit','before_gate_outcome_commit','after_gate_outcome_commit'])test(`real SIGKILL ${cut} never permits restart remint/replay; durable facts classified`,t=>{
+ const hook=`const mode=process.argv[1],exec=Database.prototype.exec,prototype=Object.getPrototypeOf(f.db.prepare('SELECT 1')),run=prototype.run;let registryBegins=0;prototype.run=function(...args){if(this.database.name===join(f.root,'writers.sqlite')&&this.source==='BEGIN IMMEDIATE'&&++registryBegins===2&&mode==='before_phase2_begin')process.kill(process.pid,'SIGKILL');return run.apply(this,args);};Database.prototype.exec=function(sql){const gate=this.name===f.gatePath,terminal=this.name===f.path;if(sql==='COMMIT'&&gate&&this.prepare('SELECT count(*) AS n FROM attempt_outcomes').get().n===1&&['before_gate_outcome_commit','after_gate_outcome_commit'].includes(mode)){if(mode==='before_gate_outcome_commit')process.kill(process.pid,'SIGKILL');const value=exec.call(this,sql);process.kill(process.pid,'SIGKILL');return value;}if(sql==='COMMIT'&&gate&&this.prepare('SELECT count(*) AS n FROM attempts').get().n===1&&this.prepare('SELECT count(*) AS n FROM attempt_outcomes').get().n===0){if(mode==='before_reservation_commit')process.kill(process.pid,'SIGKILL');const value=exec.call(this,sql);if(mode==='after_reservation_commit')process.kill(process.pid,'SIGKILL');return value;}if(sql==='COMMIT'&&terminal){if(mode==='before_business_commit')process.kill(process.pid,'SIGKILL');const value=exec.call(this,sql);if(mode==='after_business_commit')process.kill(process.pid,'SIGKILL');return value;}return exec.call(this,sql);};f.admission.commitOutcome(cap,claim,${canonical(failed)});throw new Error('cut not reached');`;
  const child=spawnSync(process.execPath,['--import','tsx','--input-type=module','-e',childPrelude+hook,cut],{cwd:process.cwd(),env:{PATH:process.env.PATH},encoding:'utf8'});
- assert.equal(child.signal,'SIGKILL',child.stdout+child.stderr);const root=child.stdout.trim().split('\n').at(-1);const gate=join(root,'staged-terminal-v1','gate.sqlite'),business=join(root,'fixture-business.sqlite');
- const captured=[];for(const path of [gate,business,gate+'-journal',business+'-journal'])if(existsSync(path))captured.push({path,...digest(path)});t.diagnostic(`retained SIGKILL pre-recovery ${canonical(captured)}`);
- // Preserve pre-recovery original bytes separately before SQLite may remove legitimate hot journals.
- for(const item of captured){const backup=item.path+'.'+cut+'.before';writeFileSync(backup,readFileSync(item.path),{flag:'wx',mode:0o600});chmodSync(backup,0o600);assert.deepEqual(digest(backup),{size:item.size,sha256:item.sha256});}
- const w=openWriters(root),driver=openTerminalDispatchDriver(root);try{const view=w.stagedTerminalControl().inspect();assert.equal(view.claims.length,1);assert.equal(view.completions.length,0);assert.equal(view.attempts.length,cut==='before_reservation_commit'?0:1);assert.throws(()=>w.registerStagedTerminal('restart-worker',driver.db,driver));assert.equal(driver.db.prepare('SELECT state FROM generation_dispatch').get().state,cut==='after_business_commit'?'failed':'claimed');blocked(view);}finally{w.close();driver.close();}
+ assert.equal(child.signal,'SIGKILL',child.stdout+child.stderr);const root=child.stdout.trim().split('\n').at(-1);
+ const captured=captureDatabases(root,cut);t.diagnostic(`retained SIGKILL complete pre-recovery ${canonical({cut,inventory:captured})}`);
+ const w=openWriters(root),driver=openTerminalDispatchDriver(root);try{const view=w.stagedTerminalControl().inspect();assert.equal(view.claims.length,1);assert.equal(view.completions.length,0);assert.equal(view.attempt_outcomes.length,cut==='after_gate_outcome_commit'?1:0);assert.equal(view.attempts.length,cut==='before_reservation_commit'?0:1);assert.throws(()=>w.registerStagedTerminal('restart-worker',driver.db,driver));assert.equal(driver.db.prepare('SELECT state FROM generation_dispatch').get().state,['after_business_commit','before_gate_outcome_commit','after_gate_outcome_commit'].includes(cut)?'failed':'claimed');blocked(view);}finally{w.close();driver.close();}
 });
 
 test('two actual claims retain independent epochs; bound caps cannot be exchanged or replaced by another cap',t=>{
@@ -157,4 +156,38 @@ test('phase2 busy after confirmed reservation is known business deny, never rese
  f.db.prepare=function(sql){if(sql==='PRAGMA database_list'&&++calls===2){lock=new Database(f.gatePath,{timeout:0});lock.exec('BEGIN IMMEDIATE');}return prepare(sql);};
  const before=f.facts();let result;try{result=f.admission.commitOutcome(cap,claim,failed);}finally{f.db.prepare=prepare;lock?.exec('ROLLBACK');lock?.close();}
  assert.deepEqual(result,{kind:'not_committed',businessCommit:'not_committed',code:'staged_terminal_busy'});assert.deepEqual(f.facts(),before);assert.equal(f.control.inspect().attempts.length,1);assert.equal(f.admission.commitOutcome(cap,claim,failed).code,'staged_terminal_capability_invalid');
+});
+
+for(const action of ['closeAdmission','bindDrain','revoke','finish'])test(`cached native registry BEGIN must follow staged filesystem preflight: ${action}`,t=>{
+ const f=fixture(t),{cap}=f.claim();let token=f.control.inspect().token,held;
+ if(action==='bindDrain'||action==='revoke'){token=f.control.closeAdmission(token);held=f.held();if(action==='revoke')token=f.control.bindDrain(token,held);}
+ hot(f);chmodSync(f.gatePath+'-journal',0o644);const before=[digest(f.gatePath),digest(f.gatePath+'-journal')];
+ const prototype=Object.getPrototypeOf(f.db.prepare('SELECT 1')),run=prototype.run,pragma=Database.prototype.pragma;let begins=0,registryPragmas=0;
+ Database.prototype.pragma=function(...args){if(this.name===join(f.root,'writers.sqlite'))registryPragmas++;return pragma.apply(this,args);};
+ prototype.run=function(...args){if(this.database.name===join(f.root,'writers.sqlite')&&this.source==='BEGIN IMMEDIATE')begins++;return run.apply(this,args);};
+ let caught;try{if(action==='finish')f.admission.finish(cap,'threw');else if(action==='closeAdmission')f.control.closeAdmission(token);else if(action==='bindDrain')f.control.bindDrain(token,held);else f.control.revoke(token,held,'staged_terminal_manual_block');}catch(error){caught=error;}finally{prototype.run=run;Database.prototype.pragma=pragma;}
+ assert.match(caught?.message??'',/unsafe_staged_path/);assert.deepEqual([digest(f.gatePath),digest(f.gatePath+'-journal')],before);t.diagnostic(canonical({action,registryBegins:begins,registryPragmas,rejected:caught.message,gateBytesPreserved:true,journalMode:(statSync(f.gatePath+'-journal').mode&0o777).toString(8)}));assert.equal(begins,0);assert.equal(registryPragmas,0);
+});
+
+function captureDatabases(root,label) {
+ const inventory=[];
+ for(const base of [join(root,'ledger.sqlite'),join(root,'writers.sqlite'),join(root,'staged-terminal-v1','gate.sqlite'),join(root,'fixture-business.sqlite')])for(const suffix of ['', '-journal','-wal','-shm']){
+  const path=base+suffix;if(!existsSync(path)){inventory.push({path,present:false});continue;}
+  const info=statSync(path),before={path,present:true,originalMode:(info.mode&0o777).toString(8),...digest(path)},backup=path+'.'+label+'.before';
+  writeFileSync(backup,readFileSync(path),{flag:'wx',mode:0o600});chmodSync(backup,0o600);assert.deepEqual(digest(backup),{size:before.size,sha256:before.sha256});inventory.push({...before,backup});
+ }
+ return inventory;
+}
+test('actual S2 bounded observeDrain produces held token for staged bind/revoke and refuses late terminal',async t=>{
+ const f=fixture(t),{cap,claim}=f.claim(),token=f.control.closeAdmission(f.control.inspect().token),leaseSource=openDrainLeaseSource(f.root,f.path),ledger=openLedger(f.root);let target;try{target=ledger.inspect().marker.target;}finally{ledger.close();}
+ const before=f.facts();let observed;try{observed=await observeDrain({root:f.root,request:{operationId:'op-real-stage-drain',ownerId:'real-controller',kind:'backup',target,executionIdentity:'fixture-real-drain'},deadlineAt:Date.now()+1000,pollEveryMs:10,leaseSource});}finally{leaseSource.close();}
+ assert.equal(observed.reason,'writer_drain_timeout');assert.ok(observed.token);blocked(observed);assert.deepEqual(f.facts(),before);
+ const bound=f.control.bindDrain(token,observed.token),revoked=f.control.revoke(bound,observed.token,'writer_drain_timeout'),view=f.control.inspect();assert.deepEqual(view.token,revoked);assert.equal(JSON.parse(view.stage.drain_record).heldToken.operationId,'op-real-stage-drain');assert.equal(JSON.parse(view.stage.revoke_record).heldToken.revision,observed.token.revision);
+ assert.equal(f.admission.commitOutcome(cap,claim,failed).code,'staged_terminal_revoked');assert.deepEqual(f.facts(),before);blocked(view);t.diagnostic(canonical({reason:observed.reason,polls:observed.polls,S0revision:observed.token.revision,stageRevision:revoked.revision,businessUnchanged:true,ready:false}));
+});
+test('unsafe outer transaction negative: real stage attempt rolls back on SIGKILL although separate business COMMIT persists',t=>{
+ const child=spawnSync(process.execPath,['--import','tsx','--input-type=module','-e',childPrelude+`const unsafe=new Database(f.gatePath);unsafe.pragma('foreign_keys=ON');unsafe.exec('BEGIN IMMEDIATE');const task=unsafe.prepare('SELECT task_id FROM claims WHERE dispatch_id=?').get(claim.dispatchId);unsafe.prepare('INSERT INTO attempts VALUES (?,?)').run(task.task_id,'11111111-1111-4111-8111-111111111111');const result=f.driver.commit(claim,${canonical(failed)});assert.equal(result.kind,'committed');process.kill(process.pid,'SIGKILL');`],{cwd:process.cwd(),env:{PATH:process.env.PATH},encoding:'utf8'});
+ assert.equal(child.signal,'SIGKILL',child.stdout+child.stderr);const root=child.stdout.trim().split('\n').at(-1);
+ const captured=captureDatabases(root,'unsafe_outer_transaction');t.diagnostic(`retained unsafe outer negative complete pre-recovery ${canonical({cut:'unsafe_outer_transaction',inventory:captured})}`);
+ const writers=openWriters(root),driver=openTerminalDispatchDriver(root);try{const view=writers.stagedTerminalControl().inspect();assert.equal(view.claims.length,1);assert.equal(view.attempts.length,0);assert.equal(driver.db.prepare('SELECT state FROM generation_dispatch').get().state,'failed');blocked(view);}finally{writers.close();driver.close();}
 });

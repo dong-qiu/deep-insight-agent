@@ -424,3 +424,21 @@ revision+1；完全 no-op 返回 immutable ingress token，禁止通过末尾 in
 实现证据和边界见 `docs/verify/a3-staged-terminal-2026-10-08.md`。本段只绑定实际代码，不预签独立最终 review、
 候选 CI、tested merge、精确 main 或镜像。`leaseSampleHash` 仍是原 `DrainLeaseSample` 聚合 canonical 摘要，
 不能证明 lease 行/epoch 或全 writer 静默；原 drainRecord 和独立 once-set revokeRecord 的区别保持。
+
+## 2026-10-08 limited source-review delta
+
+原479ca02的FULL源码评审提出的顺序和证据问题不由方案通过或原绿测试豁免。
+四个新入口 `closeAdmission / bindDrain / revoke / staged finish` 在进入私有 registry transact 之前固定
+执行 `stagedPreflight(root, stageIdentity)`，再保留 stage 内完整复核；旧方法、DDL、public接口和所有profile不变。
+保护使用真实 better-sqlite3 cached `Statement.run` 观察 registry BEGIN，不能用未观察到该 native 路径的
+`Database.exec` hook 代替零SQL证据。unsafe gate journal 的四入口必须在BEGIN=0处拒绝且原bytes不变。
+
+永久验收另含真实 S2 `observeDrain`（1000ms，原≤60s规则内）→held token→新 bind/revoke→late terminal拒绝，
+以及 phase2 registry BEGIN 前、gate outcome INSERT后/COMMIT前及 COMMIT 后三个独立 SIGKILL 切点。unsafe设计负控直接在真实
+stage attempts 表的未提交外事务 INSERT，另库 fixed business COMMIT 后 kill：恢复后attempt=0但business已提交。
+它说明不能用未独立提交的reservation替代本片phase1；不是生产fault入口，也不授予新cap/重发权限。
+
+新cut/hot运行在首次恢复之前列出 S0 ledger、S1 registry、stage和business各自main/journal/WAL/SHM的实际
+present/absent、原mode、size/hash，并非覆盖保存全部实际存在bytes。旧v1只保其明确列出的main/journal，
+漏business WAL/SHM的历史档案缺口保留；新run不回填旧run或倒签旧切点完整性。独立最终delta评审与候选CI
+仍由协调者执行，本段不预签通过。
