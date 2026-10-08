@@ -271,9 +271,36 @@ test("first cancellation during hanging actual HTTP persists cause, late respons
   assert.equal(current(f).op.commandId, null); assert.equal(current(f).op.state, "submission_unknown");
 });
 test("actual body without EOF times out, cleanup grace adds no requests", async t => {
-  const f = fixture(t), s = await server(t, (_entry, res) => { res.write("{\"Command\":"); });
-  const value = await runIsolatedSsmTransport(options(f, s.endpoint, "send", f.token, { deadlineAt: Date.now() + 1200 })); safety(value);
+  const f = fixture(t); let response, partialWritten = false, writeFailure;
+  const s = await server(t, (_entry, res) => {
+    response = res;
+    res.write("{\"Command\":", error => { if (error) writeFailure = error; else partialWritten = true; });
+  });
+  archive(f.root, "no-eof-before-control");
+  const input = options(f, s.endpoint), outcome = runIsolatedSsmTransport(input).then(value => ({ value }), error => ({ error }));
+  let preparationFailure;
+  try {
+    const barrierDeadline = performance.now() + 5000;
+    while (true) {
+      assert.ok(performance.now() < barrierDeadline, "fixture no-EOF preparation deadline");
+      if (writeFailure) throw new Error("fixture_partial_body_write_failed");
+      if (s.records.length === 1 && s.records[0].target === "AmazonSSM.SendCommand" && partialWritten && response?.writableEnded === false) break;
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+  } catch { preparationFailure = new Error("fixture_no_eof_prepare_barrier_failed"); }
+  // Always settle this same original 10s run, including a failed 5s preparation barrier.
+  // The write callback proves server output with no EOF, not that the CLI parsed bytes.
+  const settled = await outcome;
+  archive(f.root, "no-eof-after-control-before-diagnostic");
+  t.diagnostic(JSON.stringify({ case: "no-eof", deadlineAt: input.deadlineAt, requests: s.records.length, target: s.records[0]?.target ?? null,
+    partialWritten, writeFailed: Boolean(writeFailure), writableEnded: response?.writableEnded ?? null, preparationFailed: Boolean(preparationFailure), result: settled.value ?? null }));
+  if (preparationFailure) throw preparationFailure;
+  if (settled.error) throw settled.error;
+  const value = settled.value; safety(value);
   assert.equal(value.first_control_reason, "task_deadline_exceeded"); assert.equal(value.hold, "committed"); assert.equal(s.records.length, 1);
+  assert.equal(partialWritten, true); assert.equal(response.writableEnded, false);
+  const op = current(f).op; assert.equal(op.state, "submission_unknown"); assert.equal(op.disposition, "held");
+  assert.ok(op.failures.includes("task_deadline_exceeded"));
 });
 for (const scenario of ["stdout", "stderr", "invalidJSON", "wrongComment"]) test(`actual ${scenario} response refuses and holds`, async t => {
   const f = fixture(t), s = await server(t, (entry, res) => {
