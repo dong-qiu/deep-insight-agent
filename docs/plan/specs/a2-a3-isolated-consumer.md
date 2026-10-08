@@ -87,3 +87,9 @@ CLI 形态建议 `node ops/maintenance/a2-consumer.mjs <canonical-isolated-root>
 定向consumer/原A2契约/S0/S1/S2/S3 ops回归与dual typecheck/lint；CLI才新增，无HTTP/build/Docker变更，本片不为凑验收重跑447/#443镜像矩阵。命中构建闭包再补相称build，不拿不执行路径的A1作证。最终完整原diff/负例/私有raw index双独审、正常hooks/PR/精确CI；预算0，无Eval预签。缺证、oversize、终态/子工作未知始终阻断；同问题先诊断，不能无限重跑。
 
 退出：首consumer专属receipt只记录受审head/tested/mainCI/实际调用/字段及字节绑定、原红/绿与限制。未接staged/真实SSM/完整维护适配、当前生产数据/IAM/历史覆盖、回退批准及生产执行分别保留工程/缺证/外部授权待办，不能从 integrated 关闭它们。全局schema/安全边界或正常产品/AI语义变化需要先报告批准；本版本无需这些变化。下一片由root冻结新协议后串行接入，禁止自行扩展。
+
+## 2026-10-08 实施进展（历史方案状态保留）
+
+完整887d冻结方案经协调者与两位独立方案review明确授权后，已在独立consumer worktree实际实现上述五路径；本段不改冻结接口、容量/TEXT门或安全边界。真实新consumer71项本地通过、关联ops308项306通过/2既有Linux镜像门待CI，四repository TS与两新facade编译及定向lint通过。原红/所有中间失败与原因、最终源hash及继承限制见专属[收据](../../verify/a2-a3-isolated-consumer-2026-10-08.md)。
+
+当前仅本地工程消费验收完成，待双独立最终审查、事后Eval判断、正常PR/精确CI/合入；不预签未来tested/main/生产，不将旧顶部“仅方案”改成历史已通过。
