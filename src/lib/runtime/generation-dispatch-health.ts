@@ -11,6 +11,19 @@ import { runLogger } from "./logger.js";
 let unhealthySince: number | null = null;
 let lastAlertAt = 0;
 
+/** This is a comparison window, not a Node timer or an integer-only setting. */
+function reAlertIntervalMs(): number | null {
+  const ms = Math.max(1, Number(process.env.GENERATION_DISPATCH_REALERT_HOURS) || 1) * 3_600_000;
+  if (Number.isFinite(ms)) return ms;
+  try {
+    runLogger({ stage: "generation_dispatch_health" }).warn(
+      { field: "GENERATION_DISPATCH_REALERT_HOURS", reason_code: "realert_interval_nonfinite" },
+      "invalid re-alert interval",
+    );
+  } catch { /* Alert diagnostics must not change worker readiness. */ }
+  return null;
+}
+
 export function generationDispatchHealthNotification(health: GenerationDispatchHealth): Notification {
   const minutes = health.oldestActionableAgeMs == null ? "N/A" : `${(health.oldestActionableAgeMs / 60_000).toFixed(1)} min`;
   return {
@@ -43,9 +56,10 @@ export function maybeAlertGenerationDispatchHealth(
     lastAlertAt = 0;
     return;
   }
+  const reAlertMs = reAlertIntervalMs();
+  if (reAlertMs === null) return;
   if (unhealthySince == null) unhealthySince = now;
-  const reAlertHours = Math.max(1, Number(process.env.GENERATION_DISPATCH_REALERT_HOURS) || 1);
-  if (lastAlertAt !== 0 && now - lastAlertAt < reAlertHours * 3_600_000) return;
+  if (lastAlertAt !== 0 && now - lastAlertAt < reAlertMs) return;
   lastAlertAt = now;
   try {
     runLogger({ stage: "generation_dispatch_health" }).warn(

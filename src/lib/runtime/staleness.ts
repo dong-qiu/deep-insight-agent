@@ -16,6 +16,19 @@ import { reportReaderVisibilitySql } from "../db/integrity-lifecycle.js";
 
 const MS_PER_HOUR = 3_600_000;
 
+/** Preserve the existing coercion/default/clamp; only a nonfinite final window is unsafe. */
+function reAlertIntervalMs(): number | null {
+  const ms = Math.max(1, Number(process.env.STALENESS_REALERT_HOURS) || 24) * MS_PER_HOUR;
+  if (Number.isFinite(ms)) return ms;
+  try {
+    runLogger({ stage: "staleness" }).warn(
+      { field: "STALENESS_REALERT_HOURS", reason_code: "realert_interval_nonfinite" },
+      "invalid re-alert interval",
+    );
+  } catch { /* An invalid alert setting must never degrade a health probe. */ }
+  return null;
+}
+
 export interface Freshness {
   latestReportAt: string | null;
   latestContentAt: string | null;
@@ -159,14 +172,15 @@ export function maybeAlertDailyTopicStaleness(
   now: number = Date.now(),
   send: (n: Notification) => void = notify,
 ): void {
-  const reAlertHours = Math.max(1, Number(process.env.STALENESS_REALERT_HOURS) || 24);
   const staleIds = new Set(result.staleTopics.map((topic) => topic.topicId));
   for (const topicId of dailyTopicLastAlertAt.keys()) {
     if (!staleIds.has(topicId)) dailyTopicLastAlertAt.delete(topicId);
   }
+  const reAlertMs = reAlertIntervalMs();
+  if (reAlertMs === null) return;
   for (const topic of result.staleTopics) {
     const previous = dailyTopicLastAlertAt.get(topic.topicId);
-    if (previous != null && now - previous < reAlertHours * MS_PER_HOUR) continue;
+    if (previous != null && now - previous < reAlertMs) continue;
     dailyTopicLastAlertAt.set(topic.topicId, now);
     try {
       runLogger({ stage: "daily_topic_staleness" }).warn(
@@ -188,8 +202,8 @@ export function maybeAlertStale(
   send: (n: Notification) => void = notify,
 ): void {
   if (!r.stale) return;
-  const reAlertHours = Math.max(1, Number(process.env.STALENESS_REALERT_HOURS) || 24);
-  if (now - lastAlertAt < reAlertHours * MS_PER_HOUR) return; // 去重窗口内
+  const reAlertMs = reAlertIntervalMs();
+  if (reAlertMs === null || now - lastAlertAt < reAlertMs) return; // 去重窗口内
   lastAlertAt = now;
   try {
     runLogger({ stage: "staleness" }).warn(
