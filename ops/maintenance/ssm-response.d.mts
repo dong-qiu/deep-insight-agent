@@ -17,7 +17,7 @@ export interface FixedCommandContext extends MaintenanceBinding {
 }
 export type MaintenanceStatus = "Pending" | "InProgress" | "Delayed" | "Cancelling" | "Success" | "Failed" | "Cancelled" | "TimedOut" | "Undeliverable" | "Terminated" | "DeliveryTimedOut" | "ExecutionTimedOut";
 /** Immutable synthetic descriptor; no resource or transport exists. */
-export const FIXTURE_WIRE: Readonly<{
+export declare const FIXTURE_WIRE: Readonly<{
   InstanceId: "i-00000000000000000"; DocumentName: "InsightA3FixtureRecordOnly";
   DocumentVersion: "1"; PluginName: "fixtureRecordOnly";
 }>;
