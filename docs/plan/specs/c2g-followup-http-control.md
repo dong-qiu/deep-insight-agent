@@ -52,23 +52,39 @@ helper不是新调度平台/产品代码，不导出生产故障或模型解锁�
 
 1. POST 创建自身 `createTaskCancellation({signal:req.signal})`，其生命周期包括 body解析、core、QA/audit、返回；
    `finally`在所有早返回/抛错清理 listener。规范化任意 abort reason，保留现 C2a 首原因。
-2. 合法无取消请求的 auth/报告/问题/限流顺序与响应不变。检查取消须位于每个相关 await 后、
-   core开始前以及body解析catch后的明确关口；body读取因abort失败不得降成空问题后继续模型调用。
-   无需让未授权请求获得新的行为；forbidNonAdmin仍优先，报告错误/非法输入的既有优先级以反例冻结。
+2. 合法无取消请求的 auth/报告/问题/限流顺序与响应不变。`forbidNonAdmin`拒绝仍优先403；
+   授权成功后立即检查取消，再在params/body await后、body解析catch中先检查取消。
+   已观察取消优先于随后404/409/400/429分支，返回现followup_failed/500；body失败只有在未取消时才按旧逻辑
+   降级为空问题400。早期关口只检查取消，父预算检查在core/后续成功副作用关口进行，避免把父预算改成报告/输入错误的新优先级。
 3. `answerFollowup(db,report,question,{signal:cancellation.signal})`；不向core增加 deadline/budget默认值。
-   caller checkpoint先 `cancellation.check()`，再消费已经存在的父 ALS `checkTaskBudget()`，不创建全局预算。
+   core及后续成功副作用checkpoint先 `cancellation.check()`，再消费已经存在的父 ALS `checkTaskBudget()`，不创建全局预算。
    真实 core自行继承现父预算；显式为0的父预算必须在首 SDK发送前拒绝。
 4. core resolve 后、`saveFollowup`前、`appendAudit(followup_asked)`前、成功log及返回200前检查；
    同步检查至下一同步写之间不声称跨线程/进程原子 fencing。QA已COMMIT后观察abort则保QA原行，
    不再写asked/返回200，不补删除/回滚，不声称QA与audit是同事务。
 5. 取消进入现失败500路径，message使用稳定规范化首原因；失败审计允许存在。
-   失败诊断不可覆盖首取消原因。普通 provider/judge/DB失败仍按现安全诊断和失败审计。
+   params/body等早期取消可能尚无DB/logger，仍直接返回稳定500，不为诊断启动DB或调用模型。
+   取消后的logger/failure audit二次异常不得覆盖首原因或抛成另一出口；只有已可用的诊断资源才使用。
+   未取消的既有早期异常/响应和普通provider/judge/持久化失败契约保留，不修改DB/audit来吞普通错误。
    core如果已完成cache/usage记录，caller不逆改它们；late provider completion仍unknown。
 6. 每请求有独立生命周期；一个请求abort不影响另一个，也不使进程signal/全局limiter变成取消对象。
 
 此处不要求browser连接断开必然映射服务端signal：必须实测所用Next/HTTP映射。
 如果 framework 的abort映射未观测，不以手动 new Request.signal 冒充浏览器断开证据；报告确切限制，
 本片只保证真正被传入并已观察的Request.signal。不得为抹除该限制改框架/反向代理或宣称远端终止。
+
+取消竞争矩阵唯一冻结如下，每格须有取消与无取消正反配对：
+
+| 决策时实际条件 | 响应优先级 |
+| --- | --- |
+| auth拒绝，即使preabort | 原403 |
+| auth通过，授权后/params后/body后已经观察取消；报告缺失/未done/问题空或long/限流耗尽任一并存 | followup_failed/500及规范首取消原因；不执行该后续错误分支/模型/QA/asked |
+| 未观察取消 | 原404、409、empty/long400、429、正常200或原普通失败500 |
+| body解析失败、未取消 | 原empty_question/400 |
+| 已取消且DB/logger尚未建立，或失败audit/logger再抛 | 保稳定followup_failed/500和原首原因；不新建诊断DB、不用二次错误替换 |
+| 真实QA已COMMIT后观察取消 | QA原行保留；不再asked/成功log/200，不补删除 |
+
+原9140c75的独立FULL方案审查B0/W1保留原时点；本段只消除优先级歧义，不预签最终方案通过或实现。
 
 ## 必须真实验收与反例
 
