@@ -1,6 +1,6 @@
 # 剩余重构：2026-10-08 协调、证据与交付索引
 
-当前已完整验收并保全本轮16个代码/验证切片，最后完整应用main为 `284efebd8a8b21356f66e73680940879ee73126c`，精确CI [37749589993/1](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37749589993/attempts/1) success。整体20项仍为12项既有范围关闭、7项部分完成、TD19阶段完成而整体未关闭；未上线。四份台账的文档PR/精确文档CI另由私有最终交接索引记录，不伪造本文件自身未来commit或CI。
+当前已完整验收并保全本轮17个代码/验证切片，最后完整应用main为 `8bdc1cde688682fb9a5a5769b8cb311abaf8d79e`，精确CI [37765697243/1](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37765697243/attempts/1) success。整体20项仍为12项既有范围关闭、7项部分完成、TD19阶段完成而整体未关闭；未上线。四份台账#460的精确文档身份见下方增量；本次两文档增量自身未来PR/commit/CI只由私有最终交接索引记录，不预签。
 
 本轮启动重新fetch并核对 `origin/main=81dac77cd27f82d7b554694bf0a12cd82cd0920b`，
 精确main CI [37665469691/attempt1](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37665469691/attempts/1)
@@ -82,6 +82,7 @@ Reviewer只读实现并独立验收，不审自己的实现；高风险维护/fe
 | C2g followup HTTP control [#457](https://github.com/dong-qiu/deep-insight-agent/pull/457) | `c729a1e966e3dc56596c72484394349c7426e540` / `a8f3cfa58261f325013ef8edc48d18764977166c` / 37735867485/1 | `1f278ec815cd75a2f0da26d3e94e9de822daab91` / [37738854606/1](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37738854606/attempts/1) |
 | A2/A3 isolated refusal integration protection [#458](https://github.com/dong-qiu/deep-insight-agent/pull/458) | `20836d0e387611952de5854e52594b08d8ccfb01` / `eb2302db0afb26d39398261f693886e7b7e645e7` / 37742563499/1 | `5de58f707698f9b0fe186db104d1305d0f4f2efe` / [37743585704/1](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37743585704/attempts/1) |
 | A2/A3 owned hold-first drain [#459](https://github.com/dong-qiu/deep-insight-agent/pull/459) | `b88364bf058b61daefe6472847d70428dedea1d3` / `bc307dd6ed04441a919f13aaff2db378b747f2d2` / 37748057698/1 | `284efebd8a8b21356f66e73680940879ee73126c` / [37749589993/1](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37749589993/attempts/1) |
+| TD04 re-alert [#461](https://github.com/dong-qiu/deep-insight-agent/pull/461) | `6bb275ce0e9d85ba4c611ea9ba4e65873997b846` / `16e9b835d8796e6fd111520342745349fed81af9` / 37764537940/1 | `8bdc1cde688682fb9a5a5769b8cb311abaf8d79e` / [37765697243/1](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37765697243/attempts/1) |
 
 ## 候选与main原包索引
 
@@ -105,6 +106,7 @@ Reviewer只读实现并独立验收，不审自己的实现；高风险维护/fe
 | #457 | `pr457-ci-37735867485-attempt1-v2/archive-index.json` 4917bytes / `b1f51ec515ee7dcaf95257feb8fded32d400990b0ecdde0e42b36467f3e41a05` | `main457-ci-37738854606-attempt1/archive-index.json` 5433bytes / `63d4b267bebb3cac43ddde5a3468a76f3ef1566dfc5afbb0cb807f353fafb876` |
 | #458 | `pr458-ci-37742563499-attempt1/archive-index.json` 4884bytes / `93f1e318f854efccdeeb076f992589880d9be3db1ab95053095e95a8d4a2a62e` | `main458-ci-37743585704-attempt1-v2/archive-index.json` 5469bytes / `21ebb16f813f2af555cff24150a4bf54d3b8f04d312f0595430238403498c631` |
 | #459 | `pr459-ci-37748057698-attempt1-v3/archive-index.json` 4946bytes / `a3a53058bca1054d5b8be55867cabeae66523c4e895705edf746767a14d7cb47` | `main459-ci-37749589993-attempt1-v2/archive-index.json` 6839bytes / `1859c7cffc8e90e610b5af976fe8aa15e7778d14b3489e7578bf3ad869712d36` |
+| #461 | `pr461-ci-37764537940-attempt1/archive-index.json` 4913bytes / `8b1d71d462c2021131f8f68af2819604ee23582952de32f4033f0cd9542bfa16` | `main461-ci-37765697243-attempt1/archive-index.json` 5462bytes / `87fc74dd79ee2cf69ef19aa8979c646837aeb582335da21ab57e7bbd8e6fb369` |
 
 ## 真实反例与修复绑定
 
@@ -143,7 +145,7 @@ smoke/incomparable/manual pending。1项人工裁决必须由人完成；原item
 | TD-01 初始化 | 既有范围关闭 | 沿既有事实源保持；不重写迁移或恢复契约 |
 | TD-02 reader | 既有范围关闭 | 既有可见性/历史快照及人工验收保持；未测browser P95保留 |
 | TD-03 认证 | 既有范围关闭 | 既有认证/会话保护保持；本轮无生产认证矩阵 |
-| TD-04 数值配置 | 部分 | 通知两字段#447合入、精确main37696229494/1通过并保全；其他危险getter逐字段工程待办，无全局框架 |
+| TD-04 数值配置 | 部分 | 通知两字段#447与重告警两字段#461已合入，精确main37696229494/1及37765697243/1通过并保全；合法/default/clamp/getter/加载时机保持，其他危险字段仍逐项工程待办，无全局框架 |
 | TD-05 测试入口 | 既有范围关闭 | 新运维测试复用真实递归入口，JS不冒称严格TS |
 | TD-06 报告维护 | 既有范围关闭 | 历史维护拒写及预览保持；版本化历史修复不重开 |
 | TD-07 运维入口 | 既有范围关闭 | #435硬阻断保持；A3新维护工程不等于生产放行 |
@@ -185,10 +187,11 @@ smoke/incomparable/manual pending。1项人工裁决必须由人完成；原item
 | #457 / 37738854606 | 0.19478144 / 0.24173540 | true / true / 0.04695396 |
 | #458 / 37743585704 | 0.17261716 / 0.22199424 | true / true / 0.04937708 |
 | #459 / 37749589993 | 0.08168964 / 0.10279784 | true / true / 0.02110820 |
+| #461 / 37765697243 | 0.10634952 / 0.13948464 | true / true / 0.03313512 |
 
 ## 最终受影响路径与必要质量门
 
-#459受审head b88364bf、实际候选checkout bc307dd6、normal main284efebd分别绑定；ordered parents5de+b883、tree96d3与受审树一致。候选37748057698/1和精确main37749589993/1完整success，两个原包分别全部11/12件、三份actualtested绑定与Git parents/tree/hash/0600核完。实际Linux native627/627、零skip包含新owned30；当前应用3253/293files及built HTTP/browser/Docker/audit门均执行通过。主干advisory PR与full模式opposite docs为正常skip，不能当独立文档检查通过。最后完整应用结果保持绑定284ef；后续仅docs PR的policy分类/文档CI不能称新的应用或镜像验收。
+#459受审head b88364bf、实际候选checkout bc307dd6、normal main284efebd分别绑定；ordered parents5de+b883、tree96d3与受审树一致。候选37748057698/1和精确main37749589993/1完整success，两个原包分别全部11/12件、三份actualtested绑定与Git parents/tree/hash/0600核完。实际Linux native627/627、零skip包含新owned30；当前应用3253/293files及built HTTP/browser/Docker/audit门均执行通过。主干advisory PR与full模式opposite docs为正常skip，不能当独立文档检查通过。此段保留#459的受审时点；其后#461完整应用结果绑定8bdc1cde/37765697243，见本节增量。后续仅docs PR的policy分类/文档CI不能称新的应用或镜像验收。
 
 代码/路径审查采用pre-pr-ai-review，最终高风险维护/fencing/SSM有两位非作者FULL。owned双方各自30/30，所有2228作者原材料和140×29物理inventory1832present/2228absent独立核；每位Reviewer新32×29、419present/509absent与原包分开。六真实SIGKILL均在恢复前保全原main/journal/WAL/SHM/marker/八A2角色和两optional absence，再分类实际initial/close/final COMMIT事实。initial-before回滚active/rev1/OPEN/failures[]无nonce，controller_uniqueness仍unknown。首取消、失败sample NULL、旧owner/revision、两进程同ingress CAS、unknown COMMIT不重试、缓存handle真实unsafe热journal BEGIN0、原CLI abs+mono直到第一CAS/cleanup、64KiB/UTF8/noEOF/SIGINT/异步EPIPE反例均执行实际入口。
 
@@ -206,14 +209,14 @@ smoke/incomparable/manual pending。1项人工裁决必须由人完成；原item
 | 工程前置 | S3b真实core负控仍允许revoke后C3 usage写；report/raw文件效应、其他持久提交缺共享维护fencing | 保留原lease-loss拒写、预算优先、validator白名单及planned/committed/unknown事实；分别确定真实最终提交边界，不能删原unfinished证据 |
 | 条件工程 | crontab→backup-db异步db.backup及reports/raw拷贝、manifest/rename/prune未消费A3；snapshot/restore/record-deployment也不是新维护消费者 | 全writer前置与固定隔离consumer/效应/故障恢复合同先明确；现owned持久held不能改ready、refresh/release/newop或送active stage-submit绕门；本轮不执行真实备份/恢复 |
 | 工程+缺证 | recovery-time-coverage的C1 synthetic registry、真实报告删除/save/reader/PPT边界已有；历史恢复runner/startup仍缺可信checkpoint连续覆盖、全部delete writer门及snapshot/cutoff/start-receipt绑定 | 不重复已交付C1，不把旧KNOWN GAP绿签修复；可信历史覆盖/issuer/真实远端终态不能由fixture补造 |
-| 可继续独立工程 | TD04 staleness与generation-dispatch-health的re-alert、followup route的rate合法/default/getter/加载时机有界校验 | 先逐字段确认验收及原B/Session归属交接；未释放不凭clean接手。该控制校验不统称模型预算阻塞 |
+| 工程待交接 | TD04 re-alert两字段#461已完成；followup route的FOLLOWUP_RATE_LIMIT及其余危险字段仍待合法/default/getter/加载时机有界校验 | 原B/Session route文件归属未释放，须专属交接再冻结字段验收；不凭clean接手。控制校验不统称模型预算阻塞 |
 | 需逐字段划界 | 来源/熔断/AI可见输入、选择/校验数值 | 合法语义保留的非法值拒绝独立冻结；若改变模型/prompt/来源/校验口径则按用户边界先批准及eval，不预盖章、不改默认 |
 | 缺证/人工 | TD14/D3原产物现位置及有效index/hash、TD14原1项人工裁决输入缺；原审计/可信覆盖及合格新镜像证据不足 | 仅定向原owner交接，不广搜/重跑冒充；AI建议pending不作人工裁决 |
 | 模型预算 | TD20旧head真实质量专项；外置guard bridge零发送工程仍须先验收 | 本轮预算0；旧235质量缺口不能以S2b/新main补签；未来100attempt/20retry/45min仅申请建议 |
 | 生产授权 | 新候选镜像重新冻结验收、实名窗口/真实主机与SSM/备份迁移恢复/回退批准/hold释放 | 工程与必要可信证据齐备后才一次性精确专项申请；#435 blocked、safe_rollback=null及原hold持续，串行避16:50–17:30UTC |
 | 延期/取舍 | TD12延期/保留、TD14/15不追加优化、无新线索历史搜索、P1/Brief | 不重开，不自动记100%技术债关闭 |
 
-唯一后续工程动作应是冻结一个真实隔离运维消费者（优先backup-db固定隔离消费边界）的源归属和阶段/故障恢复合同，再实现该具体synthetic DB+reports/raw路径与反例。持锁不得跨backup await，既有held不能推导执行资格。这属于仍待完成工程，不是生产申请或必须额外人类许可；若实际方案改变已确认架构/历史数据/安全批准边界才请求批准。本轮稳定六NEW已完成双审→PR→精确CI/main及原包保全；16片交付和本只读审计不关闭上述工程，不宣称全部授权工程100%完成或只剩外部阻塞。
+唯一后续工程动作应先取得旧C1 Session的backup-db/backup-integrity/cron专属文件交接，再冻结一个真实隔离备份消费者的阶段/故障恢复合同，再实现该具体synthetic DB+reports/raw路径与反例。持锁不得跨backup await，既有held不能推导执行资格。这属于仍待完成工程，不是生产申请或必须额外人类许可；若实际方案改变已确认架构/历史数据/安全批准边界才请求批准。本轮稳定六NEW已完成双审→PR→精确CI/main及原包保全；17片交付和本只读审计不关闭上述工程，不宣称全部授权工程100%完成或只剩外部阻塞。
 
 ## 原失败、隔离遗漏与原包读取处置
 
@@ -227,16 +230,26 @@ C2g原测试漏默认fakefetch，以合成key走默认SDK路径观察HTTP403，�
 
 ## 私有归档、保留环境与归属
 
-私有根 `/Users/dongqiu/.local/share/insight-agent/evidence/`；本轮协调索引在 `refactor-coordination-20261008-185052/coord/`。目录0700、文件0600，原SQLite、WAL、报告/敏感原文与日志不入Git。总交付 `completed-deliveries-v9.json`29723bytes/SHA3f5360afb46daf7bab399fc9e63009c0ddc273f512882a763105587d83369946绑定16片候选/tested/精确main/CI/原包及reader Warning。
+私有根 `/Users/dongqiu/.local/share/insight-agent/evidence/`；本轮协调索引在 `refactor-coordination-20261008-185052/coord/`。目录0700、文件0600，原SQLite、WAL、报告/敏感原文与日志不入Git。总交付 `completed-deliveries-v10.json`31986bytes/SHA7ea613b3ae715b5802aa348cb9628d45d018f104e89cc87192985748fa32faff绑定17片候选/tested/精确main/CI/原包及reader Warning；旧v9十六片原索引保留。
 
 owned作者 index-final-v1.json10313/SHA48ae39cb84c6ebed66b69f3821dbb483ccc1c7454b3ea0edbe7e780992597c16；R1 index169766/SHA4b0047be36797ccbf82f3960cc1652fc49c05a6269cb3a746393cf02123255ac，R2 index6388/SHAacc941935c5696f36771298b245652029dd0349bde0da7801535ec2e4dd82851；实际PR459独立复核4651/SHA20f8cfba86d567a462328b46e8f297895ac7c11ed9bf288c504b38ed10d29b49。两FULL B0/W0与PR B0/新增W0只判受审隔离合同；不清历史Warning或签生产。root合前判断1667/SHA4e61e94a9753d447eba02557dd8c2091c4a0d97f153d3528a2525e887fd250d2先完整保全必要候选证据、核latest5de后才正常merge；精确main完成/原包保全后才准备依赖文档PR。
 
 2026-10-08T08:36:45Z只读v5观察64WT/15处未提交文件名/38个local head非main284ef祖先；worktree-readonly-inventory-v5.json33927/SHAe9aca7cb42f652f3ef2e84816420b0acd34db494ea67f709373d4cbe760cbd0d。非原子时点，不证明未读内容相同、Session已释放或可清理；文档交付后专属私有索引另补最后快照。全部WT、local branches、tmp/private原证据保留，不执行清理。原调查/方案分支未合不代表内容未交付，相关方案已随代码PR入main，不重复实现。
 
-root唯一写四主台账；A保持staged10/SSM9/integration2/owned6冻结内容，B保持consumer5/C2g7及原交接源；root仅获得相应正常Git/meta交接。其他原Session、Brief/analyzer/shadow和Reviewer各自环境归属保留，clean/FINAL不构成释放。新WT仅必要.env.local从主复制600并先隔离DB_PATH/DATA_DIR，运行env-i不加载凭据；不复制.data/live SQLite/WAL/报告/.env.development.local，不输出密钥。
+root唯一写四主台账；A保持staged10/SSM9/integration2/owned6及re-alert5冻结内容，B保持consumer5/C2g7及原交接源；root仅获得相应正常Git/meta交接。其他原Session、Brief/analyzer/shadow和Reviewer各自环境归属保留，clean/FINAL不构成释放。新WT仅必要.env.local从主复制600并先隔离DB_PATH/DATA_DIR，运行env-i不加载凭据；不复制.data/live SQLite/WAL/报告/.env.development.local，不输出密钥。
 
 工程main、reviewed head、actual tested merge、CI镜像和生产分开；本轮无AWS/SSM生产访问或部署/stop/drain/restart/备份/迁移/恢复/配置覆盖/历史回填/回退批准/hold释放。生产身份与上线本轮未核。工程与可信证据前置齐备后才一次性精确目标/命令/窗口/副作用/实名人员/失败处置申请，串行避16:50–17:30UTC。
 
 ## 历史协调原件
 
 较长启动/逐时点协调时间线完整非覆盖封存于 `coord/master-coordination-chronicle-v5.md`，80783bytes/SHA `05590f7b92a63cfeec14556eda05dd12ffa4256a66c781599e241f2612b939d2`，保留旧pending、各原失败/修复/原包时点与doc草稿；v3/v4冻结副本和独立FULL报告也保留。既有Git台账/spec/专属收据的历史记录未重写。本文入口汇总当前事实；最终四文档commit/PR/精确docsCI和最后归属快照只记录在专属私有最终交接，避免伪造本文件自身未来SHA或借docs分类skip补签应用质量。
+
+## #460 文档交付与 #461 配置增量
+
+四主文档[#460](https://github.com/dong-qiu/deep-insight-agent/pull/460)受审head `d3e8dd93f37fa6ddf8804366925fa36b1aae0fe9`、实际tested `40cc9d23baf1655659c2cb8857e82904d95908a7`、normal main `0ca435d63dbf1fdb69e8abcc3846c687fb137a8b`分别绑定。候选37756308419/1与精确main [37760885978/1](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37760885978/attempts/1) docs success；两原包index分别2411/SHA d98d504a3b1027ed41b5a6deaf028776a8b665e2f08cf806f5df273c1654284c、2060/SHA ebff8bba2380eb04f402cbf729167e147e71d0e66a22dedc7117c31a9fd0bae9。两独立报告B0/W0，正常merge原GraphQL EOF后先确认仍OPEN再单次正常重试；不绕保护或hooks。docs实际检查与必需聚合门通过，full app/Docker为正常分类skip，不能把0ca记为新应用或镜像验收。
+
+#461仅五路径，保持原数值grammar/default/clamp/动态读取与合法失败状态，只对最终非有限重告警毫秒拒绝，并用固定field/reason诊断，logger抛错不改变health响应。原80测试13fail/67pass保全，global原红仅是缺诊断；作者与独立Reviewer各自6文件105/105零skip、四TS，作者wholelint与Reviewer受影响lint分别绑定。实际候选与main均3333/294files、native627/627零skip及build/HTTP/browser/Docker/audit通过。候选reader Warning true/PASS true，ratio1.214334/delta0.04352432ms；main Warning true/PASS true，ratio1.311568/delta0.03313512ms，原双门不放宽。P1 extended checks按实际非P1 scope正常skip，不记其新的专项通过。
+
+作者索引 `td04-realert-20261008/index-final-v2.json`13725/SHA9a1aa4816f7c33145250c29c9c60ad70b8b0e9a6803d32355ee8175b113fcf64；R1 FULL index21110/SHA b121d0653224277b1671ce3621379c185177d7dcc9c12244756c7be34a42d120；R2 actualPR index8295/SHA5b50724a0081f0bccb7b60a2fda15f2b3d73cfd5f433c59205b2a5ce620bcb0c，均B0/W0。五源码/18未变闭包/43作者材料/71R1材料/28R2材料和807tracked TS输入superset独核；superset不是compiler listFiles。私有runner envDir:false与逐文件凭据/通知target absence、R1六文件fetch attempts0只证明该运行，不签全阶段零费。原docs调用失败与修正、旧v1/plan warning都保留，无A1或Eval skip预签、无模型/prompt/source/validator/schema/维护许可变化，TD04整体仍部分。
+
+下一备份消费者定向原码盘点封存于 `a3-backup-consumer-feasibility-20261008-qy5n3qov/handoff-v2.md`10568/SHA aeaef9c256ddbd621c6c5cbdd639aa87da288d4ff1fa8c580209f3229f0c7fa2、index-v2.json10227/SHA1f9958e9363f7012545b8be50d33e6c8ef041ae9d91d5472220b004595d231b5；28个不可变0ca输入与8bd逐字节相同，协调者全文读handoff与backup-db/backup-integrity并核size/hash/700/600。盘点不执行测试或备份，不计新工程交付。现held/allwriter unknown/allpermfalse不允许正向backup-db；异步db.backup及DB/FS发布/轮转不受terminal fencing覆盖。C1 manifest没有operation身份，新的只读fixture组合既重复已有inspect/verify、也不能认证真实备份来源。旧C1 worktree干净未证明文件释放，专属交接仍缺；已定向请求负责人或交接索引，未答不视为交接。先补实际writer/异步效应/取消/重启阶段合同，不能把这些工程写成只差生产或模型预算，亦不改hold来执行。两新worktree及原产物全部保留；最终readonly归属快照与本次文档自身精确PR/CI只进入私有最终交接索引。
