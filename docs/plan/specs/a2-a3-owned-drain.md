@@ -136,3 +136,5 @@ entry还须为两次预期hold预留原capacity：用已核当前state的canonic
 ## 冻结后的实施具体化（2026-10-08）
 
 协调者批准六NEW内固定无参数 `runOwnedDrainCli():Promise<void>` 适配导出。实际 CLI 文件仅调用它；它只读真实 process argv/stdin，捕获原 abs/mono 窗口，并走模块私有 consume。公共 `consumeOwnedDrainIsolated` 原签名保持，仅 fresh 参数建立新合法窗口。没有 caller clock/window/callback/object/driver/seam，也不通过 signal 属性伪造计时预算；已接受 CLI 窗口直到库首次 CAS checkpoint 和 cleanup 都不重置。此导出是固定 process 适配，不是额外业务控制 API。
+
+上文私有proposal文字及‘尚未执行/未来路径’保留原方案时点；本片实现与实际结果另见 `docs/verify/a2-a3-owned-drain-2026-10-08.md`，方案批准不替代最终源码review或PR/main CI。

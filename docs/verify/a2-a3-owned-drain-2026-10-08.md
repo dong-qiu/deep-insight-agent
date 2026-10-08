@@ -43,3 +43,9 @@ physical gate检查canonical root、owner0700/600、nlink1、固定main/marker d
 本片只提供fixed isolated hold-first positive接线。初hold/close跨库不原子；合法fixture release/takeover可在old check与close间发生，允许保守partial-stop，随后必须拒续且无foreignhold/reopen/refresh/newop/token grant。signed负控测试key/停止声明不等于人类裁决、生产stop或许可。初hold未COMMIT的旧attempt无nonce，controller_uniqueness一直unknown；phase/lease/cancel/late finish不能解除hold。
 
 其他writer/core entry全覆盖、staged真实阶段统一、C3/usage/raw/report/coverage及真实部署/备份/恢复adapter/受控transport仍属工程前置。可信生产证据、实名窗口/授权、回退批准、真实模型预算和人工裁决另列；#435硬阻断、deployment blocked、safe_rollback=null和已有hold不变。原私有fixture/worktree/branch/证据与旧源ownership全部保留。等待最终两非作者 FULL review及协调者正常Git/PR/required CI/main归档，合入不代表上线。
+
+## 最终同步与完整执行（2026-10-08）
+
+先正常提交六NEW `6c95016`，再正常 merge `origin/main=5de58f707698f9b0fe186db104d1305d0f4f2efe`，得到受测 head `3dd069f12a4f5673997b2f3d379d8434ecf150ea` / tree `0c903333074c2280823e13dbab5775030c0f75ed`。同步仅加入已交付 integration 两文件；本片运行/typed/测试字节和原30输入未变。协调者已核该目标精确 main `37743585704 / attempt1 / full success` 与 archive-index-v2 5469 bytes / SHA256 `21ebb16f813f2af555cff24150a4bf54d3b8f04d312f0595430238403498c631`，原archive下载EOF partial保留，未CI重跑。
+
+`owned-final-v3.log` 在该真实同步输入执行全部30/30 pass，零skip，包含本轮新增cached handle热journal及全部六SIGKILL切点，另有全新 `native-final-v3` 原bytes/input/output/audit/physical inventories。没有将旧29回填30。此前 wholelint/fourTS/184与声明结果按逐字节相同受检闭包保留；随后只追加本段文档，不改六路径其他源，不签未来PR/CI/main。
