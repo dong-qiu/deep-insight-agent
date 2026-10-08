@@ -12,6 +12,17 @@
 方案通过、工程合入与上线不互代。TD-12/14/15既有延期或暂不优化不重开；旧S2a真实质量单独准备、模型预算0；
 TD-14/D3现保存位置及人工裁决仍缺。A3覆盖/fencing/实际维护消费者是工程前置，不能统称“只差生产授权”。
 #435硬阻断、safe_rollback=null与原hold保持；本轮未访问或部署生产。
+续批已从a51c0579重新fetch启动，原封存身份与明文定向交接搜索见[续批记录](../../verify/refactor-coordination-2026-10-08.md#续批启动与定向搜索2026-10-08)。
+C1备份文件和followup route未取得明确释放，仍暂停相应写入；隔离SSM transport[#464](https://github.com/dong-qiu/deep-insight-agent/pull/464)
+仅六NEW文件、实际路径/双非作者终审及PR完整CI通过，合入46612863后原main CI有noEOF准备窗口失败，
+必要修复[#465](https://github.com/dong-qiu/deep-insight-agent/pull/465)只补实际SendCommand/partial-write/未EOF屏障与收据，
+runtime不变，双非作者终审通过，合入 `3ed78338903523b2f9816d0312675f64816bf9d4`，精确main
+[37816672359/1](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37816672359/attempts/1) full/success；
+原466失败仍保留，新main实际应用/HTTP/browser/Docker通过，reader Warning/PASS保持。
+这是隔离工程验收，不代表真实生产transport、全writer停止、远端终态或历史checkpoint覆盖；后续文档CI不替代新应用/镜像。
+旧head外置guard bridge[#463](https://github.com/dong-qiu/deep-insight-agent/pull/463)为有Blocking的Draft，CI绿不可合，
+不可变控制快照、默认canonical fixture根及完整harness仍是工程。旧235真实质量另需方案/预算，不由新main补签。
+两片均不改变20项整体分组或真实模型预算0；后续备份消费者须先交接、冻结副作用/提交/取消/unknown契约并双审方案。
 
 ## 目标与边界
 

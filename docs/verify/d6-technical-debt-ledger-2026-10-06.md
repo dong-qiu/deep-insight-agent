@@ -7,6 +7,24 @@
 
 ## 最新续核：2026-10-08 限定剩余工程
 
+续批启动重新fetch `a51c0579310e9a3c380fc1caf2862ef14870ed75`，精确main37768694932/1为docs/success；
+启动时最后完整应用身份为8bdc1cde/37765697243/1。原封存index-v2 hash及58份直接引用已核，未覆盖旧材料。
+用户授权自动定向搜索后仍未找到C1三个备份文件/followup route明确释放或TD-14/D3有效迁出index；
+不凭clean接手、不把搜索无结果写成原件丢失。隔离SSM transport[#464](https://github.com/dong-qiu/deep-insight-agent/pull/464)
+双非作者终审B0/W6、实际PR full CI通过，正常合入46612863；原精确main37809289491/1因noEOF准备窗口失败，
+native659/660，HTTP0，不能认实际EOF覆盖，原失败保留。必要验收修复[#465](https://github.com/dong-qiu/deep-insight-agent/pull/465)
+仅真实SendCommand/partial-write/未EOF准备屏障及收据，runtime不变、双非作者B0/片内W1，合入
+`3ed78338903523b2f9816d0312675f64816bf9d4`，新精确main
+[37816672359/1](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37816672359/attempts/1) push/full/success。
+当前最后完整应用验收为3ed/native660/660零skip、应用3333/294files、built HTTP/browser/Docker/audit0通过，
+noEOF实际HTTP1/partialWritten/未EOF/首deadline/hold已核；reader Warning/PASS保留。
+新main原包17份直接原件及精确身份已核，不倒签466的原失败，不用此三文档自身后续docs CI替代应用/镜像。
+旧head guard bridge[#463](https://github.com/dong-qiu/deep-insight-agent/pull/463)保持Draft，full PR CI绿仍有mutable limits
+cap0→HTTP1的Blocking1及默认Darwin根准备Warning；不合并、不计片交付，不签旧235质量。
+详见[续批SSM身份与原证据](refactor-coordination-2026-10-08.md#a3续批隔离ssm传输入口)、
+[必要修复与新精确main验收](refactor-coordination-2026-10-08.md#a3必要验收修复真实no-eof准备)及
+[Draft工程缺口](refactor-coordination-2026-10-08.md#td-20续批draft与未解决工程)。
+
 本轮启动基线 `81dac77cd27f82d7b554694bf0a12cd82cd0920b` 与精确main CI37665469691/1 success重新核对。
 #440/#443最终候选/main和私有原包续核、A3临时材料非覆盖保全、TD-14/D3定向位置缺口、冻结接口、
 新工程PR与20项整体/阶段分别列于[本轮协调及交付索引](refactor-coordination-2026-10-08.md)。
@@ -15,7 +33,7 @@ TD-04/09/10/12/14/15/20部分、TD-19既有阶段完成整体未关闭；本轮�
 工程main、新受审head、CI tested对象、镜像与生产分开绑定。`safe_rollback=null`、deployment blocked、
 原hold及#435生产硬阻断保持，真实模型预算0。原材料缺证与人工裁决不由新main/新CI消除。
 下文及文末所有旧状态保留各自时点；当前阅读先看本节及新索引。
-本轮现已17个冻结代码/验证切片合入、精确main CI与原包验收；最新完整应用 `8bdc1cde688682fb9a5a5769b8cb311abaf8d79e` / [37765697243/1](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37765697243/attempts/1) success。TD04通知#447及re-alert#461有界交付，整体仍部分。四文档#460合入0ca435d6 / 37760885978/1 docs success，docs分类skip不证明新应用；本次增量自身未来PR/CI只记录在最终私有索引。backup-db旧C1文件交接及共享writer/异步阶段合同仍是工程前置，不由新的只读fixture或生产授权代替。
+上一批已17个冻结代码/验证切片合入、精确main CI与原包验收；该批最后完整应用 `8bdc1cde688682fb9a5a5769b8cb311abaf8d79e` / [37765697243/1](https://github.com/dong-qiu/deep-insight-agent/actions/runs/37765697243/attempts/1) success。TD04通知#447及re-alert#461有界交付，整体仍部分。四文档#460合入0ca435d6 / 37760885978/1 docs success，docs分类skip不证明新应用；本次增量自身未来PR/CI只记录在最终私有索引。backup-db旧C1文件交接及共享writer/异步阶段合同仍是工程前置，不由新的只读fixture或生产授权代替。
 
 ## 最新状态：2026-10-07 增量同步
 
