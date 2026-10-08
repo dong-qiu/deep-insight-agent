@@ -95,8 +95,9 @@ type ControllerResult = {
   production_permitted: false;
   ready: false;
   termination: "unknown";
-  outcome: "recorded" | "replay" | "blocked";
-  token: MaintenanceToken;
+  outcome: "recorded" | "accepted_or_replay" | "blocked";
+  token: MaintenanceToken | null; // allowStale methods never export a current token
+  hold: "recorded" | "unconfirmed" | "not_attempted"; // this step only; not future-state proof
   commandId: string | null;
   observedStatus: MaintenanceStatus | null;
   reason: string | null; // fixed sanitized code; never native/remote message, output or input
@@ -111,7 +112,8 @@ runControllerStep(root: string, action: ControllerAction, input: ControllerInput
 ```
 
 具体入口 `node ops/maintenance/controller-cli.mjs <canonical-isolated-root> <action>`，
-stdin JSON 单事件、最多 65536 bytes；JSON/field/type/extra top-level input/动作错均拒绝。
+stdin JSON 单事件、最多 65536 bytes；读取期间按 chunk 累加bytes，达到超限立即停止并固定throw，
+不先readFileSync(0)无限分配再检查。JSON/field/type/extra top-level input/动作错均拒绝。
 纯 parser 验证普通 JSON 对象与有界深度/字段长度，AWS 文档范围外附加字段不用于身份/状态；
 不得保存/输出 StandardOutputContent/StandardErrorContent/URLs/Comment 原文或远端 error message。
 APIResponse body 可允许 AWS 已文档化非消费字段，但 projection 只返回上述最小 typed facts；
@@ -170,8 +172,8 @@ Comment/requestHash 关联也不证明云读取来源。不得将本测试写为
 | 动作 | 实际 S0 调用及事实 | 退出/保持阻断 |
 | --- | --- | --- |
 | stage-submit | 仅 active pre_submit + fresh token；fixed commandHash → beginSubmit，先持久 unknown；返回 token/关联摘要 | 不发送；重复/restart/unknown 不再 beginSubmit，不返回重新发送资格 |
-| receive-send | unknown + fresh token，纯 parser 核 fixed wire/full local context → bindCommand | 响应丢失/错配持久 held，command 未知不补造、不重发 |
-| receive-invocation | 已知 command，纯 parser +完整 binding → observe | 非终态仅观测；终态随后 hold(ssm_terminal_unverified)，无 authorize/complete |
+| receive-send | unknown + fresh token，纯 parser 核 fixed wire/full local context → bindCommand一次 | 输出accepted_or_replay/token=null，不消费method返回revision；wire失败一次strict hold，unknown不补造、不重发 |
+| receive-invocation | 已知command；非终态仅observe一次；终态先strict ingress hold(ssm_terminal_unverified)，成功token仅用于一次observe | observe返回token一律丢弃，不再hold，不导出新authority；终态pending/held，无authorize/complete |
 | stage-cancel | submitted/running + fresh token → cancel | 只记 cancel_requested，不发送；后续取消响应不证明停止 |
 | receive-cancel | cancel_requested + fresh token，验证空 acknowledgement | hold(ssm_cancel_not_termination)，不调用 observe；仍允许 fresh 同 op 后续纯观测 |
 | interrupt | fresh token → hold(controller_interrupted) | state/command/submit facts 原样保留；不 abort remote、不自动释放 |
@@ -181,14 +183,41 @@ Comment/requestHash 关联也不证明云读取来源。不得将本测试写为
 成功 CLI exit 只表示本地记录动作通过，所有结果 ready=false/termination=unknown/production=false。
 held 后拒 stage-submit/stage-cancel；可以 fresh 精确身份 receive-invocation 仅登记补充观测，
 原 hold 永不清除。旧 token 的任何新 mutation 拒绝，不自动从当前状态生成新 token 给旧 continuation。
-精确重复事件可显式 read-only replay，audit/revision 不变；不同 terminal 冲突由原 observe 持久 hold，
-绝不把失败变成功。动作不提供管理员解除；现有 S0 签名人工协议不是本片的自动路径。
+S0 bindCommand/observe 是 allowStale 方法，精确重复不变 audit/revision却**返回currenttoken**。
+controller不能从preinspect、returnedrevision>ingress或postinspect推己赢：同event两调用都过precheck，
+赢家推进而输家replay也拿一样newrevision。两方法成功统一输出accepted_or_replay/token=null，
+不得返回其token，也不得内部以该token作后续hold/任何mutation；observedStatus只表示accepted观测或
+精确已有观测，不冒称该调用新写。该action结束，没有后台continuation或自动next action。
 
-event unavailable/纯 parse 失败只在本轮 fresh owner/revision 仍有效时请求 hold(固定 reason)，
-失败输出 blocked；原 S0 事务 CAS 在最终持久 mutation 再核。并发 revision/owner/fence 丢失或 ledger
-文件/marker/handle失败不能 catch 后刷新 token/改写他人 hold；返回固定失败并保全原材料。
+终态固定顺序为 pure parse → strict **ingress** hold(ssm_terminal_unverified) →仅这次strict成功返回token
+用于同step一次observe。hold即使reason已存在no-op也先原strictowned/currentrevision，因此返回token来源
+是确实通过本步strictCAS，非allowStale的返回；observe返回结果丢弃，最终输出token=null/accepted_or_replay。
+hold之后observe失败保持已记录hold；任何observe异常都不再hold/refresh/retry。不同terminal冲突由原observe
+持久 terminal_conflict，原primaryreason保持，不能把失败变成功。动作不提供管理员解除；现有S0签名人工
+协议不是本片自动路径。两个成功步骤非crashatomic：hold已提交而observe没提交可留原观测，始终阻断。
+
+其他仅strictCAS单方法动作(stage-submit/stage-cancel/interrupt/resume/receive-cancel、wirefailure hold)
+可输出已知本调用strict成功返回token；只读no-op replay使用immutable ingress，不用inspect/currenttoken。
+收到receive-send/receive-invocation的token=null后，下个合法事件须独立显式operator读取S0当前状态，
+核owner/phase并另给fresh token；controller不向旧continuation提供自动inspect/refresh接口。这样不会区分
+S0无法表达的winner/replay身份，不改变原ledger方法或历史schema。
+
+错误分区冻结：
+- outer JSON/schema/action/token（包含未知字段）、root/marker/open失败，或ingress目标/owner/fence/revision
+  无可信fresh关联：module固定脱敏throw，CLI非零，仅errorcode，无ControllerResult、无token、无hold。
+  绝不从inspect或body补造token让无效输入满足返回类型。
+- 合法outer+已核fresh输入，仅wirebody解析/不可达/缺response失败：最多一次strict ingress hold(固定reason)。
+  hold COMMIT返回则blocked/token=该strict返回token/hold=recorded；CLI非零。hold若CAS丢失/文件或handle
+  失败，blocked/token=null/hold=unconfirmed，保原wireprimaryreason，不二次hold/刷新/foreignhold。
+- 实际S0动作已开始后其CAS/handle/terminal_conflict异常：保持该方法fixed primarycode，blocked/token=null；
+  不泛化catch再hold。此前本stepstrict hold确认成功时hold=recorded，否则unconfirmed/not_attempted，
+  只表示本步已知COMMIT事实，不能由diagnostic inspect填已持久。诊断再失败也不覆盖primaryreason。
+- 没有错误的strict动作recorded，allowStale动作accepted_or_replay；所有blocked/throw为CLI非零。
+
+原S0事务CAS在实际mutation再核。并发revision/owner/fence丢失或ledger文件/marker/handle失败不能
+catch后刷新token/改写他人hold；原材料保全，diagnostic读不是后续mutation的authority。
 observe 的 terminal-conflict 可能已持久新 revision/hold 后抛错，不能泛化 catch 用旧 revision 再 hold
-或重试；错误原因保留，必要只读诊断不作为新 mutation 权限。任何无法持久 hold 的情况仍阻断，
+或重试；primary maintenance_terminal_conflict 保留，必要只读诊断失败也不遮蔽，不返回其currenttoken。任何无法持久 hold 的情况仍阻断，
 不得伪报 durable hold 已成功。beginSubmit 成功→response/hold 失败是非跨步原子，原 unknown 保留。
 
 本地输入/进程等待没有远端 timeout 语义。fixture driver 在独立测试可暂停/stdin 延迟或 SIGKILL
@@ -212,13 +241,23 @@ observe 的 terminal-conflict 可能已持久新 revision/hold 后抛错，不�
    迟到非终态不倒退；冲突终态原 observe保留持久 terminal_conflict，异常后不写第二hold/刷新token。
 6. cancel-request→ack→后续 InProgress/Success 只观测，termination永远unknown；不删除旧取消事实。
    controller退出、unknown时间过去、API200、health、没有tasks均不授予后续备份/迁移/切换。
-7. 双进程旧 owner/fence/revision、延迟stdin continuation、已held/released/另一 operation：
+7. 两真实独立controller同token同send/同InProgress都先过precheck，再赢家bind/observe→输家exactreplay：
+   原S0audit只推进一次，两个allowStale返回无法辨winner，controller结果均token=null；输家不能借结果继续
+   stage-cancel/hold。terminalSuccess首次新增reason的strict前置hold只有一方推进，输家holdCAS拒；
+   既有held同reason/no-op时两个freshstrict检查可能都通过，随后observe仍只有一次auditmutation/
+   另一方可能replay；两方均丢弃observe token、无后置hold。旧heldtoken不获新revision。
+   切点用独立fixture子进程/实际原S0双handle，不加publiccallback/test生产fault参数。
+8. 双进程旧 owner/fence/revision、延迟stdin continuation、已held/released/另一 operation：
    fresh合法观测正控；旧token新mutations拒绝，原/audit无修改且不得foreignhold；重启不重发。
-8. S0自身 pre-BEGIN热journal0644/inode/pathswap/marker/半初始化：新增真实controller入口也拒绝，
+9. S0自身 pre-BEGIN热journal0644/inode/pathswap/marker/半初始化：新增真实controller入口也拒绝，
    DB/journal size/hash保持；合法0600热恢复保原unknown/held；调用实际ledger，无自动chmod修复。
-9. 嵌套深度/超65536输入/原文输出/恶意error/未知动作/env override/生产 target拒绝；CLI/module均没有
-   AWS/shell/network/任意execute/complete/authorize入口。原 S1/S2/C2a/b/validator契约定向回归保持。
-10. Node24 env-i umask077/raw0700/0600；定向 native、必要完整 ops、双 TS 与 `.d.mts` 消费验收/lint/doc。
+10. 嵌套深度/超65536输入/原文输出/恶意error/未知动作/env override/生产 target拒绝；CLI/module均没有
+   AWS/shell/network/任意execute/complete/authorize入口。新增错误partition实际module/CLI反例：
+   invalidouter无token/nohold，freshwireparsefail只一次strictCAS hold+blocked/nonzero；parsefail在hold前
+   并发revision推进保primarycode/tokennull/no foreignhold。terminalconflict先持久再抛＋诊断失败/旧hold
+   失败不得遮蔽原reason/二次hold。stream超限在累计阶段中断，不先无限read。
+   原S1/S2/C2a/b/validator契约定向回归保持。
+11. Node24 env-i umask077/raw0700/0600；定向 native、必要完整 ops、双 TS 与 `.d.mts` 消费验收/lint/doc。
     无路由/构建/Docker接线不重复无目的HTTP/browser/build，最终实际 CI按最终diff gate不skip。
     两位独立完整方案及最终源码/反例审查，正常hooks/PR/finalhead/testedmerge/mainCI分别绑定。
     eval只在最终diff判断，不预签skip，无模型调用；fixture不证明真实模型质量/SSM或全writer静默。
@@ -236,7 +275,22 @@ observe 的 terminal-conflict 可能已持久新 revision/hold 后抛错，不�
 所有CLI失败/exit/SIGKILL只保留隔离状态，不自动生产revert/部署。
 合入新代码不等于进入旧冻结4477412镜像、上线或获得批准；新候选镜像需要独立冻结/验收。
 
-后续外部阻塞仍包括：真实AWS transport与端到端response provenance、host身份/provision/账本锚、
-未知本地/远端continuation停止证据、全writer覆盖、部署/备份/恢复实际消费，A2安全候选/数据兼容及
-实名operator/on-call/reviewer/approver和生产专项授权。只在工程前置满足后统一申请具体目标/命令/
-窗口/副作用/失败处置；生产维护串行并避16:50–17:30UTC。本方案没有批准该阶段执行。
+剩余工程：全writer实际登记/提交封闭、部署/备份/恢复隔离消费适配、A2实际typedconsumer，
+及未来受控AWS transport实现。是否能实际生产验证transport另属授权，不把工程整体归external，
+离线consumer交付不构成停止可执行工程的理由。staged提交片现另编号A3-S3b，串行归属/独立审。
+缺证/人工：端到端response provenance、host身份/provision/独立账本锚、未知本地/远端continuation停止、
+真实镜像/数据兼容、可信历史恢复覆盖、实名operator/on-call/reviewer/approver与TD14人工裁决。
+预算：真实模型0，TD20旧head质量不能由本协议mock/新CI补签。
+延期：TD12保留模块、TD14/15追加性能、P1/Brief、无新线索历史搜索原样保留。
+生产授权：AWS/SSM/dispatch/维护和额外付费仍须工程前置满足后统一专项申请具体目标/命令/窗口/
+副作用/失败处置；生产维护串行避16:50–17:30UTC。本方案不批准该阶段执行。
+
+## 2026-10-08 三项独立方案 Warning delta
+
+原38fa/19707bytes/hash94608478 保留；R1完整方案B0/W3、R2原v1与完整v2 B0/W3各自时点保留。
+作者亲读两份完整review、R1真实replay-probe输入/450byte输出/index、R2 nativev3 witness与环境失败v2
+索引。原S0同send2→3与同observe3→4 replay不变audit却返回currenttoken；R2证明用该token继续hold
+会推进新revision。terminalconflict会先持久held6再throw，旧hold5 CAS失败不变audit。
+这些真实原方法probe不是新controller已实施/测试，不覆写审查意见，不签AWS执行或生产。
+本delta精确收紧tokennullable/allowStale无后续authority、terminal前strict hold、错误partition/stream限界、
+工程缺证预算授权分类；不改S0源码/历史schema。新candidate供两位独立delta审冻结，未实施/未预签eval。
