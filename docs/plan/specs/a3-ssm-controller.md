@@ -294,3 +294,43 @@ observe 的 terminal-conflict 可能已持久新 revision/hold 后抛错，不�
 这些真实原方法probe不是新controller已实施/测试，不覆写审查意见，不签AWS执行或生产。
 本delta精确收紧tokennullable/allowStale无后续authority、terminal前strict hold、错误partition/stream限界、
 工程缺证预算授权分类；不改S0源码/历史schema。新candidate供两位独立delta审冻结，未实施/未预签eval。
+
+## 2026-10-08 S4a 隔离实现绑定（候选，待最终独立源码审查）
+
+本段接续上述原方案时点；原 38fa/0d 方案及原 FULL B0/W3、最终双 PLAN B0/W0 均不改写。
+实现 worktree 为 `insight-agent-a3-ssm-controller-20261008`，branch
+`feat/a3-ssm-controller-20261008`，独占 PORT=3129；fresh fetch base 精确
+`3c6b8b0f0eb4a5335c7a5dd67469cdf7932748d0`。S3 #453 精确 main CI
+37710999247/1 的 success 由协调者原索引保全；不签未合 S3b 或本片 CI。
+两个完整 spec commits 正常 cherry-pick 为 43b8e131/8dec9ea9，原方案正文
+25399 bytes、SHA256 `0e63b38b8386b27db3729245940a7a4926469d8736641708af424bad6be0b494`。
+.env.local owner0600、自有 DB_PATH/DATA_DIR；实际测试仅新 S0 fixture，不初始化业务 DB。
+
+`FixedSubmitContext` / `FixedCommandContext` 具体化为完整原 `MaintenanceBinding` 的 readonly
+operationId、ownerId、fence、target(region/instanceId/volumeId/dataPath/serviceSet)、
+executionIdentity、commandId、submitToken、requestHash；没有 revision 或新 caller 声明。
+submit 的 commandId=null，invocation 的 commandId 为原绑定 UUID；submitToken/requestHash
+均为原非空 UUID/非零64hex。controller 仅从真实 operation 的 bindingFor 推导 context/comment；
+parser 校验格式与固定 profile，不认证声明/云来源。readonly 类型及实际坏 binding 的反例分别验收。
+`MaintenanceStatus` declaration 复用原S0完整12项enum，parser只输出原冻结9个保守pair；
+不增加对TimedOut/Undeliverable/Terminated的接受。`FIXTURE_WIRE` 只导出不可变合成
+descriptor；不存在 transport/commands 或任意配置入口。
+
+pure parser 限深12、节点4096、数组256、单字符串32768字符及累计字符串/key UTF8 bytes65536；
+拒非普通 JSON、accessor/symbol/hole/cycle与未知核心字段。仅接受文档列明的非消费附加字段，
+投影不包含输出、URL、Comment原文或远端错误。CLI 在读取 chunk 时限65536 bytes，超限无需EOF
+即可拒；module 的可信 outer/token 检查与未知 wire 的单次 hold 分区沿原冻结合同。
+strict hold 无变更时返回冻结 ingress copy，仍先实际 strict owned/CAS；不从 inspect 或 allowStale
+返回生成 continuation。accepted_or_replay/observedStatus 仅记录方法接受的 wire 投影，不能推出
+调用者新写、当前持久 terminal、真实停止或继续执行许可；迟到非终态可被原 S0 保守忽略。
+
+竞争切点只存在测试私有 native cached Statement.run 的真实 COMMIT 返回后，未给生产模块
+增加 callback、fault CLI 或 transport seam。两独立进程先完成 inspect COMMIT 后再按顺序行动；
+终态既有同 reason hold 的反例还分别停在 hold COMMIT 后，证明两方 strict no-op 已完成但
+后续 observe 赢家/精确 replay 均 token=null。初次 hold 的 CAS 输家不会 observe/fallback hold。
+SIGKILL、unsafe0644 hot journal 与0600恢复的原 main/journal/WAL/SHM存在/不存在事实、字节、
+size/hash 原样非覆盖私有归档；测试自有临时 fixture 清理不删除归档或历史证据。
+
+实际验证/失败时点、原始日志及源字节索引见
+[专属收据](../../verify/a3-ssm-controller-2026-10-08.md)。本片只离线控制协议，不接生产SSM、
+不释放hold、不签ready、不修改S0/S1/default/strict/staged历史契约或435安全门；模型预算0。
