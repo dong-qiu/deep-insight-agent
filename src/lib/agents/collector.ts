@@ -156,6 +156,9 @@ async function collectSourceTask(
   cancellation: ReturnType<typeof createTaskCancellation>,
 ): Promise<CollectResult> {
   const telemetry = opts.telemetry ?? NOOP_P1_TELEMETRY_SINK;
+  // Every collector creates a task signal; only explicit controls opt supported sources in.
+  const sourceOptions = opts.signal !== undefined || opts.deadlineAt !== undefined
+    ? { signal: cancellation.signal } : undefined;
   const trace = opts.traceClaim;
   const sourceRef = trace ? sourceConfigRef(source) : null;
   const outputs: EntityRef[] = [];
@@ -216,7 +219,8 @@ async function collectSourceTask(
         });
       })();
     }
-    const raws = await joinSource(fetchFromSource(source));
+    const raws = await joinSource(source.type === "rss" && sourceOptions
+      ? fetchFromSource(source, sourceOptions) : fetchFromSource(source));
     fetched = raws.length;
     if (trace && sourceRef) {
       checkpoint();
@@ -277,7 +281,8 @@ async function collectSourceTask(
         }
         articleFetches++;
         checkpoint();
-        const article = await joinSource(fetchArticle(raw.url, source.content_container));
+        const article = await joinSource(sourceOptions
+          ? fetchArticle(raw.url, source.content_container, sourceOptions) : fetchArticle(raw.url, source.content_container));
         if (article) {
           raw.body = article.body_html;
           raw.body_kind = "article";
