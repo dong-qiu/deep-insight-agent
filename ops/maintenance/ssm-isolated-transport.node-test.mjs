@@ -2,10 +2,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import cp, { spawn, spawnSync } from "node:child_process";
-import { syncBuiltinESMExports } from "node:module";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { chmodSync, copyFileSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import Database from "better-sqlite3";
 import { initialize, openLedger } from "./ledger.mjs";
@@ -17,13 +18,13 @@ const cli = join(import.meta.dirname, "ssm-isolated-transport-cli.mjs");
 const evidence = process.env.A3_TRANSPORT_EVIDENCE;
 const nodeEnv = { PATH: process.env.PATH };
 const schema = "a3-isolated-ssm-transport-v1";
-function fixture(t) {
+function fixture(t, extra = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "insight-transport-"))); chmodSync(root, 0o700);
   const keys = generateKeyPairSync("ed25519"), target = { region: "isolated", instanceId: "fixture-controller-node", volumeId: "fixture-controller-volume", dataPath: root, serviceSet: ["fixture-controller"] };
   initialize(root, { target, approverId: "fixture-reviewer", publicKey: keys.publicKey.export({ type: "spki", format: "pem" }) });
   const ledger = openLedger(root), request = { target, operationId: "op-transport", ownerId: "fixture-owner", executionIdentity: "fixture-controller-v1", kind: "backup" };
   const token = ledger.acquire(request);
-  t.after(() => { try { ledger.close(); } catch { /* Fixture intentionally closes handles. */ } rmSync(root, { recursive: true, force: true }); });
+  t.after(() => { try { ledger.close(); } catch { /* Fixture intentionally closes handles. */ } if (!extra.preserve?.()) rmSync(root, { recursive: true, force: true }); });
   return { root, keys, target, request, ledger, token };
 }
 function current(f) { const state = f.ledger.inspect(), op = state.operations[f.token.operationId]; return { state, op, token: tokenFor(op) }; }
@@ -89,7 +90,8 @@ function hot(f) {
   assert.equal(statSync(join(f.root, "ledger.sqlite-journal")).mode & 0o777, 0o600);
 }
 function child(root, action, endpoint, token, extra = {}) {
-  const proc = spawn(process.execPath, [cli, root, action, endpoint, String(Date.now() + (extra.duration ?? 10000))], { env: nodeEnv, stdio: ["pipe", "pipe", "pipe"] });
+  const preload = extra.preload ? ["--import", `data:text/javascript,${encodeURIComponent(extra.preload)}`] : [];
+  const proc = spawn(process.execPath, [...preload, cli, root, action, endpoint, String(Date.now() + (extra.duration ?? 10000))], { env: nodeEnv, stdio: ["pipe", "pipe", "pipe"] });
   let stdout = "", stderr = "";
   proc.stdout.on("data", bytes => { stdout += bytes; }); proc.stderr.on("data", bytes => { stderr += bytes; });
   const done = new Promise((resolve, reject) => { proc.on("error", reject); proc.on("close", (code, signal) => resolve({ code, signal, stdout, stderr })); });
@@ -99,6 +101,84 @@ function child(root, action, endpoint, token, extra = {}) {
 async function until(condition) {
   const deadline = Date.now() + 5000;
   while (!condition()) { assert.ok(Date.now() < deadline, "fixture barrier deadline"); await new Promise(resolve => setTimeout(resolve, 5)); }
+}
+
+// Test-only scheduling: execute original native SQL, then pause at a proved
+// transaction boundary. Neither the runtime nor AWS/version output is replaced.
+function contention() {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "insight-transport-race-"))); chmodSync(root, 0o700);
+  const children = [], releases = new Set();
+  const databaseUrl = pathToFileURL(createRequire(import.meta.url).resolve("better-sqlite3")).href;
+  const race = { root, children, preserve: false };
+  function path(role, name) { return join(root, `${role}-${name}.json`); }
+  function release(role, name) {
+    const output = path(role, `${name}-go`);
+    if (!existsSync(output)) writeFileSync(output, "{}\n", { flag: "wx", mode: 0o600 });
+  }
+  function preload(role, pauses) {
+    for (const name of Object.values(pauses)) releases.add(`${role}/${name}`);
+    return `import Database from ${JSON.stringify(databaseUrl)};
+      import { existsSync, writeFileSync } from 'node:fs';
+      const root=${JSON.stringify(root)}, role=${JSON.stringify(role)}, pauses=${JSON.stringify(pauses)};
+      const probe=new Database(':memory:'), prototype=Object.getPrototypeOf(probe.prepare('SELECT 1'));
+      const original=prototype.run; probe.close(); let begins=0, commits=0, rollbacks=0;
+      const wait=new Int32Array(new SharedArrayBuffer(4));
+      function record(name,value){writeFileSync(root+'/'+role+'-'+name+'.json',JSON.stringify(value)+'\\n',{flag:'wx',mode:0o600});}
+      function pause(name,inTransaction){
+        record(name+'-ready',{inTransaction,begins,commits,rollbacks});
+        const deadline=performance.now()+10000;
+        while(!existsSync(root+'/'+role+'-'+name+'-go.json')){
+          if(performance.now()>=deadline)throw new Error('fixture_contention_barrier_deadline');
+          Atomics.wait(wait,0,0,5);
+        }
+      }
+      prototype.run=function(...args){
+        let value;
+        try{value=original.apply(this,args);}catch(error){
+          if(this.source==='BEGIN IMMEDIATE'&&error.code==='SQLITE_BUSY')record('native-busy',{statement:this.source,code:error.code});
+          throw error;
+        }
+        if(this.source==='BEGIN IMMEDIATE'){
+          begins++; if(pauses['begin'+begins])pause(pauses['begin'+begins],this.database.inTransaction);
+        }else if(this.source==='COMMIT'){
+          commits++; if(pauses['commit'+commits])pause(pauses['commit'+commits],this.database.inTransaction);
+        }else if(this.source==='ROLLBACK'){
+          rollbacks++; record('rollback'+rollbacks,{begins,commits,rollbacks,inTransaction:this.database.inTransaction});
+        }
+        return value;
+      };`;
+  }
+  async function ready(role, name, milliseconds = 10000) {
+    const deadline = performance.now() + milliseconds;
+    while (!existsSync(path(role, `${name}-ready`))) {
+      assert.ok(performance.now() < deadline, `fixture ${role}/${name} preparation deadline`);
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+    return JSON.parse(readFileSync(path(role, `${name}-ready`), "utf8"));
+  }
+  function start(f, s, role, pauses, token = f.token) {
+    const item = child(f.root, "send", s.endpoint, token, { duration: 30000, preload: preload(role, pauses) });
+    item.closed = false; item.done.then(() => { item.closed = true; }, () => {}); children.push(item); return item;
+  }
+  async function close() {
+    for (const item of releases) { const [role, name] = item.split("/"); release(role, name); }
+    async function waitClosed(milliseconds) {
+      const deadline = performance.now() + milliseconds;
+      while (children.some(item => !item.closed) && performance.now() < deadline) await new Promise(resolve => setTimeout(resolve, 5));
+    }
+    for (const item of children) if (!item.closed) item.proc.kill("SIGTERM");
+    await waitClosed(2000);
+    for (const item of children) if (!item.closed) item.proc.kill("SIGKILL");
+    await waitClosed(2000);
+    race.preserve = children.some(item => !item.closed);
+    assert.equal(race.preserve, false, `fixture children not closed; retained ${root}`);
+    await Promise.all(children.map(item => item.done));
+    rmSync(root, { recursive: true, force: true });
+  }
+  return Object.assign(race, { path, release, preload, ready, start, close });
+}
+function contentionEvidence(label, value) {
+  if (evidence) writeFileSync(join(evidence, `${label}.json`), JSON.stringify(value, null, 2) + "\n", { flag: "wx", mode: 0o600 });
 }
 
 test("actual fixed AWS CLI v2 capability is required, never skipped", t => {
@@ -239,11 +319,78 @@ for (const suffix of ["-journal", "-wal", "-shm"]) test(`all observed ${suffix} 
   assert.deepEqual(inventory(f.root), before); assert.equal(s.records.length, 0);
 });
 test("two actual CLI processes compete: only stage winner sends", async t => {
-  const f = fixture(t), s = await normalServer(t);
-  const a = child(f.root, "send", s.endpoint, f.token), b = child(f.root, "send", s.endpoint, f.token);
-  const values = await Promise.all([a.done, b.done]);
-  assert.equal(values.filter(value => value.code === 0).length, 1, JSON.stringify(values)); assert.equal(s.records.length, 1);
-  assert.equal(current(f).op.state, "submitted");
+  const race = contention(), f = fixture(t, { preserve: () => race.preserve }), s = await normalServer(t);
+  try {
+    const a = race.start(f, s, "a", { commit1: "inspect", commit2: "stage" });
+    const aInspect = await race.ready("a", "inspect"); assert.equal(aInspect.inTransaction, false);
+    const b = race.start(f, s, "b", { commit1: "inspect" });
+    const bInspect = await race.ready("b", "inspect"); assert.equal(bInspect.inTransaction, false);
+    race.release("a", "inspect");
+    const aStage = await race.ready("a", "stage"); assert.equal(aStage.inTransaction, false); assert.equal(aStage.commits, 2);
+    race.release("b", "inspect"); const loser = await b.done;
+    const cas = JSON.parse(readFileSync(race.path("b", "rollback1"), "utf8"));
+    assert.deepEqual(cas, { begins: 2, commits: 1, rollbacks: 1, inTransaction: false });
+    assert.equal(loser.code, 1); assert.equal(loser.signal, null);
+    const rejected = JSON.parse(loser.stdout); safety(rejected); assert.equal(rejected.reason, "maintenance_revision_conflict");
+    race.release("a", "stage"); const winner = await a.done, values = [winner, loser];
+    assert.equal(values.filter(value => value.code === 0).length, 1, JSON.stringify(values)); assert.equal(s.records.length, 1);
+    const accepted = JSON.parse(winner.stdout); safety(accepted); assert.equal(accepted.response, "accepted_or_replay");
+    assert.equal(current(f).op.state, "submitted");
+    contentionEvidence("cas-race", { values, aInspect, bInspect, aStage, cas, wireRequests: s.records.length, state: current(f).state });
+  } finally { await race.close(); }
+});
+test("real inspect lock contention: durable unknown sends0; ingress and current restart send0", async t => {
+  const race = contention(), f = fixture(t, { preserve: () => race.preserve }), s = await normalServer(t);
+  try {
+    const before = current(f).state;
+    const a = race.start(f, s, "a", { commit2: "stage" });
+    const stage = await race.ready("a", "stage"); assert.equal(stage.inTransaction, false);
+    const b = race.start(f, s, "b", { begin1: "locked" });
+    const locked = await race.ready("b", "locked"); assert.equal(locked.inTransaction, true);
+    race.release("a", "stage"); const winner = await a.done;
+    const native = JSON.parse(readFileSync(race.path("a", "native-busy"), "utf8"));
+    assert.deepEqual(native, { statement: "BEGIN IMMEDIATE", code: "SQLITE_BUSY" });
+    assert.equal(winner.code, 1); assert.equal(winner.signal, null);
+    const rejected = JSON.parse(winner.stdout); safety(rejected);
+    assert.equal(rejected.stage, "committed"); assert.equal(rejected.child, "not_started"); assert.equal(rejected.reason, "transport_ledger_failed");
+    race.release("b", "locked"); const loser = await b.done;
+    assert.equal(loser.code, 1); assert.equal(loser.signal, null); assert.match(loser.stderr, /maintenance_revision_conflict/);
+    assert.equal(s.records.length, 0);
+    // Preserve exact native bytes after both CLI closes, before diagnostic SQL.
+    const files = archive(f.root, "busy-before-diagnostic");
+    const unknown = current(f);
+    assert.equal(unknown.op.state, "submission_unknown"); assert.equal(unknown.op.disposition, "active"); assert.equal(unknown.op.commandId, null);
+    assert.equal(unknown.op.revision, before.operations[f.token.operationId].revision + 1);
+    assert.equal(unknown.state.revision, before.revision + 1); assert.deepEqual(inventory(f.root), files);
+    const restarts = [];
+    for (const [role, token] of [["ingress", f.token], ["unknown", unknown.token]]) {
+      const restarted = await race.start(f, s, role, {}, token).done; restarts.push({ role, ...restarted });
+      assert.equal(restarted.code, 1); assert.equal(restarted.signal, null); assert.equal(s.records.length, 0);
+      assert.deepEqual(archive(f.root, `busy-after-${role}-restart`), files);
+      assert.deepEqual(current(f).state, unknown.state);
+    }
+    // A real measured red for the old unconditional liveness assumption; the
+    // expected assertion failure is evidence, not a runtime retry/fix claim.
+    let oldAssertion;
+    try { assert.equal([winner, loser].filter(value => value.code === 0).length, 1); }
+    catch (error) { oldAssertion = { code: error.code, actual: error.actual, expected: error.expected, operator: error.operator }; }
+    assert.deepEqual(oldAssertion, { code: "ERR_ASSERTION", actual: 0, expected: 1, operator: "strictEqual" });
+    contentionEvidence("busy-race", { winner, loser, stage, locked, native, wireRequests: s.records.length, files, unknown, restarts, oldAssertion });
+  } finally { await race.close(); }
+});
+test("contention preparation failure remains failed; own CLI closes before controls are removed", async t => {
+  const race = contention(), f = fixture(t, { preserve: () => race.preserve }), s = await normalServer(t);
+  let a, preparation;
+  await assert.rejects(async () => {
+    try {
+      a = race.start(f, s, "a", { commit1: "inspect" });
+      assert.equal((await race.ready("a", "inspect")).inTransaction, false);
+      try { await race.ready("a", "deliberately-absent", 10); }
+      catch (error) { preparation = error.message; throw error; }
+    } finally { await race.close(); }
+  }, /fixture a\/deliberately-absent preparation deadline/);
+  assert.equal(a.closed, true); assert.equal(race.preserve, false); assert.equal(existsSync(race.root), false);
+  contentionEvidence("preparation-failure", { preparation, child: await a.done, controlsRemovedAfterClose: true });
 });
 test("accepted request, dropped response, kill/restart remains unknown and never resends", async t => {
   const f = fixture(t), s = await server(t, (_entry, res) => { res.socket.destroy(); });
