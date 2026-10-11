@@ -8,6 +8,7 @@ import { classifyRange, parseDiff } from "./ci-change-scope.mjs";
 import { checkDocuments, anchors } from "./ci-docs-check.mjs";
 import { assertRequiredGate } from "./ci-required-gate.mjs";
 import { assertPublishAdmission } from "./ci-publish-admission.mjs";
+import { laneIdentity } from "./ci-application-gate.mjs";
 
 function fixture() {
   const cwd = mkdtempSync(join(tmpdir(), "ci-delivery-"));
@@ -194,17 +195,35 @@ test("workflow topology runs application and Docker independently on the same ch
   const publish = readFileSync(new URL("../.github/workflows/publish-image.yml", import.meta.url), "utf8");
   for (const name of ["typecheck · test · build", "docker build", "eval-gate (trailer)"]) assert.ok(ci.includes(`name: ${name}`));
   for (const key of ["verify", "docker"]) {
-    const block = ci.match(new RegExp(`\\n  ${key}:\\n([\\s\\S]*?)(?=\\n  [a-z-]+:|$)`))[1];
+    const block = ci.match(new RegExp(`\\n  ${key}:\\n([\\s\\S]*?)(?=\\n  [a-z_-]+:|$)`))[1];
     assert.ok(block.includes("if: always()")); assert.ok(block.includes("ci-required-gate.mjs"));
   }
-  for (const key of ["application", "container"]) {
-    const block = ci.match(new RegExp(`\\n  ${key}:\\n([\\s\\S]*?)(?=\\n  [a-z-]+:|$)`))[1];
+  for (const key of ["application_checks", "ops_checks", "container"]) {
+    const block = ci.match(new RegExp(`\\n  ${key}:\\n([\\s\\S]*?)(?=\\n  [a-z_-]+:|$)`))[1];
     assert.ok(block.includes("needs: scope\n"));
     assert.ok(block.includes("if: needs.scope.outputs.mode == 'full'"));
     assert.ok(block.includes("uses: actions/checkout@v7"));
     assert.ok(!block.includes("download-artifact"));
     assert.ok(!block.includes("ref:")); // Both use the event's exact github.sha, never a branch tip.
   }
+  const block = key => ci.match(new RegExp(`\\n  ${key}:\\n([\\s\\S]*?)(?=\\n  [a-z_-]+:|$)`))[1];
+  const application = block("application");
+  assert.ok(application.includes("needs: [scope, application_checks, ops_checks]"));
+  assert.ok(application.includes("if: always() && needs.scope.outputs.mode == 'full'"));
+  assert.ok(application.includes("NEEDS_JSON: ${{ toJSON(needs) }}"));
+  assert.ok(application.indexOf("ci-application-gate.mjs verify") < application.indexOf("write-prototype-ci-evidence.ts"));
+  assert.ok(!block("application_checks").includes("write-prototype-ci-evidence.ts"));
+  assert.ok(!block("ops_checks").includes("write-prototype-ci-evidence.ts"));
+  assert.ok(block("application_checks").includes("npx --no-install vitest run --coverage"));
+  assert.ok(block("ops_checks").includes("npm run test:ops"));
+  assert.ok(block("ops_checks").includes("fetch-depth: 0")); // Frozen-version regressions need Git history.
+  for (const [key, lane] of [["application_checks", "application"], ["ops_checks", "ops"]]) {
+    assert.ok(block(key).includes(`ci-application-gate.mjs record ${lane}`));
+    assert.ok(block(key).includes("identity: ${{ steps.identity.outputs.identity }}"));
+  }
+  const scripts = JSON.parse(readFileSync(new URL("../package.json", import.meta.url))).scripts;
+  assert.equal(scripts.test, "vitest run && npm run test:ops");
+  assert.equal(scripts["test:coverage"], "vitest run --coverage && npm run test:ops");
   assert.ok(ci.includes("npm run build:e2e")); assert.ok(ci.includes("npm run test:e2e:built"));
   assert.ok(!ci.includes("paths-ignore"));
   assert.ok(publish.includes("needs: admission")); assert.ok(publish.includes("if: needs.admission.outputs.publish == 'true'"));
@@ -222,6 +241,27 @@ for (const failedSide of ["application", "Docker"]) {
       const bad = structuredClone(p);
       bad.jobs.find(j => j.name === `full ${failedSide === "application" ? "application" : "Docker"} verification`).conclusion = result;
       assert.throws(() => assertPublishAdmission(bad));
+    }
+  });
+}
+
+for (const lane of ["application_checks", "ops_checks"]) {
+  test(`failed ${lane} prevents full evidence and publication through actual gate CLI`, () => {
+    const p = publication("full"), sha = p.run.head_sha;
+    const identity = { commit: sha, tested_commit: sha, repository: "owner/repo", event: "push", run_id: "123", run_attempt: 1 };
+    const needs = {
+      scope: { result: "success", outputs: { mode: "full" } },
+      application_checks: { result: "success", outputs: { identity: JSON.stringify(laneIdentity("application", identity)) } },
+      ops_checks: { result: "success", outputs: { identity: JSON.stringify(laneIdentity("ops", identity)) } },
+    };
+    const env = { ...process.env, PROTOTYPE_CI_EVIDENCE_COMMIT: sha, GITHUB_SHA: sha, GITHUB_REPOSITORY: "owner/repo", GITHUB_EVENT_NAME: "push", GITHUB_RUN_ID: "123", GITHUB_RUN_ATTEMPT: "1" };
+    for (const result of ["failure", "cancelled", "skipped"]) {
+      needs[lane].result = result;
+      const gate = spawnSync(process.execPath, [fileURL("ci-application-gate.mjs"), "verify"], { cwd: p.cwd, env: { ...env, NEEDS_JSON: JSON.stringify(needs) } });
+      assert.notEqual(gate.status, 0);
+      const missingProof = { ...p, ci: undefined }; assert.throws(() => assertPublishAdmission(missingProof));
+      const failedAggregate = structuredClone(p); failedAggregate.jobs.find(j => j.name === "full application verification").conclusion = "failure";
+      assert.throws(() => assertPublishAdmission(failedAggregate));
     }
   });
 }
