@@ -367,25 +367,56 @@ test('actual readonly, inspect, final and noninitial rollback commits cannot pro
 });
 function nativeIPCCallbackChild(phase,behavior){
  const kind={ready:'owned-drain-initial-ready-v1',entry:'owned-drain-entry-ready-v1',facts:'owned-drain-native-facts-v1'}[phase];
- // Deliver through the real IPC transport, then fault only its caller's callback.
- const complete=behavior==='late-error'?`setTimeout(()=>callback(new Error('private late ${phase} IPC callback error')),150);`:'';
- return `const actualSend=process.send;process.send=function(message,callback){if(message.kind!==${JSON.stringify(kind)})return actualSend.call(this,message,callback);return actualSend.call(this,message,error=>{if(error)callback(error);else {${complete}}});};${nativeInitialChild}`;
+ // The real message and real transport stay intact. A fixed stdout receipt proves
+ // the selected caller callback reached its deliberate fault, not merely a timeout.
+ const complete=behavior==='late-error'?`setTimeout(()=>{faultObserve('fault-injected');callback(new Error('private late ${phase} IPC callback error'));},150);`:`faultObserve('fault-suppressed');`;
+ return `const actualSend=process.send;function faultObserve(step){process.stdout.write(JSON.stringify({kind:'owned-drain-ipc-fault-observation-v1',phase:${JSON.stringify(phase)},behavior:${JSON.stringify(behavior)},pid:process.pid,step})+'\\n');}process.send=function(message,callback){if(message.kind!==${JSON.stringify(kind)})return actualSend.call(this,message,callback);faultObserve('target-send');return actualSend.call(this,message,error=>{if(error)callback(error);else {faultObserve('callback-success');${complete}}});};${nativeInitialChild}`;
+}
+async function runSingleNativeIPC(t,f,phase,behavior,onChild){
+ const release=join(f.parent,'private-release'),release2=join(f.parent,'private-entry-release');
+ return withOwnedChildren(t,async children=>{
+  const child=launchNativeChild(children,f,release,release2,{label:'single IPC '+phase+' '+behavior,code:nativeIPCCallbackChild(phase,behavior)});onChild(child);
+  await waitOwnedReady(child);assert.equal(children.length,1);assert.equal(child.closed,false);assert.equal(fs.existsSync(release2),false);
+  child.released1=true;child.phase='released-1';child.events.push('release-1');save(release,'private-release-v1\n');
+  await boundedEntryPhase(children,async active=>{
+   await child.entryPrepared;active();assert.equal(child.entryReady,true);assert.equal(child.failure,null);assert.equal(child.closed,false);assert.equal(child.exit,null);
+   assert.equal(fs.existsSync(release2),false,'premature private second release');
+   child.released2=true;child.phase='released-2';child.events.push('release-2');save(release2,'private-entry-release-v1\n');
+  });
+  return waitOwnedClose(child);
+ });
+}
+function parseNativeIPCTranscript(result,phase,behavior,expectedToken){
+ assert.equal(result.events.at(-1),'close');const lines=result.stdout.trimEnd().split('\n');assert.equal(lines.length,4,'one consumer result and three exact fault receipts required');
+ const records=lines.map(line=>JSON.parse(line)),faults=records.filter(r=>r.kind==='owned-drain-ipc-fault-observation-v1'),outputs=records.filter(r=>r.schema==='a2-a3-owned-drain-result-v1');
+ assert.equal(faults.length,3);assert.equal(outputs.length,1);assert.deepEqual(faults.map(r=>r.step),['target-send','callback-success',behavior==='late-error'?'fault-injected':'fault-suppressed']);
+ for(const r of faults){assert.deepEqual(Object.keys(r).sort(),['behavior','kind','phase','pid','step']);assert.equal(r.phase,phase);assert.equal(r.behavior,behavior);assert.equal(r.pid,result.pid);}
+ const output=outputs[0];assert.equal(output.entry_hold,'committed');assert.equal(output.final_hold,'committed');assert.ok(output.token&&typeof output.token==='object'&&!Array.isArray(output.token),'defined held token object required');assert.deepEqual(output.token,expectedToken,'exact current held token required');assert.equal(output.reason,'writer_drain_coverage_unknown');assert.equal(output.admission,'closed');assertBlocked(output);assertOwnedPermitsBlocked(output);return {faults,output};
 }
 for(const phase of ['ready','entry','facts'])for(const behavior of ['late-error','no-callback'])test('actual native IPC '+phase+' '+behavior+' cannot publish a successful closed race',async t=>{
- const f=acquired(t,'ipc-'+phase+'-'+behavior,{task:false}),code=nativeIPCCallbackChild(phase,behavior);let observed;
- await assert.rejects(runInitialRace(t,f,{a:{code},b:{code},onChildren:children=>{observed=children;}}),error=>{
-  if(behavior==='no-callback')assert.equal(error.message,phase==='entry'?'child completion watchdog exceeded':'private entry phase deadline exceeded');
-  else if(phase==='entry'){assert.ok(error instanceof assert.AssertionError);assert.equal(error.actual,2);assert.equal(error.expected,0);}
-  else assert.match(error.message,/^CAS loser emitted private failure diagnostic/);
-  return true;
- });
- assert.equal(observed.length,2);assert.ok(observed.every(child=>child.closed&&child.result.events.at(-1)==='close'));
- assert.equal(fs.existsSync(join(f.parent,'private-entry-release')),phase==='entry');
+ const f=acquired(t,'ipc-'+phase+'-'+behavior,{task:false});let child,result;
  if(behavior==='late-error'){
-  const failed=observed.filter(child=>child.result.stderr==='owned_drain_private_IPC_failed\n');assert.ok(failed.length>0);assert.ok(failed.every(child=>child.result.exit===2));
-  if(phase==='facts'){const loser=failed.find(child=>!child.result.entryReady);assert.ok(loser);assert.deepEqual(loser.result.nativeFacts.facilityErrors,[]);assert.throws(()=>assertNativeLoser(loser.result),/CAS loser emitted private failure diagnostic/);}
-  else assert.ok(failed.some(child=>child.result.nativeFacts.facilityErrors.some(error=>error.phase==='IPC'&&error.message==='private late '+phase+' IPC callback error')));
- }else {assert.ok(observed.some(child=>child.result.signal==='SIGTERM'));assert.ok(observed.every(child=>!child.cleanupErrors.length));}
+  result=await runSingleNativeIPC(t,f,phase,behavior,c=>{child=c;});assert.equal(result.exit,2);assert.equal(result.signal,null);assert.equal(result.stderr,'owned_drain_private_IPC_failed\n');
+ }else{
+  await assert.rejects(runSingleNativeIPC(t,f,phase,behavior,c=>{child=c;}),error=>{assert.equal(error.constructor,Error);assert.equal(error.message,'child completion watchdog exceeded');return true;});
+  result=child.result;assert.equal(result.exit,null);assert.equal(result.signal,'SIGTERM');assert.equal(result.stderr,'');assert.deepEqual(child.cleanupErrors,[]);
+ }
+ assert.equal(child.closed,true);assert.equal(result.events.at(-1),'close');assert.equal(result.ready,true);assert.equal(result.entryReady,true);assert.ok(result.events.indexOf('entry-ready')<result.events.indexOf('release-2'));assert.equal(fs.existsSync(join(f.parent,'private-entry-release')),true);
+ const op=ledgerNow(f).operations[f.token.operationId],expectedToken=Object.fromEntries(['operationId','ownerId','fence','revision','target','executionIdentity'].map(key=>[key,op[key]]));
+ const transcript=parseNativeIPCTranscript(result,phase,behavior,expectedToken),facts=result.nativeFacts;
+ if(behavior==='late-error'||phase==='facts'){
+  assert.ok(facts);assert.equal(facts.firstReadyCount,1);assert.equal(facts.firstReleaseObserved,true);assert.equal(facts.initialBeginAttempts,1);assert.equal(facts.initialBeginReturned,true);assert.equal(facts.initialDatabaseBound,true);assert.equal(facts.successfulInitialInserts,1);assert.equal(facts.entryReadyCount,1);assert.equal(facts.secondReleaseObserved,true);assert.equal(facts.armPresent,false);assert.deepEqual(facts.nativeErrors,[]);
+  assert.deepEqual(facts.facilityErrors,behavior==='late-error'&&phase!=='facts'?[{phase:'IPC',message:'private late '+phase+' IPC callback error'}]:[]);
+ }else assert.equal(facts,undefined,'pending ready/entry callback prevents final facts send; do not invent completed facts');
+ assert.deepEqual(op.failures,['owned_drain_started','writer_drain_coverage_unknown']);assert.equal(op.disposition,'held');assert.equal(writerNow(f).admission,'closed');
+ // A missing trigger receipt or wrong PID/phase cannot count an unrelated failure.
+ for(const mutation of ['missing','duplicate','wrong-pid','wrong-phase','missing-token','wrong-token']){
+  const lines=result.stdout.trimEnd().split('\n'),at=lines.findIndex(line=>JSON.parse(line).kind==='owned-drain-ipc-fault-observation-v1');
+  if(mutation.endsWith('token')){const outputAt=lines.findIndex(line=>JSON.parse(line).schema==='a2-a3-owned-drain-result-v1'),r=JSON.parse(lines[outputAt]);if(mutation==='missing-token')delete r.token;else r.token.fence++;lines[outputAt]=JSON.stringify(r);}
+  else if(mutation==='missing')lines.splice(at,1);else if(mutation==='duplicate')lines.splice(at,0,lines[at]);else {const r=JSON.parse(lines[at]);if(mutation==='wrong-pid')r.pid++;else r.phase='foreign';lines[at]=JSON.stringify(r);}
+  assert.throws(()=>parseNativeIPCTranscript({...result,stdout:lines.join('\n')+'\n'},phase,behavior,expectedToken),assert.AssertionError);
+ }
+ record(f,'single-ipc-result',{phase,behavior,result,faults:transcript.faults,permissionScope:'synthetic-current-code-only'});
 });
 function adversaryInitialChild(f,mode){
  const release=join(f.parent,'private-release'),release2=join(f.parent,'private-entry-release'),first=initialReady(f.root,release),entry=entryReadyFor(f,release2);
