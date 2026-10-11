@@ -1896,3 +1896,80 @@ signed_state 摘要（对象 head、pending 与冻结），显式 anchored API �
 5. 论文全文或播客转写带来的新方法、依据、局限或嘉宾观点，只有作为**此前未刊、可定位且独立通过校验的重要命题**，才可在同一事件下标为“深读更新”；新 URL、抓取时间、改写旧结论都不构成增量。只新增有界工作判断时，须待推论发布门通过后另标“分析回访”，不计新事实或近期新事件。
 
 用户已确认上述方向；三方评审的分歧及共识见[评审记录](../verify/daily-brief-rich-insight-plan-review-2026-10-05.md)。产品定义和报告规格已标注现行契约与未来版本的边界；各切片仍须在明确的事实/推断展示契约、评测与生产回退通过后，版本化修改其行为及 AC。此前 [ADR-0036](#adr-0036-daily-brief-以事件组织已验证事实提案) 的快路径仍限于已验证事实，不自动开放推论。分阶段设计和完成门见 [Daily Brief 多句洞察与时效方案](../plan/specs/daily-brief-rich-insight-freshness.md)。
+
+---
+
+## ADR-0045: R3–R6 隔离 writer 采用显式 v2 登记与固定消费协议
+
+- **日期**: 2026-10-12
+- **状态**: Accepted（原架构 owner 按主控冻结范围正式接受设计；本次文档交付不代表源码实施、运行验收或生产准入）
+
+### 来源与决定范围
+
+本决定接受 PR #477 的[精确 S2a 格式/API 合同](https://github.com/dong-qiu/deep-insight-agent/blob/fb7e3c845bef5d7a310ea5017f71bf905beedf49/docs/plan/specs/r3-r6-s2a-v2-format-2026-10-12.md)
+及[原 owner 最小 delta 提案](https://github.com/dong-qiu/deep-insight-agent/blob/fb7e3c845bef5d7a310ea5017f71bf905beedf49/docs/plan/specs/r3-r6-d2-adr-delta-2026-10-12.md)，
+分别绑定 SHA256 `0a6a989a222ad7bc9b283d4cc0ecb1bae284e73f4b3d5efff59a12158bc5078e`
+和 `7f1b40094f893f4955077f1bb85514f228ac82c98beb06124ac9983b8fc993ab`。
+此前 D1 strict-close/迟到成本及 D2 已冻结方向不重选；文档 main CI 成功仅证明文档交付，不证明 runtime。
+以下“必须”是后续实现的验收合同，不描述当前新增源码已存在。原文档未提交内容完整保留，不借本决定补签旧 dirty 范围。
+
+### 版本、实体与物理边界
+
+1. initial v2 只运行新独占 canonical root：业务文件固定 `d2-business.sqlite`，`raw/`、`report/` 为固定受控 descendants。
+   新 marker 为 `a3-writers-isolation-v2`，writer SQLite `application_id=0x41335732`、`user_version=2`；
+   与 v1 使用同 root 的 `writers-isolation.json`/`writers.sqlite` 排他文件。接受上述 S2a 的 exact marker、
+   十表/二十 trigger/十二自动唯一索引、canonical payload 与双向事实覆盖合同；实现必须展开并核实际 SQLite schema，
+   如有差异先回主控，不宽松接受。业务 schema 的事实源仍是 `src/lib/db/schema.ts`，新 registry 不是业务 schema。
+2. v1 marker/ID/version/入口保持，不原地升级，不迁移 live，不 fallback。混合 marker、ID、版本、sqlite_master 或行事实拒绝。
+   初始化只允许已核 S0 基础对象；v1/v2 同名排他、hardlink/symlink/alias、未知已有 handle/consumer 和残留状态按合同拒绝。
+   root 目标 owner 未确认独占关系不能初始化，不把 registry 未看到别的 writer 当全机排他证明。
+   文件/父目录/registry 与目标身份逐消费重查，失败留残留和 unknown，不删除“修复”重试。
+
+### 固定入口与能力
+
+接受六个固定 entry：`generation-dispatch`、`source-collect`、`startup`、`local-seed`、`raw-recovery`、`report-recovery`。
+`initializeWritersV2(root)` / `openWritersV2(root)` 及 register/admit/inspect/closeAdmission/finish/close，
+固定 runtime `openV2Business(operation)` 与 control `closeWritersV2(root)` / `inspectWritersV2(root)` 按精确 S2a API 实施。
+仅可信固定 factory/value 参数，无任意 callback、SQL/DB handle、driver、动态 env 或路径注入。
+
+worker 与 operation 是同 factory/handle 的 private WeakMap 原对象 capability；clone、inspect、SQL token、重新 open 或旧 task
+不能重建权限。admit 必需原 AbortSignal，native getter brand 与 Proxy 拒绝规则保留，private 绑定后不可替换；
+不将 signal 写为可恢复的 SQL 权限。持久 operation/step 是不可变事实与单次 reservation，不是执行许可。
+S2a 允许六入口登记/观察，但只有 startup/local-seed 的固定 `open-business` pre-open 消费；未实现 domain step 拒绝，
+不能因登记成功签业务完成。source prelude 在 request/claim/过期 lease 终结/Run 前准入，随后同连接真实 root-bind 属 S2b。
+
+### 同步提交、三态与控制
+
+锁序固定为 registry → S0 ledger 身份核验的同步事务（立即结束）→ business，initial 无 stage。
+不得业务事务反向取 registry、任意跨层 callback、持任一 SQLite 写事务或 registry 锁跨 await。
+reservation COMMIT 先结束，重取 registry 锁重验身份/开放/代际后才固定消费；close 赢得窗口时保留 reservation，不执行业务。
+业务 SQL 必须使用绑定的同一连接同步 COMMIT，之后 registry ACK；COMMIT 成功而 ACK 失败为 committed + coordination_unknown，
+不能改为 rollback。未提交确定、提交确定、无法确定分别保留；FS 创建/open/配置/publish 的 occurred/not_occurred/unknown 独立，
+SQL rollback 不能冲销已发生 FS。固定 append-only facts/audit 必须覆盖全部对应整行，反向每 fact 有唯一匹配行，
+不只检查链 hash；unknown、无 result、无 terminal 不当 completed，fresh recovery 链接旧 effect 不复活 cap/epoch。
+
+pre-open 的 mkdir/O_EXCL/SQLite constructor 和可能的恢复效应也处在 registry 保护窗口，不能把打开 DB 当无限写许可。
+FS 动作前及 COMMIT 前重查原 signal；create 后取消保留真实 FS，COMMIT 后迟到取消保留 committed。
+失权、取消或 sticky failure 不能清零真实已开始模型调用与 partial/unknown 成本，D1 合同不变。
+
+最小新 control 必须真实读取与新 entry 相同 registry 的 entry/operation/未 ACK step，永久 open→closed 并记录 closed audit。
+重复 closed 只观察，不宣称新 COMMIT、不 reopen、不清 unknown；close 的提交三态与业务静止分开。
+旧 S0 ledger/CLI 并不读取 writer 版本，inspect 可能取写锁/恢复；其既有 S0 功能保留，不纳入本 writer fence 覆盖声明。
+旧 controller/drain/staged/usage 的拒绝或旧测试不能作为新 v2 正向消费者验收，旧 usage 路径不得 cast 为新 business 连接。
+
+### 阶段、代价与保留门
+
+S2a 仅新格式、登记、固定 pre-open 和同 registry control；S2b 承接 source/domain driver 与真实同连接消费。
+startup 后续组合顺序为 pre-open→schema/provenance 初始化→raw→ordinary report→seed→发布 `_db`；
+seed 逐项 committed-prefix、directions 单事务不重选。合法 diagnostic unknown 且诊断 COMMIT 确定、完整遍历可
+completed-with-diagnostics；admission-denied 或 COMMIT/ACK unknown 则中断、关闭未发布 DB、不 seed、不发布、不 legacy fallback。
+auth-reader 仅保留 D1 readonly/WAL 协调例外，不签全部 reader 维护覆盖。
+
+接受此协议的代价是新 exact registry、固定版本消费者与三态恢复维护面；没有通用 driver/全局锁替代真实逐入口接线。
+W1/A/P/ordinary 与 anchored 同 P/D3 async/app-path/旧 target 的共同归属及写窗仍需分别移交、冻结和验收；
+raw intent/publish/finalize/reconcile、report validator 白名单与审核/幂等门不放宽，不重启延期 reports/report-gen 拆分。
+本决定不释放 S2a 八新文件或 S2b driver 写窗，不授权任何数据库初始化、迁移或生产操作。
+
+initial v2 的 `writer_quiescence`、`drain_ready`、`production_permitted` 始终 false；全 writer、可信恢复与实际 transport 未证明。
+`safe_rollback=null`、deployment blocked、hold/#435 与模型/恢复/P1/prepare/matrix 消费0保持。
+正式决定的历史接受事实、加性证据及独立文档交付边界见[本次 owner 收据](../verify/r3-r6-v2-architecture-decision-2026-10-12.md)。
