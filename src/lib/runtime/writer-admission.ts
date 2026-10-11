@@ -59,3 +59,42 @@ export interface StagedTerminalWriterAdmission {
   commitOutcome(cap: FreshStagedTaskCapability, actualClaim: DispatchClaim, outcome: DispatchOutcome): StagedTerminalCommitResult;
   finish(cap: FreshStagedTaskCapability, outcome: WriterOutcome): void;
 }
+
+/** Independent fixed accounting consumer; does not change terminal profile semantics. */
+import type { UsageIdentity, UsageObservation } from "../db/model-usage.js";
+export type UsageDenyCode = "writer_usage_closed" | "writer_usage_capability_invalid" |
+  "writer_usage_business_mismatch" | "writer_usage_reverse_transaction" | "writer_usage_busy" |
+  "writer_usage_claim_mismatch" | "writer_usage_cancelled" | "writer_usage_commit_failed" |
+  "generation_fence_lost" | "usage_identity_invalid" | "usage_identity_conflict" |
+  "usage_schema_unavailable" | "usage_observation_invalid" | "usage_count_invalid" |
+  "usage_attempt_missing" | "usage_observation_stale" | "usage_observation_conflict";
+export type UsageCommitResult =
+  | { kind: "committed"; businessCommit: "committed"; replayed: boolean }
+  | { kind: "not_committed"; businessCommit: "not_committed"; code: UsageDenyCode }
+  | { kind: "unknown"; businessCommit: "committed" | "unknown";
+      code: "writer_usage_business_commit_unknown" | "writer_usage_registry_commit_unknown"; replayed?: boolean };
+declare const usageCapability: unique symbol;
+export interface FreshUsageTaskCapability { readonly [usageCapability]: true }
+export interface FixedUsageDispatchDriver {
+  readonly db: DB;
+  begin(claim: DispatchClaim, identity: UsageIdentity): UsageCommitResult;
+  observe(claim: DispatchClaim, identity: UsageIdentity, observation: UsageObservation): UsageCommitResult;
+  close(): void;
+}
+export interface BoundUsageRun {
+  readonly db: DB;
+  readonly runId: string;
+  readonly traceId: string;
+  beginAttempt(identity: UsageIdentity): UsageCommitResult;
+  observeAttempt(attemptId: string, observation: UsageObservation): UsageCommitResult;
+}
+export interface UsageWriterAdmission {
+  readonly scope: "isolated";
+  readonly entryPoint: "generation-dispatch";
+  readonly version: "a3-usage-commit-v1";
+  readonly profile: "close-fences-usage-v1";
+  admit(): FreshUsageTaskCapability;
+  bindClaim(cap: FreshUsageTaskCapability, claim: DispatchClaim): void;
+  bindRun(cap: FreshUsageTaskCapability, run: { runId: string; traceId: string }, signal: AbortSignal): BoundUsageRun;
+  finish(cap: FreshUsageTaskCapability, outcome: WriterOutcome): void;
+}

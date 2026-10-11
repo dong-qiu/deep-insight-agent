@@ -1,6 +1,7 @@
 /** Isolated, caller-declared writer registration. No production adapter, drain-ready or resume. */
 import Database from 'better-sqlite3';
 import { randomUUID } from 'node:crypto';
+import { types } from 'node:util';
 import { closeSync, constants, fsyncSync, fstatSync, lstatSync, openSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { z } from 'zod';
@@ -252,6 +253,143 @@ export function openWriters(root) {
       },
     });
   }
+  const usageClaims = new Set();
+  function usageAdmissionFor(worker, businessDb, driver) {
+    worker = Object.freeze(parse(workerSchema, data(worker, ['workerId', 'generationToken'], 'writer_usage_capability_invalid')));
+    const descriptor = driver?.[Symbol.for('insight-agent.a3-usage-driver-v1')];
+    const deny = code => ({ kind: 'not_committed', businessCommit: 'not_committed', code });
+    const fields = ['dispatchId', 'traceId', 'ownerToken', 'claimEpoch', 'fencingEpoch', 'rootRunId'];
+    const identityFields = ['attempt_id', 'logical_call_id', 'attempt_number', 'run_id', 'trace_id', 'role', 'provider', 'model', 'started_at'];
+    const usageFields = ['input_tokens', 'output_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens'];
+    const aborted = Object.getOwnPropertyDescriptor(AbortSignal.prototype, 'aborted').get;
+    function data(raw, keys, code) {
+      check(raw && typeof raw === 'object' && !types.isProxy(raw), code);
+      const descriptors = Object.getOwnPropertyDescriptors(raw);
+      check(Object.keys(descriptors).length === keys.length && keys.every(key => descriptors[key] && 'value' in descriptors[key]), code);
+      return Object.freeze(Object.fromEntries(keys.map(key => [key, descriptors[key].value])));
+    }
+    function claimSnapshot(raw) {
+      check(raw && typeof raw === 'object' && !types.isProxy(raw), 'writer_usage_claim_mismatch');
+      const descriptors = Object.getOwnPropertyDescriptors(raw);
+      check(fields.every(key => descriptors[key] && 'value' in descriptors[key]), 'writer_usage_claim_mismatch');
+      const value = Object.freeze(Object.fromEntries(fields.map(key => [key, descriptors[key].value])));
+      check(fields.every(key => ['claimEpoch', 'fencingEpoch'].includes(key)
+        ? Number.isSafeInteger(value[key]) && value[key] > 0 : typeof value[key] === 'string' && value[key].length > 0), 'writer_usage_claim_mismatch');
+      return value;
+    }
+    function physical(sqlBinding = false) {
+      check(Object.isFrozen(driver) && Object.isFrozen(descriptor) && Object.isFrozen(descriptor?.marker)
+        && Object.isFrozen(descriptor?.marker?.target) && Object.isFrozen(descriptor?.marker?.target?.serviceSet), 'writer_usage_business_mismatch');
+      check(descriptor.root === root && same(descriptor.marker, marker) && businessDb === driver.db
+        && businessDb instanceof Database && businessDb.open && !businessDb.readonly
+        && businessDb.name === join(root, 'fixture-business.sqlite'), 'writer_usage_business_mismatch');
+      check(!businessDb.inTransaction, 'writer_usage_reverse_transaction');
+      rootCheck(root); const rootIdentity = lstatSync(root);
+      check(rootIdentity.dev === descriptor.rootDev && rootIdentity.ino === descriptor.rootIno
+        && same(marker, ledgerMarker(root)), 'writer_usage_business_mismatch');
+      const businessPath = join(root, 'fixture-business.sqlite'), current = safe(businessPath);
+      check(businessPath === realpathSync(businessPath) && current.dev === descriptor.fileDev && current.ino === descriptor.fileIno, 'writer_usage_business_mismatch');
+      for (const suffix of ['-journal', '-wal', '-shm']) {
+        try { safe(businessPath + suffix); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      }
+      if (sqlBinding) {
+        const databases = businessDb.prepare('PRAGMA database_list').all();
+        check(databases.length === 1 && databases[0].name === 'main' && databases[0].file === businessPath, 'writer_usage_business_mismatch');
+      }
+    }
+    physical(); transact(() => { owned(worker); openAdmission(); physical(true); });
+    const capabilities = new WeakMap();
+    function localFor(cap) {
+      const local = capabilities.get(cap);
+      check(local && !local.poisoned, 'writer_usage_capability_invalid'); return local;
+    }
+    function taskOwned(local, active = false) {
+      owned(worker);
+      check(db.prepare('SELECT 1 FROM tasks WHERE task_id=? AND worker_id=?').get(local.task.taskId, worker.workerId), 'writer_usage_capability_invalid');
+      if (active) check(!db.prepare('SELECT 1 FROM completions WHERE task_id=?').get(local.task.taskId), 'writer_usage_capability_invalid');
+    }
+    function account(local, identity, observation) {
+      let result, attempted = false;
+      try {
+        localFor(local.cap); physical();
+        return transact(() => {
+          taskOwned(local, observation === undefined);
+          if (db.prepare('SELECT mode FROM admission WHERE id=1').get().mode !== 'open') return deny('writer_usage_closed');
+          physical(true);
+          attempted = true;
+          result = observation === undefined ? driver.begin(local.claim, identity) : driver.observe(local.claim, identity, observation);
+          if (result.kind === 'unknown') local.poisoned = true;
+          return result;
+        });
+      } catch (error) {
+        if (result?.businessCommit === 'committed') {
+          local.poisoned = true;
+          return { kind: 'unknown', businessCommit: 'committed', code: 'writer_usage_registry_commit_unknown', replayed: result.replayed };
+        }
+        if (result?.kind === 'unknown') return result;
+        if (attempted && !result) {
+          local.poisoned = true;
+          return { kind: 'unknown', businessCommit: 'unknown', code: 'writer_usage_business_commit_unknown' };
+        }
+        if (result?.kind === 'not_committed') return result;
+        return deny(error.message === 'writer_usage_reverse_transaction' || error.message === 'writer_usage_capability_invalid'
+          ? error.message : error.code === 'SQLITE_BUSY' ? 'writer_usage_busy' : 'writer_usage_business_mismatch');
+      }
+    }
+    return Object.freeze({ scope: 'isolated', entryPoint: 'generation-dispatch', version: 'a3-usage-commit-v1', profile: 'close-fences-usage-v1',
+      admit() {
+        physical(); const task = transact(() => { owned(worker); openAdmission(); physical(true); return admit(worker); }), cap = Object.freeze({});
+        capabilities.set(cap, { cap, task, claim: null, finished: false, poisoned: false, runs: new Set() }); return cap;
+      },
+      bindClaim(cap, claim) {
+        const local = localFor(cap); check(!local.finished && !local.claim, 'writer_usage_capability_invalid');
+        const value = claimSnapshot(claim), key = canonical(value); check(!usageClaims.has(key), 'writer_usage_claim_mismatch');
+        physical(); transact(() => { taskOwned(local, true); openAdmission(); physical(true); local.claim = value; usageClaims.add(key); });
+      },
+      bindRun(cap, rawRun, signal) {
+        const local = localFor(cap), run = data(rawRun, ['runId', 'traceId'], 'writer_usage_claim_mismatch');
+        check(!local.finished && local.claim && typeof run.runId === 'string' && run.runId.length > 0 && run.traceId === local.claim.traceId
+          && signal instanceof AbortSignal && !types.isProxy(signal), 'writer_usage_claim_mismatch');
+        check(!aborted.call(signal), 'writer_usage_cancelled'); check(!local.runs.has(run.runId), 'writer_usage_capability_invalid');
+        physical(); transact(() => { taskOwned(local, true); openAdmission(); physical(true); }); local.runs.add(run.runId);
+        const attempts = new Map(); let beginFailed = false;
+        const binding = Object.freeze({ businessDb, runId: run.runId, traceId: run.traceId, signal });
+        return Object.freeze({ db: businessDb, runId: run.runId, traceId: run.traceId,
+          [Symbol.for('insight-agent.a3-usage-run-v1')]: binding,
+          beginAttempt(rawIdentity) {
+            let value;
+            try {
+              localFor(cap); check(!local.finished && !beginFailed, 'writer_usage_capability_invalid');
+              check(!aborted.call(signal), 'writer_usage_cancelled');
+              value = data(rawIdentity, identityFields, 'usage_identity_invalid');
+              check(value.run_id === run.runId && value.trace_id === run.traceId, 'writer_usage_claim_mismatch');
+            } catch (error) { beginFailed = true; return deny(error.message); }
+            const result = account(local, value);
+            // A durable replay is a fact, not a fresh observer credential after restart.
+            if (result.kind === 'committed' && !result.replayed) attempts.set(value.attempt_id, value); else beginFailed = true;
+            return result;
+          },
+          observeAttempt(attemptId, rawObservation) {
+            let value;
+            try {
+              localFor(cap); check(typeof attemptId === 'string' && attempts.has(attemptId), 'writer_usage_capability_invalid');
+              const observation = data(rawObservation, ['observation_number', 'final', 'usage'], 'usage_observation_invalid');
+              const counts = data(observation.usage, usageFields, 'usage_count_invalid');
+              check(usageFields.every(key => counts[key] === null || (Number.isSafeInteger(counts[key]) && counts[key] >= 0)), 'usage_count_invalid');
+              check(Number.isSafeInteger(observation.observation_number) && observation.observation_number > 0 && typeof observation.final === 'boolean', 'usage_observation_invalid');
+              value = Object.freeze({ ...observation, usage: counts });
+            } catch (error) { return deny(error.message); }
+            // Ignore only signal/local finish, never maintenance/physical/task/lease guards.
+            return account(local, attempts.get(attemptId), value);
+          },
+        });
+      },
+      finish(cap, outcome) {
+        const local = localFor(cap); check(!local.finished, 'writer_usage_capability_invalid');
+        finish(local.task, outcome); local.finished = true;
+      },
+    });
+  }
   let stageDb, stageIdentity;
   const stagedTaskFields = ['dispatchId', 'traceId', 'ownerToken', 'claimEpoch', 'fencingEpoch', 'rootRunId'];
   function stageOpen() {
@@ -346,5 +484,5 @@ export function openWriters(root) {
       finish(cap,outcome){const local=fresh(cap);parse(outcomeSchema,outcome);stagedPreflight(root,stageIdentity);transact(()=>stageTransact(rows=>{taskOwned(rows,local);db.prepare('INSERT INTO completions VALUES (?,?)').run(local.task.taskId,outcome);stageDb.prepare('INSERT INTO completions VALUES (?,?)').run(local.task.taskId,outcome);}));local.finished=true;},
     });return Object.freeze({worker,admission});
   }
-  return { register, admit, finish, closeAdmission, admissionFor, terminalAdmissionFor, registerStagedTerminal, stagedTerminalControl, inspect, close: () => { if(stageDb?.open)stageDb.close();db.close(); } };
+  return { register, admit, finish, closeAdmission, admissionFor, terminalAdmissionFor, usageAdmissionFor, registerStagedTerminal, stagedTerminalControl, inspect, close: () => { if(stageDb?.open)stageDb.close();db.close(); } };
 }
