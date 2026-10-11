@@ -1,9 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
+import fs from "node:fs";
 import cp, { spawn, spawnSync } from "node:child_process";
 import { createRequire, syncBuiltinESMExports } from "node:module";
-import { chmodSync, copyFileSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, copyFileSync, existsSync, linkSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -105,6 +106,15 @@ async function until(condition) {
 
 // Test-only scheduling: execute original native SQL, then pause at a proved
 // transaction boundary. Neither the runtime nor AWS/version output is replaced.
+function publishContentionRecord(output, value) {
+  const bytes = JSON.stringify(value) + "\n", staging = `${output}.${randomUUID()}.tmp`;
+  const fd = openSync(staging, "wx", 0o600);
+  try {
+    try { writeFileSync(fd, bytes); } finally { closeSync(fd); }
+    // Link publishes already-complete bytes without replacing an earlier record.
+    linkSync(staging, output);
+  } finally { unlinkSync(staging); }
+}
 function contention() {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "insight-transport-race-"))); chmodSync(root, 0o700);
   const children = [], releases = new Set();
@@ -118,12 +128,14 @@ function contention() {
   function preload(role, pauses) {
     for (const name of Object.values(pauses)) releases.add(`${role}/${name}`);
     return `import Database from ${JSON.stringify(databaseUrl)};
-      import { existsSync, writeFileSync } from 'node:fs';
+      import { closeSync, existsSync, linkSync, openSync, unlinkSync, writeFileSync } from 'node:fs';
+      import { randomUUID } from 'node:crypto';
+      ${publishContentionRecord.toString()}
       const root=${JSON.stringify(root)}, role=${JSON.stringify(role)}, pauses=${JSON.stringify(pauses)};
       const probe=new Database(':memory:'), prototype=Object.getPrototypeOf(probe.prepare('SELECT 1'));
       const original=prototype.run; probe.close(); let begins=0, commits=0, rollbacks=0;
       const wait=new Int32Array(new SharedArrayBuffer(4));
-      function record(name,value){writeFileSync(root+'/'+role+'-'+name+'.json',JSON.stringify(value)+'\\n',{flag:'wx',mode:0o600});}
+      function record(name,value){publishContentionRecord(root+'/'+role+'-'+name+'.json',value);}
       function pause(name,inTransaction){
         record(name+'-ready',{inTransaction,begins,commits,rollbacks});
         const deadline=performance.now()+10000;
@@ -180,6 +192,77 @@ function contention() {
 function contentionEvidence(label, value) {
   if (evidence) writeFileSync(join(evidence, `${label}.json`), JSON.stringify(value, null, 2) + "\n", { flag: "wx", mode: 0o600 });
 }
+
+test("ready publication: actual CLI partial staging write is invisible until complete", async t => {
+  const race = contention(), f = fixture(t, { preserve: () => race.preserve }), s = await normalServer(t);
+  const partial = race.path("a", "partial"), go = race.path("a", "partial-go"), output = race.path("a", "inspect-ready");
+  const interrupt = `import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';
+    const originalWrite=fs.writeFileSync, waitForWrite=new Int32Array(new SharedArrayBuffer(4));
+    fs.writeFileSync=function(output,bytes,...args){
+      if(typeof output!=='number'||!String(bytes).includes('"inTransaction"'))return originalWrite(output,bytes,...args);
+      const text=String(bytes); originalWrite(output,text.slice(0,1));
+      originalWrite(${JSON.stringify(partial)},'{}\\n',{flag:'wx',mode:0o600});
+      const deadline=performance.now()+10000;
+      while(!fs.existsSync(${JSON.stringify(go)})){
+        if(performance.now()>=deadline)throw new Error('fixture_partial_write_deadline');
+        Atomics.wait(waitForWrite,0,0,5);
+      }
+      return originalWrite(output,text.slice(1),...args);
+    }; syncBuiltinESMExports();`;
+  try {
+    const item = child(f.root, "send", s.endpoint, f.token, { duration: 30000, preload: interrupt + race.preload("a", { commit1: "inspect" }) });
+    item.closed = false; item.done.then(() => { item.closed = true; }, () => {}); race.children.push(item);
+    await until(() => existsSync(partial));
+    assert.equal(existsSync(output), false);
+    let settled = false;
+    const reading = race.ready("a", "inspect");
+    reading.then(() => { settled = true; }, () => { settled = true; });
+    await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(settled, false); assert.equal(existsSync(output), false);
+    race.release("a", "partial");
+    const record = await reading;
+    assert.deepEqual(record, { inTransaction: false, begins: 1, commits: 1, rollbacks: 0 });
+    assert.equal(statSync(output).mode & 0o777, 0o600);
+    race.release("a", "inspect"); const result = await item.done;
+    assert.equal(result.code, 0); assert.equal(result.signal, null); assert.equal(s.records.length, 1);
+    assert.equal(fs.readdirSync(race.root).some(name => name.endsWith(".tmp")), false);
+    safety(JSON.parse(result.stdout)); assert.equal(current(f).op.state, "submitted");
+  } finally { race.release("a", "partial"); await race.close(); }
+});
+test("ready publication: duplicate refuses replacement and removes only its staging", async () => {
+  const race = contention(), output = race.path("a", "inspect-ready");
+  try {
+    publishContentionRecord(output, { complete: true });
+    const bytes = readFileSync(output), identity = statSync(output);
+    assert.throws(() => publishContentionRecord(output, { complete: false }), { code: "EEXIST" });
+    assert.deepEqual(readFileSync(output), bytes); assert.equal(statSync(output).ino, identity.ino);
+    assert.equal(statSync(output).mode & 0o777, 0o600);
+    assert.deepEqual(fs.readdirSync(race.root), ["a-inspect-ready.json"]);
+  } finally { await race.close(); }
+});
+test("ready publication: partial write failure publishes nothing and closes staging", async () => {
+  const race = contention(), output = race.path("a", "inspect-ready"), original = fs.writeFileSync;
+  let fd;
+  try {
+    try {
+      fs.writeFileSync = function (file, bytes, ...args) {
+        if (typeof file !== "number") return original(file, bytes, ...args);
+        fd = file; original(file, "{"); throw new Error("fixture_write_failed");
+      }; syncBuiltinESMExports();
+      assert.throws(() => publishContentionRecord(output, { complete: true }), /fixture_write_failed/);
+    } finally { fs.writeFileSync = original; syncBuiltinESMExports(); }
+    assert.throws(() => fs.fstatSync(fd), { code: "EBADF" });
+    assert.equal(existsSync(output), false); assert.deepEqual(fs.readdirSync(race.root), []);
+  } finally { await race.close(); }
+});
+test("ready publication: corrupt published JSON still fails instead of parse retry", async () => {
+  const race = contention();
+  try {
+    writeFileSync(race.path("a", "inspect-ready"), "{", { flag: "wx", mode: 0o600 });
+    await assert.rejects(race.ready("a", "inspect"), SyntaxError);
+    assert.equal(readFileSync(race.path("a", "inspect-ready"), "utf8"), "{");
+  } finally { await race.close(); }
+});
 
 test("actual fixed AWS CLI v2 capability is required, never skipped", t => {
   const binary = process.platform === "darwin" ? "/opt/homebrew/bin/aws" : "/usr/local/bin/aws";
