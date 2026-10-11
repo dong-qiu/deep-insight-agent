@@ -116,11 +116,13 @@ jobs:
           printf '%s' "$PR_BODY" > "$body_file"
           node ops/pr-policy.mjs --base "$PR_BASE" --head "$PR_HEAD" --pr-body-file "$body_file"
 
-  application:
-    name: full application verification
+  application_checks:
+    name: application checks
     needs: scope
     if: needs.scope.outputs.mode == 'full'
     runs-on: ubuntu-latest
+    outputs:
+      identity: ${{ steps.identity.outputs.identity }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -163,7 +165,7 @@ jobs:
       # 真模型 eval（npm run eval:a1）+ 回归门需 API 凭据 + 预算 + 中转站 → 不在公共 CI 跑，
       # 改由定时 workflow `.github/workflows/eval.yml`（每周 + 手动，用 relay secrets）运行；
       # 见 docs/plan/m3-plan.md M3-4、docs/launch/operations.md §13。
-      - run: npm run test:coverage
+      - run: npx --no-install vitest run --coverage
       - name: P1 provenance integrity gate
         if: steps.p1_scope.outputs.run == 'true'
         run: |
@@ -221,15 +223,55 @@ jobs:
       # 开发者机器执行，不能仅因不随生产镜像 ship 就忽略；Dependabot 负责提出升级，本门兜底。
       - name: npm audit (all deps, high+ blocking)
         run: npm audit --audit-level=high
-      # This aggregate is intentionally written only after lint/test/typecheck/build in this job
-      # have passed. Docker is a separate independent required CI check and is not claimed here.
-      # A later prototype release receipt binds this candidate source SHA and records the tested
-      # merge SHA; it does not turn the artifact into a legal or quality approval.
+      - name: record successful application identity
+        id: identity
+        run: node ops/ci-application-gate.mjs record application
+        env:
+          PROTOTYPE_CI_EVIDENCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+
+  ops_checks:
+    name: operations tests
+    needs: scope
+    if: needs.scope.outputs.mode == 'full'
+    runs-on: ubuntu-latest
+    outputs:
+      identity: ${{ steps.identity.outputs.identity }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24.19.0"
+          cache: npm
+      - run: npm ci
+      - run: npm run test:ops
+      - name: record successful operations identity
+        id: identity
+        run: node ops/ci-application-gate.mjs record ops
+        env:
+          PROTOTYPE_CI_EVIDENCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+
+  application:
+    name: full application verification
+    needs: [scope, application_checks, ops_checks]
+    if: always() && needs.scope.outputs.mode == 'full'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: require both successful lanes and matching execution identities
+        run: node ops/ci-application-gate.mjs verify
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+          PROTOTYPE_CI_EVIDENCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24.19.0"
+          cache: npm
+      - run: npm ci
+      # Preserve the original evidence schema and producer; never write a partial pass.
+      # Docker remains a separate independent required check.
       - name: write prototype CI evidence
         run: npx tsx ops/write-prototype-ci-evidence.ts "$RUNNER_TEMP/prototype-ci-evidence.json"
         env:
-          # PR workflows test GitHub's temporary merge ref, while releases select the immutable
-          # PR head. The artifact records both; direct main pushes use the same SHA for both.
           PROTOTYPE_CI_EVIDENCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: upload prototype CI evidence
         uses: actions/upload-artifact@v7
