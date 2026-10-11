@@ -621,3 +621,22 @@ agent 执行单元的状态追踪；由 Job Runner 写入 SQLite，支撑管理�
 ### Controller 本地恢复存储（INSI-155）
 
 交付 Controller 的恢复状态不属于应用 live DB：`src/lib/controller/store.ts` 使用由调用者传入的独立本地 SQLite 文件，不读取 `DB_PATH`，也不允许 worktree 间共享。该文件采用 WAL、条件 compare-and-append、append-only transition/evidence/outbox audit 与 pending-invalidation fence。它目前仅由注入式只读 runtime/GitHub snapshot ports 的 reconciler 使用；outbox 只持久化 deterministic plan/claim，未连接通知渠道。真实平台 adapter、webhook、token 和生产持久化策略须另行授权与设计。
+
+### R3–R6 隔离 writer v2（设计已接受，尚未实现）
+
+[ADR-0045](../develop/decisions.md#adr-0045-r3r6-隔离-writer-采用显式-v2-登记与固定消费协议)
+接受[精确 S2a 版本合同](https://github.com/dong-qiu/deep-insight-agent/blob/fb7e3c845bef5d7a310ea5017f71bf905beedf49/docs/plan/specs/r3-r6-s2a-v2-format-2026-10-12.md)。
+initial 新独占 canonical root 内固定 `d2-business.sqlite`、`raw/`、`report/`；独立 writer registry 为
+`writers-isolation.json`/`writers.sqlite`，marker `a3-writers-isolation-v2`、APP_ID `0x41335732`、version2，
+与 v1 同 root 排他。v1 不原地升级/live 迁移/fallback；新 registry 不替代业务实体契约，业务 schema 仍以 `src/lib/db/schema.ts` 为准。
+
+六固定 entry 登记 worker/task/operation/step 与双向覆盖的 append-only audit；能力仅 private 原 worker/operation + 原 AbortSignal，
+持久 reservation 不等于执行许可。锁序 registry→S0 身份事务立即结束→business，无 stage、无跨 await 写锁；
+同连接 SQL COMMIT、registry ACK 和 FS 效果分别保留三态，迟到取消不冲销提交或真实 partial/unknown 成本。
+固定 pre-open 保护首次 mkdir/constructor；新真实 control 读取同 registry inventory 并永久 close，close 不等于全 writer 静默。
+旧 S0 CLI 不是 writer 版本 gate，其既有事实写入不冒称已纳入 fence。
+
+S2a 只新格式/登记/pre-open/control，source/domain 接线在 S2b；W1/A/P/D3/app-path/旧目标须各自移交与验收。
+startup 组合、固定恢复、seed committed-prefix 和 D1 auth readonly 例外按 ADR；未实现 consumer 不 fallback。
+本段仅原 owner 的加性设计文档，不代表源码/DDL 已实现或执行，`writer_quiescence/drain_ready/production_permitted=false`，
+safe_rollback=null、deployment blocked、hold/#435不变，不代签全 writer、恢复或生产资格。
