@@ -17,7 +17,7 @@ const { insertTopic, insertSource } = await import('../../src/lib/db/repos.ts');
 const { createDeepDiveTraceRequest, claimNextGenerationDispatch, createSourceCollectTrace, claimSourceCollectTrace } = await import('../../src/lib/db/provenance.ts');
 const { runGenerationDispatchOnce } = await import('../../src/lib/agents/generation-dispatch.ts');
 
-function fixture(t, { journalMode = 'WAL' } = {}) {
+function fixture(t, { journalMode = 'WAL', retain = false } = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'insight-a3-drain-'))); chmodSync(root, 0o700);
   const { publicKey } = generateKeyPairSync('ed25519');
   const target = { region: 'isolated', instanceId: 'fixture-app', volumeId: 'fixture-data', dataPath: root, serviceSet: ['app'] };
@@ -30,7 +30,8 @@ function fixture(t, { journalMode = 'WAL' } = {}) {
   // Close the actual migration/seed connection; readonly observation opens an already-built fixture.
   db.pragma('wal_checkpoint(TRUNCATE)'); if (journalMode === 'DELETE') db.pragma('journal_mode=DELETE'); db.close();
   const source = openDrainLeaseSource(root, path); const writers = openWriters(root); const ledger = openLedger(root);
-  t.after(() => { source.close(); writers.close(); ledger.close(); rmSync(root, { recursive: true }); });
+  t.after(() => { source.close(); writers.close(); ledger.close(); if (!retain) rmSync(root, { recursive: true }); });
+  if (retain) t.diagnostic('retained own drain fixture ' + root);
   const request = { operationId: 'op-drain', ownerId: 'controller-one', kind: 'backup', target, executionIdentity: 'fixture-controller-one' };
   const mutate = fn => { const d = openDb(path, { bootstrap: false }); try { return fn(d); } finally { d.close(); } };
   const accept = () => mutate(d => createDeepDiveTraceRequest(d, { topicId: 'topic_a', idempotencyKeyHash: 'a'.repeat(64), planning: true }));
@@ -235,7 +236,8 @@ test('actual SIGKILL hot journal unsafe permissions preserve original DB/journal
   const f = fixture(t, { journalMode: 'DELETE' });
   // Actual openDb configures WAL; close its seed connection and restore DELETE before opening this observer.
   f.source.close(); f.accept();
-  const reset = spawnSync(process.execPath, ['--input-type=module', '-e', "import Database from 'better-sqlite3';const d=new Database(process.argv[1]);d.pragma('journal_mode=DELETE');d.close();", f.path], { cwd: process.cwd(), env: { PATH: process.env.PATH }, stdio: 'pipe' });
+  const reset = spawnSync(process.execPath, ['--input-type=module', '-e', "import Database from 'better-sqlite3';const d=new Database(process.argv[1]);d.pragma('journal_mode=DELETE');d.close();", f.path], { cwd: process.cwd(), env: { PATH: process.env.PATH }, stdio: 'pipe', timeout: 10000, killSignal: 'SIGKILL' });
+  assert.equal(reset.error, undefined);
   assert.equal(reset.status, 0, reset.stderr.toString());
   const source = openDrainLeaseSource(f.root, f.path); t.after(() => source.close());
   const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
@@ -243,7 +245,8 @@ test('actual SIGKILL hot journal unsafe permissions preserve original DB/journal
     d.pragma('journal_mode=DELETE'); d.pragma('cache_size=1'); d.exec('BEGIN IMMEDIATE');
     d.exec("UPDATE generation_dispatch SET state='alien'");
     const insert=d.prepare("INSERT INTO run(id,kind,target,status,started_at) VALUES (?,'analyze','{}','running','2026-10-08T00:00:00.000Z')");
-    for(let i=0;i<10000;i++) insert.run('crash-run-'+i); process.kill(process.pid,'SIGKILL');`, f.path], { cwd: process.cwd(), env: { PATH: process.env.PATH }, stdio: 'pipe' });
+    for(let i=0;i<10000;i++) insert.run('crash-run-'+i); process.kill(process.pid,'SIGKILL');`, f.path], { cwd: process.cwd(), env: { PATH: process.env.PATH }, stdio: 'pipe', timeout: 10000, killSignal: 'SIGKILL' });
+  assert.equal(child.error, undefined);
   assert.equal(child.signal, 'SIGKILL', child.stderr.toString()); const journal = `${f.path}-journal`; assert.ok(statSync(journal).size > 512); chmodSync(journal, 0o644);
   const before = { database: bytes(f.path), journal: bytes(journal) };
   assert.throws(() => source.sample(Date.now()), /unsafe_drain_path/); assert.throws(() => openDrainLeaseSource(f.root, f.path), /unsafe_drain_path/);
@@ -255,7 +258,8 @@ test('actual SIGKILL hot journal unsafe permissions preserve original DB/journal
 test('missing actual business tables and incomplete S0 fail closed rather than initialize or repair', t => {
   const f = fixture(t); f.mutate(d => d.exec('DROP TABLE generation_dispatch'));
   assert.throws(() => f.source.sample(Date.now()), /no such table/); assert.throws(() => openDrainLeaseSource(f.root, f.path), /no such table/);
-  const other = fixture(t); const native = spawnSync(process.execPath, ['--input-type=module', '-e', "import Database from 'better-sqlite3'; const d=new Database(process.argv[1]);d.pragma('user_version=999');d.close();", join(other.root, 'ledger.sqlite')], { cwd: process.cwd(), env: { PATH: process.env.PATH }, stdio: 'pipe' });
+  const other = fixture(t); const native = spawnSync(process.execPath, ['--input-type=module', '-e', "import Database from 'better-sqlite3'; const d=new Database(process.argv[1]);d.pragma('user_version=999');d.close();", join(other.root, 'ledger.sqlite')], { cwd: process.cwd(), env: { PATH: process.env.PATH }, stdio: 'pipe', timeout: 10000, killSignal: 'SIGKILL' });
+  assert.equal(native.error, undefined);
   assert.equal(native.status, 0); assert.throws(() => other.source.sample(Date.now()), /invalid_maintenance_version/);
 });
 
@@ -281,28 +285,147 @@ test('two caller-declared same-identity first acquire tokens are indistinguishab
   assert.deepEqual(f.ledger.inspect().operations['op-drain'].failures, ['winner_hold']); assert.deepEqual(f.facts(), before);
 });
 
+// Private test-process supervision only. Business timeouts and runtime remain unchanged.
+function privateDrainChild(code, args = [], readyMs = 4000) {
+  const child = spawn(process.execPath, ['--input-type=module', '-e', code, ...args], { cwd: process.cwd(), env: { PATH: process.env.PATH }, stdio: ['ignore', 'pipe', 'pipe'] });
+  let stdout = '', stderr = '', error, closed = false, readySettled = false, readySucceeded = false, readyResolve, readyReject, closeResult, exitStatus;
+  const ready = new Promise((resolve, reject) => { readyResolve = resolve; readyReject = reject; });
+  const context = () => JSON.stringify({ pid: child.pid, stdout, stderr, error: error?.message });
+  const settleReady = failure => {
+    if (readySettled) return;
+    readySettled = true; clearTimeout(timer);
+    if (failure) readyReject(failure); else { readySucceeded = true; readyResolve(); }
+  };
+  const timer = setTimeout(() => settleReady(new Error('drain private ready deadline: ' + context())), readyMs);
+  // An early rejection must not escape while the parent is awaiting another child.
+  ready.catch(() => {});
+  child.stdout.on('data', chunk => {
+    stdout += chunk;
+    if (stdout.startsWith('READY\n')) settleReady();
+    else if (stdout.includes('\n')) settleReady(new Error('invalid private ready: ' + context()));
+  });
+  child.stderr.on('data', chunk => { stderr += chunk; });
+  child.stdout.on('error', cause => { error ??= cause; settleReady(cause); });
+  child.stderr.on('error', cause => { error ??= cause; settleReady(cause); });
+  child.on('error', cause => { error = cause; settleReady(cause); });
+  child.on('exit', (exit, signal) => { exitStatus = { exit, signal }; settleReady(new Error('child exited before private ready: ' + JSON.stringify(exitStatus) + context())); });
+  const close = new Promise(resolve => child.on('close', (exit, signal) => {
+    closed = true; settleReady(new Error('child closed before private ready: ' + context()));
+    closeResult = Object.freeze({ exit, signal, stdout, stderr, error }); resolve(closeResult);
+  }));
+  const wait = async ms => {
+    let watchdog;
+    try { return await Promise.race([close, new Promise((_, reject) => { watchdog = setTimeout(() => reject(new Error('drain private close deadline: ' + context())), ms); })]); }
+    finally { clearTimeout(watchdog); }
+  };
+  return {
+    ready, wait: (ms = 4000) => wait(ms),
+    snapshot: () => ({ pid: child.pid, ready: readySucceeded, closed, outputComplete: closed,
+      ...(closeResult ?? { ...exitStatus, stdout, stderr, error }) }),
+    async cleanup() {
+      if (!closed) {
+        child.kill('SIGCONT'); child.kill('SIGTERM');
+        try { await wait(500); } catch {
+          child.kill('SIGKILL');
+          try { await wait(2000); } catch (cause) {
+            // Unknown pipe closure is a failed test, not permission to hang or delete fixtures.
+            child.unref(); child.stdout.unref?.(); child.stderr.unref?.(); throw cause;
+          }
+        }
+      }
+      return close; // exitCode alone never confirms pipe closure.
+    },
+  };
+}
+async function finishDrainChildren(children, primary, t) {
+  const settled = await Promise.allSettled(children.map(child => child.cleanup()));
+  const failures = settled.filter(result => result.status === 'rejected').map(result => result.reason);
+  if (primary || failures.length) t?.diagnostic(JSON.stringify(children.map((child, i) => ({
+    ...child.snapshot(), ...(settled[i].status === 'rejected' ? { cleanupError: settled[i].reason.message } : {}),
+  }))));
+  if (failures.length) throw new AggregateError([...(primary ? [primary] : []), ...failures], 'private child cleanup unconfirmed; fixture retained');
+  if (primary) throw primary;
+}
+function parseDrainResult(outcome) {
+  assert.ok(Object.isFrozen(outcome), 'complete close result required');
+  assert.equal(outcome.error, undefined); assert.equal(outcome.signal, null);
+  assert.equal(outcome.exit, 0, outcome.stderr);
+  assert.ok(outcome.stdout.startsWith('READY\n'), 'exact private ready prefix required');
+  // Parse the complete remainder: never skip duplicate ready or malformed lines.
+  return JSON.parse(outcome.stdout.slice('READY\n'.length));
+}
+
 test('separate controllers racing the real drain with same operation/owner cannot report unique or ready', async t => {
-  const f = fixture(t); f.accept(); f.writers.admit(f.writers.register('worker-one', 'generation-dispatch')); const before = f.facts();
+  const f = fixture(t, { retain: true }); f.accept(); f.writers.admit(f.writers.register('worker-one', 'generation-dispatch')); const before = f.facts();
   const moduleUrl = new URL('./drain.mjs', import.meta.url).href, startPath = join(f.root, 'start-drain-race');
   const childCode = `import {existsSync} from 'node:fs';import {openDrainLeaseSource,observeDrain} from ${JSON.stringify(moduleUrl)};
     const root=process.argv[1],request=JSON.parse(process.argv[2]);console.log('READY');
-    while(!existsSync(process.argv[3])) await new Promise(r=>setTimeout(r,1));
+    const until=performance.now()+4000;
+    while(!existsSync(process.argv[3])) {if(performance.now()>=until)throw new Error('private release deadline');await new Promise(r=>setTimeout(r,1));}
     let source;try{source=openDrainLeaseSource(root,root+'/fixture-business.sqlite');
       console.log(JSON.stringify(await observeDrain({root,request,leaseSource:source,deadlineAt:Date.now()+250,pollEveryMs:5})));
-    }catch(e){console.log(JSON.stringify({error:e.code??e.message,drain_ready:false,writer_quiescence:false,production_permitted:false,process_termination:'unknown'}));}finally{source?.close();}`;
-  const run = () => {
-    const child = spawn(process.execPath, ['--input-type=module', '-e', childCode, f.root, JSON.stringify(f.request), startPath], { cwd: process.cwd(), env: { PATH: process.env.PATH }, stdio: ['ignore', 'pipe', 'pipe'] });
-    let stdout = '', stderr = '', readyResolve; const ready = new Promise(resolve => { readyResolve = resolve; });
-    child.stdout.on('data', chunk => { stdout += chunk; if (stdout.includes('READY\n')) readyResolve(); }); child.stderr.on('data', chunk => { stderr += chunk; });
-    const done = new Promise(resolve => child.on('exit', code => resolve({ code, stderr, stdout })));
-    t.after(() => { if (child.exitCode === null) child.kill('SIGTERM'); }); return { ready, done };
-  };
-  const one = run(), two = run(); await Promise.all([one.ready, two.ready]); writeFileSync(startPath, 'start', { mode: 0o600 });
-  const outcomes = await Promise.all([one.done, two.done]);
-  for (const outcome of outcomes) {
-    assert.equal(outcome.code, 0, outcome.stderr); const last = JSON.parse(outcome.stdout.trim().split('\n').at(-1)); blocked(last);
-    if (!last.error) assert.equal(last.controller_uniqueness, 'unknown');
+    }catch(e){console.log(JSON.stringify({error:e.code??e.message,detail:e.stack,drain_ready:false,writer_quiescence:false,production_permitted:false,process_termination:'unknown'}));}finally{source?.close();}`;
+  const children = []; let primary;
+  try {
+    children.push(privateDrainChild(childCode, [f.root, JSON.stringify(f.request), startPath]));
+    children.push(privateDrainChild(childCode, [f.root, JSON.stringify(f.request), startPath]));
+    await Promise.all(children.map(child => child.ready)); writeFileSync(startPath, 'start', { flag: 'wx', mode: 0o600 });
+    const outcomes = await Promise.all(children.map(child => child.wait()));
+    t.diagnostic('drain race close outputs ' + JSON.stringify({ fixture: f.root, outcomes }));
+    const parsed = outcomes.map(parseDrainResult);
+    for (const last of parsed) {
+      blocked(last);
+      if (!last.error) assert.equal(last.controller_uniqueness, 'unknown');
+    }
+    assert.equal(f.writers.inspect().admission, 'closed'); assert.equal(f.ledger.inspect().operations['op-drain'].disposition, 'held');
+    assert.deepEqual(f.facts(), before); console.log('drain-race-blocked', JSON.stringify(parsed.map(o => ({ reason: o.reason ?? o.error, controller_uniqueness: o.controller_uniqueness ?? 'unknown', drain_ready: o.drain_ready }))));
+  } catch (cause) { primary = cause; }
+  finally { await finishDrainChildren(children, primary, t); }
+});
+
+test('private drain supervision rejects early exit, wrong ready and missing ready with confirmed cleanup', async () => {
+  for (const [code, expected, readyMs] of [
+    ['process.exit(3)', /before private ready/, 4000],
+    ["console.log('WRONG');setInterval(()=>{},1000)", /invalid private ready/, 4000],
+    ['setInterval(()=>{},1000)', /ready deadline/, 200],
+  ]) {
+    const child = privateDrainChild(code, [], readyMs);
+    try { await assert.rejects(child.ready, expected); }
+    finally { const closed = await child.cleanup(); assert.equal(closed.error, undefined); }
   }
-  assert.equal(f.writers.inspect().admission, 'closed'); assert.equal(f.ledger.inspect().operations['op-drain'].disposition, 'held');
-  assert.deepEqual(f.facts(), before); console.log('drain-race-blocked', JSON.stringify(outcomes.map(o => JSON.parse(o.stdout.trim().split('\n').at(-1))).map(o => ({ reason: o.reason ?? o.error, controller_uniqueness: o.controller_uniqueness ?? 'unknown', drain_ready: o.drain_ready }))));
+});
+test('private drain close watchdog fails a TERM-ignoring child and confirms KILL cleanup', async () => {
+  const child = privateDrainChild("process.on('SIGTERM',()=>{});console.log('READY');setInterval(()=>{},1000)");
+  try { await child.ready; await assert.rejects(child.wait(50), /close deadline/); }
+  finally { const closed = await child.cleanup(); assert.equal(closed.signal, 'SIGKILL'); }
+});
+test('private drain close captures complete large stdout and stderr; malformed output is not repaired', async () => {
+  const child = privateDrainChild("console.log('READY');process.stdout.write(JSON.stringify({payload:'x'.repeat(262144)})+'\\n');process.stderr.write('y'.repeat(262144))");
+  try {
+    await child.ready; const closed = await child.wait(); assert.equal(closed.exit, 0); assert.equal(closed.error, undefined);
+    assert.equal(parseDrainResult(closed).payload.length, 262144); assert.equal(closed.stderr.length, 262144);
+    assert.ok(Object.isFrozen(closed));
+  } finally { await child.cleanup(); }
+  const bad = privateDrainChild("console.log('READY');console.log('{bad')");
+  try { await bad.ready; const closed = await bad.wait(); assert.throws(() => parseDrainResult(closed), SyntaxError); }
+  finally { await bad.cleanup(); }
+});
+test('real drain output parser rejects duplicate ready, malformed intermediate lines and multiple results after close', async () => {
+  const result = JSON.stringify({ drain_ready: false, writer_quiescence: false, production_permitted: false, process_termination: 'unknown' });
+  for (const remainder of ['READY\n' + result + '\n', '{bad\n' + result + '\n', result + '\n' + result + '\n', result + '\ntrailing-invalid\n']) {
+    const child = privateDrainChild("console.log('READY');process.stdout.write(" + JSON.stringify(remainder) + ')');
+    try { await child.ready; const closed = await child.wait(); assert.throws(() => parseDrainResult(closed), SyntaxError); }
+    finally { await child.cleanup(); }
+  }
+});
+test('failed drain preparation retains complete cleanup-close output and the original failure', async () => {
+  const tail = 'diagnostic-close-tail\n', child = privateDrainChild("process.stderr.write('x'.repeat(262144)+" + JSON.stringify(tail) + ');process.exitCode=3;');
+  try {
+    await assert.rejects(child.ready, /before private ready/);
+    let diagnostic;
+    const primary = new Error('original private ready failure');
+    await assert.rejects(finishDrainChildren([child], primary, { diagnostic: text => { diagnostic = JSON.parse(text); } }), error => error === primary);
+    assert.equal(diagnostic[0].closed, true); assert.equal(diagnostic[0].outputComplete, true);
+    assert.equal(diagnostic[0].exit, 3); assert.equal(diagnostic[0].stderr, 'x'.repeat(262144) + tail);
+  } finally { await child.cleanup(); }
 });
