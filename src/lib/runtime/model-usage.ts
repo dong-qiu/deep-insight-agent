@@ -2,17 +2,21 @@
 import { beginObservedModelAttempt, checkModelCallObserver, observedLogicalCallId } from "./model-call-observer.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
+import { types } from "node:util";
 import type { DB } from "../db/index.js";
 import type { Cost } from "../types.js";
 import { beginModelUsageAttempt, observeModelUsage, type UsageNumbers } from "../db/model-usage.js";
 import { awaitWithSignal, throwIfAborted } from "./cancellation.js";
 import { checkTaskBudget, taskBudgetEnabled } from "./task-budget.js";
+import type { BoundUsageRun, UsageCommitResult } from "./writer-admission.js";
 
 type Role = "analyzer" | "validator" | "coverage" | "followup";
 type Provider = "anthropic" | "volcengine-responses";
 interface UsageJob {
   db: DB; runId: string; traceId: string | null; signal: AbortSignal; assertWrite?: () => void;
   recordCost?: (cost: Cost) => void;
+  /** Explicit isolated fixed consumer; rejection never falls back to the legacy repository. */
+  usageWriter?: BoundUsageRun;
   failure?: Error; finished: boolean; pending: Set<Promise<unknown>>; persistenceFailure: AbortController;
 }
 interface UsageCall { job: UsageJob; id: string; attempt: number; role: Role; model: string; provider: Provider }
@@ -38,6 +42,20 @@ export function acceptUsageCost(runId: string): boolean {
   delivery.recorded = true; return true;
 }
 export function createUsageJobScope(input: Omit<UsageJob, "finished" | "failure" | "pending" | "persistenceFailure">) {
+  if (input.usageWriter !== undefined) {
+    const writer = input.usageWriter;
+    if (!writer || types.isProxy(writer) || !Object.isFrozen(writer)) throw new Error("writer_usage_business_mismatch");
+    const fields = Object.getOwnPropertyDescriptors(writer);
+    const binding = Object.getOwnPropertyDescriptor(writer, Symbol.for("insight-agent.a3-usage-run-v1"));
+    if (!["db", "runId", "traceId", "beginAttempt", "observeAttempt"].every(key => fields[key] && "value" in fields[key])
+      || !binding || !("value" in binding) || !binding.value || types.isProxy(binding.value) || !Object.isFrozen(binding.value)) throw new Error("writer_usage_business_mismatch");
+    const data = Object.getOwnPropertyDescriptors(binding.value);
+    if (!["businessDb", "runId", "traceId", "signal"].every(key => data[key] && "value" in data[key])
+      || fields.db.value !== input.db || data.businessDb.value !== input.db
+      || fields.runId.value !== input.runId || data.runId.value !== input.runId
+      || fields.traceId.value !== input.traceId || data.traceId.value !== input.traceId || data.signal.value !== input.signal
+      || typeof fields.beginAttempt.value !== "function" || typeof fields.observeAttempt.value !== "function") throw new Error("writer_usage_business_mismatch");
+  }
   const job: UsageJob = { ...input, finished: false, pending: new Set(), persistenceFailure: new AbortController() };
   return {
     run: <T>(work: () => Promise<T>): Promise<T> => jobs.run(job, work),
@@ -57,6 +75,7 @@ export function checkRuntimeControl(): void {
   if (taskBudgetEnabled()) job?.assertWrite?.();
   throwIfAborted(job?.signal);
   if (job?.failure) throw job.failure;
+  if (job?.usageWriter && job.finished) throw new Error("usage_persistence_failed");
   checkTaskBudget();
   checkModelCallObserver();
 }
@@ -84,14 +103,20 @@ export async function withUsageCall<T>(role: Role, model: string, provider: Prov
 function protectedWrite(job: UsageJob, attemptId: string, work: () => void): void {
   try { work(); } catch (error) {
     const fenceLost = error instanceof Error && error.message === "generation_fence_lost";
-    const failure = fenceLost ? error : new Error("usage_persistence_failed");
+    const commitUnknown = error instanceof Error && error.message === "usage_commit_unknown";
+    const failure = fenceLost ? error : new Error(commitUnknown ? "usage_commit_unknown" : "usage_persistence_failed");
     job.failure ??= failure;
     job.persistenceFailure.abort(job.failure);
-    const diagnostic = fenceLost ? "usage_fence_lost" : !job.db.open ? "usage_store_closed" : "usage_persistence_failed";
+    const diagnostic = fenceLost ? "usage_fence_lost" : commitUnknown ? "usage_commit_unknown" : !job.db.open ? "usage_store_closed" : "usage_persistence_failed";
     // Even after cancelled Job cleanup this callback has a controlled, body-free diagnosis.
     console.warn(diagnostic, { attempt_id: attemptId, job_finished: job.finished });
     throw failure;
   }
+}
+function requireUsageCommit(result: UsageCommitResult, fresh = false): void {
+  if (result.kind === "unknown") throw new Error("usage_commit_unknown");
+  if (result.kind === "not_committed") throw new Error(result.code);
+  if (fresh && result.replayed) throw new Error("usage_attempt_replayed");
 }
 export function beginUsageAttempt(): { observe: (usage: UsageNumbers, final: boolean) => void; fetch?: typeof fetch } | undefined {
   const call = calls.getStore();
@@ -101,11 +126,15 @@ export function beginUsageAttempt(): { observe: (usage: UsageNumbers, final: boo
   checkRuntimeControl();
   const observed = beginObservedModelAttempt();
   const attemptId = observed?.attemptId ?? randomUUID();
-  protectedWrite(job, attemptId, () => beginModelUsageAttempt(job.db, {
+  const identity = {
     attempt_id: attemptId, logical_call_id: call.id, attempt_number: ++call.attempt,
     run_id: job.runId, trace_id: job.traceId, role: call.role, model: call.model, provider: call.provider,
     started_at: new Date().toISOString(),
-  }, job.assertWrite));
+  };
+  protectedWrite(job, attemptId, () => {
+    if (job.usageWriter) requireUsageCommit(job.usageWriter.beginAttempt(identity), true);
+    else beginModelUsageAttempt(job.db, identity, job.assertWrite);
+  });
   let revision = 0;
   return {
     fetch: observed?.fetch,
@@ -113,7 +142,11 @@ export function beginUsageAttempt(): { observe: (usage: UsageNumbers, final: boo
       observed?.observe(usage, final);
       // Cancellation rejects business results but does not erase actually observed usage.
       // The original guard is executed *inside* each repository write transaction.
-      protectedWrite(job, attemptId, () => observeModelUsage(job.db, attemptId, { usage, final, observation_number: ++revision }, job.assertWrite));
+      protectedWrite(job, attemptId, () => {
+        const observation = { usage, final, observation_number: ++revision };
+        if (job.usageWriter) requireUsageCommit(job.usageWriter.observeAttempt(attemptId, observation));
+        else observeModelUsage(job.db, attemptId, observation, job.assertWrite);
+      });
     },
   };
 }

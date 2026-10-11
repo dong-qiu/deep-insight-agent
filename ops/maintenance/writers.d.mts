@@ -1,4 +1,6 @@
 import type { StagedTerminalControl } from './staged-terminal.mjs';
+import type { FixedUsageDispatchDriver, UsageWriterAdmission } from "../../src/lib/runtime/writer-admission.js";
+export type { FixedUsageDispatchDriver, UsageWriterAdmission } from "../../src/lib/runtime/writer-admission.js";
 import type { DB } from "../../src/lib/db/index.js";
 import type { WriterGenerationToken, WriterTaskToken, WriterOutcome, WriterAdmission, TerminalWriterAdmission, FixedTerminalDispatchDriver, StagedTerminalWriterAdmission } from "../../src/lib/runtime/writer-admission.js";
 export type { WriterGenerationToken, WriterTaskToken, WriterOutcome, WriterAdmission, TerminalWriterAdmission, FixedTerminalDispatchDriver, StagedTerminalWriterAdmission } from "../../src/lib/runtime/writer-admission.js";
@@ -17,6 +19,7 @@ export function openWriters(root: string): {
   closeAdmission(): void;
   admissionFor(worker: WriterGenerationToken): WriterAdmission;
   terminalAdmissionFor(worker: WriterGenerationToken, businessDb: DB, driver: FixedTerminalDispatchDriver): TerminalWriterAdmission;
+  usageAdmissionFor(worker: WriterGenerationToken, businessDb: DB, driver: FixedUsageDispatchDriver): UsageWriterAdmission;
   registerStagedTerminal(workerId: string, businessDb: DB, driver: FixedTerminalDispatchDriver): { worker: WriterGenerationToken; admission: StagedTerminalWriterAdmission };
   stagedTerminalControl(): StagedTerminalControl;
   inspect(): WriterSnapshot;
