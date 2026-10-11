@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import { generateKeyPairSync, sign } from 'node:crypto';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import Database from 'better-sqlite3';
 import { register } from 'tsx/esm/api';
 import { initialize, openLedger } from './ledger.mjs';
@@ -80,6 +80,83 @@ function ledgerNow(f){const l=openLedger(f.root);try{return l.inspect();}finally
 function writerNow(f){const w=openWriters(f.root);try{return w.inspect();}finally{w.close();}}
 function countAudit(f){const db=new Database(join(f.root,'ledger.sqlite'),{readonly:true});try{return db.prepare('SELECT count(*) AS n FROM events').get().n;}finally{db.close();}}
 
+// Private test processes only. Exit records status; close freezes all output.
+function freezeNativeFacts(message,expected){
+ assert.deepEqual(Object.keys(message).sort(),[...Object.keys(expected),'pid','firstReadyCount','firstReleaseObserved','secondReleaseObserved','initialBeginAttempts','initialBeginReturned','initialDatabaseBound','successfulInitialInserts','entryReadyCount','armPresent','readonlyCommitReturns','nonInitialWritableCommitReturns','rollbackReturns','nativeErrors','facilityErrors'].sort());
+ for(const [key,value]of Object.entries(expected))assert.equal(message[key],value,key);
+ for(const key of ['firstReadyCount','initialBeginAttempts','successfulInitialInserts','entryReadyCount','readonlyCommitReturns','nonInitialWritableCommitReturns','rollbackReturns'])assert.ok(Number.isSafeInteger(message[key])&&message[key]>=0,key);
+ for(const key of ['firstReleaseObserved','secondReleaseObserved','initialBeginReturned','initialDatabaseBound','armPresent'])assert.equal(typeof message[key],'boolean',key);
+ for(const key of ['nativeErrors','facilityErrors'])assert.ok(Array.isArray(message[key]),key);
+ for(const error of message.nativeErrors){assert.deepEqual(Object.keys(error).sort(),['phase','database','readonly','initialDatabase','source','code','message'].sort());assert.equal(typeof error.readonly,'boolean');assert.equal(typeof error.initialDatabase,'boolean');for(const key of ['phase','database','source','message'])assert.equal(typeof error[key],'string');assert.ok(error.code===null||typeof error.code==='string');}
+ for(const error of message.facilityErrors){assert.deepEqual(Object.keys(error).sort(),['phase','message'].sort());assert.equal(typeof error.phase,'string');assert.equal(typeof error.message,'string');}
+ return Object.freeze({...message,nativeErrors:Object.freeze(message.nativeErrors.map(error=>Object.freeze({...error}))),facilityErrors:Object.freeze(message.facilityErrors.map(error=>Object.freeze({...error})))});
+}
+function spawnOwnedChild(children,args,{label,ready,entryReady,nativeFacts,readyMs=4000,watchdogMs=12000,executable=process.execPath}={}){
+ const c=spawn(executable,args,{cwd:process.cwd(),env:{PATH:process.env.PATH,PORT:'3150'},stdio:ready?['pipe','pipe','pipe','ipc']:['pipe','pipe','pipe']});
+ const expectedReady=ready&&Object.freeze({...ready,pid:c.pid}),expectedEntry=entryReady&&Object.freeze({...entryReady,pid:c.pid}),expectedFacts=nativeFacts&&Object.freeze({...nativeFacts});
+ let resolveClose,resolveFailure,resolveReady,resolveEntry;
+ const state={child:c,label,phase:'spawned',closed:false,exit:null,failure:null,ready:false,cleaning:false,cleanupErrors:[],stdout:[],stderr:[],signals:[],events:['spawn'],
+  entryReady:false,released1:false,released2:false,done:new Promise(resolve=>{resolveClose=resolve;}),failed:new Promise(resolve=>{resolveFailure=resolve;}),prepared:new Promise(resolve=>{resolveReady=resolve;}),entryPrepared:new Promise(resolve=>{resolveEntry=resolve;})};
+ children.push(state);
+ const fail=error=>{if(!state.cleaning&&!state.failure){state.failure=error;resolveFailure(error);}};
+ const stream=(name,bytes)=>{if(!state.closed)state[name].push(Buffer.from(bytes));};
+ c.on('error',error=>{if(state.cleaning)state.cleanupErrors.push(error);else fail(new Error('child process error: '+error.message,{cause:error}));});
+ c.on('exit',(code,signal)=>{state.exit={code,signal};state.events.push('exit');if(ready&&!state.ready)fail(new Error('child exited before private barrier'));if(state.entryReady&&!state.released2)fail(new Error('initial winner exited before second release'));});
+ c.on('close',(code,signal)=>{clearTimeout(state.readyTimer);clearTimeout(state.watchdog);if(expectedFacts&&!state.nativeFacts)fail(new Error('child closed without native facts'));state.closed=true;state.events.push('close');
+  state.result=Object.freeze({label,pid:c.pid,exit:code,signal,stdout:Buffer.concat(state.stdout).toString('utf8'),stderr:Buffer.concat(state.stderr).toString('utf8'),
+   ready:state.ready,readyMessage:state.readyMessage,entryReady:state.entryReady,entryMessage:state.entryMessage,nativeFacts:state.nativeFacts,events:Object.freeze([...state.events]),signals:Object.freeze([...state.signals])});resolveClose(state.result);
+ });
+ c.stdout.on('data',bytes=>stream('stdout',bytes));c.stderr.on('data',bytes=>stream('stderr',bytes));
+ c.stdout.on('error',error=>fail(new Error('child stdout error: '+error.message,{cause:error})));
+ c.stderr.on('error',error=>fail(new Error('child stderr error: '+error.message,{cause:error})));
+ c.stdin.on('error',error=>fail(new Error('child stdin error: '+error.message,{cause:error})));
+ if(ready){c.on('message',message=>{
+  if(expectedEntry&&message?.kind===expectedEntry.kind){
+   try{assert.ok(state.ready&&state.released1&&!state.entryReady&&!state.nativeFacts,'entry ready out of order or duplicate');assert.deepEqual(message,expectedEntry);assert.equal(children.some(child=>child.entryReady),false,'multiple initial commit winners');}
+   catch(error){fail(new Error('invalid private entry ready',{cause:error}));return;}
+   state.entryReady=true;state.entryMessage=Object.freeze({...message});state.phase='initial-committed';state.events.push('entry-ready');resolveEntry();return;
+  }
+  if(expectedFacts&&message?.kind===expectedFacts.kind){
+   try{assert.ok(state.ready&&state.released1&&!state.nativeFacts,'native facts out of order or duplicate');assert.ok(!state.entryReady||state.released2,'winner facts before second release');assert.equal(message.pid,c.pid);assert.equal(message.firstReadyCount,1);assert.equal(message.entryReadyCount,Number(state.entryReady));state.nativeFacts=freezeNativeFacts(message,expectedFacts);}
+   catch(error){fail(new Error('invalid private native facts',{cause:error}));}return;
+  }
+  try{assert.equal(state.ready,false,'duplicate private ready');assert.deepEqual(message,expectedReady);}
+  catch(error){fail(new Error('invalid private ready',{cause:error}));return;}
+  state.ready=true;state.readyMessage=Object.freeze({...message});state.phase='ready';state.events.push('ready');clearTimeout(state.readyTimer);resolveReady();
+ });c.on('disconnect',()=>{if(expectedFacts&&!state.nativeFacts)fail(new Error(state.entryReady&&!state.released2?'initial winner IPC disconnected before second release':'child IPC disconnected before native facts'));});state.readyTimer=setTimeout(()=>fail(new Error('private ready deadline exceeded')),readyMs);}
+ state.watchdog=setTimeout(()=>fail(new Error('child completion watchdog exceeded')),watchdogMs);
+ return state;
+}
+function childDiagnostic(state){return {label:state.label,pid:state.child.pid,phase:state.phase,closed:state.closed,exit:state.exit,
+ failure:state.failure?.message,readyMessage:state.readyMessage,entryMessage:state.entryMessage,nativeFacts:state.nativeFacts,events:state.events,signals:state.signals,stdout:state.result?.stdout??Buffer.concat(state.stdout).toString('utf8'),stderr:state.result?.stderr??Buffer.concat(state.stderr).toString('utf8')};}
+async function waitOwnedReady(state){await Promise.race([state.prepared,state.failed.then(error=>{throw error;})]);if(state.failure)throw state.failure;}
+async function waitOwnedClose(state){const result=await Promise.race([state.done,state.failed.then(error=>{throw error;})]);if(state.failure)throw state.failure;return result;}
+async function boundedEntryPhase(children,body){let timer,ended=false;const until=performance.now()+4000,active=()=>assert.ok(!ended&&performance.now()<until,'private entry phase no longer active');try{return await Promise.race([body(active),...children.map(child=>child.failed.then(error=>{throw error;})),new Promise((resolve,reject)=>{timer=setTimeout(()=>{ended=true;reject(new Error('private entry phase deadline exceeded'));},4000);})]);}finally{ended=true;clearTimeout(timer);}}
+async function boundedChildClose(state,ms){let timer;try{return await Promise.race([state.done.then(()=>true),new Promise(resolve=>{timer=setTimeout(()=>resolve(false),ms);})]);}finally{clearTimeout(timer);}}
+async function cleanupOwnedChild(state){
+ clearTimeout(state.readyTimer);clearTimeout(state.watchdog);if(state.closed)return;
+ state.cleaning=true;
+ const signal=name=>{if(!state.closed&&state.exit===null){state.signals.push(name);try{state.child.kill(name);}catch(error){state.cleanupErrors.push(error);}}};
+ signal('SIGTERM');let closed=await boundedChildClose(state,500);
+ if(!closed){signal('SIGKILL');closed=await boundedChildClose(state,2000);}
+ if(!closed){
+  // Unknown close remains a failure; these refs cannot leave the test runner hanging.
+  state.child.unref();state.child.stdin.unref?.();state.child.stdout.unref?.();state.child.stderr.unref?.();state.child.channel?.unref();
+  state.cleanupErrors.push(new Error('owned child close unconfirmed: '+JSON.stringify(childDiagnostic(state))));
+ }
+ if(state.cleanupErrors.length)throw new AggregateError(state.cleanupErrors,'owned child signal or close cleanup failed');
+}
+async function withOwnedChildren(t,body){
+ const children=[];let primary;
+ try{return await body(children);}catch(error){primary=error;throw error;}
+ finally{
+  const settled=await Promise.allSettled(children.map(cleanupOwnedChild)),errors=settled.filter(x=>x.status==='rejected').map(x=>x.reason);
+  if(primary||errors.length)t.diagnostic('owned child diagnostics '+JSON.stringify(children.map(childDiagnostic)));
+  if(errors.length)throw new AggregateError(primary?[primary,...errors]:errors,'owned child cleanup failed',{cause:primary});
+ }
+}
+function parseChildJson(result){assert.equal(result.events.at(-1),'close');try{return JSON.parse(result.stdout);}catch(error){throw new Error('malformed child JSON output',{cause:error});}}
+
 test('real consumer owned hold-first closes same root and finishes timeout with two confirmed strict holds; late finish/replay stay held',async t=>{
  const f=acquired(t,'positive',{claimed:true}),before=rowsNow(f),audit=countAudit(f);capture(f,'before-positive');
  const r=await consumeOwnedDrainIsolated(opts(f));record(f,'positive-result',r);capture(f,'after-positive-before-sql');assertBlocked(r);
@@ -128,10 +205,14 @@ test('unsafe journal and capacity gates reject before any BEGIN and preserve ori
  if(evidence){save(join(evidence,'unsafe-original-journal.bin'),b);record(f,'unsafe-preserved',{journalMode:644,journalSize:b.length,journalHash:hash(b),databaseHash:hash(before),begins});}
 });
 test('real CLI legal positive and finite noEOF/overcap/invalid input have sanitized output',async t=>{
- const f=acquired(t,'cli-positive',{task:false});capture(f,'before-cli');const child=spawnSync(process.execPath,['ops/maintenance/owned-drain-cli.mjs',f.root,f.artifactRoot,String(Date.now()+5000),'10'],{input:JSON.stringify(f.input),cwd:process.cwd(),env:{PATH:process.env.PATH,PORT:'3150'},encoding:'utf8',timeout:10000});assert.equal(child.status,1,child.stderr);const r=JSON.parse(child.stdout);assertBlocked(r);assert.equal(r.final_hold,'committed');capture(f,'after-cli-before-sql');record(f,'cli-result',r);
+ const f=acquired(t,'cli-positive',{task:false});capture(f,'before-cli');const child=spawnSync(process.execPath,['ops/maintenance/owned-drain-cli.mjs',f.root,f.artifactRoot,String(Date.now()+5000),'10'],{input:JSON.stringify(f.input),cwd:process.cwd(),env:{PATH:process.env.PATH,PORT:'3150'},encoding:'utf8',timeout:10000,killSignal:'SIGKILL'});assert.equal(child.error,undefined,child.stdout+child.stderr);assert.equal(child.status,1,child.stderr);const r=JSON.parse(child.stdout);assertBlocked(r);assert.equal(r.final_hold,'committed');capture(f,'after-cli-before-sql');record(f,'cli-result',r);
  const fresh=acquired(t,'cli-input'),before=capture(fresh,'before-cli-input');
- for(const input of ['{bad',Buffer.from([255]),'x'.repeat(65537)]){const c=spawnSync(process.execPath,['ops/maintenance/owned-drain-cli.mjs',fresh.root,fresh.artifactRoot,String(Date.now()+5000),'10'],{input,cwd:process.cwd(),env:{PATH:process.env.PATH,PORT:'3150'},encoding:'utf8',timeout:10000});assert.equal(c.status,1);assert.equal(c.stdout,'');assert.match(c.stderr,/^[A-Za-z0-9_-]+\n$/);}
- const {spawn}=await import('node:child_process'),c=spawn(process.execPath,['ops/maintenance/owned-drain-cli.mjs',fresh.root,fresh.artifactRoot,String(Date.now()+700),'10'],{cwd:process.cwd(),env:{PATH:process.env.PATH,PORT:'3150'},stdio:['pipe','pipe','pipe']});let stdout='',stderr='';c.stdout.on('data',b=>stdout+=b);c.stderr.on('data',b=>stderr+=b);c.stdin.write(JSON.stringify(fresh.input));const exit=await new Promise(resolve=>c.on('exit',resolve));assert.equal(exit,1);assert.equal(stdout,'');assert.equal(stderr,'task_deadline_exceeded\n');assert.deepEqual(byteFacts(capture(fresh,'after-cli-input-before-sql')),byteFacts(before));record(fresh,'cli-noEOF-output',{exit,stdout,stderr});
+ for(const input of ['{bad',Buffer.from([255]),'x'.repeat(65537)]){const c=spawnSync(process.execPath,['ops/maintenance/owned-drain-cli.mjs',fresh.root,fresh.artifactRoot,String(Date.now()+5000),'10'],{input,cwd:process.cwd(),env:{PATH:process.env.PATH,PORT:'3150'},encoding:'utf8',timeout:10000,killSignal:'SIGKILL'});assert.equal(c.error,undefined,c.stdout+c.stderr);assert.equal(c.status,1);assert.equal(c.stdout,'');assert.match(c.stderr,/^[A-Za-z0-9_-]+\n$/);}
+ await withOwnedChildren(t,async children=>{
+  const c=spawnOwnedChild(children,['ops/maintenance/owned-drain-cli.mjs',fresh.root,fresh.artifactRoot,String(Date.now()+700),'10'],{label:'CLI noEOF'});
+  c.child.stdin.write(JSON.stringify(fresh.input));const result=await waitOwnedClose(c);
+  assert.equal(result.exit,1);assert.equal(result.signal,null);assert.equal(result.stdout,'');assert.equal(result.stderr,'task_deadline_exceeded\n');assert.deepEqual(byteFacts(capture(fresh,'after-cli-input-before-sql')),byteFacts(before));record(fresh,'cli-noEOF-output',result);
+ });
 });
 // Fixed real code helpers are embedded only in private child tests, not exposed by runtime.
 const testCode=fs.readFileSync(new URL(import.meta.url),'utf8');
@@ -142,12 +223,12 @@ const childPrelude=testCode.slice(0,testCode.indexOf("test('original real acquir
 for(const cut of ['initial-before','initial-after','close-before','close-after','final-before','final-after'])test(`actual owned SIGKILL ${cut} preserves complete before-recovery bytes and durable phase facts`,t=>{
  const hook=`const f=acquired({diagnostic:()=>{}},'crash');console.log(JSON.stringify(f));const {consumeOwnedDrainIsolated}=await import('./ops/maintenance/owned-drain.mjs');const prototype=Object.getPrototypeOf(new Database(':memory:').prepare('SELECT 1')),run=prototype.run;let phase;prototype.run=function(...args){if(this.database.name===join(f.root,'ledger.sqlite')&&this.source==='INSERT INTO events VALUES(?,?,?,?)'){const state=JSON.parse(args[3]),failures=state.operations[f.token.operationId].failures;phase=failures.length===1?'initial':'final';}if(this.database.name===join(f.root,'writers.sqlite')&&this.source.includes("UPDATE admission SET mode='closed'"))phase='close';const commit=this.source==='COMMIT'&&['ledger.sqlite','writers.sqlite'].some(n=>this.database.name===join(f.root,n));if(commit&&phase&&process.argv[1]===phase+'-before')process.kill(process.pid,'SIGKILL');const value=run.apply(this,args);if(commit&&phase&&process.argv[1]===phase+'-after')process.kill(process.pid,'SIGKILL');if(commit)phase=undefined;return value;};await consumeOwnedDrainIsolated(opts(f,{deadlineAt:Date.now()+1500}));throw new Error('cut_not_hit');`;
  if(evidence)save(join(evidence,cut+'-actual-child.mjs'),childPrelude+hook);
- const c=spawnSync(process.execPath,['--input-type=module','-e',childPrelude+hook,cut],{cwd:process.cwd(),env:{PATH:process.env.PATH,PORT:'3150'},encoding:'utf8',timeout:10000});assert.equal(c.signal,'SIGKILL',c.stdout+c.stderr);
+ const c=spawnSync(process.execPath,['--input-type=module','-e',childPrelude+hook,cut],{cwd:process.cwd(),env:{PATH:process.env.PATH,PORT:'3150'},encoding:'utf8',timeout:10000,killSignal:'SIGKILL'});assert.equal(c.error,undefined,c.stdout+c.stderr);assert.equal(c.signal,'SIGKILL',c.stdout+c.stderr);
  const f=JSON.parse(c.stdout.trim().split('\n').at(-1));capture(f,cut+'-before-recovery');record(f,cut+'-child',{signal:c.signal,status:c.status,stderr:c.stderr});
  const state=ledgerNow(f),view=writerNow(f),op=state.operations[f.token.operationId];const initialCommitted=cut!=='initial-before',closed=['close-after','final-before','final-after'].includes(cut),finalCommitted=cut==='final-after';
  assert.equal(op.disposition,initialCommitted?'held':'active');assert.equal(view.admission,closed?'closed':'open');assert.deepEqual(op.failures,finalCommitted?['owned_drain_started','writer_drain_timeout']:initialCommitted?['owned_drain_started']:[]);assert.equal(state.revision,f.token.revision+(initialCommitted?1:0)+(finalCommitted?1:0));record(f,cut+'-recovered',{state,view,business:rowsNow(f)});
 });
-function childRun(f,code,args=[],input,timeout=10000){return spawnSync(process.execPath,['--input-type=module','-e',code,...args],{cwd:process.cwd(),env:{PATH:process.env.PATH,PORT:'3150'},input,encoding:'utf8',timeout});}
+function childRun(f,code,args=[],input){const result=spawnSync(process.execPath,['--input-type=module','-e',code,...args],{cwd:process.cwd(),env:{PATH:process.env.PATH,PORT:'3150'},input,encoding:'utf8',timeout:10000,killSignal:'SIGKILL'});assert.equal(result.error,undefined,result.stdout+result.stderr);return result;}
 test('fixed CLI queued deadline callback cannot renew EOF window or setup budget under wall rollback',t=>{
  for(const mode of ['EOF','CAS']){const f=acquired(t,'mono-'+mode),before=capture(f,'before-mono'),body=mode==='EOF'?
   `const decode=TextDecoder.prototype.decode;let hit=false;TextDecoder.prototype.decode=function(...args){const text=decode.apply(this,args);if(!hit&&text.startsWith('{"schema":"a2-a3-owned-drain-v1","consumer":')){hit=true;const until=performance.now()+1400;while(performance.now()<until){}const wall=Date.now();Date.now=()=>wall-10000;}return text;};`:
@@ -165,12 +246,252 @@ test('actual competing process wins revision immediately after cached inspect CO
  try{await assert.rejects(consumeOwnedDrainIsolated(opts(f)),/maintenance_revision_conflict/);}finally{prototype.run=run;Database.prototype.prepare=prepare;}
  assert.equal(hit,true);assert.equal(writerNow(f).admission,'open');assert.deepEqual(ledgerNow(f).operations[f.token.operationId].failures,['other_cas_winner']);record(f,'race-result',{hit,view:writerNow(f),state:ledgerNow(f)});
 });
+const privateReleaseWait=`const until=performance.now()+4000,sleeper=new Int32Array(new SharedArrayBuffer(4));while(!fs.existsSync(release)){if(performance.now()>=until)throw new Error('private release deadline exceeded');Atomics.wait(sleeper,0,0,5);}`;
+const initialReady=(root,release)=>({kind:'owned-drain-initial-ready-v1',root,release,count:7,phase:'readonly-commit-returned'});
+const entryReadyFor=(f,release)=>({kind:'owned-drain-entry-ready-v1',root:f.root,release,operationId:f.token.operationId,ledgerPath:join(f.root,'ledger.sqlite'),phase:'writable-commit-returned',successfulInitialInserts:1,inTransaction:false});
+const nativeFactsFor=f=>({kind:'owned-drain-native-facts-v1',root:f.root,operationId:f.token.operationId,ledgerPath:join(f.root,'ledger.sqlite')});
+// Resolve-only sends cannot create an unhandled rejection. A pending callback keeps
+// this private IPC channel referenced until close or the existing parent watchdog.
+const nativeIPCProtocol=`const pendingIPC=[];
+function send(message){process.channel.ref();const completed=new Promise(resolve=>{let settled=false;const done=error=>{if(settled)return;settled=true;if(error)facility('IPC',error);resolve(error??null);};try{process.send(message,done);}catch(error){done(error);}});pendingIPC.push(completed);return completed;}
+async function finishIPC(){await Promise.all(pendingIPC);facts.armPresent=armDb!==undefined;const finalError=await send(facts);if(finalError||facts.facilityErrors.some(error=>error.phase==='IPC')){process.stderr.write('owned_drain_private_IPC_failed\\n');process.exitCode=2;}if(process.connected)process.disconnect();}`;
+// Seventh same-ledger readonly metadata count, after that native COMMIT returns.
+// Only a normally returned, ended initial write transaction can arm stage two.
+const nativeInitialChild=`import fs from 'node:fs';import {performance} from 'node:perf_hooks';import Database from 'better-sqlite3';import {consumeOwnedDrainIsolated} from './ops/maintenance/owned-drain.mjs';
+let bytes='';for await(const c of process.stdin)bytes+=c;const input=JSON.parse(bytes),release=process.argv[1],release2=process.argv[2],mode=process.argv[3]??'normal',token=JSON.parse(input.inputJson).consumer.a3.token,ledgerPath=input.root+'/ledger.sqlite',prepare=Database.prototype.prepare,prototype=Object.getPrototypeOf(new Database(':memory:').prepare('SELECT 1')),run=prototype.run;
+let count=0,hit=false,initialDb,armDb;const facts={kind:'owned-drain-native-facts-v1',pid:process.pid,root:input.root,operationId:token.operationId,ledgerPath,firstReadyCount:0,firstReleaseObserved:false,secondReleaseObserved:false,initialBeginAttempts:0,initialBeginReturned:false,initialDatabaseBound:false,successfulInitialInserts:0,entryReadyCount:0,armPresent:false,readonlyCommitReturns:0,nonInitialWritableCommitReturns:0,rollbackReturns:0,nativeErrors:[],facilityErrors:[]};
+function facility(phase,error){facts.facilityErrors.push({phase,message:error.message});return error;}
+${nativeIPCProtocol}
+function waitRelease(path,phase){const release=path;try{${privateReleaseWait}}catch(error){throw facility(phase,error);}}
+Database.prototype.prepare=function(sql){const stmt=prepare.call(this,sql);if(this.readonly&&this.name===input.root+'/ledger.sqlite'&&sql==='SELECT count(*) AS n FROM events'){const get=stmt.get;stmt.get=function(...a){const result=get.apply(this,a);count++;return result;};}return stmt;};
+prototype.run=function(...a){const db=this.database,isLedger=db.name===ledgerPath,initialBegin=isLedger&&!db.readonly&&this.source==='BEGIN IMMEDIATE'&&facts.firstReleaseObserved&&facts.initialBeginAttempts===0;
+ if(initialBegin){initialDb=db;facts.initialDatabaseBound=true;facts.initialBeginAttempts++;}
+ const initialCommit=armDb===db&&this.source==='COMMIT';if(this.source==='ROLLBACK')armDb=undefined;
+ let result;try{result=run.apply(this,a);}
+ catch(error){armDb=undefined;facts.nativeErrors.push({phase:initialBegin?'initial-begin':initialCommit?'initial-commit':'native-statement',database:db.name,readonly:db.readonly,initialDatabase:db===initialDb,source:this.source,code:error.code??null,message:error.message});throw error;}
+ if(initialBegin)facts.initialBeginReturned=true;if(this.source==='ROLLBACK')facts.rollbackReturns++;
+ if(isLedger&&this.source==='COMMIT'){if(db.readonly)facts.readonlyCommitReturns++;else if(!initialCommit)facts.nonInitialWritableCommitReturns++;}
+ if(db===initialDb&&!db.readonly&&this.source==='INSERT INTO events VALUES(?,?,?,?)'){const state=JSON.parse(a[3]),op=state.operations[token.operationId];if(state.active===token.operationId&&op?.operationId===token.operationId&&op.ownerId===token.ownerId&&op.fence===token.fence&&op.disposition==='held'&&op.state==='pre_submit'&&JSON.stringify(op.failures)==='["owned_drain_started"]'){facts.successfulInitialInserts++;armDb=db;}}
+ if(initialCommit){armDb=undefined;if(db.inTransaction!==false)throw facility('initial COMMIT',new Error('private initial transaction still active'));facts.entryReadyCount++;
+  if(facts.entryReadyCount!==1||facts.successfulInitialInserts!==1)throw facility('initial COMMIT',new Error('private duplicate initial COMMIT'));
+  const message={kind:'owned-drain-entry-ready-v1',pid:process.pid,root:input.root,release:release2,operationId:token.operationId,ledgerPath,phase:'writable-commit-returned',successfulInitialInserts:1,inTransaction:false};
+  if(mode!=='missing-entry')send(mode==='wrong-entry'?{...message,root:input.root+'-wrong'}:message);if(mode==='duplicate-entry')send(message);
+  if(mode==='winner-exit'){waitRelease(release2+'.exit','winner-exit');process.exit(0);}waitRelease(release2,'release2');facts.secondReleaseObserved=true;
+ }
+ if(!hit&&count===7&&this.source==='COMMIT'&&db.readonly&&isLedger){hit=true;facts.firstReadyCount++;send({kind:'owned-drain-initial-ready-v1',pid:process.pid,root:input.root,release,count,phase:'readonly-commit-returned'});waitRelease(release,'release1');facts.firstReleaseObserved=true;}
+ return result;};
+try{const result=await consumeOwnedDrainIsolated(input);if(!hit){process.stderr.write(JSON.stringify({phase:'before-private-barrier',count,result})+'\\n');throw facility('ready1',new Error('private barrier not reached'));}
+ if(mode==='non-initial'){const db=new Database(ledgerPath,{fileMustExist:true,timeout:0});try{db.transaction(()=>{})();db.transaction(()=>{}).immediate();try{db.transaction(()=>{throw new Error('private noninitial rollback');}).immediate();}catch(error){if(error.message!=='private noninitial rollback')throw error;}}finally{db.close();}}
+ console.log(JSON.stringify(result));}catch(error){console.log(JSON.stringify({error:error.message}));process.exitCode=2;}
+finally{await finishIPC();}`;
+function launchNativeChild(children,f,release,release2,{label='native child',mode='normal',code=nativeInitialChild}={}){
+ const c=spawnOwnedChild(children,['--input-type=module','-e',code,release,release2,mode],{label,ready:initialReady(f.root,release),entryReady:entryReadyFor(f,release2),nativeFacts:nativeFactsFor(f)});
+ c.child.stdin.end(JSON.stringify(opts(f,{deadlineAt:Date.now()+10000})));return c;
+}
+function assertNativeLoser(result){
+ assert.equal(result.signal,null);assert.equal(result.stderr,'','CAS loser emitted private failure diagnostic');assert.equal(result.ready,true);assert.equal(result.entryReady,false);const facts=result.nativeFacts;assert.ok(facts,'missing frozen native loser facts');
+ assert.equal(facts.firstReadyCount,1);assert.equal(facts.firstReleaseObserved,true);assert.equal(facts.initialDatabaseBound,true);assert.equal(facts.initialBeginAttempts,1);assert.equal(facts.successfulInitialInserts,0);assert.equal(facts.entryReadyCount,0);assert.equal(facts.secondReleaseObserved,false);assert.equal(facts.armPresent,false);assert.deepEqual(facts.facilityErrors,[]);
+ const parsed=parseChildJson(result);
+ if(result.exit===2){assert.deepEqual(parsed,{error:'maintenance_revision_conflict'});assert.equal(facts.initialBeginReturned,true);assert.deepEqual(facts.nativeErrors,[]);}
+ else {assert.equal(result.exit,0);assert.equal(parsed.schema,'a2-a3-owned-drain-result-v1');assert.equal(parsed.reason,'owned_drain_initial_commit_unknown');assert.equal(parsed.entry_hold,'unknown');assert.equal(parsed.final_hold,'not_attempted');assert.equal(parsed.token,null);assertBlocked(parsed);assertOwnedPermitsBlocked(parsed);
+  assert.equal(facts.initialBeginReturned,false);assert.equal(facts.nativeErrors.length,1,'unknown loser requires only actual initial BEGIN busy');const error=facts.nativeErrors[0];
+  assert.equal(error.phase,'initial-begin');assert.equal(error.database,facts.ledgerPath);assert.equal(error.readonly,false);assert.equal(error.initialDatabase,true);assert.equal(error.source,'BEGIN IMMEDIATE');assert.equal(error.code,'SQLITE_BUSY');
+ }
+ return parsed;
+}
+function assertOwnedPermitsBlocked(result){for(const key of ['deployment_permitted','rollback_permitted','database_restore_permitted','inverse_migration_permitted'])assert.equal(result[key],false,key);}
+async function runInitialRace(t,f,{a={},b={},prematureRelease2=false,onChildren}={}){
+ const release=join(f.parent,'private-release'),release2=join(f.parent,'private-entry-release');if(prematureRelease2)save(release2,'private-entry-release-v1\n');
+ return withOwnedChildren(t,async children=>{
+  onChildren?.(children);
+  const first=launchNativeChild(children,f,release,release2,{label:'same-token A',...a});await waitOwnedReady(first);
+  const second=launchNativeChild(children,f,release,release2,{label:'same-token B',...b});await waitOwnedReady(second);
+  for(const child of children)if(child.failure)throw child.failure;
+  assert.ok(children.every(c=>c.ready&&!c.closed&&!c.failure));assert.equal(fs.existsSync(release2),false,'premature private second release');
+  children.forEach(c=>{c.released1=true;c.phase='released-1';c.events.push('release-1');});save(release,'private-release-v1\n');
+  let winner,loser,loserResult;
+  await boundedEntryPhase(children,async active=>{
+   winner=await Promise.race(children.map(c=>c.entryPrepared.then(()=>c)));loser=children.find(c=>c!==winner);loserResult=await waitOwnedClose(loser);assertNativeLoser(loserResult);
+   active();assert.equal(children.filter(c=>c.entryReady).length,1);assert.ok(children.every(c=>!c.failure));assert.ok(!winner.closed&&winner.exit===null&&winner.child.exitCode===null&&winner.child.signalCode===null,'winner must remain live before release2');assert.equal(fs.existsSync(release2),false,'premature private second release');
+   winner.released2=true;winner.phase='released-2';winner.events.push('release-2');save(release2,'private-entry-release-v1\n');
+  });
+  const winnerResult=await waitOwnedClose(winner),results=children.map(c=>c===winner?winnerResult:loserResult);t.diagnostic('same-token close outcomes '+JSON.stringify(results));record(f,'two-process-results',results);
+  const parsed=results.map(parseChildJson);assert.equal(parsed.filter(r=>r.entry_hold==='committed').length,1);assert.equal(parsed.filter(r=>r.token!==undefined&&r.token!==null).length,1);
+  const op=ledgerNow(f).operations[f.token.operationId];assert.deepEqual(op.failures,['owned_drain_started','writer_drain_coverage_unknown']);
+  assert.equal(winnerResult.exit,0);assert.equal(winnerResult.signal,null);assert.equal(winnerResult.stderr,'');assertBlocked(parseChildJson(winnerResult));assertOwnedPermitsBlocked(parseChildJson(winnerResult));assert.equal(winnerResult.entryReady,true);assert.ok(winnerResult.events.indexOf('entry-ready')<winnerResult.events.indexOf('release-2'));
+  const facts=winnerResult.nativeFacts;assert.equal(facts.entryReadyCount,1);assert.equal(facts.successfulInitialInserts,1);assert.equal(facts.initialBeginReturned,true);assert.equal(facts.secondReleaseObserved,true);assert.equal(facts.armPresent,false);assert.deepEqual(facts.nativeErrors,[]);assert.deepEqual(facts.facilityErrors,[]);
+  return {results,parsed};
+ });
+}
 test('same-token concurrent actual processes get one strict initial winner, never duplicate entry or refresh loser',async t=>{
- const f=acquired(t,'two-process',{task:false}),{spawn}=await import('node:child_process');
- const code=`import Database from 'better-sqlite3';import {consumeOwnedDrainIsolated} from './ops/maintenance/owned-drain.mjs';let bytes='';for await(const c of process.stdin)bytes+=c;const input=JSON.parse(bytes),prepare=Database.prototype.prepare,prototype=Object.getPrototypeOf(new Database(':memory:').prepare('SELECT 1')),run=prototype.run;let count=0;Database.prototype.prepare=function(sql){const stmt=prepare.call(this,sql);if(sql==='SELECT count(*) AS n FROM events'){const get=stmt.get;stmt.get=function(...a){count++;return get.apply(this,a);};}return stmt;};prototype.run=function(...a){const result=run.apply(this,a);if(count===7&&this.source==='COMMIT'&&this.database.readonly&&this.database.name===input.root+'/ledger.sqlite'){process.send({ready:true});process.kill(process.pid,'SIGSTOP');}return result;};try{const r=await consumeOwnedDrainIsolated(input);console.log(JSON.stringify(r));}catch(e){console.log(JSON.stringify({error:e.message}));process.exitCode=2;}process.disconnect();`;
- const children=[];const start=()=>{const c=spawn(process.execPath,['--input-type=module','-e',code],{cwd:process.cwd(),env:{PATH:process.env.PATH,PORT:'3150'},stdio:['pipe','pipe','pipe','ipc']});children.push(c);let stdout='',stderr='';c.stdout.on('data',b=>stdout+=b);c.stderr.on('data',b=>stderr+=b);const done=new Promise((resolve,reject)=>{c.on('error',reject);c.on('exit',exit=>resolve({exit,stdout,stderr}));});const ready=new Promise((resolve,reject)=>{const timer=setTimeout(()=>{c.kill('SIGCONT');reject(new Error('private barrier deadline'));},4000);c.once('message',()=>{clearTimeout(timer);resolve();});c.once('exit',()=>{clearTimeout(timer);reject(new Error('child exited before private barrier: '+stdout+stderr));});});c.stdin.end(JSON.stringify(opts(f,{deadlineAt:Date.now()+10000})));return {c,done,ready};};
- let results;try{const a=start();await a.ready;const b=start();await b.ready;children.forEach(c=>c.kill('SIGCONT'));results=await Promise.all([a.done,b.done]);}finally{children.forEach(c=>{if(c.exitCode===null)c.kill('SIGCONT');});}
- const parsed=results.map(r=>JSON.parse(r.stdout));assert.equal(parsed.filter(r=>r.entry_hold==='committed').length,1);assert.equal(parsed.filter(r=>r.token!==undefined&&r.token!==null).length,1);const op=ledgerNow(f).operations[f.token.operationId];assert.deepEqual(op.failures,['owned_drain_started','writer_drain_coverage_unknown']);record(f,'two-process-results',results);
+ const f=acquired(t,'two-process',{task:false});await runInitialRace(t,f);
+});
+test('native initial barrier accepts a durable release created before ready without external rescue',async t=>{
+ const f=acquired(t,'early-release',{task:false}),release=join(f.parent,'private-release'),release2=join(f.parent,'private-entry-release');save(release,'private-release-v1\n');save(release2,'private-entry-release-v1\n');
+ await withOwnedChildren(t,async children=>{
+  const c=launchNativeChild(children,f,release,release2,{label:'early durable releases'});c.released1=true;c.released2=true;await waitOwnedReady(c);const result=await waitOwnedClose(c),parsed=parseChildJson(result);
+  assert.equal(result.exit,0);assert.equal(result.signal,null);assert.equal(result.stderr,'');assert.equal(parsed.entry_hold,'committed');assert.notEqual(parsed.token,null);assert.equal(parsed.final_hold,'committed');assertBlocked(parsed);
+  assert.equal(result.entryReady,true);assert.equal(result.nativeFacts.entryReadyCount,1);assert.equal(result.nativeFacts.successfulInitialInserts,1);assert.equal(result.nativeFacts.secondReleaseObserved,true);assert.deepEqual(result.nativeFacts.nativeErrors,[]);assert.deepEqual(result.nativeFacts.facilityErrors,[]);
+  assert.deepEqual(ledgerNow(f).operations[f.token.operationId].failures,['owned_drain_started','writer_drain_coverage_unknown']);record(f,'early-release-result',result);
+ });
+});
+test('actual initial BEGIN busy has frozen native evidence and no successful INSERT or entry ready',async t=>{
+ const f=acquired(t,'native-busy',{task:false}),release=join(f.parent,'private-release'),release2=join(f.parent,'private-entry-release'),before=capture(f,'before-native-busy');
+ await withOwnedChildren(t,async children=>{
+  const c=launchNativeChild(children,f,release,release2,{label:'actual initial BEGIN busy'});await waitOwnedReady(c);
+  const lock=new Database(join(f.root,'ledger.sqlite'),{fileMustExist:true,timeout:0});try{lock.exec('BEGIN IMMEDIATE');c.released1=true;save(release,'private-release-v1\n');const result=await waitOwnedClose(c);assertNativeLoser(result);const parsed=parseChildJson(result);assert.equal(parsed.reason,'owned_drain_initial_commit_unknown');assert.ok(Object.isFrozen(result.nativeFacts));assert.ok(Object.isFrozen(result.nativeFacts.nativeErrors[0]));
+   for(const key of ['deployment_permitted','rollback_permitted','database_restore_permitted','inverse_migration_permitted'])for(const variant of ['true','missing']){const mutated=structuredClone(parsed);if(variant==='true')mutated[key]=true;else delete mutated[key];const changed=Object.freeze({...result,stdout:JSON.stringify(mutated)});assert.equal(changed.nativeFacts,result.nativeFacts);assert.throws(()=>assertNativeLoser(changed),error=>{assert.ok(error instanceof assert.AssertionError);assert.equal(error.message.split('\n')[0],key);assert.equal(error.actual,variant==='true'?true:undefined);assert.equal(error.expected,false);return true;});}
+   record(f,'native-busy-result',result);}
+  finally{try{if(lock.inTransaction)lock.exec('ROLLBACK');}finally{lock.close();}}
+ });
+ assert.deepEqual(byteFacts(capture(f,'after-native-busy-before-sql')),byteFacts(before));assert.equal(countAudit(f),2);
+});
+test('actual initial COMMIT exception clears arm, keeps successful INSERT history and never signs entry ready',async t=>{
+ const f=acquired(t,'commit-no-ready',{task:false}),release=join(f.parent,'private-release'),release2=join(f.parent,'private-entry-release');
+ await withOwnedChildren(t,async children=>{
+  const c=launchNativeChild(children,f,release,release2,{label:'actual native COMMIT busy'});await waitOwnedReady(c);
+  const reader=new Database(join(f.root,'ledger.sqlite'),{readonly:true,fileMustExist:true,timeout:0});try{
+   reader.exec('BEGIN');reader.prepare('SELECT count(*) AS n FROM events').get();c.released1=true;save(release,'private-release-v1\n');const result=await waitOwnedClose(c),parsed=parseChildJson(result),facts=result.nativeFacts;
+   assert.equal(result.exit,0);assert.equal(parsed.reason,'owned_drain_initial_commit_unknown');assert.equal(parsed.entry_hold,'unknown');assert.equal(parsed.token,null);assert.equal(result.entryReady,false);assert.equal(facts.successfulInitialInserts,1);assert.equal(facts.entryReadyCount,0);assert.equal(facts.armPresent,false);assert.equal(facts.nativeErrors.length,1);assert.equal(facts.nativeErrors[0].source,'COMMIT');assert.equal(facts.nativeErrors[0].phase,'initial-commit');assert.equal(facts.nativeErrors[0].code,'SQLITE_BUSY');assert.equal(facts.nativeErrors[0].initialDatabase,true);assert.ok(facts.rollbackReturns>0);assert.deepEqual(facts.facilityErrors,[]);
+   assert.throws(()=>assertNativeLoser(result),assert.AssertionError);assert.equal(fs.existsSync(release2),false);record(f,'commit-no-ready-result',result);
+  }finally{try{if(reader.inTransaction)reader.exec('ROLLBACK');}finally{reader.close();}}
+ });
+ assert.equal(countAudit(f),2);
+});
+test('actual readonly, inspect, final and noninitial rollback commits cannot produce extra entry ready',async t=>{
+ const f=acquired(t,'noninitial-ready',{task:false}),release=join(f.parent,'private-release'),release2=join(f.parent,'private-entry-release');save(release,'private-release-v1\n');save(release2,'private-entry-release-v1\n');
+ await withOwnedChildren(t,async children=>{
+  const c=launchNativeChild(children,f,release,release2,{label:'actual noninitial commits',mode:'non-initial'});c.released1=true;c.released2=true;await waitOwnedReady(c);const result=await waitOwnedClose(c),facts=result.nativeFacts;
+  assert.equal(result.exit,0);assert.equal(result.entryReady,true);assert.equal(facts.entryReadyCount,1);assert.equal(facts.successfulInitialInserts,1);assert.ok(facts.readonlyCommitReturns>0);assert.ok(facts.nonInitialWritableCommitReturns>0);assert.ok(facts.rollbackReturns>0);assert.equal(facts.armPresent,false);assert.deepEqual(facts.nativeErrors,[]);assert.deepEqual(facts.facilityErrors,[]);assert.equal(parseChildJson(result).final_hold,'committed');assert.deepEqual(ledgerNow(f).operations[f.token.operationId].failures,['owned_drain_started','writer_drain_coverage_unknown']);record(f,'noninitial-ready-result',result);
+ });
+});
+function nativeIPCCallbackChild(phase,behavior){
+ const kind={ready:'owned-drain-initial-ready-v1',entry:'owned-drain-entry-ready-v1',facts:'owned-drain-native-facts-v1'}[phase];
+ // Deliver through the real IPC transport, then fault only its caller's callback.
+ const complete=behavior==='late-error'?`setTimeout(()=>callback(new Error('private late ${phase} IPC callback error')),150);`:'';
+ return `const actualSend=process.send;process.send=function(message,callback){if(message.kind!==${JSON.stringify(kind)})return actualSend.call(this,message,callback);return actualSend.call(this,message,error=>{if(error)callback(error);else {${complete}}});};${nativeInitialChild}`;
+}
+for(const phase of ['ready','entry','facts'])for(const behavior of ['late-error','no-callback'])test('actual native IPC '+phase+' '+behavior+' cannot publish a successful closed race',async t=>{
+ const f=acquired(t,'ipc-'+phase+'-'+behavior,{task:false}),code=nativeIPCCallbackChild(phase,behavior);let observed;
+ await assert.rejects(runInitialRace(t,f,{a:{code},b:{code},onChildren:children=>{observed=children;}}),error=>{
+  if(behavior==='no-callback')assert.equal(error.message,phase==='entry'?'child completion watchdog exceeded':'private entry phase deadline exceeded');
+  else if(phase==='entry'){assert.ok(error instanceof assert.AssertionError);assert.equal(error.actual,2);assert.equal(error.expected,0);}
+  else assert.match(error.message,/^CAS loser emitted private failure diagnostic/);
+  return true;
+ });
+ assert.equal(observed.length,2);assert.ok(observed.every(child=>child.closed&&child.result.events.at(-1)==='close'));
+ assert.equal(fs.existsSync(join(f.parent,'private-entry-release')),phase==='entry');
+ if(behavior==='late-error'){
+  const failed=observed.filter(child=>child.result.stderr==='owned_drain_private_IPC_failed\n');assert.ok(failed.length>0);assert.ok(failed.every(child=>child.result.exit===2));
+  if(phase==='facts'){const loser=failed.find(child=>!child.result.entryReady);assert.ok(loser);assert.deepEqual(loser.result.nativeFacts.facilityErrors,[]);assert.throws(()=>assertNativeLoser(loser.result),/CAS loser emitted private failure diagnostic/);}
+  else assert.ok(failed.some(child=>child.result.nativeFacts.facilityErrors.some(error=>error.phase==='IPC'&&error.message==='private late '+phase+' IPC callback error')));
+ }else {assert.ok(observed.some(child=>child.result.signal==='SIGTERM'));assert.ok(observed.every(child=>!child.cleanupErrors.length));}
+});
+function adversaryInitialChild(f,mode){
+ const release=join(f.parent,'private-release'),release2=join(f.parent,'private-entry-release'),first=initialReady(f.root,release),entry=entryReadyFor(f,release2);
+ const unknown={schema:'a2-a3-owned-drain-result-v1',reason:'owned_drain_initial_commit_unknown',entry_hold:'unknown',final_hold:'not_attempted',token:null,deployment_permitted:false,rollback_permitted:false,database_restore_permitted:false,inverse_migration_permitted:false,production_permitted:false,drain_ready:false,writer_quiescence:false,process_termination:'unknown',approved_safe_rollback:null,observation_atomic:false,controller_uniqueness:'unknown',phase_verified:false,all_writer_coverage:false,commands_executed:false};
+ const facts={...nativeFactsFor(f),firstReadyCount:1,firstReleaseObserved:true,secondReleaseObserved:false,initialBeginAttempts:1,initialBeginReturned:false,initialDatabaseBound:true,successfulInitialInserts:0,entryReadyCount:0,armPresent:false,readonlyCommitReturns:1,nonInitialWritableCommitReturns:0,rollbackReturns:0,nativeErrors:[],facilityErrors:[]};
+ if(mode==='unknown-wrong-native')facts.nativeErrors.push({phase:'initial-commit',database:facts.ledgerPath,readonly:false,initialDatabase:true,source:'COMMIT',code:'SQLITE_BUSY',message:'forged unknown COMMIT'});
+ if(mode==='unknown-facility'){facts.nativeErrors.push({phase:'initial-begin',database:facts.ledgerPath,readonly:false,initialDatabase:true,source:'BEGIN IMMEDIATE',code:'SQLITE_BUSY',message:'forged busy with wait failure'});facts.facilityErrors.push({phase:'release1',message:'private wait failed'});}
+ let body;
+ if(mode==='entry-before-ready')body=`process.send(entry);process.send(first);setInterval(()=>{},1000);`;
+ else if(mode==='entry-before-release')body=`process.send(first);process.send(entry);setInterval(()=>{},1000);`;
+ else {body=`process.send(first);${privateReleaseWait}`;
+  if(mode==='two-winners')body+=`process.send(entry);setInterval(()=>{},1000);`;
+  else if(mode==='loser-hang')body+=`setInterval(()=>{},1000);`;
+  else if(mode==='loser-output-hang'){facts.initialBeginReturned=true;body+=`console.log(JSON.stringify({error:'maintenance_revision_conflict'}));process.send(facts);setInterval(()=>{},1000);`;}
+  else body+=`console.log(JSON.stringify(${JSON.stringify(unknown)}));process.send(facts);process.disconnect();`;
+ }
+ return `import fs from 'node:fs';import {performance} from 'node:perf_hooks';let bytes='';for await(const c of process.stdin)bytes+=c;const release=process.argv[1],first={...${JSON.stringify(first)},pid:process.pid},entry={...${JSON.stringify(entry)},pid:process.pid},facts={...${JSON.stringify(facts)},pid:process.pid};${body}`;
+}
+for(const mode of ['entry-before-ready','entry-before-release','wrong-entry','duplicate-entry','missing-entry','two-winners','premature-release2','loser-hang','loser-output-hang','unknown-no-native','unknown-wrong-native','unknown-facility'])test('private two-stage supervision rejects '+mode+' without treating it as a business loser',async t=>{
+ const f=acquired(t,'phase-'+mode,{task:false});let config;
+ if(['wrong-entry','duplicate-entry','missing-entry'].includes(mode))config={a:{mode},b:{mode}};
+ else if(mode==='premature-release2')config={prematureRelease2:true};
+ else if(mode.startsWith('entry-before'))config={a:{code:adversaryInitialChild(f,mode)}};
+ else config={b:{code:adversaryInitialChild(f,mode)}};
+ await assert.rejects(runInitialRace(t,f,config),error=>{
+  if(mode==='premature-release2')assert.match(error.message,/premature private second release/);
+  else if(mode==='unknown-no-native')assert.match(error.message,/unknown loser requires only actual initial BEGIN busy/);
+  else if(mode==='unknown-wrong-native')assert.equal(error.actual,'initial-commit');
+  else if(mode==='unknown-facility')assert.ok(error instanceof assert.AssertionError);
+  else if(['missing-entry','loser-hang','loser-output-hang'].includes(mode))assert.match(error.message,/private entry phase deadline exceeded|invalid private native facts/);
+  else assert.match(error.message,/invalid private entry ready/);
+  return true;
+ });
+ assert.equal(fs.existsSync(join(f.parent,'private-entry-release')),mode==='premature-release2');
+});
+test('private two-stage supervision rejects winner-exit without treating it as a business loser',async t=>{
+ const f=acquired(t,'phase-winner-exit',{task:false}),release=join(f.parent,'private-release'),release2=join(f.parent,'private-entry-release'),exitRelease=release2+'.exit';let child;
+ await assert.rejects(withOwnedChildren(t,async children=>{
+  child=launchNativeChild(children,f,release,release2,{label:'actual committed winner exit',mode:'winner-exit'});await waitOwnedReady(child);
+  child.released1=true;child.events.push('release-1');save(release,'private-release-v1\n');
+  await boundedEntryPhase(children,async active=>{
+   await child.entryPrepared;active();assert.equal(child.entryReady,true);assert.equal(child.entryMessage.successfulInitialInserts,1);assert.equal(child.entryMessage.inTransaction,false);
+   assert.ok(!child.closed&&child.exit===null&&child.child.exitCode===null&&child.child.signalCode===null);assert.equal(child.released2,false);assert.equal(fs.existsSync(release2),false);assert.equal(fs.existsSync(exitRelease),false);
+   active();child.events.push('exit-injection');save(exitRelease,'private-winner-exit-v1\n');await waitOwnedClose(child);
+  });
+ }),error=>{assert.match(error.message,/^initial winner (exited|IPC disconnected) before second release$/);return true;});
+ assert.equal(child.closed,true);assert.equal(child.result.exit,0);assert.equal(child.result.signal,null);assert.equal(child.result.entryReady,true);assert.equal(child.result.events.at(-1),'close');
+ const events=child.result.events;assert.ok(events.indexOf('entry-ready')<events.indexOf('exit-injection'));assert.ok(events.indexOf('exit-injection')<events.indexOf('exit'));assert.ok(events.indexOf('exit')<events.indexOf('close'));
+ assert.equal(child.released2,false);assert.equal(fs.existsSync(release2),false);assert.equal(countAudit(f),3);assert.deepEqual(ledgerNow(f).operations[f.token.operationId].failures,['owned_drain_started']);record(f,'winner-exit-result',child.result);
+});
+test('private message snapshots cannot change when expected or received ready objects are mutated',async t=>{
+ const ready={kind:'owned-drain-mutable-ready-v1'};
+ await withOwnedChildren(t,async children=>{
+  const c=spawnOwnedChild(children,['--input-type=module','-e',`process.send({kind:'owned-drain-mutable-ready-v1',pid:process.pid});console.log('{}');process.disconnect();`],{label:'immutable ready snapshot',ready});ready.kind='changed after spawn';c.child.stdin.end();await waitOwnedReady(c);const result=await waitOwnedClose(c);
+  assert.equal(result.readyMessage.kind,'owned-drain-mutable-ready-v1');assert.ok(Object.isFrozen(result.readyMessage));assert.throws(()=>{result.readyMessage.kind='changed after close';},TypeError);assert.equal(result.exit,0);
+ });
+});
+test('private cleanup signal failure cannot replace the primary error or prevent bounded KILL and close',async t=>{
+ let child;const primary=new Error('private primary cleanup assertion'),ready={kind:'owned-drain-cleanup-ready-v1'};
+ await assert.rejects(withOwnedChildren(t,async children=>{
+  child=spawnOwnedChild(children,['--input-type=module','-e',`process.on('SIGTERM',()=>{});process.send({kind:'owned-drain-cleanup-ready-v1',pid:process.pid});setInterval(()=>{},1000);`],{label:'cleanup signal failure',ready});child.child.stdin.end();await waitOwnedReady(child);
+  const kill=child.child.kill;child.child.kill=function(signal){if(signal==='SIGTERM')throw new Error('private TERM send failure');return kill.call(this,signal);};throw primary;
+ }),error=>{assert.ok(error instanceof AggregateError);assert.equal(error.cause,primary);assert.equal(error.errors[0],primary);assert.match(error.errors[1].errors[0].message,/private TERM send failure/);return true;});
+ assert.equal(child.closed,true);assert.equal(child.result.signal,'SIGKILL');assert.deepEqual(child.result.signals,['SIGTERM','SIGKILL']);
+});
+for(const mode of ['early-exit','fake-ready','no-ready','post-release-hang','ignore-TERM'])test('private child supervision rejects '+mode+' and confirms bounded owned cleanup',async t=>{
+ const root=fs.realpathSync(fs.mkdtempSync(join(tmpdir(),'insight-owned-child-')));fs.chmodSync(root,0o700);t.diagnostic('retained own child fixture '+root);
+ const release=join(root,'private-release'),ready=initialReady(root,release),send=`process.send({...ready,pid:process.pid});`,idle=`setInterval(()=>{},1000);`;
+ const body=mode==='early-exit'?`process.stderr.write('before-ready-exit\\n');process.exit(0);`:mode==='fake-ready'?`process.send({ready:true});${idle}`:mode==='no-ready'?idle:
+  mode==='ignore-TERM'?`process.on('SIGTERM',()=>{});${send}${idle}`:`${send}${privateReleaseWait}${idle}`;
+ const code=`import fs from 'node:fs';import {performance} from 'node:perf_hooks';const release=process.argv[1],ready=JSON.parse(process.argv[2]);${body}`;
+ let child;
+ await assert.rejects(withOwnedChildren(t,async children=>{
+  child=spawnOwnedChild(children,['--input-type=module','-e',code,release,JSON.stringify(ready)],{label:mode,ready,...(mode==='no-ready'?{readyMs:500}:{})});child.child.stdin.end();
+  await waitOwnedReady(child);
+  if(mode==='ignore-TERM')throw new Error('private primary assertion failure');
+  save(release,'private-release-v1\n');child.phase='released';child.events.push('release');await waitOwnedClose(child);
+ }),{message:mode==='early-exit'?'child exited before private barrier':mode==='fake-ready'?'invalid private ready':mode==='no-ready'?'private ready deadline exceeded':mode==='ignore-TERM'?'private primary assertion failure':'child completion watchdog exceeded'});
+ assert.equal(child.closed,true);assert.equal(child.result.events.at(-1),'close');
+ if(mode==='early-exit'){assert.equal(child.result.exit,0);assert.equal(child.result.stderr,'before-ready-exit\n');}
+ else {assert.equal(child.result.exit,null);assert.equal(child.result.signal,mode==='ignore-TERM'?'SIGKILL':'SIGTERM');assert.deepEqual(child.result.signals,mode==='ignore-TERM'?['SIGTERM','SIGKILL']:['SIGTERM']);}
+});
+test('private child supervision captures spawn and stdin errors without unhandled rejection',async t=>{
+ let missing;
+ await assert.rejects(withOwnedChildren(t,async children=>{
+  missing=spawnOwnedChild(children,[],{label:'missing executable',executable:'/private/insight-owned-child-not-present'});await waitOwnedClose(missing);
+ }),/child process error:.*ENOENT/);assert.equal(missing.closed,true);
+ let input;const ready={kind:'owned-drain-stdin-ready-v1'};
+ await assert.rejects(withOwnedChildren(t,async children=>{
+  input=spawnOwnedChild(children,['--input-type=module','-e',`import fs from 'node:fs';fs.closeSync(0);process.send({kind:'owned-drain-stdin-ready-v1',pid:process.pid});setInterval(()=>{},1000);`],{label:'closed child stdin',ready});
+  await waitOwnedReady(input);input.child.stdin.end(Buffer.alloc(1024*1024));await waitOwnedClose(input);
+ }),/child stdin error:.*EPIPE/);assert.equal(input.closed,true);assert.equal(input.result.signal,'SIGTERM');
+});
+test('private child close freezes complete large stdout and stderr before JSON parsing',async t=>{
+ await withOwnedChildren(t,async children=>{
+  const c=spawnOwnedChild(children,['--input-type=module','-e',`process.stdout.write(JSON.stringify({payload:'x'.repeat(2*1024*1024)})+'\\n');process.stderr.write('e'.repeat(65536)+'tail\\n');`],{label:'complete large output'});c.child.stdin.end();
+  const result=await waitOwnedClose(c);assert.equal(c.closed,true);assert.ok(Object.isFrozen(result));assert.equal(result.exit,0);assert.equal(result.signal,null);
+  assert.equal(parseChildJson(result).payload,'x'.repeat(2*1024*1024));assert.equal(result.stdout.length,2*1024*1024+15);assert.equal(result.stderr,'e'.repeat(65536)+'tail\n');assert.deepEqual(result.events,['spawn','exit','close']);
+ });
+});
+test('private child malformed JSON fails after close and retains the original output',async t=>{
+ let child;
+ await assert.rejects(withOwnedChildren(t,async children=>{
+  child=spawnOwnedChild(children,['--input-type=module','-e',`process.stdout.write('{bad\\n');process.stderr.write('malformed-tail\\n');`],{label:'malformed output'});child.child.stdin.end();parseChildJson(await waitOwnedClose(child));
+ }),{message:'malformed child JSON output'});
+ assert.equal(child.closed,true);assert.equal(child.result.exit,0);assert.equal(child.result.stdout,'{bad\n');assert.equal(child.result.stderr,'malformed-tail\n');assert.equal(child.result.events.at(-1),'close');
 });
 test('actual SIGKILL hot journal is rejected before new SQL and original bytes are retained',async t=>{
  const f=acquired(t,'hot-journal'),path=join(f.root,'writers.sqlite');const code=`import Database from 'better-sqlite3';const db=new Database(process.argv[1]);db.pragma('cache_size=1');db.exec('BEGIN IMMEDIATE');const ins=db.prepare('INSERT INTO workers VALUES (?,?,?)');for(let i=0;i<10000;i++)ins.run('hot'+i,'generation'+i,'generation-dispatch');process.kill(process.pid,'SIGKILL');`;
@@ -213,7 +534,11 @@ test('first cancel during actual COMMIT return-loss preserves primary reason wit
  }
 });
 test('actual disconnected stdout yields fixed nonzero diagnostic, two durable holds and no retry',async t=>{
- const f=acquired(t,'stdout',{task:false}),{spawn}=await import('node:child_process'),c=spawn(process.execPath,['ops/maintenance/owned-drain-cli.mjs',f.root,f.artifactRoot,String(Date.now()+5000),'10'],{cwd:process.cwd(),env:{PATH:process.env.PATH,PORT:'3150'},stdio:['pipe','pipe','pipe']});let stderr='';c.stderr.on('data',b=>stderr+=b);c.stdout.destroy();c.stdin.end(JSON.stringify(f.input));const exit=await new Promise(resolve=>c.on('exit',resolve));assert.equal(exit,1);assert.equal(stderr,'owned_drain_stdout_failed\n');assert.equal(countAudit(f),4);assert.deepEqual(ledgerNow(f).operations[f.token.operationId].failures,['owned_drain_started','writer_drain_coverage_unknown']);record(f,'stdout-output',{exit,stderr});
+ const f=acquired(t,'stdout',{task:false});await withOwnedChildren(t,async children=>{
+  const c=spawnOwnedChild(children,['ops/maintenance/owned-drain-cli.mjs',f.root,f.artifactRoot,String(Date.now()+5000),'10'],{label:'CLI disconnected stdout'});
+  c.child.stdout.destroy();c.child.stdin.end(JSON.stringify(f.input));const result=await waitOwnedClose(c);
+  assert.equal(result.exit,1);assert.equal(result.signal,null);assert.equal(result.stderr,'owned_drain_stdout_failed\n');assert.equal(countAudit(f),4);assert.deepEqual(ledgerNow(f).operations[f.token.operationId].failures,['owned_drain_started','writer_drain_coverage_unknown']);record(f,'stdout-output',result);
+ });
 });
 test('actual signed fixture release/new owner between own check and close permits only conservative partial stop, never foreign hold',async t=>{
  const f=acquired(t,'partial-stop'),prototype=Object.getPrototypeOf(new Database(':memory:').prepare('SELECT 1')),run=prototype.run;let snapshot,committed=false,hit=false;
@@ -235,8 +560,12 @@ test('physical marker/inode replacement after setup cannot reach initial hold',a
  try{await assert.rejects(consumeOwnedDrainIsolated(opts(f)),/owned_drain_marker_changed/);}finally{Database.prototype.prepare=prepare;}assert.equal(hit,true);assert.equal(countAudit(f),2);assert.equal(writerNow(f).admission,'open');record(f,'marker-swap-result',{hit,audit:2});
 });
 test('actual earlier SIGINT during finite CLI stdin preserves cancelled rather than later deadline',async t=>{
- const f=acquired(t,'signal-cli'),before=capture(f,'before-signal-cli'),{spawn}=await import('node:child_process');const code=`const on=process.on;process.on=function(event,listener){const result=on.call(this,event,listener);if(event==='SIGTERM')process.stderr.write('PRIVATE_READY\\n');return result;};process.argv=['node','owned-drain-cli',...process.argv.slice(1)];await import('./ops/maintenance/owned-drain-cli.mjs');`;
- const c=spawn(process.execPath,['--input-type=module','-e',code,f.root,f.artifactRoot,String(Date.now()+2500),'10'],{cwd:process.cwd(),env:{PATH:process.env.PATH,PORT:'3150'},stdio:['pipe','pipe','pipe']});let stdout='',stderr='';c.stdout.on('data',b=>stdout+=b);let sent=false;c.stderr.on('data',b=>{stderr+=b;if(!sent&&stderr.includes('PRIVATE_READY')){sent=true;c.stdin.write(JSON.stringify(f.input));c.kill('SIGINT');}});const exit=await new Promise(resolve=>c.on('exit',resolve));assert.equal(exit,1);assert.equal(stdout,'');assert.equal(stderr,'PRIVATE_READY\ncancelled\n');assert.deepEqual(byteFacts(capture(f,'after-signal-cli-before-sql')),byteFacts(before));record(f,'signal-cli-output',{exit,stdout,stderr,sent});
+ const f=acquired(t,'signal-cli'),before=capture(f,'before-signal-cli');const code=`const on=process.on;process.on=function(event,listener){const result=on.call(this,event,listener);if(event==='SIGTERM'){process.stderr.write('PRIVATE_READY\\n');process.send({kind:'owned-drain-signal-ready-v1',pid:process.pid});}return result;};process.argv=['node','owned-drain-cli',...process.argv.slice(1)];await import('./ops/maintenance/owned-drain-cli.mjs');process.disconnect();`;
+ await withOwnedChildren(t,async children=>{
+  const c=spawnOwnedChild(children,['--input-type=module','-e',code,f.root,f.artifactRoot,String(Date.now()+2500),'10'],{label:'CLI SIGINT',ready:{kind:'owned-drain-signal-ready-v1'}});
+  await waitOwnedReady(c);c.child.stdin.write(JSON.stringify(f.input));assert.equal(c.child.kill('SIGINT'),true);const result=await waitOwnedClose(c);
+  assert.equal(result.exit,1);assert.equal(result.signal,null);assert.equal(result.stdout,'');assert.equal(result.stderr,'PRIVATE_READY\ncancelled\n');assert.deepEqual(byteFacts(capture(f,'after-signal-cli-before-sql')),byteFacts(before));record(f,'signal-cli-output',{...result,sent:true});
+ });
 });
 test('existing owned handles refuse newly unsafe true hot journal before next SQL and keep initial hold unknown',async t=>{
  const f=acquired(t,'cached-hot'),pending=consumeOwnedDrainIsolated(opts(f)),path=join(f.root,'writers.sqlite');
