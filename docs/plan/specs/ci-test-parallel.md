@@ -9,7 +9,7 @@
 ## 验收标准
 
 1. 本地 `test`、`test:coverage` 保持应用与运维测试串行全覆盖；CI 使用已有 `npx --no-install vitest run --coverage`；package 字节保持，以兼容 A2 冻结源码的依赖共享断言。
-2. full 范围下 `application_checks` 与 `ops_checks` 分别只依赖 scope，在独立 runner/checkout/临时目录并行。应用保留 lint、TS7/TS6、完整应用覆盖率、P1/P0c 门、一次 build、HTTP/browser、audit；运维保留原自动发现的全部 Node 测试。
+2. full 范围下 `application_checks` 与 `ops_checks` 分别只依赖 scope，在独立 runner/checkout/临时目录并行。应用保留 lint、TS7/TS6、完整应用覆盖率、P1/P0c 门、一次 build、HTTP/browser、audit；运维保留原自动发现的全部 Node 测试，以及历史版本回归依赖的完整 Git 历史。
 3. 两路成功结束时记录实际 checkout SHA、候选 SHA、仓库/事件、run ID/attempt 和 lane。汇总核对成功结果及全部身份。失败、取消、skipped、空/畸形输出、错 SHA/run/attempt/仓库/事件/角色均拒绝，不生成完整证明。
 4. 保留 `full application verification` 汇总 job 名及三个必需检查名称。仅汇总通过后调用原 writer，保持 prototype CI/Docker schema 和现有消费者契约。Docker 继续独立；docs 下两路及完整汇总正常 skipped，不生成完整证明或镜像。
 5. 用实际 Git/CLI 和下游发布判定测试正反例；完整候选由两位独立非作者审查，PR 后独立核对远端 diff。正常 hooks、保护规则、候选和精确合入 SHA 的 CI 全部通过后完成。

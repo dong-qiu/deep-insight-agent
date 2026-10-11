@@ -238,6 +238,9 @@ jobs:
       identity: ${{ steps.identity.outputs.identity }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          # Frozen-version ops regressions archive historical commits and inspect origin/main.
+          fetch-depth: 0
       - uses: actions/setup-node@v7
         with:
           node-version: "24.19.0"

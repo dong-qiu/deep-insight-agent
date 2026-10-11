@@ -216,6 +216,7 @@ test("workflow topology runs application and Docker independently on the same ch
   assert.ok(!block("ops_checks").includes("write-prototype-ci-evidence.ts"));
   assert.ok(block("application_checks").includes("npx --no-install vitest run --coverage"));
   assert.ok(block("ops_checks").includes("npm run test:ops"));
+  assert.ok(block("ops_checks").includes("fetch-depth: 0")); // Frozen-version regressions need Git history.
   for (const [key, lane] of [["application_checks", "application"], ["ops_checks", "ops"]]) {
     assert.ok(block(key).includes(`ci-application-gate.mjs record ${lane}`));
     assert.ok(block(key).includes("identity: ${{ steps.identity.outputs.identity }}"));

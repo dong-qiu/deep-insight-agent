@@ -29,6 +29,10 @@ Eval 不适用：未改 AI 输出语义或触发路径。未运行真实模型�
 
 通过正常 revert PR 恢复串行 CI，本批没有业务数据回退对象；不放松失败门或改变生产 hold。
 
+## 首次候选 CI 与修正
+
+候选 `23451d65f860e0302e77b5ef71f40075ffdb078c`、PR #474、run `38134846023/1`：ops lane 默认浅 checkout 缺失 `origin/main` 和历史冻结 Git 对象，六个历史源码/版本对回归失败（日志 `/tmp/ci-test-parallel-pr-ops-native.log`）。这是新 job 的集成遗漏，已在 ops checkout 设置 `fetch-depth: 0`，恢复原 application job 的历史可用条件；增加 topology 断言，不修改或跳过测试。失败 run 不改签成功；此修正定向 delivery 42/42、actionlint、diff 与文档检查通过，未改变应用构建源码；前述本地 build/HTTP/browser 归属修正前输入，修正后新候选完整 CI/main 仍待补。
+
 ## 本地原件摘要
 
 以下是本次临时日志的 SHA-256；原日志在执行主机 `/tmp`，不是永久归档。首轮失败日志与后续结果分别保留。
@@ -42,3 +46,5 @@ Eval 不适用：未改 AI 输出语义或触发路径。未运行真实模型�
 | `ci-test-parallel-build-final.log` | `e6a9b2f91a17836265e400824bc39207746e7d3cc045920612f954f13fd0d5ca` |
 | `ci-test-parallel-http-final.log` | `4b84bb25f76df01f263bb3159641cc24efd4c0103daeab326740172f45d2b13e` |
 | `ci-test-parallel-browser-final.log` | `2719f2802e0ed232f93059a52e7e54ccb2a23bc8f5a142dd30fdbe3b44ac1c78` |
+
+首次 PR ops 失败原日志 SHA-256：`1627ea780e42ebf5983d53c320b83b56d311ee6fb5ac6b499f930c8e35da5116`。
