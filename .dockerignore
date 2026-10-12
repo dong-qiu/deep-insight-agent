@@ -35,6 +35,12 @@ ops/**
 !ops/readonly-report-snapshot.mjs
 !ops/backfill-highlights.mjs
 !ops/backfill-report-chain.mjs
+!ops/maintenance/
+ops/maintenance/**
+!ops/maintenance/writers-v2.mjs
+!ops/maintenance/writers-v2.d.mts
+!ops/maintenance/contract.mjs
+!ops/maintenance/ledger.mjs
 
 # Defense in depth inside allowed source/asset/vendor directories.
 **/node_modules
