@@ -660,3 +660,23 @@ usage running 仅对应旧 begin，不含 observation settle；canonical SELECT/
 独立合成 fixture（7表/12 autoindex/1 partial index、APP_ID `0x44324231`/version1）及其 F 是 expected，
 真实 SQLite SQL/header/FK/同连接输出待验，不初始化生产 schema或假迁移账本。fixture/setup、源码用途与精确 build 依赖窗口均另冻。
 本片未授代码/DB/build 写权，未执行 native/模型/VM/恢复或生产；全 writer、drain、生产许可 false 与既有 hold/nullrollback 不变。
+
+### M1/M2 具名账务与独立 observer（架构接受，未实施）
+
+[ADR-0047](../develop/decisions.md#adr-0047-具名迟到账务与独立-usage-observer-operation)
+仅接受已复核 S2b M1/M2 的窄方向：原已确定开始 attempt 的 fresh observer 可记录迟到真实账务，
+实时读原 AbortSignal、保留取消首因；registry/physical/generation/真实 claim/current Run 绑定仍强制。
+不放宽普通 pre-open、begin 或 terminal 取消，不产生新 fetch/结果发布，不复活 cap/claim，不把费用或 partial/unknown 归零。
+
+模型前独立预登记 same-owner `usage-observer` operation，exact scope 为
+`{kind:'usage-observer',parentInvocationId,attemptId,runId,traceId,claim}`，原 signal 私有绑定。
+只有非 replayed begin COMMIT+ACK 和 observer 激活确认后才发 fresh 观察 cap；预登记/激活 unknown 均 0 新 fetch。
+只消费本 attempt 的顺序 usage-observe，不 open/terminal；Job/父 finish 不终结尚未 settled 的独立 observer operation，也不伪称其已 settled。
+取消及时返回 Job；无后台 SQL interval/跨 await 持锁。final/失权/close/死亡保留已知、partial 与 unknown；
+两 operation 不承诺原子完成，晚取消不能抹去已确认 COMMIT/ACK，fresh recovery 不恢复旧 cap。
+
+observer catalog/header/DDL/marker/终态、完整 fact/input/result、Run 状态与 canonical 原 DB owner 认领尚未冻结；
+default v2 与 dispatch-bind header3 不自动接纳 observer，也不改旧 root 或 fallback。
+独立 standalone 七表 fixture 的 schema/SELECT 验证不证明 model_usage writer 或完整来源准入。
+core/domain/build/fixture/setup/runtime model-usage/jobs/HTTP/collector 接线仍各需新唯一 owner 窗口和真实反例，
+本节不授源码/DB/模型/环境/生产权；全 writer/drain/production false、hold/#435/nullrollback 保持。
