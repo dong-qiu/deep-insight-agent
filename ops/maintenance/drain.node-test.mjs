@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { spawn, spawnSync } from 'node:child_process';
+import Database from 'better-sqlite3';
 import { register } from 'tsx/esm/api';
 import { initialize, openLedger } from './ledger.mjs';
 import { initializeWriters, openWriters } from './writers.mjs';
@@ -286,29 +287,58 @@ test('two caller-declared same-identity first acquire tokens are indistinguishab
 });
 
 // Private test-process supervision only. Business timeouts and runtime remain unchanged.
-function privateDrainChild(code, args = [], readyMs = 4000) {
-  const child = spawn(process.execPath, ['--input-type=module', '-e', code, ...args], { cwd: process.cwd(), env: { PATH: process.env.PATH }, stdio: ['ignore', 'pipe', 'pipe'] });
+function privateDrainChild(code, args = [], readyMs = 4000, preparation = null) {
+  const child = spawn(process.execPath, ['--input-type=module', '-e', code, ...args], { cwd: process.cwd(), env: { PATH: process.env.PATH }, stdio: preparation ? ['ignore', 'pipe', 'pipe', 'ipc'] : ['ignore', 'pipe', 'pipe'] });
   let stdout = '', stderr = '', error, closed = false, readySettled = false, readySucceeded = false, readyResolve, readyReject, closeResult, exitStatus;
+  let prepared = false, released = false, frames = 0, targetCalls = 0, lateAck = false, frameResolve;
+  const frameObserved = new Promise(resolve => { frameResolve = resolve; });
   const ready = new Promise((resolve, reject) => { readyResolve = resolve; readyReject = reject; });
   const context = () => JSON.stringify({ pid: child.pid, stdout, stderr, error: error?.message });
   const settleReady = failure => {
     if (readySettled) return;
     readySettled = true; clearTimeout(timer);
+    if (failure && preparation) error ??= failure;
     if (failure) readyReject(failure); else { readySucceeded = true; readyResolve(); }
   };
+  const refuse = cause => { error ??= cause; settleReady(error); };
+  const maybePrepared = () => { if (prepared && stdout.startsWith('READY\n') && !error) settleReady(); };
+  if (preparation) child.on('message', message => {
+    try {
+      const binding = { ...preparation, pid: child.pid };
+      if (message?.kind === 'drain-target-invoked-v1') {
+        assert.ok(released && !error && !closed, 'target invocation without release');
+        assert.deepEqual(message.binding, binding); assert.equal(message.callReturned, true);
+        assert.deepEqual(Object.keys(message).sort(), ['binding', 'callReturned', 'kind']);
+        assert.equal(++targetCalls, 1, 'duplicate target invocation'); return;
+      }
+      frames++;
+      if (readySettled && !readySucceeded) { lateAck = true; throw new Error('late preparation ACK after refusal'); }
+      assert.ok(!closed && !released && frames === 1, 'duplicate or late preparation frame');
+      if (message?.kind === 'drain-preparation-failed-v1') {
+        assert.deepEqual(message.binding, binding); assert.match(message.errorCode, /^[A-Za-z0-9_]{1,64}$/);
+        assert.deepEqual(Object.keys(message).sort(), ['binding', 'errorCode', 'kind']);
+        throw Object.assign(new Error('native drain preparation failed: ' + message.errorCode), { code: message.errorCode });
+      }
+      assert.deepEqual(Object.keys(message).sort(), ['ended', 'entries', 'kind']);
+      assert.equal(message.kind, 'drain-prepared-sequence-v1'); assert.equal(message.ended, true);
+      assert.ok(Array.isArray(message.entries) && message.entries.length === 1, 'exactly one finite preparation ACK');
+      assert.deepEqual(message.entries[0], binding); prepared = true; maybePrepared();
+    } catch (cause) { refuse(cause); }
+    finally { frameResolve(); }
+  });
   const timer = setTimeout(() => settleReady(new Error('drain private ready deadline: ' + context())), readyMs);
   // An early rejection must not escape while the parent is awaiting another child.
   ready.catch(() => {});
   child.stdout.on('data', chunk => {
     stdout += chunk;
-    if (stdout.startsWith('READY\n')) settleReady();
+    if (stdout.startsWith('READY\n')) { if (preparation) maybePrepared(); else settleReady(); }
     else if (stdout.includes('\n')) settleReady(new Error('invalid private ready: ' + context()));
   });
   child.stderr.on('data', chunk => { stderr += chunk; });
   child.stdout.on('error', cause => { error ??= cause; settleReady(cause); });
   child.stderr.on('error', cause => { error ??= cause; settleReady(cause); });
   child.on('error', cause => { error = cause; settleReady(cause); });
-  child.on('exit', (exit, signal) => { exitStatus = { exit, signal }; settleReady(new Error('child exited before private ready: ' + JSON.stringify(exitStatus) + context())); });
+  child.on('exit', (exit, signal) => { exitStatus = { exit, signal }; const cause = new Error('child exited before private ready: ' + JSON.stringify(exitStatus) + context()); if (preparation && !released) refuse(cause); else settleReady(cause); });
   const close = new Promise(resolve => child.on('close', (exit, signal) => {
     closed = true; settleReady(new Error('child closed before private ready: ' + context()));
     closeResult = Object.freeze({ exit, signal, stdout, stderr, error }); resolve(closeResult);
@@ -320,7 +350,16 @@ function privateDrainChild(code, args = [], readyMs = 4000) {
   };
   return {
     ready, wait: (ms = 4000) => wait(ms),
+    assertPrepared() { assert.ok(preparation && readySucceeded && prepared && frames === 1 && !error && !closed && !released, 'preparation not authorized'); },
+    markReleased() { this.assertPrepared(); released = true; },
+    async observeFrame() {
+      let deadline;
+      try { await Promise.race([frameObserved, new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error('preparation frame deadline')), 4000); })]); }
+      finally { clearTimeout(deadline); }
+    },
+    emitLateAck() { return new Promise((resolve, reject) => child.send({ kind: 'emit-late-ack' }, cause => cause ? reject(cause) : resolve())); },
     snapshot: () => ({ pid: child.pid, ready: readySucceeded, closed, outputComplete: closed,
+      ...(preparation ? { prepared, released, frames, targetCalls, lateAck, binding: preparation } : {}),
       ...(closeResult ?? { ...exitStatus, stdout, stderr, error }) }),
     async cleanup() {
       if (!closed) {
@@ -337,13 +376,16 @@ function privateDrainChild(code, args = [], readyMs = 4000) {
     },
   };
 }
-async function finishDrainChildren(children, primary, t) {
+async function finishDrainChildren(children, primary, t, extraCleanup = []) {
   const settled = await Promise.allSettled(children.map(child => child.cleanup()));
   const failures = settled.filter(result => result.status === 'rejected').map(result => result.reason);
-  if (primary || failures.length) t?.diagnostic(JSON.stringify(children.map((child, i) => ({
-    ...child.snapshot(), ...(settled[i].status === 'rejected' ? { cleanupError: settled[i].reason.message } : {}),
-  }))));
-  if (failures.length) throw new AggregateError([...(primary ? [primary] : []), ...failures], 'private child cleanup unconfirmed; fixture retained');
+  for (const cleanup of extraCleanup) { try { await cleanup(); } catch (cause) { failures.push(cause); } }
+  if (primary || failures.length) {
+    try { t?.diagnostic(JSON.stringify(children.map((child, i) => ({
+      ...child.snapshot(), ...(settled[i].status === 'rejected' ? { cleanupError: settled[i].reason.message } : {}),
+    })))); } catch (cause) { failures.push(cause); }
+  }
+  if (failures.length) throw new AggregateError([...(primary ? [primary] : []), ...failures], 'private child cleanup/diagnostic unconfirmed; fixture retained', { cause: primary });
   if (primary) throw primary;
 }
 function parseDrainResult(outcome) {
@@ -355,32 +397,156 @@ function parseDrainResult(outcome) {
   return JSON.parse(outcome.stdout.slice('READY\n'.length));
 }
 
+function preparedDrainChild(f, startPath, actor, mode = 'normal', readyMs = 4000) {
+  assert.ok(['normal', 'early-exit', 'early-error', 'wrong-ack', 'missing-ack', 'duplicate-ack', 'late-ack'].includes(mode));
+  const binding = { schema: 'drain-native-prepared-v1', actor, root: f.root, databasePath: f.path,
+    operationId: f.request.operationId, ownerId: f.request.ownerId, kind: f.request.kind, executionIdentity: f.request.executionIdentity,
+    targetSHA256: createHash('sha256').update(JSON.stringify(f.request.target)).digest('hex') };
+  const moduleUrl = new URL('./drain.mjs', import.meta.url).href;
+  const code = `import {existsSync} from 'node:fs';import {openDrainLeaseSource,observeDrain} from ${JSON.stringify(moduleUrl)};
+    const root=process.argv[1],request=JSON.parse(process.argv[2]),go=process.argv[3],binding={...JSON.parse(process.argv[4]),pid:process.pid},mode=process.argv[5];
+    const send=value=>new Promise((resolve,reject)=>process.send(value,error=>error?reject(error):resolve()));
+    let source,prepared=false,prefix=false,targetCalled=false,calledAt=null,settledAt=null;
+    try{
+      if(mode==='early-exit')process.exit(3);
+      if(mode==='early-error')throw Object.assign(new Error('fixed preparation fault'),{code:'FIXTURE_PREPARE_FAILED'});
+      source=openDrainLeaseSource(root,root+'/fixture-business.sqlite');prepared=true;
+      const ack=mode==='wrong-ack'?{...binding,ownerId:'wrong-owner'}:binding;
+      const frame={kind:'drain-prepared-sequence-v1',ended:true,entries:mode==='duplicate-ack'?[ack,ack]:[ack]};
+      if(mode==='late-ack')process.on('message',command=>{if(command?.kind==='emit-late-ack')send(frame).catch(error=>{console.error(error.code??'late_send_failed');process.exitCode=1;});});
+      if(!['missing-ack','late-ack'].includes(mode))await send(frame);
+      console.log('READY');prefix=true;
+      const until=performance.now()+4000;
+      while(!existsSync(go)){if(performance.now()>=until)throw new Error('private release deadline');await new Promise(resolve=>setTimeout(resolve,1));}
+      calledAt=process.hrtime.bigint().toString();const pending=observeDrain({root,request,leaseSource:source,deadlineAt:Date.now()+250,pollEveryMs:5}).then(
+        value=>{settledAt=process.hrtime.bigint().toString();return value;},error=>{settledAt=process.hrtime.bigint().toString();throw error;});
+      targetCalled=true;pending.catch(()=>{});
+      await send({kind:'drain-target-invoked-v1',binding,callReturned:true});
+      console.log(JSON.stringify({...await pending,privateTestCall:{calledAt,settledAt}}));
+    }catch(error){
+      if(!prepared)await send({kind:'drain-preparation-failed-v1',binding,errorCode:error.code??'FIXTURE_PREPARE_FAILED'});
+      if(!prefix)console.log('READY');
+      console.log(JSON.stringify({error:error.code??error.message,detail:error.stack,phase:prepared?'target_or_release':'source_initialization',targetCalled,
+        privateTestCall:targetCalled?{calledAt,settledAt}:null,
+        drain_ready:false,writer_quiescence:false,production_permitted:false,process_termination:'unknown'}));
+    }finally{source?.close();if(process.connected)process.disconnect();}`;
+  return privateDrainChild(code, [f.root, JSON.stringify(f.request), startPath, JSON.stringify(binding), mode], readyMs, binding);
+}
+function releasePrepared(children, startPath) {
+  for (const child of children) child.assertPrepared();
+  writeFileSync(startPath, 'start', { flag: 'wx', mode: 0o600 });
+  for (const child of children) child.markReleased();
+}
+function concurrentDrainCalls(results) {
+  assert.equal(results.length, 2);
+  const intervals = results.map(result => {
+    const call = result.privateTestCall; assert.ok(call, 'actual target call interval required');
+    assert.match(call.calledAt, /^\d{1,24}$/); assert.match(call.settledAt, /^\d{1,24}$/);
+    const start = BigInt(call.calledAt), end = BigInt(call.settledAt); assert.ok(end > start, 'nonempty native call interval');
+    return { start, end };
+  });
+  // Same-host hrtime is a system monotonic clock. This proves measured function
+  // interval overlap, not database lock ownership or any ready/commit authority.
+  assert.ok(intervals[0].start < intervals[1].end && intervals[1].start < intervals[0].end, 'actual drain call intervals must overlap');
+}
 test('separate controllers racing the real drain with same operation/owner cannot report unique or ready', async t => {
   const f = fixture(t, { retain: true }); f.accept(); f.writers.admit(f.writers.register('worker-one', 'generation-dispatch')); const before = f.facts();
-  const moduleUrl = new URL('./drain.mjs', import.meta.url).href, startPath = join(f.root, 'start-drain-race');
-  const childCode = `import {existsSync} from 'node:fs';import {openDrainLeaseSource,observeDrain} from ${JSON.stringify(moduleUrl)};
-    const root=process.argv[1],request=JSON.parse(process.argv[2]);console.log('READY');
-    const until=performance.now()+4000;
-    while(!existsSync(process.argv[3])) {if(performance.now()>=until)throw new Error('private release deadline');await new Promise(r=>setTimeout(r,1));}
-    let source;try{source=openDrainLeaseSource(root,root+'/fixture-business.sqlite');
-      console.log(JSON.stringify(await observeDrain({root,request,leaseSource:source,deadlineAt:Date.now()+250,pollEveryMs:5})));
-    }catch(e){console.log(JSON.stringify({error:e.code??e.message,detail:e.stack,drain_ready:false,writer_quiescence:false,production_permitted:false,process_termination:'unknown'}));}finally{source?.close();}`;
+  const startPath = join(f.root, 'start-drain-race');
   const children = []; let primary;
   try {
-    children.push(privateDrainChild(childCode, [f.root, JSON.stringify(f.request), startPath]));
-    children.push(privateDrainChild(childCode, [f.root, JSON.stringify(f.request), startPath]));
-    await Promise.all(children.map(child => child.ready)); writeFileSync(startPath, 'start', { flag: 'wx', mode: 0o600 });
+    children.push(preparedDrainChild(f, startPath, 'actor-a')); await children[0].ready;
+    children.push(preparedDrainChild(f, startPath, 'actor-b')); await children[1].ready;
+    releasePrepared(children, startPath);
     const outcomes = await Promise.all(children.map(child => child.wait()));
-    t.diagnostic('drain race close outputs ' + JSON.stringify({ fixture: f.root, outcomes }));
+    t.diagnostic('drain race close outputs ' + JSON.stringify({ fixture: f.root, outcomes, preparation: children.map(child => child.snapshot()) }));
     const parsed = outcomes.map(parseDrainResult);
+    concurrentDrainCalls(parsed);
     for (const last of parsed) {
       blocked(last);
       if (!last.error) assert.equal(last.controller_uniqueness, 'unknown');
     }
+    for (const child of children) { assert.equal(child.snapshot().prepared, true); assert.equal(child.snapshot().targetCalls, 1); }
     assert.equal(f.writers.inspect().admission, 'closed'); assert.equal(f.ledger.inspect().operations['op-drain'].disposition, 'held');
     assert.deepEqual(f.facts(), before); console.log('drain-race-blocked', JSON.stringify(parsed.map(o => ({ reason: o.reason ?? o.error, controller_uniqueness: o.controller_uniqueness ?? 'unknown', drain_ready: o.drain_ready }))));
   } catch (cause) { primary = cause; }
   finally { await finishDrainChildren(children, primary, t); }
+});
+
+test('native prepared drain: initializer SQLITE_BUSY remains a separate no-claim failure, one prepared peer is cleaned', async t => {
+  const f = fixture(t, { retain: true }), startPath = join(f.root, 'native-preparation-go');
+  const beforeLedger = f.ledger.inspect(), beforeWriters = f.writers.inspect(), beforeBusiness = f.facts();
+  const first = preparedDrainChild(f, startPath, 'prepared-first'), children = [first];
+  let locker, primary, outerFailure, diagnostics;
+  try {
+    await first.ready;
+    locker = new Database(join(f.root, 'ledger.sqlite'), { fileMustExist: true, timeout: 0 }); locker.exec('BEGIN EXCLUSIVE');
+    const second = preparedDrainChild(f, startPath, 'native-busy-second'); children.push(second);
+    await assert.rejects(second.ready, error => { primary = error; return error.code === 'SQLITE_BUSY'; });
+    const result = await second.wait(), payload = JSON.parse(result.stdout.slice('READY\n'.length));
+    assert.equal(result.exit, 0); assert.equal(result.signal, null); assert.equal(payload.error, 'SQLITE_BUSY');
+    assert.equal(payload.phase, 'source_initialization'); assert.equal(payload.targetCalled, false); blocked(payload);
+    assert.throws(() => releasePrepared(children, startPath), /preparation not authorized/);
+    assert.equal(existsSync(startPath), false);
+    await assert.rejects(finishDrainChildren(children, primary, { diagnostic: value => { diagnostics = JSON.parse(value); } }), error => error === primary);
+    for (const child of children) { assert.equal(child.snapshot().closed, true); assert.equal(child.snapshot().targetCalls, 0); assert.equal(child.snapshot().released, false); }
+    assert.equal(diagnostics[0].prepared, true); assert.equal(diagnostics[1].prepared, false);
+    t.diagnostic('native preparation SQLITE_BUSY: source-only/no-target/no-go; both physical closes observed');
+  } catch (cause) { outerFailure = cause; }
+  finally {
+    await finishDrainChildren(children, outerFailure, t, [() => locker?.exec('ROLLBACK'), () => locker?.close()]);
+  }
+  assert.deepEqual(f.ledger.inspect(), beforeLedger); assert.deepEqual(f.writers.inspect(), beforeWriters); assert.deepEqual(f.facts(), beforeBusiness);
+});
+test('native prepared drain: wrong, missing, duplicate and late ACK never release or revive preparation', async t => {
+  const f = fixture(t, { retain: true });
+  for (const mode of ['wrong-ack', 'missing-ack', 'duplicate-ack', 'late-ack']) {
+    const startPath = join(f.root, mode + '-go'), child = preparedDrainChild(f, startPath, mode, mode, ['missing-ack', 'late-ack'].includes(mode) ? 200 : 4000);
+    let failure;
+    try {
+      let primary;
+      await assert.rejects(child.ready, error => {
+        primary = error;
+        if (mode === 'wrong-ack') return error.code === 'ERR_ASSERTION' && error.message.includes('wrong-owner');
+        if (mode === 'duplicate-ack') return error.code === 'ERR_ASSERTION' && error.message.includes('exactly one finite preparation ACK');
+        return error.message.includes('drain private ready deadline');
+      });
+      if (mode === 'late-ack') { await child.emitLateAck(); await child.observeFrame(); assert.equal(child.snapshot().lateAck, true); assert.equal(child.snapshot().error, primary); }
+      if (mode === 'duplicate-ack') assert.equal(child.snapshot().prepared, false);
+      assert.throws(() => releasePrepared([child], startPath), /preparation not authorized/);
+      assert.equal(existsSync(startPath), false); assert.equal(child.snapshot().targetCalls, 0);
+    } catch (cause) { failure = cause; }
+    finally { await finishDrainChildren([child], failure, t); }
+    assert.equal(child.snapshot().closed, true); assert.equal(child.snapshot().outputComplete, true);
+  }
+});
+test('native prepared drain: early error and exit cannot acquire a preparation grant', async t => {
+  const f = fixture(t, { retain: true });
+  for (const mode of ['early-error', 'early-exit']) {
+    const go = join(f.root, mode + '-go'), child = preparedDrainChild(f, go, mode, mode);
+    let failure;
+    try {
+      await assert.rejects(child.ready, mode === 'early-exit' ? /before private ready/ : /FIXTURE_PREPARE_FAILED/);
+      assert.throws(() => releasePrepared([child], go), /preparation not authorized/);
+      assert.equal(existsSync(go), false); assert.equal(child.snapshot().targetCalls, 0);
+    } catch (cause) { failure = cause; }
+    finally { await finishDrainChildren([child], failure, t); }
+    assert.equal(child.snapshot().closed, true);
+  }
+});
+test('prepared drain cleanup preserves primary then ordered cleanup and diagnostic secondaries', async () => {
+  const primary = new Error('first preparation failure'), secondary = new Error('unconfirmed close'), rollback = new Error('rollback failure'), io = new Error('diagnostic failure');
+  const child = { cleanup: async () => { throw secondary; }, snapshot: () => ({ closed: false, outputComplete: false }) };
+  let closed = false;
+  await assert.rejects(finishDrainChildren([child], primary, { diagnostic() { throw io; } }, [() => { throw rollback; }, () => { closed = true; }]),
+    error => error instanceof AggregateError && error.cause === primary && error.errors[0] === primary && error.errors[1] === secondary && error.errors[2] === rollback && error.errors[3] === io);
+  assert.equal(closed, true);
+});
+test('prepared drain overlap oracle rejects serial, missing and empty invocation intervals', () => {
+  const result = (start, end) => ({ privateTestCall: { calledAt: start, settledAt: end } });
+  concurrentDrainCalls([result('10', '30'), result('20', '40')]);
+  assert.throws(() => concurrentDrainCalls([result('10', '20'), result('20', '30')]), /must overlap/);
+  assert.throws(() => concurrentDrainCalls([result('10', '10'), result('10', '30')]), /nonempty/);
+  assert.throws(() => concurrentDrainCalls([{}, result('10', '30')]), /interval required/);
 });
 
 test('private drain supervision rejects early exit, wrong ready and missing ready with confirmed cleanup', async () => {
