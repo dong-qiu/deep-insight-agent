@@ -2049,3 +2049,71 @@ COMMIT 前重新采样 core current clock、拒绝回退并重跑同 SELECT；ca
 本片只新增架构文档，未执行 DB/DDL/native、模型、VM、恢复或生产；`writer_quiescence/drain_ready/production_permitted=false`，
 `safe_rollback=null`、deployment blocked、hold/#435 保持。任何超出冻结合同的 profile/DDL/API/语义差异须先精确回报主控另定。
 接受事实与验证边界见[专属收据](../verify/dispatch-bind-architecture-decision-2026-10-12.md)。
+
+## ADR-0047: 具名迟到账务与独立 usage-observer operation
+
+日期：2026-10-12。状态：**原 ADR-0045/0046 架构 owner 接受已复核的 M1/M2 新增方向；未实施，不开放 domain/DB/schema/build 写窗。**
+
+### 来源与精确范围
+
+来源是 [S2b 固定 domain 合同](../plan/specs/r3-r6-s2b-fixed-domain-contract-2026-10-12.md)
+（SHA256 `5ba890fa20a4b8cb64934b757381ef5ff85ef09fbab9f0ec599a6091486a7196`）的 M1/M2 段，
+以及已独立复核并由主控接受的决定 `7967e8bf9f9564c9b62bed2851e5f819e7eb9b36e2a373c116b813024a922150` 的 `M1_M2` 字段。
+该旧决定的 deadline、S2a 八文件窗口和实现许可不转用于本片。实际文档基线为
+`17a609029b508aa14bfc7224727dbf010f969ddc`；ADR-0046 已发布，standalone fixture/固定 SELECT 验收
+不证明 observer、原 DB owner 认领或消费者接线。旧 S2b/S2a 算法不进行第三轮审查。
+
+接受目的仅是保全已发生的真实模型 attempt 的迟到账务，不扩大任何模型执行、业务结果发布或恢复权限。
+ordinary S2a pre-open、usage begin 与 terminal 继续严格执行原 AbortSignal 取消；不能换新 signal 掩盖取消。
+
+### M1：具名 accounting 窄政策
+
+只有**原已确定开始的 attempt 与其 fresh observer cap**可提交迟到真实 usage observation。
+每次实时读取原 signal 并保留原取消首因；accounting 可以在原 invocation 取消或 local finish 后继续，
+但 registry open、physical identity、generation、实际原 claim ownership 与当前 Run/trace/attempt 绑定始终强制。
+maintenance close、lease 失权或身份不明即拒绝，不能为补账复活 cap/claim，不能把已有 partial/unknown 或费用改成零。
+
+这个例外仅属于具名 `usage-observe`；不是 generic consumer、pre-open、begin、terminal 或 source 的 signal 豁免。
+它不产生新 fetch、重试、结果发布或新的计费 attempt 权限。reported 的原价格快照及幂等、冲突、stale 拒绝继续保留。
+真实账务观测不是模型质量、来源许可、全部成本已知或套餐余额证明。
+
+### M2：独立预登记与激活
+
+模型调用前预登记独立 observer operation，同 worker/entry/owner，scope exact 为
+`{kind:'usage-observer',parentInvocationId,attemptId,runId,traceId,claim}`，claim 为原 dispatch 六字段。
+原 signal 在私有映射绑定；JSON scope、数据库行、路径或 inspect 输出不能重建 operation 或 observer cap。
+预登记只保留意图，不授观察权限；预登记失败不得调用模型。
+
+只有**非 replayed 的原 begin 业务 COMMIT 与 registry ACK 均确定**，再确认 observer 激活，才发 fresh 观察 cap。
+replayed begin 不发新 observer、不发新 fetch；begin 或激活 ACK unknown 均不允许新 fetch，保留真实 COMMIT 与未知协调事实。
+不能用 rollback、父 finish 或 inspect 旧行把 unknown 改成未提交或激活成功。
+
+observer operation 只消费该原 attempt 的顺序 usage-observe step，不 open、不 terminal-commit、不创建 claim/Run。
+每次观察独立 reservation/同步业务 COMMIT/registry ACK，原对象只引出下一合法 fresh step，禁止 clone/restart/SQL replay。
+Job/父 operation finish 不终结尚未 settled 的独立 observer operation，也不得伪称其已 settled；取消及时返回 Job，不等待它而阻塞取消响应。
+不新增后台 SQL interval；registry/S0/business 固定锁序继续，不跨 await 持锁，不承诺两 operation/跨库原子完成。
+
+final 确定或 sticky 失败分别按未来精确 observer 终态合同收尾；无 final、close、lease 失权或进程死亡
+保留已知/partial/unknown 与已开始 attempt 事实，不以父结束证明账务 final。fresh recovery 需另行鉴定，不能恢复旧 cap。
+若普通取消发生在 COMMIT/ACK 后，真实已确认提交仍保留；没有后续权不能伪造完成或冲销费用。
+
+### 实施前置与禁止推导
+
+本片不冻结新的 catalog/header/DDL/marker 或 observer terminal enum。default v2/header2 与 ADR-0046
+dispatch-bind header3/catalog 的现有范围不自动认识 `usage-observer`；禁止静默扩 parse、旧 root ALTER/迁移或 fallback。
+下一合同须逐项冻结新 scope/input/fact/result 双向覆盖、observer 注册/激活/顺序/终态/未知库存与 exact reader 拒绝规则，
+明确是否需要独立 profile、header 和终态 DDL 增量，再由原架构/schema owner认领；未冻结即 unsupported。
+
+原 provenance/schema/usage/terminal DB 语义 owner 的精确认领仍缺，canonical 当前时钟、claim/run 与 attempt 来源
+不能由本架构 owner 代签。begin 的 running 判定不自动套作迟到 observer 的 Run 状态政策；其真实 current-run 绑定、
+final/失权与取消的固定读写断言必须单独认领，不能凭字符串 scope 或 synthetic fixture 放行。
+standalone 七表 fixture 缺 model_usage 表和完整迁移账本，不能拿其 SELECT 绿灯签 usage 业务 writer。
+
+两个 core、九个 domain 新文件、runtime model-usage/jobs/HTTP/collector、W1/A/P/D3、build 依赖及 fixture/setup
+仍须各自精确 sole-owner 窗口；本片只写三文档，不修改这些源码、不调用原 DB 函数、不执行模型/eval/native/VM/生产。
+未来须验证取消前 begin、开始后取消、父 finish 后 late observe、close/失权、replay/activation unknown、
+partial/reported 价格与进程死亡反例，绑定真实同连接外层 COMMIT/ACK 及新候选 CI；文档 CI 不替运行验收。
+
+`safe_rollback=null`、deployment blocked、hold/#435 与全 writer/drain/production 许可 false 保持。
+语义超出已接受 M1/M2、extra 文件或 owner 冲突须停止并回主控，不把正式 ADR 发布当代码准入或上线。
+接受范围与未决门见[专属收据](../verify/usage-observer-architecture-decision-2026-10-12.md)。
