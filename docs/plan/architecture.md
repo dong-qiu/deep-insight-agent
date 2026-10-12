@@ -680,3 +680,36 @@ default v2 与 dispatch-bind header3 不自动接纳 observer，也不改旧 roo
 独立 standalone 七表 fixture 的 schema/SELECT 验证不证明 model_usage writer 或完整来源准入。
 core/domain/build/fixture/setup/runtime model-usage/jobs/HTTP/collector 接线仍各需新唯一 owner 窗口和真实反例，
 本节不授源码/DB/模型/环境/生产权；全 writer/drain/production false、hold/#435/nullrollback 保持。
+
+### Observer registry v4：已审设计与 unsupported 门（ADR-0048）
+
+[ADR-0048](../develop/decisions.md#adr-0048-observer-registry-v4-设计记录与-unsupported-准入门)
+正式记录[registry-only 合同](specs/r3-r6-observer-registry-inactive-activation-contract-2026-10-12.md)的设计/否定门，
+不等 runtime/new native identity 实施或 owner 交接；前节未冻结陈述是历史快照，不改旧正文。
+仅显式新 exclusive root：schema `a3-writers-isolation-v4-usage-observer-v1`、catalog
+`dispatch-usage-observer-v1`、APP_ID `0x41335732`、header4、exact八键marker。
+old2/3 constructor前拒绝；0ALTER/迁移/optional parse/fallback。nullFingerprint拒绝constructor；
+合法digest也须canonical owner来源，否则仍unsupported，不拿七表 F/registry/schema48代签。
+
+文本manifest SHA `6e68d8306c8063e911ec79d5a07d31b23c7105c0d9307eb61fd5805266bc1503`：
+steps.input_json、step_results.result_json均TEXT NOT NULL，terminals CHECK8为namespace；
+10/20/12仅逻辑文本，非实际sqlite_schema/FK/header/index验证。
+SQL NULL拒绝；仅合同具名规则接受canonical JSON null文本，不混缺行投影JSONnull、拒绝用bind sentinel或activation非nullresult。
+严格七fact exact payload完整双向覆盖八张事实表的input/result/scope/binding/terminal；
+admission与audit链独立全遍历，control exact投影/observerInventory不授cap，ready/quiescence/production始终false。
+
+inactive child原parent/target/Signal/worker/entry/owner/generation私有派生，预登记0observe cap/0fetch；
+业务/producer前置未齐实际预登记unsupported。只有genuine非replayed parentbegin业务外层COMMIT+registryACK，
+再独立ordinal0 registry-only not_applicable activation COMMIT+ACK才可能freshcap；不是业务COMMIT/网络开始/两库原子。
+无真实proof producer、业务hash oracle/fingerprint/DBowner事实时reservation前0行/0cap，publichash/boolean/fixture不是认证。
+unknown保COMMIT真相和协调未知，0新fetch；inspect/rollback/父finish不修复unknown。
+
+ordinary原Signal严格；M1仅原confirmed-started+freshobserver迟到账务，保取消首因/sticky failure/已报价格partialunknown，
+维护open/physical/generation/task/真实claim/currentRuntraceattempt仍强制，0新fetch/retry/resultpublish/claimrevive/费用归零。
+父finish不结束unsettledchild，现有finish无cascade；真close/lease失权/死亡拒绝未来消费，缺final不签settled/failed。
+observer终态谓词、UsageIdentity9/numbering/final/pricing/currentRun/model_usage/schemaFingerprint与genuineparentbegin仍unsupported。
+原DBsemanticowner null，源码/control/build/caller窗口未开；无await写锁/后台SQL interval/跨库原子承诺。
+
+本设计状态不证明constructor、预登记/activation/observe/final已实现；docs CI不提供runtime/native/镜像或上线资格。
+safe_rollback=null、deployment blocked、hold/#435、全writer/drain/productionfalse和真实模型恢复矩阵0保持。
+本轮限定交付见[专属收据](../verify/observer-registry-profile-architecture-decision-2026-10-12.md)。

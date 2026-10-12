@@ -2117,3 +2117,97 @@ partial/reported 价格与进程死亡反例，绑定真实同连接外层 COMMI
 `safe_rollback=null`、deployment blocked、hold/#435 与全 writer/drain/production 许可 false 保持。
 语义超出已接受 M1/M2、extra 文件或 owner 冲突须停止并回主控，不把正式 ADR 发布当代码准入或上线。
 接受范围与未决门见[专属收据](../verify/usage-observer-architecture-decision-2026-10-12.md)。
+
+## ADR-0048: Observer registry v4 设计记录与 unsupported 准入门
+
+日期：2026-10-12。状态：**原 ADR0045/46/47 架构 owner 正式记录已审 registry-only 设计及停止门；候选文档未发布，格式与 runtime 未实施，不授源码、DB 或生产资格。**
+
+### 来源及接受范围
+
+本记录基于主干 `4063a083ea154441ea48ff123493f809e6c59aa5` 的
+[registry-only 合同](../plan/specs/r3-r6-observer-registry-inactive-activation-contract-2026-10-12.md)
+（SHA256 `3cd8a882c27185b1a3bc9c599da940a2abd203c1806c2e6906113fe6d19b526f`）及
+[设计收据](../verify/r3-r6-observer-registry-design-receipt-2026-10-12.md)
+（SHA256 `2fc4096ae92d18f92d0309c7a1dccd54ec81876b2ec257a6ba74ff07acdb6ca6`）。
+PR486 已合入，其精确 main CI `38222757111/1` 为 docs 成功；应用/native/Docker/reader/P1 未执行。
+自动镜像流程只核证据，构建及 GHCR 发布正常跳过；不作为镜像或运行证明。
+
+私有 owner 裁定 `806a9938d98ab729552fa42335e244e049986af807fa2430e64bc3efb90e2a8b`
+曾接受方向，但不是正式 ADR；其超限初稿与额外保留偏差继续存在，不改写为全流程合规。
+本 ADR 只将主干已审合同的设计和否定门正式记录，不重审旧 S2a/S2b/31-case 算法。
+本次新正式记录另做双独立审查，最多两轮；接受不预留源码名、不转移原 DB 或 R3/W/build owner。
+
+### 独立格式及严格拒绝
+
+接受设计字面量 `a3-writers-isolation-v4-usage-observer-v1`、catalog
+`dispatch-usage-observer-v1`、application_id `0x41335732`、user_version `4`，
+仅用于未来显式 exclusive 新 root；old v2/header2 与 bind-header3 保持原协议。
+marker exact 八键为 `schema,initId,ledgerMarkerHash,root,registry,targets,catalog,fixtureFingerprint`，
+各字段及物理 identity 以合同第2节为准。old2/3 在 SQLite constructor 前拒绝新格式；
+没有 ALTER、原地迁移、自动协商、optional parse 或 fallback。
+
+`fixtureFingerprint:null` 仅是文本未决/拒绝样例，initializer/opener/control 均须在 constructor 前拒绝。
+即使填入合法 digest，缺 canonical DB/schema owner 的真实来源与绑定仍 unsupported，不得构造或获得 proof 资格。
+不能借七表 F、registry hash 或 schema48 版本替代业务 fingerprint。当前新 opener/constructor 未实现。
+
+### Storage、事实与控制投影
+
+接受合同第3节完整 literal manifest 的**文本设计**，
+SHA256 `6e68d8306c8063e911ec79d5a07d31b23c7105c0d9307eb61fd5805266bc1503`。
+相对 defaultv2 三处 storage 增量：steps 的 `input_json TEXT NOT NULL`、
+step_results 的 `result_json TEXT NOT NULL`、terminals 的 CHECK8 namespace。
+逻辑10 tables/20 triggers/12 autoindices 不是实际 native sqlite_schema、FK、headers 或索引 identity 验证；
+保留原 trigger 错误串不是 legacy fallback。此处不执行 DDL或升级旧 root。
+
+SQL NULL 不可写两个 NOT NULL 列；合同明定的 canonical JSON null **文本**是四个 ASCII 字符 `null`，
+不是 SQL NULL、缺键或泛化默认值。open-business completed 的 null-text result 依靠真实 FS/creation binding；
+dispatch-bind 的 null input sentinel 仅拒绝用，0 reservation；activation completed 必须是第5节 exact 非null对象。
+真实 FS facts 与 domain result 分开，activation 的 FS list 为 `[]`，不伪称创建业务文件。
+
+七 fact discriminants 沿合同第7节 exact payload，严格覆盖 scope/input/result/binding/terminal：
+identity、workers、tasks、operations、steps、bindings、step_results、terminals 八表每行双向恰一次；
+admission 单独永久 open→closed singleton 状态一致，audit_facts 单独逐 seq/hashchain 全遍历。
+哈希正确不容许 orphan、missing、extra、duplicate 或 reorder，不递归 cover audit 自身。
+control 的 rows/projections 和 observerInventory 以第8节 exact 字段为准，缺行投影 JSON null
+不混同存储 result_json 的 null 文本；observed=recorded 不证明业务完成，inspect 不发 cap。
+writer_quiescence/drain_ready/production_permitted 始终 false；control 行为当前未实施。
+
+### Inactive 与独立 ordinal0 activation
+
+接受同 worker/entry/owner、独立 task/operation/invocation 的预登记形状。
+scope exact 为 `{kind:'usage-observer',parentInvocationId,attemptId,runId,traceId,claim}`，
+claim 是原 dispatch 六字段；原 parent/target/generation/AbortSignal 私有对象绑定不可从 JSON、路径、inspect 重建。
+预登记意图 0 observe cap/0 fetch 权；duplicate parent-attempt 不因换 run/claim/新ID刷新。
+业务/producer 前置未签时实际 preregister 也 unsupported，并非本记录已有可执行登记。
+
+未来必须先有真正**非 replayed parent begin 的外层业务 COMMIT 与 registry ACK**，
+再确认独立 child ordinal0 activation 的 registry result/binding/audit COMMIT及 ACK，才可能发 fresh cap。
+该 activation business_commit=not_applicable，不是业务 COMMIT、网络已开始或成本已知证明；
+两 ACK 边界不是跨库原子。public hash/boolean、复制行、fixture、注入 callback/SQL 均不能认证 begin。
+genuine producer/receipt 尚未冻结，真实 activation 在 reservation 前拒绝，0行/0cap/0新fetch。
+begin或activation unknown 保真实已提交与未知协调事实；不从 rollback、父finish或inspect补签成功。
+
+### M1/M2、终态及实施停止门
+
+ordinary preopen/preregister/activation/usage-begin/terminal/source 一直严格原 Signal。
+M1 只对原 confirmed-started attempt 与 fresh 原 observer 保全迟到账务；activation ACK 不证明实际模型开始。
+实时保留原取消首因、独立 sticky failure及已报价格/partial/unknown，原 registry open、physical、
+generation、task、真实 claim/current Run/trace/attempt 始终强制；0新fetch/retry/resultpublish/claimrevive/reprice/费用归零。
+本合同 usage-observe 当前仍 unsupported；不把原 firstReason 宣称已实现新 cancelCause/failureCause 分列。
+
+父 finish 不终结未 settled child，取消及时返回、不等待 observer；现有 finish 本来只结束传入 operation，不捏造 cascade bug。
+真实 close/leaseclaim/generation/physical失权/进程死亡仍拒绝 future consumption，保 known/partial/unknown。
+无 final 不等 failed/settled，父terminal或cancel不能替代final；CHECK8仅namespace，不授observer_settled/observer_failed写权，
+binding_completed亦需尚unsupported映射。缺诊断写权不能越过 closed/loss填假终态。
+固定 registry→S0→business 锁序、原同连接外层 COMMIT再registry ACK，无 await 写锁/后台SQL interval或全局原子保证。
+
+canonical DB semantic owner 认领仍 null。genuine parentbind/begin producer、业务 fingerprint/model_usage schema、
+UsageIdentity9、observation numbering/final/pricing/currentRun及 exact final/failed predicates 未齐：
+本 ADR 不补签这些事实，不开放 core/domain/control/build/runtime/jobs/HTTP/collector 等源码窗或移交 owner。
+未来新合同/实现须精确 sole-owner、真实新 native identity/原对象/unknown反例和独立验收；
+正式设计记录及 docs CI 不等于 constructor、预登记/activation/observe/终态已实现，更不等全writer/drain或生产恢复资格。
+
+本次只追加三文档，旧 ADR/架构节作为历史快照完整保留；新增设计状态以本节为增量，不降低旧实施停止门。
+`safe_rollback=null`、deployment blocked、hold/#435、真实模型/恢复/P1/矩阵预算0保持。
+超出已审合同或 M1/M2、基线漂移/extra dirty/owner冲突须停回主控。
+事实与候选边界见[本次收据](../verify/observer-registry-profile-architecture-decision-2026-10-12.md)。
