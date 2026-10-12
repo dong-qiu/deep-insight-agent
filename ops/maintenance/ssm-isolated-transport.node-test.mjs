@@ -3,12 +3,13 @@ import assert from "node:assert/strict";
 import http from "node:http";
 import fs from "node:fs";
 import cp, { spawn, spawnSync } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import { chmodSync, closeSync, copyFileSync, existsSync, linkSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
+import { createHash, generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import Database from "better-sqlite3";
 import { initialize, openLedger } from "./ledger.mjs";
 import { bindingFor, canonical, DOMAIN, hash, tokenFor } from "./contract.mjs";
@@ -90,19 +91,154 @@ function hot(f) {
   assert.equal(result.signal, "SIGKILL", result.stderr.toString());
   assert.equal(statSync(join(f.root, "ledger.sqlite-journal")).mode & 0o777, 0o600);
 }
+// Passive failure metadata only; never invoke error accessors or publish output.
+function errorSummary(error) {
+  try {
+    const own = Object.getOwnPropertyDescriptors(error), message = own.message?.value;
+    return { errorCode: typeof own.code?.value === "string" && /^[A-Z0-9_]{1,64}$/.test(own.code.value) ? own.code.value : "unknown",
+      messageBytes: typeof message === "string" ? Buffer.byteLength(message) : null,
+      messageSHA256: typeof message === "string" ? hash(message) : null };
+  } catch { return { errorCode: "unknown", errorUnreadable: true }; }
+}
+function failureObservation(diagnostic, label, serialize = JSON.stringify) {
+  const records = [], started = performance.now(); let bytes = 0, dropped = 0, secondary = 0;
+  function note(event, fields = {}) {
+    try {
+      const value = { event, elapsedMs: performance.now() - started }, descriptors = Object.getOwnPropertyDescriptors(fields);
+      assert.match(event, /^[a-z_]{1,48}$/); assert.ok(Object.keys(descriptors).length <= 12);
+      for (const [key, descriptor] of Object.entries(descriptors)) {
+        assert.match(key, /^[a-zA-Z][a-zA-Z0-9_]{0,47}$/); assert.ok(Object.hasOwn(descriptor, "value"));
+        const field = descriptor.value;
+        assert.ok(field === null || typeof field === "boolean" || (typeof field === "number" && Number.isFinite(field)) || (typeof field === "string" && field.length <= 128));
+        value[key] = field;
+      }
+      const encoded = serialize(value), size = Buffer.byteLength(encoded);
+      if (records.length === 16 || bytes + size > 6000) { dropped++; return; }
+      records.push(value); bytes += size;
+    } catch { secondary++; }
+  }
+  function emit(extra = {}) {
+    try {
+      let encoded;
+      try { encoded = serialize({ schema: "ssm-fixture-observation-v1", label, records, dropped, secondary, ...extra }); }
+      catch { secondary++; encoded = JSON.stringify({ schema: "ssm-fixture-observation-v1", label, diagnosticSerialization: "failed_unknown", dropped, secondary }); }
+      assert.ok(Buffer.byteLength(encoded) <= 8192); diagnostic(encoded); return true;
+    } catch { secondary++; return false; }
+  }
+  return { note, emit, summary: () => ({ records: records.length, bytes, dropped, secondary }) };
+}
+async function runObservedCase(observation, action, cleanup, summary) {
+  let primary;
+  try { return await action(); }
+  catch (error) { primary = error; observation.note("primary", errorSummary(error)); throw error; }
+  finally {
+    try { await cleanup(); }
+    catch (error) { observation.note("cleanup_error", errorSummary(error)); if (primary) throw new AggregateError([primary, error], "fixture primary and cleanup failures", { cause: primary }); primary = error; throw error; }
+    finally {
+      if (primary) {
+        let metadata; try { metadata = summary(); } catch { metadata = { closed: false, output: "unknown" }; }
+        observation.emit(metadata);
+      }
+    }
+  }
+}
+function outputSummary(bytes) {
+  return bytes == null ? { bytes: null, sha256: null } : { bytes: bytes.length, sha256: hash(bytes) };
+}
+function observeChild(proc, observation) {
+  const streams = { stdout: { bytes: 0, digest: createHash("sha256") }, stderr: { bytes: 0, digest: createHash("sha256") } };
+  const state = { failure: null, exited: false, closed: false, code: null, signal: null };
+  observation.note("child_created", { pid: proc.pid ?? null });
+  for (const name of ["stdout", "stderr"]) proc[name].on("data", chunk => {
+    try { streams[name].bytes += chunk.length; streams[name].digest.update(chunk); }
+    catch { observation.note("output_summary_unknown", { stream: name }); }
+  });
+  proc.on("spawn", () => observation.note("child_spawned", { pid: proc.pid ?? null }));
+  proc.on("error", error => { state.failure ??= error; observation.note("child_error", errorSummary(error)); });
+  proc.on("exit", (code, signal) => { Object.assign(state, { exited: true, code, signal }); observation.note("child_exit", { code, signal }); });
+  proc.on("close", (code, signal) => { Object.assign(state, { closed: true, code, signal }); observation.note("child_close", { code, signal }); });
+  return { state, summary() {
+    try { return { closed: state.closed, outputExtent: state.closed ? "closed_streams" : "partial_snapshot", stdoutBytes: streams.stdout.bytes, stdoutSHA256: streams.stdout.digest.copy().digest("hex"),
+      stderrBytes: streams.stderr.bytes, stderrSHA256: streams.stderr.digest.copy().digest("hex") }; }
+    catch { return { closed: state.closed, output: "unknown" }; }
+  } };
+}
 function child(root, action, endpoint, token, extra = {}) {
   const preload = extra.preload ? ["--import", `data:text/javascript,${encodeURIComponent(extra.preload)}`] : [];
   const proc = spawn(process.execPath, [...preload, cli, root, action, endpoint, String(Date.now() + (extra.duration ?? 10000))], { env: nodeEnv, stdio: ["pipe", "pipe", "pipe"] });
   let stdout = "", stderr = "";
+  const observation = extra.observation ? observeChild(proc, extra.observation) : null;
   proc.stdout.on("data", bytes => { stdout += bytes; }); proc.stderr.on("data", bytes => { stderr += bytes; });
   const done = new Promise((resolve, reject) => { proc.on("error", reject); proc.on("close", (code, signal) => resolve({ code, signal, stdout, stderr })); });
   if (extra.write !== false) proc.stdin.end(JSON.stringify({ schema, token }));
-  return { proc, done };
+  return { proc, done, observation };
 }
-async function until(condition) {
-  const deadline = Date.now() + 5000;
-  while (!condition()) { assert.ok(Date.now() < deadline, "fixture barrier deadline"); await new Promise(resolve => setTimeout(resolve, 5)); }
+async function until(condition, childState = null, observation = null, milliseconds = 5000) {
+  const deadline = Date.now() + milliseconds;
+  for (;;) {
+    if (childState?.failure) throw childState.failure;
+    if (childState?.exited || childState?.closed) throw new Error("fixture child ended before barrier observation");
+    if (condition()) { observation?.note("barrier_observed"); return; }
+    if (Date.now() >= deadline) { observation?.note("barrier_deadline", { milliseconds }); assert.fail("fixture barrier deadline"); }
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
 }
+
+test("SSM observation: early child failure wins over marker and preserves identity", async () => {
+  const original = new Error("synthetic child failure"), state = { failure: original };
+  await assert.rejects(until(() => true, state), error => error === original);
+  await assert.rejects(until(() => false, { exited: true }), /child ended before barrier/);
+});
+test("SSM observation: missing barrier fails, success records no invented close", async () => {
+  const records = [], observer = failureObservation(value => records.push(JSON.parse(value)), "synthetic");
+  await assert.rejects(until(() => false, null, observer, 10), /fixture barrier deadline/);
+  await until(() => true, null, observer); observer.emit({ closed: false });
+  assert.equal(records[0].closed, false); assert.deepEqual(records[0].records.map(item => item.event), ["barrier_deadline", "barrier_observed"]);
+});
+test("SSM observation: finite metadata rejects getters, truncates and never copies raw output", () => {
+  let getterCalls = 0, output;
+  const observer = failureObservation(value => { output = value; }, "synthetic");
+  observer.note("invalid", { get payload() { getterCalls++; return "secret"; } });
+  observer.note("invalid", { payload: "x".repeat(129) });
+  for (let i = 0; i < 100; i++) observer.note("bounded", { ordinal: i });
+  observer.emit({ closed: false }); assert.equal(getterCalls, 0); assert.ok(Buffer.byteLength(output) <= 8192);
+  assert.equal(observer.summary().records, 16); assert.equal(observer.summary().dropped, 84); assert.equal(observer.summary().secondary, 2);
+  assert.doesNotMatch(output, /secret/); assert.deepEqual(outputSummary(Buffer.from("abc")), { bytes: 3, sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad" });
+  assert.deepEqual(outputSummary(null), { bytes: null, sha256: null });
+});
+test("SSM observation: serializer and diagnostic failure do not replace primary error", () => {
+  const primary = new Error("original assertion"), outputs = [];
+  const observer = failureObservation(value => outputs.push(JSON.parse(value)), "synthetic", () => { throw new Error("serialize"); });
+  observer.note("primary", errorSummary(primary)); assert.equal(observer.emit(), true);
+  assert.equal(outputs[0].diagnosticSerialization, "failed_unknown");
+  const broken = failureObservation(() => { throw new Error("diagnostic IO"); }, "synthetic");
+  assert.throws(() => { try { throw primary; } catch (error) { broken.note("primary", errorSummary(error)); assert.equal(broken.emit(), false); throw error; } }, error => error === primary);
+  assert.equal(errorSummary(new Proxy({}, { ownKeys() { throw new Error("descriptor"); } })).errorUnreadable, true);
+});
+test("SSM observation: actual observer wiring records partial output, error and close separately", async () => {
+  const messages = [], observation = failureObservation(value => messages.push(JSON.parse(value)), "synthetic");
+  const proc = new EventEmitter(); Object.assign(proc, { pid: 123, stdout: new EventEmitter(), stderr: new EventEmitter() });
+  const observed = observeChild(proc, observation), original = new Error("synthetic spawn");
+  proc.emit("spawn"); proc.stdout.emit("data", Buffer.from("abc")); proc.stderr.emit("data", Buffer.alloc(1024 * 1024, 120));
+  assert.equal(observed.summary().outputExtent, "partial_snapshot"); assert.equal(observed.state.closed, false);
+  proc.emit("error", original); proc.emit("exit", 1, null);
+  await assert.rejects(until(() => true, observed.state), error => error === original);
+  assert.equal(observed.state.exited, true); assert.equal(observed.state.closed, false);
+  proc.emit("close", 1, null); observation.emit(observed.summary());
+  assert.equal(messages[0].closed, true); assert.equal(messages[0].outputExtent, "closed_streams");
+  assert.equal(messages[0].stdoutBytes, 3); assert.equal(messages[0].stdoutSHA256, outputSummary(Buffer.from("abc")).sha256);
+  assert.equal(messages[0].stderrBytes, 1024 * 1024); assert.ok(Buffer.byteLength(JSON.stringify(messages[0])) <= 8192);
+  assert.deepEqual(messages[0].records.map(item => item.event), ["child_created", "child_spawned", "child_error", "child_exit", "child_close"]);
+});
+test("SSM observation: shared failure path keeps primary before cleanup and emits after close", async () => {
+  const primary = new Error("primary"), secondary = new Error("cleanup"), messages = [];
+  const observer = failureObservation(value => messages.push(JSON.parse(value)), "synthetic"); let closed = false;
+  await assert.rejects(runObservedCase(observer, () => { throw primary; }, () => { closed = true; throw secondary; }, () => ({ closed })),
+    error => error instanceof AggregateError && error.cause === primary && error.errors[0] === primary && error.errors[1] === secondary);
+  assert.equal(messages[0].closed, true); assert.deepEqual(messages[0].records.map(item => item.event), ["primary", "cleanup_error"]);
+  const broken = failureObservation(() => { throw new Error("IO"); }, "synthetic", () => { throw new Error("serialize"); });
+  await assert.rejects(runObservedCase(broken, () => { throw primary; }, () => {}, () => { throw new Error("summary"); }), error => error === primary);
+});
 
 // Test-only scheduling: execute original native SQL, then pause at a proved
 // transaction boundary. Neither the runtime nor AWS/version output is replaced.
@@ -194,6 +330,7 @@ function contentionEvidence(label, value) {
 }
 
 test("ready publication: actual CLI partial staging write is invisible until complete", async t => {
+  const observation = failureObservation(value => t.diagnostic(value), "partial_staging"); let item;
   const race = contention(), f = fixture(t, { preserve: () => race.preserve }), s = await normalServer(t);
   const partial = race.path("a", "partial"), go = race.path("a", "partial-go"), output = race.path("a", "inspect-ready");
   const interrupt = `import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';
@@ -209,10 +346,10 @@ test("ready publication: actual CLI partial staging write is invisible until com
       }
       return originalWrite(output,text.slice(1),...args);
     }; syncBuiltinESMExports();`;
-  try {
-    const item = child(f.root, "send", s.endpoint, f.token, { duration: 30000, preload: interrupt + race.preload("a", { commit1: "inspect" }) });
+  await runObservedCase(observation, async () => {
+    item = child(f.root, "send", s.endpoint, f.token, { duration: 30000, preload: interrupt + race.preload("a", { commit1: "inspect" }), observation });
     item.closed = false; item.done.then(() => { item.closed = true; }, () => {}); race.children.push(item);
-    await until(() => existsSync(partial));
+    await until(() => existsSync(partial), item.observation.state, observation);
     assert.equal(existsSync(output), false);
     let settled = false;
     const reading = race.ready("a", "inspect");
@@ -220,14 +357,16 @@ test("ready publication: actual CLI partial staging write is invisible until com
     await new Promise(resolve => setTimeout(resolve, 10));
     assert.equal(settled, false); assert.equal(existsSync(output), false);
     race.release("a", "partial");
+    observation.note("partial_released");
     const record = await reading;
+    observation.note("complete_record_read");
     assert.deepEqual(record, { inTransaction: false, begins: 1, commits: 1, rollbacks: 0 });
     assert.equal(statSync(output).mode & 0o777, 0o600);
     race.release("a", "inspect"); const result = await item.done;
     assert.equal(result.code, 0); assert.equal(result.signal, null); assert.equal(s.records.length, 1);
     assert.equal(fs.readdirSync(race.root).some(name => name.endsWith(".tmp")), false);
     safety(JSON.parse(result.stdout)); assert.equal(current(f).op.state, "submitted");
-  } finally { race.release("a", "partial"); await race.close(); }
+  }, async () => { race.release("a", "partial"); await race.close(); }, () => item?.observation?.summary() ?? { closed: false, output: "unknown" });
 });
 test("ready publication: duplicate refuses replacement and removes only its staging", async () => {
   const race = contention(), output = race.path("a", "inspect-ready");
@@ -265,10 +404,16 @@ test("ready publication: corrupt published JSON still fails instead of parse ret
 });
 
 test("actual fixed AWS CLI v2 capability is required, never skipped", t => {
+  const observation = failureObservation(value => t.diagnostic(value), "aws_version");
   const binary = process.platform === "darwin" ? "/opt/homebrew/bin/aws" : "/usr/local/bin/aws";
+  observation.note("version_started");
   const observed = spawnSync(binary, ["--version"], { env: { AWS_CONFIG_FILE: "/dev/null", AWS_SHARED_CREDENTIALS_FILE: "/dev/null",
     AWS_EC2_METADATA_DISABLED: "true", AWS_ACCESS_KEY_ID: "AKIAISOLATEDFIXTURE01", AWS_SECRET_ACCESS_KEY: "fixture-only-not-a-secret", PATH: "/usr/bin:/bin" }, timeout: 5000 });
-  assert.equal(observed.error, undefined); assert.equal(observed.status, 0); assert.match(observed.stdout.toString(), /^aws-cli\/2\.[0-9]+\.[0-9]+\s/);
+  const stdout = outputSummary(observed.stdout), stderr = outputSummary(observed.stderr);
+  observation.note("version_returned", { status: observed.status, signal: observed.signal, ...errorSummary(observed.error),
+    stdoutBytes: stdout.bytes, stdoutSHA256: stdout.sha256, stderrBytes: stderr.bytes, stderrSHA256: stderr.sha256 });
+  try { assert.equal(observed.error, undefined); assert.equal(observed.status, 0); assert.match(observed.stdout.toString(), /^aws-cli\/2\.[0-9]+\.[0-9]+\s/); }
+  catch (error) { observation.note("primary", errorSummary(error)); observation.emit(); throw error; }
   t.diagnostic(`Node ${process.version}; ${binary}; ${observed.stdout.toString().trim()}`);
 });
 

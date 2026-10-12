@@ -91,12 +91,12 @@ function freezeNativeFacts(message,expected){
  for(const error of message.facilityErrors){assert.deepEqual(Object.keys(error).sort(),['phase','message'].sort());assert.equal(typeof error.phase,'string');assert.equal(typeof error.message,'string');}
  return Object.freeze({...message,nativeErrors:Object.freeze(message.nativeErrors.map(error=>Object.freeze({...error}))),facilityErrors:Object.freeze(message.facilityErrors.map(error=>Object.freeze({...error})))});
 }
-function spawnOwnedChild(children,args,{label,ready,entryReady,nativeFacts,readyMs=4000,watchdogMs=12000,executable=process.execPath}={}){
+function spawnOwnedChild(children,args,{label,ready,entryReady,nativeFacts,finiteEntry=false,readyMs=4000,watchdogMs=12000,executable=process.execPath}={}){
  const c=spawn(executable,args,{cwd:process.cwd(),env:{PATH:process.env.PATH,PORT:'3150'},stdio:ready?['pipe','pipe','pipe','ipc']:['pipe','pipe','pipe']});
  const expectedReady=ready&&Object.freeze({...ready,pid:c.pid}),expectedEntry=entryReady&&Object.freeze({...entryReady,pid:c.pid}),expectedFacts=nativeFacts&&Object.freeze({...nativeFacts});
  let resolveClose,resolveFailure,resolveReady,resolveEntry;
  const state={child:c,label,phase:'spawned',closed:false,exit:null,failure:null,ready:false,cleaning:false,cleanupErrors:[],stdout:[],stderr:[],signals:[],events:['spawn'],
-  entryReady:false,released1:false,released2:false,done:new Promise(resolve=>{resolveClose=resolve;}),failed:new Promise(resolve=>{resolveFailure=resolve;}),prepared:new Promise(resolve=>{resolveReady=resolve;}),entryPrepared:new Promise(resolve=>{resolveEntry=resolve;})};
+  entryReady:false,released1:false,released2:false,entryFrameReceived:0,entryItemsProcessed:0,entryFrameCompleted:false,done:new Promise(resolve=>{resolveClose=resolve;}),failed:new Promise(resolve=>{resolveFailure=resolve;}),prepared:new Promise(resolve=>{resolveReady=resolve;}),entryPrepared:new Promise(resolve=>{resolveEntry=resolve;})};
  children.push(state);
  const fail=error=>{if(!state.cleaning&&!state.failure){state.failure=error;resolveFailure(error);}};
  const stream=(name,bytes)=>{if(!state.closed)state[name].push(Buffer.from(bytes));};
@@ -111,7 +111,20 @@ function spawnOwnedChild(children,args,{label,ready,entryReady,nativeFacts,ready
  c.stderr.on('error',error=>fail(new Error('child stderr error: '+error.message,{cause:error})));
  c.stdin.on('error',error=>fail(new Error('child stdin error: '+error.message,{cause:error})));
  if(ready){c.on('message',message=>{
+  if(finiteEntry&&message?.kind==='owned-drain-entry-sequence-ended-v1'){
+   state.entryFrameReceived++;state.events.push('entry-frame-received');
+   try{
+    assert.ok(state.ready&&state.released1&&!state.entryFrameCompleted&&!state.entryReady&&!state.nativeFacts&&!state.released2,'finite entry frame out of order or duplicate');
+    assert.deepEqual(Object.keys(message).sort(),['entries','kind','pid']);assert.equal(message.pid,c.pid);assert.ok(Array.isArray(message.entries)&&message.entries.length>=1&&message.entries.length<=2,'bounded finite entry sequence required');
+    for(const entry of message.entries){
+     state.entryItemsProcessed++;assert.ok(!state.entryReady,'entry ready out of order or duplicate');assert.deepEqual(entry,expectedEntry);assert.equal(children.some(child=>child.entryReady),false,'multiple initial commit winners');
+     state.entryReady=true;state.entryMessage=Object.freeze({...entry});state.phase='initial-committed';state.events.push('entry-ready');
+    }
+    state.entryFrameCompleted=true;state.events.push('entry-frame-completed');resolveEntry();
+   }catch(error){state.events.push('entry-frame-rejected');fail(new Error('invalid private entry ready',{cause:error}));}return;
+  }
   if(expectedEntry&&message?.kind===expectedEntry.kind){
+   if(finiteEntry){fail(new Error('invalid private entry ready',{cause:new Error('finite fixture requires explicit sequence frame')}));return;}
    try{assert.ok(state.ready&&state.released1&&!state.entryReady&&!state.nativeFacts,'entry ready out of order or duplicate');assert.deepEqual(message,expectedEntry);assert.equal(children.some(child=>child.entryReady),false,'multiple initial commit winners');}
    catch(error){fail(new Error('invalid private entry ready',{cause:error}));return;}
    state.entryReady=true;state.entryMessage=Object.freeze({...message});state.phase='initial-committed';state.events.push('entry-ready');resolveEntry();return;
@@ -127,7 +140,7 @@ function spawnOwnedChild(children,args,{label,ready,entryReady,nativeFacts,ready
  state.watchdog=setTimeout(()=>fail(new Error('child completion watchdog exceeded')),watchdogMs);
  return state;
 }
-function childDiagnostic(state){return {label:state.label,pid:state.child.pid,phase:state.phase,closed:state.closed,exit:state.exit,
+function childDiagnostic(state){return {label:state.label,pid:state.child.pid,phase:state.phase,closed:state.closed,exit:state.exit,entryFrameReceived:state.entryFrameReceived,entryItemsProcessed:state.entryItemsProcessed,entryFrameCompleted:state.entryFrameCompleted,
  failure:state.failure?.message,readyMessage:state.readyMessage,entryMessage:state.entryMessage,nativeFacts:state.nativeFacts,events:state.events,signals:state.signals,stdout:state.result?.stdout??Buffer.concat(state.stdout).toString('utf8'),stderr:state.result?.stderr??Buffer.concat(state.stderr).toString('utf8')};}
 async function waitOwnedReady(state){await Promise.race([state.prepared,state.failed.then(error=>{throw error;})]);if(state.failure)throw state.failure;}
 async function waitOwnedClose(state){const result=await Promise.race([state.done,state.failed.then(error=>{throw error;})]);if(state.failure)throw state.failure;return result;}
@@ -275,17 +288,21 @@ prototype.run=function(...a){const db=this.database,isLedger=db.name===ledgerPat
  if(initialCommit){armDb=undefined;if(db.inTransaction!==false)throw facility('initial COMMIT',new Error('private initial transaction still active'));facts.entryReadyCount++;
   if(facts.entryReadyCount!==1||facts.successfulInitialInserts!==1)throw facility('initial COMMIT',new Error('private duplicate initial COMMIT'));
   const message={kind:'owned-drain-entry-ready-v1',pid:process.pid,root:input.root,release:release2,operationId:token.operationId,ledgerPath,phase:'writable-commit-returned',successfulInitialInserts:1,inTransaction:false};
-  if(mode!=='missing-entry')send(mode==='wrong-entry'?{...message,root:input.root+'-wrong'}:message);if(mode==='duplicate-entry')send(message);
+  if(mode.startsWith('finite-')){
+   const entries=mode==='finite-duplicate'?[message,message]:mode==='finite-wrong'?[{...message,root:input.root+'-wrong'}]:[message];
+   if(mode!=='finite-missing')send({kind:'owned-drain-entry-sequence-ended-v1',pid:process.pid,entries});
+  }else {if(mode!=='missing-entry')send(mode==='wrong-entry'?{...message,root:input.root+'-wrong'}:message);if(mode==='duplicate-entry')send(message);}
   if(mode==='winner-exit'){waitRelease(release2+'.exit','winner-exit');process.exit(0);}waitRelease(release2,'release2');facts.secondReleaseObserved=true;
+  if(mode==='finite-late')send({kind:'owned-drain-entry-sequence-ended-v1',pid:process.pid,entries:[message]});
  }
- if(!hit&&count===7&&this.source==='COMMIT'&&db.readonly&&isLedger){hit=true;facts.firstReadyCount++;send({kind:'owned-drain-initial-ready-v1',pid:process.pid,root:input.root,release,count,phase:'readonly-commit-returned'});waitRelease(release,'release1');facts.firstReleaseObserved=true;}
+ if(!hit&&count===7&&this.source==='COMMIT'&&db.readonly&&isLedger){hit=true;facts.firstReadyCount++;if(mode==='finite-premature')send({kind:'owned-drain-entry-sequence-ended-v1',pid:process.pid,entries:[]});send({kind:'owned-drain-initial-ready-v1',pid:process.pid,root:input.root,release,count,phase:'readonly-commit-returned'});waitRelease(release,'release1');facts.firstReleaseObserved=true;}
  return result;};
 try{const result=await consumeOwnedDrainIsolated(input);if(!hit){process.stderr.write(JSON.stringify({phase:'before-private-barrier',count,result})+'\\n');throw facility('ready1',new Error('private barrier not reached'));}
  if(mode==='non-initial'){const db=new Database(ledgerPath,{fileMustExist:true,timeout:0});try{db.transaction(()=>{})();db.transaction(()=>{}).immediate();try{db.transaction(()=>{throw new Error('private noninitial rollback');}).immediate();}catch(error){if(error.message!=='private noninitial rollback')throw error;}}finally{db.close();}}
  console.log(JSON.stringify(result));}catch(error){console.log(JSON.stringify({error:error.message}));process.exitCode=2;}
 finally{await finishIPC();}`;
 function launchNativeChild(children,f,release,release2,{label='native child',mode='normal',code=nativeInitialChild}={}){
- const c=spawnOwnedChild(children,['--input-type=module','-e',code,release,release2,mode],{label,ready:initialReady(f.root,release),entryReady:entryReadyFor(f,release2),nativeFacts:nativeFactsFor(f)});
+ const c=spawnOwnedChild(children,['--input-type=module','-e',code,release,release2,mode],{label,ready:initialReady(f.root,release),entryReady:entryReadyFor(f,release2),nativeFacts:nativeFactsFor(f),finiteEntry:mode.startsWith('finite-')});
  c.child.stdin.end(JSON.stringify(opts(f,{deadlineAt:Date.now()+10000})));return c;
 }
 function assertNativeLoser(result){
@@ -323,6 +340,35 @@ async function runInitialRace(t,f,{a={},b={},prematureRelease2=false,onChildren}
   return {results,parsed};
  });
 }
+async function runFiniteNativeEntry(t,f,mode,onChild){
+ const release=join(f.parent,'private-release'),release2=join(f.parent,'private-entry-release');
+ return withOwnedChildren(t,async children=>{
+  const child=launchNativeChild(children,f,release,release2,{label:'finite native entry '+mode,mode});onChild(child);
+  await waitOwnedReady(child);assert.equal(children.length,1);assert.equal(fs.existsSync(release2),false);
+  child.released1=true;child.phase='released-1';child.events.push('release-1');save(release,'private-release-v1\n');
+  await boundedEntryPhase(children,async active=>{
+   await child.entryPrepared;active();assert.equal(child.entryFrameReceived,1);assert.equal(child.entryItemsProcessed,1);assert.equal(child.entryFrameCompleted,true);assert.equal(child.entryReady,true);assert.equal(child.failure,null);
+   assert.ok(!child.closed&&child.exit===null&&child.child.exitCode===null&&child.child.signalCode===null);assert.equal(fs.existsSync(release2),false);
+   child.released2=true;child.phase='released-2';child.events.push('release-2');save(release2,'private-entry-release-v1\n');
+  });
+  return waitOwnedClose(child);
+ });
+}
+test('finite native single-entry completion grants stage two only after actual parent validation',async t=>{
+ const f=acquired(t,'finite-single',{task:false});let child;
+ const result=await runFiniteNativeEntry(t,f,'finite-single',c=>{child=c;}),parsed=parseChildJson(result);
+ assert.equal(result.exit,0);assert.equal(result.signal,null);assert.equal(result.stderr,'');assert.equal(child.entryFrameCompleted,true);assert.equal(child.entryItemsProcessed,1);assert.ok(result.events.indexOf('entry-frame-completed')<result.events.indexOf('release-2'));
+ assert.equal(child.nativeFacts.entryReadyCount,1);assert.equal(child.nativeFacts.successfulInitialInserts,1);assert.equal(child.nativeFacts.initialBeginReturned,true);assert.equal(child.nativeFacts.secondReleaseObserved,true);assert.deepEqual(child.nativeFacts.nativeErrors,[]);assert.deepEqual(child.nativeFacts.facilityErrors,[]);
+ assert.equal(parsed.entry_hold,'committed');assert.equal(parsed.final_hold,'committed');assert.equal(parsed.reason,'writer_drain_coverage_unknown');assert.equal(parsed.admission,'closed');assertBlocked(parsed);assertOwnedPermitsBlocked(parsed);
+ const op=ledgerNow(f).operations[f.token.operationId];assert.deepEqual(op.failures,['owned_drain_started','writer_drain_coverage_unknown']);assert.deepEqual(parsed.token,Object.fromEntries(['operationId','ownerId','fence','revision','target','executionIdentity'].map(k=>[k,op[k]])));
+});
+for(const mode of ['finite-wrong','finite-missing','finite-premature','finite-late'])test('finite native entry sequence rejects '+mode+' with explicit phase evidence',async t=>{
+ const f=acquired(t,mode,{task:false});let child;
+ await assert.rejects(runFiniteNativeEntry(t,f,mode,c=>{child=c;}),error=>{assert.equal(error.constructor,Error);if(mode==='finite-missing')assert.ok(['private entry phase deadline exceeded','invalid private native facts'].includes(error.message));else assert.equal(error.message,'invalid private entry ready');return true;});
+ assert.equal(child.closed,true);assert.equal(child.result.events.at(-1),'close');assert.deepEqual(child.cleanupErrors,[]);
+ if(mode==='finite-late'){assert.equal(child.entryFrameCompleted,true);assert.equal(child.entryItemsProcessed,1);assert.equal(child.entryFrameReceived,2);assert.ok(child.events.indexOf('entry-frame-completed')<child.events.indexOf('release-2'));assert.equal(child.failure.message,'invalid private entry ready');}
+ else {assert.equal(child.entryFrameCompleted,false);assert.equal(child.released2,false);assert.equal(fs.existsSync(join(f.parent,'private-entry-release')),false);}
+});
 test('same-token concurrent actual processes get one strict initial winner, never duplicate entry or refresh loser',async t=>{
  const f=acquired(t,'two-process',{task:false});await runInitialRace(t,f);
 });
@@ -436,12 +482,12 @@ function adversaryInitialChild(f,mode){
  return `import fs from 'node:fs';import {performance} from 'node:perf_hooks';let bytes='';for await(const c of process.stdin)bytes+=c;const release=process.argv[1],first={...${JSON.stringify(first)},pid:process.pid},entry={...${JSON.stringify(entry)},pid:process.pid},facts={...${JSON.stringify(facts)},pid:process.pid};${body}`;
 }
 for(const mode of ['entry-before-ready','entry-before-release','wrong-entry','duplicate-entry','missing-entry','two-winners','premature-release2','loser-hang','loser-output-hang','unknown-no-native','unknown-wrong-native','unknown-facility'])test('private two-stage supervision rejects '+mode+' without treating it as a business loser',async t=>{
- const f=acquired(t,'phase-'+mode,{task:false});let config;
+ const f=acquired(t,'phase-'+mode,{task:false});let config,finiteChild;
  if(['wrong-entry','duplicate-entry','missing-entry'].includes(mode))config={a:{mode},b:{mode}};
  else if(mode==='premature-release2')config={prematureRelease2:true};
  else if(mode.startsWith('entry-before'))config={a:{code:adversaryInitialChild(f,mode)}};
  else config={b:{code:adversaryInitialChild(f,mode)}};
- await assert.rejects(runInitialRace(t,f,config),error=>{
+ await assert.rejects(mode==='duplicate-entry'?runFiniteNativeEntry(t,f,'finite-duplicate',c=>{finiteChild=c;}):runInitialRace(t,f,config),error=>{
   if(mode==='premature-release2')assert.match(error.message,/premature private second release/);
   else if(mode==='unknown-no-native')assert.match(error.message,/unknown loser requires only actual initial BEGIN busy/);
   else if(mode==='unknown-wrong-native')assert.equal(error.actual,'initial-commit');
@@ -450,6 +496,7 @@ for(const mode of ['entry-before-ready','entry-before-release','wrong-entry','du
   else assert.match(error.message,/invalid private entry ready/);
   return true;
  });
+ if(mode==='duplicate-entry'){assert.equal(finiteChild.entryFrameReceived,1);assert.equal(finiteChild.entryItemsProcessed,2);assert.equal(finiteChild.entryReady,true);assert.deepEqual(finiteChild.entryMessage,{...entryReadyFor(f,join(f.parent,'private-entry-release')),pid:finiteChild.child.pid});assert.equal(finiteChild.entryFrameCompleted,false);assert.equal(finiteChild.failure.message,'invalid private entry ready');assert.equal(finiteChild.released2,false);assert.equal(finiteChild.closed,true);assert.deepEqual(finiteChild.cleanupErrors,[]);assert.ok(finiteChild.events.indexOf('entry-ready')<finiteChild.events.indexOf('entry-frame-rejected'));}
  assert.equal(fs.existsSync(join(f.parent,'private-entry-release')),mode==='premature-release2');
 });
 test('private two-stage supervision rejects winner-exit without treating it as a business loser',async t=>{

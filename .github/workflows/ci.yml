@@ -242,16 +242,86 @@ jobs:
           # Frozen-version ops regressions archive historical commits and inspect origin/main.
           fetch-depth: 0
       - uses: actions/setup-node@v7
+        id: ssm_node_setup
         with:
           node-version: "24.19.0"
           cache: npm
       - run: npm ci
+      - name: record SSM comparison environment
+        if: github.event_name == 'pull_request' && github.event.pull_request.number == 487
+        run: node ops/run-node-tests.mjs --diagnostic-environment
+        env:
+          SSM_SETUP_CACHE_HIT: ${{ steps.ssm_node_setup.outputs.cache-hit }}
       - run: npm run test:ops
+      - name: record SSM comparison final environment
+        if: always() && github.event_name == 'pull_request' && github.event.pull_request.number == 487
+        run: node ops/run-node-tests.mjs --diagnostic-environment
+        env:
+          SSM_SETUP_CACHE_HIT: ${{ steps.ssm_node_setup.outputs.cache-hit }}
       - name: record successful operations identity
         id: identity
         run: node ops/ci-application-gate.mjs record ops
         env:
           PROTOTYPE_CI_EVIDENCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+
+  # One initial same-candidate comparison, not a default scheduling repair.
+  # Remove these lanes before the next repair candidate; neither can replace
+  # ops_checks or the required application result if baseline fails.
+  ssm_diagnostic_comparison:
+    name: SSM diagnostic (${{ matrix.mode }})
+    needs: scope
+    if: github.event_name == 'pull_request' && github.event.pull_request.number == 487 && needs.scope.outputs.mode == 'full'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [targeted-ssm, full-file-concurrency-2]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v7
+        id: ssm_node_setup
+        with:
+          node-version: "24.19.0"
+          cache: npm
+      - run: npm ci
+      - name: record SSM comparison environment
+        run: node ops/run-node-tests.mjs --diagnostic-environment
+        env:
+          SSM_SETUP_CACHE_HIT: ${{ steps.ssm_node_setup.outputs.cache-hit }}
+      - name: execute fixed comparison once
+        env:
+          COMPARISON_MODE: ${{ matrix.mode }}
+        run: |
+          set -o pipefail
+          node --input-type=module <<'NODE' 2>&1 | tee "$RUNNER_TEMP/ssm-comparison.tap"
+          import { spawnSync } from 'node:child_process';
+          import { discoverNodeTests } from './ops/run-node-tests.mjs';
+          const mode=process.env.COMPARISON_MODE;
+          const files=mode==='targeted-ssm' ? ['ops/maintenance/ssm-isolated-transport.node-test.mjs'] : discoverNodeTests(process.cwd());
+          if(!['targeted-ssm','full-file-concurrency-2'].includes(mode)) throw new Error('invalid fixed comparison');
+          const args=['--test', ...(mode==='full-file-concurrency-2' ? ['--test-concurrency=2'] : []), ...files];
+          console.log(JSON.stringify({mode, actualArgv:args, startedUTC:new Date().toISOString()}));
+          const result=spawnSync(process.execPath,args,{cwd:process.cwd(),stdio:'inherit'});
+          console.log(JSON.stringify({mode,endedUTC:new Date().toISOString(),status:result.status,signal:result.signal,errorCode:result.error?.code ?? null}));
+          if(result.error) throw result.error;
+          process.exitCode=result.status ?? 1;
+          NODE
+      - name: record SSM comparison final environment
+        if: always()
+        run: node ops/run-node-tests.mjs --diagnostic-environment
+        env:
+          SSM_SETUP_CACHE_HIT: ${{ steps.ssm_node_setup.outputs.cache-hit }}
+      - name: retain comparison raw on success or failure
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ssm-comparison-${{ matrix.mode }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ssm-comparison.tap
+          if-no-files-found: error
+          retention-days: 90
 
   application:
     name: full application verification
