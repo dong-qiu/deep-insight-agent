@@ -640,3 +640,23 @@ S2a 只新格式/登记/pre-open/control，source/domain 接线在 S2b；W1/A/P/
 startup 组合、固定恢复、seed committed-prefix 和 D1 auth readonly 例外按 ADR；未实现 consumer 不 fallback。
 本段仅原 owner 的加性设计文档，不代表源码/DDL 已实现或执行，`writer_quiescence/drain_ready/production_permitted=false`，
 safe_rollback=null、deployment blocked、hold/#435不变，不代签全 writer、恢复或生产资格。
+
+### Dispatch-bind 独立 profile（架构接受，实施与执行验收待定）
+
+[ADR-0046](../develop/decisions.md#adr-0046-dispatch-bind-使用独立新-profile-与单步绑定终态)
+仅接受[冻结新增合同](https://github.com/dong-qiu/deep-insight-agent/blob/6869854f93cac8194fa9f269551fc8e1e4080496/docs/plan/specs/r3-r6-dispatch-bind-contract-2026-10-12.md)
+的窄设计，不改变上节默认 v2/header2/API 或任何旧 root。新独占 root 使用 APP_ID `0x41335732`/header3，
+八键 marker `a3-writers-isolation-v3-dispatch-bind-v1`、catalog `dispatch-bind-v1` 与固定 fixture F；
+registry 10/20/12 对象数保持，仅新 terminals CHECK 加入 `binding_completed`，其余定义原字节保留。
+禁止 ALTER/live 迁移/重写/自动协商；旧 reader 对新 marker、新 opener 对未知 catalog/F/schema 均须 constructor 前拒绝。
+
+同原 handle 的 private operation+已 ACK pre-open target、原 AbortSignal 与 strict run 值才可消费唯一 ordinal0 `dispatch-bind`。
+固定值桥只提供 SELECT/manifest/primitive 值，不携 connection/SQL callback；core 使用 target 私有原 native connection，
+reservation → registry/S0/business 固定同步锁序 → 两次真实 claim/root/child/current-clock SELECT → 空业务 COMMIT → registry ACK。
+unknown 0 cap、不重试、不用 rollback 冲销 COMMIT；普通取消不获 observer 豁免。返回 opaque bound cap 只证明绑定 phase，
+`binding_completed` 不等 dispatchdone/Run完成/lease-release/后续业务权，close 不等全 writer 静默。
+
+usage running 仅对应旧 begin，不含 observation settle；canonical SELECT/clock/root-child 语义须原 DB owner 只读认领。
+独立合成 fixture（7表/12 autoindex/1 partial index、APP_ID `0x44324231`/version1）及其 F 是 expected，
+真实 SQLite SQL/header/FK/同连接输出待验，不初始化生产 schema或假迁移账本。fixture/setup、源码用途与精确 build 依赖窗口均另冻。
+本片未授代码/DB/build 写权，未执行 native/模型/VM/恢复或生产；全 writer、drain、生产许可 false 与既有 hold/nullrollback 不变。

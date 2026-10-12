@@ -1973,3 +1973,79 @@ raw intent/publish/finalize/reconcile、report validator 白名单与审核/幂�
 initial v2 的 `writer_quiescence`、`drain_ready`、`production_permitted` 始终 false；全 writer、可信恢复与实际 transport 未证明。
 `safe_rollback=null`、deployment blocked、hold/#435 与模型/恢复/P1/prepare/matrix 消费0保持。
 正式决定的历史接受事实、加性证据及独立文档交付边界见[本次 owner 收据](../verify/r3-r6-v2-architecture-decision-2026-10-12.md)。
+
+## ADR-0046: Dispatch-bind 使用独立新 profile 与单步绑定终态
+
+日期：2026-10-12。状态：**原 ADR-0045 架构 owner 接受以下冻结新增设计；尚未实施或执行验收，不授予源码/DB/build 写窗。**
+
+### 决策来源与边界
+
+本决定仅接受 [PR482 冻结合同](https://github.com/dong-qiu/deep-insight-agent/blob/6869854f93cac8194fa9f269551fc8e1e4080496/docs/plan/specs/r3-r6-dispatch-bind-contract-2026-10-12.md)
+（源码身份 `6869854f93cac8194fa9f269551fc8e1e4080496`，spec SHA256
+`bb8be05684af3d0dea36a8d2eff3eba6b405c9db4d7ba904ec7cc9f94ceb7936`）的独立 profile、单步绑定与固定值桥方向。
+本片基线 `541d2264685c6a44b48af3186466b981523d76ae`；合同来源在创建本分支时仍为候选，不写成已在 main 发布。
+旧 S2a/S2b/default v2 的决定、合同与算法不修改，不以本决定进行第三轮旧算法审查。
+
+目的只是在预置可信合成 claim/run 上确认绑定：固定 SELECT、真实空业务 COMMIT、registry ACK。
+不创建数据库、claim、Run、usage 或 terminal 业务记录；不接真实 producer/preclaim/source、observer/M1/M2、raw/report 或完整 dispatch。
+架构接受不等于原 DB owner 已认领 canonical SQL，也不等于原源码已移交。
+
+### 独立格式与兼容拒绝
+
+只为**新建独占 root**增加 profile：同 application_id `0x41335732`，user_version **3**；新 marker schema
+`a3-writers-isolation-v3-dispatch-bind-v1`，exact 八键
+`schema,initId,ledgerMarkerHash,root,registry,targets,catalog,fixtureFingerprint`。
+catalog 固定 `dispatch-bind-v1`；fixtureFingerprint 固定
+`cc57b8b610500d9b57f0a41ead782df4a4ea7eaef359c87eda94adbcfd44a5c3`。
+
+registry 仍为 10 表/20 trigger/12 autoindex；仅新 profile 的 terminals.outcome CHECK 增加 `binding_completed`，
+其它九表、trigger 与索引定义保持原字节。新 expected manifest hash
+`ca0a81b1ada410e0f52d9d3be233377771e7f959b405ac81cbf3e855c7427e5d` 是冻结合同的期望值，不是本片 SQLite 执行证据。
+默认 v2/header2/六键 marker、原 initializer/opener/API/SQL/OUTCOMES 继续保持；**禁止旧 root ALTER、迁移、重写、自动协商或 fallback**。
+旧 reader 对八键 marker 必须在 SQLite constructor 前拒绝；新 opener 对未知 catalog/F/schema 同样前置拒绝。
+新 reader 的 header/schema、step/fact/完整双向 audit 验证也必须真实实现，不能只识别 marker 即放行。
+
+具名新 initializer/opener 是 `initializeDispatchBindRegistryV2(root)` / `openDispatchBindRegistryV2(root)`；
+新 handle 的 inspect/close 不代表旧 control wrapper 或 S0 CLI 已支持新 profile，更不代表全 writer fence/静默。
+
+### 固定值桥与单次绑定
+
+`bindDispatchDomainV2(operation,target,run)` 只接受同一原 registry handle 的 private operation/pre-open target cap
+和 strict `{runId,traceId}`；target 必须来自另一个 startup/local-seed operation 已 committed+ACK 的原 pre-open。
+克隆、跨 handle、同路径、inspect/SQL 行或重启不得恢复 cap；调用者不提供 DB/SQL/driver/callback/时钟。
+固定值桥只导出冻结 SELECT/fixture manifest 与 strict primitive 校验，不能执行 SQL、打开 DB 或读 env/Date；
+实际 SQL 由 core 在 target 私有原 native connection 执行，不从 public db getter 或可替换方法获取能力。
+
+catalog 的新 step 仅 `dispatch-bind`、ordinal 恒 **0**、每 operation 至多一步；不把 pre-open 塞进同一个 dispatch operation。
+完整 canonical input/hash、scope、creator step、physical identity、F、claim/run、两次 current-clock 检查
+必须按冻结合同双向关联到 reservation/result/binding/facts，不能只检查 hash 链或持久行存在。
+SELECT 固定文本 hash 为 `d26881b619b0918acb4176b751a98728a7d314be9b04943ae4cb6be573e1a2dc`。
+usage 的 running 条件只对应旧 **usage begin**，不是 observation settle 的等价声明；terminal 必须选实际 root run，
+root/child trace、token/claimEpoch/fencingEpoch 与两 expiry/current clock 的真实来源仍须 canonical owner 认领。
+COMMIT 前重新采样 core current clock、拒绝回退并重跑同 SELECT；caller clock 不能替代。
+
+锁序保持：reservation COMMIT 结束 → registry 重验/锁 → S0 同步 inspect 事务立即结束 → business BEGIN/SELECT →
+原 signal/物理/时钟重验及 SELECT → 空业务 COMMIT → 同 registry ACK → 返回 opaque bound cap。
+不持锁跨 await、不反向取锁、不承诺多库原子。普通取消继续严格原 signal/sticky 首因，没有 observer 豁免。
+只有 business COMMIT 与 registry ACK 都确定才返回 bound cap；reservation/COMMIT/ACK unknown 一律 **0 cap**，
+不重试、不以 cleanup rollback 抹掉已发生 COMMIT，不复活 cap。第一次消费之后只返回 consumed，不 replay/noop-success。
+
+`binding_completed` 与 ACK/result/binding/facts 同 registry 事务，仅表示**绑定 phase 已完成**；
+不是 dispatch done、Run/usage/terminal 业务完成、lease-release 或任何后续写入许可。
+已确认 COMMIT 遇晚取消保留真实事实，但不伪造业务完成；close 的库存和永久拒绝仍不等于 drain/quiescence。
+
+### 实施前置、代价与未决门
+
+接受的代价是显式 profile 分流、新精确 reader/catalog/终态验证与独立 fixture 维护，不能用泛型 callback 或旧 root 迁移省略。
+七表/十二 autoindex/一 partial index、fixture APP_ID `0x44324231`/version1/F 都只是 expected 合成定义；
+不是生产 schema、迁移账本或应用 ready。真实 native SQLite 的逐对象 SQL/header/FK/同连接 fingerprint
+必须先验证；actual 不同即停并回报合同差异，不能放宽 F。初始化 fixture 不在 bind API 内。
+
+仍需分别完成：原 provenance/schema owner 只读认领 canonical SELECT/clock/run 语义；真实 fixture/schema/setup 窄许可与测试；
+两个 core 的新用途及六新候选的唯一源码窗口；既有 build owner 对两个精确值桥依赖的白名单/checker 窄增量。
+这些均未由本决定释放，不能把旧源码窗、clean checkout、文档 CI 或旧静态报告代签新实现。
+真实同连接 COMMIT/ACK、取消/close、unknown/死亡与默认 v2 拒绝兼容反例须绑定未来新 candidate CI。
+
+本片只新增架构文档，未执行 DB/DDL/native、模型、VM、恢复或生产；`writer_quiescence/drain_ready/production_permitted=false`，
+`safe_rollback=null`、deployment blocked、hold/#435 保持。任何超出冻结合同的 profile/DDL/API/语义差异须先精确回报主控另定。
+接受事实与验证边界见[专属收据](../verify/dispatch-bind-architecture-decision-2026-10-12.md)。
