@@ -118,14 +118,14 @@ function interpret(texts, { production, expectedVersions = null }) {
     const key = path + ':' + name;
     if (stack.includes(key)) fail('identifier_cycle:' + key);
     if (cache.has(key)) return cache.get(key);
-    const module = modules.get(path), imported = module.imports.get(name);
+    const parsedModule = modules.get(path), imported = parsedModule.imports.get(name);
     let value;
     if (imported) {
       if (!modules.get(imported.target).exported.has(imported.name)) fail('missing_export:' + imported.name);
       value = resolve(imported.target, imported.name, [...stack, key]);
     } else {
-      if (!module.definitions.has(name)) fail('missing_identifier:' + name);
-      value = expression(path, name, module.definitions.get(name), [...stack, key]);
+      if (!parsedModule.definitions.has(name)) fail('missing_identifier:' + name);
+      value = expression(path, name, parsedModule.definitions.get(name), [...stack, key]);
     }
     cache.set(key, value); return value;
   }
@@ -147,8 +147,8 @@ function interpret(texts, { production, expectedVersions = null }) {
     }
     fail('unsupported_expression:' + ts.SyntaxKind[node.kind]);
   }
-  const module = modules.get(DEFINITIONS), root = module.definitions.get('MIGRATIONS');
-  if (!module.exported.has('MIGRATIONS') || !root) fail('missing_migrations');
+  const parsedModule = modules.get(DEFINITIONS), root = parsedModule.definitions.get('MIGRATIONS');
+  if (!parsedModule.exported.has('MIGRATIONS') || !root) fail('missing_migrations');
   const array = unwrap(root);
   if (!ts.isArrayLiteralExpression(array)) fail('migration_array_required');
   const ids = new Set(), rows = [];
