@@ -23,7 +23,7 @@ const item: ContentItem = { id: contentId, source_id: source.id, url: "https://r
   fetch_status: "ok" };
 
 // Per-test root and explicit DB path; no getDb/closeDb singleton access or default .data.
-describe.sequential("R4 existing raw archive characterization", () => {
+describe("R4 existing raw archive characterization", () => {
   let db: DB | undefined;
   let root: string | undefined;
   let setupComplete = false;
