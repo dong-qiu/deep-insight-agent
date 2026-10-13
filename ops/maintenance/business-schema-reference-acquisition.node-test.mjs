@@ -6,7 +6,47 @@ import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { LIMITS } from './business-schema-reference-acquisition.mjs';
+import { LIMITS, assertReferenceNamespace } from './business-schema-reference-acquisition.mjs';
+
+// Data-only future negative definitions. No runner, SQL execution or path authority exists here.
+const negativeFixtureProposals = Object.freeze([
+  { id: 'N1', effects: ["CREATE TEMP TABLE schema_migration(version TEXT)", "CREATE TEMP VIEW namespace_probe_view AS SELECT version FROM temp.schema_migration", "CREATE INDEX temp.namespace_probe_index ON schema_migration(version)", "CREATE TEMP TRIGGER namespace_probe_trigger AFTER INSERT ON schema_migration BEGIN SELECT 1; END"], executionAuthorized: false },
+  { id: 'N2', effects: ["ATTACH ':memory:' AS aux"], executionAuthorized: false },
+  { id: 'N3', effects: ['ATTACH ? AS aux'], missingGate: 'master must freeze the sole absent owned aux file binding/target and aggregate budget', executionAuthorized: false },
+  { id: 'N4', effects: ['wrong expected main physical identity'], executionAuthorized: false }
+]);
+
+test('namespace predicate accepts only original main and explicitly verified empty builtin temp', () => {
+  const target = '/isolated-namespace-shape/d2-business.sqlite';
+  const main = { seq: 0, name: 'main', file: target }, temp = { seq: 1, name: 'temp', file: '' };
+  const builtin = { schema: 'temp', name: 'sqlite_temp_schema', type: 'table', ncol: 5, wr: 0, strict: 0 };
+  const mainMetadata = { schema: 'main', name: 'sqlite_schema', type: 'table', ncol: 5, wr: 0, strict: 0 };
+  const mainOnly = { databases: [main], tableList: [mainMetadata], tempCatalog: null };
+  const emptyTemp = { databases: [main,temp], tableList: [mainMetadata,builtin], tempCatalog: [] };
+  assert.deepEqual(assertReferenceNamespace(mainOnly,target), { builtinTemp: 'not-present', qualification: false });
+  assert.deepEqual(assertReferenceNamespace(emptyTemp,target), { builtinTemp: 'verified-empty-v1', qualification: false });
+  const invalid = [
+    { ...emptyTemp, databases: [main,{ seq: 1, name: 'aux', file: '' }] },
+    { ...emptyTemp, databases: [main,{ seq: 1, name: 'aux', file: '/isolated-namespace-shape/aux.sqlite' }] },
+    { ...mainOnly, databases: [{ ...main, file: '/wrong-main.sqlite' }] },
+    { ...mainOnly, databases: [temp] }, { ...mainOnly, databases: [main,main] },
+    { ...mainOnly, databases: [{ ...main, seq: '0' }] }, { ...mainOnly, databases: [{ ...main, extra: true }] },
+    { ...emptyTemp, databases: [main,{ ...temp, seq: 0 }] }, { ...emptyTemp, databases: [main,{ ...temp, file: '/temp.sqlite' }] },
+    { ...emptyTemp, tableList: [mainMetadata,{ ...builtin, name: 'unknown_alias' }] },
+    { ...emptyTemp, tableList: [mainMetadata,{ ...builtin, extra: true }] }, { ...emptyTemp, tableList: [mainMetadata,builtin,builtin] },
+    { ...emptyTemp, tableList: [mainMetadata,{ ...builtin, schema: 'aux' }] }, { ...emptyTemp, tableList: null },
+    { ...mainOnly, tableList: [mainMetadata,builtin] }, { ...mainOnly, tempCatalog: [] },
+    { ...mainOnly, tableList: [] }, { ...emptyTemp, tempCatalog: null },
+    { ...mainOnly, tableList: [{ ...mainMetadata, ncol: '5' }] }, { ...mainOnly, tableList: [{ ...mainMetadata, wr: true }] },
+    ...['table','index','view','trigger'].map(type => ({ ...emptyTemp, tempCatalog: [{ type, name: 'shadow', tbl_name: 'schema_migration', rootpage: 0, sql: null }] }))
+  ];
+  for (const facts of invalid) {
+    const original = JSON.stringify(facts); assert.throws(() => assertReferenceNamespace(facts,target));
+    assert.equal(JSON.stringify(facts), original, 'rejection must not filter or erase supplied raw facts');
+  }
+  assert.deepEqual(negativeFixtureProposals.map(p => p.id), ['N1','N2','N3','N4']);
+  assert.ok(negativeFixtureProposals.every(p => p.executionAuthorized === false));
+});
 
 function retainedByteLabel(counts, retained) {
   return { receivedBytesRetained: counts.stdout === retained.stdout && counts.stderr === retained.stderr };
@@ -114,6 +154,20 @@ test('one hosted real business reference acquisition preserves complete raw sour
   assert.equal(data.status, 'ACQUIRED', JSON.stringify(data.primary));
   assert.equal(data.qualification, false); assert.equal(data.expected_native_descriptor_sha256, null);
   assert.ok(data.raw.catalog.length > 7); assert.equal(data.raw.ledger.length, 48);
+  assert.ok(data.raw.namespaceSnapshots.length === 3);
+  for (const snapshot of data.raw.namespaceSnapshots) {
+    assertReferenceNamespace({ databases: snapshot.after, tableList: snapshot.tableList, tempCatalog: snapshot.tempCatalog }, data.originalHandle.target.path);
+  }
+  assert.ok(data.raw.databases.some(d => d.name === 'main' && d.file === data.originalHandle.target.path));
+  assert.equal(data.originalHandle.target.nlink, 1);
+  assert.equal(data.raw.resources.scope, 'owned-root-only'); assert.equal(data.raw.resources.allTempDiskHeapQualification, 'UNKNOWN');
+  assert.ok(Number.isInteger(data.raw.resources.tempStore) && Array.isArray(data.raw.resources.compileOptions));
+  assert.equal(typeof data.raw.sqliteVersion.version, 'string');
+  assert.equal(data.runtime.sqlite, data.raw.sqliteVersion.version);
+  assert.equal(typeof data.raw.sqliteSourceId.source_id, 'string');
+  assert.equal(data.runtime.sqliteSourceId, data.raw.sqliteSourceId.source_id);
+  assert.equal(data.stable.normalization, 'business-main-native-observation-v2');
+  assert.ok(data.stable.tableList.every(row => row.schema === 'main'));
   assert.equal(data.databaseClose.existed, true); assert.equal(data.databaseClose.openAfter, false);
   assert.equal(data.originalHandle.target.path, join(root,'d2-business.sqlite'));
   assert.equal(data.semanticExpectations.golden, 'UNKNOWN');
