@@ -77,7 +77,9 @@ struct broker {
  uint64_t operation, actual, observed[2], hashes[2], prefill, partial;
  unsigned allowed, denied, notifications, send_failed;
  int adapter_hold, outfd, errfd, rd[2], listener;
- pid_t children[2];
+ pid_t children[2], born[2];
+ uint64_t first_id, last_id; uint32_t first_task, last_task;
+ struct stat pipe_identity[2];
  int workers;
 };
 static int report_fd = -1, diagnostic_fd = -1;
@@ -243,7 +245,8 @@ static void handle(struct broker *b, struct shared *s, const char *name, struct 
  }
  io_ticket_v1 ticket; io_status_v1 admission = reserve(b, (pid_t)n->pid, stream, length, &ticket);
  struct seccomp_notif_resp response; memset(&response, 0, sizeof(response)); response.id = n->id;
- b->notifications++;
+ if (b->notifications == 0) { b->first_id = n->id; b->first_task = n->pid; }
+ b->last_id = n->id; b->last_task = n->pid; b->notifications++;
  if (admission == IO_DENIED_V1) { b->denied++; response.error = -EDQUOT; }
  else {
   REQUIRE(admission == IO_ALLOWED_V1, "I/O admission"); b->allowed++;
@@ -279,25 +282,54 @@ static void handle(struct broker *b, struct shared *s, const char *name, struct 
  }
  REQUIRE(ioctl(b->listener, SECCOMP_IOCTL_NOTIF_SEND, &response) == 0, "notification SEND");
 }
+/* Test-only GNU-ld --wrap observers. They preserve real core semantics and
+ * count actual API entries, including accidental initialization/close/snapshot.
+ * No old core file is changed and these are not an admission capability. */
+static unsigned journal_api_calls[8];
+extern lj_result_v1 __real_lj_sink_create_v1(lj_sink_v1 *, int, const char *, lj_cookie_v1);
+lj_result_v1 __wrap_lj_sink_create_v1(lj_sink_v1 *s, int fd, const char *name, lj_cookie_v1 d) {
+ journal_api_calls[0]++; return __real_lj_sink_create_v1(s, fd, name, d);
+}
+extern void __real_lj_sink_close_v1(lj_sink_v1 *);
+void __wrap_lj_sink_close_v1(lj_sink_v1 *s) { journal_api_calls[1]++; __real_lj_sink_close_v1(s); }
+extern lj_result_v1 __real_lj_init_v1(lj_domain_v1 *, lj_slot_v1 *, size_t, size_t, lj_cookie_v1, lj_cookie_v1, lj_sink_v1 *);
+lj_result_v1 __wrap_lj_init_v1(lj_domain_v1 *d, lj_slot_v1 *s, size_t n, size_t u, lj_cookie_v1 c, lj_cookie_v1 o, lj_sink_v1 *k) {
+ journal_api_calls[2]++; return __real_lj_init_v1(d, s, n, u, c, o, k);
+}
+extern lj_result_v1 __real_lj_reserve_v1(lj_domain_v1 *, lj_kind_v1, lj_cookie_v1, lj_cookie_v1, lj_cookie_v1, lj_ticket_v1 *);
+lj_result_v1 __wrap_lj_reserve_v1(lj_domain_v1 *d, lj_kind_v1 k, lj_cookie_v1 t, lj_cookie_v1 p, lj_cookie_v1 r, lj_ticket_v1 *o) {
+ journal_api_calls[3]++; return __real_lj_reserve_v1(d, k, t, p, r, o);
+}
+extern lj_result_v1 __real_lj_report_v1(lj_domain_v1 *, const lj_ticket_v1 *, lj_event_v1, uint64_t, lj_cookie_v1);
+lj_result_v1 __wrap_lj_report_v1(lj_domain_v1 *d, const lj_ticket_v1 *t, lj_event_v1 e, uint64_t o, lj_cookie_v1 r) {
+ journal_api_calls[4]++; return __real_lj_report_v1(d, t, e, o, r);
+}
+extern lj_result_v1 __real_lj_unknown_v1(lj_domain_v1 *, const lj_ticket_v1 *);
+lj_result_v1 __wrap_lj_unknown_v1(lj_domain_v1 *d, const lj_ticket_v1 *t) { journal_api_calls[5]++; return __real_lj_unknown_v1(d, t); }
+extern lj_result_v1 __real_lj_flush_v1(lj_domain_v1 *, const lj_ticket_v1 *);
+lj_result_v1 __wrap_lj_flush_v1(lj_domain_v1 *d, const lj_ticket_v1 *t) { journal_api_calls[6]++; return __real_lj_flush_v1(d, t); }
+extern lj_snapshot_v1 __real_lj_snapshot_v1_get(lj_domain_v1 *);
+lj_snapshot_v1 __wrap_lj_snapshot_v1_get(lj_domain_v1 *d) { journal_api_calls[7]++; return __real_lj_snapshot_v1_get(d); }
 static int run_journal_negative(const char *directory) {
+ /* No producers exist. The negative adapter rejects BEFORE creating/initializing
+  * any journal/sink, reserving a ticket, reporting, flushing or payload effect.
+  * active0 below means NO context, not a successful journal snapshot. */
+ const void *authentic_prebirth = NULL, *authentic_release = NULL;
+ int adapter_hold = authentic_prebirth == NULL || authentic_release == NULL;
+ REQUIRE(adapter_hold, "missing authentic lifecycle capability");
+ unsigned calls = 0; for (size_t i = 0; i < ARRAY_LEN(journal_api_calls); i++) calls += journal_api_calls[i];
+ REQUIRE(calls == 0, "actual wrapped journal API calls before missing-capability HOLD");
  int dir = open(directory, O_DIRECTORY|O_RDONLY|O_CLOEXEC); REQUIRE(dir >= 0, "private evidence dir");
- lj_sink_v1 sink = LJ_SINK_V1_INITIALIZER; lj_domain_v1 journal = LJ_DOMAIN_V1_INITIALIZER;
- lj_slot_v1 slots[1];
- REQUIRE(lj_sink_create_v1(&sink, dir, "journal-negative.bin", (lj_cookie_v1){31, 7}) == LJ_OK_V1, "negative sink create");
- REQUIRE(lj_init_v1(&journal, slots, 1, 2, (lj_cookie_v1){31, 7}, (lj_cookie_v1){31, 8}, &sink) == LJ_OK_V1, "negative journal init");
- /* No authentic prebirth/release capabilities exist. Fail closed before calls/effect. */
- const int authentic_prebirth = 0, authentic_release = 0;
- int adapter_hold = !(authentic_prebirth && authentic_release);
- lj_snapshot_v1 snapshot = lj_snapshot_v1_get(&journal);
- struct stat st; REQUIRE(fstat(sink.fd, &st) == 0 && st.st_size == 0, "no journal append");
- REQUIRE(adapter_hold && snapshot.active == 0 && !snapshot.inflight && !snapshot.original_qualification, "missing capability blocks eligibility");
+ struct stat st; errno = 0;
+ REQUIRE(fstatat(dir, "journal-negative.bin", &st, AT_SYMLINK_NOFOLLOW) == -1 && errno == ENOENT, "no journal sink exists");
  int receipt = openat(dir, "engineering-receipt.json", O_CREAT|O_EXCL|O_WRONLY|O_CLOEXEC|O_NOFOLLOW, 0600);
  REQUIRE(receipt >= 0, "engineering receipt create");
- const char text[] = "{\"adapter\":\"HOLD\",\"journal_reserve_report_flush_calls\":0,\"payload_effects\":0,\"qualification\":false}\n";
+ const char text[] = "{\"adapter\":\"HOLD\",\"journal_initialized\":false,\"sink_creates\":0,\"journal_reserve_report_flush_calls\":0,\"payload_effects\":0,\"qualification\":false}\n";
  REQUIRE(write(receipt, text, sizeof(text)-1) == (ssize_t)(sizeof(text)-1) && fsync(receipt) == 0, "engineering receipt durability");
  REQUIRE(close(receipt) == 0 && fsync(dir) == 0, "engineering directory durability");
- lj_sink_close_v1(&sink); close(dir);
- dprintf(report_fd, "{\"case\":\"B07\",\"result\":\"PASS\",\"adapter_hold\":true,\"journal_active\":0,\"journal_bytes\":0,\"journal_calls\":0,\"payload_bytes\":0,\"fixture_children\":0,\"qualification\":false}\n");
+ close(dir);
+ dprintf(report_fd, "{\"case\":\"B07\",\"result\":\"PASS\",\"adapter_hold\":true,\"journal_initialized\":false,\"journal_active\":0,\"sink_creates\":%u,\"journal_bytes\":0,\"journal_calls\":%u,\"wrapped_api_counts\":[%u,%u,%u,%u,%u,%u,%u,%u],\"payload_bytes\":0,\"fixture_children\":0,\"qualification\":false}\n",
+ journal_api_calls[0], calls, journal_api_calls[0], journal_api_calls[1], journal_api_calls[2], journal_api_calls[3], journal_api_calls[4], journal_api_calls[5], journal_api_calls[6], journal_api_calls[7]);
  return 0;
 }
 int main(int argc, char **argv) {
@@ -320,6 +352,7 @@ int main(int argc, char **argv) {
  struct broker b; memset(&b, 0, sizeof(b)); b.hashes[0] = b.hashes[1] = UINT64_C(14695981039346656037);
  b.rd[0] = guard_dup(pipes[0][0]); b.rd[1] = guard_dup(pipes[1][0]);
  b.outfd = guard_dup(pipes[0][1]); b.errfd = guard_dup(pipes[1][1]);
+ REQUIRE(fstat(b.outfd, &b.pipe_identity[0]) == 0 && fstat(b.errfd, &b.pipe_identity[1]) == 0, "actual pipe guard metadata");
  REQUIRE(dup2(pipes[0][1], 1) == 1 && dup2(pipes[1][1], 2) == 2 && dup2(pipes[0][1], 103) == 103, "fixed payload map");
  for (int i = 0; i < 2; i++) { close(pipes[i][0]); close(pipes[i][1]); }
  REQUIRE(prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) == 0, "no_new_privs");
@@ -330,7 +363,7 @@ int main(int argc, char **argv) {
  for (int i = 0; i < b.workers; i++) {
   pid_t p = fork(); REQUIRE(p >= 0, "owned fixture fork");
   if (p == 0) child_main(s, name, i);
-  b.children[i] = p;
+  b.children[i] = p; b.born[i] = p;
  }
  close(1); close(2); close(103);
  /* P30 live context is initialized only after every fork. */
@@ -384,8 +417,8 @@ int main(int argc, char **argv) {
  if (strcmp(name, "B06") == 0) pass = b.observed[0] == 1 && b.actual == 1 && snap.used[6] == 1 && atomic_load(&s->ok) == 1;
  if (strcmp(name, "R01") == 0) pass = b.observed[0] == 2 && snap.used[6] == 1 && snap.held && b.adapter_hold && atomic_load(&s->ok) == 1;
  REQUIRE(pass, "case expected actual effects");
- dprintf(report_fd, "{\"case\":\"%s\",\"result\":\"%s\",\"notifications\":%u,\"allowed\":%u,\"denied\":%u,\"stdout_observed\":%" PRIu64 ",\"stderr_observed\":%" PRIu64 ",\"stdout_fnv64\":\"%016" PRIx64 "\",\"stderr_fnv64\":\"%016" PRIx64 "\",\"actual_guard_bytes\":%" PRIu64 ",\"prefill_bytes\":%" PRIu64 ",\"known_partial\":%" PRIu64 ",\"used_stdout\":%" PRIu64 ",\"used_combined\":%" PRIu64 ",\"core_held\":%s,\"adapter_hold\":%s,\"send_failed\":%u,\"strict_denials\":%d,\"fixture_children\":%d,\"children_reaped\":%u,\"mutator_tid\":%d,\"pipe_capacity\":%d,\"qualification\":false}\n",
- name, strcmp(name, "R01") == 0 ? "COUNTEREXAMPLE_OBSERVED" : "PASS", b.notifications, b.allowed, b.denied, b.observed[0], b.observed[1], b.hashes[0], b.hashes[1], b.actual, b.prefill, b.partial, snap.used[6], snap.used[7], snap.held ? "true" : "false", b.adapter_hold ? "true" : "false", b.send_failed, atomic_load(&s->denied), b.workers, reaped, atomic_load(&s->mutator_tid), capacity);
+ dprintf(report_fd, "{\"case\":\"%s\",\"result\":\"%s\",\"notifications\":%u,\"allowed\":%u,\"denied\":%u,\"stdout_observed\":%" PRIu64 ",\"stderr_observed\":%" PRIu64 ",\"stdout_fnv64\":\"%016" PRIx64 "\",\"stderr_fnv64\":\"%016" PRIx64 "\",\"actual_guard_bytes\":%" PRIu64 ",\"prefill_bytes\":%" PRIu64 ",\"known_partial\":%" PRIu64 ",\"used_stdout\":%" PRIu64 ",\"used_combined\":%" PRIu64 ",\"core_held\":%s,\"adapter_hold\":%s,\"send_failed\":%u,\"strict_denials\":%d,\"fixture_children\":%d,\"children_reaped\":%u,\"mutator_tid\":%d,\"pipe_capacity\":%d,\"owned_pids\":[%d,%d],\"first_notif_id\":%" PRIu64 ",\"last_notif_id\":%" PRIu64 ",\"first_notif_task\":%u,\"last_notif_task\":%u,\"listener_fd\":%d,\"guard_fds\":[%d,%d],\"pipe_inodes\":[%" PRIuMAX ",%" PRIuMAX "],\"qualification\":false}\n",
+ name, strcmp(name, "R01") == 0 ? "COUNTEREXAMPLE_OBSERVED" : "PASS", b.notifications, b.allowed, b.denied, b.observed[0], b.observed[1], b.hashes[0], b.hashes[1], b.actual, b.prefill, b.partial, snap.used[6], snap.used[7], snap.held ? "true" : "false", b.adapter_hold ? "true" : "false", b.send_failed, atomic_load(&s->denied), b.workers, reaped, atomic_load(&s->mutator_tid), capacity, (int)b.born[0], (int)b.born[1], b.first_id, b.last_id, b.first_task, b.last_task, b.listener, b.outfd, b.errfd, (uintmax_t)b.pipe_identity[0].st_ino, (uintmax_t)b.pipe_identity[1].st_ino);
  free(notification); close(b.listener); close(b.outfd); close(b.errfd); close(b.rd[0]); close(b.rd[1]);
  return 0;
 }

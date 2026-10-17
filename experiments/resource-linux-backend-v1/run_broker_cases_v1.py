@@ -135,6 +135,10 @@ def assert_case(name, result):
         for key in ["journal_active", "journal_bytes", "journal_calls", "payload_bytes"]:
             if result.get(key) != 0:
                 raise ValueError("journal negative effect: " + key)
+        if result.get("wrapped_api_counts") != [0] * 8:
+            raise ValueError("actual wrapped lifecycle API calls observed")
+        if result.get("journal_initialized") is not False or result.get("sink_creates") != 0:
+            raise ValueError("capability gate must precede sink/context initialization")
         if result.get("adapter_hold") is not True:
             raise ValueError("missing lifecycle capability did not hold")
         return
@@ -212,19 +216,21 @@ def main():
     else:
         errors.append("actual-linker-identity")
     source = here / "broker_discriminator_v1.c"
-    dependency, raw_deps = run(output, "actual-headers", [compiler, "-std=c11", "-pthread", "-I", core, "-M", source], here, batch_start, inputs)
+    dependency, raw_deps = run(output, "actual-headers", [compiler, "-std=c11", "-pthread", "-I", core, "-M", source] + [core / n for n in CORE_NAMES if n.endswith(".c")], here, batch_start, inputs)
     if dependency["complete"]:
         tokens = shlex.split(raw_deps.decode().replace("\\\n", " ").split(":", 1)[1])
         headers = [identity(Path(x).resolve()) for x in sorted(set(tokens)) if Path(x).is_file()]
         create(output / "actual-header-identities.json", headers)
     else:
         errors.append("actual-headers")
+    wrapped = ["lj_sink_create_v1", "lj_sink_close_v1", "lj_init_v1", "lj_reserve_v1",
+               "lj_report_v1", "lj_unknown_v1", "lj_flush_v1", "lj_snapshot_v1_get"]
     binaries = {}
     for build, negative in [("positive", 0), ("negative-only", 1)]:
         binary = output / ("broker-" + build)
         create(binary, b"")
         argv = [compiler, "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-pthread", "-I", core,
-                "-DP31_NEGATIVE_CONTROL=" + str(negative), source] + [core / x for x in CORE_NAMES if x.endswith(".c")] + ["-o", binary]
+                "-DP31_NEGATIVE_CONTROL=" + str(negative), source] + [core / x for x in CORE_NAMES if x.endswith(".c")] + ["-Wl,--wrap=" + symbol for symbol in wrapped] + ["-o", binary]
         record, _ = run(output, "compile-" + build, argv, here, batch_start, inputs)
         if not record["complete"]:
             errors.append("compile-" + build)
@@ -240,7 +246,14 @@ def main():
             raise ValueError("compiled filter identity")
         create(output / ("compiled-filter-identities-" + build + ".json"),
                [{"index": i, "bytes": len(bytes.fromhex(h)), "sha256": hashlib.sha256(bytes.fromhex(h)).hexdigest()} for i, h in enumerate(filters["filters"])])
-        run(output, "linked-runtime-" + build, ["ldd", binary], here, batch_start, bound)
+        runtime_result, runtime_raw = run(output, "linked-runtime-" + build, ["ldd", binary], here, batch_start, bound)
+        if not runtime_result["complete"]:
+            errors.append("linked-runtime-" + build)
+        runtime_files = sorted({x for x in runtime_raw.decode().split() if x.startswith("/") and Path(x).is_file()})
+        if not runtime_files:
+            errors.append("linked-runtime-files-" + build)
+        create(output / ("linked-runtime-identities-" + build + ".json"),
+               [identity(Path(x).resolve()) for x in runtime_files])
         binaries[build] = (binary, bound)
     for name in EXPECTED:
         build = "negative-only" if name == "R01" else "positive"
