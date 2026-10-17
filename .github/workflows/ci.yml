@@ -323,6 +323,38 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
+  resource_c:
+    name: resource C (${{ matrix.compiler }})
+    needs: scope
+    if: needs.scope.outputs.mode == 'full'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
+    steps:
+      - uses: actions/checkout@v7
+      - name: supervisor failure-path and required-gate regressions
+        run: python3 -B resource/ci_runner_v1_test.py
+        env:
+          RESOURCE_SUPERVISOR_EVIDENCE: ${{ runner.temp }}/resource-supervisor-${{ matrix.compiler }}
+      - name: compile production C and run all finite groups
+        run: python3 -B resource/ci_runner_v1.py run --compiler "$RESOURCE_CC" --output "$RUNNER_TEMP/resource-c-$RESOURCE_CC"
+        env:
+          RESOURCE_CC: ${{ matrix.compiler }}
+          RESOURCE_EVENT_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: retain exact compiler source exit and EOF evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: resource-c-${{ matrix.compiler }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/resource-c-${{ matrix.compiler }}
+            ${{ runner.temp }}/resource-supervisor-${{ matrix.compiler }}
+          if-no-files-found: error
+          retention-days: 90
+
   application:
     name: full application verification
     needs: [scope, application_checks, ops_checks]
@@ -557,7 +589,7 @@ jobs:
   verify:
     name: typecheck · test · build
     runs-on: ubuntu-latest
-    needs: [scope, documents, application]
+    needs: [scope, documents, application, resource_c]
     if: always()
     steps:
       - uses: actions/checkout@v7
@@ -568,6 +600,11 @@ jobs:
           SCOPE_RESULT: ${{ needs.scope.result }}
           DOCS_RESULT: ${{ needs.documents.result }}
           FULL_RESULT: ${{ needs.application.result }}
+      - name: require both Linux C compiler lanes on full scope
+        run: python3 -B resource/ci_runner_v1.py gate --mode "$MODE" --lane "$RESOURCE_RESULT"
+        env:
+          MODE: ${{ needs.scope.outputs.mode }}
+          RESOURCE_RESULT: ${{ needs.resource_c.result }}
 
   docker:
     name: docker build
