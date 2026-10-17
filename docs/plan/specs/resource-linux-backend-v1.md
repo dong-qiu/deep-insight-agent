@@ -85,3 +85,18 @@ L01：缺 prebirth/release 的零 mutation/effect HOLD；L02 若另激活，仅�
 稳定联合 HIGH 审查前，允许普通 feature push 的独占临时 `.github/workflows/p31-broker-development.yml` 做真实 Linux debug：仅当前分支 push、已有 gcc/clang/Python、contents:read、无 install/sudo/secrets/dispatch/schedule。临时文件必须在 full R1 前正常 commit 移除，所有 commit/run/失败 raw 留档。最终最小 step 接入既有 `resource_c` 两 compiler lane 与其 artifact；缺 case/特性不可用必须使 aggregate 失败，不 green skip、不改变旧门禁。
 
 这份激活不是实际执行或通过收据。编译 BPF bytes 只能在真实 compile 后观测；第一次开发 push 前检查源 allowlist/filter，CI 在安装前记录编译 BPF/headers/binary/kernel 身份，不能事后回填。source STOP 14:32:35、review STOP 15:02:35、collect STOP 15:32:35 UTC 均不延长。
+
+## 7. 已观测的限定工程结果
+
+首开发 head `95b7d1f327893d5fba5dec49e19ecc6b70ea8c08` 的 branch CI `39036170797/1` 两 lane 成功，但 B07 当时只证明无 append：先建空 sink 的顺序不符合前置拒绝要求，因此不能当最终 B07 通过。原 commit/run/ZIP 保留，不回填。随后 v3 head `1199fc6901487bc125f82e000fdcd28948f19bf9`、branch CI `39036428726/1` 为新候选、新运行，不是重跑旧 attempt。
+
+v3 的 GCC/Clang 各实际得到 B01–B07 七个 PASS 与 R01 一个 `COUNTEREXAMPLE_OBSERVED`，无 missing/feature skip；每 lane 20 个 subprocess 记录有 actual wait、两路 EOF、exit0，无 timeout/overflow/forced-close。B07 在真实目录检查中不存在 journal sink；test-only linker `--wrap` 的八个 journal API entry count 全零，context 未初始化，独立 engineering receipt 实际 fsync。wrappers 若被调用会转发旧 real implementation，不替换旧 core 行为。它证明这个缺能力负例，不证明真实 prebirth/release producer 存在。
+
+| v3 原始 ZIP | bytes | SHA256 |
+| --- | ---: | --- |
+| GCC | 95298 | `2262f30d48f876f80ec36d12af0eae0ef5d4d663fabb3abbd694a39938914430` |
+| Clang | 96971 | `e5a76f064220571b1928f8fd8ebb3a6d8ba54afb6486089987423cfe54002ab3` |
+
+每 ZIP 的 91 个成员、CRC、完整 membership/size/hash、11 个源码输入、实际编译与 filter byte identities 已核对。运行身份由外层 artifact exact head/run 和内层源码/编译/case capture 绑定；不捏造内层不存在的 sourceSHA 字段。实际 uname 为 `6.17.0-1022-azure`，仍只是 metadata，不补齐 kernel binary/config/source 身份。开发 CI 不替代最终 PR 必需检查或 actual main CI。
+
+v3 C SHA256 `7f5235ec0f5c113b9a8c9f1593b061c1254668f5f617b73b054374010bcd3954`；runner SHA256 `30990746b97244a25dabe86a80d2ee7642d1f082429880a179a906cd770b81c4`。本机仅做 AST/JSON/UTF8/格式和源身份检查，未运行 Linux native、原 Node、SQL 或生产。HIGH 审查与 PR/main 身份另行记录，不能用这些开发结果预签。
