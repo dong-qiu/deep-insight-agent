@@ -1,0 +1,67 @@
+name: P32 readonly target identity
+on:
+  push:
+    branches: [codex/p32-resource-route-20261017-863552e7]
+permissions:
+  contents: read
+jobs:
+  identity:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Finite readonly census
+        timeout-minutes: 2
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          ulimit -c 0
+          mkdir -m 700 p32-target-identity
+          cp experiments/resource-linux-backend-v1/collect_target_identity_v1.py p32-target-identity/collector.py
+          cp .github/workflows/p32-target-identity.yml p32-target-identity/workflow.yml
+          python3 -B - <<'PY'
+          import hashlib,json,os,pathlib,subprocess,time,datetime,selectors,signal
+          root=pathlib.Path('p32-target-identity')
+          source=root/'collector.py'; workflow=root/'workflow.yml'
+          def put(name,obj):
+              fd=os.open(root/name,os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o600)
+              with os.fdopen(fd,'w') as f:json.dump(obj,f,indent=2);f.write('\n');f.flush();os.fsync(f.fileno())
+          argv=['/usr/bin/python3','-B',str(source),'--output',str(root/'target-identity-v1.json')]
+          put('plan.json',{'actualUTC':datetime.datetime.now(datetime.timezone.utc).isoformat(),'argv':argv,'sourceSHA256':hashlib.sha256(source.read_bytes()).hexdigest(),'workflowSHA256':hashlib.sha256(workflow.read_bytes()).hexdigest(),'head':os.environ['GITHUB_SHA'],'run':os.environ['GITHUB_RUN_ID'],'attempt':os.environ['GITHUB_RUN_ATTEMPT'],'seconds':100,'qualification':False})
+          start=time.monotonic();p=subprocess.Popen(argv,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
+          sel=selectors.DefaultSelector();data={'stdout':bytearray(),'stderr':bytearray()};eof={k:False for k in data}
+          for name,f in [('stdout',p.stdout),('stderr',p.stderr)]:
+              os.set_blocking(f.fileno(),False);sel.register(f,selectors.EVENT_READ,name)
+          reason=None;term=None;forced=False
+          while sel.get_map() or p.poll() is None:
+              if time.monotonic()-start>100 and reason is None:reason='timeout'
+              if reason and term is None:
+                  term=time.monotonic()
+                  try:os.killpg(p.pid,signal.SIGTERM)
+                  except ProcessLookupError:pass
+              if term and time.monotonic()-term>1:
+                  try:os.killpg(p.pid,signal.SIGKILL)
+                  except ProcessLookupError:pass
+              if term and time.monotonic()-term>2 and sel.get_map():
+                  forced=True
+                  for key in list(sel.get_map().values()):sel.unregister(key.fileobj);key.fileobj.close()
+              for key,_ in sel.select(.02):
+                  raw=os.read(key.fileobj.fileno(),8192);name=key.data
+                  if not raw:sel.unregister(key.fileobj);eof[name]=True;key.fileobj.close();continue
+                  room=65536-sum(map(len,data.values()))
+                  if len(raw)>room:reason=reason or 'overflow'
+                  data[name].extend(raw[:max(0,room)])
+          code=p.wait();sel.close()
+          for name,raw in data.items():
+              fd=os.open(root/(name+'.raw'),os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o600)
+              with os.fdopen(fd,'wb') as f:f.write(raw);f.flush();os.fsync(f.fileno())
+          put('result.json',{'exit':code,'waitCompleted':True,'EOF':eof,'stopReason':reason,'forcedPipeClosure':forced,'elapsed':time.monotonic()-start,'qualification':False})
+          assert code==0 and all(eof.values()) and reason is None and not forced
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: p32-target-identity
+          path: p32-target-identity/
+          if-no-files-found: error
