@@ -1,0 +1,35 @@
+name: P31 bounded broker development
+
+on:
+  push:
+    branches: [codex/p31-linux-resource-backend-20261017-6e192557]
+
+permissions:
+  contents: read
+
+jobs:
+  broker:
+    name: P31 broker development (${{ matrix.compiler }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: bounded actual Linux broker cases
+        run: python3 -B experiments/resource-linux-backend-v1/run_broker_cases_v1.py --compiler "$RESOURCE_CC" --output "$RUNNER_TEMP/p31-broker-$RESOURCE_CC"
+        env:
+          RESOURCE_CC: ${{ matrix.compiler }}
+          RESOURCE_EVENT_HEAD: ${{ github.sha }}
+      - name: retain source compiler case failure wait and EOF evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: p31-broker-development-${{ matrix.compiler }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/p31-broker-${{ matrix.compiler }}
+          if-no-files-found: error
+          retention-days: 90

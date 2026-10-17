@@ -1,0 +1,66 @@
+{
+  "schema": "p31-restricted-pipe-cases-v1",
+  "qualification": false,
+  "positiveBuild": [
+    "B01",
+    "B02",
+    "B03",
+    "B04",
+    "B05",
+    "B06",
+    "B07"
+  ],
+  "negativeOnlyBuild": [
+    "R01"
+  ],
+  "notActivated": [
+    "devices",
+    "ptrace",
+    "memory",
+    "originalNode",
+    "businessSQL",
+    "production"
+  ],
+  "cases": [
+    {
+      "id": "B01",
+      "expectedResult": "PASS",
+      "maxFixtureTasks": 2
+    },
+    {
+      "id": "B02",
+      "expectedResult": "PASS",
+      "maxFixtureTasks": 3
+    },
+    {
+      "id": "B03",
+      "expectedResult": "PASS",
+      "maxFixtureTasks": 2
+    },
+    {
+      "id": "B04",
+      "expectedResult": "PASS",
+      "maxFixtureTasks": 2
+    },
+    {
+      "id": "B05",
+      "expectedResult": "PASS",
+      "maxFixtureTasks": 2
+    },
+    {
+      "id": "B06",
+      "expectedResult": "PASS",
+      "maxFixtureTasks": 3
+    },
+    {
+      "id": "B07",
+      "expectedResult": "PASS",
+      "maxFixtureTasks": 1
+    },
+    {
+      "id": "R01",
+      "expectedResult": "COUNTEREXAMPLE_OBSERVED",
+      "maxFixtureTasks": 3
+    }
+  ]
+}
