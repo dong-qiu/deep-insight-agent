@@ -28,3 +28,28 @@ fields are rejected. A policy handle is not a signed authority or readiness rece
 
 Darwin C tests and repository typechecking do not prove Linux ABI, kernel/cgroup charged
 peak, lossless task lifetime, original Node probe, application integration or deployment.
+
+## Linux engineering CI (P29)
+
+Full-scope GitHub CI compiles these actual production sources with installed GCC and
+Clang, strict C11 warnings-as-errors, then runs all25 groups (32 ordered and32 direct
+duplicate-writer rounds per binary). Both matrix lanes must succeed in the existing
+required `typecheck · test · build` aggregate; failure/cancellation/skipping a full-scope
+lane fails that gate. Documentation-only scope skips this lane, not the existing docs gate.
+
+`python3 -B resource/ci_runner_v1.py run --compiler gcc --output /absolute/new/output`
+requires Linux and a new output directory. Each phase records tool/source identity,
+argv/environment, real exit/wait/two EOFs and bounded raw streams. Evidence uploads even
+on failure; prior files are never overwritten. Children have120s+2s termination grace,
+core dumps disabled, stdout1MiB/stderr2MiB/combined2MiB, observed owned build cap64MiB.
+This is trusted engineering supervision, not original physical memory/disk/cgroup proof.
+The runner records GitHub ImageOS/ImageVersion/runner OS+arch, compiler-selected linker
+query and bytes/version before compilation, and actual linker version from the link.
+Before the C binary runs, ELF PT_INTERP and `ldd` dependency resolution bind the loader,
+libc and other file dependencies by resolved path/hash. vDSO is explicitly virtual with
+no invented disk hash; this is not full process-map attestation. Required identity gaps
+are recorded as UNKNOWN and fail the engineering lane. File identities are rechecked.
+
+`python3 -B resource/ci_runner_v1_test.py` uses clearly separate supervisor fixtures to
+test compile/test nonzero, timeout/output caps, raw preservation and fail-closed aggregate
+decisions. These fixtures do not stand in for the production C tests in either lane.

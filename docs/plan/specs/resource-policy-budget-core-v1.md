@@ -80,8 +80,17 @@ instead of resetting usage. No callbacks, I/O, subprocess, OS task/FD discovery 
 
 ## Evidence layers / nonclaims
 
-Source/static and actual Darwin C tests are I1 engineering evidence only. Trusted Linux
-bootstrap evidence remains absent. Future actual pre-effect resource/Node probe and
+Source/static and actual Darwin C tests are I1 engineering evidence only. P29 adds an
+ordinary GitHub-hosted Linux GCC/Clang engineering lane; actual compiler/checkout/source,
+exit/wait/two EOFs and raw evidence must bind that candidate before claiming Linux tests.
+GitHub image/OS/arch and driver-selected linker identity precede compilation; compiled
+ELF PT_INTERP and dynamically resolved libc/dependency file identities precede C tests.
+Missing required identity is UNKNOWN and fails closed; vDSO has no invented file hash.
+Both matrix lanes feed the existing required CI aggregate on full scope. Supervisor
+regressions exercise compile/test failure and fail-closed aggregate decisions without
+substituting for the actual production C suite. Documentation-only mode preserves its
+existing independent checks. This does not supply the original trusted resource bootstrap.
+Future actual pre-effect resource/Node probe and
 business runtime are NOT_RUN. Host charged physical enforcement UNKNOWN; rlimit/RSS
 observations do not sign original cgroup limits. No new original ready gate, deployment,
 safe rollback, paid model, owner transfer or controller completion.
