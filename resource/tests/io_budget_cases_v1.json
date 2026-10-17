@@ -1,0 +1,140 @@
+{
+  "schema": "resource-io-budget-c-test-inventory-v1",
+  "actualFunctions": [
+    "rp_decode_v1",
+    "rp_get_limits_v1",
+    "io_init_v1",
+    "io_reserve_v1",
+    "io_complete_v1",
+    "io_snapshot_get_v1"
+  ],
+  "compiledTestSource": "io_budget_test_v1.c",
+  "jsonIsInventoryNotAlgorithmOrRuntimeOracle": true,
+  "jsonReadByTestBinary": false,
+  "groups": 21,
+  "twoWriterRounds": 32,
+  "maximumWorkerThreads": 2,
+  "mainThreads": 1,
+  "wireBytes": 3107,
+  "payloadBytes": 3083,
+  "payloadSHA256": "22b76496adbaf6aa6738a45d368c8d94148b08492f4115929eeb879bfe9836d4",
+  "finiteLoops": {
+    "truncatedLengths": 3107,
+    "singleByteMutations": 3107,
+    "malformedRepresentations": 8,
+    "deviceBoundaryConfigurations": 6,
+    "wrongTicketFields": 6,
+    "invalidRequestFields": 4,
+    "concurrentRounds": 32
+  },
+  "cases": [
+    {
+      "id": "policy_roundtrip",
+      "expected": "Canonical header/complete contract/opaque handle and all immutable numeric limits/hash expectations.",
+      "execution": "Actual compiled production C functions; outcome must be observed, not inferred from this file"
+    },
+    {
+      "id": "policy_lengths",
+      "expected": "Every shorter length, extra byte and NULL forms reject.",
+      "execution": "Actual compiled production C functions; outcome must be observed, not inferred from this file"
+    },
+    {
+      "id": "policy_every_byte",
+      "expected": "Each single-byte XOR mutation rejects; output null.",
+      "execution": "Actual compiled production C functions; outcome must be observed, not inferred from this file"
+    },
+    {
+      "id": "policy_malformed",
+      "expected": "Changed cap/null/float/overflow/duplicate/missing/unknown/format payloads reject.",
+      "execution": "Actual compiled production C functions; outcome must be observed, not inferred from this file"
+    },
+    {
+      "id": "policy_identity",
+      "expected": "Only library canonical pointer yields limits; forged or NULL pointer denied.",
+      "execution": "Actual compiled production C functions; outcome must be observed, not inferred from this file"
+    },
+    {
+      "id": "cap_boundaries",
+      "expected": "For six permitted object/direction configurations, cap-1, exact cap, +1 denial without reset.",
+      "execution": "Actual compiled production C functions; outcome must be observed, not inferred from this file"
+    },
+    {
+      "id": "oversized_and_directions",
+      "expected": "UINT64_MAX request, cap+1, forbidden directions and unknown enums refuse before effect.",
+      "execution": "Actual compiled production C functions; outcome must be observed, not inferred from this file"
+    },
+    {
+      "id": "multi_bucket",
+      "expected": "Combined bucket refusal leaves stdout unchanged; successful reservation atomically adds both.",
+      "execution": "Actual compiled production C functions; outcome must be observed, not inferred from this file"
+    },
+    {
+      "id": "short_completion",
+      "expected": "Known actual25 from reserved100 releases75 once; cumulative remainder remains.",
+      "execution": "Actual compiled production C functions; outcome must be observed, not inferred from this file"
+    },
+    {
+      "id": "unknown_no_refund",
+      "expected": "Unknown keeps100, holds, late known0 cannot refund or allow retry.",
+      "execution": "Actual compiled production C functions; outcome must be observed, not inferred from this file"
+    },
+    {
+      "id": "wrong_tickets",
+      "expected": "Domain/task/object/opID/generation/slot tampering holds with debit unchanged.",
+      "execution": "Actual compiled production C functions; outcome must be observed, not inferred from this file"
+    },
+    {
+      "id": "duplicate_completion",
+      "expected": "Second settlement holds and cannot decrement counters again.",
+      "execution": "Actual compiled production C functions; outcome must be observed, not inferred from this file"
+    },
+    {
+      "id": "duplicate_reservation",
+      "expected": "Repeated operation ID holds; no second debit or valid ticket.",
+      "execution": "Actual compiled production C functions; outcome must be observed, not inferred from this file"
+    },
+    {
+      "id": "storage_reuse_stale",
+      "expected": "Full storage refuses; known slot recycles generation, stale ticket holds without touching new debit.",
+      "execution": "Actual compiled production C functions; outcome must be observed, not inferred from this file"
+    },
+    {
+      "id": "inconsistent_actual",
+      "expected": "actual>reserved holds without credit.",
+      "execution": "Actual compiled production C functions; outcome must be observed, not inferred from this file"
+    },
+    {
+      "id": "known_cleanup_held",
+      "expected": "Independent known pending operation settles while another unknown keeps hold.",
+      "execution": "Actual compiled production C functions; outcome must be observed, not inferred from this file"
+    },
+    {
+      "id": "init_and_invalid",
+      "expected": "NULL/zero/oversized storage/invalid policy; repeated init cannot reset existing use.",
+      "execution": "Actual compiled production C functions; outcome must be observed, not inferred from this file"
+    },
+    {
+      "id": "invalid_requests",
+      "expected": "Wrong domain, zero task/object cookies and zero operation ID hold.",
+      "execution": "Actual compiled production C functions; outcome must be observed, not inferred from this file"
+    },
+    {
+      "id": "identity_generation_wrap",
+      "expected": "UINT64 generation/operation exhaustion cannot wrap or reset.",
+      "execution": "Actual compiled production C functions; outcome must be observed, not inferred from this file"
+    },
+    {
+      "id": "cross_domain",
+      "expected": "Ticket from a distinct unique domain cannot settle the other domain.",
+      "execution": "Actual compiled production C functions; outcome must be observed, not inferred from this file"
+    },
+    {
+      "id": "two_writers",
+      "expected": "32 simultaneous two-worker cap races, exactly one reservation allowed; no cumulative overrun. Out-of-order IDs may conservatively hold.",
+      "execution": "Actual compiled production C functions; outcome must be observed, not inferred from this file"
+    }
+  ],
+  "resourceQualification": false,
+  "originalProbeExecuted": false,
+  "modelBudget": 0
+}
