@@ -165,7 +165,7 @@ function observeChild(proc, observation) {
 }
 function child(root, action, endpoint, token, extra = {}) {
   const preload = extra.preload ? ["--import", `data:text/javascript,${encodeURIComponent(extra.preload)}`] : [];
-  const proc = spawn(process.execPath, [...preload, cli, root, action, endpoint, String(Date.now() + (extra.duration ?? 10000))], { env: nodeEnv, stdio: ["pipe", "pipe", "pipe"] });
+  const proc = spawn(process.execPath, [...preload, cli, root, action, endpoint, String(extra.deadline?.deadlineAt ?? Date.now() + (extra.duration ?? 10000))], { env: nodeEnv, stdio: ["pipe", "pipe", "pipe"] });
   let stdout = "", stderr = "";
   const observation = extra.observation ? observeChild(proc, extra.observation) : null;
   proc.stdout.on("data", bytes => { stdout += bytes; }); proc.stderr.on("data", bytes => { stderr += bytes; });
@@ -173,13 +173,19 @@ function child(root, action, endpoint, token, extra = {}) {
   if (extra.write !== false) proc.stdin.end(JSON.stringify({ schema, token }));
   return { proc, done, observation };
 }
-async function until(condition, childState = null, observation = null, milliseconds = 5000) {
-  const deadline = Date.now() + milliseconds;
+function fixtureDeadline(milliseconds) {
+  assert.ok(Number.isSafeInteger(milliseconds) && milliseconds >= 0 && milliseconds <= 60000);
+  const deadlineAt = Date.now() + milliseconds, started = performance.now();
+  return Object.freeze({ deadlineAt, milliseconds,
+    remaining: () => Math.min(deadlineAt - Date.now(), milliseconds - (performance.now() - started)) });
+}
+async function until(condition, childState = null, observation = null, milliseconds = 5000, shared = null) {
+  const deadline = shared ?? fixtureDeadline(milliseconds);
   for (;;) {
     if (childState?.failure) throw childState.failure;
     if (childState?.exited || childState?.closed) throw new Error("fixture child ended before barrier observation");
+    if (deadline.remaining() <= 0) { observation?.note("barrier_deadline", { milliseconds: deadline.milliseconds }); assert.fail("fixture barrier deadline"); }
     if (condition()) { observation?.note("barrier_observed"); return; }
-    if (Date.now() >= deadline) { observation?.note("barrier_deadline", { milliseconds }); assert.fail("fixture barrier deadline"); }
     await new Promise(resolve => setTimeout(resolve, 5));
   }
 }
@@ -251,7 +257,7 @@ function publishContentionRecord(output, value) {
     linkSync(staging, output);
   } finally { unlinkSync(staging); }
 }
-function contention() {
+function contention(shared = null) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "insight-transport-race-"))); chmodSync(root, 0o700);
   const children = [], releases = new Set();
   const databaseUrl = pathToFileURL(createRequire(import.meta.url).resolve("better-sqlite3")).href;
@@ -267,16 +273,18 @@ function contention() {
       import { closeSync, existsSync, linkSync, openSync, unlinkSync, writeFileSync } from 'node:fs';
       import { randomUUID } from 'node:crypto';
       ${publishContentionRecord.toString()}
-      const root=${JSON.stringify(root)}, role=${JSON.stringify(role)}, pauses=${JSON.stringify(pauses)};
+       const root=${JSON.stringify(root)}, role=${JSON.stringify(role)}, pauses=${JSON.stringify(pauses)};
+       const fixedDeadlineAt=${JSON.stringify(shared?.deadlineAt ?? null)}, fixedBudget=${JSON.stringify(shared?.milliseconds ?? null)};
       const probe=new Database(':memory:'), prototype=Object.getPrototypeOf(probe.prepare('SELECT 1'));
       const original=prototype.run; probe.close(); let begins=0, commits=0, rollbacks=0;
       const wait=new Int32Array(new SharedArrayBuffer(4));
       function record(name,value){publishContentionRecord(root+'/'+role+'-'+name+'.json',value);}
       function pause(name,inTransaction){
         record(name+'-ready',{inTransaction,begins,commits,rollbacks});
-        const deadline=performance.now()+10000;
-        while(!existsSync(root+'/'+role+'-'+name+'-go.json')){
+         const deadline=performance.now()+(fixedDeadlineAt===null?10000:Math.max(0,Math.min(fixedBudget,fixedDeadlineAt-Date.now())));
+         for(;;){
           if(performance.now()>=deadline)throw new Error('fixture_contention_barrier_deadline');
+           if(existsSync(root+'/'+role+'-'+name+'-go.json'))break;
           Atomics.wait(wait,0,0,5);
         }
       }
@@ -296,13 +304,15 @@ function contention() {
         return value;
       };`;
   }
-  async function ready(role, name, milliseconds = 10000) {
-    const deadline = performance.now() + milliseconds;
-    while (!existsSync(path(role, `${name}-ready`))) {
-      assert.ok(performance.now() < deadline, `fixture ${role}/${name} preparation deadline`);
+  async function ready(role, name, milliseconds = 10000, childState = null) {
+    const deadline = shared ?? fixtureDeadline(milliseconds);
+    for (;;) {
+      if (childState?.failure) throw childState.failure;
+      if (childState?.exited || childState?.closed) throw new Error("fixture child ended before ready observation");
+      assert.ok(deadline.remaining() > 0, `fixture ${role}/${name} preparation deadline`);
+      if (existsSync(path(role, `${name}-ready`))) return JSON.parse(readFileSync(path(role, `${name}-ready`), "utf8"));
       await new Promise(resolve => setTimeout(resolve, 5));
     }
-    return JSON.parse(readFileSync(path(role, `${name}-ready`), "utf8"));
   }
   function start(f, s, role, pauses, token = f.token) {
     const item = child(f.root, "send", s.endpoint, token, { duration: 30000, preload: preload(role, pauses) });
@@ -329,30 +339,35 @@ function contentionEvidence(label, value) {
   if (evidence) writeFileSync(join(evidence, `${label}.json`), JSON.stringify(value, null, 2) + "\n", { flag: "wx", mode: 0o600 });
 }
 
-test("ready publication: actual CLI partial staging write is invisible until complete", async t => {
+async function partialStagingPublication(t, startupDelayMS = 0) {
+  assert.ok(startupDelayMS === 0 || startupDelayMS === 6000);
   const observation = failureObservation(value => t.diagnostic(value), "partial_staging"); let item;
-  const race = contention(), f = fixture(t, { preserve: () => race.preserve }), s = await normalServer(t);
+  // One original30s window, not new per-stage observer deadlines. Scheduling counts.
+  const deadline = fixtureDeadline(30000);
+  const race = contention(deadline), f = fixture(t, { preserve: () => race.preserve }), s = await normalServer(t);
   const partial = race.path("a", "partial"), go = race.path("a", "partial-go"), output = race.path("a", "inspect-ready");
   const interrupt = `import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,${startupDelayMS});
     const originalWrite=fs.writeFileSync, waitForWrite=new Int32Array(new SharedArrayBuffer(4));
     fs.writeFileSync=function(output,bytes,...args){
       if(typeof output!=='number'||!String(bytes).includes('"inTransaction"'))return originalWrite(output,bytes,...args);
       const text=String(bytes); originalWrite(output,text.slice(0,1));
       originalWrite(${JSON.stringify(partial)},'{}\\n',{flag:'wx',mode:0o600});
-      const deadline=performance.now()+10000;
-      while(!fs.existsSync(${JSON.stringify(go)})){
-        if(performance.now()>=deadline)throw new Error('fixture_partial_write_deadline');
+       const expires=performance.now()+Math.max(0,Math.min(30000,${deadline.deadlineAt}-Date.now()));
+       for(;;){
+         if(performance.now()>=expires)throw new Error('fixture_partial_write_deadline');
+         if(fs.existsSync(${JSON.stringify(go)}))break;
         Atomics.wait(waitForWrite,0,0,5);
       }
       return originalWrite(output,text.slice(1),...args);
     }; syncBuiltinESMExports();`;
   await runObservedCase(observation, async () => {
-    item = child(f.root, "send", s.endpoint, f.token, { duration: 30000, preload: interrupt + race.preload("a", { commit1: "inspect" }), observation });
+    item = child(f.root, "send", s.endpoint, f.token, { deadline, preload: interrupt + race.preload("a", { commit1: "inspect" }), observation });
     item.closed = false; item.done.then(() => { item.closed = true; }, () => {}); race.children.push(item);
-    await until(() => existsSync(partial), item.observation.state, observation);
+    await until(() => existsSync(partial), item.observation.state, observation, 5000, deadline);
     assert.equal(existsSync(output), false);
     let settled = false;
-    const reading = race.ready("a", "inspect");
+    const reading = race.ready("a", "inspect", 10000, item.observation.state);
     reading.then(() => { settled = true; }, () => { settled = true; });
     await new Promise(resolve => setTimeout(resolve, 10));
     assert.equal(settled, false); assert.equal(existsSync(output), false);
@@ -367,6 +382,23 @@ test("ready publication: actual CLI partial staging write is invisible until com
     assert.equal(fs.readdirSync(race.root).some(name => name.endsWith(".tmp")), false);
     safety(JSON.parse(result.stdout)); assert.equal(current(f).op.state, "submitted");
   }, async () => { race.release("a", "partial"); await race.close(); }, () => item?.observation?.summary() ?? { closed: false, output: "unknown" });
+}
+test("ready publication: actual CLI partial staging write is invisible until complete", t => partialStagingPublication(t));
+test("ready publication: legal delayed CLI startup shares absolute deadline", t => partialStagingPublication(t, 6000));
+test("SSM observation: shared deadlines reject expired markers and never-ready", async () => {
+  let checked = false;
+  await assert.rejects(until(() => { checked = true; return true; }, null, null, 5000, fixtureDeadline(0)), /fixture barrier deadline/);
+  assert.equal(checked, false);
+  const original = new Error("shared deadline child failure");
+  await assert.rejects(until(() => true, { failure: original }, null, 5000, fixtureDeadline(100)), error => error === original);
+  await assert.rejects(until(() => false, null, null, 5000, fixtureDeadline(25)), /fixture barrier deadline/);
+  const expired = contention(fixtureDeadline(0)), never = contention(fixtureDeadline(25));
+  try {
+    publishContentionRecord(expired.path("a", "inspect-ready"), { complete: true });
+    await assert.rejects(expired.ready("a", "inspect"), /preparation deadline/);
+    await assert.rejects(never.ready("a", "inspect"), /preparation deadline/);
+    await assert.rejects(never.ready("a", "inspect", 10000, { closed: true }), /child ended/);
+  } finally { await expired.close(); await never.close(); }
 });
 test("ready publication: duplicate refuses replacement and removes only its staging", async () => {
   const race = contention(), output = race.path("a", "inspect-ready");
