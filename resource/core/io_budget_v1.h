@@ -28,7 +28,7 @@ typedef struct {
 } io_slot_v1;
 
 /* TCB-owned storage: initialize once; never copy/move/tamper with a live context.
- * All API access is serialized; caller orders strictly increasing operation IDs.
+ * All API access is serialized; caller delivers contiguous attempt IDs starting1.
  * No OS identities, effects or crash-persistence are supplied by this C core. */
 typedef struct {
     atomic_flag lock;

@@ -10,12 +10,16 @@ not authenticate an untrusted environment or release the original UNIMPLEMENTED 
 
 Use caller-owned fixed storage and one C11 atomic lock per domain. Subtract-before-add
 checks and atomic multi-bucket reservation prevent local counter overflow/partial debit.
-Tickets bind domain/task/object/opID/slot-generation, with monotonically ordered caller
-IDs. Completed slots recycle; unknown effects hold debit and quarantine without retry.
+Tickets bind domain/task/object/opID/slot-generation, with contiguous caller attempt
+IDs starting1. Valid no-effect denials consume the sequence number but no bucket/slot;
+gaps/replays/order errors/wrap hold. Completion order need not match request order.
+Completed slots recycle; unknown effects hold debit and quarantine without retry.
 The trusted adapter must order IDs and authenticate actual identity/effect ordering. The
 core is not a security boundary against memory corruption by that caller.
 
-Known settlement can clean up while held but cannot unlock. Repeat init never resets an
+Inconsistent actual>reserved permanently poisons that matched reservation: same-ticket
+known0 can never refund/recycle it. Known settlement of other unpoisoned reservations
+can clean up while held but cannot unlock. Repeat init never resets an
 active domain. Any future persistence/adapter/kernel or identity adoption is a separate
 design and implementation window; this in-memory core does not claim crash durability.
 

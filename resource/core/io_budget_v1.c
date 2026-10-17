@@ -48,7 +48,7 @@ io_status_v1 io_reserve_v1(io_domain_v1 *d, const io_request_v1 *r, io_ticket_v1
     if (!d->initialized) return done(d, IO_INVALID_V1);
     if (d->held) return done(d, IO_HELD_V1);
     if (!same(d->domain, r->domain) || !nonzero(r->task) || !nonzero(r->object) ||
-        r->operation_id == 0 || r->operation_id <= d->high_operation_id)
+        d->high_operation_id == UINT64_MAX || r->operation_id != d->high_operation_id + 1)
         return done(d, hold(d));
     d->high_operation_id = r->operation_id;
     mask = bucket_mask(r->object_class, r->direction);
@@ -81,7 +81,7 @@ io_status_v1 io_complete_v1(io_domain_v1 *d, const io_ticket_v1 *t, bool known, 
         !same(slot->task, t->task) || !same(slot->object, t->object)) return done(d, hold(d));
     if (slot->unknown) return done(d, IO_HELD_V1);
     if (!known) { slot->unknown = true; return done(d, hold(d)); }
-    if (actual > slot->reserved) return done(d, hold(d));
+    if (actual > slot->reserved) { slot->unknown = true; return done(d, hold(d)); }
     uint64_t unused = slot->reserved - actual;
     for (unsigned b = 0; b < 8; b++)
         if ((slot->mask & (1U << b)) != 0 && d->used[b] < unused) return done(d, hold(d));

@@ -11,7 +11,7 @@
   "compiledTestSource": "io_budget_test_v1.c",
   "jsonIsInventoryNotAlgorithmOrRuntimeOracle": true,
   "jsonReadByTestBinary": false,
-  "groups": 21,
+  "groups": 25,
   "twoWriterRounds": 32,
   "maximumWorkerThreads": 2,
   "mainThreads": 1,
@@ -25,7 +25,8 @@
     "deviceBoundaryConfigurations": 6,
     "wrongTicketFields": 6,
     "invalidRequestFields": 4,
-    "concurrentRounds": 32
+    "concurrentRounds": 32,
+    "directDuplicateRounds": 32
   },
   "cases": [
     {
@@ -120,7 +121,7 @@
     },
     {
       "id": "identity_generation_wrap",
-      "expected": "UINT64 generation/operation exhaustion cannot wrap or reset.",
+      "expected": "Generation exhaustion holds. Seed TCB attempt counter at UINT64_MAX-1 only for arithmetic boundary, then lastMAX accepted and wrap holds; not a claim of2^64 real earlier attempts.",
       "execution": "Actual compiled production C functions; outcome must be observed, not inferred from this file"
     },
     {
@@ -130,11 +131,35 @@
     },
     {
       "id": "two_writers",
-      "expected": "32 simultaneous two-worker cap races, exactly one reservation allowed; no cumulative overrun. Out-of-order IDs may conservatively hold.",
+      "expected": "32 two-worker races through trusted serialized issuance+delivery coordinator; exact attempt1/2, exactly one allowed, other quota-denied, no hold or cumulative overrun. Original numeric bound assertions retained.",
+      "execution": "Actual compiled production C functions; outcome must be observed, not inferred from this file"
+    },
+    {
+      "id": "sequence_gap_regression",
+      "expected": "Exact old production red: reserve attempt1 then3 must hold without extra debit; repaired production retains100.",
+      "execution": "Actual compiled production C functions; outcome must be observed, not inferred from this file"
+    },
+    {
+      "id": "poison_same_ticket_regression",
+      "expected": "Exact old production red: inconsistent101 for reserved100 then same-ticket known0 must retain100 and slot; independent known reservation may release proven75 unused without clearing hold.",
+      "execution": "Actual compiled production C functions; outcome must be observed, not inferred from this file"
+    },
+    {
+      "id": "sequence_attempt_boundaries",
+      "expected": "First attempt2 holds; valid quota/direction/storage denials consume1/3/5 without debit/slot; contiguous2/4/6 accepted; completions can reverse; gap8 holds.",
+      "execution": "Actual compiled production C functions; outcome must be observed, not inferred from this file"
+    },
+    {
+      "id": "two_duplicate_writers",
+      "expected": "32 direct two-worker attempt1 races contend on actual production lock; exactly one allowed, one replay-held, one debit only. No dispatch mutex in this group.",
       "execution": "Actual compiled production C functions; outcome must be observed, not inferred from this file"
     }
   ],
   "resourceQualification": false,
   "originalProbeExecuted": false,
-  "modelBudget": 0
+  "modelBudget": 0,
+  "duplicateWriterRounds": 32,
+  "requestSequence": "First1, each legally received attempt last+1; valid no-effect denials consume sequence, not quota/storage. Gap/replay/order/wrap holds.",
+  "inconsistentSettlement": "actual>reserved permanently poisons matched reservation/debit/slot; same-ticket known0 cannot refund. Other unpoisoned known cleanup may complete while global hold remains.",
+  "historicalOriginalCandidate": "b0e0d91 original21/6764 PASS retained; two new fixed selectors independently failed with exact old production functions before repair."
 }

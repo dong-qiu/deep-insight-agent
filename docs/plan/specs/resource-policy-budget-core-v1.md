@@ -36,9 +36,11 @@ are caller-owned, initialized once with the documented initializer, bounded/no h
 One domain atomic-flag lock serializes all operations. The caller must not copy/move a
 live context, reinitialize its atomic object or use overlapping slot storage.
 
-Request operation IDs are positive, strictly increasing across attempts in one domain;
-the trusted dispatch layer must serialize issuance/order. Old/duplicate/out-of-order IDs
-fail closed and hold the domain. This deliberately refuses unsupported request order;
+Request attempt IDs start at1 and are contiguous: each legally received attempt is
+exactly last+1. Quota/direction/storage DENY_NO_EFFECT consumes its attempt ID without
+debiting buckets or taking a slot. The trusted dispatch layer serializes issuance AND
+delivery. Gap/replay/out-of-order/overflow holds the domain without effect. Completion
+order is independent of request issue order. This refuses unsupported request order;
 it is not proof of Node workload compatibility. No finite total-event quota: completed
 slots recycle with monotonically increasing slot generations. ID/generation exhaustion
 holds before effect; storage exhaustion refuses before effect without resetting usage.
@@ -52,8 +54,11 @@ returning a ticket. Only the real adapter can ensure no effect precedes reserve.
 Known completion must match domain/task/object/opID/slot/generation and actual<=reserved;
 it releases only proven-unused reservation once. Unknown completion preserves the debit,
 holds domain/no next or retry, and never later refunds uncertain effects. Wrong/stale,
-duplicate or inconsistent settlement holds without decrementing any bucket. Existing
-known reservations may settle while held for honest cleanup but cannot clear the hold.
+duplicate or inconsistent settlement holds without decrementing any bucket. A matching
+ticket reporting actual>reserved permanently poisons that reservation as UNKNOWN_HELD:
+its full debit/slot cannot later be refunded or recycled by the same ticket, even known0.
+Only other unpoisoned known reservations may settle while held for honest cleanup;
+their proven-unused credit can be released but cannot clear the domain hold.
 Quota/direction/storage denial has no effect and never clears counters. Repeat init holds
 instead of resetting usage. No callbacks, I/O, subprocess, OS task/FD discovery or heap.
 

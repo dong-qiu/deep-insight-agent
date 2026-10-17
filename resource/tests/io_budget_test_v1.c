@@ -197,7 +197,8 @@ static void invalid_requests(void) {
 static void identity_generation_wrap(void) {
     io_domain_v1 d=IO_DOMAIN_V1_INITIALIZER;io_slot_v1 slots[1];io_ticket_v1 t;init(&d,slots,1);slots[0].generation=UINT64_MAX;
     io_request_v1 r=request(&d,1,IO_NULL_V1,IO_READ_V1,1);CHECK(io_reserve_v1(&d,&r,&t)==IO_HELD_V1);CHECK(snapshot(&d).used[0]==0);
-    io_domain_v1 e=IO_DOMAIN_V1_INITIALIZER;io_slot_v1 other[1];init(&e,other,1);r=request(&e,UINT64_MAX,IO_NULL_V1,IO_READ_V1,0);CHECK(io_reserve_v1(&e,&r,&t)==IO_ALLOWED_V1);CHECK(io_complete_v1(&e,&t,true,0)==IO_ALLOWED_V1);
+    /* Seed the TCB counter boundary; do not claim2^64 real preceding attempts. */
+    io_domain_v1 e=IO_DOMAIN_V1_INITIALIZER;io_slot_v1 other[1];init(&e,other,1);e.high_operation_id=UINT64_MAX-1;r=request(&e,UINT64_MAX,IO_NULL_V1,IO_READ_V1,0);CHECK(io_reserve_v1(&e,&r,&t)==IO_ALLOWED_V1);CHECK(io_complete_v1(&e,&t,true,0)==IO_ALLOWED_V1);
     r.operation_id=1;CHECK(io_reserve_v1(&e,&r,&t)==IO_HELD_V1);CHECK(snapshot(&e).used[0]==0);
 }
 static void cross_domain(void) {
@@ -206,34 +207,99 @@ static void cross_domain(void) {
     CHECK(io_reserve_v1(&a,&ra,&ta)==IO_ALLOWED_V1);CHECK(io_reserve_v1(&b,&rb,&tb)==IO_ALLOWED_V1);
     CHECK(io_complete_v1(&b,&ta,true,0)==IO_HELD_V1);CHECK(snapshot(&b).used[0]==50);CHECK(io_complete_v1(&a,&ta,true,50)==IO_ALLOWED_V1);
 }
-typedef struct { io_domain_v1 *domain;uint64_t id;atomic_uint *ready;atomic_bool *go;io_status_v1 status;io_ticket_v1 ticket; } writer_args;
+typedef struct { io_domain_v1 *domain;uint64_t id;atomic_uint *ready;atomic_bool *go;io_status_v1 status;io_ticket_v1 ticket;pthread_mutex_t *delivery;uint64_t *next; } writer_args;
 static void *writer(void *arg) {
-    writer_args *a=arg;io_request_v1 r=request(a->domain,a->id,IO_STDOUT_V1,IO_WRITE_V1,M);
+    writer_args *a=arg;
     atomic_fetch_add_explicit(a->ready,1,memory_order_release);
     while(!atomic_load_explicit(a->go,memory_order_acquire)) { }
-    a->status=io_reserve_v1(a->domain,&r,&a->ticket);return NULL;
+    uint64_t id=a->id;
+    if(a->delivery!=NULL) {
+        if(pthread_mutex_lock(a->delivery)!=0){a->status=IO_INVALID_V1;return NULL;}
+        id=++*a->next;
+    }
+    io_request_v1 r=request(a->domain,id,IO_STDOUT_V1,IO_WRITE_V1,M);
+    a->status=io_reserve_v1(a->domain,&r,&a->ticket);
+    if(a->delivery!=NULL && pthread_mutex_unlock(a->delivery)!=0)a->status=IO_INVALID_V1;
+    return NULL;
 }
 static void two_writers(void) {
     for (unsigned round=0;round<32;round++) {
         io_domain_v1 d=IO_DOMAIN_V1_INITIALIZER;io_slot_v1 slots[2];init(&d,slots,2);atomic_uint ready=0;atomic_bool go=false;
-        writer_args args[2]={{.domain=&d,.id=1,.ready=&ready,.go=&go},{.domain=&d,.id=2,.ready=&ready,.go=&go}};pthread_t threads[2];
+        /* Trusted adapter must serialize BOTH issuance and delivery, per contract. */
+        pthread_mutex_t delivery=PTHREAD_MUTEX_INITIALIZER;uint64_t next=0;
+        writer_args args[2]={{.domain=&d,.ready=&ready,.go=&go,.delivery=&delivery,.next=&next},{.domain=&d,.ready=&ready,.go=&go,.delivery=&delivery,.next=&next}};pthread_t threads[2];
         CHECK(pthread_create(&threads[0],NULL,writer,&args[0])==0);CHECK(pthread_create(&threads[1],NULL,writer,&args[1])==0);
         while(atomic_load_explicit(&ready,memory_order_acquire)!=2) { }
         atomic_store_explicit(&go,true,memory_order_release);
         CHECK(pthread_join(threads[0],NULL)==0);CHECK(pthread_join(threads[1],NULL)==0);
+        CHECK(pthread_mutex_destroy(&delivery)==0);
         unsigned allowed=(args[0].status==IO_ALLOWED_V1?1U:0U)+(args[1].status==IO_ALLOWED_V1?1U:0U);CHECK(allowed==1);
         CHECK((args[0].status==IO_ALLOWED_V1 || args[0].status==IO_HELD_V1 || args[0].status==IO_DENIED_V1) && (args[1].status==IO_ALLOWED_V1 || args[1].status==IO_HELD_V1 || args[1].status==IO_DENIED_V1));
-        io_snapshot_v1 s=snapshot(&d);CHECK(s.used[6]==M && s.used[7]==M);
+        io_snapshot_v1 s=snapshot(&d);CHECK(!s.held && s.used[6]==M && s.used[7]==M && s.high_operation_id==2);
     }
 }
+static void two_duplicate_writers(void) {
+    for(unsigned round=0;round<32;round++) {
+        io_domain_v1 d=IO_DOMAIN_V1_INITIALIZER;io_slot_v1 slots[2];init(&d,slots,2);atomic_uint ready=0;atomic_bool go=false;
+        writer_args args[2]={{.domain=&d,.id=1,.ready=&ready,.go=&go},{.domain=&d,.id=1,.ready=&ready,.go=&go}};pthread_t threads[2];
+        CHECK(pthread_create(&threads[0],NULL,writer,&args[0])==0);CHECK(pthread_create(&threads[1],NULL,writer,&args[1])==0);
+        while(atomic_load_explicit(&ready,memory_order_acquire)!=2) { }
+        atomic_store_explicit(&go,true,memory_order_release);
+        CHECK(pthread_join(threads[0],NULL)==0);CHECK(pthread_join(threads[1],NULL)==0);
+        CHECK((args[0].status==IO_ALLOWED_V1 && args[1].status==IO_HELD_V1)||(args[1].status==IO_ALLOWED_V1 && args[0].status==IO_HELD_V1));
+        io_snapshot_v1 s=snapshot(&d);CHECK(s.held && s.used[6]==M && s.used[7]==M && s.high_operation_id==1);
+    }
+}
+static void sequence_attempt_boundaries(void) {
+    io_domain_v1 gap=IO_DOMAIN_V1_INITIALIZER;io_slot_v1 gs[1];io_ticket_v1 t;init(&gap,gs,1);
+    io_request_v1 r=request(&gap,2,IO_NULL_V1,IO_READ_V1,1);CHECK(io_reserve_v1(&gap,&r,&t)==IO_HELD_V1);CHECK(snapshot(&gap).used[0]==0 && !gs[0].active);
+    io_domain_v1 d=IO_DOMAIN_V1_INITIALIZER;io_slot_v1 slots[2];io_ticket_v1 a,b;init(&d,slots,2);
+    r=request(&d,1,IO_NULL_V1,IO_READ_V1,UINT64_MAX);CHECK(io_reserve_v1(&d,&r,&t)==IO_DENIED_V1);CHECK(snapshot(&d).high_operation_id==1 && !slots[0].active);
+    r=request(&d,2,IO_NULL_V1,IO_READ_V1,1);CHECK(io_reserve_v1(&d,&r,&a)==IO_ALLOWED_V1);
+    r=request(&d,3,IO_ZERO_V1,IO_WRITE_V1,0);CHECK(io_reserve_v1(&d,&r,&t)==IO_DENIED_V1);CHECK(snapshot(&d).high_operation_id==3);
+    r=request(&d,4,IO_NULL_V1,IO_READ_V1,1);CHECK(io_reserve_v1(&d,&r,&b)==IO_ALLOWED_V1);
+    r.operation_id=5;CHECK(io_reserve_v1(&d,&r,&t)==IO_DENIED_V1);CHECK(snapshot(&d).high_operation_id==5 && snapshot(&d).used[0]==2);
+    /* Reverse ticket completion is legal; request issuance sequence is separate. */
+    CHECK(io_complete_v1(&d,&b,true,1)==IO_ALLOWED_V1);CHECK(io_complete_v1(&d,&a,true,1)==IO_ALLOWED_V1);
+    r.operation_id=6;CHECK(io_reserve_v1(&d,&r,&t)==IO_ALLOWED_V1);
+    r.operation_id=8;CHECK(io_reserve_v1(&d,&r,&t)==IO_HELD_V1);CHECK(snapshot(&d).used[0]==3);
+}
 typedef void (*test_fn)(void);
-int main(void) {
+static void sequence_gap_regression(void) {
+    io_domain_v1 d=IO_DOMAIN_V1_INITIALIZER;io_slot_v1 slots[2];io_ticket_v1 t;init(&d,slots,2);
+    io_request_v1 r=request(&d,1,IO_NULL_V1,IO_READ_V1,100);CHECK(io_reserve_v1(&d,&r,&t)==IO_ALLOWED_V1);
+    r.operation_id=3;CHECK(io_reserve_v1(&d,&r,&t)==IO_HELD_V1);
+    io_snapshot_v1 s=snapshot(&d);CHECK(s.held && s.used[0]==100);
+}
+static void poison_same_ticket_regression(void) {
+    io_domain_v1 d=IO_DOMAIN_V1_INITIALIZER;io_slot_v1 slots[2];io_ticket_v1 a,b;init(&d,slots,2);
+    io_request_v1 r=request(&d,1,IO_STDOUT_V1,IO_WRITE_V1,100);CHECK(io_reserve_v1(&d,&r,&a)==IO_ALLOWED_V1);
+    r=request(&d,2,IO_STDERR_V1,IO_WRITE_V1,100);CHECK(io_reserve_v1(&d,&r,&b)==IO_ALLOWED_V1);
+    CHECK(io_complete_v1(&d,&a,true,101)==IO_HELD_V1);
+    CHECK(io_complete_v1(&d,&a,true,0)==IO_HELD_V1);
+    io_snapshot_v1 s=snapshot(&d);CHECK(s.held && s.used[6]==100 && s.used[7]==200);
+    CHECK(slots[a.slot].active && slots[a.slot].unknown);
+    CHECK(io_complete_v1(&d,&b,true,25)==IO_HELD_V1);
+    s=snapshot(&d);CHECK(s.used[6]==100 && s.used[7]==125);
+    CHECK(io_complete_v1(&d,&a,true,0)==IO_HELD_V1);CHECK(snapshot(&d).used[7]==125);
+}
+int main(int argc, char **argv) {
     const struct {const char *id;test_fn run;} cases[]={
         {"policy_roundtrip",policy_roundtrip},{"policy_lengths",policy_lengths},{"policy_every_byte",policy_every_byte},{"policy_malformed",policy_malformed},{"policy_identity",policy_identity},
         {"cap_boundaries",cap_boundaries},{"oversized_and_directions",oversized_and_directions},{"multi_bucket",multi_bucket},{"short_completion",short_completion},{"unknown_no_refund",unknown_no_refund},
         {"wrong_tickets",wrong_tickets},{"duplicate_completion",duplicate_completion},{"duplicate_reservation",duplicate_reservation},{"storage_reuse_stale",storage_reuse_stale},{"inconsistent_actual",inconsistent_actual},
-        {"known_cleanup_held",known_cleanup_held},{"init_and_invalid",init_and_invalid},{"invalid_requests",invalid_requests},{"identity_generation_wrap",identity_generation_wrap},{"cross_domain",cross_domain},{"two_writers",two_writers}
+        {"known_cleanup_held",known_cleanup_held},{"init_and_invalid",init_and_invalid},{"invalid_requests",invalid_requests},{"identity_generation_wrap",identity_generation_wrap},{"cross_domain",cross_domain},{"two_writers",two_writers},
+        {"sequence_gap_regression",sequence_gap_regression},{"poison_same_ticket_regression",poison_same_ticket_regression},
+        {"sequence_attempt_boundaries",sequence_attempt_boundaries},{"two_duplicate_writers",two_duplicate_writers}
     };
+    if(argc==2) {
+        policy_roundtrip();
+        for(size_t i=0;i<sizeof(cases)/sizeof(cases[0]);i++) if(strcmp(argv[1],cases[i].id)==0) {
+            cases[i].run();printf("PASS selected=%s checks=%u qualification=false\n",cases[i].id,checks);return 0;
+        }
+        fprintf(stderr,"Unknown fixed test selector\n");return 2;
+    }
+    if(argc!=1) return 2;
     for(size_t i=0;i<sizeof(cases)/sizeof(cases[0]);i++){cases[i].run();printf("PASS %s\n",cases[i].id);}
-    printf("PASS groups=21 checks=%u two_writer_rounds=32 maximum_workers=2 qualification=false\n",checks);return 0;
+    printf("PASS groups=%zu checks=%u ordered_writer_rounds=32 duplicate_writer_rounds=32 maximum_workers=2 qualification=false\n",sizeof(cases)/sizeof(cases[0]),checks);return 0;
 }
