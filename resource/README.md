@@ -53,3 +53,20 @@ are recorded as UNKNOWN and fail the engineering lane. File identities are reche
 `python3 -B resource/ci_runner_v1_test.py` uses clearly separate supervisor fixtures to
 test compile/test nonzero, timeout/output caps, raw preservation and fail-closed aggregate
 decisions. These fixtures do not stand in for the production C tests in either lane.
+
+## Pending lifetime journal (P30)
+
+The separate [lifetime protocol](../docs/plan/specs/resource-lifetime-journal-v1.md)
+and [ADR](../docs/develop/adr-resource-lifetime-journal-v1.md) add a bounded pending
+journal and real private-file durable receiver. Only reported waitable-one-exec lifecycle
+shapes are supported. Birth and terminal capacity are reserved together, and slots are
+reused only after full terminal reports plus actual receiver write/fsync. A caller ACK
+boolean cannot grant reuse. Real kernel identity/prebirth and per-run charge adapters are
+still absent; this component does not make any original readiness gate true.
+
+`make -C resource BUILD_DIR=/absolute/new/owned/root test-lifetime` runs29 unwrapped
+positive/protocol groups (including64 sequential reuses and32 two-contender rounds) and
+7 separate negative-only syscall-fault/concurrency groups. Each invocation requires new
+fixture directories. The negative build is not positive durable-storage proof. Full CI
+runs both builds with GCC and Clang inside the existing mandatory C matrix, retaining
+raw results and actual receipt bytes. No original Node/VM/business database is executed.

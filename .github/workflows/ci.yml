@@ -344,6 +344,11 @@ jobs:
         env:
           RESOURCE_CC: ${{ matrix.compiler }}
           RESOURCE_EVENT_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: compile lifetime journal and verify real durable receiver
+        run: python3 -B resource/lifetime_ci_v1.py --compiler "$RESOURCE_CC" --output "$RUNNER_TEMP/resource-lifetime-$RESOURCE_CC"
+        env:
+          RESOURCE_CC: ${{ matrix.compiler }}
+          RESOURCE_EVENT_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: retain exact compiler source exit and EOF evidence
         if: always()
         uses: actions/upload-artifact@v7
@@ -352,6 +357,7 @@ jobs:
           path: |
             ${{ runner.temp }}/resource-c-${{ matrix.compiler }}
             ${{ runner.temp }}/resource-supervisor-${{ matrix.compiler }}
+            ${{ runner.temp }}/resource-lifetime-${{ matrix.compiler }}
           if-no-files-found: error
           retention-days: 90
 
