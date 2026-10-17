@@ -1,0 +1,15 @@
+{
+  "schema": "resource-lifetime-finite-cases-v1",
+  "qualification": false,
+  "positiveUnwrappedGroups": 29,
+  "negativeOnlyFaultGroups": 7,
+  "pendingSlotsMaximum": 16,
+  "recordUnitsPerSlot": 2,
+  "recordBytes": 256,
+  "sequentialDurableReuseCycles": 64,
+  "twoContenderRounds": 32,
+  "workersPlusMainMaximum": 3,
+  "scope": ["reported identities only", "waitable single-exec child", "real private-file durable ACK"],
+  "negativeCases": ["missing obligations", "wrong reporter", "ordinal gaps and duplicates", "stale and cross-domain tickets", "no-birth to exec", "unknown birth", "wrap", "reopened FD", "mode and size drift", "short write", "EINTR", "EIO", "fsync EBADF", "inflight quarantine", "concurrent close"],
+  "notProven": ["kernel authentication", "prebirth adapter", "original Node", "physical charge placement", "original scratch sharing", "restart recovery", "original resource readiness"]
+}
