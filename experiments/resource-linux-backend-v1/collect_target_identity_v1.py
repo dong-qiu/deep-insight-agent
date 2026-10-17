@@ -154,7 +154,17 @@ def save(path, value):
         os.fsync(stream.fileno())
 
 
-def collect():
+def save_raw(root, name, raw):
+    path = root / name
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "wb") as stream:
+        stream.write(raw)
+        stream.flush()
+        os.fsync(stream.fileno())
+    return {"path": name, "bytes": len(raw), "sha256": digest(raw)}
+
+
+def collect(output_root):
     release = platform.release()
     if sys.platform != "linux" or platform.machine() != "x86_64":
         raise RuntimeError("only Linux x86_64 identity observation is supported")
@@ -169,12 +179,20 @@ def collect():
     result["source"].pop("text", None)
     notes, raw = read_file("/sys/kernel/notes")
     if raw is not None:
+        notes["ownedRaw"] = save_raw(output_root, "running-notes.bin", raw)
         try:
             notes["GNUbuildIDs"] = note_build_ids(raw)
         except ValueError as exc:
             notes["parseStatus"] = str(exc)
     result["kernel"]["runningNotes"] = notes
-    result["kernel"]["config"] = text_file("/boot/config-" + release)
+    config_result, config_raw = read_file("/boot/config-" + release)
+    result["kernel"]["config"] = config_result
+    if config_raw is not None:
+        config_result["ownedRaw"] = save_raw(output_root, "disk-config.raw", config_raw)
+        try:
+            config_result["text"] = config_raw.decode("utf-8")
+        except UnicodeDecodeError:
+            config_result["status"] = "non_utf8"
     # Config hash is useful; expose only named relevant options, not the entire config.
     config = result["kernel"]["config"].pop("text", None)
     if config is not None:
@@ -184,14 +202,18 @@ def collect():
         result["kernel"]["config"]["selectedOptions"] = [
             line for line in config.splitlines() if any(
                 line.startswith(name + "=") or line == "# " + name + " is not set" for name in names)]
-    # No arbitrary boot-image reads or large downloads: availability/stat alone is not identity.
+    # One exact matching image read, bounded20MiB. Failure is not retried via other paths.
+    image_result, image_raw = read_file("/boot/vmlinuz-" + release, cap=20971520)
+    result["kernel"]["bootImage"] = image_result
+    image_result["runningBinaryBinding"] = False
+    if image_raw is not None:
+        image_result["ownedRaw"] = save_raw(output_root, "disk-boot-image.bin", image_raw)
     try:
         image = os.stat("/boot/vmlinuz-" + release)
-        result["kernel"]["bootImage"] = {"status": "stat_only", "bytes": image.st_size,
-            "mode": oct(stat.S_IMODE(image.st_mode)), "binarySHA": None,
-            "runningBinaryBinding": False}
+        image_result["stat"] = {"bytes": image.st_size, "mode": oct(stat.S_IMODE(image.st_mode)),
+                                "uid": image.st_uid, "gid": image.st_gid}
     except OSError as exc:
-        result["kernel"]["bootImage"] = {"status": "unavailable", "errno": exc.errno}
+        image_result["stat"] = {"status": "unavailable", "errno": exc.errno}
     result["cpu"] = {name: text_file("/sys/devices/system/cpu/" + name)
                      for name in ["online", "possible", "present", "offline", "isolated"]}
     status, raw = read_file("/proc/self/status")
@@ -283,6 +305,6 @@ if __name__ == "__main__":
     if args.self_test:
         self_test()
     elif args.output is not None:
-        save(args.output, collect())
+        save(args.output, collect(args.output.parent))
     else:
         parser.error("--output or --self-test required")
