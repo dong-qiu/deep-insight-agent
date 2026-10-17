@@ -349,6 +349,12 @@ jobs:
         env:
           RESOURCE_CC: ${{ matrix.compiler }}
           RESOURCE_EVENT_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: restricted Linux broker engineering cases (not workload qualification)
+        if: always()
+        run: python3 -B experiments/resource-linux-backend-v1/run_broker_cases_v1.py --compiler "$RESOURCE_CC" --output "$RUNNER_TEMP/p31-broker-$RESOURCE_CC"
+        env:
+          RESOURCE_CC: ${{ matrix.compiler }}
+          RESOURCE_EVENT_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: retain exact compiler source exit and EOF evidence
         if: always()
         uses: actions/upload-artifact@v7
@@ -358,6 +364,7 @@ jobs:
             ${{ runner.temp }}/resource-c-${{ matrix.compiler }}
             ${{ runner.temp }}/resource-supervisor-${{ matrix.compiler }}
             ${{ runner.temp }}/resource-lifetime-${{ matrix.compiler }}
+            ${{ runner.temp }}/p31-broker-${{ matrix.compiler }}
           if-no-files-found: error
           retention-days: 90
 
