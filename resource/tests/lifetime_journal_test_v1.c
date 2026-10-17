@@ -198,8 +198,8 @@ static void races(void) {
     fixture f; start(&f, 1U);
     for (unsigned round = 0U; round < 32U; ++round) {
         atomic_uint ready = 0U; atomic_bool go = false;
-        contender a = {&f, (uint64_t)round * 2U + 1U, LJ_HELD_V1, {0}, &ready, &go};
-        contender b = {&f, (uint64_t)round * 2U + 2U, LJ_HELD_V1, {0}, &ready, &go};
+        contender a = {.f = &f, .id = (uint64_t)round * 2U + 1U, .result = LJ_HELD_V1, .ready = &ready, .go = &go};
+        contender b = {.f = &f, .id = (uint64_t)round * 2U + 2U, .result = LJ_HELD_V1, .ready = &ready, .go = &go};
         pthread_t ta, tb; CHECK(pthread_create(&ta, NULL, compete, &a) == 0); CHECK(pthread_create(&tb, NULL, compete, &b) == 0);
         while (atomic_load_explicit(&ready, memory_order_acquire) != 2U) { }
         atomic_store_explicit(&go, true, memory_order_release);
